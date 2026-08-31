@@ -10,3 +10,4 @@
 - Task 5: opusdm-fsops run_move, run_delete, make_entry. fsops crate complete.
 - Task 6: opusdm-hub crate skeleton, apply_role_event() role machine.
 - Task 7: opusdm-hub JobEngine (validate, MAX_CONCURRENT=4, map_progress).
+- Task 8: opusdm-hub server.rs - accept loop, owner loop, HubEvent/HubCmd bridge.
