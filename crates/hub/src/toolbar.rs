@@ -1,0 +1,258 @@
+//! The always-on toolbar: New Lister, SRC/DST indicators, job progress, Quit.
+
+use crate::server::{HubCmd, HubEvent, ServerHandle};
+use gtk4 as gtk;
+use gtk::gio;
+use gtk::glib;
+use gtk::prelude::*;
+use opusdm_ipc::ListerId;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::mpsc::Sender;
+
+/// Build and run the toolbar application. Returns on quit.
+pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
+    let app = gtk::Application::builder()
+        .application_id("org.opusdm.Hub")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+
+    // Bridge the blocking mpsc receiver onto an async channel the GTK loop drains.
+    let (ui_tx, ui_rx) = async_channel::unbounded::<HubEvent>();
+    let evt_rx = handle.evt_rx;
+    std::thread::spawn(move || {
+        for ev in evt_rx.iter() {
+            if ui_tx.send_blocking(ev).is_err() {
+                break;
+            }
+        }
+    });
+
+    let cmd_tx = handle.cmd_tx;
+    app.connect_activate(move |app| {
+        build_ui(app, cmd_tx.clone(), ui_rx.clone());
+    });
+    app.run_with_args::<&str>(&[])
+}
+
+/// Live widget handles shared by the event pump.
+struct Widgets {
+    window: gtk::ApplicationWindow,
+    src_label: gtk::Label,
+    dst_label: gtk::Label,
+    src_id: Cell<Option<ListerId>>,
+    dst_id: Cell<Option<ListerId>>,
+    job_box: gtk::Box,
+    jobs: RefCell<HashMap<u64, JobRow>>,
+    cmd_tx: Sender<HubCmd>,
+}
+
+struct JobRow {
+    root: gtk::Box,
+    bar: gtk::ProgressBar,
+}
+
+fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
+    let window = gtk::ApplicationWindow::builder()
+        .application(app)
+        .title("OpusDM")
+        .resizable(false)
+        .build();
+
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    root.set_margin_top(6);
+    root.set_margin_bottom(6);
+    root.set_margin_start(6);
+    root.set_margin_end(6);
+
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+
+    let new_btn = gtk::Button::with_label("New Lister");
+    {
+        let cmd_tx = cmd_tx.clone();
+        new_btn.connect_clicked(move |_| {
+            let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
+        });
+    }
+    bar.append(&new_btn);
+
+    let src_label = gtk::Label::new(Some("SRC: -"));
+    let dst_label = gtk::Label::new(Some("DST: -"));
+    src_label.add_css_class("dim-label");
+    dst_label.add_css_class("dim-label");
+    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    bar.append(&src_label);
+    bar.append(&dst_label);
+
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bar.append(&spacer);
+
+    let quit_btn = gtk::Button::with_label("Quit");
+    bar.append(&quit_btn);
+
+    root.append(&bar);
+
+    let job_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    root.append(&job_box);
+
+    window.set_child(Some(&root));
+
+    let widgets = Rc::new(Widgets {
+        window: window.clone(),
+        src_label: src_label.clone(),
+        dst_label: dst_label.clone(),
+        src_id: Cell::new(None),
+        dst_id: Cell::new(None),
+        job_box: job_box.clone(),
+        jobs: RefCell::new(HashMap::new()),
+        cmd_tx: cmd_tx.clone(),
+    });
+
+    // Click an indicator to raise its Lister.
+    attach_present_gesture(&src_label, &widgets, true);
+    attach_present_gesture(&dst_label, &widgets, false);
+
+    // Quit button and window close: confirm if jobs are running.
+    {
+        let widgets = widgets.clone();
+        quit_btn.connect_clicked(move |_| request_quit(&widgets));
+    }
+    {
+        let widgets = widgets.clone();
+        window.connect_close_request(move |_| {
+            request_quit(&widgets);
+            glib::Propagation::Stop
+        });
+    }
+
+    // Event pump.
+    {
+        let widgets = widgets.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(ev) = ui_rx.recv().await {
+                apply_event(&widgets, ev);
+            }
+        });
+    }
+
+    window.present();
+}
+
+fn attach_present_gesture(label: &gtk::Label, widgets: &Rc<Widgets>, is_src: bool) {
+    let gesture = gtk::GestureClick::new();
+    let widgets = widgets.clone();
+    gesture.connect_released(move |_, _, _, _| {
+        let id = if is_src { widgets.src_id.get() } else { widgets.dst_id.get() };
+        if let Some(id) = id {
+            let _ = widgets.cmd_tx.send(HubCmd::PresentLister(id));
+        }
+    });
+    label.add_controller(gesture);
+}
+
+fn request_quit(widgets: &Rc<Widgets>) {
+    let running = widgets.jobs.borrow().len();
+    if running == 0 {
+        let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
+        widgets.window.close();
+        if let Some(app) = widgets.window.application() {
+            app.quit();
+        }
+        return;
+    }
+    let dialog = gtk::AlertDialog::builder()
+        .message("Quit OpusDM?")
+        .detail(format!("{running} job(s) still running."))
+        .buttons(["Cancel", "Quit"])
+        .cancel_button(0)
+        .default_button(0)
+        .build();
+    let widgets = widgets.clone();
+    let parent = widgets.window.clone();
+    dialog.choose(
+        Some(&parent),
+        gio::Cancellable::NONE,
+        move |result| {
+            if result == Ok(1) {
+                let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
+                widgets.window.close();
+                if let Some(app) = widgets.window.application() {
+                    app.quit();
+                }
+            }
+        },
+    );
+}
+
+fn short_path(p: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if home.as_deref() == Some(p) {
+        return "~".to_string();
+    }
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string_lossy().into_owned())
+}
+
+fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
+    match ev {
+        HubEvent::Roles { source, dest, paths } => {
+            let lookup = |id: Option<ListerId>| -> String {
+                let Some(id) = id else { return "-".to_string() };
+                paths
+                    .iter()
+                    .find(|(pid, _)| *pid == id)
+                    .map(|(_, p)| short_path(p))
+                    .unwrap_or_else(|| "-".to_string())
+            };
+            widgets.src_label.set_text(&format!("SRC: {}", lookup(source)));
+            widgets.dst_label.set_text(&format!("DST: {}", lookup(dest)));
+            widgets.src_id.set(source);
+            widgets.dst_id.set(dest);
+        }
+        HubEvent::JobUpdate { job_id, label, done, total } => {
+            let mut jobs = widgets.jobs.borrow_mut();
+            let row = jobs.entry(job_id).or_insert_with(|| {
+                let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                let text = gtk::Label::new(Some(&label));
+                let bar = gtk::ProgressBar::new();
+                bar.set_hexpand(true);
+                let cancel = gtk::Button::with_label("Cancel");
+                let cmd_tx = widgets.cmd_tx.clone();
+                cancel.connect_clicked(move |_| {
+                    let _ = cmd_tx.send(HubCmd::CancelJob(job_id));
+                });
+                root.append(&text);
+                root.append(&bar);
+                root.append(&cancel);
+                widgets.job_box.append(&root);
+                JobRow { root, bar }
+            });
+            let fraction = if total > 0 { done as f64 / total as f64 } else { 0.0 };
+            row.bar.set_fraction(fraction.clamp(0.0, 1.0));
+        }
+        HubEvent::JobFinished { job_id, ok, errors } => {
+            let mut jobs = widgets.jobs.borrow_mut();
+            if let Some(row) = jobs.remove(&job_id) {
+                if ok && errors == 0 {
+                    widgets.job_box.remove(&row.root);
+                } else {
+                    // Keep the row, mark it, let a click dismiss it.
+                    row.root.add_css_class("error");
+                    let gesture = gtk::GestureClick::new();
+                    let job_box = widgets.job_box.clone();
+                    let root = row.root.clone();
+                    gesture.connect_released(move |_, _, _, _| job_box.remove(&root));
+                    row.root.add_controller(gesture);
+                }
+            }
+        }
+        HubEvent::RaiseToolbar => widgets.window.present(),
+        HubEvent::ListerRegistered { .. }
+        | HubEvent::ListerGone(_)
+        | HubEvent::AllListersGone => {}
+    }
+}

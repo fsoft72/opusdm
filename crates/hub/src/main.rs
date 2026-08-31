@@ -1,10 +1,11 @@
 //! opusdm-hub: the always-on controller.
 
+mod toolbar;
+
 use opusdm_hub::{children, server};
 
 use children::AcquireOutcome;
 use opusdm_ipc::sockpath::hub_sock_path;
-use server::{HubCmd, HubEvent};
 
 fn main() {
     let sock_path = hub_sock_path();
@@ -38,26 +39,6 @@ fn main() {
         eprintln!("opusdm-hub: cannot spawn initial lister: {e}");
     }
 
-    // Headless event drain. Task 10 replaces this block with the GTK toolbar
-    // main loop.
-    for ev in handle.evt_rx.iter() {
-        match ev {
-            HubEvent::ListerRegistered { id, pid, path } => {
-                eprintln!("[hub] lister {id:?} pid={pid} at {}", path.display());
-            }
-            HubEvent::ListerGone(id) => eprintln!("[hub] lister {id:?} gone"),
-            HubEvent::AllListersGone => eprintln!("[hub] no listers open (toolbar still up in v10)"),
-            HubEvent::Roles { source, dest, .. } => {
-                eprintln!("[hub] roles: source={source:?} dest={dest:?}");
-            }
-            HubEvent::JobUpdate { job_id, label, done, total } => {
-                eprintln!("[hub] job {job_id}: {label} {done}/{total}");
-            }
-            HubEvent::JobFinished { job_id, ok, errors } => {
-                eprintln!("[hub] job {job_id} done ok={ok} errors={errors}");
-            }
-            HubEvent::RaiseToolbar => eprintln!("[hub] raise-toolbar request"),
-        }
-    }
-    let _ = handle.cmd_tx.send(HubCmd::Shutdown);
+    let code = toolbar::run(handle, sock_path);
+    std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }
