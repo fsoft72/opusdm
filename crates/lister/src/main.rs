@@ -34,5 +34,5 @@ fn main() {
     };
 
     let code = window::run(client, lister_id, roles, start_path);
-    std::process::exit(code as i32);
+    std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }

@@ -12,8 +12,7 @@ path = "src/main.rs"
 opusdm-ipc = { path = "../ipc" }
 async-channel.workspace = true
 libc.workspace = true
+gtk4.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-# NOTE: gtk4 + gio are added in Task 13 (window). Needs system libgtk-4-dev.

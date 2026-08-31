@@ -562,6 +562,7 @@ name = "opusdm-lister"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "gtk4",
  "libc",
  "opusdm-ipc",
  "tempfile",
