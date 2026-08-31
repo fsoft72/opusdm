@@ -19,6 +19,8 @@ async-channel.workspace = true
 signal-hook.workspace = true
 libc.workspace = true
 gtk4.workspace = true
+gdk4-x11 = "0.10"
+x11rb = "0.13"
 
 [dev-dependencies]
 tempfile.workspace = true

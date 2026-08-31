@@ -1,5 +1,6 @@
 //! opusdm-hub: the always-on controller.
 
+mod dock;
 mod toolbar;
 
 use opusdm_hub::{children, server};

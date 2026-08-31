@@ -55,15 +55,26 @@ struct JobRow {
 }
 
 fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
+    let panel_width = gtk::gdk::Display::default()
+        .as_ref()
+        .map(crate::dock::monitor_width)
+        .unwrap_or(1280);
+
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM")
+        .decorated(false)
         .resizable(false)
+        .default_width(panel_width)
+        .default_height(crate::dock::PANEL_HEIGHT)
         .build();
 
+    // Turn the window into a top-docked X11 panel once its surface exists.
+    window.connect_realize(move |w| crate::dock::make_top_dock(w, panel_width));
+
     let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    root.set_margin_top(6);
-    root.set_margin_bottom(6);
+    root.set_margin_top(2);
+    root.set_margin_bottom(2);
     root.set_margin_start(6);
     root.set_margin_end(6);
 
