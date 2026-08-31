@@ -240,19 +240,38 @@ fn owner_loop(
             }
 
             OwnerMsg::FromLister(cid, ToHub::RunJob { op, srcs, dest_dir }) => {
-                let needs_validation = matches!(op, Op::Copy | Op::Move);
-                if needs_validation {
-                    if let Err(msg) = validate_job(&srcs, &dest_dir) {
-                        if let Some(c) = conns.get_mut(&cid) {
-                            let _ = send(
-                                &mut c.write,
-                                &ToLister::JobDone {
-                                    job_id: 0,
-                                    outcome: Outcome::Error { message: msg },
-                                    errors: Vec::new(),
-                                },
-                            );
+                let fail = |conns: &mut HashMap<u64, Conn>, msg: String| {
+                    if let Some(c) = conns.get_mut(&cid) {
+                        let _ = send(
+                            &mut c.write,
+                            &ToLister::JobDone {
+                                job_id: 0,
+                                outcome: Outcome::Error { message: msg },
+                                errors: Vec::new(),
+                            },
+                        );
+                    }
+                };
+                // For Copy/Move the real destination is the DEST Lister's
+                // current directory - the requester cannot know it.
+                let dest_dir = if matches!(op, Op::Copy | Op::Move) {
+                    if roles.source != Some(ListerId(cid)) {
+                        fail(&mut conns, "this Lister is not the SOURCE".into());
+                        continue;
+                    }
+                    match roles.dest.and_then(|d| conns.get(&d.0).map(|c| c.path.clone())) {
+                        Some(p) => p,
+                        None => {
+                            fail(&mut conns, "no DEST Lister set".into());
+                            continue;
                         }
+                    }
+                } else {
+                    dest_dir
+                };
+                if matches!(op, Op::Copy | Op::Move) {
+                    if let Err(msg) = validate_job(&srcs, &dest_dir) {
+                        fail(&mut conns, msg);
                         continue;
                     }
                 }
