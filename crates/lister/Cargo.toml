@@ -1,0 +1,19 @@
+[package]
+name = "opusdm-lister"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-lister"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+async-channel.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# NOTE: gtk4 + gio are added in Task 13 (window). Needs system libgtk-4-dev.
