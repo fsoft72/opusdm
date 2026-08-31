@@ -90,8 +90,10 @@ pub enum ToHub {
     FocusGained,
     /// This Lister navigated to a new directory.
     PathChanged(PathBuf),
-    /// Request a filesystem job.
-    RunJob { op: Op, srcs: Vec<PathBuf>, dest_dir: PathBuf },
+    /// Request a filesystem job. `dest_dir` is `None` for a button Copy/Move
+    /// (the hub fills it from the DEST Lister's current path) and `Some` for
+    /// an explicit destination (drag-drop, Delete, MakeDir, NewFile).
+    RunJob { op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf> },
     /// Ask the hub to open another Lister.
     SpawnLister { start_path: Option<PathBuf> },
     /// Answer to a `ToLister::ConflictPrompt`.
@@ -180,8 +182,9 @@ mod tests {
         roundtrip_tohub(ToHub::RunJob {
             op: Op::Copy,
             srcs: vec!["/a".into(), "/b".into()],
-            dest_dir: "/dst".into(),
+            dest_dir: Some("/dst".into()),
         });
+        roundtrip_tohub(ToHub::RunJob { op: Op::Move, srcs: vec![], dest_dir: None });
         roundtrip_tohub(ToHub::SpawnLister { start_path: Some("/etc".into()) });
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
     }

@@ -18,3 +18,4 @@
 - Task 10: opusdm-hub toolbar.rs GTK window (New Lister, SRC/DST indicators, job rows, Quit); main runs the GTK app. gtk4 pinned to 0.10 + v4_10 (0.11 needs rustc 1.92).
 - Task 13: opusdm-lister window.rs - ColumnView (BoxedAnyObject rows), path bar, sort buttons, navigation, focus, status line, inbound pump. actions/dnd stubs.
 - Task 14: opusdm-lister actions.rs - Copy/Move/Delete/MakeDir/NewFile/Rename, role toggles, conflict dialog, error dialog. Hub now resolves Copy/Move dest_dir from the DEST Lister path (server.rs); resolve_copy_target is a precondition check.
+- Task 15: opusdm-lister dnd.rs - text/uri-list drag source + drop target (Shift=Move). RunJob.dest_dir is now Option: None=button Copy/Move (hub resolves), Some=explicit (DnD/Delete/MakeDir/NewFile).

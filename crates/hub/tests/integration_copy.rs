@@ -48,12 +48,13 @@ fn copy_source_to_dest_lands_file() {
     let _ = recv::<_, ToLister>(&mut a).unwrap();
     let _ = recv::<_, ToLister>(&mut b).unwrap();
 
+    // dest_dir: None exercises the hub resolving it from the DEST Lister (B).
     send(
         &mut a,
         &ToHub::RunJob {
             op: Op::Copy,
             srcs: vec![src_dir.join("payload.txt")],
-            dest_dir: dst_dir.clone(),
+            dest_dir: None,
         },
     )
     .unwrap();

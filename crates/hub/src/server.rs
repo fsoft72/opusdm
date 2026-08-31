@@ -252,22 +252,25 @@ fn owner_loop(
                         );
                     }
                 };
-                // For Copy/Move the real destination is the DEST Lister's
-                // current directory - the requester cannot know it.
-                let dest_dir = if matches!(op, Op::Copy | Op::Move) {
-                    if roles.source != Some(ListerId(cid)) {
-                        fail(&mut conns, "this Lister is not the SOURCE".into());
-                        continue;
-                    }
-                    match roles.dest.and_then(|d| conns.get(&d.0).map(|c| c.path.clone())) {
-                        Some(p) => p,
-                        None => {
-                            fail(&mut conns, "no DEST Lister set".into());
+                // A `None` destination means a button Copy/Move: the requester
+                // must be the SOURCE and the destination is the DEST Lister's
+                // current directory. A `Some` destination is explicit
+                // (drag-drop, Delete, MakeDir, NewFile).
+                let dest_dir = match dest_dir {
+                    Some(p) => p,
+                    None => {
+                        if roles.source != Some(ListerId(cid)) {
+                            fail(&mut conns, "this Lister is not the SOURCE".into());
                             continue;
                         }
+                        match roles.dest.and_then(|d| conns.get(&d.0).map(|c| c.path.clone())) {
+                            Some(p) => p,
+                            None => {
+                                fail(&mut conns, "no DEST Lister set".into());
+                                continue;
+                            }
+                        }
                     }
-                } else {
-                    dest_dir
                 };
                 if matches!(op, Op::Copy | Op::Move) {
                     if let Err(msg) = validate_job(&srcs, &dest_dir) {

@@ -67,7 +67,7 @@ pub fn attach(ui: &Rc<Ui>) {
                     let _ = ui2.client.send(&ToHub::RunJob {
                         op: Op::Delete,
                         srcs: ui2.selected_paths(),
-                        dest_dir: ui2.cwd_path(),
+                        dest_dir: Some(ui2.cwd_path()),
                     });
                 }
             });
@@ -83,7 +83,7 @@ pub fn attach(ui: &Rc<Ui>) {
                 let _ = ui.client.send(&ToHub::RunJob {
                     op: Op::MakeDir { name },
                     srcs: Vec::new(),
-                    dest_dir: ui.cwd_path(),
+                    dest_dir: Some(ui.cwd_path()),
                 });
             });
         });
@@ -98,7 +98,7 @@ pub fn attach(ui: &Rc<Ui>) {
                 let _ = ui.client.send(&ToHub::RunJob {
                     op: Op::NewFile { name },
                     srcs: Vec::new(),
-                    dest_dir: ui.cwd_path(),
+                    dest_dir: Some(ui.cwd_path()),
                 });
             });
         });
@@ -177,7 +177,7 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
         let _ = ui.client.send(&ToHub::RunJob {
             op: op.clone(),
             srcs,
-            dest_dir: ui.cwd_path(), // ignored by the hub for Copy/Move
+            dest_dir: None, // hub fills this from the DEST Lister's path
         });
     });
 }
