@@ -1,0 +1,21 @@
+[package]
+name = "opusdm-hub"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-hub"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-fsops = { path = "../fsops" }
+async-channel.workspace = true
+signal-hook.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# NOTE: gtk4 is added in Task 10 (GTK toolbar). Needs system libgtk-4-dev.
