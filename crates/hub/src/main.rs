@@ -1,6 +1,7 @@
 //! opusdm-hub: the always-on controller. Owns the socket, the Lister
 //! registry, the global roles, and the job engine.
 
+mod jobs;
 mod roles;
 
 fn main() {
