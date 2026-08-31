@@ -1,9 +1,6 @@
 //! opusdm-hub: the always-on controller.
 
-mod children;
-mod jobs;
-mod roles;
-mod server;
+use opusdm_hub::{children, server};
 
 use children::AcquireOutcome;
 use opusdm_ipc::sockpath::hub_sock_path;
