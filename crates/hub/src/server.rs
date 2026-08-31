@@ -25,7 +25,7 @@ pub enum HubEvent {
     /// Current roles and every Lister's path.
     Roles {
         source: Option<ListerId>,
-        dest: Option<ListerId>,
+        dests: Vec<ListerId>,
         paths: Vec<(ListerId, PathBuf)>,
     },
     /// Progress for a running job.
@@ -194,8 +194,8 @@ fn owner_loop(
                         &mut c.write,
                         &ToLister::Welcome {
                             lister_id: ListerId(cid),
-                            source: roles.source,
-                            dest: roles.dest,
+                            source: roles.source(),
+                            dests: roles.dests(),
                         },
                     );
                     let _ = evt_tx.send(HubEvent::ListerRegistered {
@@ -253,47 +253,56 @@ fn owner_loop(
                     }
                 };
                 // A `None` destination means a button Copy/Move: the requester
-                // must be the SOURCE and the destination is the DEST Lister's
-                // current directory. A `Some` destination is explicit
-                // (drag-drop, Delete, MakeDir, NewFile).
-                let dest_dir = match dest_dir {
-                    Some(p) => p,
+                // must be the SOURCE and the job fans out to every DEST
+                // Lister's current directory. A `Some` destination is explicit
+                // (drag-drop, Delete, MakeDir, NewFile) and is a single target.
+                let dest_dirs: Vec<PathBuf> = match dest_dir {
+                    Some(p) => vec![p],
                     None => {
-                        if roles.source != Some(ListerId(cid)) {
+                        if roles.source() != Some(ListerId(cid)) {
                             fail(&mut conns, "this Lister is not the SOURCE".into());
                             continue;
                         }
-                        match roles.dest.and_then(|d| conns.get(&d.0).map(|c| c.path.clone())) {
-                            Some(p) => p,
-                            None => {
-                                fail(&mut conns, "no DEST Lister set".into());
-                                continue;
-                            }
+                        let dirs: Vec<PathBuf> = roles
+                            .dests()
+                            .iter()
+                            .filter_map(|d| conns.get(&d.0).map(|c| c.path.clone()))
+                            .collect();
+                        if dirs.is_empty() {
+                            fail(&mut conns, "no DEST Lister set".into());
+                            continue;
                         }
+                        dirs
                     }
                 };
-                if matches!(op, Op::Copy | Op::Move) {
-                    if let Err(msg) = validate_job(&srcs, &dest_dir) {
-                        fail(&mut conns, msg);
-                        continue;
-                    }
-                }
                 let src_parents: Vec<PathBuf> = srcs
                     .iter()
                     .filter_map(|s| s.parent().map(PathBuf::from))
                     .collect();
-                let spec = opusdm_fsops::JobSpec { op: op.clone(), srcs, dest_dir: dest_dir.clone() };
-                let out = engine.submit(ListerId(cid), spec);
-                jobs.insert(
-                    out.job_id,
-                    JobMeta {
-                        requester: cid,
-                        op,
-                        totals: ProgressTotals::default(),
-                        dest_dir,
-                        src_parents,
-                    },
-                );
+                for dest_dir in dest_dirs {
+                    if matches!(op, Op::Copy | Op::Move) {
+                        if let Err(msg) = validate_job(&srcs, &dest_dir) {
+                            fail(&mut conns, msg);
+                            continue;
+                        }
+                    }
+                    let spec = opusdm_fsops::JobSpec {
+                        op: op.clone(),
+                        srcs: srcs.clone(),
+                        dest_dir: dest_dir.clone(),
+                    };
+                    let out = engine.submit(ListerId(cid), spec);
+                    jobs.insert(
+                        out.job_id,
+                        JobMeta {
+                            requester: cid,
+                            op: op.clone(),
+                            totals: ProgressTotals::default(),
+                            dest_dir,
+                            src_parents: src_parents.clone(),
+                        },
+                    );
+                }
             }
 
             OwnerMsg::FromLister(_cid, ToHub::ConflictReply { req_id, resolution }) => {
@@ -389,7 +398,7 @@ fn apply_role(
                 for c in conns.values_mut().filter(|c| c.registered) {
                     let _ = send(
                         &mut c.write,
-                        &ToLister::RoleChanged { source: roles.source, dest: roles.dest },
+                        &ToLister::RoleChanged { source: roles.source(), dests: roles.dests() },
                     );
                 }
                 emit_roles(roles, conns, evt_tx);
@@ -398,7 +407,7 @@ fn apply_role(
                 if let Some(c) = conns.get_mut(&id.0) {
                     let _ = send(
                         &mut c.write,
-                        &ToLister::RoleChanged { source: roles.source, dest: roles.dest },
+                        &ToLister::RoleChanged { source: roles.source(), dests: roles.dests() },
                     );
                 }
             }
@@ -412,7 +421,7 @@ fn emit_roles(roles: &RoleState, conns: &HashMap<u64, Conn>, evt_tx: &Sender<Hub
         .filter(|(_, c)| c.registered)
         .map(|(k, c)| (ListerId(*k), c.path.clone()))
         .collect();
-    let _ = evt_tx.send(HubEvent::Roles { source: roles.source, dest: roles.dest, paths });
+    let _ = evt_tx.send(HubEvent::Roles { source: roles.source(), dests: roles.dests(), paths });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -519,9 +528,9 @@ mod tests {
         send(&mut a, &ToHub::Register { pid: 1000, initial_path: "/home/a".into() }).unwrap();
         let welcome: ToLister = recv(&mut a).unwrap().unwrap();
         let id_a = match welcome {
-            ToLister::Welcome { lister_id, source, dest } => {
+            ToLister::Welcome { lister_id, source, dests } => {
                 assert_eq!(source, None);
-                assert_eq!(dest, None);
+                assert!(dests.is_empty());
                 lister_id
             }
             other => panic!("expected Welcome, got {other:?}"),
@@ -567,10 +576,10 @@ mod tests {
         send(&mut b, &ToHub::FocusGained).unwrap();
         let rb2: ToLister = recv(&mut b).unwrap().unwrap();
         match rb2 {
-            ToLister::RoleChanged { source, dest } => {
+            ToLister::RoleChanged { source, dests } => {
                 assert!(source.is_some());
-                assert!(dest.is_some());
-                assert_ne!(source, dest);
+                assert_eq!(dests.len(), 1);
+                assert_ne!(Some(dests[0]), source);
             }
             other => panic!("{other:?}"),
         }

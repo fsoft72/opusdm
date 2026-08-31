@@ -22,3 +22,5 @@
 - Task 16: release build verified; GUI smoke (hub spawns Lister at $HOME, single-instance handoff works); integration_copy passes. v1 feature-complete.
 - Post-v1: hub toolbar is now a top-docked X11 panel - undecorated, full monitor width, _NET_WM_WINDOW_TYPE_DOCK + _NET_WM_STRUT_PARTIAL (top=42) so Listers tile below it. New crates/hub/src/dock.rs; deps gdk4-x11, x11rb.
 - Fix: openbox was re-centering the DOCK panel. Now sets WM_NORMAL_HINTS user-specified position (0,0) + re-asserts geometry on map. Panel sits flush top-left, full width.
+- Feature: Lock button disabled unless the Lister holds SOURCE or DEST.
+- Feature: multiple DEST Listers. Role model reworked to a per-Lister map (RoleState.source()/dests()); a locked DEST persists, one unlocked DEST is transient. Button Copy/Move fans out to every DEST (one job per destination). Wire: ToLister RoleChanged/Welcome carry dests: Vec<ListerId>.

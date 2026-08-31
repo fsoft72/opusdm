@@ -107,16 +107,17 @@ pub enum ToLister {
     Welcome {
         lister_id: ListerId,
         source: Option<ListerId>,
-        dest: Option<ListerId>,
+        dests: Vec<ListerId>,
     },
     /// Reply to `Ping`.
     Pong,
     /// Ask this Lister to raise and focus its window.
     Present,
-    /// Global roles changed.
+    /// Global roles changed. There is at most one SOURCE and zero or more
+    /// DEST Listers (a locked DEST persists; the unlocked one is transient).
     RoleChanged {
         source: Option<ListerId>,
-        dest: Option<ListerId>,
+        dests: Vec<ListerId>,
     },
     /// Progress tick for a running job.
     JobProgress {
@@ -194,11 +195,14 @@ mod tests {
         roundtrip_tolister(ToLister::Welcome {
             lister_id: ListerId(1),
             source: Some(ListerId(1)),
-            dest: None,
+            dests: vec![],
         });
         roundtrip_tolister(ToLister::Pong);
         roundtrip_tolister(ToLister::Present);
-        roundtrip_tolister(ToLister::RoleChanged { source: None, dest: Some(ListerId(3)) });
+        roundtrip_tolister(ToLister::RoleChanged {
+            source: None,
+            dests: vec![ListerId(3), ListerId(4)],
+        });
         roundtrip_tolister(ToLister::JobProgress {
             job_id: 1,
             op: Op::Move,

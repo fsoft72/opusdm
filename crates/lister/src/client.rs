@@ -9,12 +9,19 @@ use std::path::Path;
 use std::sync::Mutex;
 
 /// The roles the hub reported.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct Roles {
     /// Current SOURCE Lister, if any.
     pub source: Option<ListerId>,
-    /// Current DEST Lister, if any.
-    pub dest: Option<ListerId>,
+    /// Current DEST Listers (a locked DEST persists; one may be transient).
+    pub dests: Vec<ListerId>,
+}
+
+impl Roles {
+    /// Whether `id` holds a DEST role.
+    pub fn is_dest(&self, id: ListerId) -> bool {
+        self.dests.contains(&id)
+    }
 }
 
 /// Something arriving from the hub.
@@ -44,7 +51,7 @@ impl Client {
         let welcome: ToLister = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
         let (id, roles) = match welcome {
-            ToLister::Welcome { lister_id, source, dest } => (lister_id, Roles { source, dest }),
+            ToLister::Welcome { lister_id, source, dests } => (lister_id, Roles { source, dests }),
             other => {
                 return Err(io::Error::other(format!("expected Welcome, got {other:?}")));
             }
@@ -112,7 +119,7 @@ mod tests {
             send(&mut s, &ToLister::Welcome {
                 lister_id: ListerId(5),
                 source: Some(ListerId(5)),
-                dest: None,
+                dests: vec![],
             }).unwrap();
             send(&mut s, &ToLister::InvalidatePath("/tmp".into())).unwrap();
         });
@@ -141,7 +148,7 @@ mod tests {
             let (mut s, _) = listener.accept().unwrap();
             let _got: ToHub = recv(&mut s).unwrap().unwrap();
             send(&mut s, &ToLister::Welcome {
-                lister_id: ListerId(1), source: None, dest: None,
+                lister_id: ListerId(1), source: None, dests: vec![],
             }).unwrap();
         });
         let (mut client, _id, _roles) =

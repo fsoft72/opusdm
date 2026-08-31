@@ -1,21 +1,85 @@
 //! The hybrid SOURCE/DEST role machine. Pure: no sockets, no GTK.
 //!
-//! Roles are global singletons - at most one SOURCE and one DEST across all
-//! Listers, either possibly unset. Focus auto-assigns; explicit buttons force;
-//! a per-Lister lock pins a role against focus changes.
+//! At most one Lister holds SOURCE. Zero or more hold DEST: a locked DEST
+//! persists, the single unlocked ("transient") DEST is replaced when focus or
+//! an explicit button assigns a new one. A Copy/Move fans out to every DEST.
+//! Lock is only meaningful for a Lister that currently holds a role.
 
 use opusdm_ipc::{ListerId, Role};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
-/// Current role assignment plus the set of Listers whose role is pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Slot {
+    role: Role,
+    locked: bool,
+}
+
+/// Current per-Lister role assignment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RoleState {
-    /// The Lister that Copy/Move read from.
-    pub source: Option<ListerId>,
-    /// The Lister that Copy/Move write into.
-    pub dest: Option<ListerId>,
-    /// Listers that pinned their current role.
-    pub locked: BTreeSet<ListerId>,
+    slots: BTreeMap<ListerId, Slot>,
+}
+
+impl RoleState {
+    /// The SOURCE Lister, if any.
+    pub fn source(&self) -> Option<ListerId> {
+        self.slots
+            .iter()
+            .find(|(_, s)| s.role == Role::Source)
+            .map(|(id, _)| *id)
+    }
+
+    /// Every DEST Lister, ascending.
+    pub fn dests(&self) -> Vec<ListerId> {
+        self.slots
+            .iter()
+            .filter(|(_, s)| s.role == Role::Dest)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Whether `id` currently holds SOURCE or DEST.
+    pub fn has_role(&self, id: ListerId) -> bool {
+        self.slots.get(&id).is_some_and(|s| s.role != Role::None)
+    }
+
+    fn role_of(&self, id: ListerId) -> Role {
+        self.slots.get(&id).map(|s| s.role).unwrap_or(Role::None)
+    }
+
+    fn is_locked(&self, id: ListerId) -> bool {
+        self.slots.get(&id).is_some_and(|s| s.locked)
+    }
+
+    fn set(&mut self, id: ListerId, role: Role, locked: bool) {
+        if role == Role::None {
+            self.slots.remove(&id);
+        } else {
+            self.slots.insert(id, Slot { role, locked });
+        }
+    }
+
+    fn locked_source(&self) -> Option<ListerId> {
+        self.slots
+            .iter()
+            .find(|(_, s)| s.role == Role::Source && s.locked)
+            .map(|(id, _)| *id)
+    }
+
+    /// Clear every unlocked DEST (the transient slot).
+    fn clear_transient_dests(&mut self, except: Option<ListerId>) {
+        let victims: Vec<ListerId> = self
+            .slots
+            .iter()
+            .filter(|(id, s)| {
+                s.role == Role::Dest && !s.locked && Some(**id) != except
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in victims {
+            self.slots.remove(&id);
+        }
+    }
 }
 
 /// Something that can change the role assignment.
@@ -44,71 +108,70 @@ pub enum RoleEffect {
 
 /// Apply one event. Returns the new state and the effects to carry out.
 pub fn apply_role_event(mut s: RoleState, ev: RoleEvent) -> (RoleState, Vec<RoleEffect>) {
-    let before = (s.source, s.dest);
+    let before = (s.source(), s.dests());
 
     match ev {
         RoleEvent::Lock(id) => {
-            s.locked.insert(id);
+            if !s.has_role(id) {
+                return (s, vec![RoleEffect::Reject(id)]);
+            }
+            if let Some(slot) = s.slots.get_mut(&id) {
+                slot.locked = true;
+            }
             return (s, Vec::new());
         }
         RoleEvent::Unlock(id) => {
-            s.locked.remove(&id);
+            if let Some(slot) = s.slots.get_mut(&id) {
+                slot.locked = false;
+            }
             return (s, Vec::new());
         }
         RoleEvent::Dropped(id) => {
-            s.locked.remove(&id);
-            if s.source == Some(id) {
-                s.source = None;
-            }
-            if s.dest == Some(id) {
-                s.dest = None;
-            }
+            s.slots.remove(&id);
         }
         RoleEvent::FocusGained(id) => {
-            if s.locked.contains(&id) || s.source == Some(id) {
+            if s.role_of(id) == Role::Source || s.is_locked(id) {
                 return (s, Vec::new());
             }
-            // A locked SOURCE cannot be displaced by focus.
-            if s.source.is_some_and(|cur| s.locked.contains(&cur)) {
+            if s.locked_source().is_some() {
                 return (s, Vec::new());
             }
-            let old_source = s.source;
-            s.source = Some(id);
-            if s.dest == Some(id) {
-                s.dest = None;
-            }
+            let old_source = s.source();
+            s.set(id, Role::Source, false);
+            s.clear_transient_dests(None);
             if let Some(os) = old_source {
-                if !s.locked.contains(&os) {
-                    s.dest = Some(os);
+                if os != id && !s.is_locked(os) {
+                    s.set(os, Role::Dest, false);
                 }
             }
         }
-        RoleEvent::SetRole(id, role) => {
-            let holder = match role {
-                Role::Source => s.source,
-                Role::Dest => s.dest,
-                Role::None => None,
-            };
-            if let Some(h) = holder {
-                if h != id && s.locked.contains(&h) {
+        RoleEvent::SetRole(id, Role::Source) => {
+            if let Some(ls) = s.locked_source() {
+                if ls != id {
                     return (s, vec![RoleEffect::Reject(id)]);
                 }
             }
-            if s.source == Some(id) {
-                s.source = None;
+            if let Some(os) = s.source() {
+                if os != id && !s.is_locked(os) {
+                    s.set(os, Role::None, false);
+                }
             }
-            if s.dest == Some(id) {
-                s.dest = None;
+            let keep_lock = s.is_locked(id);
+            s.set(id, Role::Source, keep_lock);
+        }
+        RoleEvent::SetRole(id, Role::Dest) => {
+            let keep_lock = s.is_locked(id);
+            s.set(id, Role::Dest, keep_lock);
+            if !keep_lock {
+                s.clear_transient_dests(Some(id));
             }
-            match role {
-                Role::Source => s.source = Some(id),
-                Role::Dest => s.dest = Some(id),
-                Role::None => {}
-            }
+        }
+        RoleEvent::SetRole(id, Role::None) => {
+            s.slots.remove(&id);
         }
     }
 
-    if (s.source, s.dest) == before {
+    if (s.source(), s.dests()) == before {
         (s, Vec::new())
     } else {
         (s, vec![RoleEffect::Broadcast])
@@ -124,99 +187,130 @@ mod tests {
         (ListerId(1), ListerId(2), ListerId(3))
     }
 
+    fn ev(s: RoleState, e: RoleEvent) -> (RoleState, Vec<RoleEffect>) {
+        apply_role_event(s, e)
+    }
+
     #[test]
     fn first_focus_becomes_source() {
         let (a, _, _) = ids();
-        let (s, fx) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        assert_eq!(s.source, Some(a));
-        assert_eq!(s.dest, None);
+        let (s, fx) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        assert_eq!(s.source(), Some(a));
+        assert!(s.dests().is_empty());
         assert_eq!(fx, vec![RoleEffect::Broadcast]);
     }
 
     #[test]
     fn second_focus_demotes_previous_source_to_dest() {
         let (a, b, _) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, fx) = apply_role_event(s, RoleEvent::FocusGained(b));
-        assert_eq!(s.source, Some(b));
-        assert_eq!(s.dest, Some(a));
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, fx) = ev(s, RoleEvent::FocusGained(b));
+        assert_eq!(s.source(), Some(b));
+        assert_eq!(s.dests(), vec![a]);
         assert_eq!(fx, vec![RoleEffect::Broadcast]);
     }
 
     #[test]
     fn refocusing_current_source_is_a_noop() {
         let (a, b, _) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, _) = apply_role_event(s, RoleEvent::FocusGained(b));
-        let (s2, fx) = apply_role_event(s.clone(), RoleEvent::FocusGained(b));
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, _) = ev(s, RoleEvent::FocusGained(b));
+        let (s2, fx) = ev(s.clone(), RoleEvent::FocusGained(b));
         assert_eq!(s2, s);
         assert!(fx.is_empty());
     }
 
     #[test]
-    fn locked_holder_is_not_demoted_by_focus() {
+    fn cannot_lock_without_a_role() {
+        let (a, _, _) = ids();
+        let (s, fx) = ev(RoleState::default(), RoleEvent::Lock(a));
+        assert_eq!(fx, vec![RoleEffect::Reject(a)]);
+        assert!(!s.has_role(a));
+    }
+
+    #[test]
+    fn locked_source_not_displaced_by_focus() {
         let (a, b, c) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, fx) = apply_role_event(s, RoleEvent::Lock(a));
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, fx) = ev(s, RoleEvent::Lock(a));
         assert!(fx.is_empty());
-        let (s, _fx) = apply_role_event(s, RoleEvent::FocusGained(c));
-        assert_eq!(s.source, Some(a), "locked source keeps its role");
-        let (s, _fx) = apply_role_event(s, RoleEvent::FocusGained(b));
-        assert_eq!(s.source, Some(a));
+        let (s, _) = ev(s, RoleEvent::FocusGained(c));
+        assert_eq!(s.source(), Some(a));
+        let (s, _) = ev(s, RoleEvent::FocusGained(b));
+        assert_eq!(s.source(), Some(a));
     }
 
     #[test]
-    fn set_role_forces_dest() {
-        let (a, b, _) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, fx) = apply_role_event(s, RoleEvent::SetRole(b, Role::Dest));
-        assert_eq!(s.source, Some(a));
-        assert_eq!(s.dest, Some(b));
-        assert_eq!(fx, vec![RoleEffect::Broadcast]);
+    fn multiple_locked_dests_accumulate() {
+        let (a, b, c) = ids();
+        // a = source
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        // b = dest, locked
+        let (s, _) = ev(s, RoleEvent::SetRole(b, Role::Dest));
+        let (s, _) = ev(s, RoleEvent::Lock(b));
+        // c = dest, locked
+        let (s, _) = ev(s, RoleEvent::SetRole(c, Role::Dest));
+        let (s, fx) = ev(s, RoleEvent::Lock(c));
+        assert!(fx.is_empty()); // lock does not broadcast
+        assert_eq!(s.source(), Some(a));
+        assert_eq!(s.dests(), vec![b, c]);
     }
 
     #[test]
-    fn set_role_colliding_with_locked_holder_is_rejected() {
+    fn new_source_focus_clears_transient_dest_but_keeps_locked_dests() {
+        let (a, b, c) = ids();
+        let d = ListerId(4);
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a)); // a source
+        let (s, _) = ev(s, RoleEvent::SetRole(b, Role::Dest));
+        let (s, _) = ev(s, RoleEvent::Lock(b)); // b locked dest
+        let (s, _) = ev(s, RoleEvent::SetRole(c, Role::Dest)); // c transient dest
+        assert_eq!(s.dests(), vec![b, c]);
+        // Focusing a brand-new Lister d: d becomes source, a demotes to the new
+        // transient dest, old transient dest c is cleared, locked b stays.
+        let (s, _) = ev(s, RoleEvent::FocusGained(d));
+        assert_eq!(s.source(), Some(d));
+        assert_eq!(s.dests(), vec![a, b]);
+    }
+
+    #[test]
+    fn explicit_transient_dest_replaces_previous_transient() {
+        let (a, b, c) = ids();
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, _) = ev(s, RoleEvent::SetRole(b, Role::Dest)); // b transient
+        let (s, _) = ev(s, RoleEvent::SetRole(c, Role::Dest)); // c transient, b cleared
+        assert_eq!(s.dests(), vec![c]);
+    }
+
+    #[test]
+    fn set_role_source_colliding_with_locked_source_is_rejected() {
         let (a, b, _) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, _) = apply_role_event(s, RoleEvent::Lock(a));
-        let (s2, fx) = apply_role_event(s.clone(), RoleEvent::SetRole(b, Role::Source));
-        assert_eq!(s2, s, "state unchanged");
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, _) = ev(s, RoleEvent::Lock(a));
+        let (s2, fx) = ev(s.clone(), RoleEvent::SetRole(b, Role::Source));
+        assert_eq!(s2, s);
         assert_eq!(fx, vec![RoleEffect::Reject(b)]);
     }
 
     #[test]
-    fn set_role_none_clears_only_that_lister() {
+    fn set_role_none_clears_and_unlocks() {
         let (a, b, _) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, _) = apply_role_event(s, RoleEvent::FocusGained(b));
-        let (s, fx) = apply_role_event(s, RoleEvent::SetRole(b, Role::None));
-        assert_eq!(s.source, None);
-        assert_eq!(s.dest, Some(a));
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, _) = ev(s, RoleEvent::SetRole(b, Role::Dest));
+        let (s, _) = ev(s, RoleEvent::Lock(b));
+        let (s, fx) = ev(s, RoleEvent::SetRole(b, Role::None));
+        assert!(s.dests().is_empty());
+        assert!(!s.has_role(b));
         assert_eq!(fx, vec![RoleEffect::Broadcast]);
     }
 
     #[test]
-    fn dropping_a_lister_clears_its_roles_and_lock() {
+    fn dropping_a_lister_clears_its_role() {
         let (a, b, _) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, _) = apply_role_event(s, RoleEvent::FocusGained(b));
-        let (s, _) = apply_role_event(s, RoleEvent::Lock(b));
-        let (s, fx) = apply_role_event(s, RoleEvent::Dropped(b));
-        assert_eq!(s.source, None);
-        assert_eq!(s.dest, Some(a));
-        assert!(!s.locked.contains(&b));
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, _) = ev(s, RoleEvent::FocusGained(b)); // b source, a dest
+        let (s, fx) = ev(s, RoleEvent::Dropped(b));
+        assert_eq!(s.source(), None);
+        assert_eq!(s.dests(), vec![a]);
         assert_eq!(fx, vec![RoleEffect::Broadcast]);
-    }
-
-    #[test]
-    fn unlock_alone_does_not_move_roles() {
-        let (a, _, _) = ids();
-        let (s, _) = apply_role_event(RoleState::default(), RoleEvent::FocusGained(a));
-        let (s, _) = apply_role_event(s, RoleEvent::Lock(a));
-        let (s2, fx) = apply_role_event(s.clone(), RoleEvent::Unlock(a));
-        assert_eq!(s2.source, s.source);
-        assert_eq!(s2.dest, s.dest);
-        assert!(fx.is_empty());
     }
 }

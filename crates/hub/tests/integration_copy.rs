@@ -74,3 +74,75 @@ fn copy_source_to_dest_lands_file() {
     let landed = dst_dir.join("payload.txt");
     assert_eq!(std::fs::read(&landed).unwrap(), b"hello opusdm");
 }
+
+#[test]
+#[ignore]
+fn copy_fans_out_to_all_locked_dests() {
+    let td = tempfile::tempdir().unwrap();
+    let sock = td.path().join("hub.sock");
+    let src = td.path().join("src");
+    let d1 = td.path().join("d1");
+    let d2 = td.path().join("d2");
+    for p in [&src, &d1, &d2] {
+        std::fs::create_dir_all(p).unwrap();
+    }
+    std::fs::write(src.join("f.txt"), b"fan out").unwrap();
+
+    let listener = UnixListener::bind(&sock).unwrap();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+
+    let mut a = UnixStream::connect(&sock).unwrap();
+    a.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut b = UnixStream::connect(&sock).unwrap();
+    b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut c = UnixStream::connect(&sock).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+    reg(&mut a, 1, src.to_str().unwrap());
+    reg(&mut b, 2, d1.to_str().unwrap());
+    reg(&mut c, 3, d2.to_str().unwrap());
+
+    // a = SOURCE.
+    send(&mut a, &ToHub::FocusGained).unwrap();
+    // b and c = locked DESTs.
+    send(&mut b, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+    send(&mut b, &ToHub::LockRole).unwrap();
+    send(&mut c, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+    send(&mut c, &ToHub::LockRole).unwrap();
+
+    // Wait until A has observed both DESTs before issuing the job.
+    loop {
+        match recv::<_, ToLister>(&mut a).unwrap() {
+            Some(ToLister::RoleChanged { dests, .. }) if dests.len() == 2 => break,
+            Some(_) => {}
+            None => panic!("hub closed while waiting for roles"),
+        }
+    }
+
+    send(
+        &mut a,
+        &ToHub::RunJob {
+            op: Op::Copy,
+            srcs: vec![src.join("f.txt")],
+            dest_dir: None,
+        },
+    )
+    .unwrap();
+
+    // Expect two JobDone messages on A (one per destination).
+    let mut done = 0;
+    while done < 2 {
+        match recv::<_, ToLister>(&mut a).unwrap() {
+            Some(ToLister::JobDone { outcome, errors, .. }) => {
+                assert!(errors.is_empty(), "{errors:?}");
+                assert!(matches!(outcome, opusdm_ipc::Outcome::Ok { .. }));
+                done += 1;
+            }
+            Some(_) => {}
+            None => panic!("hub closed early"),
+        }
+    }
+
+    assert_eq!(std::fs::read(d1.join("f.txt")).unwrap(), b"fan out");
+    assert_eq!(std::fs::read(d2.join("f.txt")).unwrap(), b"fan out");
+}

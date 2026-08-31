@@ -26,12 +26,15 @@ a built workspace). The hub opens its toolbar and the first Lister itself.
 - [ ] Focus Lister A -> it becomes SOURCE (badge + toolbar SRC).
 - [ ] Focus Lister B -> B becomes SOURCE, A becomes DEST.
 - [ ] `Source` / `Dest` / `Lock` toggle buttons reflect and drive hub state.
+- [ ] `Lock` is greyed out on a Lister that holds neither SOURCE nor DEST.
 - [ ] `Lock` on A keeps A as SOURCE when B is focused.
+- [ ] Mark two Listers as DEST + Lock; the toolbar DST field lists both.
 - [ ] Clicking the toolbar SRC / DST indicator raises that Lister.
 
 ## Operations
 
 - [ ] Select files in SOURCE, `Copy` -> they appear in DEST's directory; toolbar shows a progress row that clears; both Listers refresh.
+- [ ] With two locked DESTs, one `Copy` puts the files in BOTH destination directories.
 - [ ] `Move` on the same filesystem is instant; the file leaves SOURCE.
 - [ ] `Move` across filesystems copies then deletes.
 - [ ] Copy onto an existing name -> conflict dialog; `Skip` keeps the old file; re-run and `Overwrite All` replaces it.

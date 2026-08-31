@@ -218,19 +218,24 @@ fn short_path(p: &std::path::Path) -> String {
 
 fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     match ev {
-        HubEvent::Roles { source, dest, paths } => {
-            let lookup = |id: Option<ListerId>| -> String {
-                let Some(id) = id else { return "-".to_string() };
+        HubEvent::Roles { source, dests, paths } => {
+            let name_of = |id: ListerId| -> String {
                 paths
                     .iter()
                     .find(|(pid, _)| *pid == id)
                     .map(|(_, p)| short_path(p))
-                    .unwrap_or_else(|| "-".to_string())
+                    .unwrap_or_else(|| "?".to_string())
             };
-            widgets.src_label.set_text(&format!("SRC: {}", lookup(source)));
-            widgets.dst_label.set_text(&format!("DST: {}", lookup(dest)));
+            let src_text = source.map(name_of).unwrap_or_else(|| "-".to_string());
+            let dst_text = if dests.is_empty() {
+                "-".to_string()
+            } else {
+                dests.iter().map(|d| name_of(*d)).collect::<Vec<_>>().join(", ")
+            };
+            widgets.src_label.set_text(&format!("SRC: {src_text}"));
+            widgets.dst_label.set_text(&format!("DST: {dst_text}"));
             widgets.src_id.set(source);
-            widgets.dst_id.set(dest);
+            widgets.dst_id.set(dests.first().copied());
         }
         HubEvent::JobUpdate { job_id, label, done, total } => {
             let mut jobs = widgets.jobs.borrow_mut();

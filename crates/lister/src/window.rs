@@ -36,7 +36,7 @@ pub struct Ui {
     /// SOURCE / DEST badge.
     pub role_badge: gtk::Label,
     /// Latest known global roles.
-    pub roles: Cell<Roles>,
+    pub roles: RefCell<Roles>,
     /// Editable path bar.
     pub path_entry: gtk::Entry,
     /// Local timezone offset for date formatting.
@@ -76,7 +76,7 @@ pub fn run(mut client: Client, id: ListerId, roles: Roles, start: PathBuf) -> gl
         let mut guard = shared.borrow_mut();
         let Some(st) = guard.as_mut() else { return };
         let inbox = st.inbox.take().expect("activate once");
-        let ui = build_window(app, st.client.clone(), st.id, st.roles);
+        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone());
         ui.navigate_to(&st.start);
 
         let ui_for_pump = ui.clone();
@@ -196,7 +196,7 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         sorter: sorter.clone(),
         status,
         role_badge,
-        roles: Cell::new(roles),
+        roles: RefCell::new(roles),
         path_entry: path_entry.clone(),
         tz: local_tz_offset_secs(),
         role_src_btn: gtk::ToggleButton::with_label("Source"),
@@ -442,15 +442,16 @@ impl Ui {
                 }
             }
         }
-        let roles = self.roles.get();
+        let roles = self.roles.borrow();
         let badge = if roles.source == Some(self.id) {
             "SOURCE"
-        } else if roles.dest == Some(self.id) {
+        } else if roles.is_dest(self.id) {
             "DEST"
         } else {
             ""
         };
         self.role_badge.set_text(badge);
+        drop(roles);
         self.status.set_text(&format!(
             "{total} items, {sel} selected, {}",
             format_size(false, sel_bytes)
@@ -460,8 +461,8 @@ impl Ui {
     /// Handle a message from the hub.
     pub fn apply_inbound(self: &Rc<Self>, msg: ToLister) {
         match msg {
-            ToLister::RoleChanged { source, dest } => {
-                self.roles.set(Roles { source, dest });
+            ToLister::RoleChanged { source, dests } => {
+                *self.roles.borrow_mut() = Roles { source, dests };
                 self.update_status();
                 crate::actions::sync_role_buttons(self);
             }

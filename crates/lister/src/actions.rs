@@ -11,15 +11,15 @@ use std::rc::Rc;
 
 /// Check the preconditions for a Copy/Move from this Lister. The hub resolves
 /// the actual destination directory (the DEST Lister's current path).
-pub fn resolve_copy_target(roles: Roles, me: ListerId) -> Result<(), String> {
+pub fn resolve_copy_target(roles: &Roles, me: ListerId) -> Result<(), String> {
     if roles.source != Some(me) {
         return Err("this Lister is not the SOURCE".into());
     }
-    match roles.dest {
-        Some(d) if d == me => Err("SOURCE and DEST are the same Lister".into()),
-        Some(_) => Ok(()),
-        None => Err("no DEST Lister set".into()),
+    let real_dests: Vec<_> = roles.dests.iter().filter(|d| **d != me).collect();
+    if real_dests.is_empty() {
+        return Err("no DEST Lister set".into());
     }
+    Ok(())
 }
 
 /// Build the button row and wire every control. Call once during window build.
@@ -160,12 +160,15 @@ pub fn attach(ui: &Rc<Ui>) {
             let _ = ui.client.send(&msg);
         });
     }
+
+    // Reflect the initial role state (Lock starts disabled with no role).
+    sync_role_buttons(ui);
 }
 
 fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
     let ui = ui.clone();
     btn.connect_clicked(move |_| {
-        if let Err(msg) = resolve_copy_target(ui.roles.get(), ui.id) {
+        if let Err(msg) = resolve_copy_target(&ui.roles.borrow(), ui.id) {
             flash(&ui, &msg);
             return;
         }
@@ -182,12 +185,21 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
     });
 }
 
-/// Sync the Source/Dest toggles from the hub's role state without re-emitting.
+/// Sync the Source/Dest/Lock controls from the hub's role state without
+/// re-emitting. Lock is only usable while this Lister holds a role.
 pub fn sync_role_buttons(ui: &Rc<Ui>) {
     ui.role_guard.set(true);
-    let roles = ui.roles.get();
-    ui.role_src_btn.set_active(roles.source == Some(ui.id));
-    ui.role_dst_btn.set_active(roles.dest == Some(ui.id));
+    let roles = ui.roles.borrow();
+    let is_source = roles.source == Some(ui.id);
+    let is_dest = roles.is_dest(ui.id);
+    ui.role_src_btn.set_active(is_source);
+    ui.role_dst_btn.set_active(is_dest);
+    let has_role = is_source || is_dest;
+    ui.role_lock_btn.set_sensitive(has_role);
+    if !has_role && ui.role_lock_btn.is_active() {
+        ui.role_lock_btn.set_active(false);
+    }
+    drop(roles);
     ui.role_guard.set(false);
 }
 
@@ -330,9 +342,10 @@ mod tests {
     fn resolve_requires_me_source_and_a_dest() {
         let me = ListerId(1);
         let other = ListerId(2);
-        assert!(resolve_copy_target(Roles { source: Some(other), dest: Some(me) }, me).is_err());
-        assert!(resolve_copy_target(Roles { source: Some(me), dest: None }, me).is_err());
-        assert!(resolve_copy_target(Roles { source: Some(me), dest: Some(me) }, me).is_err());
-        assert!(resolve_copy_target(Roles { source: Some(me), dest: Some(other) }, me).is_ok());
+        assert!(resolve_copy_target(&Roles { source: Some(other), dests: vec![me] }, me).is_err());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![] }, me).is_err());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![me] }, me).is_err());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![other] }, me).is_ok());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![other, ListerId(3)] }, me).is_ok());
     }
 }
