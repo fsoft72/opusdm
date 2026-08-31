@@ -13,3 +13,4 @@
 - Task 8: opusdm-hub server.rs - accept loop, owner loop, HubEvent/HubCmd bridge.
 - Task 9: opusdm-hub startup - acquire_socket, spawn_lister, install_sigchld; headless main.
 - Task 11: opusdm-lister crate, Client::connect + reader thread, env guard in main.
+- Task 12: opusdm-lister model.rs (pure): rows, format_size, format_mtime, dir_first_cmp.
