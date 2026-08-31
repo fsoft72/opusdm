@@ -11,3 +11,4 @@
 - Task 6: opusdm-hub crate skeleton, apply_role_event() role machine.
 - Task 7: opusdm-hub JobEngine (validate, MAX_CONCURRENT=4, map_progress).
 - Task 8: opusdm-hub server.rs - accept loop, owner loop, HubEvent/HubCmd bridge.
+- Task 9: opusdm-hub startup - acquire_socket, spawn_lister, install_sigchld; headless main.
