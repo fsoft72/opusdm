@@ -1,1 +1,22 @@
+# Rust build output
 /target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Editor / IDE
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Sandbox / runtime scratch
+/tmp/
+/run-x11.local.sh
+opusdm-*.log
+/.worktrees/
+
+# Local overrides
+/.env
+/*.local.toml
