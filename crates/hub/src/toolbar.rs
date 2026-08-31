@@ -69,8 +69,16 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         .default_height(crate::dock::PANEL_HEIGHT)
         .build();
 
-    // Turn the window into a top-docked X11 panel once its surface exists.
+    // Turn the window into a top-docked X11 panel once its surface exists, then
+    // re-assert the geometry after the WM has run its placement policy.
     window.connect_realize(move |w| crate::dock::make_top_dock(w, panel_width));
+    window.connect_map(move |w| {
+        crate::dock::make_top_dock(w, panel_width);
+        let w = w.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
+            crate::dock::pin_geometry(&w, panel_width);
+        });
+    });
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
     root.set_margin_top(2);

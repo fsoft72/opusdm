@@ -4,6 +4,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use x11rb::connection::Connection;
+use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{self, AtomEnum, ConnectionExt, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -22,11 +23,11 @@ pub fn monitor_width(display: &gtk::gdk::Display) -> i32 {
         .unwrap_or(1280)
 }
 
-/// Apply the dock window type and a top strut to the realized `window`.
+/// Apply the dock window type, a top strut, and a fixed top-left position to
+/// the realized `window`. Safe to call more than once (realize and map).
 ///
-/// Must run after the window's X11 surface exists (connect_realize / _map).
 /// Errors are logged and swallowed - the panel still works without the strut,
-/// it just will not reserve space.
+/// it just will not reserve space or sit flush at the top.
 pub fn make_top_dock(window: &gtk::ApplicationWindow, width: i32) {
     let Some(xid) = x11_window_id(window) else {
         eprintln!("opusdm-hub: toolbar is not on X11; skipping dock/strut setup");
@@ -34,6 +35,23 @@ pub fn make_top_dock(window: &gtk::ApplicationWindow, width: i32) {
     };
     if let Err(e) = apply(xid, width) {
         eprintln!("opusdm-hub: cannot set panel struts: {e}");
+    }
+}
+
+/// Re-assert the top-left geometry only. Cheap; used on the `map` signal after
+/// the window manager has run its placement policy.
+pub fn pin_geometry(window: &gtk::ApplicationWindow, width: i32) {
+    let Some(xid) = x11_window_id(window) else { return };
+    if let Ok((conn, _)) = x11rb::connect(None) {
+        let _ = conn.configure_window(
+            xid,
+            &xproto::ConfigureWindowAux::new()
+                .x(0)
+                .y(0)
+                .width(width.max(1) as u32)
+                .height(PANEL_HEIGHT as u32),
+        );
+        let _ = conn.flush();
     }
 }
 
@@ -46,6 +64,7 @@ fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
 
 fn apply(xid: u32, width: i32) -> Result<(), Box<dyn std::error::Error>> {
     let (conn, _screen) = x11rb::connect(None)?;
+    let width = width.max(1) as u32;
 
     let dock_type = conn
         .intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK")?
@@ -56,13 +75,7 @@ fn apply(xid: u32, width: i32) -> Result<(), Box<dyn std::error::Error>> {
     let strut_partial = conn.intern_atom(false, b"_NET_WM_STRUT_PARTIAL")?.reply()?.atom;
 
     // Window type = DOCK.
-    conn.change_property32(
-        PropMode::REPLACE,
-        xid,
-        win_type,
-        AtomEnum::ATOM,
-        &[dock_type],
-    )?;
+    conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[dock_type])?;
 
     // _NET_WM_STRUT: left, right, top, bottom.
     conn.change_property32(
@@ -76,14 +89,22 @@ fn apply(xid: u32, width: i32) -> Result<(), Box<dyn std::error::Error>> {
     // _NET_WM_STRUT_PARTIAL: left, right, top, bottom,
     // left_start_y, left_end_y, right_start_y, right_end_y,
     // top_start_x, top_end_x, bottom_start_x, bottom_end_x.
-    let top_end_x = width.max(1) as u32 - 1;
     conn.change_property32(
         PropMode::REPLACE,
         xid,
         strut_partial,
         AtomEnum::CARDINAL,
-        &[0, 0, PANEL_HEIGHT as u32, 0, 0, 0, 0, 0, 0, top_end_x, 0, 0],
+        &[0, 0, PANEL_HEIGHT as u32, 0, 0, 0, 0, 0, 0, width - 1, 0, 0],
     )?;
+
+    // Tell the WM the position is user-specified so it does not re-center the
+    // window (openbox centers dock windows that carry no position hint).
+    let mut hints = WmSizeHints::new();
+    hints.position = Some((WmSizeHintsSpecification::UserSpecified, 0, 0));
+    hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, PANEL_HEIGHT));
+    hints.min_size = Some((width as i32, PANEL_HEIGHT));
+    hints.max_size = Some((width as i32, PANEL_HEIGHT));
+    hints.set_normal_hints(&conn, xid)?.check()?;
 
     // Pin geometry to the top-left corner at full width.
     conn.configure_window(
@@ -91,7 +112,7 @@ fn apply(xid: u32, width: i32) -> Result<(), Box<dyn std::error::Error>> {
         &xproto::ConfigureWindowAux::new()
             .x(0)
             .y(0)
-            .width(width.max(1) as u32)
+            .width(width)
             .height(PANEL_HEIGHT as u32),
     )?;
 

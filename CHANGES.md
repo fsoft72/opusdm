@@ -21,3 +21,4 @@
 - Task 15: opusdm-lister dnd.rs - text/uri-list drag source + drop target (Shift=Move). RunJob.dest_dir is now Option: None=button Copy/Move (hub resolves), Some=explicit (DnD/Delete/MakeDir/NewFile).
 - Task 16: release build verified; GUI smoke (hub spawns Lister at $HOME, single-instance handoff works); integration_copy passes. v1 feature-complete.
 - Post-v1: hub toolbar is now a top-docked X11 panel - undecorated, full monitor width, _NET_WM_WINDOW_TYPE_DOCK + _NET_WM_STRUT_PARTIAL (top=42) so Listers tile below it. New crates/hub/src/dock.rs; deps gdk4-x11, x11rb.
+- Fix: openbox was re-centering the DOCK panel. Now sets WM_NORMAL_HINTS user-specified position (0,0) + re-asserts geometry on map. Panel sits flush top-left, full width.
