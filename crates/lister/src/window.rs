@@ -9,7 +9,7 @@ use gtk::gio;
 use gtk::gdk;
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
-use opusdm_ipc::{ListerId, Settings, ToHub, ToLister};
+use opusdm_ipc::{ListerId, Role, Settings, ToHub, ToLister};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,11 +45,7 @@ pub struct Ui {
     pub path_entry: gtk::Entry,
     /// Local timezone offset for date formatting.
     pub tz: i32,
-    /// Role toggle buttons (wired in Task 14).
-    pub role_src_btn: gtk::ToggleButton,
-    /// Role toggle button.
-    pub role_dst_btn: gtk::ToggleButton,
-    /// Role lock toggle.
+    /// Pin: locks this Lister's current role against focus changes (stat bar).
     pub role_lock_btn: gtk::ToggleButton,
     /// Guards against feedback while syncing toggle state from the hub.
     pub role_guard: Cell<bool>,
@@ -146,12 +142,15 @@ fn build_window(
     root.set_margin_start(4);
     root.set_margin_end(4);
 
-    // Top stat bar: D/F/B counts (left) + SOURCE/DEST/lock (right).
+    // Top stat bar: D/F/B counts (left) + pin + SOURCE/DEST badge (right).
+    // Click the badge to cycle SOURCE -> DEST -> NONE.
     let stat_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let stat_info = gtk::Label::new(Some("D: [0/0] F: [0/0] B: [0/0]"));
     stat_info.set_xalign(0.0);
     stat_info.set_hexpand(true);
     stat_bar.append(&stat_info);
+    let pin_btn = gtk::ToggleButton::with_label("📌");
+    stat_bar.append(&pin_btn);
     let role_badge = gtk::Label::new(None);
     stat_bar.append(&role_badge);
     root.append(&stat_bar);
@@ -231,9 +230,7 @@ fn build_window(
         roles: RefCell::new(roles),
         path_entry: path_entry.clone(),
         tz: local_tz_offset_secs(),
-        role_src_btn: gtk::ToggleButton::with_label("Source"),
-        role_dst_btn: gtk::ToggleButton::with_label("Dest"),
-        role_lock_btn: gtk::ToggleButton::with_label("Lock"),
+        role_lock_btn: pin_btn,
         role_guard: Cell::new(false),
         job_line,
         button_row: button_row.clone(),
@@ -242,6 +239,27 @@ fn build_window(
         css_provider,
     });
     ui.update_css_for_colors();
+
+    // Click the role badge to cycle SOURCE -> DEST -> NONE.
+    {
+        let ui_for_click = ui.clone();
+        let gesture = gtk::GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
+            let roles = ui_for_click.roles.borrow();
+            let is_source = roles.source == Some(ui_for_click.id);
+            let is_dest = roles.is_dest(ui_for_click.id);
+            drop(roles);
+            let next = if is_source {
+                Role::Dest
+            } else if is_dest {
+                Role::None
+            } else {
+                Role::Source
+            };
+            let _ = ui_for_click.client.send(&ToHub::SetRole(next));
+        });
+        ui.role_badge.add_controller(gesture);
+    }
 
     // Navigation.
     {

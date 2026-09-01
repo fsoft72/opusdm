@@ -2,6 +2,7 @@
 
 ## 2026-09-01
 
+- Lister stat bar: SOURCE/DEST badge is now clickable, cycles SOURCE -> DEST -> NONE (ToHub::SetRole). Pin button (was "Lock" in the button row) moved to the stat bar, left of the badge; same LockRole/UnlockRole semantics. Removed the separate Source/Dest toggle buttons from the button row - role is set by clicking the badge now, not two extra buttons.
 - Lister: "Hidden" toggle button in the button row, off by default; filters dotfile rows out of navigate_to(). Ui.show_hidden: Cell<bool>.
 - Lister layout redesign: top stat bar (D/F/B counts + SOURCE/DEST/lock), button row, file list (Name/Size/Date/User/Group/Access), bottom navigation (home/parent/path).
 - model.rs: Row extended with uid, gid, mode fields; format_user/format_group/format_access functions added.

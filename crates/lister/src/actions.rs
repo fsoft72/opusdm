@@ -5,7 +5,7 @@ use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_ipc::{FileMeta, ListerId, Op, Outcome, Resolution, Role, ToHub};
+use opusdm_ipc::{FileMeta, ListerId, Op, Outcome, Resolution, ToHub};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -43,10 +43,6 @@ pub fn attach(ui: &Rc<Ui>) {
     row.append(&rename_btn);
     row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     row.append(&hidden_btn);
-    row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    row.append(&ui.role_src_btn);
-    row.append(&ui.role_dst_btn);
-    row.append(&ui.role_lock_btn);
 
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);
@@ -141,39 +137,22 @@ pub fn attach(ui: &Rc<Ui>) {
         });
     }
 
-    // Role toggles.
-    {
-        let ui = ui.clone();
-        let btn = ui.role_src_btn.clone();
-        btn.connect_toggled(move |b| {
-            if ui.role_guard.get() {
-                return;
-            }
-            let role = if b.is_active() { Role::Source } else { Role::None };
-            let _ = ui.client.send(&ToHub::SetRole(role));
-        });
-    }
-    {
-        let ui = ui.clone();
-        let btn = ui.role_dst_btn.clone();
-        btn.connect_toggled(move |b| {
-            if ui.role_guard.get() {
-                return;
-            }
-            let role = if b.is_active() { Role::Dest } else { Role::None };
-            let _ = ui.client.send(&ToHub::SetRole(role));
-        });
-    }
+    // Pin: locks this Lister's role against focus changes. Role itself is
+    // set by clicking the stat-bar badge (see window::build_window), which
+    // cycles SOURCE -> DEST -> NONE.
     {
         let ui = ui.clone();
         let btn = ui.role_lock_btn.clone();
         btn.connect_toggled(move |b| {
+            if ui.role_guard.get() {
+                return;
+            }
             let msg = if b.is_active() { ToHub::LockRole } else { ToHub::UnlockRole };
             let _ = ui.client.send(&msg);
         });
     }
 
-    // Reflect the initial role state (Lock starts disabled with no role).
+    // Reflect the initial role state (pin starts disabled with no role).
     sync_role_buttons(ui);
 }
 
@@ -197,16 +176,12 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
     });
 }
 
-/// Sync the Source/Dest/Lock controls from the hub's role state without
-/// re-emitting. Lock is only usable while this Lister holds a role.
+/// Sync the pin control from the hub's role state without re-emitting. Pin
+/// is only usable while this Lister holds a role (SOURCE or DEST).
 pub fn sync_role_buttons(ui: &Rc<Ui>) {
     ui.role_guard.set(true);
     let roles = ui.roles.borrow();
-    let is_source = roles.source == Some(ui.id);
-    let is_dest = roles.is_dest(ui.id);
-    ui.role_src_btn.set_active(is_source);
-    ui.role_dst_btn.set_active(is_dest);
-    let has_role = is_source || is_dest;
+    let has_role = roles.source == Some(ui.id) || roles.is_dest(ui.id);
     ui.role_lock_btn.set_sensitive(has_role);
     if !has_role && ui.role_lock_btn.is_active() {
         ui.role_lock_btn.set_active(false);
