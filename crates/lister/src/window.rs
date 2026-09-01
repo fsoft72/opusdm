@@ -153,10 +153,9 @@ fn build_window(
     pin_btn.add_css_class("pin-btn");
     stat_bar.append(&pin_btn);
     let role_badge = gtk::Label::new(Some("NONE"));
-    // width_chars alone is only a minimum; max_width_chars pins it so the
-    // badge never grows past "SOURCE", the longest value.
-    role_badge.set_width_chars(6);
-    role_badge.set_max_width_chars(6);
+    // Fixed pixel width so it never reflows between SOURCE/DEST/NONE -
+    // width_chars is font-metric dependent and still shifted.
+    role_badge.set_size_request(60, -1);
     role_badge.set_xalign(0.5); // center text within that fixed width
     stat_bar.append(&role_badge);
     root.append(&stat_bar);
