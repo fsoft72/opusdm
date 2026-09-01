@@ -444,6 +444,9 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
         });
     }
 
+    button_box.append(&cancel_btn);
+    button_box.append(&save_btn);
+
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&scroller);
     root.append(&button_box);
