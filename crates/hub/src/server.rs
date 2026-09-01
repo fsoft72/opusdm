@@ -48,6 +48,8 @@ pub enum HubCmd {
     CancelJob(u64),
     /// Ask a Lister to raise its window.
     PresentLister(ListerId),
+    /// Update colors on all connected Listers.
+    UpdateColors { source_color: String, dest_color: String },
     /// Tear everything down.
     Shutdown,
     /// A child process exited (from the SIGCHLD reaper).
@@ -335,6 +337,15 @@ fn owner_loop(
             OwnerMsg::FromGtk(HubCmd::PresentLister(id)) => {
                 if let Some(c) = conns.get_mut(&id.0) {
                     let _ = send(&mut c.write, &ToLister::Present);
+                }
+            }
+
+            OwnerMsg::FromGtk(HubCmd::UpdateColors { source_color, dest_color }) => {
+                for c in conns.values_mut().filter(|c| c.registered) {
+                    let _ = send(&mut c.write, &ToLister::ColorUpdate {
+                        source_color: source_color.clone(),
+                        dest_color: dest_color.clone(),
+                    });
                 }
             }
 

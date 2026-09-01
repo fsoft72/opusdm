@@ -533,6 +533,11 @@ impl Ui {
                 *self.dest_color.borrow_mut() = dest_color;
                 self.update_css_for_colors();
             }
+            ToLister::ColorUpdate { source_color, dest_color } => {
+                *self.source_color.borrow_mut() = source_color;
+                *self.dest_color.borrow_mut() = dest_color;
+                self.update_css_for_colors();
+            }
             ToLister::Pong => {}
         }
     }

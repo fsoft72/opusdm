@@ -141,7 +141,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     // Settings button: open settings dialog.
     {
         let widgets = widgets.clone();
-        settings_btn.connect_clicked(move |_| show_settings_dialog(&widgets.window));
+        settings_btn.connect_clicked(move |_| show_settings_dialog(&widgets.window, &widgets.cmd_tx));
     }
 
     // Quit button and window close: confirm if jobs are running.
@@ -324,7 +324,7 @@ fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, initial_rgba: gtk
     );
 }
 
-fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
+fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>) {
     let settings_data = settings::load_settings();
 
     let window = gtk::Window::builder()
@@ -346,11 +346,23 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
     src_label.set_size_request(100, -1);
     let src_entry = gtk::Entry::new();
     src_entry.set_text(&settings_data.source_color);
-    let src_btn = gtk::Button::with_label("Pick...");
+    src_entry.set_hexpand(true);
+    let src_preview = gtk::DrawingArea::new();
+    src_preview.set_content_width(50);
+    src_preview.set_content_height(30);
+    let src_color_str = src_entry.text().to_string();
+    src_preview.set_draw_func(move |_da, cr, w, h| {
+        if let Ok(color) = parse_hex_color(&src_color_str) {
+            cr.set_source_rgb(color.0, color.1, color.2);
+            cr.rectangle(0.0, 0.0, w as f64, h as f64);
+            cr.fill().ok();
+        }
+    });
     {
         let src_entry = src_entry.clone();
         let window = window.clone();
-        src_btn.connect_clicked(move |_| {
+        let gesture = gtk::GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
             let rgba = if let Ok(color) = parse_hex_color(src_entry.text().as_str()) {
                 gtk::gdk::RGBA::new(color.0 as f32, color.1 as f32, color.2 as f32, 1.0)
             } else {
@@ -358,12 +370,13 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
             };
             show_color_dialog(&window, &src_entry, rgba);
         });
+        src_preview.add_controller(gesture);
     }
 
     let src_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     src_box.append(&src_label);
     src_box.append(&src_entry);
-    src_box.append(&src_btn);
+    src_box.append(&src_preview);
     vbox.append(&src_box);
 
     let dst_label = gtk::Label::new(Some("DEST color:"));
@@ -371,11 +384,23 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
     dst_label.set_size_request(100, -1);
     let dst_entry = gtk::Entry::new();
     dst_entry.set_text(&settings_data.dest_color);
-    let dst_btn = gtk::Button::with_label("Pick...");
+    dst_entry.set_hexpand(true);
+    let dst_preview = gtk::DrawingArea::new();
+    dst_preview.set_content_width(50);
+    dst_preview.set_content_height(30);
+    let dst_color_str = dst_entry.text().to_string();
+    dst_preview.set_draw_func(move |_da, cr, w, h| {
+        if let Ok(color) = parse_hex_color(&dst_color_str) {
+            cr.set_source_rgb(color.0, color.1, color.2);
+            cr.rectangle(0.0, 0.0, w as f64, h as f64);
+            cr.fill().ok();
+        }
+    });
     {
         let dst_entry = dst_entry.clone();
         let window = window.clone();
-        dst_btn.connect_clicked(move |_| {
+        let gesture = gtk::GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
             let rgba = if let Ok(color) = parse_hex_color(dst_entry.text().as_str()) {
                 gtk::gdk::RGBA::new(color.0 as f32, color.1 as f32, color.2 as f32, 1.0)
             } else {
@@ -383,12 +408,13 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
             };
             show_color_dialog(&window, &dst_entry, rgba);
         });
+        dst_preview.add_controller(gesture);
     }
 
     let dst_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     dst_box.append(&dst_label);
     dst_box.append(&dst_entry);
-    dst_box.append(&dst_btn);
+    dst_box.append(&dst_preview);
     vbox.append(&dst_box);
 
     let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -405,14 +431,19 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
         let window = window.clone();
         let src = src_entry.clone();
         let dst = dst_entry.clone();
+        let cmd_tx = cmd_tx.clone();
         save_btn.connect_clicked(move |_| {
             let src_hex = src.text().to_string();
             let dst_hex = dst.text().to_string();
             let new_settings = settings::Settings {
-                source_color: src_hex,
-                dest_color: dst_hex,
+                source_color: src_hex.clone(),
+                dest_color: dst_hex.clone(),
             };
             let _ = settings::save_settings(&new_settings);
+            let _ = cmd_tx.send(HubCmd::UpdateColors {
+                source_color: src_hex,
+                dest_color: dst_hex,
+            });
             window.close();
         });
     }

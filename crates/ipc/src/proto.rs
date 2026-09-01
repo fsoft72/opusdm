@@ -147,6 +147,11 @@ pub enum ToLister {
     },
     /// A directory changed on disk; reload if showing it.
     InvalidatePath(PathBuf),
+    /// Settings changed: new role colors.
+    ColorUpdate {
+        source_color: String,
+        dest_color: String,
+    },
     /// Graceful-exit request.
     Shutdown,
 }
@@ -229,6 +234,10 @@ mod tests {
             dst: FileMeta { size: 2, modified_unix: 20 },
         });
         roundtrip_tolister(ToLister::InvalidatePath("/dst".into()));
+        roundtrip_tolister(ToLister::ColorUpdate {
+            source_color: "#90EE90".to_string(),
+            dest_color: "#FFB6C1".to_string(),
+        });
         roundtrip_tolister(ToLister::Shutdown);
     }
 }
