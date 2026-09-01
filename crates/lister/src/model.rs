@@ -181,18 +181,14 @@ pub fn format_group(gid: u32) -> String {
     gid.to_string()
 }
 
-/// Rwx permission string for access.
+/// Rwx permission string for access, e.g. "rwxr-xr--".
 pub fn format_access(mode: u32) -> String {
-    let u_r = if mode & 0o400 != 0 { 'r' } else { '-' };
-    let u_w = if mode & 0o200 != 0 { 'w' } else { '-' };
-    let u_x = if mode & 0o100 != 0 { 'x' } else { '-' };
-    let g_r = if mode & 0o040 != 0 { 'r' } else { '-' };
-    let g_w = if mode & 0o020 != 0 { 'w' } else { '-' };
-    let g_x = if mode & 0o010 != 0 { 'x' } else { '-' };
-    let o_r = if mode & 0o004 != 0 { 'r' } else { '-' };
-    let o_w = if mode & 0o002 != 0 { 'w' } else { '-' };
-    let o_x = if mode & 0o001 != 0 { 'x' } else { '-' };
-    format!("{}{}{}{}{}{}{}{}{}", u_r, u_w, u_x, g_r, g_w, g_x, o_r, o_w, o_x)
+    const BITS: [(u32, char); 9] = [
+        (0o400, 'r'), (0o200, 'w'), (0o100, 'x'),
+        (0o040, 'r'), (0o020, 'w'), (0o010, 'x'),
+        (0o004, 'r'), (0o002, 'w'), (0o001, 'x'),
+    ];
+    BITS.iter().map(|&(bit, c)| if mode & bit != 0 { c } else { '-' }).collect()
 }
 
 /// Best-effort local timezone offset in seconds east of UTC. Falls back to 0.

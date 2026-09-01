@@ -291,17 +291,6 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     }
 }
 
-fn parse_hex_color(hex: &str) -> Result<(f64, f64, f64), String> {
-    let hex = hex.trim_start_matches('#');
-    if hex.len() != 6 {
-        return Err("Invalid hex color".to_string());
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).map_err(|_| "Invalid hex")? as f64 / 255.0;
-    let g = u8::from_str_radix(&hex[2..4], 16).map_err(|_| "Invalid hex")? as f64 / 255.0;
-    let b = u8::from_str_radix(&hex[4..6], 16).map_err(|_| "Invalid hex")? as f64 / 255.0;
-    Ok((r, g, b))
-}
-
 fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     let r = (rgba.red() * 255.0) as u8;
     let g = (rgba.green() * 255.0) as u8;
@@ -309,21 +298,68 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     format!("#{:02X}{:02X}{:02X}", r, g, b)
 }
 
-fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, preview: &gtk::DrawingArea, initial_rgba: gtk::gdk::RGBA) {
+fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, initial_rgba: gtk::gdk::RGBA) {
     let color_dialog = gtk::ColorDialog::new();
     let entry = entry.clone();
-    let preview = preview.clone();
     color_dialog.choose_rgba(
         Some(parent),
         Some(&initial_rgba),
         gio::Cancellable::NONE,
         move |result| {
             if let Ok(color) = result {
+                // set_text fires "changed", which redraws the preview below.
                 entry.set_text(&rgba_to_hex(&color));
-                preview.queue_draw();
             }
         },
     );
+}
+
+/// One "<label> <hex entry> <color preview>" settings row. Click the preview
+/// swatch to open a GTK color picker; typing a hex value redraws it too.
+/// Returns the row box and the entry, so the caller can read the chosen hex.
+fn build_color_row(window: &gtk::Window, label: &str, initial_hex: &str) -> (gtk::Box, gtk::Entry) {
+    let row_label = gtk::Label::new(Some(label));
+    row_label.set_xalign(0.0);
+    row_label.set_size_request(100, -1);
+
+    let entry = gtk::Entry::new();
+    entry.set_text(initial_hex);
+    entry.set_hexpand(true);
+
+    let preview = gtk::DrawingArea::new();
+    preview.set_content_width(50);
+    preview.set_content_height(30);
+    {
+        let entry = entry.clone();
+        preview.set_draw_func(move |_da, cr, w, h| {
+            if let Ok(color) = gtk::gdk::RGBA::parse(entry.text()) {
+                cr.set_source_rgb(color.red() as f64, color.green() as f64, color.blue() as f64);
+                cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                cr.fill().ok();
+            }
+        });
+    }
+    {
+        let preview = preview.clone();
+        entry.connect_changed(move |_| preview.queue_draw());
+    }
+    {
+        let entry = entry.clone();
+        let window = window.clone();
+        let gesture = gtk::GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
+            let rgba = gtk::gdk::RGBA::parse(entry.text())
+                .unwrap_or_else(|_| gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0));
+            show_color_dialog(&window, &entry, rgba);
+        });
+        preview.add_controller(gesture);
+    }
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.append(&row_label);
+    row.append(&entry);
+    row.append(&preview);
+    (row, entry)
 }
 
 fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>) {
@@ -343,102 +379,10 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
     vbox.set_margin_start(12);
     vbox.set_margin_end(12);
 
-    let src_label = gtk::Label::new(Some("SOURCE color:"));
-    src_label.set_xalign(0.0);
-    src_label.set_size_request(100, -1);
-    let src_entry = gtk::Entry::new();
-    src_entry.set_text(&settings_data.source_color);
-    src_entry.set_hexpand(true);
-    let src_preview = gtk::DrawingArea::new();
-    src_preview.set_content_width(50);
-    src_preview.set_content_height(30);
-    let src_color_ref = Rc::new(RefCell::new(src_entry.text().to_string()));
-    {
-        let src_color_ref = src_color_ref.clone();
-        src_preview.set_draw_func(move |_da, cr, w, h| {
-            if let Ok(color) = parse_hex_color(&src_color_ref.borrow()) {
-                cr.set_source_rgb(color.0, color.1, color.2);
-                cr.rectangle(0.0, 0.0, w as f64, h as f64);
-                cr.fill().ok();
-            }
-        });
-    }
-    {
-        let src_entry = src_entry.clone();
-        let src_color_ref = src_color_ref.clone();
-        src_entry.connect_changed(move |entry| {
-            *src_color_ref.borrow_mut() = entry.text().to_string();
-        });
-    }
-    {
-        let src_entry = src_entry.clone();
-        let window = window.clone();
-        let src_preview_clone = src_preview.clone();
-        let gesture = gtk::GestureClick::new();
-        gesture.connect_released(move |_, _, _, _| {
-            let rgba = if let Ok(color) = parse_hex_color(src_entry.text().as_str()) {
-                gtk::gdk::RGBA::new(color.0 as f32, color.1 as f32, color.2 as f32, 1.0)
-            } else {
-                gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)
-            };
-            show_color_dialog(&window, &src_entry, &src_preview_clone, rgba);
-        });
-        src_preview.add_controller(gesture);
-    }
-
-    let src_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    src_box.append(&src_label);
-    src_box.append(&src_entry);
-    src_box.append(&src_preview);
+    let (src_box, src_entry) = build_color_row(&window, "SOURCE color:", &settings_data.source_color);
     vbox.append(&src_box);
 
-    let dst_label = gtk::Label::new(Some("DEST color:"));
-    dst_label.set_xalign(0.0);
-    dst_label.set_size_request(100, -1);
-    let dst_entry = gtk::Entry::new();
-    dst_entry.set_text(&settings_data.dest_color);
-    dst_entry.set_hexpand(true);
-    let dst_preview = gtk::DrawingArea::new();
-    dst_preview.set_content_width(50);
-    dst_preview.set_content_height(30);
-    let dst_color_ref = Rc::new(RefCell::new(dst_entry.text().to_string()));
-    {
-        let dst_color_ref = dst_color_ref.clone();
-        dst_preview.set_draw_func(move |_da, cr, w, h| {
-            if let Ok(color) = parse_hex_color(&dst_color_ref.borrow()) {
-                cr.set_source_rgb(color.0, color.1, color.2);
-                cr.rectangle(0.0, 0.0, w as f64, h as f64);
-                cr.fill().ok();
-            }
-        });
-    }
-    {
-        let dst_entry = dst_entry.clone();
-        let dst_color_ref = dst_color_ref.clone();
-        dst_entry.connect_changed(move |entry| {
-            *dst_color_ref.borrow_mut() = entry.text().to_string();
-        });
-    }
-    {
-        let dst_entry = dst_entry.clone();
-        let window = window.clone();
-        let dst_preview_clone = dst_preview.clone();
-        let gesture = gtk::GestureClick::new();
-        gesture.connect_released(move |_, _, _, _| {
-            let rgba = if let Ok(color) = parse_hex_color(dst_entry.text().as_str()) {
-                gtk::gdk::RGBA::new(color.0 as f32, color.1 as f32, color.2 as f32, 1.0)
-            } else {
-                gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)
-            };
-            show_color_dialog(&window, &dst_entry, &dst_preview_clone, rgba);
-        });
-        dst_preview.add_controller(gesture);
-    }
-
-    let dst_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    dst_box.append(&dst_label);
-    dst_box.append(&dst_entry);
-    dst_box.append(&dst_preview);
+    let (dst_box, dst_entry) = build_color_row(&window, "DEST color:", &settings_data.dest_color);
     vbox.append(&dst_box);
 
     let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);

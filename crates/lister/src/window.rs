@@ -11,6 +11,7 @@ use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
 use opusdm_ipc::{ListerId, ToHub, ToLister};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -60,6 +61,9 @@ pub struct Ui {
     pub source_color: RefCell<String>,
     /// DEST role background color (hex).
     pub dest_color: RefCell<String>,
+    /// Single stylesheet for role colors; reloaded in place on change rather
+    /// than re-registered, so providers don't stack up on the display.
+    pub css_provider: gtk::CssProvider,
 }
 
 /// Build and run the window application.
@@ -202,6 +206,14 @@ fn build_window(
 
     window.set_child(Some(&root));
 
+    // Registered once; update_css_for_colors() reloads its content in place.
+    let css_provider = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        &gdk::Display::default().unwrap(),
+        &css_provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
     let ui = Rc::new(Ui {
         window: window.clone(),
         client,
@@ -225,6 +237,7 @@ fn build_window(
         button_row: button_row.clone(),
         source_color: RefCell::new(initial_settings.source_color),
         dest_color: RefCell::new(initial_settings.dest_color),
+        css_provider,
     });
     ui.update_css_for_colors();
 
@@ -332,6 +345,9 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
         item.set_child(Some(&label));
     });
     let tz = local_tz_offset_secs();
+    // uid/gid -> name lookups hit NSS (files/LDAP); cache per column factory
+    // so scrolling and resorting don't repeat the same lookup per row.
+    let name_cache: Rc<RefCell<HashMap<u32, String>>> = Rc::new(RefCell::new(HashMap::new()));
     factory.connect_bind(move |_, list_item| {
         let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let row = item
@@ -362,11 +378,19 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
             }
             ColKind::User => {
                 label.set_xalign(0.0);
-                label.set_text(&crate::model::format_user(row.uid));
+                let mut cache = name_cache.borrow_mut();
+                let name = cache
+                    .entry(row.uid)
+                    .or_insert_with(|| crate::model::format_user(row.uid));
+                label.set_text(name);
             }
             ColKind::Group => {
                 label.set_xalign(0.0);
-                label.set_text(&crate::model::format_group(row.gid));
+                let mut cache = name_cache.borrow_mut();
+                let name = cache
+                    .entry(row.gid)
+                    .or_insert_with(|| crate::model::format_group(row.gid));
+                label.set_text(name);
             }
             ColKind::Access => {
                 label.set_xalign(0.0);
@@ -544,6 +568,8 @@ impl Ui {
         }
     }
 
+    /// Reload the role-color stylesheet in place (same provider, new content)
+    /// instead of registering a fresh provider each time.
     fn update_css_for_colors(&self) {
         let src = self.source_color.borrow();
         let dst = self.dest_color.borrow();
@@ -551,12 +577,6 @@ impl Ui {
             ".stat-source {{ background-color: {}; }} .stat-dest {{ background-color: {}; }}",
             src, dst
         );
-        let css_provider = gtk::CssProvider::new();
-        css_provider.load_from_data(&css_data);
-        gtk::style_context_add_provider_for_display(
-            &gdk::Display::default().unwrap(),
-            &css_provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        self.css_provider.load_from_data(&css_data);
     }
 }

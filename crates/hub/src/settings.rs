@@ -20,7 +20,14 @@ impl Default for Settings {
 }
 
 fn config_path() -> PathBuf {
-    let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config"));
+    // dirs::config_dir() fails only when neither XDG_CONFIG_HOME nor HOME is
+    // set; fall back to $HOME/.config built by hand rather than a literal
+    // "~" path, which fs calls never expand.
+    let mut path = dirs::config_dir().unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".config"))
+            .unwrap_or_else(std::env::temp_dir)
+    });
     path.push("opusdm");
     path.push("settings.json");
     path
