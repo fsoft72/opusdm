@@ -245,7 +245,10 @@ fn build_window(
     });
     ui.update_css_for_colors();
 
-    // Click the role badge to cycle SOURCE -> DEST -> NONE.
+    // Click the role badge to cycle SOURCE -> DEST -> NONE. If SOURCE is
+    // pinned by another Lister, a SetRole(Source) from here would just be
+    // rejected every time (see roles.rs) - skip straight to DEST instead of
+    // retrying a doomed request and looking stuck.
     {
         let ui_for_click = ui.clone();
         let gesture = gtk::GestureClick::new();
@@ -253,11 +256,15 @@ fn build_window(
             let roles = ui_for_click.roles.borrow();
             let is_source = roles.source == Some(ui_for_click.id);
             let is_dest = roles.is_dest(ui_for_click.id);
+            let source_unreachable =
+                roles.source_locked && roles.source != Some(ui_for_click.id);
             drop(roles);
             let next = if is_source {
                 Role::Dest
             } else if is_dest {
                 Role::None
+            } else if source_unreachable {
+                Role::Dest
             } else {
                 Role::Source
             };
@@ -589,8 +596,8 @@ impl Ui {
     /// Handle a message from the hub.
     pub fn apply_inbound(self: &Rc<Self>, msg: ToLister) {
         match msg {
-            ToLister::RoleChanged { source, dests } => {
-                *self.roles.borrow_mut() = Roles { source, dests };
+            ToLister::RoleChanged { source, dests, source_locked } => {
+                *self.roles.borrow_mut() = Roles { source, dests, source_locked };
                 self.update_status();
                 crate::actions::sync_role_buttons(self);
             }

@@ -202,6 +202,7 @@ fn owner_loop(
                             lister_id: ListerId(cid),
                             source: roles.source(),
                             dests: roles.dests(),
+                            source_locked: roles.source_locked(),
                             settings: current_settings.clone(),
                         },
                     );
@@ -413,7 +414,11 @@ fn apply_role(
                 for c in conns.values_mut().filter(|c| c.registered) {
                     let _ = send(
                         &mut c.write,
-                        &ToLister::RoleChanged { source: roles.source(), dests: roles.dests() },
+                        &ToLister::RoleChanged {
+                            source: roles.source(),
+                            dests: roles.dests(),
+                            source_locked: roles.source_locked(),
+                        },
                     );
                 }
                 emit_roles(roles, conns, evt_tx);
@@ -422,7 +427,11 @@ fn apply_role(
                 if let Some(c) = conns.get_mut(&id.0) {
                     let _ = send(
                         &mut c.write,
-                        &ToLister::RoleChanged { source: roles.source(), dests: roles.dests() },
+                        &ToLister::RoleChanged {
+                            source: roles.source(),
+                            dests: roles.dests(),
+                            source_locked: roles.source_locked(),
+                        },
                     );
                 }
             }
@@ -591,7 +600,7 @@ mod tests {
         send(&mut b, &ToHub::FocusGained).unwrap();
         let rb2: ToLister = recv(&mut b).unwrap().unwrap();
         match rb2 {
-            ToLister::RoleChanged { source, dests } => {
+            ToLister::RoleChanged { source, dests, .. } => {
                 assert!(source.is_some());
                 assert_eq!(dests.len(), 1);
                 assert_ne!(Some(dests[0]), source);

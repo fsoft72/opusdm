@@ -15,6 +15,10 @@ pub struct Roles {
     pub source: Option<ListerId>,
     /// Current DEST Listers (a locked DEST persists; one may be transient).
     pub dests: Vec<ListerId>,
+    /// Whether SOURCE is pinned. While true, `SetRole(_, Source)` from any
+    /// other Lister is rejected by the hub - the badge cycle uses this to
+    /// skip straight to DEST instead of retrying a doomed request.
+    pub source_locked: bool,
 }
 
 impl Roles {
@@ -51,8 +55,8 @@ impl Client {
         let welcome: ToLister = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
         let (id, roles, settings) = match welcome {
-            ToLister::Welcome { lister_id, source, dests, settings } => {
-                (lister_id, Roles { source, dests }, settings)
+            ToLister::Welcome { lister_id, source, dests, source_locked, settings } => {
+                (lister_id, Roles { source, dests, source_locked }, settings)
             }
             other => {
                 return Err(io::Error::other(format!("expected Welcome, got {other:?}")));
@@ -123,6 +127,7 @@ mod tests {
                 lister_id: ListerId(5),
                 source: Some(ListerId(5)),
                 dests: vec![],
+                source_locked: false,
                 settings: opusdm_ipc::Settings::default(),
             }).unwrap();
             send(&mut s, &ToLister::InvalidatePath("/tmp".into())).unwrap();
@@ -153,6 +158,7 @@ mod tests {
             let _got: ToHub = recv(&mut s).unwrap().unwrap();
             send(&mut s, &ToLister::Welcome {
                 lister_id: ListerId(1), source: None, dests: vec![],
+                source_locked: false,
                 settings: opusdm_ipc::Settings::default(),
             }).unwrap();
         });

@@ -66,6 +66,14 @@ impl RoleState {
             .map(|(id, _)| *id)
     }
 
+    /// Whether SOURCE is currently pinned - a `SetRole(_, Source)` from any
+    /// other Lister will be rejected while this holds. Sent to Listers so
+    /// they don't keep retrying a doomed request (see badge cycle in the
+    /// Lister UI).
+    pub fn source_locked(&self) -> bool {
+        self.locked_source().is_some()
+    }
+
     /// Clear every unlocked DEST (the transient slot).
     fn clear_transient_dests(&mut self, except: Option<ListerId>) {
         let victims: Vec<ListerId> = self
@@ -289,6 +297,17 @@ mod tests {
         let (s2, fx) = ev(s.clone(), RoleEvent::SetRole(b, Role::Source));
         assert_eq!(s2, s);
         assert_eq!(fx, vec![RoleEffect::Reject(b)]);
+    }
+
+    #[test]
+    fn source_locked_reflects_pin_state() {
+        let (a, _, _) = ids();
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        assert!(!s.source_locked(), "source held but not pinned yet");
+        let (s, _) = ev(s, RoleEvent::Lock(a));
+        assert!(s.source_locked());
+        let (s, _) = ev(s, RoleEvent::Unlock(a));
+        assert!(!s.source_locked());
     }
 
     #[test]

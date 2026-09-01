@@ -329,10 +329,10 @@ mod tests {
     fn resolve_requires_me_source_and_a_dest() {
         let me = ListerId(1);
         let other = ListerId(2);
-        assert!(resolve_copy_target(&Roles { source: Some(other), dests: vec![me] }, me).is_err());
-        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![] }, me).is_err());
-        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![me] }, me).is_err());
-        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![other] }, me).is_ok());
-        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![other, ListerId(3)] }, me).is_ok());
+        assert!(resolve_copy_target(&Roles { source: Some(other), dests: vec![me], ..Default::default() }, me).is_err());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![], ..Default::default() }, me).is_err());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![me], ..Default::default() }, me).is_err());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![other], ..Default::default() }, me).is_ok());
+        assert!(resolve_copy_target(&Roles { source: Some(me), dests: vec![other, ListerId(3)], ..Default::default() }, me).is_ok());
     }
 }

@@ -150,6 +150,7 @@ pub enum ToLister {
         lister_id: ListerId,
         source: Option<ListerId>,
         dests: Vec<ListerId>,
+        source_locked: bool,
         settings: Settings,
     },
     /// Reply to `Ping`.
@@ -158,9 +159,13 @@ pub enum ToLister {
     Present,
     /// Global roles changed. There is at most one SOURCE and zero or more
     /// DEST Listers (a locked DEST persists; the unlocked one is transient).
+    /// `source_locked` tells a Lister that isn't SOURCE whether trying to
+    /// become SOURCE would be rejected, so it can skip that step in its
+    /// own role-cycling UI instead of retrying a doomed request forever.
     RoleChanged {
         source: Option<ListerId>,
         dests: Vec<ListerId>,
+        source_locked: bool,
     },
     /// Progress tick for a running job.
     JobProgress {
@@ -242,6 +247,7 @@ mod tests {
             lister_id: ListerId(1),
             source: Some(ListerId(1)),
             dests: vec![],
+            source_locked: false,
             settings: Settings::default(),
         });
         roundtrip_tolister(ToLister::Pong);
@@ -249,6 +255,7 @@ mod tests {
         roundtrip_tolister(ToLister::RoleChanged {
             source: None,
             dests: vec![ListerId(3), ListerId(4)],
+            source_locked: true,
         });
         roundtrip_tolister(ToLister::JobProgress {
             job_id: 1,
