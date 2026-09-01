@@ -6,6 +6,8 @@
 - model.rs: Row extended with uid, gid, mode fields; format_user/format_group/format_access functions added.
 - window.rs: rebuild_window refactored for new layout; add_column expanded for new column types (User, Group, Access with monospace font).
 - update_status() now computes directory/file/byte counts (D/F/B format).
+- Role-based stat bar coloring: SOURCE=green, DEST=light red; CSS classes toggle in update_status().
+- Hub settings: new settings.rs module (load/save ~/.config/opusdm/settings.json); Settings button opens dialog with SOURCE/DEST color picker (hex inputs).
 
 ## 2026-08-31
 

@@ -1,6 +1,7 @@
 //! The always-on toolbar: New Lister, SRC/DST indicators, job progress, Quit.
 
 use crate::server::{HubCmd, HubEvent, ServerHandle};
+use super::settings;
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
@@ -109,6 +110,9 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     spacer.set_hexpand(true);
     bar.append(&spacer);
 
+    let settings_btn = gtk::Button::with_label("Settings");
+    bar.append(&settings_btn);
+
     let quit_btn = gtk::Button::with_label("Quit");
     bar.append(&quit_btn);
 
@@ -133,6 +137,12 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     // Click an indicator to raise its Lister.
     attach_present_gesture(&src_label, &widgets, true);
     attach_present_gesture(&dst_label, &widgets, false);
+
+    // Settings button: open settings dialog.
+    {
+        let widgets = widgets.clone();
+        settings_btn.connect_clicked(move |_| show_settings_dialog(&widgets.window));
+    }
 
     // Quit button and window close: confirm if jobs are running.
     {
@@ -280,3 +290,73 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
         | HubEvent::AllListersGone => {}
     }
 }
+
+fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
+    let settings_data = settings::load_settings();
+
+    let window = gtk::Window::builder()
+        .title("OpusDM Settings")
+        .modal(true)
+        .transient_for(parent)
+        .default_width(400)
+        .default_height(250)
+        .build();
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    vbox.set_margin_top(12);
+    vbox.set_margin_bottom(12);
+    vbox.set_margin_start(12);
+    vbox.set_margin_end(12);
+
+    let src_label = gtk::Label::new(Some("SOURCE color (hex):"));
+    src_label.set_xalign(0.0);
+    let src_entry = gtk::Entry::new();
+    src_entry.set_text(&settings_data.source_color);
+    let src_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    src_box.append(&src_label);
+    src_box.append(&src_entry);
+    vbox.append(&src_box);
+
+    let dst_label = gtk::Label::new(Some("DEST color (hex):"));
+    dst_label.set_xalign(0.0);
+    let dst_entry = gtk::Entry::new();
+    dst_entry.set_text(&settings_data.dest_color);
+    let dst_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    dst_box.append(&dst_label);
+    dst_box.append(&dst_entry);
+    vbox.append(&dst_box);
+
+    let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    button_box.set_halign(gtk::Align::End);
+    let cancel_btn = gtk::Button::with_label("Cancel");
+    let save_btn = gtk::Button::with_label("Save");
+
+    {
+        let window = window.clone();
+        cancel_btn.connect_clicked(move |_| window.close());
+    }
+
+    {
+        let window = window.clone();
+        let src = src_entry.clone();
+        let dst = dst_entry.clone();
+        save_btn.connect_clicked(move |_| {
+            let src_hex = src.text().to_string();
+            let dst_hex = dst.text().to_string();
+            let new_settings = settings::Settings {
+                source_color: src_hex,
+                dest_color: dst_hex,
+            };
+            let _ = settings::save_settings(&new_settings);
+            window.close();
+        });
+    }
+
+    button_box.append(&cancel_btn);
+    button_box.append(&save_btn);
+    vbox.append(&button_box);
+
+    window.set_child(Some(&vbox));
+    window.present();
+}
+

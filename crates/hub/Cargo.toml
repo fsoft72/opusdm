@@ -21,6 +21,9 @@ libc.workspace = true
 gtk4.workspace = true
 gdk4-x11 = "0.10"
 x11rb = "0.13"
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

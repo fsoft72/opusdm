@@ -3,7 +3,7 @@
 mod dock;
 mod toolbar;
 
-use opusdm_hub::{children, server};
+use opusdm_hub::{children, server, settings};
 
 use children::AcquireOutcome;
 use opusdm_ipc::sockpath::hub_sock_path;

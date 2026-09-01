@@ -5,3 +5,4 @@ pub mod children;
 pub mod jobs;
 pub mod roles;
 pub mod server;
+pub mod settings;
