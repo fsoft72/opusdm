@@ -115,12 +115,9 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         .build();
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    for m in [root.clone()] {
-        m.set_margin_top(4);
-        m.set_margin_bottom(4);
-        m.set_margin_start(4);
-        m.set_margin_end(4);
-    }
+    root.set_margin_top(4);
+    root.set_margin_start(4);
+    root.set_margin_end(4);
 
     // Top stat bar: D/F/B counts (left) + SOURCE/DEST/lock (right).
     let stat_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -166,10 +163,13 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
     // Transient message line.
     let job_line = gtk::Label::new(None);
     job_line.set_xalign(0.0);
+    job_line.set_vexpand(false);
     root.append(&job_line);
 
     // Bottom navigation: home, parent, path.
     let nav_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    nav_bar.set_vexpand(false);
+    nav_bar.set_margin_bottom(4);
     let home_btn = gtk::Button::with_label("⌂");
     let parent_btn = gtk::Button::with_label("↑");
     let path_entry = gtk::Entry::new();
