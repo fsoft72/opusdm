@@ -144,6 +144,9 @@ fn owner_loop(
     let mut conns: HashMap<u64, Conn> = HashMap::new();
     let mut next_conn: u64 = 1;
     let mut roles = RoleState::default();
+    // Loaded once at startup; kept in memory and updated in place by
+    // HubCmd::UpdateColors. Never re-read from disk after this.
+    let mut current_settings = settings::load_settings();
 
     let (jp_tx, jp_rx) = channel::<(u64, Progress)>();
     {
@@ -193,15 +196,14 @@ fn owner_loop(
                     c.registered = true;
                     c.pid = pid;
                     c.path = initial_path.clone();
-                    let sett = settings::load_settings();
                     let _ = send(
                         &mut c.write,
                         &ToLister::Welcome {
                             lister_id: ListerId(cid),
                             source: roles.source(),
                             dests: roles.dests(),
-                            source_color: sett.source_color.clone(),
-                            dest_color: sett.dest_color.clone(),
+                            source_color: current_settings.source_color.clone(),
+                            dest_color: current_settings.dest_color.clone(),
                         },
                     );
                     let _ = evt_tx.send(HubEvent::ListerRegistered {
@@ -341,6 +343,9 @@ fn owner_loop(
             }
 
             OwnerMsg::FromGtk(HubCmd::UpdateColors { source_color, dest_color }) => {
+                current_settings.source_color = source_color.clone();
+                current_settings.dest_color = dest_color.clone();
+                let _ = settings::save_settings(&current_settings);
                 for c in conns.values_mut().filter(|c| c.registered) {
                     let _ = send(&mut c.write, &ToLister::ColorUpdate {
                         source_color: source_color.clone(),
@@ -543,7 +548,7 @@ mod tests {
         send(&mut a, &ToHub::Register { pid: 1000, initial_path: "/home/a".into() }).unwrap();
         let welcome: ToLister = recv(&mut a).unwrap().unwrap();
         let id_a = match welcome {
-            ToLister::Welcome { lister_id, source, dests } => {
+            ToLister::Welcome { lister_id, source, dests, .. } => {
                 assert_eq!(source, None);
                 assert!(dests.is_empty());
                 lister_id

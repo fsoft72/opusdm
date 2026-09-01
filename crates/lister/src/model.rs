@@ -242,6 +242,9 @@ mod tests {
             broken_link: false,
             size,
             modified_unix: mtime,
+            uid: 0,
+            gid: 0,
+            mode: 0,
         }
     }
 

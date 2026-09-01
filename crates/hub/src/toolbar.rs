@@ -459,11 +459,7 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
         save_btn.connect_clicked(move |_| {
             let src_hex = src.text().to_string();
             let dst_hex = dst.text().to_string();
-            let new_settings = settings::Settings {
-                source_color: src_hex.clone(),
-                dest_color: dst_hex.clone(),
-            };
-            let _ = settings::save_settings(&new_settings);
+            // Server owns the in-memory settings and persists to disk.
             let _ = cmd_tx.send(HubCmd::UpdateColors {
                 source_color: src_hex,
                 dest_color: dst_hex,

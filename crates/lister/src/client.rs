@@ -17,6 +17,15 @@ pub struct Roles {
     pub dests: Vec<ListerId>,
 }
 
+/// Settings the hub reported at connect time (from its in-memory settings).
+#[derive(Debug, Clone)]
+pub struct InitialSettings {
+    /// SOURCE role background color (hex).
+    pub source_color: String,
+    /// DEST role background color (hex).
+    pub dest_color: String,
+}
+
 impl Roles {
     /// Whether `id` holds a DEST role.
     pub fn is_dest(&self, id: ListerId) -> bool {
@@ -45,13 +54,17 @@ impl Client {
         sock_path: &Path,
         pid: u32,
         initial_path: &Path,
-    ) -> io::Result<(Client, ListerId, Roles)> {
+    ) -> io::Result<(Client, ListerId, Roles, InitialSettings)> {
         let mut stream = UnixStream::connect(sock_path)?;
         send(&mut stream, &ToHub::Register { pid, initial_path: initial_path.to_path_buf() })?;
         let welcome: ToLister = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
-        let (id, roles) = match welcome {
-            ToLister::Welcome { lister_id, source, dests, .. } => (lister_id, Roles { source, dests }),
+        let (id, roles, settings) = match welcome {
+            ToLister::Welcome { lister_id, source, dests, source_color, dest_color } => (
+                lister_id,
+                Roles { source, dests },
+                InitialSettings { source_color, dest_color },
+            ),
             other => {
                 return Err(io::Error::other(format!("expected Welcome, got {other:?}")));
             }
@@ -62,6 +75,7 @@ impl Client {
             Client { write: Mutex::new(stream), inbox: Some(inbox) },
             id,
             roles,
+            settings,
         ))
     }
 
@@ -120,11 +134,13 @@ mod tests {
                 lister_id: ListerId(5),
                 source: Some(ListerId(5)),
                 dests: vec![],
+                source_color: "#90EE90".to_string(),
+                dest_color: "#FFB6C1".to_string(),
             }).unwrap();
             send(&mut s, &ToLister::InvalidatePath("/tmp".into())).unwrap();
         });
 
-        let (mut client, id, roles) =
+        let (mut client, id, roles, _settings) =
             Client::connect(&path, 77, std::path::Path::new("/home/x")).unwrap();
         assert_eq!(id, ListerId(5));
         assert_eq!(roles.source, Some(ListerId(5)));
@@ -149,9 +165,11 @@ mod tests {
             let _got: ToHub = recv(&mut s).unwrap().unwrap();
             send(&mut s, &ToLister::Welcome {
                 lister_id: ListerId(1), source: None, dests: vec![],
+                source_color: "#90EE90".to_string(),
+                dest_color: "#FFB6C1".to_string(),
             }).unwrap();
         });
-        let (mut client, _id, _roles) =
+        let (mut client, _id, _roles, _settings) =
             Client::connect(&path, 1, std::path::Path::new("/")).unwrap();
         let inbox = client.take_inbox();
         loop {

@@ -1,6 +1,6 @@
 //! The Lister window: path bar, column view, status line, navigation.
 
-use crate::client::{Client, Inbound, Roles};
+use crate::client::{Client, Inbound, InitialSettings, Roles};
 use crate::model::{
     dir_first_cmp, format_mtime, format_size, local_tz_offset_secs, read_dir_rows, Row, SortCol,
 };
@@ -63,13 +63,20 @@ pub struct Ui {
 }
 
 /// Build and run the window application.
-pub fn run(mut client: Client, id: ListerId, roles: Roles, start: PathBuf) -> glib::ExitCode {
+pub fn run(
+    mut client: Client,
+    id: ListerId,
+    roles: Roles,
+    initial_settings: InitialSettings,
+    start: PathBuf,
+) -> glib::ExitCode {
     let inbox = client.take_inbox();
     let client = Rc::new(client);
     let shared: Rc<RefCell<Option<StartState>>> = Rc::new(RefCell::new(Some(StartState {
         client,
         id,
         roles,
+        initial_settings,
         start,
         inbox: Some(inbox),
     })));
@@ -83,7 +90,7 @@ pub fn run(mut client: Client, id: ListerId, roles: Roles, start: PathBuf) -> gl
         let mut guard = shared.borrow_mut();
         let Some(st) = guard.as_mut() else { return };
         let inbox = st.inbox.take().expect("activate once");
-        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone());
+        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.initial_settings.clone());
         ui.navigate_to(&st.start);
 
         let ui_for_pump = ui.clone();
@@ -99,8 +106,6 @@ pub fn run(mut client: Client, id: ListerId, roles: Roles, start: PathBuf) -> gl
             }
         });
 
-        // Apply default CSS and present window; Welcome will update colors if needed.
-        ui.update_css_for_colors();
         ui.window.present();
     });
 
@@ -111,11 +116,18 @@ struct StartState {
     client: Rc<Client>,
     id: ListerId,
     roles: Roles,
+    initial_settings: InitialSettings,
     start: PathBuf,
     inbox: Option<async_channel::Receiver<Inbound>>,
 }
 
-fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles: Roles) -> Rc<Ui> {
+fn build_window(
+    app: &gtk::Application,
+    client: Rc<Client>,
+    id: ListerId,
+    roles: Roles,
+    initial_settings: InitialSettings,
+) -> Rc<Ui> {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM Lister")
@@ -211,9 +223,10 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         role_guard: Cell::new(false),
         job_line,
         button_row: button_row.clone(),
-        source_color: RefCell::new("#90EE90".to_string()),
-        dest_color: RefCell::new("#FFB6C1".to_string()),
+        source_color: RefCell::new(initial_settings.source_color),
+        dest_color: RefCell::new(initial_settings.dest_color),
     });
+    ui.update_css_for_colors();
 
     // Navigation.
     {
@@ -519,10 +532,8 @@ impl Ui {
             ToLister::ConflictPrompt { req_id, path, src, dst, .. } => {
                 crate::actions::on_conflict(self, req_id, &path, src, dst);
             }
-            ToLister::Welcome { source_color, dest_color, .. } => {
-                *self.source_color.borrow_mut() = source_color;
-                *self.dest_color.borrow_mut() = dest_color;
-                self.update_css_for_colors();
+            ToLister::Welcome { .. } => {
+                // Consumed synchronously in Client::connect(); never reaches here.
             }
             ToLister::ColorUpdate { source_color, dest_color } => {
                 *self.source_color.borrow_mut() = source_color;

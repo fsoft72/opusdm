@@ -25,14 +25,15 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("/"));
 
     let pid = std::process::id();
-    let (client, lister_id, roles) = match client::Client::connect(&sock_path, pid, &start_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("opusdm-lister: cannot reach hub: {e}");
-            std::process::exit(1);
-        }
-    };
+    let (client, lister_id, roles, initial_settings) =
+        match client::Client::connect(&sock_path, pid, &start_path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("opusdm-lister: cannot reach hub: {e}");
+                std::process::exit(1);
+            }
+        };
 
-    let code = window::run(client, lister_id, roles, start_path);
+    let code = window::run(client, lister_id, roles, initial_settings, start_path);
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }
