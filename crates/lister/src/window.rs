@@ -358,6 +358,17 @@ enum ColKind {
     Access,
 }
 
+/// Toggle the CSS class that shows selection. Needed because row-dir/row-file
+/// paint an opaque background on every cell label, which otherwise sits on
+/// top of (and hides) GTK's normal selection highlight.
+fn apply_selected_class(label: &gtk::Label, selected: bool) {
+    if selected {
+        label.add_css_class("cell-selected");
+    } else {
+        label.remove_css_class("cell-selected");
+    }
+}
+
 fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(move |_, list_item| {
@@ -366,6 +377,12 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
         label.set_xalign(0.0);
         if matches!(kind, ColKind::Access) {
             label.add_css_class("monospace");
+        }
+        // Selection can change without a rebind (no row.item() change), so
+        // this has to be tracked on its own signal, not just in bind.
+        {
+            let label = label.clone();
+            item.connect_selected_notify(move |li| apply_selected_class(&label, li.is_selected()));
         }
         item.set_child(Some(&label));
     });
@@ -386,6 +403,9 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
         label.remove_css_class("row-dir");
         label.remove_css_class("row-file");
         label.add_css_class(if row.is_dir { "row-dir" } else { "row-file" });
+        // A rebind reuses this widget for a possibly different row; resync
+        // the selection highlight to the row now bound, not the old one.
+        apply_selected_class(&label, item.is_selected());
         match kind {
             ColKind::Name => {
                 let mark = if row.broken_link {
@@ -611,7 +631,9 @@ impl Ui {
              .stat-dest {{ background-color: {}; color: {}; }} \
              .row-dir {{ background-color: {}; color: {}; }} \
              .row-file {{ background-color: {}; color: {}; }} \
-             .pin-btn {{ min-height: 0; min-width: 0; padding: 0 6px; }}",
+             .pin-btn {{ min-height: 0; min-width: 0; padding: 0 6px; }} \
+             .cell-selected {{ background-color: @theme_selected_bg_color; \
+                                color: @theme_selected_fg_color; }}",
             c.source_bg, c.source_fg,
             c.dest_bg, c.dest_fg,
             c.dir_bg, c.dir_fg,
