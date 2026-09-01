@@ -48,6 +48,11 @@ struct Widgets {
     job_box: gtk::Box,
     jobs: RefCell<HashMap<u64, JobRow>>,
     cmd_tx: Sender<HubCmd>,
+    /// Panel width, kept for re-pinning the dock geometry on `RaiseToolbar` -
+    /// a stale hub instance handed a fresh `present()` (single-instance
+    /// handoff, e.g. after the WM/session restarted) needs its dock hints
+    /// re-asserted, not just a window.present().
+    panel_width: i32,
 }
 
 struct JobRow {
@@ -132,6 +137,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         job_box: job_box.clone(),
         jobs: RefCell::new(HashMap::new()),
         cmd_tx: cmd_tx.clone(),
+        panel_width,
     });
 
     // Click an indicator to raise its Lister.
@@ -284,7 +290,18 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 }
             }
         }
-        HubEvent::RaiseToolbar => widgets.window.present(),
+        HubEvent::RaiseToolbar => {
+            // Re-assert dock hints, not just present(): a redundant hub
+            // invocation hands this off to a possibly stale instance whose
+            // window may have lost its docked position (WM/session restart).
+            crate::dock::make_top_dock(&widgets.window, widgets.panel_width);
+            widgets.window.present();
+            let window = widgets.window.clone();
+            let panel_width = widgets.panel_width;
+            glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
+                crate::dock::pin_geometry(&window, panel_width);
+            });
+        }
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
         | HubEvent::AllListersGone => {}
