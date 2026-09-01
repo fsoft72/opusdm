@@ -149,9 +149,12 @@ fn build_window(
     stat_info.set_xalign(0.0);
     stat_info.set_hexpand(true);
     stat_bar.append(&stat_info);
-    let pin_btn = gtk::ToggleButton::with_label("📌");
+    let pin_btn = gtk::ToggleButton::with_label("\u{2713}"); // checkmark
+    pin_btn.add_css_class("pin-btn");
     stat_bar.append(&pin_btn);
-    let role_badge = gtk::Label::new(None);
+    let role_badge = gtk::Label::new(Some("NONE"));
+    role_badge.set_width_chars(6); // fits "SOURCE", the longest value
+    role_badge.set_justify(gtk::Justification::Center);
     stat_bar.append(&role_badge);
     root.append(&stat_bar);
 
@@ -541,7 +544,7 @@ impl Ui {
         } else if roles.is_dest(self.id) {
             ("DEST", "stat-dest")
         } else {
-            ("", "")
+            ("NONE", "")
         };
         self.role_badge.set_text(badge);
 
@@ -605,7 +608,8 @@ impl Ui {
             ".stat-source {{ background-color: {}; color: {}; }} \
              .stat-dest {{ background-color: {}; color: {}; }} \
              .row-dir {{ background-color: {}; color: {}; }} \
-             .row-file {{ background-color: {}; color: {}; }}",
+             .row-file {{ background-color: {}; color: {}; }} \
+             .pin-btn {{ min-height: 0; min-width: 0; padding: 0 6px; }}",
             c.source_bg, c.source_fg,
             c.dest_bg, c.dest_fg,
             c.dir_bg, c.dir_fg,
