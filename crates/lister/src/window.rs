@@ -6,6 +6,7 @@ use crate::model::{
 };
 use gtk4 as gtk;
 use gtk::gio;
+use gtk::gdk;
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
 use opusdm_ipc::{ListerId, ToHub, ToLister};
@@ -31,8 +32,10 @@ pub struct Ui {
     pub sort: Rc<Cell<(SortCol, bool)>>,
     /// The single sorter driven by the sort buttons.
     pub sorter: gtk::CustomSorter,
-    /// Status line.
+    /// Status line (top bar with D/F/B counts).
     pub status: gtk::Label,
+    /// Stat bar box (for background color based on role).
+    pub stat_bar: gtk::Box,
     /// SOURCE / DEST badge.
     pub role_badge: gtk::Label,
     /// Latest known global roles.
@@ -181,6 +184,17 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
 
     window.set_child(Some(&root));
 
+    // Add CSS for role colors.
+    let css_provider = gtk::CssProvider::new();
+    css_provider.load_from_data(
+        ".stat-source { background-color: #90EE90; } .stat-dest { background-color: #FFB6C1; }"
+    );
+    gtk::style_context_add_provider_for_display(
+        &gdk::Display::default().unwrap(),
+        &css_provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
     let ui = Rc::new(Ui {
         window: window.clone(),
         client,
@@ -191,6 +205,7 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         sort: sort_cell.clone(),
         sorter: sorter.clone(),
         status: stat_info,
+        stat_bar: stat_bar.clone(),
         role_badge,
         roles: RefCell::new(roles),
         path_entry: path_entry.clone(),
@@ -458,14 +473,21 @@ impl Ui {
         }
 
         let roles = self.roles.borrow();
-        let badge = if roles.source == Some(self.id) {
-            "SOURCE"
+        let (badge, stat_class) = if roles.source == Some(self.id) {
+            ("SOURCE", "stat-source")
         } else if roles.is_dest(self.id) {
-            "DEST"
+            ("DEST", "stat-dest")
         } else {
-            ""
+            ("", "")
         };
         self.role_badge.set_text(badge);
+
+        // Update stat bar background color based on role.
+        self.stat_bar.remove_css_class("stat-source");
+        self.stat_bar.remove_css_class("stat-dest");
+        if !stat_class.is_empty() {
+            self.stat_bar.add_css_class(stat_class);
+        }
         drop(roles);
 
         self.status.set_text(&format!(
