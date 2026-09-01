@@ -309,9 +309,10 @@ fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     format!("#{:02X}{:02X}{:02X}", r, g, b)
 }
 
-fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, initial_rgba: gtk::gdk::RGBA) {
+fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, preview: &gtk::DrawingArea, initial_rgba: gtk::gdk::RGBA) {
     let color_dialog = gtk::ColorDialog::new();
     let entry = entry.clone();
+    let preview = preview.clone();
     color_dialog.choose_rgba(
         Some(parent),
         Some(&initial_rgba),
@@ -319,6 +320,7 @@ fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, initial_rgba: gtk
         move |result| {
             if let Ok(color) = result {
                 entry.set_text(&rgba_to_hex(&color));
+                preview.queue_draw();
             }
         },
     );
@@ -350,17 +352,28 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
     let src_preview = gtk::DrawingArea::new();
     src_preview.set_content_width(50);
     src_preview.set_content_height(30);
-    let src_color_str = src_entry.text().to_string();
-    src_preview.set_draw_func(move |_da, cr, w, h| {
-        if let Ok(color) = parse_hex_color(&src_color_str) {
-            cr.set_source_rgb(color.0, color.1, color.2);
-            cr.rectangle(0.0, 0.0, w as f64, h as f64);
-            cr.fill().ok();
-        }
-    });
+    let src_color_ref = Rc::new(RefCell::new(src_entry.text().to_string()));
+    {
+        let src_color_ref = src_color_ref.clone();
+        src_preview.set_draw_func(move |_da, cr, w, h| {
+            if let Ok(color) = parse_hex_color(&src_color_ref.borrow()) {
+                cr.set_source_rgb(color.0, color.1, color.2);
+                cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                cr.fill().ok();
+            }
+        });
+    }
+    {
+        let src_entry = src_entry.clone();
+        let src_color_ref = src_color_ref.clone();
+        src_entry.connect_changed(move |entry| {
+            *src_color_ref.borrow_mut() = entry.text().to_string();
+        });
+    }
     {
         let src_entry = src_entry.clone();
         let window = window.clone();
+        let src_preview_clone = src_preview.clone();
         let gesture = gtk::GestureClick::new();
         gesture.connect_released(move |_, _, _, _| {
             let rgba = if let Ok(color) = parse_hex_color(src_entry.text().as_str()) {
@@ -368,7 +381,7 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
             } else {
                 gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)
             };
-            show_color_dialog(&window, &src_entry, rgba);
+            show_color_dialog(&window, &src_entry, &src_preview_clone, rgba);
         });
         src_preview.add_controller(gesture);
     }
@@ -388,17 +401,28 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
     let dst_preview = gtk::DrawingArea::new();
     dst_preview.set_content_width(50);
     dst_preview.set_content_height(30);
-    let dst_color_str = dst_entry.text().to_string();
-    dst_preview.set_draw_func(move |_da, cr, w, h| {
-        if let Ok(color) = parse_hex_color(&dst_color_str) {
-            cr.set_source_rgb(color.0, color.1, color.2);
-            cr.rectangle(0.0, 0.0, w as f64, h as f64);
-            cr.fill().ok();
-        }
-    });
+    let dst_color_ref = Rc::new(RefCell::new(dst_entry.text().to_string()));
+    {
+        let dst_color_ref = dst_color_ref.clone();
+        dst_preview.set_draw_func(move |_da, cr, w, h| {
+            if let Ok(color) = parse_hex_color(&dst_color_ref.borrow()) {
+                cr.set_source_rgb(color.0, color.1, color.2);
+                cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                cr.fill().ok();
+            }
+        });
+    }
+    {
+        let dst_entry = dst_entry.clone();
+        let dst_color_ref = dst_color_ref.clone();
+        dst_entry.connect_changed(move |entry| {
+            *dst_color_ref.borrow_mut() = entry.text().to_string();
+        });
+    }
     {
         let dst_entry = dst_entry.clone();
         let window = window.clone();
+        let dst_preview_clone = dst_preview.clone();
         let gesture = gtk::GestureClick::new();
         gesture.connect_released(move |_, _, _, _| {
             let rgba = if let Ok(color) = parse_hex_color(dst_entry.text().as_str()) {
@@ -406,7 +430,7 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
             } else {
                 gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)
             };
-            show_color_dialog(&window, &dst_entry, rgba);
+            show_color_dialog(&window, &dst_entry, &dst_preview_clone, rgba);
         });
         dst_preview.add_controller(gesture);
     }
