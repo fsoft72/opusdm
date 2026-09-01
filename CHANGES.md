@@ -1,5 +1,12 @@
 # Changes
 
+## 2026-09-01
+
+- Lister layout redesign: top stat bar (D/F/B counts + SOURCE/DEST/lock), button row, file list (Name/Size/Date/User/Group/Access), bottom navigation (home/parent/path).
+- model.rs: Row extended with uid, gid, mode fields; format_user/format_group/format_access functions added.
+- window.rs: rebuild_window refactored for new layout; add_column expanded for new column types (User, Group, Access with monospace font).
+- update_status() now computes directory/file/byte counts (D/F/B format).
+
 ## 2026-08-31
 
 - Task 1: workspace scaffold, opusdm-ipc frame module (length-prefixed JSON frames).

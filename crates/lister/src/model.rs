@@ -21,6 +21,12 @@ pub struct Row {
     pub size: u64,
     /// Modification time, whole seconds since the Unix epoch.
     pub modified_unix: i64,
+    /// User ID (owner).
+    pub uid: u32,
+    /// Group ID (owner group).
+    pub gid: u32,
+    /// File mode (permissions + type bits).
+    pub mode: u32,
 }
 
 /// Which column an ordering is keyed on.
@@ -58,9 +64,21 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        rows.push(Row { name, is_dir, is_symlink, broken_link, size, modified_unix });
+        let (uid, gid, mode) = metadata_perms(&link_meta);
+        rows.push(Row { name, is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode });
     }
     Ok(rows)
+}
+
+#[cfg(unix)]
+fn metadata_perms(m: &std::fs::Metadata) -> (u32, u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    (m.uid(), m.gid(), m.mode())
+}
+
+#[cfg(not(unix))]
+fn metadata_perms(_m: &std::fs::Metadata) -> (u32, u32, u32) {
+    (0, 0, 0)
 }
 
 /// Human-readable size. Empty string for directories.
@@ -121,6 +139,60 @@ pub fn dir_first_cmp(a: &Row, b: &Row, col: SortCol, desc: bool) -> Ordering {
     } else {
         base
     }
+}
+
+/// Human-readable user name or UID fallback.
+pub fn format_user(uid: u32) -> String {
+    #[cfg(unix)]
+    {
+        use std::ffi::CStr;
+        let mut passwd_buf = [0u8; 16384];
+        let mut passwd_ptr = std::ptr::null_mut();
+        let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let uid_ctype = uid as libc::uid_t;
+        // SAFETY: buffers are properly sized; function fills or returns error.
+        let ret = unsafe { libc::getpwuid_r(uid_ctype, &mut passwd, passwd_buf.as_mut_ptr() as *mut _, passwd_buf.len(), &mut passwd_ptr) };
+        if ret == 0 && !passwd_ptr.is_null() {
+            if let Ok(name) = unsafe { CStr::from_ptr((*passwd_ptr).pw_name) }.to_str() {
+                return name.to_string();
+            }
+        }
+    }
+    uid.to_string()
+}
+
+/// Human-readable group name or GID fallback.
+pub fn format_group(gid: u32) -> String {
+    #[cfg(unix)]
+    {
+        use std::ffi::CStr;
+        let mut group_buf = [0u8; 16384];
+        let mut group_ptr = std::ptr::null_mut();
+        let mut group: libc::group = unsafe { std::mem::zeroed() };
+        let gid_ctype = gid as libc::gid_t;
+        // SAFETY: buffers are properly sized; function fills or returns error.
+        let ret = unsafe { libc::getgrgid_r(gid_ctype, &mut group, group_buf.as_mut_ptr() as *mut _, group_buf.len(), &mut group_ptr) };
+        if ret == 0 && !group_ptr.is_null() {
+            if let Ok(name) = unsafe { CStr::from_ptr((*group_ptr).gr_name) }.to_str() {
+                return name.to_string();
+            }
+        }
+    }
+    gid.to_string()
+}
+
+/// Rwx permission string for access.
+pub fn format_access(mode: u32) -> String {
+    let u_r = if mode & 0o400 != 0 { 'r' } else { '-' };
+    let u_w = if mode & 0o200 != 0 { 'w' } else { '-' };
+    let u_x = if mode & 0o100 != 0 { 'x' } else { '-' };
+    let g_r = if mode & 0o040 != 0 { 'r' } else { '-' };
+    let g_w = if mode & 0o020 != 0 { 'w' } else { '-' };
+    let g_x = if mode & 0o010 != 0 { 'x' } else { '-' };
+    let o_r = if mode & 0o004 != 0 { 'r' } else { '-' };
+    let o_w = if mode & 0o002 != 0 { 'w' } else { '-' };
+    let o_x = if mode & 0o001 != 0 { 'x' } else { '-' };
+    format!("{}{}{}{}{}{}{}{}{}", u_r, u_w, u_x, g_r, g_w, g_x, o_r, o_w, o_x)
 }
 
 /// Best-effort local timezone offset in seconds east of UTC. Falls back to 0.

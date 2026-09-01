@@ -110,8 +110,8 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM Lister")
-        .default_width(640)
-        .default_height(480)
+        .default_width(800)
+        .default_height(600)
         .build();
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -122,25 +122,19 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         m.set_margin_end(4);
     }
 
-    // Path bar.
-    let path_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    let path_entry = gtk::Entry::new();
-    path_entry.set_hexpand(true);
-    let parent_btn = gtk::Button::with_label("Parent");
-    let root_btn = gtk::Button::with_label("Root");
-    let refresh_btn = gtk::Button::with_label("Refresh");
-    let sort_name_btn = gtk::Button::with_label("Name");
-    let sort_size_btn = gtk::Button::with_label("Size");
-    let sort_date_btn = gtk::Button::with_label("Date");
-    path_bar.append(&path_entry);
-    path_bar.append(&parent_btn);
-    path_bar.append(&root_btn);
-    path_bar.append(&refresh_btn);
-    path_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    path_bar.append(&sort_name_btn);
-    path_bar.append(&sort_size_btn);
-    path_bar.append(&sort_date_btn);
-    root.append(&path_bar);
+    // Top stat bar: D/F/B counts (left) + SOURCE/DEST/lock (right).
+    let stat_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let stat_info = gtk::Label::new(Some("D: [0/0] F: [0/0] B: [0/0]"));
+    stat_info.set_xalign(0.0);
+    stat_info.set_hexpand(true);
+    stat_bar.append(&stat_info);
+    let role_badge = gtk::Label::new(None);
+    stat_bar.append(&role_badge);
+    root.append(&stat_bar);
+
+    // Button row (filled by actions::attach).
+    let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    root.append(&button_row);
 
     // Model + sorter + selection + column view.
     let store = gio::ListStore::new::<BoxedAnyObject>();
@@ -161,27 +155,29 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
 
     add_column(&column_view, "Name", ColKind::Name);
     add_column(&column_view, "Size", ColKind::Size);
-    add_column(&column_view, "Modified", ColKind::Modified);
+    add_column(&column_view, "Date", ColKind::Modified);
+    add_column(&column_view, "User", ColKind::User);
+    add_column(&column_view, "Group", ColKind::Group);
+    add_column(&column_view, "Access", ColKind::Access);
 
     let scroller = gtk::ScrolledWindow::builder().child(&column_view).vexpand(true).build();
     root.append(&scroller);
 
-    // Button row (filled by actions::attach) + transient message line.
-    let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    root.append(&button_row);
+    // Transient message line.
     let job_line = gtk::Label::new(None);
     job_line.set_xalign(0.0);
     root.append(&job_line);
 
-    // Status line + role badge.
-    let status_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let status = gtk::Label::new(Some("0 items"));
-    status.set_xalign(0.0);
-    status.set_hexpand(true);
-    let role_badge = gtk::Label::new(None);
-    status_bar.append(&status);
-    status_bar.append(&role_badge);
-    root.append(&status_bar);
+    // Bottom navigation: home, parent, path.
+    let nav_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let home_btn = gtk::Button::with_label("⌂");
+    let parent_btn = gtk::Button::with_label("↑");
+    let path_entry = gtk::Entry::new();
+    path_entry.set_hexpand(true);
+    nav_bar.append(&home_btn);
+    nav_bar.append(&parent_btn);
+    nav_bar.append(&path_entry);
+    root.append(&nav_bar);
 
     window.set_child(Some(&root));
 
@@ -194,7 +190,7 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         selection: selection.clone(),
         sort: sort_cell.clone(),
         sorter: sorter.clone(),
-        status,
+        status: stat_info,
         role_badge,
         roles: RefCell::new(roles),
         path_entry: path_entry.clone(),
@@ -206,21 +202,6 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         job_line,
         button_row: button_row.clone(),
     });
-
-    // Sort buttons: cycle asc/desc on repeat, reset on switch.
-    for (btn, col) in [
-        (&sort_name_btn, SortCol::Name),
-        (&sort_size_btn, SortCol::Size),
-        (&sort_date_btn, SortCol::Modified),
-    ] {
-        let ui = ui.clone();
-        btn.connect_clicked(move |_| {
-            let (cur, desc) = ui.sort.get();
-            let next = if cur == col { (col, !desc) } else { (col, false) };
-            ui.sort.set(next);
-            ui.sorter.changed(gtk::SorterChange::Different);
-        });
-    }
 
     // Navigation.
     {
@@ -234,11 +215,11 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
     }
     {
         let ui = ui.clone();
-        root_btn.connect_clicked(move |_| ui.navigate_to(Path::new("/")));
-    }
-    {
-        let ui = ui.clone();
-        refresh_btn.connect_clicked(move |_| ui.reload());
+        home_btn.connect_clicked(move |_| {
+            if let Ok(home) = std::env::var("HOME") {
+                ui.navigate_to(Path::new(&home));
+            }
+        });
     }
     {
         let ui = ui.clone();
@@ -309,14 +290,20 @@ enum ColKind {
     Name,
     Size,
     Modified,
+    User,
+    Group,
+    Access,
 }
 
 fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, list_item| {
+    factory.connect_setup(move |_, list_item| {
         let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let label = gtk::Label::new(None);
         label.set_xalign(0.0);
+        if matches!(kind, ColKind::Access) {
+            label.add_css_class("monospace");
+        }
         item.set_child(Some(&label));
     });
     let tz = local_tz_offset_secs();
@@ -347,6 +334,18 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
             ColKind::Modified => {
                 label.set_xalign(0.0);
                 label.set_text(&format_mtime(row.modified_unix, tz));
+            }
+            ColKind::User => {
+                label.set_xalign(0.0);
+                label.set_text(&crate::model::format_user(row.uid));
+            }
+            ColKind::Group => {
+                label.set_xalign(0.0);
+                label.set_text(&crate::model::format_group(row.gid));
+            }
+            ColKind::Access => {
+                label.set_xalign(0.0);
+                label.set_text(&crate::model::format_access(row.mode));
             }
         }
     });
@@ -432,16 +431,32 @@ impl Ui {
     /// Recompute the status line and the role badge.
     pub fn update_status(&self) {
         let total = self.selection.n_items();
-        let mut sel = 0u32;
+        let mut total_dirs = 0u32;
+        let mut total_files = 0u32;
+        let mut total_bytes = 0u64;
+        let mut sel_dirs = 0u32;
+        let mut sel_files = 0u32;
         let mut sel_bytes = 0u64;
+
         for i in 0..total {
-            if self.selection.is_selected(i) {
-                sel += 1;
-                if let Some(row) = self.row_at(i) {
-                    sel_bytes += row.size;
+            if let Some(row) = self.row_at(i) {
+                if row.is_dir {
+                    total_dirs += 1;
+                } else {
+                    total_files += 1;
+                    total_bytes += row.size;
+                }
+                if self.selection.is_selected(i) {
+                    if row.is_dir {
+                        sel_dirs += 1;
+                    } else {
+                        sel_files += 1;
+                        sel_bytes += row.size;
+                    }
                 }
             }
         }
+
         let roles = self.roles.borrow();
         let badge = if roles.source == Some(self.id) {
             "SOURCE"
@@ -452,9 +467,12 @@ impl Ui {
         };
         self.role_badge.set_text(badge);
         drop(roles);
+
         self.status.set_text(&format!(
-            "{total} items, {sel} selected, {}",
-            format_size(false, sel_bytes)
+            "D: [{}/{}]  F: [{}/{}]  B: [{}/{}]",
+            sel_dirs, total_dirs,
+            sel_files, total_files,
+            sel_bytes, total_bytes
         ));
     }
 
