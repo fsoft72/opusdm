@@ -32,6 +32,8 @@ pub fn attach(ui: &Rc<Ui>) {
     let mkdir_btn = gtk::Button::with_label("MakeDir");
     let newfile_btn = gtk::Button::with_label("NewFile");
     let rename_btn = gtk::Button::with_label("Rename");
+    let hidden_btn = gtk::ToggleButton::with_label("Hidden");
+    hidden_btn.set_active(ui.show_hidden.get());
 
     row.append(&copy_btn);
     row.append(&move_btn);
@@ -40,12 +42,22 @@ pub fn attach(ui: &Rc<Ui>) {
     row.append(&newfile_btn);
     row.append(&rename_btn);
     row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    row.append(&hidden_btn);
+    row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     row.append(&ui.role_src_btn);
     row.append(&ui.role_dst_btn);
     row.append(&ui.role_lock_btn);
 
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);
+
+    {
+        let ui = ui.clone();
+        hidden_btn.connect_toggled(move |btn| {
+            ui.show_hidden.set(btn.is_active());
+            ui.reload();
+        });
+    }
 
     {
         let ui = ui.clone();

@@ -2,6 +2,7 @@
 
 ## 2026-09-01
 
+- Lister: "Hidden" toggle button in the button row, off by default; filters dotfile rows out of navigate_to(). Ui.show_hidden: Cell<bool>.
 - Lister layout redesign: top stat bar (D/F/B counts + SOURCE/DEST/lock), button row, file list (Name/Size/Date/User/Group/Access), bottom navigation (home/parent/path).
 - model.rs: Row extended with uid, gid, mode fields; format_user/format_group/format_access functions added.
 - window.rs: rebuild_window refactored for new layout; add_column expanded for new column types (User, Group, Access with monospace font).

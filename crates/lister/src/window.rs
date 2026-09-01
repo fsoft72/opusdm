@@ -60,6 +60,8 @@ pub struct Ui {
     /// Current settings (colors, and whatever else joins later). Updated
     /// wholesale from `Welcome` and `SettingsUpdate`.
     pub settings: RefCell<Settings>,
+    /// Whether dotfiles are shown in the file list. Off by default.
+    pub show_hidden: Cell<bool>,
     /// Single stylesheet for settings-driven colors; reloaded in place on
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
@@ -236,6 +238,7 @@ fn build_window(
         job_line,
         button_row: button_row.clone(),
         settings: RefCell::new(settings),
+        show_hidden: Cell::new(false),
         css_provider,
     });
     ui.update_css_for_colors();
@@ -420,7 +423,11 @@ impl Ui {
         };
         *self.cwd.borrow_mut() = dir.to_path_buf();
         self.store.remove_all();
+        let show_hidden = self.show_hidden.get();
         for row in rows {
+            if !show_hidden && row.name.starts_with('.') {
+                continue;
+            }
             self.store.append(&BoxedAnyObject::new(Rc::new(row)));
         }
         self.sorter.changed(gtk::SorterChange::Different);
