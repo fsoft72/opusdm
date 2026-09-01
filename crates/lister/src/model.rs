@@ -181,14 +181,24 @@ pub fn format_group(gid: u32) -> String {
     gid.to_string()
 }
 
-/// Rwx permission string for access, e.g. "rwxr-xr--".
-pub fn format_access(mode: u32) -> String {
+/// Rwx permission string for access, prefixed with the entry type ('d'
+/// directory, 'l' symlink, '-' regular file), e.g. "drwxr-xr--".
+pub fn format_access(mode: u32, is_dir: bool, is_symlink: bool) -> String {
     const BITS: [(u32, char); 9] = [
         (0o400, 'r'), (0o200, 'w'), (0o100, 'x'),
         (0o040, 'r'), (0o020, 'w'), (0o010, 'x'),
         (0o004, 'r'), (0o002, 'w'), (0o001, 'x'),
     ];
-    BITS.iter().map(|&(bit, c)| if mode & bit != 0 { c } else { '-' }).collect()
+    let kind = if is_symlink {
+        'l'
+    } else if is_dir {
+        'd'
+    } else {
+        '-'
+    };
+    std::iter::once(kind)
+        .chain(BITS.iter().map(|&(bit, c)| if mode & bit != 0 { c } else { '-' }))
+        .collect()
 }
 
 /// Best-effort local timezone offset in seconds east of UTC. Falls back to 0.

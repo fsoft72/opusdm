@@ -424,7 +424,7 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
             }
             ColKind::Access => {
                 label.set_xalign(0.0);
-                label.set_text(&crate::model::format_access(row.mode));
+                label.set_text(&crate::model::format_access(row.mode, row.is_dir, row.is_symlink));
             }
         }
     });
