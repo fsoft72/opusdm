@@ -188,17 +188,6 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
 
     window.set_child(Some(&root));
 
-    // Add CSS for role colors.
-    let css_provider = gtk::CssProvider::new();
-    css_provider.load_from_data(
-        ".stat-source { background-color: #90EE90; } .stat-dest { background-color: #FFB6C1; }"
-    );
-    gtk::style_context_add_provider_for_display(
-        &gdk::Display::default().unwrap(),
-        &css_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-
     let ui = Rc::new(Ui {
         window: window.clone(),
         client,
