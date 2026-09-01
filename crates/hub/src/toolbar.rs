@@ -302,6 +302,28 @@ fn parse_hex_color(hex: &str) -> Result<(f64, f64, f64), String> {
     Ok((r, g, b))
 }
 
+fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
+    let r = (rgba.red() * 255.0) as u8;
+    let g = (rgba.green() * 255.0) as u8;
+    let b = (rgba.blue() * 255.0) as u8;
+    format!("#{:02X}{:02X}{:02X}", r, g, b)
+}
+
+fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, initial_rgba: gtk::gdk::RGBA) {
+    let color_dialog = gtk::ColorDialog::new();
+    let entry = entry.clone();
+    color_dialog.choose_rgba(
+        Some(parent),
+        Some(&initial_rgba),
+        gio::Cancellable::NONE,
+        move |result| {
+            if let Ok(color) = result {
+                entry.set_text(&rgba_to_hex(&color));
+            }
+        },
+    );
+}
+
 fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
     let settings_data = settings::load_settings();
 
@@ -319,52 +341,54 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
     vbox.set_margin_start(12);
     vbox.set_margin_end(12);
 
-    let src_label = gtk::Label::new(Some("SOURCE color (hex):"));
+    let src_label = gtk::Label::new(Some("SOURCE color:"));
     src_label.set_xalign(0.0);
-    src_label.set_size_request(120, -1);
+    src_label.set_size_request(100, -1);
     let src_entry = gtk::Entry::new();
     src_entry.set_text(&settings_data.source_color);
-    src_entry.set_hexpand(true);
-    let src_preview = gtk::DrawingArea::new();
-    src_preview.set_content_width(40);
-    src_preview.set_content_height(40);
-    let src_color_str = settings_data.source_color.clone();
-    src_preview.set_draw_func(move |da, _cr, w, h| {
-        if let Ok(color) = parse_hex_color(&src_color_str) {
-            _cr.set_source_rgb(color.0, color.1, color.2);
-            _cr.rectangle(0.0, 0.0, w as f64, h as f64);
-            _cr.fill().ok();
-        }
-    });
+    let src_btn = gtk::Button::with_label("Pick...");
+    {
+        let src_entry = src_entry.clone();
+        let window = window.clone();
+        src_btn.connect_clicked(move |_| {
+            let rgba = if let Ok(color) = parse_hex_color(src_entry.text().as_str()) {
+                gtk::gdk::RGBA::new(color.0 as f32, color.1 as f32, color.2 as f32, 1.0)
+            } else {
+                gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)
+            };
+            show_color_dialog(&window, &src_entry, rgba);
+        });
+    }
 
     let src_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     src_box.append(&src_label);
     src_box.append(&src_entry);
-    src_box.append(&src_preview);
+    src_box.append(&src_btn);
     vbox.append(&src_box);
 
-    let dst_label = gtk::Label::new(Some("DEST color (hex):"));
+    let dst_label = gtk::Label::new(Some("DEST color:"));
     dst_label.set_xalign(0.0);
-    dst_label.set_size_request(120, -1);
+    dst_label.set_size_request(100, -1);
     let dst_entry = gtk::Entry::new();
     dst_entry.set_text(&settings_data.dest_color);
-    dst_entry.set_hexpand(true);
-    let dst_preview = gtk::DrawingArea::new();
-    dst_preview.set_content_width(40);
-    dst_preview.set_content_height(40);
-    let dst_color_str = settings_data.dest_color.clone();
-    dst_preview.set_draw_func(move |da, _cr, w, h| {
-        if let Ok(color) = parse_hex_color(&dst_color_str) {
-            _cr.set_source_rgb(color.0, color.1, color.2);
-            _cr.rectangle(0.0, 0.0, w as f64, h as f64);
-            _cr.fill().ok();
-        }
-    });
+    let dst_btn = gtk::Button::with_label("Pick...");
+    {
+        let dst_entry = dst_entry.clone();
+        let window = window.clone();
+        dst_btn.connect_clicked(move |_| {
+            let rgba = if let Ok(color) = parse_hex_color(dst_entry.text().as_str()) {
+                gtk::gdk::RGBA::new(color.0 as f32, color.1 as f32, color.2 as f32, 1.0)
+            } else {
+                gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)
+            };
+            show_color_dialog(&window, &dst_entry, rgba);
+        });
+    }
 
     let dst_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     dst_box.append(&dst_label);
     dst_box.append(&dst_entry);
-    dst_box.append(&dst_preview);
+    dst_box.append(&dst_btn);
     vbox.append(&dst_box);
 
     let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
