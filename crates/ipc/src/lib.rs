@@ -5,5 +5,5 @@ pub mod proto;
 pub mod sockpath;
 
 pub use proto::{
-    FileMeta, ListerId, Op, Outcome, Resolution, Role, ToHub, ToLister,
+    ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role, Settings, ToHub, ToLister,
 };

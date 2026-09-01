@@ -25,7 +25,7 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("/"));
 
     let pid = std::process::id();
-    let (client, lister_id, roles, initial_settings) =
+    let (client, lister_id, roles, settings) =
         match client::Client::connect(&sock_path, pid, &start_path) {
             Ok(t) => t,
             Err(e) => {
@@ -34,6 +34,6 @@ fn main() {
             }
         };
 
-    let code = window::run(client, lister_id, roles, initial_settings, start_path);
+    let code = window::run(client, lister_id, roles, settings, start_path);
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }

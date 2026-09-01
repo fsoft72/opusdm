@@ -48,8 +48,8 @@ pub enum HubCmd {
     CancelJob(u64),
     /// Ask a Lister to raise its window.
     PresentLister(ListerId),
-    /// Update colors on all connected Listers.
-    UpdateColors { source_color: String, dest_color: String },
+    /// Update settings on all connected Listers.
+    UpdateSettings(opusdm_ipc::Settings),
     /// Tear everything down.
     Shutdown,
     /// A child process exited (from the SIGCHLD reaper).
@@ -202,8 +202,7 @@ fn owner_loop(
                             lister_id: ListerId(cid),
                             source: roles.source(),
                             dests: roles.dests(),
-                            source_color: current_settings.source_color.clone(),
-                            dest_color: current_settings.dest_color.clone(),
+                            settings: current_settings.clone(),
                         },
                     );
                     let _ = evt_tx.send(HubEvent::ListerRegistered {
@@ -342,15 +341,11 @@ fn owner_loop(
                 }
             }
 
-            OwnerMsg::FromGtk(HubCmd::UpdateColors { source_color, dest_color }) => {
-                current_settings.source_color = source_color.clone();
-                current_settings.dest_color = dest_color.clone();
+            OwnerMsg::FromGtk(HubCmd::UpdateSettings(new_settings)) => {
+                current_settings = new_settings.clone();
                 let _ = settings::save_settings(&current_settings);
                 for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = send(&mut c.write, &ToLister::ColorUpdate {
-                        source_color: source_color.clone(),
-                        dest_color: dest_color.clone(),
-                    });
+                    let _ = send(&mut c.write, &ToLister::SettingsUpdate(new_settings.clone()));
                 }
             }
 

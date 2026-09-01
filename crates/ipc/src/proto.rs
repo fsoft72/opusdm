@@ -100,16 +100,57 @@ pub enum ToHub {
     ConflictReply { req_id: u64, resolution: Resolution },
 }
 
+/// Background/text colors for the four things a Lister paints: the SOURCE
+/// and DEST role stat bar, and directory/file rows in the file list. Hex
+/// strings (e.g. "#90EE90"), persisted in the hub's settings.json and
+/// distributed to every Lister on connect and on every settings change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColorSettings {
+    pub source_bg: String,
+    pub source_fg: String,
+    pub dest_bg: String,
+    pub dest_fg: String,
+    pub dir_bg: String,
+    pub dir_fg: String,
+    pub file_bg: String,
+    pub file_fg: String,
+}
+
+impl Default for ColorSettings {
+    fn default() -> Self {
+        Self {
+            source_bg: "#90EE90".to_string(),
+            source_fg: "#000000".to_string(),
+            dest_bg: "#FFB6C1".to_string(),
+            dest_fg: "#000000".to_string(),
+            dir_bg: "#FFFFFF".to_string(),
+            dir_fg: "#000000".to_string(),
+            file_bg: "#FFFFFF".to_string(),
+            file_fg: "#000000".to_string(),
+        }
+    }
+}
+
+/// Every user-configurable setting the hub owns, persists to
+/// settings.json, and distributes to every Lister. This one struct is the
+/// wire format (`Welcome`/`SettingsUpdate`), the on-disk JSON shape, and the
+/// hub's in-memory state - one place to extend when a new setting is added,
+/// instead of a new IPC field plus a new HubCmd variant each time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Settings {
+    pub colors: ColorSettings,
+}
+
 /// Messages the hub sends to a Lister.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToLister {
-    /// Reply to `Register`; carries the assigned id and current roles.
+    /// Reply to `Register`; carries the assigned id, current roles, and the
+    /// hub's current settings.
     Welcome {
         lister_id: ListerId,
         source: Option<ListerId>,
         dests: Vec<ListerId>,
-        source_color: String,
-        dest_color: String,
+        settings: Settings,
     },
     /// Reply to `Ping`.
     Pong,
@@ -147,11 +188,9 @@ pub enum ToLister {
     },
     /// A directory changed on disk; reload if showing it.
     InvalidatePath(PathBuf),
-    /// Settings changed: new role colors.
-    ColorUpdate {
-        source_color: String,
-        dest_color: String,
-    },
+    /// Settings changed: the full new `Settings`, replacing the ones from
+    /// `Welcome`.
+    SettingsUpdate(Settings),
     /// Graceful-exit request.
     Shutdown,
 }
@@ -203,8 +242,7 @@ mod tests {
             lister_id: ListerId(1),
             source: Some(ListerId(1)),
             dests: vec![],
-            source_color: "#90EE90".to_string(),
-            dest_color: "#FFB6C1".to_string(),
+            settings: Settings::default(),
         });
         roundtrip_tolister(ToLister::Pong);
         roundtrip_tolister(ToLister::Present);
@@ -234,10 +272,7 @@ mod tests {
             dst: FileMeta { size: 2, modified_unix: 20 },
         });
         roundtrip_tolister(ToLister::InvalidatePath("/dst".into()));
-        roundtrip_tolister(ToLister::ColorUpdate {
-            source_color: "#90EE90".to_string(),
-            dest_color: "#FFB6C1".to_string(),
-        });
+        roundtrip_tolister(ToLister::SettingsUpdate(Settings::default()));
         roundtrip_tolister(ToLister::Shutdown);
     }
 }

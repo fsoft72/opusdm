@@ -1,23 +1,14 @@
-//! Settings management: colors, preferences, stored in ~/.config/opusdm/settings.json.
+//! Settings persistence: stored in ~/.config/opusdm/settings.json.
+//!
+//! The on-disk shape is `opusdm_ipc::Settings` itself - the same struct the
+//! hub keeps in memory (`server::owner_loop`'s `current_settings`) and sends
+//! to Listers in `Welcome`/`SettingsUpdate`. One struct, three roles (file
+//! format, in-memory state, wire format), so a new setting is one field
+//! added in one place rather than three kept in sync by hand.
 
-use serde::{Deserialize, Serialize};
+use opusdm_ipc::Settings;
 use std::fs;
 use std::path::PathBuf;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Settings {
-    pub source_color: String,
-    pub dest_color: String,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            source_color: "#90EE90".to_string(),
-            dest_color: "#FFB6C1".to_string(),
-        }
-    }
-}
 
 fn config_path() -> PathBuf {
     // dirs::config_dir() fails only when neither XDG_CONFIG_HOME nor HOME is

@@ -1,6 +1,6 @@
 //! The Lister window: path bar, column view, status line, navigation.
 
-use crate::client::{Client, Inbound, InitialSettings, Roles};
+use crate::client::{Client, Inbound, Roles};
 use crate::model::{
     dir_first_cmp, format_mtime, format_size, local_tz_offset_secs, read_dir_rows, Row, SortCol,
 };
@@ -9,7 +9,7 @@ use gtk::gio;
 use gtk::gdk;
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
-use opusdm_ipc::{ListerId, ToHub, ToLister};
+use opusdm_ipc::{ListerId, Settings, ToHub, ToLister};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -57,12 +57,12 @@ pub struct Ui {
     pub job_line: gtk::Label,
     /// Empty box the button row is built into by `actions::attach`.
     pub button_row: gtk::Box,
-    /// SOURCE role background color (hex).
-    pub source_color: RefCell<String>,
-    /// DEST role background color (hex).
-    pub dest_color: RefCell<String>,
-    /// Single stylesheet for role colors; reloaded in place on change rather
-    /// than re-registered, so providers don't stack up on the display.
+    /// Current settings (colors, and whatever else joins later). Updated
+    /// wholesale from `Welcome` and `SettingsUpdate`.
+    pub settings: RefCell<Settings>,
+    /// Single stylesheet for settings-driven colors; reloaded in place on
+    /// change rather than re-registered, so providers don't stack up on the
+    /// display.
     pub css_provider: gtk::CssProvider,
 }
 
@@ -71,7 +71,7 @@ pub fn run(
     mut client: Client,
     id: ListerId,
     roles: Roles,
-    initial_settings: InitialSettings,
+    settings: Settings,
     start: PathBuf,
 ) -> glib::ExitCode {
     let inbox = client.take_inbox();
@@ -80,7 +80,7 @@ pub fn run(
         client,
         id,
         roles,
-        initial_settings,
+        settings,
         start,
         inbox: Some(inbox),
     })));
@@ -94,7 +94,7 @@ pub fn run(
         let mut guard = shared.borrow_mut();
         let Some(st) = guard.as_mut() else { return };
         let inbox = st.inbox.take().expect("activate once");
-        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.initial_settings.clone());
+        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone());
         ui.navigate_to(&st.start);
 
         let ui_for_pump = ui.clone();
@@ -120,7 +120,7 @@ struct StartState {
     client: Rc<Client>,
     id: ListerId,
     roles: Roles,
-    initial_settings: InitialSettings,
+    settings: Settings,
     start: PathBuf,
     inbox: Option<async_channel::Receiver<Inbound>>,
 }
@@ -130,7 +130,7 @@ fn build_window(
     client: Rc<Client>,
     id: ListerId,
     roles: Roles,
-    initial_settings: InitialSettings,
+    settings: Settings,
 ) -> Rc<Ui> {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -235,8 +235,7 @@ fn build_window(
         role_guard: Cell::new(false),
         job_line,
         button_row: button_row.clone(),
-        source_color: RefCell::new(initial_settings.source_color),
-        dest_color: RefCell::new(initial_settings.dest_color),
+        settings: RefCell::new(settings),
         css_provider,
     });
     ui.update_css_for_colors();
@@ -356,6 +355,11 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
             .map(|o| o.borrow::<Rc<Row>>().clone());
         let Some(row) = row else { return };
         let label = item.child().and_downcast::<gtk::Label>().unwrap();
+        // Every cell in the row gets the same dir/file background+text CSS
+        // class, so the whole row reads as one colored line.
+        label.remove_css_class("row-dir");
+        label.remove_css_class("row-file");
+        label.add_css_class(if row.is_dir { "row-dir" } else { "row-file" });
         match kind {
             ColKind::Name => {
                 let mark = if row.broken_link {
@@ -559,23 +563,28 @@ impl Ui {
             ToLister::Welcome { .. } => {
                 // Consumed synchronously in Client::connect(); never reaches here.
             }
-            ToLister::ColorUpdate { source_color, dest_color } => {
-                *self.source_color.borrow_mut() = source_color;
-                *self.dest_color.borrow_mut() = dest_color;
+            ToLister::SettingsUpdate(new_settings) => {
+                *self.settings.borrow_mut() = new_settings;
                 self.update_css_for_colors();
             }
             ToLister::Pong => {}
         }
     }
 
-    /// Reload the role-color stylesheet in place (same provider, new content)
-    /// instead of registering a fresh provider each time.
+    /// Reload the settings-driven stylesheet in place (same provider, new
+    /// content) instead of registering a fresh provider each time.
     fn update_css_for_colors(&self) {
-        let src = self.source_color.borrow();
-        let dst = self.dest_color.borrow();
+        let s = self.settings.borrow();
+        let c = &s.colors;
         let css_data = format!(
-            ".stat-source {{ background-color: {}; }} .stat-dest {{ background-color: {}; }}",
-            src, dst
+            ".stat-source {{ background-color: {}; color: {}; }} \
+             .stat-dest {{ background-color: {}; color: {}; }} \
+             .row-dir {{ background-color: {}; color: {}; }} \
+             .row-file {{ background-color: {}; color: {}; }}",
+            c.source_bg, c.source_fg,
+            c.dest_bg, c.dest_fg,
+            c.dir_bg, c.dir_fg,
+            c.file_bg, c.file_fg,
         );
         self.css_provider.load_from_data(&css_data);
     }

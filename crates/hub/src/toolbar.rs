@@ -362,31 +362,60 @@ fn build_color_row(window: &gtk::Window, label: &str, initial_hex: &str) -> (gtk
     (row, entry)
 }
 
+/// One settings section: a bold heading plus a Background and a Text color
+/// row. Returns the two entries so the caller can read the chosen hex on
+/// Save.
+fn add_color_section(
+    vbox: &gtk::Box,
+    window: &gtk::Window,
+    title: &str,
+    bg_hex: &str,
+    fg_hex: &str,
+) -> (gtk::Entry, gtk::Entry) {
+    let heading = gtk::Label::new(Some(title));
+    heading.set_xalign(0.0);
+    heading.add_css_class("heading");
+    vbox.append(&heading);
+
+    let (bg_row, bg_entry) = build_color_row(window, "Background:", bg_hex);
+    vbox.append(&bg_row);
+    let (fg_row, fg_entry) = build_color_row(window, "Text:", fg_hex);
+    vbox.append(&fg_row);
+
+    (bg_entry, fg_entry)
+}
+
 fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>) {
     let settings_data = settings::load_settings();
+    let c = &settings_data.colors;
 
     let window = gtk::Window::builder()
         .title("OpusDM Settings")
         .modal(true)
         .transient_for(parent)
-        .default_width(400)
-        .default_height(250)
+        .default_width(420)
+        .default_height(560)
         .build();
 
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
     vbox.set_margin_top(12);
     vbox.set_margin_bottom(12);
     vbox.set_margin_start(12);
     vbox.set_margin_end(12);
 
-    let (src_box, src_entry) = build_color_row(&window, "SOURCE color:", &settings_data.source_color);
-    vbox.append(&src_box);
+    let (src_bg, src_fg) = add_color_section(&vbox, &window, "SOURCE", &c.source_bg, &c.source_fg);
+    let (dst_bg, dst_fg) = add_color_section(&vbox, &window, "DEST", &c.dest_bg, &c.dest_fg);
+    let (dir_bg, dir_fg) = add_color_section(&vbox, &window, "DIRECTORY", &c.dir_bg, &c.dir_fg);
+    let (file_bg, file_fg) = add_color_section(&vbox, &window, "FILE", &c.file_bg, &c.file_fg);
 
-    let (dst_box, dst_entry) = build_color_row(&window, "DEST color:", &settings_data.dest_color);
-    vbox.append(&dst_box);
+    let scroller = gtk::ScrolledWindow::builder().child(&vbox).vexpand(true).build();
 
     let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     button_box.set_halign(gtk::Align::End);
+    button_box.set_margin_top(8);
+    button_box.set_margin_bottom(12);
+    button_box.set_margin_start(12);
+    button_box.set_margin_end(12);
     let cancel_btn = gtk::Button::with_label("Cancel");
     let save_btn = gtk::Button::with_label("Save");
 
@@ -397,26 +426,29 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
 
     {
         let window = window.clone();
-        let src = src_entry.clone();
-        let dst = dst_entry.clone();
         let cmd_tx = cmd_tx.clone();
         save_btn.connect_clicked(move |_| {
-            let src_hex = src.text().to_string();
-            let dst_hex = dst.text().to_string();
+            let colors = opusdm_ipc::ColorSettings {
+                source_bg: src_bg.text().to_string(),
+                source_fg: src_fg.text().to_string(),
+                dest_bg: dst_bg.text().to_string(),
+                dest_fg: dst_fg.text().to_string(),
+                dir_bg: dir_bg.text().to_string(),
+                dir_fg: dir_fg.text().to_string(),
+                file_bg: file_bg.text().to_string(),
+                file_fg: file_fg.text().to_string(),
+            };
             // Server owns the in-memory settings and persists to disk.
-            let _ = cmd_tx.send(HubCmd::UpdateColors {
-                source_color: src_hex,
-                dest_color: dst_hex,
-            });
+            let _ = cmd_tx.send(HubCmd::UpdateSettings(opusdm_ipc::Settings { colors }));
             window.close();
         });
     }
 
-    button_box.append(&cancel_btn);
-    button_box.append(&save_btn);
-    vbox.append(&button_box);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.append(&scroller);
+    root.append(&button_box);
 
-    window.set_child(Some(&vbox));
+    window.set_child(Some(&root));
     window.present();
 }
 

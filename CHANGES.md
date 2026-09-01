@@ -11,6 +11,9 @@
 - IPC: ToLister::Welcome extended with source_color/dest_color fields; new ColorUpdate message to push color changes to connected Listers.
 - Server: HubCmd::UpdateColors broadcasts ColorUpdate to all registered Listers when settings saved.
 - Lister: receives colors from Welcome + ColorUpdate; applies them dynamically via CSS; update_css_for_colors() generates role-based CSS at runtime.
+- Settings model restructured for growth: `opusdm_ipc::Settings { colors: ColorSettings }` is now the single struct used as the wire format (Welcome/SettingsUpdate), the on-disk JSON shape, and the hub's in-memory state - one place to extend when a new setting is added, no more per-field IPC messages. `ColorUpdate` renamed `SettingsUpdate`, carries the whole `Settings`. `HubCmd::UpdateColors` renamed `UpdateSettings`.
+- ColorSettings expanded to 4 categories x background+text: source_bg/fg, dest_bg/fg, dir_bg/fg, file_bg/fg. Directory/file rows in the Lister's file list now get their own CSS classes (row-dir/row-file) applied per cell in every column.
+- Hub settings dialog: 4 sections (SOURCE/DEST/DIRECTORY/FILE), each with Background + Text color rows; scrollable.
 
 ## 2026-08-31
 

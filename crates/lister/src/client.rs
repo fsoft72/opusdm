@@ -2,7 +2,7 @@
 //! forwards every `ToLister` onto an async channel the GTK loop drains.
 
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::{ListerId, ToHub, ToLister};
+use opusdm_ipc::{ListerId, Settings, ToHub, ToLister};
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -15,15 +15,6 @@ pub struct Roles {
     pub source: Option<ListerId>,
     /// Current DEST Listers (a locked DEST persists; one may be transient).
     pub dests: Vec<ListerId>,
-}
-
-/// Settings the hub reported at connect time (from its in-memory settings).
-#[derive(Debug, Clone)]
-pub struct InitialSettings {
-    /// SOURCE role background color (hex).
-    pub source_color: String,
-    /// DEST role background color (hex).
-    pub dest_color: String,
 }
 
 impl Roles {
@@ -54,17 +45,15 @@ impl Client {
         sock_path: &Path,
         pid: u32,
         initial_path: &Path,
-    ) -> io::Result<(Client, ListerId, Roles, InitialSettings)> {
+    ) -> io::Result<(Client, ListerId, Roles, Settings)> {
         let mut stream = UnixStream::connect(sock_path)?;
         send(&mut stream, &ToHub::Register { pid, initial_path: initial_path.to_path_buf() })?;
         let welcome: ToLister = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
         let (id, roles, settings) = match welcome {
-            ToLister::Welcome { lister_id, source, dests, source_color, dest_color } => (
-                lister_id,
-                Roles { source, dests },
-                InitialSettings { source_color, dest_color },
-            ),
+            ToLister::Welcome { lister_id, source, dests, settings } => {
+                (lister_id, Roles { source, dests }, settings)
+            }
             other => {
                 return Err(io::Error::other(format!("expected Welcome, got {other:?}")));
             }
@@ -134,8 +123,7 @@ mod tests {
                 lister_id: ListerId(5),
                 source: Some(ListerId(5)),
                 dests: vec![],
-                source_color: "#90EE90".to_string(),
-                dest_color: "#FFB6C1".to_string(),
+                settings: opusdm_ipc::Settings::default(),
             }).unwrap();
             send(&mut s, &ToLister::InvalidatePath("/tmp".into())).unwrap();
         });
@@ -165,8 +153,7 @@ mod tests {
             let _got: ToHub = recv(&mut s).unwrap().unwrap();
             send(&mut s, &ToLister::Welcome {
                 lister_id: ListerId(1), source: None, dests: vec![],
-                source_color: "#90EE90".to_string(),
-                dest_color: "#FFB6C1".to_string(),
+                settings: opusdm_ipc::Settings::default(),
             }).unwrap();
         });
         let (mut client, _id, _roles, _settings) =
