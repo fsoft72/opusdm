@@ -108,6 +108,8 @@ pub enum ToLister {
         lister_id: ListerId,
         source: Option<ListerId>,
         dests: Vec<ListerId>,
+        source_color: String,
+        dest_color: String,
     },
     /// Reply to `Ping`.
     Pong,
@@ -196,6 +198,8 @@ mod tests {
             lister_id: ListerId(1),
             source: Some(ListerId(1)),
             dests: vec![],
+            source_color: "#90EE90".to_string(),
+            dest_color: "#FFB6C1".to_string(),
         });
         roundtrip_tolister(ToLister::Pong);
         roundtrip_tolister(ToLister::Present);

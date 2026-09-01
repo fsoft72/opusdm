@@ -4,6 +4,7 @@
 
 use crate::jobs::{default_runner, map_progress, validate_job, JobEngine, ProgressTotals};
 use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
+use crate::settings;
 use opusdm_fsops::Progress;
 use opusdm_ipc::frame::{recv, send};
 use opusdm_ipc::{ListerId, Op, Outcome, Resolution, ToHub, ToLister};
@@ -190,12 +191,15 @@ fn owner_loop(
                     c.registered = true;
                     c.pid = pid;
                     c.path = initial_path.clone();
+                    let sett = settings::load_settings();
                     let _ = send(
                         &mut c.write,
                         &ToLister::Welcome {
                             lister_id: ListerId(cid),
                             source: roles.source(),
                             dests: roles.dests(),
+                            source_color: sett.source_color.clone(),
+                            dest_color: sett.dest_color.clone(),
                         },
                     );
                     let _ = evt_tx.send(HubEvent::ListerRegistered {

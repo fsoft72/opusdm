@@ -291,6 +291,17 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     }
 }
 
+fn parse_hex_color(hex: &str) -> Result<(f64, f64, f64), String> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return Err("Invalid hex color".to_string());
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).map_err(|_| "Invalid hex")? as f64 / 255.0;
+    let g = u8::from_str_radix(&hex[2..4], 16).map_err(|_| "Invalid hex")? as f64 / 255.0;
+    let b = u8::from_str_radix(&hex[4..6], 16).map_err(|_| "Invalid hex")? as f64 / 255.0;
+    Ok((r, g, b))
+}
+
 fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
     let settings_data = settings::load_settings();
 
@@ -310,20 +321,50 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow) {
 
     let src_label = gtk::Label::new(Some("SOURCE color (hex):"));
     src_label.set_xalign(0.0);
+    src_label.set_size_request(120, -1);
     let src_entry = gtk::Entry::new();
     src_entry.set_text(&settings_data.source_color);
+    src_entry.set_hexpand(true);
+    let src_preview = gtk::DrawingArea::new();
+    src_preview.set_content_width(40);
+    src_preview.set_content_height(40);
+    let src_color_str = settings_data.source_color.clone();
+    src_preview.set_draw_func(move |da, _cr, w, h| {
+        if let Ok(color) = parse_hex_color(&src_color_str) {
+            _cr.set_source_rgb(color.0, color.1, color.2);
+            _cr.rectangle(0.0, 0.0, w as f64, h as f64);
+            _cr.fill().ok();
+        }
+    });
+
     let src_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     src_box.append(&src_label);
     src_box.append(&src_entry);
+    src_box.append(&src_preview);
     vbox.append(&src_box);
 
     let dst_label = gtk::Label::new(Some("DEST color (hex):"));
     dst_label.set_xalign(0.0);
+    dst_label.set_size_request(120, -1);
     let dst_entry = gtk::Entry::new();
     dst_entry.set_text(&settings_data.dest_color);
+    dst_entry.set_hexpand(true);
+    let dst_preview = gtk::DrawingArea::new();
+    dst_preview.set_content_width(40);
+    dst_preview.set_content_height(40);
+    let dst_color_str = settings_data.dest_color.clone();
+    dst_preview.set_draw_func(move |da, _cr, w, h| {
+        if let Ok(color) = parse_hex_color(&dst_color_str) {
+            _cr.set_source_rgb(color.0, color.1, color.2);
+            _cr.rectangle(0.0, 0.0, w as f64, h as f64);
+            _cr.fill().ok();
+        }
+    });
+
     let dst_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     dst_box.append(&dst_label);
     dst_box.append(&dst_entry);
+    dst_box.append(&dst_preview);
     vbox.append(&dst_box);
 
     let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);

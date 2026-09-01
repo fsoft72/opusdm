@@ -56,6 +56,10 @@ pub struct Ui {
     pub job_line: gtk::Label,
     /// Empty box the button row is built into by `actions::attach`.
     pub button_row: gtk::Box,
+    /// SOURCE role background color (hex).
+    pub source_color: RefCell<String>,
+    /// DEST role background color (hex).
+    pub dest_color: RefCell<String>,
 }
 
 /// Build and run the window application.
@@ -216,6 +220,8 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         role_guard: Cell::new(false),
         job_line,
         button_row: button_row.clone(),
+        source_color: RefCell::new("#90EE90".to_string()),
+        dest_color: RefCell::new("#FFB6C1".to_string()),
     });
 
     // Navigation.
@@ -522,7 +528,28 @@ impl Ui {
             ToLister::ConflictPrompt { req_id, path, src, dst, .. } => {
                 crate::actions::on_conflict(self, req_id, &path, src, dst);
             }
-            ToLister::Welcome { .. } | ToLister::Pong => {}
+            ToLister::Welcome { source_color, dest_color, .. } => {
+                *self.source_color.borrow_mut() = source_color;
+                *self.dest_color.borrow_mut() = dest_color;
+                self.update_css_for_colors();
+            }
+            ToLister::Pong => {}
         }
+    }
+
+    fn update_css_for_colors(&self) {
+        let src = self.source_color.borrow();
+        let dst = self.dest_color.borrow();
+        let css_data = format!(
+            ".stat-source {{ background-color: {}; }} .stat-dest {{ background-color: {}; }}",
+            src, dst
+        );
+        let css_provider = gtk::CssProvider::new();
+        css_provider.load_from_data(&css_data);
+        gtk::style_context_add_provider_for_display(
+            &gdk::Display::default().unwrap(),
+            &css_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
     }
 }

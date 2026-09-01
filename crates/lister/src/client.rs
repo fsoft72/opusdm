@@ -51,7 +51,7 @@ impl Client {
         let welcome: ToLister = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
         let (id, roles) = match welcome {
-            ToLister::Welcome { lister_id, source, dests } => (lister_id, Roles { source, dests }),
+            ToLister::Welcome { lister_id, source, dests, .. } => (lister_id, Roles { source, dests }),
             other => {
                 return Err(io::Error::other(format!("expected Welcome, got {other:?}")));
             }
