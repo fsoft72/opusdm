@@ -60,6 +60,8 @@ pub struct Ui {
     pub source_color: RefCell<String>,
     /// DEST role background color (hex).
     pub dest_color: RefCell<String>,
+    /// Whether window has been presented yet.
+    pub window_presented: Cell<bool>,
 }
 
 /// Build and run the window application.
@@ -98,8 +100,6 @@ pub fn run(mut client: Client, id: ListerId, roles: Roles, start: PathBuf) -> gl
                 }
             }
         });
-
-        ui.window.present();
     });
 
     app.run_with_args::<&str>(&[])
@@ -211,6 +211,7 @@ fn build_window(app: &gtk::Application, client: Rc<Client>, id: ListerId, roles:
         button_row: button_row.clone(),
         source_color: RefCell::new("#90EE90".to_string()),
         dest_color: RefCell::new("#FFB6C1".to_string()),
+        window_presented: Cell::new(false),
     });
 
     // Navigation.
@@ -521,6 +522,10 @@ impl Ui {
                 *self.source_color.borrow_mut() = source_color;
                 *self.dest_color.borrow_mut() = dest_color;
                 self.update_css_for_colors();
+                if !self.window_presented.get() {
+                    self.window.present();
+                    self.window_presented.set(true);
+                }
             }
             ToLister::ColorUpdate { source_color, dest_color } => {
                 *self.source_color.borrow_mut() = source_color;
