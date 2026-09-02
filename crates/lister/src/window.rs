@@ -138,9 +138,6 @@ fn build_window(
         .build();
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    root.set_margin_top(4);
-    root.set_margin_start(4);
-    root.set_margin_end(4);
 
     // Top stat bar: D/F/B counts (left) + pin + SOURCE/DEST badge (right).
     // Click the badge to cycle SOURCE -> DEST -> NONE.
@@ -162,6 +159,8 @@ fn build_window(
 
     // Button row (filled by actions::attach).
     let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    button_row.set_margin_start(4);
+    button_row.set_margin_end(4);
     root.append(&button_row);
 
     // Model + sorter + selection + column view.
@@ -180,6 +179,8 @@ fn build_window(
     let selection = gtk::MultiSelection::new(Some(sort_model));
     let column_view = gtk::ColumnView::new(Some(selection.clone()));
     column_view.set_vexpand(true);
+    // Compact rows: default theme pads cells 8px 6px, data-table cuts it to 2px.
+    column_view.add_css_class("data-table");
 
     add_column(&column_view, "Name", ColKind::Name);
     add_column(&column_view, "Size", ColKind::Size);
@@ -189,6 +190,8 @@ fn build_window(
     add_column(&column_view, "Access", ColKind::Access);
 
     let scroller = gtk::ScrolledWindow::builder().child(&column_view).vexpand(true).build();
+    scroller.set_margin_start(4);
+    scroller.set_margin_end(4);
     root.append(&scroller);
 
     // Transient message line.
@@ -201,6 +204,8 @@ fn build_window(
     let nav_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     nav_bar.set_vexpand(false);
     nav_bar.set_margin_bottom(4);
+    nav_bar.set_margin_start(4);
+    nav_bar.set_margin_end(4);
     let home_btn = gtk::Button::with_label("⌂");
     let parent_btn = gtk::Button::with_label("↑");
     let path_entry = gtk::Entry::new();
@@ -382,6 +387,7 @@ fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
         let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let label = gtk::Label::new(None);
         label.set_xalign(0.0);
+        label.set_valign(gtk::Align::Fill);
         if matches!(kind, ColKind::Access) {
             label.add_css_class("monospace");
         }
@@ -636,9 +642,15 @@ impl Ui {
         let css_data = format!(
             ".stat-source {{ background-color: {}; color: {}; }} \
              .stat-dest {{ background-color: {}; color: {}; }} \
+             .stat-source, .stat-dest {{ padding: 0 4px; }} \
              .row-dir {{ background-color: {}; color: {}; }} \
              .row-file {{ background-color: {}; color: {}; }} \
              .pin-btn {{ min-height: 0; min-width: 0; padding: 0 6px; }} \
+             columnview > listview > row {{ padding: 0; margin: 0; border: none; min-height: 0; }} \
+             columnview > listview > row > cell {{ padding: 0; min-height: 0; }} \
+             /* Transparent border: without it the theme leaves a 1-2px dark gap
+                between rows; with it the labels stack flush. */
+             .row-dir, .row-file {{ padding: 0 4px; border: 1px solid transparent; }} \
              .cell-selected {{ background-color: @theme_selected_bg_color; \
                                 color: @theme_selected_fg_color; }}",
             c.source_bg, c.source_fg,
