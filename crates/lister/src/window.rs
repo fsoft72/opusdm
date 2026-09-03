@@ -38,6 +38,8 @@ pub struct Ui {
     pub roles: RefCell<Roles>,
     /// Editable path bar.
     pub path_entry: gtk::Entry,
+    /// Cached directory totals: (total_dirs, total_files, total_bytes)
+    pub totals: Cell<(u32, u32, u64)>,
     /// Pin: locks this Lister's current role against focus changes (stat bar).
     pub role_lock_btn: gtk::ToggleButton,
     /// Guards against feedback while syncing toggle state from the hub.
@@ -231,6 +233,7 @@ fn build_window(
         role_badge,
         roles: RefCell::new(roles),
         path_entry: path_entry.clone(),
+        totals: Cell::new((0, 0, 0)),
         role_lock_btn: pin_btn,
         role_guard: Cell::new(false),
         job_line,
@@ -362,14 +365,26 @@ impl Ui {
             }
         };
         *self.cwd.borrow_mut() = dir.to_path_buf();
-        self.store.remove_all();
         let show_hidden = self.show_hidden.get();
+        let mut total_dirs = 0u32;
+        let mut total_files = 0u32;
+        let mut total_bytes = 0u64;
+        let mut new_items = Vec::new();
         for row in rows {
             if !show_hidden && row.name.starts_with('.') {
                 continue;
             }
-            self.store.append(&BoxedAnyObject::new(Rc::new(row)));
+            if row.is_dir {
+                total_dirs += 1;
+            } else {
+                total_files += 1;
+                total_bytes += row.size;
+            }
+            new_items.push(BoxedAnyObject::new(Rc::new(row)));
         }
+        self.totals.set((total_dirs, total_files, total_bytes));
+        let old_len = self.store.n_items();
+        self.store.splice(0, old_len, &new_items);
         self.sorter.changed(gtk::SorterChange::Different);
         self.window.set_title(Some(&dir.to_string_lossy()));
         self.refresh_path_entry();
@@ -430,23 +445,14 @@ impl Ui {
 
     /// Recompute the status line and the role badge.
     pub fn update_status(&self) {
-        let total = self.selection.n_items();
-        let mut total_dirs = 0u32;
-        let mut total_files = 0u32;
-        let mut total_bytes = 0u64;
+        let (total_dirs, total_files, total_bytes) = self.totals.get();
         let mut sel_dirs = 0u32;
         let mut sel_files = 0u32;
         let mut sel_bytes = 0u64;
 
-        for i in 0..total {
-            if let Some(row) = self.row_at(i) {
-                if row.is_dir {
-                    total_dirs += 1;
-                } else {
-                    total_files += 1;
-                    total_bytes += row.size;
-                }
-                if self.selection.is_selected(i) {
+        for i in 0..self.selection.n_items() {
+            if self.selection.is_selected(i) {
+                if let Some(row) = self.row_at(i) {
                     if row.is_dir {
                         sel_dirs += 1;
                     } else {
