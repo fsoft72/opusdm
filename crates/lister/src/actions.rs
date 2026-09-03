@@ -25,15 +25,22 @@ pub fn resolve_copy_target(roles: &Roles, me: ListerId) -> Result<(), String> {
 /// Build the button row and wire every control. Call once during window build.
 pub fn attach(ui: &Rc<Ui>) {
     let row = &ui.button_row;
+    let icon_size = 18;
 
-    let copy_btn = gtk::Button::with_label("Copy");
-    let move_btn = gtk::Button::with_label("Move");
-    let delete_btn = gtk::Button::with_label("Delete");
-    let mkdir_btn = gtk::Button::with_label("MakeDir");
-    let newfile_btn = gtk::Button::with_label("NewFile");
-    let rename_btn = gtk::Button::with_label("Rename");
-    let hidden_btn = gtk::ToggleButton::with_label("Hidden");
-    hidden_btn.set_active(ui.show_hidden.get());
+    let copy_btn = crate::icons::icon_button(crate::icons::SVG_COPY, "Copy (Source -> Dest)", icon_size);
+    let move_btn = crate::icons::icon_button(crate::icons::SVG_MOVE, "Move (Source -> Dest)", icon_size);
+    let delete_btn = crate::icons::icon_button(crate::icons::SVG_DELETE, "Delete", icon_size);
+    let mkdir_btn = crate::icons::icon_button(crate::icons::SVG_MKDIR, "Make Directory", icon_size);
+    let newfile_btn = crate::icons::icon_button(crate::icons::SVG_NEWFILE, "New File", icon_size);
+    let rename_btn = crate::icons::icon_button(crate::icons::SVG_RENAME, "Rename", icon_size);
+    
+    let is_hidden_active = ui.show_hidden.get();
+    let hidden_btn = crate::icons::icon_toggle_button(
+        if is_hidden_active { crate::icons::SVG_EYE } else { crate::icons::SVG_EYE_OFF },
+        "Toggle Hidden Files",
+        icon_size,
+    );
+    hidden_btn.set_active(is_hidden_active);
 
     row.append(&copy_btn);
     row.append(&move_btn);
@@ -50,7 +57,12 @@ pub fn attach(ui: &Rc<Ui>) {
     {
         let ui = ui.clone();
         hidden_btn.connect_toggled(move |btn| {
-            ui.show_hidden.set(btn.is_active());
+            let active = btn.is_active();
+            ui.show_hidden.set(active);
+            btn.set_child(Some(&crate::icons::svg_image(
+                if active { crate::icons::SVG_EYE } else { crate::icons::SVG_EYE_OFF },
+                icon_size,
+            )));
             ui.reload();
         });
     }

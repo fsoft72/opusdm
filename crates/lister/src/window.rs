@@ -146,7 +146,7 @@ fn build_window(
     stat_info.set_xalign(0.0);
     stat_info.set_hexpand(true);
     stat_bar.append(&stat_info);
-    let pin_btn = gtk::ToggleButton::with_label("\u{2713}"); // checkmark
+    let pin_btn = crate::icons::icon_toggle_button(crate::icons::SVG_PIN, "Pin / Lock Role", 14);
     pin_btn.add_css_class("pin-btn");
     stat_bar.append(&pin_btn);
     let role_badge = gtk::Label::new(Some("NONE"));
@@ -206,8 +206,8 @@ fn build_window(
     nav_bar.set_margin_bottom(4);
     nav_bar.set_margin_start(4);
     nav_bar.set_margin_end(4);
-    let home_btn = gtk::Button::with_label("⌂");
-    let parent_btn = gtk::Button::with_label("↑");
+    let home_btn = crate::icons::icon_button(crate::icons::SVG_HOME, "Home Directory", 16);
+    let parent_btn = crate::icons::icon_button(crate::icons::SVG_PARENT, "Parent Directory", 16);
     let path_entry = gtk::Entry::new();
     path_entry.set_hexpand(true);
     nav_bar.append(&home_btn);
@@ -645,7 +645,35 @@ impl Ui {
              .stat-source, .stat-dest {{ padding: 0 4px; }} \
              .row-dir {{ background-color: {}; color: {}; }} \
              .row-file {{ background-color: {}; color: {}; }} \
-             .pin-btn {{ min-height: 0; min-width: 0; padding: 0 6px; }} \
+             .pin-btn {{ min-height: 0; min-width: 0; padding: 2px 6px; }} \
+             button.opus-btn {{ \
+                 min-height: 30px; \
+                 min-width: 32px; \
+                 padding: 3px 6px; \
+                 margin: 1px 2px; \
+                 border-radius: 3px; \
+                 border-top: 1px solid rgba(255, 255, 255, 0.4); \
+                 border-left: 1px solid rgba(255, 255, 255, 0.4); \
+                 border-right: 1px solid rgba(0, 0, 0, 0.6); \
+                 border-bottom: 1px solid rgba(0, 0, 0, 0.6); \
+                 background: linear-gradient(to bottom, alpha(@theme_bg_color, 0.95), alpha(@theme_bg_color, 0.75)); \
+                 box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.2); \
+             }} \
+             button.opus-btn:hover {{ \
+                 border-top: 1px solid rgba(255, 255, 255, 0.7); \
+                 border-left: 1px solid rgba(255, 255, 255, 0.7); \
+                 border-right: 1px solid rgba(0, 0, 0, 0.7); \
+                 border-bottom: 1px solid rgba(0, 0, 0, 0.7); \
+                 background: linear-gradient(to bottom, alpha(@theme_bg_color, 1.0), alpha(@theme_bg_color, 0.85)); \
+             }} \
+             button.opus-btn:active, button.opus-btn:checked {{ \
+                 border-top: 1px solid rgba(0, 0, 0, 0.7); \
+                 border-left: 1px solid rgba(0, 0, 0, 0.7); \
+                 border-right: 1px solid rgba(255, 255, 255, 0.5); \
+                 border-bottom: 1px solid rgba(255, 255, 255, 0.5); \
+                 background: linear-gradient(to bottom, alpha(@theme_bg_color, 0.6), alpha(@theme_bg_color, 0.85)); \
+                 box-shadow: inset 1px 1px 2px rgba(0, 0, 0, 0.4); \
+             }} \
              columnview > listview > row {{ padding: 0; margin: 0; border: none; min-height: 0; }} \
              columnview > listview > row > cell {{ padding: 0; min-height: 0; }} \
              /* Transparent border: without it the theme leaves a 1-2px dark gap

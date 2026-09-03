@@ -20,3 +20,4 @@ opusdm-*.log
 # Local overrides
 /.env
 /*.local.toml
+.codegraph

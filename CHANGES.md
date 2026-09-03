@@ -1,5 +1,11 @@
 # Changes
 
+## 2026-09-03
+
+- SVG Icon Toolbar (Directory Opus 5 style): I pulsanti testuali della toolbar e i controlli di navigazione (Home, Parent, Pin) sono stati sostituiti con icone vettoriali SVG ad alta definizione tratte dal set Tabler Icons (salvate in `assets/icons/` ed incorporate a tempo di compilazione senza dipendenze a runtime). Zero emoji.
+- Nuovi bottoni icone con tooltip descrittivi: Copy (`copy.svg`), Move (`file-arrow-right.svg`), Delete (`trash.svg`), MakeDir (`folder-plus.svg`), NewFile (`file-plus.svg`), Rename (`edit.svg`), Hidden toggle (`eye.svg` / `eye-off.svg`), Home (`home.svg`), Parent (`arrow-up.svg`), Pin (`pin.svg`).
+- Modulo `crates/lister/src/icons.rs`: helper per istanziare `GtkImage` e bottoni GTK4 `flat` con icone SVG scalate nitidamente.
+
 ## 2026-09-01
 
 - Lister stat bar: SOURCE/DEST badge is now clickable, cycles SOURCE -> DEST -> NONE (ToHub::SetRole). Pin button (was "Lock" in the button row) moved to the stat bar, left of the badge; same LockRole/UnlockRole semantics. Removed the separate Source/Dest toggle buttons from the button row - role is set by clicking the badge now, not two extra buttons.

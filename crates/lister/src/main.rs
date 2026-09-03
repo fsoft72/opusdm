@@ -3,6 +3,7 @@
 mod actions;
 mod client;
 mod dnd;
+mod icons;
 mod model;
 mod window;
 
