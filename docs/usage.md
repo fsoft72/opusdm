@@ -170,6 +170,24 @@ their defaults.
 
 ## 4. Keyboard Shortcuts Reference
 
+Every binding below works whenever the file list has the focus. While you are typing in the filter
+bar, the path bar or the terminal drawer, single letters are just text - only `Esc`, `F1`-`F12` and
+the `Ctrl` chords stay active.
+
+### Modal navigation (vim mode)
+
+| Shortcut | Action |
+| :--- | :--- |
+| **`j`** / **`k`** | Move the cursor down / up one row (arrows work too) |
+| **`g`** / **`G`** | Jump to the first / last row |
+| **`l`** or **`Enter`** | Enter the directory, step into the archive, or open the file |
+| **`h`** or **`Backspace`** | Go to the parent directory |
+| **`~`** | Go to user home directory (`$HOME`) |
+| **`Ins`** | Toggle the selection of the cursor row, then step down |
+| **`Tab`** | Jump to the Lister holding the opposite role (SOURCE <-> DEST) |
+
+### Everything else
+
 | Shortcut | Action |
 | :--- | :--- |
 | **`/`** or **`Ctrl+F`** | Open inline Fuzzy File Filter |
@@ -180,7 +198,7 @@ their defaults.
 | **`F4`** or **`` ` ``** | Toggle Quake-style dropdown terminal drawer |
 | **`c`** | Copy selected items from SOURCE to DEST |
 | **`m`** | Move selected items from SOURCE to DEST |
-| **`Del`** | Delete selected items permanently |
+| **`d`** or **`Del`** | Delete selected items permanently |
 | **`F2`** | Rename single item / Open Batch Renamer on multiple items |
 | **`F7`** | Create new directory |
 | **`Shift+F7`** | Create new blank file |
@@ -190,9 +208,6 @@ their defaults.
 | **`-`** | Deselect files matching glob pattern |
 | **`Ctrl+H`** | Toggle hidden files (dotfiles) |
 | **`Ctrl+R`** | Reload current directory |
-| **`Backspace`** | Go to parent directory |
-| **`~`** | Go to user home directory (`$HOME`) |
-| **`Enter`** | Open folder, enter virtual archive, or execute first filter match |
 
 ---
 

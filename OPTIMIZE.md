@@ -199,6 +199,15 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
   * Accesso a tutte le funzioni: "Invert Selection", "Calculate Directory Sizes", "Select All by Pattern (*.rs)", "Open Terminal Here", "Git Diff", ecc.
 
 ### 3.5 Keybindings Modali / Vim-Mode
+> ✅ **FATTO** - `crates/lister/src/keys.rs`: tabella di binding pura (`resolve`) separata da GTK e
+> coperta da test, `window.rs` esegue solo l'azione risolta.
+> `j`/`k` su/giu, `g`/`G` prima/ultima riga, `l`/`Enter` entra, `h`/`Backspace` esce, `~` home,
+> `Ins` seleziona e avanza, `Tab` salta al Lister con il ruolo opposto (nuovo `ToHub::PresentLister`),
+> `c`/`m`/`d` copia/sposta/elimina.
+> Nota: `c`, `m`, `Del`, `Backspace` e `~` erano documentati ma **non** erano mai stati collegati;
+> ora lo sono. `` ` `` apre il terminale e `~` va alla home (prima entrambi aprivano il terminale).
+> Le lettere singole sono inattive mentre il focus e in un campo di testo.
+
 * **Controllo Totale da Tastiera (Zero Mouse Needed)**:
   * `j` / `k` (o frecce) per navigare.
   * `h` / `l` per uscire/entrare nelle directory (o freccia sinistra/destra).
@@ -267,7 +276,7 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
 | **Fighissimo** | Icone Nerd Font + indicatori tipo (`/ * @ = \|`) | ✨ Wow | Bassa | ✅ **FATTO** |
 | **Fighissimo** | Quick Look / Previewer Istantaneo (Spazio/F3) | 🚀 Produttività | Media | ✅ **FATTO** (`d5568dd`) |
 | **Fighissimo** | File Watcher `inotify` (auto-refresh reattivo) | 🚀 Produttività | Media | **Alta** |
-| **Fighissimo** | Navigazione Tastiera / Vim Mode (`j`,`k`,`h`,`l`, Tab) | ⌨️ UX | Media | **Media** |
+| **Fighissimo** | Navigazione Tastiera / Vim Mode (`j`,`k`,`h`,`l`, Tab) | ⌨️ UX | Media | ✅ **FATTO** |
 | **Fighissimo** | Terminale embedded a scomparsa | 🚀 Wow | Media | ✅ **FATTO** (`45d2588`) |
 | **Fighissimo** | Batch Rename avanzato con live preview | 🛠️ Funzionale | Media | ✅ **FATTO** (`c0b2e33`) |
 | **Fighissimo** | Dir Sync / Compare interattivo Source <-> Dest | 🛠️ Funzionale | Media | ✅ **FATTO** (`63f7f53`) |

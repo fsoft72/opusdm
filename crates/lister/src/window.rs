@@ -12,6 +12,14 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// Whether the keyboard focus currently sits in a text field, where a plain
+/// letter is a character rather than a shortcut.
+fn is_editing(window: &gtk::ApplicationWindow) -> bool {
+    gtk::prelude::RootExt::focus(window)
+        .map(|w| w.is::<gtk::Editable>() || w.is::<gtk::TextView>())
+        .unwrap_or(false)
+}
+
 /// Everything the window's callbacks need. Shared by `Rc` across Tasks 13-15.
 pub struct Ui {
     /// The top-level window.
@@ -26,6 +34,11 @@ pub struct Ui {
     pub store: gio::ListStore,
     /// Selection model feeding the column view.
     pub selection: gtk::MultiSelection,
+    /// The file list itself, kept for cursor movement and scrolling.
+    pub column_view: gtk::ColumnView,
+    /// Row the keyboard cursor sits on. Kept in step with the mouse by
+    /// `selection`'s changed signal.
+    pub cursor: Cell<u32>,
     /// The single sorter driven by the sort buttons.
     pub sorter: gtk::CustomSorter,
     /// Status line (top bar with D/F/B counts).
@@ -291,6 +304,8 @@ fn build_window(
         filter_bar: filter_bar.clone(),
         filter_model,
         selection: selection.clone(),
+        column_view: column_view.clone(),
+        cursor: Cell::new(0),
         sorter: sorter.clone(),
         status: stat_info,
         stat_bar: stat_bar.clone(),
@@ -396,40 +411,14 @@ fn build_window(
     // Row activation: enter directory, open archive, or open file.
     {
         let ui = ui.clone();
-        column_view.connect_activate(move |_, position| {
-            if let Some(row) = ui.row_at(position) {
-                let cwd = ui.cwd.borrow().clone();
-                if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
-                    let next_inner = if inner.is_empty() {
-                        row.name.clone()
-                    } else {
-                        format!("{}/{}", inner.trim_end_matches('/'), row.name)
-                    };
-                    if row.is_dir {
-                        ui.navigate_to(&crate::archive::make_archive_path(&arch, &next_inner));
-                    } else if let Ok(temp_path) = crate::archive::extract_single_file_temp(&arch, &next_inner) {
-                        let uri = format!("file://{}", temp_path.to_string_lossy());
-                        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
-                    }
-                } else {
-                    let target = cwd.join(&row.name);
-                    if row.is_dir {
-                        ui.navigate_to(&target);
-                    } else if crate::archive::is_archive_file(&target) {
-                        ui.navigate_to(&crate::archive::make_archive_path(&target, ""));
-                    } else {
-                        let uri = format!("file://{}", target.to_string_lossy());
-                        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
-                    }
-                }
-            }
-        });
+        column_view.connect_activate(move |_, position| ui.activate_row(position));
     }
 
     // Selection changes update the status line and active preview if open.
     {
         let ui = ui.clone();
         selection.connect_selection_changed(move |_, _, _| {
+            ui.sync_cursor_from_selection();
             ui.update_status();
             ui.update_preview_if_open();
         });
@@ -454,134 +443,26 @@ fn build_window(
         });
     }
 
-    // Keyboard shortcuts: /, Ctrl+P, Ctrl+F, Ctrl+A, Ctrl+R, Ctrl+H, Esc, etc.
+    // Keyboard shortcuts. The binding table itself lives in `keys.rs`; this
+    // only turns the resolved action into a call.
     {
         let ui_for_keys = ui.clone();
-        let column_view_for_keys = column_view.clone();
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
             let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
             let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
-
-            // Ctrl shortcuts (work everywhere)
-            if ctrl {
-                match keyval {
-                    gdk::Key::p | gdk::Key::P => {
-                        crate::palette::open_command_palette(&ui_for_keys);
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::f | gdk::Key::F => {
-                        ui_for_keys.reveal_filter();
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::a | gdk::Key::A => {
-                        ui_for_keys.selection.select_all();
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::r | gdk::Key::R => {
-                        ui_for_keys.reload();
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::h | gdk::Key::H => {
-                        let active = !ui_for_keys.show_hidden.get();
-                        ui_for_keys.show_hidden.set(active);
-                        ui_for_keys.reload();
-                        return glib::Propagation::Stop;
-                    }
-                    _ => {}
-                }
-            }
-
-            // Global F4 shortcut for terminal drawer
-            if keyval == gdk::Key::F4 {
-                ui_for_keys.toggle_terminal();
-                return glib::Propagation::Stop;
-            }
-
-            // Check if focus is inside an editable field
-            let is_editing = gtk::prelude::RootExt::focus(&ui_for_keys.window)
-                .map(|w| w.is::<gtk::Editable>() || w.is::<gtk::TextView>())
-                .unwrap_or(false);
-
-            if !is_editing {
-                match keyval {
-                    gdk::Key::grave | gdk::Key::asciitilde => {
-                        ui_for_keys.toggle_terminal();
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::F3 => {
-                        ui_for_keys.toggle_preview();
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::space => {
-                        let paths = ui_for_keys.selected_paths();
-                        let has_dir = paths.iter().any(|p| p.is_dir());
-                        if has_dir {
-                            crate::tools::calculate_dir_sizes_async(&ui_for_keys);
-                        } else {
-                            ui_for_keys.toggle_preview();
-                        }
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::slash => {
-                        ui_for_keys.reveal_filter();
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::asterisk => {
-                        crate::palette::execute_command(&ui_for_keys, "invert_selection");
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::plus => {
-                        crate::palette::execute_command(&ui_for_keys, "select_pattern");
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::minus => {
-                        crate::palette::execute_command(&ui_for_keys, "deselect_pattern");
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::F2 => {
-                        crate::palette::execute_command(&ui_for_keys, "rename");
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::F7 if !shift => {
-                        crate::palette::execute_command(&ui_for_keys, "mkdir");
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::F7 if shift => {
-                        crate::palette::execute_command(&ui_for_keys, "newfile");
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::Escape => {
-                        if ui_for_keys.filter_bar.container.is_visible() {
-                            ui_for_keys.dismiss_filter();
-                            column_view_for_keys.grab_focus();
-                            return glib::Propagation::Stop;
-                        } else if ui_for_keys.terminal.container.is_visible() {
-                            ui_for_keys.terminal.container.set_visible(false);
-                            column_view_for_keys.grab_focus();
-                            return glib::Propagation::Stop;
-                        } else {
-                            ui_for_keys.selection.unselect_all();
-                            return glib::Propagation::Stop;
-                        }
-                    }
-                    _ => {}
-                }
+            // Single-letter bindings must not steal characters from a text
+            // field, so where the focus sits decides how a key is read.
+            let focus = if is_editing(&ui_for_keys.window) {
+                crate::keys::Focus::Editing
             } else {
-                if keyval == gdk::Key::Escape {
-                    if ui_for_keys.filter_bar.container.is_visible() {
-                        ui_for_keys.dismiss_filter();
-                        column_view_for_keys.grab_focus();
-                        return glib::Propagation::Stop;
-                    } else if ui_for_keys.terminal.container.is_visible() {
-                        ui_for_keys.terminal.container.set_visible(false);
-                        column_view_for_keys.grab_focus();
-                        return glib::Propagation::Stop;
-                    }
-                }
-            }
-
-            glib::Propagation::Proceed
+                crate::keys::Focus::List
+            };
+            let Some(action) = crate::keys::resolve(keyval, ctrl, shift, focus) else {
+                return glib::Propagation::Proceed;
+            };
+            ui_for_keys.run_key_action(action);
+            glib::Propagation::Stop
         });
         window.add_controller(key_ctrl);
     }
@@ -693,6 +574,8 @@ impl Ui {
             new_items.push(BoxedAnyObject::new(Rc::new(row)));
         }
         self.totals.set((total_dirs, total_files, total_bytes));
+        // A new listing invalidates the old cursor row.
+        self.cursor.set(0);
         let old_len = self.store.n_items();
         self.store.splice(0, old_len, &new_items);
         self.sorter.changed(gtk::SorterChange::Different);
@@ -845,6 +728,168 @@ impl Ui {
             }
             ToLister::Pong => {}
         }
+    }
+
+    /// Carry out a binding resolved by [`crate::keys::resolve`].
+    pub fn run_key_action(self: &Rc<Self>, action: crate::keys::Action) {
+        use crate::keys::Action;
+        match action {
+            Action::Command(id) => crate::palette::execute_command(self, id),
+            Action::Move(motion) => self.move_cursor(motion),
+            Action::Enter => self.activate_row(self.cursor.get()),
+            Action::ToggleSelectAndAdvance => self.toggle_select_and_advance(),
+            Action::SwapRoleFocus => self.swap_role_focus(),
+            Action::OpenPalette => crate::palette::open_command_palette(self),
+            Action::RevealFilter => self.reveal_filter(),
+            Action::ToggleTerminal => self.toggle_terminal(),
+            Action::PreviewOrSize => {
+                // A directory selection means "how big is this?", anything else
+                // means "show me what is inside".
+                if self.selected_paths().iter().any(|p| p.is_dir()) {
+                    crate::tools::calculate_dir_sizes_async(self);
+                } else {
+                    self.toggle_preview();
+                }
+            }
+            Action::Escape => self.dismiss_topmost(),
+        }
+    }
+
+    /// Escape unwinds one layer at a time: filter bar, then terminal drawer,
+    /// then - only once the focus is already back on the list - the selection.
+    fn dismiss_topmost(self: &Rc<Self>) {
+        if self.filter_bar.container.is_visible() {
+            self.dismiss_filter();
+        } else if self.terminal.container.is_visible() {
+            self.terminal.container.set_visible(false);
+        } else if is_editing(&self.window) {
+            // Escape out of the path entry without touching the selection.
+        } else {
+            self.selection.unselect_all();
+            return;
+        }
+        self.column_view.grab_focus();
+    }
+
+    /// Open the row at `position`: descend into a directory, step into an
+    /// archive, or hand the file to its default application.
+    pub fn activate_row(self: &Rc<Self>, position: u32) {
+        let Some(row) = self.row_at(position) else { return };
+        let cwd = self.cwd.borrow().clone();
+        if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
+            let next_inner = if inner.is_empty() {
+                row.name.clone()
+            } else {
+                format!("{}/{}", inner.trim_end_matches('/'), row.name)
+            };
+            if row.is_dir {
+                self.navigate_to(&crate::archive::make_archive_path(&arch, &next_inner));
+            } else if let Ok(temp_path) =
+                crate::archive::extract_single_file_temp(&arch, &next_inner)
+            {
+                let uri = format!("file://{}", temp_path.to_string_lossy());
+                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+            }
+            return;
+        }
+        let target = cwd.join(&row.name);
+        if row.is_dir {
+            self.navigate_to(&target);
+        } else if crate::archive::is_archive_file(&target) {
+            self.navigate_to(&crate::archive::make_archive_path(&target, ""));
+        } else {
+            let uri = format!("file://{}", target.to_string_lossy());
+            let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+        }
+    }
+
+    /// Move the keyboard cursor and make the row it lands on the only
+    /// selection, the way arrow keys already behave.
+    pub fn move_cursor(&self, motion: crate::keys::Motion) {
+        use crate::keys::Motion;
+        let n = self.selection.n_items();
+        if n == 0 {
+            return;
+        }
+        let last = n - 1;
+        let here = self.cursor.get().min(last);
+        let pos = match motion {
+            Motion::Down => (here + 1).min(last),
+            Motion::Up => here.saturating_sub(1),
+            Motion::First => 0,
+            Motion::Last => last,
+        };
+        self.cursor.set(pos);
+        self.selection.select_item(pos, true);
+        self.scroll_to_cursor();
+    }
+
+    /// Toggle the row under the cursor and step down, so a run of `Insert`
+    /// marks consecutive files the way Directory Opus does.
+    pub fn toggle_select_and_advance(&self) {
+        let n = self.selection.n_items();
+        if n == 0 {
+            return;
+        }
+        let pos = self.cursor.get().min(n - 1);
+        if self.selection.is_selected(pos) {
+            self.selection.unselect_item(pos);
+        } else {
+            self.selection.select_item(pos, false);
+        }
+        // Set the cursor after toggling: the selection-changed handler would
+        // otherwise drag it back to whatever is selected.
+        self.cursor.set((pos + 1).min(n - 1));
+        self.scroll_to_cursor();
+    }
+
+    /// Bring the cursor row into view. `ColumnView::scroll_to` needs GTK 4.12,
+    /// so this goes through the `GtkListBase` action available at 4.10.
+    fn scroll_to_cursor(&self) {
+        let pos = self.cursor.get();
+        let _ = self
+            .column_view
+            .activate_action("list.scroll-to-item", Some(&pos.to_variant()));
+    }
+
+    /// Follow the mouse: a plain click leaves exactly one row selected, and the
+    /// cursor should continue from there.
+    fn sync_cursor_from_selection(&self) {
+        let n = self.selection.n_items();
+        let mut only = None;
+        for i in 0..n {
+            if !self.selection.is_selected(i) {
+                continue;
+            }
+            if only.is_some() {
+                return; // more than one selected: leave the cursor alone
+            }
+            only = Some(i);
+        }
+        if let Some(i) = only {
+            self.cursor.set(i);
+        }
+    }
+
+    /// Tab: raise the Lister holding the opposite role. A SOURCE jumps to the
+    /// first DEST and vice versa; a Lister with no role jumps to SOURCE.
+    fn swap_role_focus(self: &Rc<Self>) {
+        let target = {
+            let roles = self.roles.borrow();
+            let picked = if roles.source == Some(self.id) {
+                roles.dests.first().copied()
+            } else if roles.is_dest(self.id) {
+                roles.source
+            } else {
+                roles.source.or_else(|| roles.dests.first().copied())
+            };
+            picked.filter(|t| *t != self.id)
+        };
+        let Some(target) = target else {
+            crate::actions::flash(self, "no other SOURCE/DEST Lister to switch to");
+            return;
+        };
+        let _ = self.client.send(&ToHub::PresentLister(target));
     }
 
     /// Reload the settings-driven stylesheet in place (same provider, new

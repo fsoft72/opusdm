@@ -324,6 +324,13 @@ fn owner_loop(
                 }
             }
 
+            // Tab in a Lister: raise the pane holding the opposite role.
+            OwnerMsg::FromLister(_cid, ToHub::PresentLister(target)) => {
+                if let Some(c) = conns.get_mut(&target.0).filter(|c| c.registered) {
+                    let _ = send(&mut c.write, &ToLister::Present);
+                }
+            }
+
             OwnerMsg::FromLister(_cid, ToHub::ConflictReply { req_id, resolution }) => {
                 if let Some(tx) = replies.remove(&req_id) {
                     let _ = tx.send(resolution);

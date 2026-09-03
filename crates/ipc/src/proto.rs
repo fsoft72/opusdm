@@ -96,6 +96,9 @@ pub enum ToHub {
     RunJob { op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf> },
     /// Ask the hub to open another Lister.
     SpawnLister { start_path: Option<PathBuf> },
+    /// Ask the hub to raise another Lister's window. Used by the Tab binding to
+    /// jump between the SOURCE and DEST panes.
+    PresentLister(ListerId),
     /// Answer to a `ToLister::ConflictPrompt`.
     ConflictReply { req_id: u64, resolution: Resolution },
 }
@@ -285,6 +288,7 @@ mod tests {
         });
         roundtrip_tohub(ToHub::RunJob { op: Op::Move, srcs: vec![], dest_dir: None });
         roundtrip_tohub(ToHub::SpawnLister { start_path: Some("/etc".into()) });
+        roundtrip_tohub(ToHub::PresentLister(ListerId(5)));
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
     }
 

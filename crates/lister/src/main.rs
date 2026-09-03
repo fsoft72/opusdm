@@ -10,6 +10,7 @@ mod dnd;
 mod filter;
 mod glyphs;
 mod icons;
+mod keys;
 mod model;
 mod palette;
 mod preview;
