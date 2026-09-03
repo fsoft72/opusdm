@@ -175,6 +175,8 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
   * Se un terminale, un editor o un download scrive o crea un file, il Lister si aggiorna in millisecondi in tempo reale senza dover ricaricare a mano.
 
 ### 3.7 Visual Diff, Checksums & Calcolo Dimensioni Cartelle Istantaneo
+> ✅ **FATTO** - commit `63f7f53` (feat: visual dir compare, checksums, fast folder sizing)
+
 * **Calcolo Spazio Cartelle Rapido (`Space` su Directory)**:
   * Invece di mostrare stringa vuota nella colonna Size per le cartelle, un click o shortcut avvia un calcolo in background che mostra la dimensione totale (es. `4.2G`) con una mini barra di occupazione.
 * **Calcolo Checksum On-the-Fly**:
@@ -190,6 +192,8 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
 * Quando si naviga nel Lister, la shell sincronizza opzionalmente il suo percorso, o viceversa quando si esegue `cd` nel terminale, il Lister naviga in quella cartella.
 
 ### 3.9 Batch Rename Potente con Regex & Numerazione
+> ✅ **FATTO** - commit `c0b2e33` (feat: batch renamer con regex e live preview)
+
 * Uno dei punti di forza di Directory Opus originale è il rinominatore batch:
   * Interfaccia a due colonne (Nome Attuale -> Nuovo Nome con preview in tempo reale).
   * Supporto per:
@@ -199,6 +203,8 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
     * Inserimento tag EXIF (data scatto per foto) o tag ID3 per MP3.
 
 ### 3.10 Supporto Archivi Integrato (Virtual FS per Zip, Tar, 7z)
+> ✅ **FATTO** - commit `1ed0bea` (feat: virtual archive navigation e selective extraction)
+
 * Trattare archivi `.zip`, `.tar.gz`, `.tar.zst` come se fossero normali directory:
   * Doppio click per "entrarci" ed esplorarne il contenuto.
   * Drag & Drop o "Copy" da dentro l'archivio verso il Lister DEST per estrarre direttamente i singoli file selezionati.
@@ -221,5 +227,6 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
 | **Fighissimo** | File Watcher `inotify` (auto-refresh reattivo) | 🚀 Produttività | Media | **Alta** |
 | **Fighissimo** | Navigazione Tastiera / Vim Mode (`j`,`k`,`h`,`l`, Tab) | ⌨️ UX | Media | **Media** |
 | **Fighissimo** | Terminale embedded a scomparsa | 🚀 Wow | Media | **Media** |
-| **Fighissimo** | Batch Rename avanzato con live preview | 🛠️ Funzionale | Media | **Media** |
-| **Fighissimo** | Dir Sync / Compare interattivo Source <-> Dest | 🛠️ Funzionale | Media | **Media** |
+| **Fighissimo** | Batch Rename avanzato con live preview | 🛠️ Funzionale | Media | ✅ **FATTO** (`c0b2e33`) |
+| **Fighissimo** | Dir Sync / Compare interattivo Source <-> Dest | 🛠️ Funzionale | Media | ✅ **FATTO** (`63f7f53`) |
+| **Fighissimo** | Virtual FS archivi (zip, tar) + estrazione selettiva | 🛠️ Funzionale | Media | ✅ **FATTO** (`1ed0bea`) |
