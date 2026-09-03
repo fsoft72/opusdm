@@ -1,6 +1,7 @@
 //! Recursive pre-pass: enumerate every entry to copy/move and total up
 //! file count and bytes, so the work pass can report progress.
 
+use crate::errors::FsError;
 use std::io;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -36,7 +37,7 @@ pub fn scan(srcs: &[PathBuf]) -> io::Result<Plan> {
             let rel = entry
                 .path()
                 .strip_prefix(base)
-                .map_err(|_| io::Error::other("path outside its source base"))?
+                .map_err(|_| io::Error::other(FsError::PathOutsideBase(entry.path().to_path_buf())))?
                 .to_path_buf();
             let ft = entry.file_type();
             if ft.is_symlink() {

@@ -4,11 +4,13 @@
 pub mod cancel;
 pub mod copy;
 pub mod delete;
+pub mod errors;
 pub mod moveop;
 pub mod scan;
 pub mod types;
 
 pub use cancel::CancelToken;
+pub use errors::FsError;
 pub use types::{JobSpec, Progress};
 
 use opusdm_ipc::{FileMeta, Op};

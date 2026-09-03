@@ -213,22 +213,79 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
     match outcome {
         Outcome::Error { message } => flash(ui, &format!("job failed: {message}")),
         _ if !errors.is_empty() => {
-            let detail = errors
-                .iter()
-                .take(20)
-                .map(|(p, e)| format!("{}: {e}", p.display()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            gtk::AlertDialog::builder()
-                .message(format!("Completed with {} error(s)", errors.len()))
-                .detail(detail)
-                .build()
-                .show(Some(&ui.window));
+            show_error_dialog(ui, errors);
             ui.job_line.set_text("");
         }
         _ => ui.job_line.set_text(""),
     }
     ui.reload();
+}
+
+fn show_error_dialog(ui: &Rc<Ui>, errors: &[(PathBuf, String)]) {
+    let dialog = gtk::Window::builder()
+        .title(format!("Completed with {} error(s)", errors.len()))
+        .transient_for(&ui.window)
+        .modal(true)
+        .default_width(550)
+        .default_height(350)
+        .build();
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    vbox.set_margin_start(12);
+    vbox.set_margin_end(12);
+    vbox.set_margin_top(12);
+    vbox.set_margin_bottom(12);
+
+    let header = gtk::Label::new(Some(&format!(
+        "The operation completed with {} error(s):",
+        errors.len()
+    )));
+    header.set_xalign(0.0);
+    header.add_css_class("title-4");
+    vbox.append(&header);
+
+    let full_text = errors
+        .iter()
+        .map(|(p, e)| format!("{}: {e}", p.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let text_view = gtk::TextView::builder()
+        .editable(false)
+        .monospace(true)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .build();
+    text_view.buffer().set_text(&full_text);
+
+    let scroller = gtk::ScrolledWindow::builder()
+        .child(&text_view)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+    vbox.append(&scroller);
+
+    let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    btn_box.set_halign(gtk::Align::End);
+
+    let copy_btn = gtk::Button::with_label("Copy Errors");
+    let full_text_clone = full_text.clone();
+    copy_btn.connect_clicked(move |_| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&full_text_clone);
+        }
+    });
+    btn_box.append(&copy_btn);
+
+    let close_btn = gtk::Button::with_label("Close");
+    let dlg = dialog.clone();
+    close_btn.connect_clicked(move |_| {
+        dlg.close();
+    });
+    btn_box.append(&close_btn);
+
+    vbox.append(&btn_box);
+    dialog.set_child(Some(&vbox));
+    dialog.present();
 }
 
 /// Prompt for an overwrite conflict and reply to the hub.

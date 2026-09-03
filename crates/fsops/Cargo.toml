@@ -12,6 +12,7 @@ path = "src/lib.rs"
 opusdm-ipc = { path = "../ipc" }
 walkdir.workspace = true
 filetime.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
