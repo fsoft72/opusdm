@@ -54,6 +54,7 @@ echo "Starting Xephyr on $DISPLAY_NUM ($RESOLUTION)"
 Xephyr "$DISPLAY_NUM" \
     -ac \
     -screen "$RESOLUTION" \
+    -glamor \
     -resizeable \
     -title "Xephyr $DISPLAY_NUM" &
 XEPHYR_PID=$!

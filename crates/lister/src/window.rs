@@ -189,12 +189,18 @@ fn build_window(
     // Compact rows: default theme pads cells 8px 6px, data-table cuts it to 2px.
     column_view.add_css_class("data-table");
 
-    crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name);
-    crate::columns::add_column(&column_view, "Size", crate::columns::ColKind::Size);
-    crate::columns::add_column(&column_view, "Date", crate::columns::ColKind::Modified);
-    crate::columns::add_column(&column_view, "User", crate::columns::ColKind::User);
-    crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group);
-    crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access);
+    let ui_slot: Rc<RefCell<Option<Rc<Ui>>>> = Rc::new(RefCell::new(None));
+    let ui_getter = {
+        let slot = ui_slot.clone();
+        move || slot.borrow().clone()
+    };
+
+    crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name, ui_getter.clone());
+    crate::columns::add_column(&column_view, "Size", crate::columns::ColKind::Size, ui_getter.clone());
+    crate::columns::add_column(&column_view, "Date", crate::columns::ColKind::Modified, ui_getter.clone());
+    crate::columns::add_column(&column_view, "User", crate::columns::ColKind::User, ui_getter.clone());
+    crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group, ui_getter.clone());
+    crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access, ui_getter);
 
     root.append(&filter_bar.container);
 
@@ -302,6 +308,7 @@ fn build_window(
         show_hidden: Cell::new(false),
         css_provider,
     });
+    *ui_slot.borrow_mut() = Some(ui.clone());
     terminal.attach_events(&ui);
     ui.update_css_for_colors();
 

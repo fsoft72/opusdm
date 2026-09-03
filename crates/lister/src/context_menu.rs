@@ -1,0 +1,170 @@
+//! Context menu (right-click / secondary click) on Lister rows.
+
+use crate::model::Row;
+use crate::window::Ui;
+use gtk4 as gtk;
+use gtk::gdk;
+use gtk::prelude::*;
+use opusdm_ipc::{Op, ToHub};
+use std::path::PathBuf;
+use std::rc::Rc;
+
+/// Show the context menu for a row.
+pub fn show_context_menu(
+    ui: &Rc<Ui>,
+    anchor: &(impl IsA<gtk::Widget> + Clone),
+    row: &Row,
+    target_path: PathBuf,
+    x: f64,
+    y: f64,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_parent(anchor);
+    popover.set_has_arrow(true);
+    let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+    popover.set_pointing_to(Some(&rect));
+
+    let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    menu_box.set_margin_start(4);
+    menu_box.set_margin_end(4);
+    menu_box.set_margin_top(4);
+    menu_box.set_margin_bottom(4);
+    menu_box.add_css_class("context-menu");
+
+    // Helper to create flat menu action buttons
+    fn menu_button(title: &str) -> gtk::Button {
+        let btn = gtk::Button::with_label(title);
+        btn.add_css_class("flat");
+        btn.set_halign(gtk::Align::Fill);
+        if let Some(child) = btn.child().and_downcast::<gtk::Label>() {
+            child.set_xalign(0.0);
+        }
+        btn
+    }
+
+    // 1. Azioni rapide: Copy, Rename, Move, Delete
+    // Copy
+    {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let btn = menu_button("Copy (Source -> Dest)");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Err(msg) = crate::actions::resolve_copy_target(&ui.roles.borrow(), ui.id) {
+                crate::actions::flash(&ui, &msg);
+                return;
+            }
+            let _ = ui.client.send(&ToHub::RunJob {
+                op: Op::Copy,
+                srcs: vec![target_path.clone()],
+                dest_dir: None,
+            });
+        });
+        menu_box.append(&btn);
+    }
+
+    // Rename
+    {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let old_name = row.name.clone();
+        let btn = menu_button("Rename...");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            let ui_clone = ui.clone();
+            let win = ui.window.clone();
+            let old = target_path.clone();
+            crate::actions::prompt(&win, "Rename to", &old_name, move |new_name| {
+                let new_path = ui_clone.cwd_path().join(&new_name);
+                match std::fs::rename(&old, &new_path) {
+                    Ok(()) => ui_clone.reload(),
+                    Err(e) => crate::actions::flash(&ui_clone, &format!("rename failed: {e}")),
+                }
+            });
+        });
+        menu_box.append(&btn);
+    }
+
+    // Move
+    {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let btn = menu_button("Move (Source -> Dest)");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Err(msg) = crate::actions::resolve_copy_target(&ui.roles.borrow(), ui.id) {
+                crate::actions::flash(&ui, &msg);
+                return;
+            }
+            let _ = ui.client.send(&ToHub::RunJob {
+                op: Op::Move,
+                srcs: vec![target_path.clone()],
+                dest_dir: None,
+            });
+        });
+        menu_box.append(&btn);
+    }
+
+    // Delete
+    {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let file_name = row.name.clone();
+        let btn = menu_button("Delete...");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            let dialog = gtk::AlertDialog::builder()
+                .message(format!("Delete \"{}\" permanently?", file_name))
+                .buttons(["Cancel", "Delete"])
+                .cancel_button(0)
+                .default_button(0)
+                .build();
+            let ui2 = ui.clone();
+            let target_path = target_path.clone();
+            dialog.choose(Some(&ui.window), gtk::gio::Cancellable::NONE, move |res| {
+                if res == Ok(1) {
+                    let _ = ui2.client.send(&ToHub::RunJob {
+                        op: Op::Delete,
+                        srcs: vec![target_path],
+                        dest_dir: Some(ui2.cwd_path()),
+                    });
+                }
+            });
+        });
+        menu_box.append(&btn);
+    }
+
+    // 2. Separatore
+    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // 3. Quick Look
+    {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let btn = menu_button("Quick Look (Preview)");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            ui.toggle_preview();
+        });
+        menu_box.append(&btn);
+    }
+
+    // 4. Checksums & Dimensioni cartelle (solo per directories)
+    if row.is_dir {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let btn = menu_button("Checksums & Dimensioni cartelle");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            crate::tools::calculate_dir_sizes_async(&ui);
+        });
+        menu_box.append(&btn);
+    }
+
+    popover.set_child(Some(&menu_box));
+    popover.popup();
+}

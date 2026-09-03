@@ -230,14 +230,18 @@ impl TerminalDrawer {
             let (tx, rx) = async_channel::unbounded::<String>();
 
             std::thread::spawn(move || {
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-                let child = Command::new(shell)
+                let shell = detect_user_shell();
+                let mut cmd = Command::new(&shell);
+                // Pass `-l` (login shell) so that user profile/environment (/etc/profile, ~/.bash_profile,
+                // ~/.bash_login, or ~/.profile) is sourced, ensuring the full user environment is present.
+                cmd.arg("-l")
                     .arg("-c")
                     .arg(&cmd_str)
                     .current_dir(&current_dir)
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn();
+                    .stderr(Stdio::piped());
+
+                let child = cmd.spawn();
 
                 match child {
                     Ok(mut process) => {
@@ -368,6 +372,46 @@ pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
     }
 }
 
+/// Detect the user's preferred shell:
+/// 1. `SHELL` environment variable if set and non-empty.
+/// 2. User's shell from `/etc/passwd` via libc `getpwuid_r`.
+/// 3. Fallback to `/bin/sh`.
+pub fn detect_user_shell() -> String {
+    if let Ok(shell) = std::env::var("SHELL") {
+        let trimmed = shell.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    // Query user database via libc getpwuid_r
+    let uid = unsafe { libc::getuid() };
+    let mut passwd_buf = vec![0u8; 1024];
+    let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut passwd_ptr = std::ptr::null_mut();
+
+    let ret = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut passwd,
+            passwd_buf.as_mut_ptr() as *mut libc::c_char,
+            passwd_buf.len(),
+            &mut passwd_ptr,
+        )
+    };
+
+    if ret == 0 && !passwd_ptr.is_null() && !unsafe { (*passwd_ptr).pw_shell }.is_null() {
+        if let Ok(shell_str) = unsafe { std::ffi::CStr::from_ptr((*passwd_ptr).pw_shell) }.to_str() {
+            let trimmed = shell_str.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+
+    "/bin/sh".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,4 +423,12 @@ mod tests {
         assert_eq!(resolve_path(cwd, "/etc"), PathBuf::from("/etc"));
         assert_eq!(resolve_path(cwd, ".."), PathBuf::from("/home/user/project/.."));
     }
+
+    #[test]
+    fn test_detect_user_shell() {
+        let shell = detect_user_shell();
+        assert!(!shell.is_empty());
+        assert!(shell.starts_with('/') || shell.contains("sh"));
+    }
 }
+

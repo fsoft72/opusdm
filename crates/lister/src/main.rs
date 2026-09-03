@@ -5,6 +5,7 @@ mod archive;
 mod batch_rename;
 mod client;
 mod columns;
+mod context_menu;
 mod dnd;
 mod filter;
 mod icons;

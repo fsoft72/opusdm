@@ -30,24 +30,74 @@ pub fn apply_selected_class(label: &gtk::Label, selected: bool) {
     }
 }
 
-pub fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
+pub fn add_column(
+    view: &gtk::ColumnView,
+    title: &str,
+    kind: ColKind,
+    ui_getter: impl Fn() -> Option<Rc<crate::window::Ui>> + 'static + Clone,
+) {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(move |_, list_item| {
-        let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
-        let label = gtk::Label::new(None);
-        label.set_xalign(0.0);
-        label.set_valign(gtk::Align::Fill);
-        if matches!(kind, ColKind::Access) {
-            label.add_css_class("monospace");
-        }
-        // Selection can change without a rebind (no row.item() change), so
-        // this has to be tracked on its own signal, not just in bind.
-        {
-            let label = label.clone();
-            item.connect_selected_notify(move |li| apply_selected_class(&label, li.is_selected()));
-        }
-        item.set_child(Some(&label));
-    });
+    {
+        let ui_getter = ui_getter.clone();
+        factory.connect_setup(move |_, list_item| {
+            let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
+            let label = gtk::Label::new(None);
+            label.set_xalign(0.0);
+            label.set_valign(gtk::Align::Fill);
+            if matches!(kind, ColKind::Access) {
+                label.add_css_class("monospace");
+            }
+            // Selection can change without a rebind (no row.item() change), so
+            // this has to be tracked on its own signal, not just in bind.
+            {
+                let label = label.clone();
+                item.connect_selected_notify(move |li| apply_selected_class(&label, li.is_selected()));
+            }
+
+            // Right-click context menu gesture on cell
+            {
+                let click = gtk::GestureClick::new();
+                click.set_button(gtk::gdk::BUTTON_SECONDARY);
+                let label_weak = label.downgrade();
+                let item_weak = item.downgrade();
+                let ui_getter = ui_getter.clone();
+                click.connect_pressed(move |gesture, n_press, x, y| {
+                    if n_press != 1 {
+                        return;
+                    }
+                    let Some(label) = label_weak.upgrade() else {
+                        return;
+                    };
+                    let Some(item) = item_weak.upgrade() else {
+                        return;
+                    };
+                    let Some(ui) = ui_getter() else {
+                        return;
+                    };
+                    let row = item
+                        .item()
+                        .and_downcast::<BoxedAnyObject>()
+                        .map(|o| o.borrow::<Rc<Row>>().clone());
+                    let Some(row) = row else {
+                        return;
+                    };
+
+                    // If clicked item is not selected, select it
+                    let pos = item.position();
+                    if !ui.selection.is_selected(pos) {
+                        ui.selection.select_item(pos, true);
+                    }
+
+                    let target_path = ui.cwd_path().join(&row.name);
+                    crate::context_menu::show_context_menu(&ui, &label, &row, target_path, x, y);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                });
+                label.add_controller(click);
+            }
+
+            item.set_child(Some(&label));
+        });
+    }
     let tz = local_tz_offset_secs();
     factory.connect_bind(move |_, list_item| {
         let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
