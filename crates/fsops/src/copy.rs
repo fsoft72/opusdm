@@ -16,16 +16,31 @@ const COPY_BUF: usize = 256 * 1024;
 
 /// Copy one regular file, preserving unix permission bits and mtime.
 ///
+/// If `overwrite` is false, atomically attempts to create the file without
+/// replacing an existing destination (`ErrorKind::AlreadyExists`).
+///
 /// Calls `on_bytes` with the size of each chunk written. On cancel it removes
 /// the partial destination and returns `ErrorKind::Interrupted`.
 pub fn copy_file(
     src: &Path,
     dst: &Path,
+    overwrite: bool,
     cancel: &CancelToken,
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
     let mut reader = std::fs::File::open(src)?;
-    let mut writer = std::fs::File::create(dst)?;
+    let mut writer = if overwrite {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dst)?
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst)?
+    };
     let mut buf = vec![0u8; COPY_BUF];
     loop {
         if cancel.is_cancelled() {
@@ -98,37 +113,30 @@ pub fn copy_tree(
             }
             Item::File { rel, abs, size } => {
                 let dst = dest_dir.join(rel);
-                if dst.exists() {
-                    let resolution = if overwrite_all {
-                        Resolution::Overwrite
-                    } else if skip_all {
-                        Resolution::Skip
-                    } else {
-                        match ask_conflict(tx, &dst, abs) {
-                            Some(r) => r,
-                            None => {
-                                return Progress::Done {
-                                    copied,
-                                    skipped,
-                                    cancelled: true,
-                                    errors,
-                                };
-                            }
-                        }
-                    };
-                    match resolution {
-                        Resolution::Skip => {
+                let mut overwrite = overwrite_all;
+                if !overwrite && dst.exists() {
+                    if skip_all {
+                        skipped += 1;
+                        continue;
+                    }
+                    match ask_conflict(tx, &dst, abs) {
+                        Some(Resolution::Skip) => {
                             skipped += 1;
                             continue;
                         }
-                        Resolution::SkipAll => {
+                        Some(Resolution::SkipAll) => {
                             skip_all = true;
                             skipped += 1;
                             continue;
                         }
-                        Resolution::Overwrite => {}
-                        Resolution::OverwriteAll => overwrite_all = true,
-                        Resolution::Cancel => {
+                        Some(Resolution::Overwrite) => {
+                            overwrite = true;
+                        }
+                        Some(Resolution::OverwriteAll) => {
+                            overwrite_all = true;
+                            overwrite = true;
+                        }
+                        Some(Resolution::Cancel) | None => {
                             return Progress::Done { copied, skipped, cancelled: true, errors };
                         }
                     }
@@ -145,8 +153,49 @@ pub fn copy_tree(
                         files_total,
                     });
                 };
-                match copy_file(abs, &dst, cancel, &mut on_bytes) {
+                let res = copy_file(abs, &dst, overwrite, cancel, &mut on_bytes);
+                match res {
                     Ok(()) => copied += 1,
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                        // Concurrent creation detected (TOCTOU)
+                        if skip_all {
+                            skipped += 1;
+                            continue;
+                        }
+                        match ask_conflict(tx, &dst, abs) {
+                            Some(Resolution::Skip) => {
+                                skipped += 1;
+                                continue;
+                            }
+                            Some(Resolution::SkipAll) => {
+                                skip_all = true;
+                                skipped += 1;
+                                continue;
+                            }
+                            Some(Resolution::Overwrite) => {
+                                match copy_file(abs, &dst, true, cancel, &mut on_bytes) {
+                                    Ok(()) => copied += 1,
+                                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                                        return Progress::Done { copied, skipped, cancelled: true, errors };
+                                    }
+                                    Err(e) => errors.push((abs.clone(), e.to_string())),
+                                }
+                            }
+                            Some(Resolution::OverwriteAll) => {
+                                overwrite_all = true;
+                                match copy_file(abs, &dst, true, cancel, &mut on_bytes) {
+                                    Ok(()) => copied += 1,
+                                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                                        return Progress::Done { copied, skipped, cancelled: true, errors };
+                                    }
+                                    Err(e) => errors.push((abs.clone(), e.to_string())),
+                                }
+                            }
+                            Some(Resolution::Cancel) | None => {
+                                return Progress::Done { copied, skipped, cancelled: true, errors };
+                            }
+                        }
+                    }
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {
                         return Progress::Done { copied, skipped, cancelled: true, errors };
                     }

@@ -56,12 +56,27 @@ fn remove_recursive(path: &Path) -> io::Result<()> {
 /// Create one empty file (`file == true`) or one directory under `dest_dir`.
 pub fn make_entry(dest_dir: &Path, name: &str, file: bool) -> Progress {
     let target = dest_dir.join(name);
-    let result = if target.exists() {
-        Err(format!("{} already exists", target.display()))
-    } else if file {
-        std::fs::File::create(&target).map(|_| ()).map_err(|e| e.to_string())
+    let result = if file {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map(|_| ())
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::AlreadyExists {
+                    format!("{} already exists", target.display())
+                } else {
+                    e.to_string()
+                }
+            })
     } else {
-        std::fs::create_dir(&target).map_err(|e| e.to_string())
+        std::fs::create_dir(&target).map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                format!("{} already exists", target.display())
+            } else {
+                e.to_string()
+            }
+        })
     };
     match result {
         Ok(()) => Progress::Done { copied: 1, skipped: 0, cancelled: false, errors: Vec::new() },
