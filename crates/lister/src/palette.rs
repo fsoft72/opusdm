@@ -38,7 +38,9 @@ pub fn get_commands() -> Vec<CommandItem> {
         CommandItem { id: "parent_dir", title: "Go to Parent Directory", category: "Navigation", shortcut: Some("Backspace") },
         CommandItem { id: "home_dir", title: "Go to Home Directory (~)", category: "Navigation", shortcut: Some("~") },
         CommandItem { id: "terminal", title: "Toggle Terminal Drawer", category: "Tools", shortcut: Some("F4 / `") },
-        CommandItem { id: "calc_sizes", title: "Calculate Directory Sizes", category: "Tools", shortcut: None },
+        CommandItem { id: "calc_sizes", title: "Calculate Directory Sizes", category: "Tools", shortcut: Some("Space (on dir)") },
+        CommandItem { id: "calc_checksums", title: "Calculate Checksums (SHA-256 / MD5)...", category: "Tools", shortcut: None },
+        CommandItem { id: "compare_dirs", title: "Compare / Sync Directories (Visual Diff)...", category: "Tools", shortcut: None },
         CommandItem { id: "set_source", title: "Set Role: SOURCE", category: "Roles", shortcut: None },
         CommandItem { id: "set_dest", title: "Set Role: DEST", category: "Roles", shortcut: None },
         CommandItem { id: "set_none", title: "Set Role: NONE", category: "Roles", shortcut: None },
@@ -227,13 +229,13 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
             }
         }
         "calc_sizes" => {
-            crate::actions::flash(ui, "Calculating sizes...");
-            let cwd = ui.cwd_path();
-            let ui_clone = ui.clone();
-            glib::spawn_future_local(async move {
-                let total = calculate_dir_size_recursive(&cwd);
-                crate::actions::flash(&ui_clone, &format!("Directory total size: {}", crate::model::format_size(false, total)));
-            });
+            crate::tools::calculate_dir_sizes_async(ui);
+        }
+        "calc_checksums" => {
+            crate::tools::open_checksum_dialog(ui);
+        }
+        "compare_dirs" => {
+            crate::tools::open_compare_dialog(ui);
         }
         "set_source" => {
             let _ = ui.client.send(&ToHub::SetRole(Role::Source));
@@ -252,18 +254,6 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
         }
         _ => {}
     }
-}
-
-fn calculate_dir_size_recursive(dir: &std::path::Path) -> u64 {
-    let mut total = 0u64;
-    for entry in walkdir::WalkDir::new(dir).min_depth(1).into_iter().filter_map(Result::ok) {
-        if let Ok(meta) = entry.metadata() {
-            if meta.is_file() {
-                total += meta.len();
-            }
-        }
-    }
-    total
 }
 
 /// Open the Command Palette modal HUD.

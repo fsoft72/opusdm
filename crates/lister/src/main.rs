@@ -13,6 +13,7 @@ mod palette;
 mod preview;
 mod terminal;
 mod theme;
+mod tools;
 mod window;
 
 use std::path::PathBuf;

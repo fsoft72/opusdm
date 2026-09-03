@@ -502,8 +502,18 @@ fn build_window(
                         ui_for_keys.toggle_terminal();
                         return glib::Propagation::Stop;
                     }
-                    gdk::Key::space | gdk::Key::F3 => {
+                    gdk::Key::F3 => {
                         ui_for_keys.toggle_preview();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::space => {
+                        let paths = ui_for_keys.selected_paths();
+                        let has_dir = paths.iter().any(|p| p.is_dir());
+                        if has_dir {
+                            crate::tools::calculate_dir_sizes_async(&ui_for_keys);
+                        } else {
+                            ui_for_keys.toggle_preview();
+                        }
                         return glib::Propagation::Stop;
                     }
                     gdk::Key::slash => {
