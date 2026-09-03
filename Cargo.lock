@@ -611,6 +611,7 @@ name = "opusdm-fsops"
 version = "0.1.0"
 dependencies = [
  "filetime",
+ "libc",
  "opusdm-ipc",
  "tempfile",
  "thiserror 2.0.20",

@@ -132,25 +132,32 @@ fn copy_file_kernel(
     Ok(())
 }
 
+thread_local! {
+    static COPY_BUFFER: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; COPY_BUF]);
+}
+
 fn copy_file_userspace(
     reader: &mut std::fs::File,
     writer: &mut std::fs::File,
     cancel: &CancelToken,
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
-    let mut buf = vec![0u8; COPY_BUF];
-    loop {
-        if cancel.is_cancelled() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+    COPY_BUFFER.with(|cell| {
+        let mut buf_guard = cell.borrow_mut();
+        let buf: &mut [u8] = &mut buf_guard;
+        loop {
+            if cancel.is_cancelled() {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            }
+            let n = reader.read(buf)?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n])?;
+            on_bytes(n as u64);
         }
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        writer.write_all(&buf[..n])?;
-        on_bytes(n as u64);
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Recreate `srcs` under `dest_dir`. Returns the `Progress::Done` to send.
