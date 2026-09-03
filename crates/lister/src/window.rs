@@ -1,17 +1,14 @@
 //! The Lister window: path bar, column view, status line, navigation.
 
 use crate::client::{Client, Inbound, Roles};
-use crate::model::{
-    dir_first_cmp, format_mtime, format_size, local_tz_offset_secs, read_dir_rows, Row, SortCol,
-};
+use crate::model::{dir_first_cmp, read_dir_rows, Row, SortCol};
 use gtk4 as gtk;
-use gtk::gio;
 use gtk::gdk;
+use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
 use opusdm_ipc::{ListerId, Role, Settings, ToHub, ToLister};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -29,8 +26,6 @@ pub struct Ui {
     pub store: gio::ListStore,
     /// Selection model feeding the column view.
     pub selection: gtk::MultiSelection,
-    /// Active sort: column + descending flag.
-    pub sort: Rc<Cell<(SortCol, bool)>>,
     /// The single sorter driven by the sort buttons.
     pub sorter: gtk::CustomSorter,
     /// Status line (top bar with D/F/B counts).
@@ -43,8 +38,6 @@ pub struct Ui {
     pub roles: RefCell<Roles>,
     /// Editable path bar.
     pub path_entry: gtk::Entry,
-    /// Local timezone offset for date formatting.
-    pub tz: i32,
     /// Pin: locks this Lister's current role against focus changes (stat bar).
     pub role_lock_btn: gtk::ToggleButton,
     /// Guards against feedback while syncing toggle state from the hub.
@@ -182,12 +175,12 @@ fn build_window(
     // Compact rows: default theme pads cells 8px 6px, data-table cuts it to 2px.
     column_view.add_css_class("data-table");
 
-    add_column(&column_view, "Name", ColKind::Name);
-    add_column(&column_view, "Size", ColKind::Size);
-    add_column(&column_view, "Date", ColKind::Modified);
-    add_column(&column_view, "User", ColKind::User);
-    add_column(&column_view, "Group", ColKind::Group);
-    add_column(&column_view, "Access", ColKind::Access);
+    crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name);
+    crate::columns::add_column(&column_view, "Size", crate::columns::ColKind::Size);
+    crate::columns::add_column(&column_view, "Date", crate::columns::ColKind::Modified);
+    crate::columns::add_column(&column_view, "User", crate::columns::ColKind::User);
+    crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group);
+    crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access);
 
     let scroller = gtk::ScrolledWindow::builder().child(&column_view).vexpand(true).build();
     scroller.set_margin_start(4);
@@ -232,14 +225,12 @@ fn build_window(
         cwd: RefCell::new(PathBuf::from("/")),
         store,
         selection: selection.clone(),
-        sort: sort_cell.clone(),
         sorter: sorter.clone(),
         status: stat_info,
         stat_bar: stat_bar.clone(),
         role_badge,
         roles: RefCell::new(roles),
         path_entry: path_entry.clone(),
-        tz: local_tz_offset_secs(),
         role_lock_btn: pin_btn,
         role_guard: Cell::new(false),
         job_line,
@@ -358,113 +349,6 @@ fn build_window(
     crate::dnd::attach(&ui, &column_view);
     ui.update_status();
     ui
-}
-
-#[derive(Clone, Copy)]
-enum ColKind {
-    Name,
-    Size,
-    Modified,
-    User,
-    Group,
-    Access,
-}
-
-/// Toggle the CSS class that shows selection. Needed because row-dir/row-file
-/// paint an opaque background on every cell label, which otherwise sits on
-/// top of (and hides) GTK's normal selection highlight.
-fn apply_selected_class(label: &gtk::Label, selected: bool) {
-    if selected {
-        label.add_css_class("cell-selected");
-    } else {
-        label.remove_css_class("cell-selected");
-    }
-}
-
-fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(move |_, list_item| {
-        let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
-        let label = gtk::Label::new(None);
-        label.set_xalign(0.0);
-        label.set_valign(gtk::Align::Fill);
-        if matches!(kind, ColKind::Access) {
-            label.add_css_class("monospace");
-        }
-        // Selection can change without a rebind (no row.item() change), so
-        // this has to be tracked on its own signal, not just in bind.
-        {
-            let label = label.clone();
-            item.connect_selected_notify(move |li| apply_selected_class(&label, li.is_selected()));
-        }
-        item.set_child(Some(&label));
-    });
-    let tz = local_tz_offset_secs();
-    // uid/gid -> name lookups hit NSS (files/LDAP); cache per column factory
-    // so scrolling and resorting don't repeat the same lookup per row.
-    let name_cache: Rc<RefCell<HashMap<u32, String>>> = Rc::new(RefCell::new(HashMap::new()));
-    factory.connect_bind(move |_, list_item| {
-        let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
-        let row = item
-            .item()
-            .and_downcast::<BoxedAnyObject>()
-            .map(|o| o.borrow::<Rc<Row>>().clone());
-        let Some(row) = row else { return };
-        let label = item.child().and_downcast::<gtk::Label>().unwrap();
-        // Every cell in the row gets the same dir/file background+text CSS
-        // class, so the whole row reads as one colored line.
-        label.remove_css_class("row-dir");
-        label.remove_css_class("row-file");
-        label.add_css_class(if row.is_dir { "row-dir" } else { "row-file" });
-        // A rebind reuses this widget for a possibly different row; resync
-        // the selection highlight to the row now bound, not the old one.
-        apply_selected_class(&label, item.is_selected());
-        match kind {
-            ColKind::Name => {
-                let mark = if row.broken_link {
-                    " (broken link)"
-                } else if row.is_symlink {
-                    " ->"
-                } else {
-                    ""
-                };
-                label.set_xalign(0.0);
-                label.set_text(&format!("{}{}", row.name, mark));
-            }
-            ColKind::Size => {
-                label.set_xalign(1.0);
-                label.set_text(&format_size(row.is_dir, row.size));
-            }
-            ColKind::Modified => {
-                label.set_xalign(0.0);
-                label.set_text(&format_mtime(row.modified_unix, tz));
-            }
-            ColKind::User => {
-                label.set_xalign(0.0);
-                let mut cache = name_cache.borrow_mut();
-                let name = cache
-                    .entry(row.uid)
-                    .or_insert_with(|| crate::model::format_user(row.uid));
-                label.set_text(name);
-            }
-            ColKind::Group => {
-                label.set_xalign(0.0);
-                let mut cache = name_cache.borrow_mut();
-                let name = cache
-                    .entry(row.gid)
-                    .or_insert_with(|| crate::model::format_group(row.gid));
-                label.set_text(name);
-            }
-            ColKind::Access => {
-                label.set_xalign(0.0);
-                label.set_text(&crate::model::format_access(row.mode, row.is_dir, row.is_symlink));
-            }
-        }
-    });
-    let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
-    column.set_expand(matches!(kind, ColKind::Name));
-    column.set_resizable(true);
-    view.append_column(&column);
 }
 
 impl Ui {
@@ -638,54 +522,7 @@ impl Ui {
     /// content) instead of registering a fresh provider each time.
     fn update_css_for_colors(&self) {
         let s = self.settings.borrow();
-        let c = &s.colors;
-        let css_data = format!(
-            ".stat-source {{ background-color: {}; color: {}; }} \
-             .stat-dest {{ background-color: {}; color: {}; }} \
-             .stat-source, .stat-dest {{ padding: 0 4px; }} \
-             .row-dir {{ background-color: {}; color: {}; }} \
-             .row-file {{ background-color: {}; color: {}; }} \
-             .pin-btn {{ min-height: 0; min-width: 0; padding: 2px 6px; }} \
-             button.opus-btn {{ \
-                 min-height: 30px; \
-                 min-width: 32px; \
-                 padding: 3px 6px; \
-                 margin: 1px 2px; \
-                 border-radius: 3px; \
-                 border-top: 1px solid rgba(255, 255, 255, 0.4); \
-                 border-left: 1px solid rgba(255, 255, 255, 0.4); \
-                 border-right: 1px solid rgba(0, 0, 0, 0.6); \
-                 border-bottom: 1px solid rgba(0, 0, 0, 0.6); \
-                 background: linear-gradient(to bottom, alpha(@theme_bg_color, 0.95), alpha(@theme_bg_color, 0.75)); \
-                 box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.2); \
-             }} \
-             button.opus-btn:hover {{ \
-                 border-top: 1px solid rgba(255, 255, 255, 0.7); \
-                 border-left: 1px solid rgba(255, 255, 255, 0.7); \
-                 border-right: 1px solid rgba(0, 0, 0, 0.7); \
-                 border-bottom: 1px solid rgba(0, 0, 0, 0.7); \
-                 background: linear-gradient(to bottom, alpha(@theme_bg_color, 1.0), alpha(@theme_bg_color, 0.85)); \
-             }} \
-             button.opus-btn:active, button.opus-btn:checked {{ \
-                 border-top: 1px solid rgba(0, 0, 0, 0.7); \
-                 border-left: 1px solid rgba(0, 0, 0, 0.7); \
-                 border-right: 1px solid rgba(255, 255, 255, 0.5); \
-                 border-bottom: 1px solid rgba(255, 255, 255, 0.5); \
-                 background: linear-gradient(to bottom, alpha(@theme_bg_color, 0.6), alpha(@theme_bg_color, 0.85)); \
-                 box-shadow: inset 1px 1px 2px rgba(0, 0, 0, 0.4); \
-             }} \
-             columnview > listview > row {{ padding: 0; margin: 0; border: none; min-height: 0; }} \
-             columnview > listview > row > cell {{ padding: 0; min-height: 0; }} \
-             /* Transparent border: without it the theme leaves a 1-2px dark gap
-                between rows; with it the labels stack flush. */
-             .row-dir, .row-file {{ padding: 0 4px; border: 1px solid transparent; }} \
-             .cell-selected {{ background-color: @theme_selected_bg_color; \
-                                color: @theme_selected_fg_color; }}",
-            c.source_bg, c.source_fg,
-            c.dest_bg, c.dest_fg,
-            c.dir_bg, c.dir_fg,
-            c.file_bg, c.file_fg,
-        );
+        let css_data = crate::theme::generate_css(&s);
         self.css_provider.load_from_data(&css_data);
     }
 }

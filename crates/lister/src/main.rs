@@ -2,9 +2,11 @@
 
 mod actions;
 mod client;
+mod columns;
 mod dnd;
 mod icons;
 mod model;
+mod theme;
 mod window;
 
 use std::path::PathBuf;

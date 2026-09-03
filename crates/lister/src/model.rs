@@ -31,6 +31,7 @@ pub struct Row {
 
 /// Which column an ordering is keyed on.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum SortCol {
     /// By name, case-insensitive.
     Name,
