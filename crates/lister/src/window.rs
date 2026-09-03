@@ -232,6 +232,14 @@ fn build_window(
             }
         });
     }
+    {
+        let filter_bar_clone = filter_bar.clone();
+        let column_view_clone = column_view.clone();
+        filter_bar.entry.connect_stop_search(move |_| {
+            filter_bar_clone.dismiss();
+            column_view_clone.grab_focus();
+        });
+    }
 
     // Quake-style dropdown terminal drawer
     let terminal = crate::terminal::TerminalDrawer::new();
@@ -492,12 +500,12 @@ fn build_window(
                         return glib::Propagation::Stop;
                     }
                     gdk::Key::Escape => {
-                        if ui_for_keys.terminal.container.is_visible() {
-                            ui_for_keys.terminal.container.set_visible(false);
+                        if ui_for_keys.filter_bar.container.is_visible() {
+                            ui_for_keys.dismiss_filter();
                             column_view_for_keys.grab_focus();
                             return glib::Propagation::Stop;
-                        } else if ui_for_keys.filter_bar.container.is_visible() {
-                            ui_for_keys.dismiss_filter();
+                        } else if ui_for_keys.terminal.container.is_visible() {
+                            ui_for_keys.terminal.container.set_visible(false);
                             column_view_for_keys.grab_focus();
                             return glib::Propagation::Stop;
                         } else {
@@ -509,12 +517,12 @@ fn build_window(
                 }
             } else {
                 if keyval == gdk::Key::Escape {
-                    if ui_for_keys.terminal.container.is_visible() {
-                        ui_for_keys.terminal.container.set_visible(false);
+                    if ui_for_keys.filter_bar.container.is_visible() {
+                        ui_for_keys.dismiss_filter();
                         column_view_for_keys.grab_focus();
                         return glib::Propagation::Stop;
-                    } else if ui_for_keys.filter_bar.container.is_visible() {
-                        ui_for_keys.dismiss_filter();
+                    } else if ui_for_keys.terminal.container.is_visible() {
+                        ui_for_keys.terminal.container.set_visible(false);
                         column_view_for_keys.grab_focus();
                         return glib::Propagation::Stop;
                     }

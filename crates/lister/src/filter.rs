@@ -2,6 +2,7 @@
 
 use crate::model::Row;
 use gtk4 as gtk;
+use gtk::gdk;
 use gtk::glib::BoxedAnyObject;
 use gtk::prelude::*;
 use std::cell::RefCell;
@@ -122,6 +123,39 @@ impl FilterBar {
                 *q.borrow_mut() = String::new();
                 filt.changed(gtk::FilterChange::Different);
                 container_clone.set_visible(false);
+            });
+        }
+
+        // Capture ESC directly on search entry so it closes immediately
+        {
+            let container_clone = container.clone();
+            let entry_clone = entry.clone();
+            let q = query.clone();
+            let filt = filter.clone();
+
+            let key_ctrl = gtk::EventControllerKey::new();
+            key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+            key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+                if keyval == gdk::Key::Escape {
+                    entry_clone.set_text("");
+                    *q.borrow_mut() = String::new();
+                    filt.changed(gtk::FilterChange::Different);
+                    container_clone.set_visible(false);
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk::glib::Propagation::Proceed
+            });
+            entry.add_controller(key_ctrl);
+
+            let container_clone2 = container.clone();
+            let entry_clone2 = entry.clone();
+            let q2 = query.clone();
+            let filt2 = filter.clone();
+            entry.connect_stop_search(move |_| {
+                entry_clone2.set_text("");
+                *q2.borrow_mut() = String::new();
+                filt2.changed(gtk::FilterChange::Different);
+                container_clone2.set_visible(false);
             });
         }
 
