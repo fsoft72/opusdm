@@ -233,17 +233,29 @@ pub fn copy_tree(
                 }
                 let total = plan.total_bytes;
                 let files_total = plan.total_files;
-                let mut on_bytes = |n: u64| {
-                    done_bytes += n;
-                    let _ = tx.send(Progress::File {
-                        path: abs.clone(),
-                        done_bytes,
-                        total_bytes: total,
-                        files_done: copied,
-                        files_total,
-                    });
+                let mut last_emit = std::time::Instant::now();
+                let mut emit_progress = |n: u64, force: bool, done_bytes: &mut u64, copied: u64| {
+                    *done_bytes += n;
+                    if force || last_emit.elapsed() >= std::time::Duration::from_millis(50) {
+                        last_emit = std::time::Instant::now();
+                        let _ = tx.send(Progress::File {
+                            path: abs.clone(),
+                            done_bytes: *done_bytes,
+                            total_bytes: total,
+                            files_done: copied,
+                            files_total,
+                        });
+                    }
                 };
-                let res = copy_file(abs, &dst, overwrite, cancel, &mut on_bytes);
+
+                let res = {
+                    let mut on_bytes = |n: u64| {
+                        emit_progress(n, false, &mut done_bytes, copied);
+                    };
+                    copy_file(abs, &dst, overwrite, cancel, &mut on_bytes)
+                };
+                emit_progress(0, true, &mut done_bytes, copied);
+
                 match res {
                     Ok(()) => copied += 1,
                     Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -263,8 +275,14 @@ pub fn copy_tree(
                                 continue;
                             }
                             Some(Resolution::Overwrite) => {
+                                let mut on_bytes = |n: u64| {
+                                    emit_progress(n, false, &mut done_bytes, copied);
+                                };
                                 match copy_file(abs, &dst, true, cancel, &mut on_bytes) {
-                                    Ok(()) => copied += 1,
+                                    Ok(()) => {
+                                        emit_progress(0, true, &mut done_bytes, copied);
+                                        copied += 1;
+                                    }
                                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {
                                         return Progress::Done { copied, skipped, cancelled: true, errors };
                                     }
@@ -273,8 +291,14 @@ pub fn copy_tree(
                             }
                             Some(Resolution::OverwriteAll) => {
                                 overwrite_all = true;
+                                let mut on_bytes = |n: u64| {
+                                    emit_progress(n, false, &mut done_bytes, copied);
+                                };
                                 match copy_file(abs, &dst, true, cancel, &mut on_bytes) {
-                                    Ok(()) => copied += 1,
+                                    Ok(()) => {
+                                        emit_progress(0, true, &mut done_bytes, copied);
+                                        copied += 1;
+                                    }
                                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {
                                         return Progress::Done { copied, skipped, cancelled: true, errors };
                                     }
