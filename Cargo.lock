@@ -655,6 +655,7 @@ dependencies = [
  "libc",
  "opusdm-ipc",
  "tempfile",
+ "walkdir",
 ]
 
 [[package]]

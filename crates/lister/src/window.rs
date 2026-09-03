@@ -53,6 +53,11 @@ pub struct Ui {
     pub settings: RefCell<Settings>,
     /// Whether dotfiles are shown in the file list. Off by default.
     pub show_hidden: Cell<bool>,
+    /// Filter bar widget (search entry, filter model, etc.)
+    pub filter_bar: Rc<crate::filter::FilterBar>,
+    /// Filter list model wrapping store.
+    #[allow(dead_code)]
+    pub filter_model: gtk::FilterListModel,
     /// Single stylesheet for settings-driven colors; reloaded in place on
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
@@ -158,8 +163,11 @@ fn build_window(
     button_row.set_margin_end(4);
     root.append(&button_row);
 
-    // Model + sorter + selection + column view.
+    // Model + filter + sorter + selection + column view.
     let store = gio::ListStore::new::<BoxedAnyObject>();
+    let filter_bar = Rc::new(crate::filter::FilterBar::new());
+    let filter_model = gtk::FilterListModel::new(Some(store.clone()), Some(filter_bar.filter.clone()));
+
     let sort_cell = Rc::new(Cell::new((SortCol::Name, false)));
     let sorter = gtk::CustomSorter::new({
         let sort_cell = sort_cell.clone();
@@ -170,7 +178,7 @@ fn build_window(
             dir_first_cmp(&ra, &rb, col, desc).into()
         }
     });
-    let sort_model = gtk::SortListModel::new(Some(store.clone()), Some(sorter.clone()));
+    let sort_model = gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
     let selection = gtk::MultiSelection::new(Some(sort_model));
     let column_view = gtk::ColumnView::new(Some(selection.clone()));
     column_view.set_vexpand(true);
@@ -184,10 +192,42 @@ fn build_window(
     crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group);
     crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access);
 
+    root.append(&filter_bar.container);
+
     let scroller = gtk::ScrolledWindow::builder().child(&column_view).vexpand(true).build();
     scroller.set_margin_start(4);
     scroller.set_margin_end(4);
     root.append(&scroller);
+
+    // Filter entry interaction
+    {
+        let count_label = filter_bar.count_label.clone();
+        let filter_model_for_count = filter_model.clone();
+        let store_for_count = store.clone();
+        let q = filter_bar.query.clone();
+        let filt = filter_bar.filter.clone();
+        filter_bar.entry.connect_search_changed(move |e| {
+            *q.borrow_mut() = e.text().to_string();
+            filt.changed(gtk::FilterChange::Different);
+            let filtered = filter_model_for_count.n_items();
+            let total = store_for_count.n_items();
+            if e.text().is_empty() {
+                count_label.set_text("");
+            } else {
+                count_label.set_text(&format!("{filtered}/{total}"));
+            }
+        });
+    }
+    {
+        let selection_clone = selection.clone();
+        let column_view_clone = column_view.clone();
+        filter_bar.entry.connect_activate(move |_| {
+            if selection_clone.n_items() > 0 {
+                selection_clone.select_item(0, false);
+                column_view_clone.grab_focus();
+            }
+        });
+    }
 
     // Transient message line.
     let job_line = gtk::Label::new(None);
@@ -226,6 +266,8 @@ fn build_window(
         id,
         cwd: RefCell::new(PathBuf::from("/")),
         store,
+        filter_bar: filter_bar.clone(),
+        filter_model,
         selection: selection.clone(),
         sorter: sorter.clone(),
         status: stat_info,
@@ -348,6 +390,104 @@ fn build_window(
         });
     }
 
+    // Keyboard shortcuts: /, Ctrl+P, Ctrl+F, Ctrl+A, Ctrl+R, Ctrl+H, Esc, etc.
+    {
+        let ui_for_keys = ui.clone();
+        let column_view_for_keys = column_view.clone();
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+            let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+
+            // Ctrl shortcuts (work everywhere)
+            if ctrl {
+                match keyval {
+                    gdk::Key::p | gdk::Key::P => {
+                        crate::palette::open_command_palette(&ui_for_keys);
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::f | gdk::Key::F => {
+                        ui_for_keys.reveal_filter();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::a | gdk::Key::A => {
+                        ui_for_keys.selection.select_all();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::r | gdk::Key::R => {
+                        ui_for_keys.reload();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::h | gdk::Key::H => {
+                        let active = !ui_for_keys.show_hidden.get();
+                        ui_for_keys.show_hidden.set(active);
+                        ui_for_keys.reload();
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check if focus is inside an editable field
+            let is_editing = gtk::prelude::RootExt::focus(&ui_for_keys.window)
+                .map(|w| w.is::<gtk::Editable>() || w.is::<gtk::TextView>())
+                .unwrap_or(false);
+
+            if !is_editing {
+                match keyval {
+                    gdk::Key::slash => {
+                        ui_for_keys.reveal_filter();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::asterisk => {
+                        crate::palette::execute_command(&ui_for_keys, "invert_selection");
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::plus => {
+                        crate::palette::execute_command(&ui_for_keys, "select_pattern");
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::minus => {
+                        crate::palette::execute_command(&ui_for_keys, "deselect_pattern");
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::F2 => {
+                        crate::palette::execute_command(&ui_for_keys, "rename");
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::F7 if !shift => {
+                        crate::palette::execute_command(&ui_for_keys, "mkdir");
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::F7 if shift => {
+                        crate::palette::execute_command(&ui_for_keys, "newfile");
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::Escape => {
+                        if ui_for_keys.filter_bar.container.is_visible() {
+                            ui_for_keys.dismiss_filter();
+                            column_view_for_keys.grab_focus();
+                            return glib::Propagation::Stop;
+                        } else {
+                            ui_for_keys.selection.unselect_all();
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                if keyval == gdk::Key::Escape && ui_for_keys.filter_bar.container.is_visible() {
+                    ui_for_keys.dismiss_filter();
+                    column_view_for_keys.grab_focus();
+                    return glib::Propagation::Stop;
+                }
+            }
+
+            glib::Propagation::Proceed
+        });
+        window.add_controller(key_ctrl);
+    }
+
     crate::actions::attach(&ui);
     crate::dnd::attach(&ui, &column_view);
     ui.update_status();
@@ -355,6 +495,16 @@ fn build_window(
 }
 
 impl Ui {
+    /// Reveal and focus the filter bar.
+    pub fn reveal_filter(&self) {
+        self.filter_bar.reveal();
+    }
+
+    /// Dismiss and reset the filter bar.
+    pub fn dismiss_filter(&self) {
+        self.filter_bar.dismiss();
+    }
+
     /// Read `dir`, repopulate the store, update title/entry/status, notify the hub.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
         let rows = match read_dir_rows(dir) {
@@ -364,6 +514,7 @@ impl Ui {
                 return;
             }
         };
+        self.dismiss_filter();
         *self.cwd.borrow_mut() = dir.to_path_buf();
         let show_hidden = self.show_hidden.get();
         let mut total_dirs = 0u32;
@@ -427,7 +578,8 @@ impl Ui {
         names
     }
 
-    fn row_at(&self, position: u32) -> Option<Rc<Row>> {
+    /// Retrieve the row model at `position` in the visual list.
+    pub fn row_at(&self, position: u32) -> Option<Rc<Row>> {
         self.selection
             .item(position)
             .and_downcast::<BoxedAnyObject>()

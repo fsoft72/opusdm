@@ -315,7 +315,7 @@ pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: Fi
 }
 
 /// Show `text` in the transient message line for a few seconds.
-fn flash(ui: &Rc<Ui>, text: &str) {
+pub fn flash(ui: &Rc<Ui>, text: &str) {
     ui.job_line.set_text(text);
     let line = ui.job_line.clone();
     let expected = text.to_string();
@@ -327,7 +327,7 @@ fn flash(ui: &Rc<Ui>, text: &str) {
 }
 
 /// A small modal name-entry dialog. Calls `on_ok` with the entered text.
-fn prompt(
+pub fn prompt(
     parent: &gtk::ApplicationWindow,
     title: &str,
     initial: &str,

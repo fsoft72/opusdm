@@ -46,7 +46,14 @@ pub fn generate_css(settings: &Settings) -> String {
             between rows; with it the labels stack flush. */
          .row-dir, .row-file {{ padding: 0 4px; border: 1px solid transparent; }} \
          .cell-selected {{ background-color: @theme_selected_bg_color; \
-                            color: @theme_selected_fg_color; }}",
+                            color: @theme_selected_fg_color; }} \
+         .filter-bar {{ background: alpha(@theme_bg_color, 0.8); border-bottom: 1px solid rgba(0, 0, 0, 0.2); padding: 2px 4px; }} \
+         .dim-label {{ opacity: 0.7; font-size: 0.85em; }} \
+         .command-palette {{ background: @theme_bg_color; }} \
+         .palette-search {{ font-size: 1.1em; padding: 4px; }} \
+         .palette-cat {{ font-size: 0.8em; font-weight: bold; opacity: 0.6; }} \
+         .palette-title {{ font-weight: 500; }} \
+         .palette-shortcut {{ font-size: 0.8em; opacity: 0.7; background: rgba(0, 0, 0, 0.15); border-radius: 3px; padding: 1px 4px; }}",
         c.source_bg, c.source_fg,
         c.dest_bg, c.dest_fg,
         c.dir_bg, c.dir_fg,

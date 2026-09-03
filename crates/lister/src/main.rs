@@ -4,8 +4,10 @@ mod actions;
 mod client;
 mod columns;
 mod dnd;
+mod filter;
 mod icons;
 mod model;
+mod palette;
 mod theme;
 mod window;
 
