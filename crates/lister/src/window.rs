@@ -60,6 +60,8 @@ pub struct Ui {
     pub filter_model: gtk::FilterListModel,
     /// Active Quick Look preview window, if open.
     pub preview_win: RefCell<Option<Rc<crate::preview::PreviewWindow>>>,
+    /// Quake-style dropdown terminal drawer.
+    pub terminal: Rc<crate::terminal::TerminalDrawer>,
     /// Single stylesheet for settings-driven colors; reloaded in place on
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
@@ -231,6 +233,10 @@ fn build_window(
         });
     }
 
+    // Quake-style dropdown terminal drawer
+    let terminal = crate::terminal::TerminalDrawer::new();
+    root.append(&terminal.container);
+
     // Transient message line.
     let job_line = gtk::Label::new(None);
     job_line.set_xalign(0.0);
@@ -281,12 +287,14 @@ fn build_window(
         role_lock_btn: pin_btn,
         role_guard: Cell::new(false),
         preview_win: RefCell::new(None),
+        terminal: terminal.clone(),
         job_line,
         button_row: button_row.clone(),
         settings: RefCell::new(settings),
         show_hidden: Cell::new(false),
         css_provider,
     });
+    terminal.attach_events(&ui);
     ui.update_css_for_colors();
 
     // Click the role badge to cycle SOURCE -> DEST -> NONE. If SOURCE is
@@ -434,6 +442,12 @@ fn build_window(
                 }
             }
 
+            // Global F4 shortcut for terminal drawer
+            if keyval == gdk::Key::F4 {
+                ui_for_keys.toggle_terminal();
+                return glib::Propagation::Stop;
+            }
+
             // Check if focus is inside an editable field
             let is_editing = gtk::prelude::RootExt::focus(&ui_for_keys.window)
                 .map(|w| w.is::<gtk::Editable>() || w.is::<gtk::TextView>())
@@ -441,6 +455,10 @@ fn build_window(
 
             if !is_editing {
                 match keyval {
+                    gdk::Key::grave | gdk::Key::asciitilde => {
+                        ui_for_keys.toggle_terminal();
+                        return glib::Propagation::Stop;
+                    }
                     gdk::Key::space | gdk::Key::F3 => {
                         ui_for_keys.toggle_preview();
                         return glib::Propagation::Stop;
@@ -474,7 +492,11 @@ fn build_window(
                         return glib::Propagation::Stop;
                     }
                     gdk::Key::Escape => {
-                        if ui_for_keys.filter_bar.container.is_visible() {
+                        if ui_for_keys.terminal.container.is_visible() {
+                            ui_for_keys.terminal.container.set_visible(false);
+                            column_view_for_keys.grab_focus();
+                            return glib::Propagation::Stop;
+                        } else if ui_for_keys.filter_bar.container.is_visible() {
                             ui_for_keys.dismiss_filter();
                             column_view_for_keys.grab_focus();
                             return glib::Propagation::Stop;
@@ -486,10 +508,16 @@ fn build_window(
                     _ => {}
                 }
             } else {
-                if keyval == gdk::Key::Escape && ui_for_keys.filter_bar.container.is_visible() {
-                    ui_for_keys.dismiss_filter();
-                    column_view_for_keys.grab_focus();
-                    return glib::Propagation::Stop;
+                if keyval == gdk::Key::Escape {
+                    if ui_for_keys.terminal.container.is_visible() {
+                        ui_for_keys.terminal.container.set_visible(false);
+                        column_view_for_keys.grab_focus();
+                        return glib::Propagation::Stop;
+                    } else if ui_for_keys.filter_bar.container.is_visible() {
+                        ui_for_keys.dismiss_filter();
+                        column_view_for_keys.grab_focus();
+                        return glib::Propagation::Stop;
+                    }
                 }
             }
 
@@ -554,6 +582,11 @@ impl Ui {
         }
     }
 
+    /// Toggle the Quake-style dropdown terminal drawer.
+    pub fn toggle_terminal(&self) {
+        self.terminal.toggle();
+    }
+
     /// Read `dir`, repopulate the store, update title/entry/status, notify the hub.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
         let rows = match read_dir_rows(dir) {
@@ -564,6 +597,7 @@ impl Ui {
             }
         };
         self.dismiss_filter();
+        self.terminal.sync_cwd(dir);
         *self.cwd.borrow_mut() = dir.to_path_buf();
         let show_hidden = self.show_hidden.get();
         let mut total_dirs = 0u32;

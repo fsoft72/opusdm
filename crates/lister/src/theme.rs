@@ -56,7 +56,13 @@ pub fn generate_css(settings: &Settings) -> String {
          .palette-shortcut {{ font-size: 0.8em; opacity: 0.7; background: rgba(0, 0, 0, 0.15); border-radius: 3px; padding: 1px 4px; }} \
          .preview-root {{ background: @theme_bg_color; }} \
          .preview-header {{ background: alpha(@theme_bg_color, 0.95); border-bottom: 1px solid rgba(0,0,0,0.15); }} \
-         .preview-title {{ font-weight: bold; font-size: 1.1em; }}",
+         .preview-title {{ font-weight: bold; font-size: 1.1em; }} \
+         .terminal-drawer {{ background: #121417; border-top: 1px solid rgba(255, 255, 255, 0.15); }} \
+         .terminal-header {{ background: #1a1d24; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding: 2px 6px; }} \
+         .terminal-title {{ font-family: monospace; font-size: 0.85em; opacity: 0.9; color: #58a6ff; }} \
+         .terminal-view {{ font-family: monospace; font-size: 0.9em; background: #121417; color: #c9d1d9; }} \
+         .terminal-entry {{ font-family: monospace; font-size: 0.9em; background: #161b22; color: #58a6ff; }} \
+         .terminal-prompt {{ font-family: monospace; font-weight: bold; color: #3fb950; }}",
         c.source_bg, c.source_fg,
         c.dest_bg, c.dest_fg,
         c.dir_bg, c.dir_fg,

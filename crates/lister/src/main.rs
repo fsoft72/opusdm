@@ -9,6 +9,7 @@ mod icons;
 mod model;
 mod palette;
 mod preview;
+mod terminal;
 mod theme;
 mod window;
 

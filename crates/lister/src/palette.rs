@@ -36,6 +36,7 @@ pub fn get_commands() -> Vec<CommandItem> {
         CommandItem { id: "reload", title: "Reload / Refresh Current Directory", category: "View", shortcut: Some("Ctrl+R") },
         CommandItem { id: "parent_dir", title: "Go to Parent Directory", category: "Navigation", shortcut: Some("Backspace") },
         CommandItem { id: "home_dir", title: "Go to Home Directory (~)", category: "Navigation", shortcut: Some("~") },
+        CommandItem { id: "terminal", title: "Toggle Terminal Drawer", category: "Tools", shortcut: Some("F4 / `") },
         CommandItem { id: "calc_sizes", title: "Calculate Directory Sizes", category: "Tools", shortcut: None },
         CommandItem { id: "set_source", title: "Set Role: SOURCE", category: "Roles", shortcut: None },
         CommandItem { id: "set_dest", title: "Set Role: DEST", category: "Roles", shortcut: None },
@@ -52,6 +53,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
         }
         "preview" => {
             ui.toggle_preview();
+        }
+        "terminal" => {
+            ui.toggle_terminal();
         }
         "select_all" => {
             ui.selection.select_all();

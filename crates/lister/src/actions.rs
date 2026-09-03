@@ -42,6 +42,14 @@ pub fn attach(ui: &Rc<Ui>) {
     );
     hidden_btn.set_active(is_hidden_active);
 
+    let preview_btn = gtk::Button::with_label("👁");
+    preview_btn.set_tooltip_text(Some("Quick Look Preview (F3 / Space)"));
+    preview_btn.add_css_class("opus-btn");
+
+    let term_btn = gtk::Button::with_label(">_");
+    term_btn.set_tooltip_text(Some("Terminal Drawer (F4 / `)"));
+    term_btn.add_css_class("opus-btn");
+
     row.append(&copy_btn);
     row.append(&move_btn);
     row.append(&delete_btn);
@@ -50,9 +58,25 @@ pub fn attach(ui: &Rc<Ui>) {
     row.append(&rename_btn);
     row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     row.append(&hidden_btn);
+    row.append(&preview_btn);
+    row.append(&term_btn);
 
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);
+
+    {
+        let ui = ui.clone();
+        preview_btn.connect_clicked(move |_| {
+            ui.toggle_preview();
+        });
+    }
+
+    {
+        let ui = ui.clone();
+        term_btn.connect_clicked(move |_| {
+            ui.toggle_terminal();
+        });
+    }
 
     {
         let ui = ui.clone();
