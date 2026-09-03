@@ -199,6 +199,39 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
             flash(&ui, &msg);
             return;
         }
+
+        let cwd = ui.cwd.borrow().clone();
+        if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
+            let names = ui.selected_names();
+            if names.is_empty() {
+                flash(&ui, "nothing selected");
+                return;
+            }
+            let temp_extract = std::env::temp_dir().join(format!("opusdm-extract-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&temp_extract);
+            let full_items: Vec<String> = names
+                .into_iter()
+                .map(|n| {
+                    if inner.is_empty() {
+                        n
+                    } else {
+                        format!("{}/{}", inner.trim_end_matches('/'), n)
+                    }
+                })
+                .collect();
+            match crate::archive::extract_items_to_dir(&arch, &full_items, &temp_extract) {
+                Ok(extracted) => {
+                    let _ = ui.client.send(&ToHub::RunJob {
+                        op: op.clone(),
+                        srcs: extracted,
+                        dest_dir: None,
+                    });
+                }
+                Err(e) => flash(&ui, &format!("extraction failed: {e}")),
+            }
+            return;
+        }
+
         let srcs = ui.selected_paths();
         if srcs.is_empty() {
             flash(&ui, "nothing selected");

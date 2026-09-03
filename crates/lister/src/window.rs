@@ -337,8 +337,20 @@ fn build_window(
     {
         let ui = ui.clone();
         parent_btn.connect_clicked(move |_| {
-            let parent = ui.cwd.borrow().parent().map(PathBuf::from);
-            if let Some(p) = parent {
+            let cwd = ui.cwd.borrow().clone();
+            if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
+                if inner.is_empty() {
+                    if let Some(p) = arch.parent() {
+                        ui.navigate_to(p);
+                    }
+                } else {
+                    let parent_inner = Path::new(&inner)
+                        .parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    ui.navigate_to(&crate::archive::make_archive_path(&arch, &parent_inner));
+                }
+            } else if let Some(p) = cwd.parent().map(PathBuf::from) {
                 ui.navigate_to(&p);
             }
         });
@@ -355,8 +367,14 @@ fn build_window(
         let ui = ui.clone();
         path_entry.connect_activate(move |entry| {
             let candidate = PathBuf::from(entry.text().to_string());
-            if candidate.is_dir() {
-                ui.navigate_to(&candidate);
+            let is_arch_sub = crate::archive::parse_archive_path(&candidate).is_some();
+            let is_arch_file = crate::archive::is_archive_file(&candidate) && candidate.is_file();
+            if candidate.is_dir() || is_arch_sub || is_arch_file {
+                if is_arch_file {
+                    ui.navigate_to(&crate::archive::make_archive_path(&candidate, ""));
+                } else {
+                    ui.navigate_to(&candidate);
+                }
             } else {
                 entry.add_css_class("error");
                 let entry = entry.clone();
@@ -368,17 +386,34 @@ fn build_window(
         });
     }
 
-    // Row activation: enter directory or open file.
+    // Row activation: enter directory, open archive, or open file.
     {
         let ui = ui.clone();
         column_view.connect_activate(move |_, position| {
             if let Some(row) = ui.row_at(position) {
-                let target = ui.cwd.borrow().join(&row.name);
-                if row.is_dir {
-                    ui.navigate_to(&target);
+                let cwd = ui.cwd.borrow().clone();
+                if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
+                    let next_inner = if inner.is_empty() {
+                        row.name.clone()
+                    } else {
+                        format!("{}/{}", inner.trim_end_matches('/'), row.name)
+                    };
+                    if row.is_dir {
+                        ui.navigate_to(&crate::archive::make_archive_path(&arch, &next_inner));
+                    } else if let Ok(temp_path) = crate::archive::extract_single_file_temp(&arch, &next_inner) {
+                        let uri = format!("file://{}", temp_path.to_string_lossy());
+                        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                    }
                 } else {
-                    let uri = format!("file://{}", target.to_string_lossy());
-                    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                    let target = cwd.join(&row.name);
+                    if row.is_dir {
+                        ui.navigate_to(&target);
+                    } else if crate::archive::is_archive_file(&target) {
+                        ui.navigate_to(&crate::archive::make_archive_path(&target, ""));
+                    } else {
+                        let uri = format!("file://{}", target.to_string_lossy());
+                        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                    }
                 }
             }
         });
@@ -597,15 +632,31 @@ impl Ui {
 
     /// Read `dir`, repopulate the store, update title/entry/status, notify the hub.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
-        let rows = match read_dir_rows(dir) {
-            Ok(r) => r,
-            Err(e) => {
-                self.job_line.set_text(&format!("cannot open {}: {e}", dir.display()));
-                return;
+        let rows = if let Some((arch, inner)) = crate::archive::parse_archive_path(dir) {
+            match crate::archive::read_archive_rows(&arch, &inner) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.job_line.set_text(&format!("cannot read archive {}: {e}", arch.display()));
+                    return;
+                }
+            }
+        } else {
+            match read_dir_rows(dir) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.job_line.set_text(&format!("cannot open {}: {e}", dir.display()));
+                    return;
+                }
             }
         };
         self.dismiss_filter();
-        self.terminal.sync_cwd(dir);
+        if let Some((arch, _)) = crate::archive::parse_archive_path(dir) {
+            if let Some(parent) = arch.parent() {
+                self.terminal.sync_cwd(parent);
+            }
+        } else {
+            self.terminal.sync_cwd(dir);
+        }
         *self.cwd.borrow_mut() = dir.to_path_buf();
         let show_hidden = self.show_hidden.get();
         let mut total_dirs = 0u32;
@@ -657,7 +708,8 @@ impl Ui {
         self.selected_names().into_iter().map(|n| cwd.join(n)).collect()
     }
 
-    fn selected_names(&self) -> Vec<String> {
+    /// Names of all currently selected rows.
+    pub fn selected_names(&self) -> Vec<String> {
         let mut names = Vec::new();
         for i in 0..self.selection.n_items() {
             if self.selection.is_selected(i) {

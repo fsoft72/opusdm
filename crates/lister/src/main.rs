@@ -1,6 +1,7 @@
 //! opusdm-lister: one file-manager window. Spawned by opusdm-hub.
 
 mod actions;
+mod archive;
 mod client;
 mod columns;
 mod dnd;
