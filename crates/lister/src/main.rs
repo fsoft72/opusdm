@@ -17,6 +17,7 @@ mod preview;
 mod terminal;
 mod theme;
 mod tools;
+mod watcher;
 mod window;
 
 use std::path::PathBuf;

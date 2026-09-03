@@ -143,7 +143,19 @@ Generate file hashes on demand:
 - Recursively traverses the directory tree in background threads.
 - Replaces the directory's size column with the computed total (e.g., `3.4 GB`) and flashes the overall size in the status bar.
 
-### 3.10 Theme Presets & File Icons
+### 3.10 Real-Time Auto-Refresh (inotify)
+The open directory is watched with Linux `inotify`, so the list follows what happens on disk:
+- A download finishing, an editor saving, a `git checkout` or a build writing output all show up
+  within a few hundred milliseconds - no manual `Ctrl+R`.
+- Bursts are coalesced: a build that writes thousands of files reloads the list once, not once per
+  file.
+- An active filter survives the refresh, caret position included, so a reload never eats what you
+  are typing.
+- Virtual archive paths are not watched (there is nothing on disk to watch).
+- Turn it off with **"Auto-refresh the list when the directory changes"** under **BEHAVIOUR** in
+  Settings.
+
+### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
   - `Default (light)` - the original white list with a green SOURCE and pink DEST badge.

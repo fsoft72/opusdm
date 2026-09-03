@@ -2,6 +2,12 @@
 
 ## 2026-09-03
 
+- OPTIMIZE 3.6 - Auto-refresh in tempo reale con inotify. Nuovo `crates/lister/src/watcher.rs`: inotify diretto tramite `libc`, senza aggiungere dipendenze. Un thread per Lister possiede il file descriptor e blocca su `poll`; la directory osservata viene sostituita ad ogni navigazione.
+- Le raffiche di eventi vengono accorpate (debounce 250 ms, tetto di 2 s): un `cargo build` che scrive migliaia di file provoca un solo reload invece di uno per file. Le notifiche raggiungono il thread GTK su un `async_channel`, lo stesso schema gia usato dal reader dell'hub.
+- Nuovo blocco `Behavior { auto_refresh, auto_refresh_debounce_ms }` in `Settings`, con interruttore nella sezione BEHAVIOUR del dialogo Settings. Acceso di default. `debounce_ms()` limita il valore a 50-5000 ms, cosi un settings.json modificato a mano non puo far girare a vuoto il watcher ne farlo sembrare bloccato.
+- I path virtuali degli archivi non vengono osservati. Se il kernel rifiuta l'istanza inotify (limite di watch raggiunto) il Lister lo segnala su stderr e continua a funzionare senza auto-refresh.
+- Il filtro attivo viene salvato e ripristinato attorno al reload (testo, posizione del cursore e focus): `reload()` passa da `navigate_to()`, che azzera la barra del filtro, quindi senza questo l'auto-refresh cancellava quello che l'utente stava digitando.
+- Test: parsing del buffer inotify grezzo (compresa una coda troncata) piu cinque test di integrazione sul watcher vero - creazione file, accorpamento di 200 scritture, eventi di altre directory ignorati, `unwatch`, e sostituzione della directory osservata.
 - OPTIMIZE 3.5 - Keybindings modali (vim mode). Nuovo `crates/lister/src/keys.rs`: la tabella dei binding e una funzione pura `resolve(key, ctrl, shift, focus) -> Option<Action>`, testabile senza GTK; `window.rs` si limita a eseguire l'azione risolta. La chiusura inline di ~130 righe che gestiva i tasti e sparita.
 - Nuovi tasti: `j`/`k` giu/su, `g`/`G` prima/ultima riga, `l` o `Enter` entra (directory, archivio virtuale o apertura file), `h` o `Backspace` risale al parent, `~` va alla home, `Ins` inverte la selezione della riga sotto il cursore e avanza, `Tab` porta il focus sul Lister con il ruolo opposto (SOURCE <-> DEST).
 - Bug preesistente corretto: `c`, `m`, `Del`, `Backspace` e `~` erano elencati nella palette e in `docs/usage.md` ma non erano mai stati collegati a nessun handler. Ora funzionano davvero, insieme a `d` come alias di `Del`.

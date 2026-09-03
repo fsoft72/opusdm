@@ -120,6 +120,7 @@ mod tests {
             let settings = Settings {
                 colors: preset.colors(),
                 appearance: Default::default(),
+                behavior: Default::default(),
             };
             let css = generate_css(&settings);
             let c = &settings.colors;
@@ -162,6 +163,7 @@ mod tests {
         let mut settings = Settings {
             colors: opusdm_ipc::ThemePreset::Cyberpunk.colors(),
             appearance: Default::default(),
+            behavior: Default::default(),
         };
         assert!(!generate_css(&settings).contains("@define-color"));
 
@@ -201,6 +203,7 @@ mod tests {
                     monospace_list: true,
                     theme_window: true,
                 },
+                behavior: Default::default(),
             };
             provider.load_from_data(&generate_css(&settings));
             assert!(

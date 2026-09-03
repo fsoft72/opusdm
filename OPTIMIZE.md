@@ -217,6 +217,17 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
   * `*` per invertire la selezione; `+` / `-` per selezionare/deselezionare per glob (es. `*.png`).
 
 ### 3.6 Inotify / File Watcher Real-Time
+> ✅ **FATTO** - `crates/lister/src/watcher.rs`: inotify diretto via `libc` (nessuna dipendenza nuova).
+> Un thread per Lister possiede il file descriptor inotify e blocca su `poll`; la directory osservata
+> cambia ad ogni navigazione. Le raffiche di eventi (un `cargo build`, un `git checkout`, uno scompatta)
+> vengono accorpate con un debounce di 250 ms (max 2 s), quindi la lista si ricarica una volta sola.
+> Le notifiche arrivano al thread GTK su un `async_channel`, come gia fa il reader dell'hub.
+> Interruttore in Settings (`Behavior::auto_refresh`, acceso di default); i path virtuali degli
+> archivi non vengono osservati. Se il kernel rifiuta l'istanza inotify (limite watch) il Lister
+> continua a funzionare senza auto-refresh.
+> Il filtro attivo viene salvato e ripristinato attorno al reload, altrimenti l'auto-refresh
+> cancellava quello che l'utente stava digitando.
+
 * **Aggiornamento Automatico senza Premere Refresh**:
   * Usare `notify` o chiamate dirette a Linux `inotify` per osservare la directory aperta nel Lister.
   * Se un terminale, un editor o un download scrive o crea un file, il Lister si aggiorna in millisecondi in tempo reale senza dover ricaricare a mano.
@@ -275,7 +286,7 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
 | **Fighissimo** | Preset Temi Vintage (Amiga, DOpus 4, Cyberpunk) | ✨ Wow | Bassa | ✅ **FATTO** |
 | **Fighissimo** | Icone Nerd Font + indicatori tipo (`/ * @ = \|`) | ✨ Wow | Bassa | ✅ **FATTO** |
 | **Fighissimo** | Quick Look / Previewer Istantaneo (Spazio/F3) | 🚀 Produttività | Media | ✅ **FATTO** (`d5568dd`) |
-| **Fighissimo** | File Watcher `inotify` (auto-refresh reattivo) | 🚀 Produttività | Media | **Alta** |
+| **Fighissimo** | File Watcher `inotify` (auto-refresh reattivo) | 🚀 Produttività | Media | ✅ **FATTO** |
 | **Fighissimo** | Navigazione Tastiera / Vim Mode (`j`,`k`,`h`,`l`, Tab) | ⌨️ UX | Media | ✅ **FATTO** |
 | **Fighissimo** | Terminale embedded a scomparsa | 🚀 Wow | Media | ✅ **FATTO** (`45d2588`) |
 | **Fighissimo** | Batch Rename avanzato con live preview | 🛠️ Funzionale | Media | ✅ **FATTO** (`c0b2e33`) |

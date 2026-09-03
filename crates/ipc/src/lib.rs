@@ -6,7 +6,7 @@ pub mod sockpath;
 pub mod theme;
 
 pub use proto::{
-    Appearance, ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role, Settings, ToHub,
-    ToLister, PRESET_CUSTOM,
+    Appearance, Behavior, ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role,
+    Settings, ToHub, ToLister, AUTO_REFRESH_DEBOUNCE_RANGE_MS, PRESET_CUSTOM,
 };
 pub use theme::ThemePreset;

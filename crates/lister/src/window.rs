@@ -79,6 +79,10 @@ pub struct Ui {
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
     pub css_provider: gtk::CssProvider,
+    /// inotify watch on the open directory. `None` when the kernel refused an
+    /// inotify instance (watch limit reached), in which case the Lister simply
+    /// keeps working without auto-refresh.
+    pub watcher: Option<crate::watcher::DirWatcher>,
 }
 
 /// Build and run the window application.
@@ -295,6 +299,18 @@ fn build_window(
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
+    // One inotify instance per Lister, started even when auto-refresh is off so
+    // toggling the setting does not need a restart. A kernel refusal (watch
+    // limit) is not fatal: the Lister just loses live refresh.
+    let debounce = std::time::Duration::from_millis(settings.behavior.debounce_ms());
+    let (watcher, watch_rx) = match crate::watcher::DirWatcher::start(debounce) {
+        Ok((w, rx)) => (Some(w), Some(rx)),
+        Err(e) => {
+            eprintln!("opusdm-lister: auto-refresh unavailable: {e}");
+            (None, None)
+        }
+    };
+
     let ui = Rc::new(Ui {
         window: window.clone(),
         client,
@@ -322,7 +338,18 @@ fn build_window(
         settings: RefCell::new(settings),
         show_hidden: Cell::new(false),
         css_provider,
+        watcher,
     });
+
+    // Drain coalesced watch notices on the GTK thread.
+    if let Some(watch_rx) = watch_rx {
+        let ui = ui.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(dir) = watch_rx.recv().await {
+                ui.on_directory_changed(&dir);
+            }
+        });
+    }
     *ui_slot.borrow_mut() = Some(ui.clone());
     terminal.attach_events(&ui);
     ui.update_css_for_colors();
@@ -573,6 +600,7 @@ impl Ui {
             }
             new_items.push(BoxedAnyObject::new(Rc::new(row)));
         }
+        self.sync_watch(dir);
         self.totals.set((total_dirs, total_files, total_bytes));
         // A new listing invalidates the old cursor row.
         self.cursor.set(0);
@@ -720,6 +748,9 @@ impl Ui {
                 };
                 *self.settings.borrow_mut() = new_settings;
                 self.update_css_for_colors();
+                // Auto-refresh may have just been switched on or off.
+                let cwd = self.cwd.borrow().clone();
+                self.sync_watch(&cwd);
                 // Name-column text is built at bind time, so glyph and
                 // indicator changes only show after the rows are rebound.
                 if names_changed {
@@ -890,6 +921,46 @@ impl Ui {
             return;
         };
         let _ = self.client.send(&ToHub::PresentLister(target));
+    }
+
+    /// Point the inotify watch at `dir`, or drop it when auto-refresh is off or
+    /// the path is a virtual archive (nothing on disk to watch).
+    fn sync_watch(&self, dir: &Path) {
+        let Some(watcher) = &self.watcher else { return };
+        let enabled = self.settings.borrow().behavior.auto_refresh;
+        if enabled && crate::archive::parse_archive_path(dir).is_none() {
+            watcher.watch(dir);
+        } else {
+            watcher.unwatch();
+        }
+    }
+
+    /// A watched directory changed on disk. Reloads only if it is still the one
+    /// on screen.
+    ///
+    /// `reload` goes through `navigate_to`, which resets the filter bar, so an
+    /// auto-refresh would otherwise wipe a filter the user is halfway through
+    /// typing. Save it across the reload and put it back.
+    fn on_directory_changed(self: &Rc<Self>, dir: &Path) {
+        if *self.cwd.borrow() != dir {
+            return;
+        }
+        let filtering = self.filter_bar.container.is_visible();
+        let query = filtering.then(|| self.filter_bar.entry.text().to_string());
+        let had_focus = filtering && self.filter_bar.entry.has_focus();
+
+        self.reload();
+
+        let Some(query) = query else { return };
+        self.filter_bar.container.set_visible(true);
+        // set_text re-fires "changed", which re-applies the filter.
+        self.filter_bar.entry.set_text(&query);
+        self.filter_bar.entry.set_position(-1);
+        if had_focus {
+            // Hiding the entry during the reload took the focus with it.
+            self.filter_bar.entry.grab_focus();
+            self.filter_bar.entry.set_position(-1);
+        }
     }
 
     /// Reload the settings-driven stylesheet in place (same provider, new

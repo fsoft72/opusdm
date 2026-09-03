@@ -179,6 +179,39 @@ impl Default for Appearance {
     }
 }
 
+/// Non-visual behaviour switches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Behavior {
+    /// Watch the open directory with inotify and reload it when it changes on
+    /// disk, without waiting for a manual refresh.
+    pub auto_refresh: bool,
+    /// How long a burst of filesystem events is allowed to keep extending
+    /// itself before the Lister reloads. Clamped by
+    /// [`AUTO_REFRESH_DEBOUNCE_RANGE_MS`] when used.
+    pub auto_refresh_debounce_ms: u64,
+}
+
+/// Accepted range for [`Behavior::auto_refresh_debounce_ms`]. Too low and a
+/// build storm reloads the list constantly; too high and it feels broken.
+pub const AUTO_REFRESH_DEBOUNCE_RANGE_MS: (u64, u64) = (50, 5_000);
+
+impl Default for Behavior {
+    fn default() -> Self {
+        Self { auto_refresh: true, auto_refresh_debounce_ms: 250 }
+    }
+}
+
+impl Behavior {
+    /// The debounce to actually use, clamped into
+    /// [`AUTO_REFRESH_DEBOUNCE_RANGE_MS`] so a hand-edited settings.json cannot
+    /// make the Lister spin or appear frozen.
+    pub fn debounce_ms(&self) -> u64 {
+        let (lo, hi) = AUTO_REFRESH_DEBOUNCE_RANGE_MS;
+        self.auto_refresh_debounce_ms.clamp(lo, hi)
+    }
+}
+
 /// Every user-configurable setting the hub owns, persists to
 /// settings.json, and distributes to every Lister. This one struct is the
 /// wire format (`Welcome`/`SettingsUpdate`), the on-disk JSON shape, and the
@@ -189,6 +222,7 @@ impl Default for Appearance {
 pub struct Settings {
     pub colors: ColorSettings,
     pub appearance: Appearance,
+    pub behavior: Behavior,
 }
 
 /// Messages the hub sends to a Lister.
@@ -351,6 +385,24 @@ mod tests {
         assert_eq!(s.colors.file_fg, "#888888");
         assert_eq!(s.colors.selected_bg, ColorSettings::default().selected_bg);
         assert_eq!(s.appearance, Appearance::default());
+        assert_eq!(s.behavior, Behavior::default());
+    }
+
+    #[test]
+    fn auto_refresh_is_on_by_default() {
+        assert!(Behavior::default().auto_refresh);
+    }
+
+    #[test]
+    fn a_hand_edited_debounce_is_clamped_to_something_usable() {
+        let (lo, hi) = AUTO_REFRESH_DEBOUNCE_RANGE_MS;
+        let at = |ms| Behavior { auto_refresh: true, auto_refresh_debounce_ms: ms }.debounce_ms();
+        assert_eq!(at(0), lo, "0 would spin the watcher");
+        assert_eq!(at(u64::MAX), hi, "a huge value would look frozen");
+        assert_eq!(at(lo), lo);
+        assert_eq!(at(hi), hi);
+        assert_eq!(at(250), 250);
+        assert_eq!(Behavior::default().debounce_ms(), 250);
     }
 
     #[test]
@@ -370,6 +422,7 @@ mod tests {
                 monospace_list: true,
                 theme_window: true,
             },
+            behavior: Behavior { auto_refresh: false, auto_refresh_debounce_ms: 900 },
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);

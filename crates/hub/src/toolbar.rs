@@ -536,6 +536,21 @@ fn add_theme_section(
     (dropdown, checks)
 }
 
+/// The "Behaviour" section. Returns the auto-refresh toggle.
+fn add_behavior_section(vbox: &gtk::Box, behavior: &opusdm_ipc::Behavior) -> gtk::CheckButton {
+    let heading = gtk::Label::new(Some("BEHAVIOUR"));
+    heading.set_xalign(0.0);
+    heading.add_css_class("heading");
+    vbox.append(&heading);
+
+    let auto_refresh =
+        gtk::CheckButton::with_label("Auto-refresh the list when the directory changes (inotify)");
+    auto_refresh.set_active(behavior.auto_refresh);
+    vbox.append(&auto_refresh);
+
+    auto_refresh
+}
+
 fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>) {
     let settings_data = settings::load_settings();
     let c = &settings_data.colors;
@@ -556,6 +571,7 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
 
     let (preset_dd, appearance_checks) =
         add_theme_section(&vbox, &settings_data.appearance.preset, &settings_data.appearance);
+    let auto_refresh = add_behavior_section(&vbox, &settings_data.behavior);
 
     let (src_bg, src_fg) = add_color_section(&vbox, &window, "SOURCE", &c.source_bg, &c.source_fg);
     let (dst_bg, dst_fg) = add_color_section(&vbox, &window, "DEST", &c.dest_bg, &c.dest_fg);
@@ -612,10 +628,16 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
         save_btn.connect_clicked(move |_| {
             let colors = entries.read();
             let appearance = appearance_checks.read(&colors);
+            let behavior = opusdm_ipc::Behavior {
+                auto_refresh: auto_refresh.is_active(),
+                // Not exposed in the dialog yet; keep whatever settings.json has.
+                auto_refresh_debounce_ms: settings_data.behavior.auto_refresh_debounce_ms,
+            };
             // Server owns the in-memory settings and persists to disk.
             let _ = cmd_tx.send(HubCmd::UpdateSettings(Box::new(opusdm_ipc::Settings {
                 colors,
                 appearance,
+                behavior,
             })));
             window.close();
         });
