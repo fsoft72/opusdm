@@ -8,7 +8,7 @@ use crate::settings;
 use opusdm_fsops::Progress;
 use opusdm_ipc::frame::{recv, send};
 use opusdm_ipc::{ListerId, Op, Outcome, Resolution, ToHub, ToLister};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -142,6 +142,7 @@ fn owner_loop(
     on_spawn: SpawnFn,
 ) {
     let mut conns: HashMap<u64, Conn> = HashMap::new();
+    let mut free_conns: BTreeSet<u64> = BTreeSet::new();
     let mut next_conn: u64 = 1;
     let mut roles = RoleState::default();
     // Loaded once at startup; kept in memory and updated in place by
@@ -167,9 +168,18 @@ fn owner_loop(
     for msg in rx {
         match msg {
             OwnerMsg::Accepted(stream) => {
-                let cid = next_conn;
-                next_conn += 1;
-                let Ok(write) = stream.try_clone() else { continue };
+                let cid = if let Some(&first) = free_conns.iter().next() {
+                    free_conns.remove(&first);
+                    first
+                } else {
+                    let id = next_conn;
+                    next_conn += 1;
+                    id
+                };
+                let Ok(write) = stream.try_clone() else {
+                    free_conns.insert(cid);
+                    continue;
+                };
                 conns.insert(
                     cid,
                     Conn { write, registered: false, pid: 0, path: PathBuf::new() },
@@ -216,7 +226,7 @@ fn owner_loop(
             }
 
             OwnerMsg::FromLister(cid, ToHub::Goodbye) | OwnerMsg::ListerEof(cid) => {
-                drop_conn(cid, &mut conns, &mut roles, &evt_tx);
+                drop_conn(cid, &mut conns, &mut free_conns, &mut roles, &evt_tx);
             }
 
             OwnerMsg::FromLister(cid, ToHub::FocusGained) => {
@@ -360,7 +370,7 @@ fn owner_loop(
             OwnerMsg::FromGtk(HubCmd::ChildExited(pid)) => {
                 let hit = conns.iter().find(|(_, c)| c.pid == pid).map(|(k, _)| *k);
                 if let Some(cid) = hit {
-                    drop_conn(cid, &mut conns, &mut roles, &evt_tx);
+                    drop_conn(cid, &mut conns, &mut free_conns, &mut roles, &evt_tx);
                 }
             }
         }
@@ -386,10 +396,13 @@ fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
 fn drop_conn(
     cid: u64,
     conns: &mut HashMap<u64, Conn>,
+    free_conns: &mut BTreeSet<u64>,
     roles: &mut RoleState,
     evt_tx: &Sender<HubEvent>,
 ) {
     let Some(c) = conns.remove(&cid) else { return };
+    free_conns.insert(cid);
+    let _ = c.write.shutdown(std::net::Shutdown::Both);
     if !c.registered {
         return;
     }
