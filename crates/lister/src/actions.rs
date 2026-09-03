@@ -152,8 +152,12 @@ pub fn attach(ui: &Rc<Ui>) {
         let ui = ui.clone();
         rename_btn.connect_clicked(move |_| {
             let sel = ui.selected_paths();
-            if sel.len() != 1 {
-                flash(&ui, "select exactly one item to rename");
+            if sel.is_empty() {
+                flash(&ui, "nothing selected to rename");
+                return;
+            }
+            if sel.len() > 1 {
+                crate::batch_rename::open_batch_rename_dialog(&ui);
                 return;
             }
             let old = sel.into_iter().next().unwrap();

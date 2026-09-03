@@ -33,6 +33,7 @@ pub fn get_commands() -> Vec<CommandItem> {
         CommandItem { id: "mkdir", title: "Make Directory...", category: "File Ops", shortcut: Some("F7") },
         CommandItem { id: "newfile", title: "New File...", category: "File Ops", shortcut: Some("Shift+F7") },
         CommandItem { id: "rename", title: "Rename...", category: "File Ops", shortcut: Some("F2") },
+        CommandItem { id: "batch_rename", title: "Batch Rename Selected Files (Regex/Numbering)...", category: "File Ops", shortcut: Some("F2 (multi)") },
         CommandItem { id: "reload", title: "Reload / Refresh Current Directory", category: "View", shortcut: Some("Ctrl+R") },
         CommandItem { id: "parent_dir", title: "Go to Parent Directory", category: "Navigation", shortcut: Some("Backspace") },
         CommandItem { id: "home_dir", title: "Go to Home Directory (~)", category: "Navigation", shortcut: Some("~") },
@@ -185,8 +186,12 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
         }
         "rename" => {
             let sel = ui.selected_paths();
-            if sel.len() != 1 {
-                crate::actions::flash(ui, "select exactly one item to rename");
+            if sel.is_empty() {
+                crate::actions::flash(ui, "nothing selected to rename");
+                return;
+            }
+            if sel.len() > 1 {
+                crate::batch_rename::open_batch_rename_dialog(ui);
                 return;
             }
             let old = sel.into_iter().next().unwrap();
@@ -203,6 +208,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                     Err(e) => crate::actions::flash(&ui_clone, &format!("rename failed: {e}")),
                 }
             });
+        }
+        "batch_rename" => {
+            crate::batch_rename::open_batch_rename_dialog(ui);
         }
         "reload" => {
             ui.reload();

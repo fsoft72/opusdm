@@ -2,6 +2,7 @@
 
 mod actions;
 mod archive;
+mod batch_rename;
 mod client;
 mod columns;
 mod dnd;

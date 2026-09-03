@@ -62,7 +62,9 @@ pub fn generate_css(settings: &Settings) -> String {
          .terminal-title {{ font-family: monospace; font-size: 0.85em; opacity: 0.9; color: #58a6ff; }} \
          .terminal-view {{ font-family: monospace; font-size: 0.9em; background: #121417; color: #c9d1d9; }} \
          .terminal-entry {{ font-family: monospace; font-size: 0.9em; background: #161b22; color: #58a6ff; }} \
-         .terminal-prompt {{ font-family: monospace; font-weight: bold; color: #3fb950; }}",
+         .terminal-prompt {{ font-family: monospace; font-weight: bold; color: #3fb950; }} \
+         .success-text {{ color: #2ea043; font-weight: 500; }} \
+         .error-text {{ color: #da3633; font-weight: bold; }}",
         c.source_bg, c.source_fg,
         c.dest_bg, c.dest_fg,
         c.dir_bg, c.dir_fg,
