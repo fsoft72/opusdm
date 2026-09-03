@@ -58,6 +58,8 @@ pub struct Ui {
     /// Filter list model wrapping store.
     #[allow(dead_code)]
     pub filter_model: gtk::FilterListModel,
+    /// Active Quick Look preview window, if open.
+    pub preview_win: RefCell<Option<Rc<crate::preview::PreviewWindow>>>,
     /// Single stylesheet for settings-driven colors; reloaded in place on
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
@@ -278,6 +280,7 @@ fn build_window(
         totals: Cell::new((0, 0, 0)),
         role_lock_btn: pin_btn,
         role_guard: Cell::new(false),
+        preview_win: RefCell::new(None),
         job_line,
         button_row: button_row.clone(),
         settings: RefCell::new(settings),
@@ -365,10 +368,13 @@ fn build_window(
         });
     }
 
-    // Selection changes update the status line.
+    // Selection changes update the status line and active preview if open.
     {
         let ui = ui.clone();
-        selection.connect_selection_changed(move |_, _, _| ui.update_status());
+        selection.connect_selection_changed(move |_, _, _| {
+            ui.update_status();
+            ui.update_preview_if_open();
+        });
     }
 
     // Focus -> notify the hub.
@@ -435,6 +441,10 @@ fn build_window(
 
             if !is_editing {
                 match keyval {
+                    gdk::Key::space | gdk::Key::F3 => {
+                        ui_for_keys.toggle_preview();
+                        return glib::Propagation::Stop;
+                    }
                     gdk::Key::slash => {
                         ui_for_keys.reveal_filter();
                         return glib::Propagation::Stop;
@@ -503,6 +513,45 @@ impl Ui {
     /// Dismiss and reset the filter bar.
     pub fn dismiss_filter(&self) {
         self.filter_bar.dismiss();
+    }
+
+    /// Toggle or open Quick Look preview for the currently selected item.
+    pub fn toggle_preview(self: &Rc<Self>) {
+        let mut p_guard = self.preview_win.borrow_mut();
+        if let Some(prev) = p_guard.take() {
+            prev.window.close();
+            return;
+        }
+
+        let paths = self.selected_paths();
+        let target = if let Some(p) = paths.first() {
+            p.clone()
+        } else {
+            self.cwd_path()
+        };
+
+        let prev = crate::preview::PreviewWindow::new(&self.window);
+        prev.load_file(&target);
+
+        let ui_clone = self.clone();
+        prev.window.connect_close_request(move |_| {
+            ui_clone.preview_win.borrow_mut().take();
+            glib::Propagation::Proceed
+        });
+
+        prev.window.present();
+        *p_guard = Some(prev);
+    }
+
+    /// If preview window is open, update it with the current selection.
+    pub fn update_preview_if_open(&self) {
+        let guard = self.preview_win.borrow();
+        if let Some(prev) = guard.as_ref() {
+            let paths = self.selected_paths();
+            if let Some(target) = paths.first() {
+                prev.load_file(target);
+            }
+        }
     }
 
     /// Read `dir`, repopulate the store, update title/entry/status, notify the hub.

@@ -8,6 +8,7 @@ mod filter;
 mod icons;
 mod model;
 mod palette;
+mod preview;
 mod theme;
 mod window;
 

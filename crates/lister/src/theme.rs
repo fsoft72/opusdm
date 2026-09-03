@@ -53,7 +53,10 @@ pub fn generate_css(settings: &Settings) -> String {
          .palette-search {{ font-size: 1.1em; padding: 4px; }} \
          .palette-cat {{ font-size: 0.8em; font-weight: bold; opacity: 0.6; }} \
          .palette-title {{ font-weight: 500; }} \
-         .palette-shortcut {{ font-size: 0.8em; opacity: 0.7; background: rgba(0, 0, 0, 0.15); border-radius: 3px; padding: 1px 4px; }}",
+         .palette-shortcut {{ font-size: 0.8em; opacity: 0.7; background: rgba(0, 0, 0, 0.15); border-radius: 3px; padding: 1px 4px; }} \
+         .preview-root {{ background: @theme_bg_color; }} \
+         .preview-header {{ background: alpha(@theme_bg_color, 0.95); border-bottom: 1px solid rgba(0,0,0,0.15); }} \
+         .preview-title {{ font-weight: bold; font-size: 1.1em; }}",
         c.source_bg, c.source_fg,
         c.dest_bg, c.dest_fg,
         c.dir_bg, c.dir_fg,

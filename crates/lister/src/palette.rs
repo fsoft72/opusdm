@@ -20,6 +20,7 @@ pub struct CommandItem {
 pub fn get_commands() -> Vec<CommandItem> {
     vec![
         CommandItem { id: "filter", title: "Filter Files in Current View", category: "View", shortcut: Some("/") },
+        CommandItem { id: "preview", title: "Quick Look File Preview", category: "View", shortcut: Some("F3 / Space") },
         CommandItem { id: "select_all", title: "Select All", category: "Selection", shortcut: Some("Ctrl+A") },
         CommandItem { id: "deselect_all", title: "Deselect All", category: "Selection", shortcut: None },
         CommandItem { id: "invert_selection", title: "Invert Selection", category: "Selection", shortcut: Some("*") },
@@ -48,6 +49,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
     match cmd_id {
         "filter" => {
             ui.reveal_filter();
+        }
+        "preview" => {
+            ui.toggle_preview();
         }
         "select_all" => {
             ui.selection.select_all();
