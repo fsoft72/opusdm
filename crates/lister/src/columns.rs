@@ -7,8 +7,6 @@ use crate::model::{
 use gtk4 as gtk;
 use gtk::glib::BoxedAnyObject;
 use gtk::prelude::*;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Clone, Copy)]
@@ -51,9 +49,6 @@ pub fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
         item.set_child(Some(&label));
     });
     let tz = local_tz_offset_secs();
-    // uid/gid -> name lookups hit NSS (files/LDAP); cache per column factory
-    // so scrolling and resorting don't repeat the same lookup per row.
-    let name_cache: Rc<RefCell<HashMap<u32, String>>> = Rc::new(RefCell::new(HashMap::new()));
     factory.connect_bind(move |_, list_item| {
         let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let row = item
@@ -92,19 +87,11 @@ pub fn add_column(view: &gtk::ColumnView, title: &str, kind: ColKind) {
             }
             ColKind::User => {
                 label.set_xalign(0.0);
-                let mut cache = name_cache.borrow_mut();
-                let name = cache
-                    .entry(row.uid)
-                    .or_insert_with(|| format_user(row.uid));
-                label.set_text(name);
+                label.set_text(&format_user(row.uid));
             }
             ColKind::Group => {
                 label.set_xalign(0.0);
-                let mut cache = name_cache.borrow_mut();
-                let name = cache
-                    .entry(row.gid)
-                    .or_insert_with(|| format_group(row.gid));
-                label.set_text(name);
+                label.set_text(&format_group(row.gid));
             }
             ColKind::Access => {
                 label.set_xalign(0.0);

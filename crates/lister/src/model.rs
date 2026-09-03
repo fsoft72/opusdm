@@ -48,24 +48,44 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        let link_meta = std::fs::symlink_metadata(entry.path())?;
-        let is_symlink = link_meta.file_type().is_symlink();
-        let target_meta = std::fs::metadata(entry.path()); // follows symlinks
-        let (is_dir, size, broken_link) = match &target_meta {
-            Ok(m) => (m.is_dir(), if m.is_dir() { 0 } else { m.len() }, false),
-            Err(_) => (false, 0, is_symlink),
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
         };
-        let mtime_source = match &target_meta {
-            Ok(m) => m,
-            Err(_) => &link_meta,
+        let is_symlink = ft.is_symlink();
+        let (is_dir, size, broken_link, modified_unix, uid, gid, mode) = if is_symlink {
+            let link_meta = std::fs::symlink_metadata(entry.path())?;
+            let target_meta = std::fs::metadata(entry.path()); // follows symlinks
+            let (is_dir, size, broken_link) = match &target_meta {
+                Ok(m) => (m.is_dir(), if m.is_dir() { 0 } else { m.len() }, false),
+                Err(_) => (false, 0, true),
+            };
+            let mtime_source = match &target_meta {
+                Ok(m) => m,
+                Err(_) => &link_meta,
+            };
+            let modified_unix = mtime_source
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let (uid, gid, mode) = metadata_perms(&link_meta);
+            (is_dir, size, broken_link, modified_unix, uid, gid, mode)
+        } else {
+            // Direct entry (not a symlink) - single metadata call needed!
+            let meta = entry.metadata()?;
+            let is_dir = meta.is_dir();
+            let size = if is_dir { 0 } else { meta.len() };
+            let modified_unix = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let (uid, gid, mode) = metadata_perms(&meta);
+            (is_dir, size, false, modified_unix, uid, gid, mode)
         };
-        let modified_unix = mtime_source
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let (uid, gid, mode) = metadata_perms(&link_meta);
         rows.push(Row { name, is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode });
     }
     Ok(rows)
@@ -142,8 +162,27 @@ pub fn dir_first_cmp(a: &Row, b: &Row, col: SortCol, desc: bool) -> Ordering {
     }
 }
 
-/// Human-readable user name or UID fallback.
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+static USER_CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+static GROUP_CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+
+/// Human-readable user name or UID fallback (cached globally).
 pub fn format_user(uid: u32) -> String {
+    if let Ok(mut guard) = USER_CACHE.lock() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        if let Some(name) = cache.get(&uid) {
+            return name.clone();
+        }
+        let resolved = resolve_user_nss(uid);
+        cache.insert(uid, resolved.clone());
+        return resolved;
+    }
+    resolve_user_nss(uid)
+}
+
+fn resolve_user_nss(uid: u32) -> String {
     #[cfg(unix)]
     {
         use std::ffi::CStr;
@@ -162,8 +201,21 @@ pub fn format_user(uid: u32) -> String {
     uid.to_string()
 }
 
-/// Human-readable group name or GID fallback.
+/// Human-readable group name or GID fallback (cached globally).
 pub fn format_group(gid: u32) -> String {
+    if let Ok(mut guard) = GROUP_CACHE.lock() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        if let Some(name) = cache.get(&gid) {
+            return name.clone();
+        }
+        let resolved = resolve_group_nss(gid);
+        cache.insert(gid, resolved.clone());
+        return resolved;
+    }
+    resolve_group_nss(gid)
+}
+
+fn resolve_group_nss(gid: u32) -> String {
     #[cfg(unix)]
     {
         use std::ffi::CStr;
