@@ -3,7 +3,10 @@
 pub mod frame;
 pub mod proto;
 pub mod sockpath;
+pub mod theme;
 
 pub use proto::{
-    ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role, Settings, ToHub, ToLister,
+    Appearance, ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role, Settings, ToHub,
+    ToLister, PRESET_CUSTOM,
 };
+pub use theme::ThemePreset;

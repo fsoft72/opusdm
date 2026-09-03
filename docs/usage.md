@@ -143,6 +143,29 @@ Generate file hashes on demand:
 - Recursively traverses the directory tree in background threads.
 - Replaces the directory's size column with the computed total (e.g., `3.4 GB`) and flashes the overall size in the status bar.
 
+### 3.10 Theme Presets & File Icons
+Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
+- **Preset dropdown**: one click fills every colour at once.
+  - `Default (light)` - the original white list with a green SOURCE and pink DEST badge.
+  - `Amiga Workbench 1.3` - deep blue ground with white and amber text.
+  - `Directory Opus 4/5 Classic` - grey panels with navy accents.
+  - `Cyberpunk / Tokyo Night` - neon cyan and pink on dark slate.
+  - `Monochrome Phosphor (green)` and `(amber)` - vintage CRT terminal looks.
+- Editing any colour by hand afterwards is fine; the stored preset then reads `custom`.
+- **SELECTION** colours are now configurable too, instead of following the GTK theme.
+- **File type icons**: Nerd Font glyphs before each name (Rust, Python, images, audio, video,
+  archives, ...). Off by default because it needs a patched Nerd Font installed, otherwise the
+  glyphs render as empty boxes.
+- **Type indicators**: appends an `ls -F` style character to each name - `/` directory,
+  `*` executable, `@` symlink, `=` socket, `|` fifo.
+- **Monospace file list**: renders every column in the system monospace font.
+- **Apply theme colours to the whole window**: extends the file colours to the toolbar and
+  navigation chrome. Leave it off to keep your system GTK theme around the list.
+
+Settings live in `~/.config/opusdm/settings.json` and are pushed to every open Lister the moment
+you press Save. A settings file written by an older build still loads: missing keys fall back to
+their defaults.
+
 ---
 
 ## 4. Keyboard Shortcuts Reference

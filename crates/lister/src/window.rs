@@ -829,8 +829,19 @@ impl Ui {
                 // Consumed synchronously in Client::connect(); never reaches here.
             }
             ToLister::SettingsUpdate(new_settings) => {
+                let names_changed = {
+                    let old = &self.settings.borrow().appearance;
+                    let new = &new_settings.appearance;
+                    old.file_icons != new.file_icons
+                        || old.type_indicators != new.type_indicators
+                };
                 *self.settings.borrow_mut() = new_settings;
                 self.update_css_for_colors();
+                // Name-column text is built at bind time, so glyph and
+                // indicator changes only show after the rows are rebound.
+                if names_changed {
+                    self.reload();
+                }
             }
             ToLister::Pong => {}
         }

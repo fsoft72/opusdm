@@ -99,6 +99,7 @@ pub fn add_column(
         });
     }
     let tz = local_tz_offset_secs();
+    let ui_getter_bind = ui_getter.clone();
     factory.connect_bind(move |_, list_item| {
         let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let row = item
@@ -117,15 +118,14 @@ pub fn add_column(
         apply_selected_class(&label, item.is_selected());
         match kind {
             ColKind::Name => {
-                let mark = if row.broken_link {
-                    " (broken link)"
-                } else if row.is_symlink {
-                    " ->"
-                } else {
-                    ""
-                };
+                let (icons, indicators) = ui_getter_bind()
+                    .map(|ui| {
+                        let a = &ui.settings.borrow().appearance;
+                        (a.file_icons, a.type_indicators)
+                    })
+                    .unwrap_or((false, false));
                 label.set_xalign(0.0);
-                label.set_text(&format!("{}{}", row.name, mark));
+                label.set_text(&crate::glyphs::decorate_name(&row, icons, indicators));
             }
             ColKind::Size => {
                 label.set_xalign(1.0);

@@ -153,6 +153,16 @@ L'analisi copre tre pilastri fondamentali:
 Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la velocità fulminea, l'ergonomia totale della tastiera, la programmabilità e l'estetica rétro-futuristica. Ecco come portare OpusDM a un livello "God Tier":
 
 ### 3.1 Estetica Amiga Classic & Cyberpunk Moderno (Theme Engine)
+> ✅ **FATTO** - preset temi + icone Nerd Font + indicatori di tipo.
+> `crates/ipc/src/theme.rs`: `ThemePreset` con 6 preset (Default, Amiga Workbench 1.3,
+> Directory Opus 4/5 Classic, Cyberpunk/Tokyo Night, Phosphor verde e ambra); selezionabili dal
+> menu a tendina in Settings, riempiono tutti i colori in un click.
+> `ColorSettings` estesa con i colori di selezione (prima erano bloccati sul tema GTK);
+> nuovo `Appearance { preset, file_icons, type_indicators, monospace_list, theme_window }`.
+> `crates/lister/src/glyphs.rs`: glifi Nerd Font per estensione/tipo e indicatori stile `ls -F`
+> (`/ * @ = |`), entrambi opzionali e spenti di default (i glifi richiedono un Nerd Font).
+> Vecchi settings.json restano leggibili: i campi mancanti tornano ai default.
+
 * **Preset di Temi Iconici Out-of-the-Box**:
   Oltre al color picker RGB attuale, includere preset con un click:
   * 📼 **Amiga Workbench 1.3**: Blu profondo, arancione ambra, bianco e nero con font bitmap stile Topaz.
@@ -253,7 +263,8 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
 | **Codice** | Errori tipizzati con `thiserror` | 🛡️ Stabilità | Media | ✅ **FATTO** (`8376d24`) |
 | **Codice** | Supporto Wayland (wlr-layer-shell) oltre a X11 | 🌐 Portabilità | Media | **Media** |
 | **Codice** | Fix TOCTOU su creazione destinazione | 🛡️ Stabilità | Bassa | ✅ **FATTO** (`6bb4cfd`) |
-| **Fighissimo** | Preset Temi Vintage (Amiga, DOpus 4, Cyberpunk) | ✨ Wow | Bassa | **Alta (Effetto Immediato)** |
+| **Fighissimo** | Preset Temi Vintage (Amiga, DOpus 4, Cyberpunk) | ✨ Wow | Bassa | ✅ **FATTO** |
+| **Fighissimo** | Icone Nerd Font + indicatori tipo (`/ * @ = \|`) | ✨ Wow | Bassa | ✅ **FATTO** |
 | **Fighissimo** | Quick Look / Previewer Istantaneo (Spazio/F3) | 🚀 Produttività | Media | ✅ **FATTO** (`d5568dd`) |
 | **Fighissimo** | File Watcher `inotify` (auto-refresh reattivo) | 🚀 Produttività | Media | **Alta** |
 | **Fighissimo** | Navigazione Tastiera / Vim Mode (`j`,`k`,`h`,`l`, Tab) | ⌨️ UX | Media | **Media** |

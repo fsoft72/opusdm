@@ -100,11 +100,16 @@ pub enum ToHub {
     ConflictReply { req_id: u64, resolution: Resolution },
 }
 
-/// Background/text colors for the four things a Lister paints: the SOURCE
-/// and DEST role stat bar, and directory/file rows in the file list. Hex
-/// strings (e.g. "#90EE90"), persisted in the hub's settings.json and
-/// distributed to every Lister on connect and on every settings change.
+/// Background/text colors for the things a Lister paints: the SOURCE and DEST
+/// role stat bar, directory/file rows in the file list, and the selection
+/// highlight. Hex strings (e.g. "#90EE90"), persisted in the hub's
+/// settings.json and distributed to every Lister on connect and on every
+/// settings change.
+///
+/// `#[serde(default)]` fills in fields absent from an older settings.json from
+/// [`Default`], so adding a colour never invalidates a user's config file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ColorSettings {
     pub source_bg: String,
     pub source_fg: String,
@@ -114,6 +119,8 @@ pub struct ColorSettings {
     pub dir_fg: String,
     pub file_bg: String,
     pub file_fg: String,
+    pub selected_bg: String,
+    pub selected_fg: String,
 }
 
 impl Default for ColorSettings {
@@ -127,6 +134,44 @@ impl Default for ColorSettings {
             dir_fg: "#000000".to_string(),
             file_bg: "#FFFFFF".to_string(),
             file_fg: "#000000".to_string(),
+            selected_bg: "#3584E4".to_string(),
+            selected_fg: "#FFFFFF".to_string(),
+        }
+    }
+}
+
+/// Id stored in [`Appearance::preset`] once colours have been hand-edited and
+/// no longer match any named preset.
+pub const PRESET_CUSTOM: &str = "custom";
+
+/// Look-and-feel switches that are not colours.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Appearance {
+    /// Id of the last applied [`crate::theme::ThemePreset`], or
+    /// [`PRESET_CUSTOM`]. Purely informational: the colours themselves always
+    /// live in [`ColorSettings`].
+    pub preset: String,
+    /// Show a Nerd Font glyph before each file name. Off by default because it
+    /// renders as tofu without a patched font installed.
+    pub file_icons: bool,
+    /// Append an `ls -F` style type character (`/ * @ = |`) to each name.
+    pub type_indicators: bool,
+    /// Render the file list in the system monospace font.
+    pub monospace_list: bool,
+    /// Carry the file colours into the window chrome too. Off by default so a
+    /// user who only picked accent colours keeps their system theme.
+    pub theme_window: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            preset: "default".to_string(),
+            file_icons: false,
+            type_indicators: false,
+            monospace_list: false,
+            theme_window: false,
         }
     }
 }
@@ -137,8 +182,10 @@ impl Default for ColorSettings {
 /// hub's in-memory state - one place to extend when a new setting is added,
 /// instead of a new IPC field plus a new HubCmd variant each time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Settings {
     pub colors: ColorSettings,
+    pub appearance: Appearance,
 }
 
 /// Messages the hub sends to a Lister.
@@ -281,5 +328,50 @@ mod tests {
         roundtrip_tolister(ToLister::InvalidatePath("/dst".into()));
         roundtrip_tolister(ToLister::SettingsUpdate(Settings::default()));
         roundtrip_tolister(ToLister::Shutdown);
+    }
+
+    #[test]
+    fn a_settings_file_from_before_presets_still_loads() {
+        // The shape settings.json had before selection colours and appearance
+        // existed. Missing fields must fall back to Default, not fail.
+        let old = r##"{
+            "colors": {
+                "source_bg": "#111111", "source_fg": "#222222",
+                "dest_bg": "#333333", "dest_fg": "#444444",
+                "dir_bg": "#555555", "dir_fg": "#666666",
+                "file_bg": "#777777", "file_fg": "#888888"
+            }
+        }"##;
+        let s: Settings = serde_json::from_str(old).expect("old settings must still parse");
+        assert_eq!(s.colors.source_bg, "#111111");
+        assert_eq!(s.colors.file_fg, "#888888");
+        assert_eq!(s.colors.selected_bg, ColorSettings::default().selected_bg);
+        assert_eq!(s.appearance, Appearance::default());
+    }
+
+    #[test]
+    fn an_empty_settings_file_yields_the_defaults() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn settings_survive_a_full_json_round_trip() {
+        let mut s = Settings {
+            colors: crate::theme::ThemePreset::Cyberpunk.colors(),
+            appearance: Appearance {
+                preset: crate::theme::ThemePreset::Cyberpunk.id().to_string(),
+                file_icons: true,
+                type_indicators: true,
+                monospace_list: true,
+                theme_window: true,
+            },
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
+
+        s.appearance.preset = PRESET_CUSTOM.to_string();
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
     }
 }

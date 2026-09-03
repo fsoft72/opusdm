@@ -8,6 +8,7 @@ mod columns;
 mod context_menu;
 mod dnd;
 mod filter;
+mod glyphs;
 mod icons;
 mod model;
 mod palette;

@@ -48,8 +48,9 @@ pub enum HubCmd {
     CancelJob(u64),
     /// Ask a Lister to raise its window.
     PresentLister(ListerId),
-    /// Update settings on all connected Listers.
-    UpdateSettings(opusdm_ipc::Settings),
+    /// Update settings on all connected Listers. Boxed because `Settings` is
+    /// far larger than every other variant and is sent rarely.
+    UpdateSettings(Box<opusdm_ipc::Settings>),
     /// Tear everything down.
     Shutdown,
     /// A child process exited (from the SIGCHLD reaper).
@@ -353,10 +354,11 @@ fn owner_loop(
             }
 
             OwnerMsg::FromGtk(HubCmd::UpdateSettings(new_settings)) => {
-                current_settings = new_settings.clone();
+                current_settings = *new_settings;
                 let _ = settings::save_settings(&current_settings);
                 for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = send(&mut c.write, &ToLister::SettingsUpdate(new_settings.clone()));
+                    let _ =
+                        send(&mut c.write, &ToLister::SettingsUpdate(current_settings.clone()));
                 }
             }
 
