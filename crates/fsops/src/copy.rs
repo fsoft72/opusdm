@@ -14,7 +14,16 @@ use std::sync::mpsc::{channel, Sender};
 /// Copy buffer size. 256 KiB balances syscall count against memory.
 const COPY_BUF: usize = 256 * 1024;
 
+use std::os::unix::io::AsRawFd;
+
+/// Kernel chunk size for `copy_file_range` (1 GiB max per syscall recommended).
+const KERNEL_COPY_CHUNK: usize = 1024 * 1024 * 1024;
+
 /// Copy one regular file, preserving unix permission bits and mtime.
+///
+/// Tries Linux `copy_file_range(2)` first for zero-copy in-kernel transfer and
+/// filesystem-level reflink/clone (CoW) support. Falls back to userspace read/write
+/// if the kernel returns EXDEV, ENOSYS, EINVAL, or EOPNOTSUPP.
 ///
 /// If `overwrite` is false, atomically attempts to create the file without
 /// replacing an existing destination (`ErrorKind::AlreadyExists`).
@@ -41,11 +50,97 @@ pub fn copy_file(
             .create_new(true)
             .open(dst)?
     };
+
+    let copy_res = copy_file_kernel(&mut reader, &mut writer, cancel, on_bytes);
+    match copy_res {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+            drop(writer);
+            let _ = std::fs::remove_file(dst);
+            return Err(e);
+        }
+        Err(e) if should_fallback_userspace(&e) => {
+            // Seek or reopen reader/writer at current positions for userspace fallback
+            let fallback_res = copy_file_userspace(&mut reader, &mut writer, cancel, on_bytes);
+            if let Err(fe) = fallback_res {
+                if fe.kind() == io::ErrorKind::Interrupted {
+                    drop(writer);
+                    let _ = std::fs::remove_file(dst);
+                }
+                return Err(fe);
+            }
+        }
+        Err(e) => {
+            drop(writer);
+            let _ = std::fs::remove_file(dst);
+            return Err(e);
+        }
+    }
+
+    writer.flush()?;
+    let meta = std::fs::metadata(src)?;
+    std::fs::set_permissions(dst, meta.permissions())?;
+    let mtime = filetime::FileTime::from_last_modification_time(&meta);
+    filetime::set_file_mtime(dst, mtime)?;
+    Ok(())
+}
+
+fn should_fallback_userspace(e: &io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(libc::EXDEV)
+            | Some(libc::ENOSYS)
+            | Some(libc::EINVAL)
+            | Some(libc::EOPNOTSUPP)
+    )
+}
+
+fn copy_file_kernel(
+    reader: &mut std::fs::File,
+    writer: &mut std::fs::File,
+    cancel: &CancelToken,
+    on_bytes: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    let fd_in = reader.as_raw_fd();
+    let fd_out = writer.as_raw_fd();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        let ret = unsafe {
+            libc::copy_file_range(
+                fd_in,
+                std::ptr::null_mut(),
+                fd_out,
+                std::ptr::null_mut(),
+                KERNEL_COPY_CHUNK,
+                0,
+            )
+        };
+        if ret == 0 {
+            // EOF reached
+            break;
+        } else if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        on_bytes(ret as u64);
+    }
+    Ok(())
+}
+
+fn copy_file_userspace(
+    reader: &mut std::fs::File,
+    writer: &mut std::fs::File,
+    cancel: &CancelToken,
+    on_bytes: &mut dyn FnMut(u64),
+) -> io::Result<()> {
     let mut buf = vec![0u8; COPY_BUF];
     loop {
         if cancel.is_cancelled() {
-            drop(writer);
-            let _ = std::fs::remove_file(dst);
             return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
         let n = reader.read(&mut buf)?;
@@ -55,11 +150,6 @@ pub fn copy_file(
         writer.write_all(&buf[..n])?;
         on_bytes(n as u64);
     }
-    writer.flush()?;
-    let meta = std::fs::metadata(src)?;
-    std::fs::set_permissions(dst, meta.permissions())?;
-    let mtime = filetime::FileTime::from_last_modification_time(&meta);
-    filetime::set_file_mtime(dst, mtime)?;
     Ok(())
 }
 
