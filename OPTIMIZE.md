@@ -38,6 +38,9 @@ L'analisi copre tre pilastri fondamentali:
 ## 1. Aspetti da Migliorare nel Codice
 
 ### 1.1 Robustezza I/O e Race Conditions (TOCTOU)
+> ✅ **FATTO (parziale)** - commit `6bb4cfd`: create_new(true) atomico + retry TOCTOU.
+> Restano aperti: preservazione xattr/ACL/setuid e rollback transazionale del Move cross-filesystem.
+
 * **Controllo Esistenza vs Sovrascrittura**: In [`crates/fsops/src/copy.rs`](crates/fsops/src/copy.rs#L101), viene eseguito `if dst.exists()` prima di chiedere la risoluzione del conflitto o di creare il file. Questa operazione soffre di **Time-Of-Check to Time-Of-Use (TOCTOU)**: un file può essere creato o rimosso da un processo terzo tra il check e la `create`.
   * *Miglioramento*: Utilizzare `OpenOptions::new().write(true).create_new(true)` per rilevare atomicamente se la destinazione esiste già (`ErrorKind::AlreadyExists`), evitando la race condition.
 * **Rimozione Directory Ricorsiva (`delete.rs`)**: In [`crates/fsops/src/delete.rs`](crates/fsops/src/delete.rs#L37-L54), `remove_recursive` attraversa la directory via `read_dir` e chiama `symlink_metadata`. Se ci sono file con permessi readonly o link ricorsivi/modificati durante l'eliminazione, la gestione dei retry con `set_permissions` è rudimentale.
@@ -46,17 +49,23 @@ L'analisi copre tre pilastri fondamentali:
 * **Rollback in caso di fallimento Move**: In [`crates/fsops/src/moveop.rs`](crates/fsops/src/moveop.rs), se il rename `EXDEV` ripiega su `copy_tree(..., true)` e l'operazione fallisce a metà (es. disco pieno), una parte dei file è copiata e non eliminata, mentre un'altra parte è rimasta all'origine, senza un report chiaro di transazionalità.
 
 ### 1.2 Gestione Errori e Feedback Utente
+> ✅ **FATTO** - commit `8376d24` (errori tipizzati con thiserror + dialog errori scrollabile).
+
 * **Stringhe di Errore Grezze**: Spesso gli errori I/O vengono convertiti direttamente con `.to_string()`, ad esempio in `scan.rs` (`io::Error::other("path outside its source base")`).
   * *Miglioramento*: Adottare `thiserror` (già presente nelle workspace dependencies!) per strutturare gerarchie di errore tipizzate (`CopyError`, `ScanError`, `IpcError`), rendendo possibile per la UI distinguere `PermissionDenied`, `NoSpaceLeft`, `Cancelled`, `NotFound`.
 * **Truncation degli Errori in Dialog**: In [`crates/lister/src/actions.rs`](crates/lister/src/actions.rs#L206), solo i primi 20 errori vengono visualizzati in un AlertDialog di testo piatto. Se una copia massiva fallisce per 500 file (es. permessi), l'utente non ha modo di salvare un report o scorrere l'elenco.
   * *Miglioramento*: Fornire una finestra dialog con `gtk::ScrolledWindow`, `gtk::ListView` e un pulsante "Copia log errori negli appunti" o "Esporta log".
 
 ### 1.3 Gestione Connessioni, Reader Threads e Lifecycle dei Lister
+> ✅ **FATTO** - commit `41472c3` (lifecycle connessioni e gestione id).
+
 * **Thread per Connessione (`server.rs`)**: In [`crates/hub/src/server.rs`](crates/hub/src/server.rs#L180), ogni Lister accetta un thread OS dedicato (`opusdm-reader-{cid}`). Anche se per 5-10 Lister l'overhead è trascurabile, le pipe Unix domain possono essere gestite in modo asincrono o tramite polling non-blocking (ad esempio con `epoll` / `mio` o un runtime asincrono), riducendo le risorse e semplificando la sincronizzazione con un unico event loop.
 * **`next_conn` Overflow & Riuso ID**: `next_conn` è un `u64` progressivo. Sebbene l'overflow sia teorico, l'ID non viene riciclato.
 * **Reconnection & Crash Recovery**: Se un Lister crasha, il server pulisce lo stato tramite `SIGCHLD` o EOF (`drop_conn`). Tuttavia, se l'Hub muore o viene riavviato, tutti i Lister chiudono immediatamente (`Inbound::HubGone -> window.close()`). Sarebbe eccellente se i Lister potessero rimanere aperti in modalità autonoma e riconnettersi al nuovo Hub quando riparte.
 
 ### 1.4 Decoupling e Testing della UI
+> ✅ **FATTO** - commit `1c4c10d` (window.rs suddiviso in sottomoduli + test UI).
+
 * **Monolite `window.rs`**: Con oltre 660 righe, `window.rs` gestisce setup GTK, callbacks, costruttori di factory, aggiornamenti CSS al volo, gestione dello stato della selezione e rendering delle colonne.
   * *Miglioramento*: Suddividere in sottomoduli:
     * `columns/`: factory e render per Name, Size, Mode, Date, User, Group.
@@ -74,6 +83,13 @@ L'analisi copre tre pilastri fondamentali:
 ## 2. Ottimizzazioni di Velocità & Throughput
 
 ### 2.1 Zero-Copy & Kernel Fast-Paths (copy_file_range / io_uring / reflinks)
+> ✅ **FATTO** - commit `dcdcb7b` (copy_file_range zero-copy) + worker pool per file piccoli.
+> `crates/fsops/src/pool.rs`: `WorkerPool` a dimensione fissa, un thread per core (max 8, override con
+> `OPUSDM_COPY_WORKERS`). File <= 4 MiB (`SMALL_FILE_MAX`) vanno al pool, i file grandi restano inline
+> per non frammentare l'I/O sequenziale. Directory, symlink e prompt di conflitto restano sul thread
+> orchestratore, quindi l'utente non vede mai due dialog insieme.
+> Misurato su 20.000 file da 8 KiB: **175 ms -> 62 ms (2.8x)**.
+
 * **Sostituire il buffer loop userspace (`copy_file`)**:
   In [`crates/fsops/src/copy.rs`](crates/fsops/src/copy.rs#L27-L42), i file vengono copiati tramite loop `read()` + `write_all()` con buffer di 256 KiB.
   * Su Linux moderno, la syscall **`copy_file_range(2)`** permette di copiare dati in-kernel tra due file descriptor senza trasferire dati nello spazio utente, e supporta automaticamente i **reflink / CoW (Copy-on-Write)** su filesystem come Btrfs, XFS e ZFS! Una copia di 10 GB su Btrfs diventa istantanea (0 millisecondi) e non occupa spazio su disco aggiuntivo.
@@ -84,6 +100,8 @@ L'analisi copre tre pilastri fondamentali:
   * *Ottimizzazione*: Utilizzare un worker pool interno (es. `rayon` o thread pool bilanciato) con canali dedicati per parallelizzare la copia dei piccoli file (< 4 MB) mantenendo sequenziali i file enormi per non frammentare l'I/O rotazionale.
 
 ### 2.2 Directory Reading & Caching dei Metadati
+> ✅ **FATTO** - commit `dffcc9f` (d_type al posto di stat doppia, cache NSS condivisa).
+
 * **Syscall Ridondanti in `read_dir_rows`**:
   In [`crates/lister/src/model.rs`](crates/lister/src/model.rs#L45-L71):
   1. Si chiama `std::fs::symlink_metadata(entry.path())`
@@ -96,6 +114,8 @@ L'analisi copre tre pilastri fondamentali:
   * *Ottimizzazione*: Spostare la cache `Uid/Gid -> String` a livello globale/thread-safe o condivisa tra i Lister, pre-popolando gli account locali standard (`0=root`, ecc.).
 
 ### 2.3 Throttling degli Eventi IPC di Progresso & Saturazione Canali
+> ✅ **FATTO** - commit `113022e`, poi reso globale al job (non piu per-file) dal worker pool 2.1.
+
 * **Frequenza di Invio Progresso Byte per Byte**:
   In `copy_file`:
   ```rust
@@ -108,6 +128,8 @@ L'analisi copre tre pilastri fondamentali:
   * *Ottimizzazione*: **Rate-limiting temporale** del progresso. Inviare l'evento di progresso solo se sono passati almeno **50-100 ms** dall'ultimo evento (oppure quando il file corrente è completato).
 
 ### 2.4 UI Batching & Lazy Column Sorting
+> ✅ **FATTO** - commit `28227e8` (store.splice + totali precalcolati).
+
 * **Popolamento `gio::ListStore`**:
   In [`crates/lister/src/window.rs`](crates/lister/src/window.rs#L481-L489):
   `self.store.remove_all();` seguito da un loop di `self.store.append(&boxed);` per ogni riga.
@@ -118,6 +140,8 @@ L'analisi copre tre pilastri fondamentali:
   * Memorizzare i conteggi totali (directory, file, byte totali) direttamente durante il caricamento in `read_dir_rows`, evitando di ricalcolare la somma di tutti i file a ogni click di selezione.
 
 ### 2.5 Memory Allocation & Buffer Recycling
+> ✅ **FATTO** - commit `4ce263e` (buffer di copia riciclato per thread).
+
 * **Allocazione Buffer nel Loop di Scrittura**:
   In `copy_file`, `let mut buf = vec![0u8; COPY_BUF];` alloca 256 KiB sullo heap per ogni singolo file. Se si copiano 100.000 piccoli file, ci sono 100.000 allocazioni/deallocazioni di buffer da 256 KiB.
   * *Ottimizzazione*: Riutilizzare lo stesso buffer o un `BufferPool` condiviso tra i thread di lavoro.
@@ -146,6 +170,8 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
   * Tasti di scelta rapida per auto-organizzare i Lister attivi: `Alt+1` (Affiancati 50/50), `Alt+2` (Sovrapposti Alto/Basso), `Alt+3` (3 Lister Source + 2 Dest a griglia).
 
 ### 3.3 File Previewer Istantaneo (Quick Look / F3)
+> ✅ **FATTO** - commit `d5568dd` (quick look con F3/Spazio).
+
 * **Pannello di Anteprima Rapida o Finestra HUD Fluttuante**:
   * Premendo `Spazio` o `F3` sull'elemento selezionato:
     * **Immagini**: Rendering istantaneo con zoom e metadati risoluzione/canali.
@@ -155,6 +181,8 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
     * **PDF / Markdown**: Rendering formattato.
 
 ### 3.4 Fuzzy Finder & Command Palette (Ctrl+P / /)
+> ✅ **FATTO** - commit `ed1e3f6` (fuzzy finder + command palette).
+
 * **Filtro Istantaneo nella Vista Corrente**:
   * Premendo `/` o digitando direttamente mentre la lista ha il focus: filtro fuzzy istantaneo stile fzf (evidenziando i caratteri matchati) senza dover usare il mouse.
 * **Command Palette globale (`Ctrl+Shift+P`)**:
@@ -188,6 +216,8 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
     * File con contenuto identico o modificato
 
 ### 3.8 Terminale a Scomparsa (Quake-style Dropdown Drawer)
+> ✅ **FATTO** - commit `45d2588` (terminale embedded quake-style).
+
 * Premendo il tasto tilde `` ` `` o `F4`, compare un terminale embedded (`vte-4`) nella parte inferiore del Lister attivo, già aperto nel percorso corrente (`$CWD`).
 * Quando si naviga nel Lister, la shell sincronizza opzionalmente il suo percorso, o viceversa quando si esegue `cd` nel terminale, il Lister naviga in quella cartella.
 
@@ -215,18 +245,19 @@ Directory Opus sull'Amiga è leggendario non solo per il dual-pane, ma per la ve
 
 | Categoria | Intervento | Impatto | Complessità | Priorità Consigliata |
 |---|---|---|---|---|
-| **Velocità** | `copy_file_range` / reflink CoW per Copy pass | 🔥 Enorme | Bassa | **Alta (Quick Win)** |
-| **Velocità** | Throttling eventi di progresso IPC (100ms) | 🔥 Alto | Bassa | **Alta (Quick Win)** |
-| **Velocità** | Syscall reduction su `read_dir_rows` (`d_type`) | 🔥 Alto | Bassa | **Alta (Quick Win)** |
-| **Velocità** | Batching `store.splice` per ListStore GTK4 | 🔥 Alto | Media | **Alta** |
-| **Codice** | Errori tipizzati con `thiserror` | 🛡️ Stabilità | Media | **Media** |
+| **Velocità** | `copy_file_range` / reflink CoW per Copy pass | 🔥 Enorme | Bassa | ✅ **FATTO** (`dcdcb7b`) |
+| **Velocità** | Worker pool parallelo per file piccoli (< 4 MiB) | 🔥 Alto | Media | ✅ **FATTO** (2.8x su 20k file) |
+| **Velocità** | Throttling eventi di progresso IPC (50ms) | 🔥 Alto | Bassa | ✅ **FATTO** (`113022e`) |
+| **Velocità** | Syscall reduction su `read_dir_rows` (`d_type`) | 🔥 Alto | Bassa | ✅ **FATTO** (`dffcc9f`) |
+| **Velocità** | Batching `store.splice` per ListStore GTK4 | 🔥 Alto | Media | ✅ **FATTO** (`28227e8`) |
+| **Codice** | Errori tipizzati con `thiserror` | 🛡️ Stabilità | Media | ✅ **FATTO** (`8376d24`) |
 | **Codice** | Supporto Wayland (wlr-layer-shell) oltre a X11 | 🌐 Portabilità | Media | **Media** |
-| **Codice** | Fix TOCTOU su creazione destinazione | 🛡️ Stabilità | Bassa | **Media** |
+| **Codice** | Fix TOCTOU su creazione destinazione | 🛡️ Stabilità | Bassa | ✅ **FATTO** (`6bb4cfd`) |
 | **Fighissimo** | Preset Temi Vintage (Amiga, DOpus 4, Cyberpunk) | ✨ Wow | Bassa | **Alta (Effetto Immediato)** |
-| **Fighissimo** | Quick Look / Previewer Istantaneo (Spazio/F3) | 🚀 Produttività | Media | **Alta** |
+| **Fighissimo** | Quick Look / Previewer Istantaneo (Spazio/F3) | 🚀 Produttività | Media | ✅ **FATTO** (`d5568dd`) |
 | **Fighissimo** | File Watcher `inotify` (auto-refresh reattivo) | 🚀 Produttività | Media | **Alta** |
 | **Fighissimo** | Navigazione Tastiera / Vim Mode (`j`,`k`,`h`,`l`, Tab) | ⌨️ UX | Media | **Media** |
-| **Fighissimo** | Terminale embedded a scomparsa | 🚀 Wow | Media | **Media** |
+| **Fighissimo** | Terminale embedded a scomparsa | 🚀 Wow | Media | ✅ **FATTO** (`45d2588`) |
 | **Fighissimo** | Batch Rename avanzato con live preview | 🛠️ Funzionale | Media | ✅ **FATTO** (`c0b2e33`) |
 | **Fighissimo** | Dir Sync / Compare interattivo Source <-> Dest | 🛠️ Funzionale | Media | ✅ **FATTO** (`63f7f53`) |
 | **Fighissimo** | Virtual FS archivi (zip, tar) + estrazione selettiva | 🛠️ Funzionale | Media | ✅ **FATTO** (`1ed0bea`) |

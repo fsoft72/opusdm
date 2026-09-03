@@ -2,6 +2,12 @@
 
 ## 2026-09-03
 
+- OPTIMIZE 2.1 - Copia parallela dei file piccoli. Nuovo modulo `crates/fsops/src/pool.rs` con un `WorkerPool` a dimensione fissa (un thread per core, massimo 8, override via la variabile d'ambiente `OPUSDM_COPY_WORKERS`). I file fino a `SMALL_FILE_MAX` (4 MiB) vengono accodati al pool; i file piu grandi restano sul thread orchestratore per non frammentare l'I/O sequenziale.
+- `copy_tree` riscritta attorno a `CopyShared`: contatori atomici (copied/skipped/done_bytes), lista errori sotto `Mutex`, flag sticky `overwrite_all`/`skip_all` e un `conflict_lock` che serializza i prompt, cosi l'utente non vede mai due dialog di conflitto insieme. Directory, symlink e decisioni di conflitto restano sequenziali.
+- Il throttling degli eventi `Progress::File` e ora globale al job (50 ms) invece che per singolo file: copiare 100.000 file non genera piu 100.000 eventi IPC forzati.
+- `copy_tree_with_workers` interna permette ai test di esercitare sia il percorso sequenziale sia quello con pool; nuovi test su file misti grandi/piccoli, invarianza del risultato al variare dei worker e throttling del progresso.
+- Misura su 20.000 file da 8 KiB: 175 ms con 1 worker, 62 ms con 8 (2.8x).
+
 - SVG Icon Toolbar (Directory Opus 5 style): I pulsanti testuali della toolbar e i controlli di navigazione (Home, Parent, Pin) sono stati sostituiti con icone vettoriali SVG ad alta definizione tratte dal set Tabler Icons (salvate in `assets/icons/` ed incorporate a tempo di compilazione senza dipendenze a runtime). Zero emoji.
 - Nuovi bottoni icone con tooltip descrittivi: Copy (`copy.svg`), Move (`file-arrow-right.svg`), Delete (`trash.svg`), MakeDir (`folder-plus.svg`), NewFile (`file-plus.svg`), Rename (`edit.svg`), Hidden toggle (`eye.svg` / `eye-off.svg`), Home (`home.svg`), Parent (`arrow-up.svg`), Pin (`pin.svg`).
 - Modulo `crates/lister/src/icons.rs`: helper per istanziare `GtkImage` e bottoni GTK4 `flat` con icone SVG scalate nitidamente.

@@ -6,6 +6,7 @@ pub mod copy;
 pub mod delete;
 pub mod errors;
 pub mod moveop;
+pub mod pool;
 pub mod scan;
 pub mod types;
 
