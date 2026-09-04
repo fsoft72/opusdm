@@ -1,7 +1,7 @@
 //! The Lister window: path bar, column view, status line, navigation.
 
 use crate::client::{Client, Inbound, Roles};
-use crate::model::{dir_first_cmp, read_dir_rows, Row, SortCol};
+use crate::model::{read_dir_rows, Row};
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
@@ -39,8 +39,6 @@ pub struct Ui {
     /// Row the keyboard cursor sits on. Kept in step with the mouse by
     /// `selection`'s changed signal.
     pub cursor: Cell<u32>,
-    /// The single sorter driven by the sort buttons.
-    pub sorter: gtk::CustomSorter,
     /// Status line (top bar with D/F/B counts).
     pub status: gtk::Label,
     /// Stat bar box (for background color based on role).
@@ -192,18 +190,12 @@ fn build_window(
     let filter_bar = Rc::new(crate::filter::FilterBar::new());
     let filter_model = gtk::FilterListModel::new(Some(store.clone()), Some(filter_bar.filter.clone()));
 
-    let sort_cell = Rc::new(Cell::new((SortCol::Name, false)));
-    let sorter = gtk::CustomSorter::new({
-        let sort_cell = sort_cell.clone();
-        move |a, b| {
-            let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
-            let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
-            let (col, desc) = sort_cell.get();
-            dir_first_cmp(&ra, &rb, col, desc).into()
-        }
-    });
-    let sort_model = gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
-    let selection = gtk::MultiSelection::new(Some(sort_model));
+    // Sorting is driven by the column headers: each column carries its own
+    // sorter (see `columns::add_column`), and the ColumnView's own sorter
+    // reflects whichever header is active. It is wired into the SortListModel
+    // once the columns exist, below.
+    let sort_model = gtk::SortListModel::new(Some(filter_model.clone()), None::<gtk::Sorter>);
+    let selection = gtk::MultiSelection::new(Some(sort_model.clone()));
     let column_view = gtk::ColumnView::new(Some(selection.clone()));
     column_view.set_vexpand(true);
     // Compact rows: default theme pads cells 8px 6px, data-table cuts it to 2px.
@@ -215,12 +207,19 @@ fn build_window(
         move || slot.borrow().clone()
     };
 
-    crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name, ui_getter.clone());
+    let name_col =
+        crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name, ui_getter.clone());
     crate::columns::add_column(&column_view, "Size", crate::columns::ColKind::Size, ui_getter.clone());
     crate::columns::add_column(&column_view, "Date", crate::columns::ColKind::Modified, ui_getter.clone());
     crate::columns::add_column(&column_view, "User", crate::columns::ColKind::User, ui_getter.clone());
     crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group, ui_getter.clone());
     crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access, ui_getter);
+
+    // Now that the columns (and their sorters) exist, feed the ColumnView's
+    // own sorter into the model and default to Name ascending. Clicking a
+    // header from here on re-sorts and moves the arrow indicator.
+    sort_model.set_sorter(column_view.sorter().as_ref());
+    column_view.sort_by_column(Some(&name_col), gtk::SortType::Ascending);
 
     root.append(&filter_bar.container);
 
@@ -325,7 +324,6 @@ fn build_window(
         selection: selection.clone(),
         column_view: column_view.clone(),
         cursor: Cell::new(0),
-        sorter: sorter.clone(),
         status: stat_info,
         stat_bar: stat_bar.clone(),
         role_badge,
@@ -609,7 +607,6 @@ impl Ui {
         self.cursor.set(0);
         let old_len = self.store.n_items();
         self.store.splice(0, old_len, &new_items);
-        self.sorter.changed(gtk::SorterChange::Different);
         self.window.set_title(Some(&dir.to_string_lossy()));
         self.refresh_path_entry();
         self.update_status();

@@ -1,8 +1,8 @@
 //! Column setup and cell rendering for the Lister ColumnView.
 
 use crate::model::{
-    format_access, format_group, format_mtime, format_size, format_user,
-    local_tz_offset_secs, Row,
+    dir_first_cmp, format_access, format_group, format_mtime, format_size, format_user,
+    local_tz_offset_secs, Row, SortCol,
 };
 use gtk4 as gtk;
 use gtk::glib::BoxedAnyObject;
@@ -17,6 +17,20 @@ pub enum ColKind {
     User,
     Group,
     Access,
+}
+
+impl ColKind {
+    /// Ordering key this column sorts on when its header is clicked.
+    fn sort_col(self) -> SortCol {
+        match self {
+            ColKind::Name => SortCol::Name,
+            ColKind::Size => SortCol::Size,
+            ColKind::Modified => SortCol::Modified,
+            ColKind::User => SortCol::User,
+            ColKind::Group => SortCol::Group,
+            ColKind::Access => SortCol::Access,
+        }
+    }
 }
 
 /// Toggle the CSS class that shows selection. Needed because row-dir/row-file
@@ -35,7 +49,7 @@ pub fn add_column(
     title: &str,
     kind: ColKind,
     ui_getter: impl Fn() -> Option<Rc<crate::window::Ui>> + 'static + Clone,
-) {
+) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
     {
         let ui_getter = ui_getter.clone();
@@ -149,8 +163,21 @@ pub fn add_column(
             }
         }
     });
+    // Per-column sorter: click the header to sort on this key. GTK's
+    // ColumnView toggles ascending/descending and draws the arrow indicator
+    // on the active column on its own; the sorter always compares ascending
+    // and keeps directories on top in both directions.
+    let sort_col = kind.sort_col();
+    let sorter = gtk::CustomSorter::new(move |a, b| {
+        let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
+        let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
+        dir_first_cmp(&ra, &rb, sort_col, false).into()
+    });
+
     let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
     column.set_expand(matches!(kind, ColKind::Name));
     column.set_resizable(true);
+    column.set_sorter(Some(&sorter));
     view.append_column(&column);
+    column
 }

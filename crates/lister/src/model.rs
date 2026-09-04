@@ -31,7 +31,6 @@ pub struct Row {
 
 /// Which column an ordering is keyed on.
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum SortCol {
     /// By name, case-insensitive.
     Name,
@@ -39,6 +38,12 @@ pub enum SortCol {
     Size,
     /// By modification time.
     Modified,
+    /// By owner user name, case-insensitive.
+    User,
+    /// By owner group name, case-insensitive.
+    Group,
+    /// By file mode bits.
+    Access,
 }
 
 /// Read `dir` into rows. `.` and `..` are excluded. A symlink's `is_dir`
@@ -154,6 +159,13 @@ pub fn dir_first_cmp(a: &Row, b: &Row, col: SortCol, desc: bool) -> Ordering {
         SortCol::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         SortCol::Size => a.size.cmp(&b.size),
         SortCol::Modified => a.modified_unix.cmp(&b.modified_unix),
+        SortCol::User => format_user(a.uid)
+            .to_lowercase()
+            .cmp(&format_user(b.uid).to_lowercase()),
+        SortCol::Group => format_group(a.gid)
+            .to_lowercase()
+            .cmp(&format_group(b.gid).to_lowercase()),
+        SortCol::Access => a.mode.cmp(&b.mode),
     };
     if desc {
         base.reverse()
@@ -330,6 +342,16 @@ mod tests {
         assert_eq!(dir_first_cmp(&small, &big, SortCol::Size, false), Ordering::Less);
         assert_eq!(dir_first_cmp(&small, &big, SortCol::Size, true), Ordering::Greater);
         assert_eq!(dir_first_cmp(&small, &big, SortCol::Modified, false), Ordering::Greater);
+    }
+
+    #[test]
+    fn access_sort_uses_mode_bits() {
+        let mut ro = row("ro", false, 0, 0);
+        ro.mode = 0o100_644;
+        let mut rwx = row("rwx", false, 0, 0);
+        rwx.mode = 0o100_755;
+        assert_eq!(dir_first_cmp(&ro, &rwx, SortCol::Access, false), Ordering::Less);
+        assert_eq!(dir_first_cmp(&ro, &rwx, SortCol::Access, true), Ordering::Greater);
     }
 
     #[test]

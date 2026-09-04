@@ -2,6 +2,10 @@
 
 ## 2026-09-04
 
+- Sort cliccando sulle intestazioni di colonna. Ogni colonna del Lister (Name, Size, Date, User, Group, Access) porta ora il proprio `gtk::CustomSorter`; il `SortListModel` e pilotato dal sorter nativo del `ColumnView`, quindi GTK gestisce il toggle ascendente/discendente e disegna da solo la freccia indicatrice sulla colonna attiva. Ordinamento predefinito: Name ascendente.
+- `SortCol` esteso con `User`, `Group`, `Access` e i relativi rami in `dir_first_cmp` (utente e gruppo per nome visualizzato, case-insensitive; access per i bit di `mode`). Le directory restano sempre in cima in entrambe le direzioni.
+- Rimossi il `sort_cell` mai aggiornato, il campo `Ui.sorter` e la sveglia manuale `sorter.changed()` dopo lo `splice`: con i sorter per-colonna il `SortListModel` si riordina da solo al cambio dati.
+
 - Le requester restituiscono un valore invece di un indice: i bottoni si passano come coppie `(label, valore)` e la callback riceve il valore scelto. `on_conflict` non ha piu un `match` sugli indici e inserire un bottone in mezzo non puo piu dirottare silenziosamente i rami.
 - Rete di sicurezza al posto di `deletable(false)`: la requester e di nuovo chiudibile dal WM, ma `connect_close_request` consegna la scelta di cancel. Un unico `deliver()` guardato da un flag serve bottoni, Esc e chiusura WM, cosi `on_choice` gira esattamente una volta e con lo stesso testo dell'entry qualunque sia la via d'uscita - prima una chiusura via WM lasciava l'hub in attesa di `ConflictReply` per sempre.
 - Migrati a `opusdm_ui::requester` gli ultimi tre `gtk::AlertDialog`: conferma di uscita dell'hub, delete del menu contestuale e delete della palette. Le tre copie della conferma di delete passano ora da `actions::confirm_delete()`, quindi ordine dei bottoni e default sono gli stessi da qualunque punto d'ingresso (prima la palette e il menu contestuale avevano Cancel come primario, la toolbar no).
