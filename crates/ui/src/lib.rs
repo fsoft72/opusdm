@@ -8,6 +8,16 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use std::rc::Rc;
 
+/// Wrap width shared by every label in a requester.
+const BODY_MAX_WIDTH_CHARS: i32 = 50;
+
+/// The body of a requester: either plain text or Pango markup.
+enum Body<'a> {
+    Text(&'a str),
+    /// Rich text (bold titles, small print, links, ...), rendered centered.
+    Markup(&'a str),
+}
+
 /// Show a modal requester over `parent`.
 ///
 /// `buttons[0]` is the primary action (bold, far left, activated by Return),
@@ -22,17 +32,23 @@ pub fn requester(
     buttons: &[&str],
     on_choice: impl Fn(usize) + 'static,
 ) {
-    let on_choice = Rc::new(move |idx, _text: String| on_choice(idx));
-    build(parent, title, message, detail, None, buttons, on_choice, None);
+    build(
+        parent.upcast_ref(),
+        title,
+        Body::Text(message),
+        detail,
+        None,
+        buttons,
+        _ignore_text(on_choice),
+    );
 }
 
-/// Like [`requester`], but with a text entry under the message. `on_choice`
-/// gets the picked button index and the entry text; Return in the entry
-/// picks the primary button.
+/// Like [`requester`], but with a text entry as the body. `on_choice` gets the
+/// picked button index and the entry text; Return in the entry picks the
+/// primary button.
 pub fn requester_entry(
     parent: &impl IsA<gtk::Window>,
     title: &str,
-    message: &str,
     initial: &str,
     buttons: &[&str],
     on_choice: impl Fn(usize, String) + 'static,
@@ -41,14 +57,13 @@ pub fn requester_entry(
     entry.set_text(initial);
     entry.set_activates_default(true);
     build(
-        parent,
+        parent.upcast_ref(),
         title,
-        message,
+        Body::Text(""),
         None,
         Some(entry),
         buttons,
         Rc::new(on_choice),
-        None,
     );
 }
 
@@ -61,34 +76,45 @@ pub fn requester_rich(
     buttons: &[&str],
     on_choice: impl Fn(usize) + 'static,
 ) {
-    let on_choice = Rc::new(move |idx, _text: String| on_choice(idx));
-    build_rich(parent, title, body_markup, buttons, on_choice);
+    build(
+        parent.upcast_ref(),
+        title,
+        Body::Markup(body_markup),
+        None,
+        None,
+        buttons,
+        _ignore_text(on_choice),
+    );
 }
 
-fn build_rich(
-    parent: &impl IsA<gtk::Window>,
-    title: &str,
-    body_markup: &str,
-    buttons: &[&str],
-    on_choice: Rc<dyn Fn(usize, String)>,
-) {
-    let body = gtk::Label::new(None);
-    body.set_markup(body_markup);
-    body.set_wrap(true);
-    body.set_max_width_chars(50);
-    body.set_justify(gtk::Justification::Center);
-    build(parent, title, "", None, None, buttons, on_choice, Some(body));
+/// Adapt an index-only callback to the internal index + entry text signature.
+fn _ignore_text(on_choice: impl Fn(usize) + 'static) -> Rc<dyn Fn(usize, String)> {
+    Rc::new(move |idx, _text: String| on_choice(idx))
+}
+
+/// Build a wrapped label for one of the requester body lines.
+fn _body_label(body: &Body) -> gtk::Label {
+    let label = gtk::Label::new(None);
+    match body {
+        Body::Text(text) => label.set_text(text),
+        Body::Markup(markup) => {
+            label.set_markup(markup);
+            label.set_justify(gtk::Justification::Center);
+        }
+    }
+    label.set_wrap(true);
+    label.set_max_width_chars(BODY_MAX_WIDTH_CHARS);
+    label
 }
 
 fn build(
-    parent: &impl IsA<gtk::Window>,
+    parent: &gtk::Window,
     title: &str,
-    message: &str,
+    body: Body,
     detail: Option<&str>,
     entry: Option<gtk::Entry>,
     buttons: &[&str],
     on_choice: Rc<dyn Fn(usize, String)>,
-    rich_body: Option<gtk::Label>,
 ) {
     assert!(!buttons.is_empty(), "a requester needs at least one button");
 
@@ -103,7 +129,6 @@ fn build(
         .deletable(false)
         .resizable(false)
         .build();
-    dialog.add_css_class("requester");
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
     vbox.set_margin_top(12);
@@ -111,23 +136,14 @@ fn build(
     vbox.set_margin_start(16);
     vbox.set_margin_end(16);
 
-    if let Some(body) = rich_body {
-        vbox.append(&body);
-    }
-
-    if !message.is_empty() {
-        let msg = gtk::Label::new(Some(message));
-        msg.set_wrap(true);
-        msg.set_max_width_chars(50);
-        vbox.append(&msg);
+    if !matches!(body, Body::Text("")) {
+        vbox.append(&_body_label(&body));
     }
 
     if let Some(detail) = detail {
-        let d = gtk::Label::new(Some(detail));
-        d.set_wrap(true);
-        d.set_max_width_chars(50);
-        d.add_css_class("dim-label");
-        vbox.append(&d);
+        let label = _body_label(&Body::Text(detail));
+        label.add_css_class("dim-label");
+        vbox.append(&label);
     }
 
     if let Some(entry) = &entry {
@@ -135,63 +151,62 @@ fn build(
         vbox.append(entry);
     }
 
-    let entry_text = {
-        let entry = entry.clone();
-        move || entry.as_ref().map(|e| e.text().to_string()).unwrap_or_default()
-    };
-
     let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    // A lone button sits in the middle, not pinned to the left.
-    let single = buttons.len() == 1;
-    if single {
-        btn_box.set_halign(gtk::Align::Center);
-        btn_box.set_hexpand(true);
-    }
 
     let make_button = |label: &str, idx: usize| {
         // The primary (Return key) action gets bold text.
-        let label_widget = gtk::Label::new(None);
-        if idx == 0 {
+        let btn = if idx == 0 {
+            let label_widget = gtk::Label::new(None);
             label_widget.set_markup(&format!("<b>{}</b>", gtk::glib::markup_escape_text(label)));
+            let btn = gtk::Button::new();
+            btn.set_child(Some(&label_widget));
+            btn
         } else {
-            label_widget.set_text(label);
-        }
-        let btn = gtk::Button::new();
-        btn.set_child(Some(&label_widget));
+            gtk::Button::with_label(label)
+        };
         btn.set_size_request(90, -1);
         let dialog = dialog.clone();
         let on_choice = on_choice.clone();
-        let entry_text = entry_text.clone();
+        let entry = entry.clone();
         btn.connect_clicked(move |_| {
-            on_choice(idx, entry_text());
-            dialog.close();
+            let text = entry.as_ref().map(|e| e.text().to_string()).unwrap_or_default();
+            on_choice(idx, text);
+            // destroy() rather than close(): it drops the widget tree and so
+            // breaks the dialog -> button -> closure -> dialog reference cycle.
+            dialog.destroy();
         });
         btn
     };
 
-    let primary = make_button(buttons[0], 0);
-    dialog.set_default_widget(Some(&primary));
-    btn_box.append(&primary);
-    if !single {
+    let widgets: Vec<gtk::Button> = buttons
+        .iter()
+        .enumerate()
+        .map(|(idx, label)| make_button(label, idx))
+        .collect();
+
+    dialog.set_default_widget(Some(&widgets[0]));
+    btn_box.append(&widgets[0]);
+    if widgets.len() == 1 {
+        // A lone button sits in the middle, not pinned to the left.
+        btn_box.set_halign(gtk::Align::Center);
+        btn_box.set_hexpand(true);
+    } else {
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         btn_box.append(&spacer);
-    }
-    for (i, label) in buttons[1..].iter().enumerate() {
-        btn_box.append(&make_button(label, i + 1));
+        for btn in &widgets[1..] {
+            btn_box.append(btn);
+        }
     }
     vbox.append(&btn_box);
 
-    // Esc is the cancel button.
+    // Esc clicks the cancel button, so both paths run the very same handler.
     {
         let keys = gtk::EventControllerKey::new();
-        let dlg = dialog.clone();
-        let on_choice = on_choice.clone();
-        let cancel_idx = buttons.len() - 1;
+        let cancel = widgets[widgets.len() - 1].clone();
         keys.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
-                on_choice(cancel_idx, String::new());
-                dlg.close();
+                cancel.emit_clicked();
                 return gtk::glib::Propagation::Stop;
             }
             gtk::glib::Propagation::Proceed

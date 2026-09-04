@@ -1,5 +1,14 @@
 # Changes
 
+## 2026-09-04
+
+- CLEANUP - `crates/ui`: un solo parametro `Body { Text | Markup }` al posto della coppia mutuamente esclusiva `message: &str` / `rich_body: Option<Label>`; `build_rich` eliminata e `build` scesa da 8 a 7 parametri.
+- Le tre label del requester (corpo, dettaglio, rich) passano da `_body_label()`: la larghezza di wrap vive ora nella costante `BODY_MAX_WIDTH_CHARS` invece di essere ripetuta tre volte.
+- Esc ora fa `emit_clicked()` sul bottone di cancel invece di richiamare `on_choice` per conto suo: prima un `requester_entry` chiuso con Esc consegnava una stringa vuota mentre il click sullo stesso bottone consegnava il testo digitato.
+- I bottoni chiudono con `destroy()` e non `close()`, rompendo il ciclo dialog -> button -> closure -> dialog che teneva in vita finestra, widget e callback (con dentro `Rc<Ui>`) per tutta la vita del processo.
+- Rimosso `add_css_class("requester")`: nessuna regola `.requester` esiste in `theme.rs`, era un aggancio morto.
+- `requester_entry` perde il parametro `message`, che nessun chiamante valorizzava. I bottoni non primari usano `Button::with_label` invece di una `Label` figlia costruita a mano, e `build` non e piu generica sul tipo di parent (upcast nei wrapper pubblici): una sola istanza del corpo grande.
+
 ## 2026-09-03
 
 - OPTIMIZE 3.6 - Auto-refresh in tempo reale con inotify. Nuovo `crates/lister/src/watcher.rs`: inotify diretto tramite `libc`, senza aggiungere dipendenze. Un thread per Lister possiede il file descriptor e blocca su `poll`; la directory osservata viene sostituita ad ogni navigazione.

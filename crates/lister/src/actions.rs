@@ -395,7 +395,7 @@ pub fn prompt(
     initial: &str,
     on_ok: impl Fn(String) + 'static,
 ) {
-    opusdm_ui::requester_entry(parent, title, "", initial, &["OK", "Cancel"], move |idx, text| {
+    opusdm_ui::requester_entry(parent, title, initial, &["OK", "Cancel"], move |idx, text| {
         if idx == 0 && !text.is_empty() {
             on_ok(text);
         }
