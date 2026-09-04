@@ -147,22 +147,11 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 crate::actions::flash(ui, "nothing selected");
                 return;
             }
-            let dialog = gtk::AlertDialog::builder()
-                .message(format!("Delete {} item(s) permanently?", paths.len()))
-                .buttons(["Cancel", "Delete"])
-                .cancel_button(0)
-                .default_button(0)
-                .build();
-            let ui2 = ui.clone();
-            dialog.choose(Some(&ui.window), gtk::gio::Cancellable::NONE, move |res| {
-                if res == Ok(1) {
-                    let _ = ui2.client.send(&ToHub::RunJob {
-                        op: Op::Delete,
-                        srcs: ui2.selected_paths(),
-                        dest_dir: Some(ui2.cwd_path()),
-                    });
-                }
-            });
+            crate::actions::confirm_delete(
+                ui,
+                &format!("Delete {} item(s) permanently?", paths.len()),
+                paths,
+            );
         }
         "mkdir" => {
             let ui_clone = ui.clone();
@@ -258,20 +247,10 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
 
 /// Open the Command Palette modal HUD.
 pub fn open_command_palette(ui: &Rc<Ui>) {
-    let dialog = gtk::Window::builder()
-        .title("OpusDM Command Palette")
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(520)
-        .default_height(380)
-        .resizable(false)
-        .build();
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    root.set_margin_start(12);
-    root.set_margin_end(12);
-    root.set_margin_top(12);
-    root.set_margin_bottom(12);
+    let shell = opusdm_ui::DialogShell::new(&ui.window, "OpusDM Command Palette")
+        .size(520, 380)
+        .resizable(false);
+    let root = shell.content();
     root.add_css_class("command-palette");
 
     let entry = gtk::SearchEntry::new();
@@ -354,7 +333,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     // Execute selected row helper
     let execute_selected = {
         let ui_for_exec = ui.clone();
-        let dlg = dialog.clone();
+        let dlg = shell.window().clone();
         let list_box_clone = list_box.clone();
         let rows_for_exec = rows.clone();
         Rc::new(move || {
@@ -381,7 +360,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     // Key handling for Enter, Esc, Up, Down in SearchEntry
     {
         let key_ctrl = gtk::EventControllerKey::new();
-        let dlg = dialog.clone();
+        let dlg = shell.window().clone();
         let list_box_clone = list_box.clone();
         let rows_clone = rows.clone();
         let exec = execute_selected.clone();
@@ -434,7 +413,6 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
         entry.add_controller(key_ctrl);
     }
 
-    dialog.set_child(Some(&root));
-    dialog.present();
+    shell.present();
     entry.grab_focus();
 }

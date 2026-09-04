@@ -197,19 +197,12 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
 
     let cwd = ui.cwd_path();
 
-    let dialog = gtk::Window::builder()
-        .title(format!("Batch Rename — {} items", names.len()))
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(680)
-        .default_height(520)
-        .build();
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    root.set_margin_start(12);
-    root.set_margin_end(12);
-    root.set_margin_top(12);
-    root.set_margin_bottom(12);
+    let shell = opusdm_ui::DialogShell::new(
+        &ui.window,
+        &format!("Batch Rename - {} items", names.len()),
+    )
+    .size(680, 520);
+    let root = shell.content();
 
     // Controls grid
     let grid = gtk::Grid::builder()
@@ -304,14 +297,9 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
     root.append(&warning_label);
 
     // Buttons
-    let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    btn_box.set_halign(gtk::Align::End);
-    let cancel_btn = gtk::Button::with_label("Cancel");
-    let apply_btn = gtk::Button::with_label("Apply Rename");
+    shell.close_button("Cancel");
+    let apply_btn = shell.button("Apply Rename");
     apply_btn.add_css_class("suggested-action");
-    btn_box.append(&cancel_btn);
-    btn_box.append(&apply_btn);
-    root.append(&btn_box);
 
     let current_mappings = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
 
@@ -443,15 +431,9 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
     // Initial calculation
     update_preview();
 
-    // Cancel
-    {
-        let dlg = dialog.clone();
-        cancel_btn.connect_clicked(move |_| dlg.close());
-    }
-
     // Apply
     {
-        let dlg = dialog.clone();
+        let dlg = shell.window().clone();
         let ui_clone = ui.clone();
         let current_mappings = current_mappings.clone();
         apply_btn.connect_clicked(move |_| {
@@ -488,8 +470,7 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
         });
     }
 
-    dialog.set_child(Some(&root));
-    dialog.present();
+    shell.present();
     find_entry.grab_focus();
 }
 

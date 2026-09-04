@@ -99,22 +99,10 @@ pub fn attach(ui: &Rc<Ui>) {
                 flash(&ui, "nothing selected");
                 return;
             }
-            let ui2 = ui.clone();
-            opusdm_ui::requester(
-                &ui.window,
-                "Request",
+            confirm_delete(
+                &ui,
                 &format!("Delete {} item(s) permanently?", paths.len()),
-                None,
-                &["Delete", "Cancel"],
-                move |choice| {
-                    if choice == 0 {
-                        let _ = ui2.client.send(&ToHub::RunJob {
-                            op: Op::Delete,
-                            srcs: ui2.selected_paths(),
-                            dest_dir: Some(ui2.cwd_path()),
-                        });
-                    }
-                },
+                paths,
             );
         });
     }
@@ -284,19 +272,12 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
 }
 
 fn show_error_dialog(ui: &Rc<Ui>, errors: &[(PathBuf, String)]) {
-    let dialog = gtk::Window::builder()
-        .title(format!("Completed with {} error(s)", errors.len()))
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(550)
-        .default_height(350)
-        .build();
-
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    vbox.set_margin_start(12);
-    vbox.set_margin_end(12);
-    vbox.set_margin_top(12);
-    vbox.set_margin_bottom(12);
+    let shell = opusdm_ui::DialogShell::new(
+        &ui.window,
+        &format!("Completed with {} error(s)", errors.len()),
+    )
+    .size(550, 350);
+    let vbox = shell.content();
 
     let header = gtk::Label::new(Some(&format!(
         "The operation completed with {} error(s):",
@@ -326,28 +307,15 @@ fn show_error_dialog(ui: &Rc<Ui>, errors: &[(PathBuf, String)]) {
         .build();
     vbox.append(&scroller);
 
-    let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    btn_box.set_halign(gtk::Align::End);
-
-    let copy_btn = gtk::Button::with_label("Copy Errors");
-    let full_text_clone = full_text.clone();
+    let copy_btn = shell.button("Copy Errors");
     copy_btn.connect_clicked(move |_| {
         if let Some(display) = gtk::gdk::Display::default() {
-            display.clipboard().set_text(&full_text_clone);
+            display.clipboard().set_text(&full_text);
         }
     });
-    btn_box.append(&copy_btn);
+    shell.close_button("Close");
 
-    let close_btn = gtk::Button::with_label("Close");
-    let dlg = dialog.clone();
-    close_btn.connect_clicked(move |_| {
-        dlg.close();
-    });
-    btn_box.append(&close_btn);
-
-    vbox.append(&btn_box);
-    dialog.set_child(Some(&vbox));
-    dialog.present();
+    shell.present();
 }
 
 /// Prompt for an overwrite conflict and reply to the hub.
@@ -362,16 +330,41 @@ pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: Fi
             "source: {} bytes\ndestination: {} bytes",
             src.size, dst.size
         )),
-        &["Overwrite", "Skip", "Overwrite All", "Skip All", "Cancel"],
-        move |choice| {
-            let resolution = match choice {
-                0 => Resolution::Overwrite,
-                1 => Resolution::Skip,
-                2 => Resolution::OverwriteAll,
-                3 => Resolution::SkipAll,
-                _ => Resolution::Cancel,
-            };
+        &[
+            ("Overwrite", Resolution::Overwrite),
+            ("Skip", Resolution::Skip),
+            ("Overwrite All", Resolution::OverwriteAll),
+            ("Skip All", Resolution::SkipAll),
+            ("Cancel", Resolution::Cancel),
+        ],
+        move |resolution| {
             let _ = ui.client.send(&ToHub::ConflictReply { req_id, resolution });
+        },
+    );
+}
+
+/// Ask the user to confirm a deletion, then hand `srcs` to the hub.
+///
+/// `message` is the question shown in the requester; it differs between the
+/// toolbar (a count of selected entries) and the context menu (one name).
+pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>) {
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    opusdm_ui::requester(
+        &win,
+        "Request",
+        message,
+        None,
+        &[("Delete", true), ("Cancel", false)],
+        move |confirmed| {
+            if !confirmed {
+                return;
+            }
+            let _ = ui.client.send(&ToHub::RunJob {
+                op: Op::Delete,
+                srcs: srcs.clone(),
+                dest_dir: Some(ui.cwd_path()),
+            });
         },
     );
 }
@@ -395,11 +388,17 @@ pub fn prompt(
     initial: &str,
     on_ok: impl Fn(String) + 'static,
 ) {
-    opusdm_ui::requester_entry(parent, title, initial, &["OK", "Cancel"], move |idx, text| {
-        if idx == 0 && !text.is_empty() {
-            on_ok(text);
-        }
-    });
+    opusdm_ui::requester_entry(
+        parent,
+        title,
+        initial,
+        &[("OK", true), ("Cancel", false)],
+        move |accepted, text| {
+            if accepted && !text.is_empty() {
+                on_ok(text);
+            }
+        },
+    );
 }
 
 #[cfg(test)]

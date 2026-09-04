@@ -117,23 +117,11 @@ pub fn show_context_menu(
         let btn = menu_button("Delete...");
         btn.connect_clicked(move |_| {
             pop.popdown();
-            let dialog = gtk::AlertDialog::builder()
-                .message(format!("Delete \"{}\" permanently?", file_name))
-                .buttons(["Cancel", "Delete"])
-                .cancel_button(0)
-                .default_button(0)
-                .build();
-            let ui2 = ui.clone();
-            let target_path = target_path.clone();
-            dialog.choose(Some(&ui.window), gtk::gio::Cancellable::NONE, move |res| {
-                if res == Ok(1) {
-                    let _ = ui2.client.send(&ToHub::RunJob {
-                        op: Op::Delete,
-                        srcs: vec![target_path],
-                        dest_dir: Some(ui2.cwd_path()),
-                    });
-                }
-            });
+            crate::actions::confirm_delete(
+                &ui,
+                &format!("Delete \"{}\" permanently?", file_name),
+                vec![target_path.clone()],
+            );
         });
         menu_box.append(&btn);
     }

@@ -204,7 +204,7 @@ fn show_about_dialog(parent: &gtk::ApplicationWindow) {
          Written by Fabio Rotondo\n\
          <a href='https://github.com/fsof72'>https://github.com/fsof72</a>\n\n\
          <small>This software is Open Source</small>",
-        &["OK"],
+        &[("OK", ())],
         |_| {},
     );
 }
@@ -219,25 +219,22 @@ fn request_quit(widgets: &Rc<Widgets>) {
         }
         return;
     }
-    let dialog = gtk::AlertDialog::builder()
-        .message("Quit OpusDM?")
-        .detail(format!("{running} job(s) still running."))
-        .buttons(["Cancel", "Quit"])
-        .cancel_button(0)
-        .default_button(0)
-        .build();
-    let widgets = widgets.clone();
     let parent = widgets.window.clone();
-    dialog.choose(
-        Some(&parent),
-        gio::Cancellable::NONE,
-        move |result| {
-            if result == Ok(1) {
-                let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
-                widgets.window.close();
-                if let Some(app) = widgets.window.application() {
-                    app.quit();
-                }
+    let widgets = widgets.clone();
+    opusdm_ui::requester(
+        &parent,
+        "Request",
+        "Quit OpusDM?",
+        Some(&format!("{running} job(s) still running.")),
+        &[("Quit", true), ("Cancel", false)],
+        move |quit| {
+            if !quit {
+                return;
+            }
+            let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
+            widgets.window.close();
+            if let Some(app) = widgets.window.application() {
+                app.quit();
             }
         },
     );
@@ -576,30 +573,22 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
     let settings_data = settings::load_settings();
     let c = &settings_data.colors;
 
-    let window = gtk::Window::builder()
-        .title("OpusDM Settings")
-        .modal(true)
-        .transient_for(parent)
-        .default_width(460)
-        .default_height(620)
-        .build();
-
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    vbox.set_margin_top(12);
-    vbox.set_margin_bottom(12);
-    vbox.set_margin_start(12);
-    vbox.set_margin_end(12);
+    let shell = opusdm_ui::DialogShell::new(parent, "OpusDM Settings")
+        .size(460, 620)
+        .scrolled();
+    let window = shell.window().clone();
+    let vbox = shell.content();
 
     let (preset_dd, appearance_checks) =
-        add_theme_section(&vbox, &settings_data.appearance.preset, &settings_data.appearance);
-    let auto_refresh = add_behavior_section(&vbox, &settings_data.behavior);
+        add_theme_section(vbox, &settings_data.appearance.preset, &settings_data.appearance);
+    let auto_refresh = add_behavior_section(vbox, &settings_data.behavior);
 
-    let (src_bg, src_fg) = add_color_section(&vbox, &window, "SOURCE", &c.source_bg, &c.source_fg);
-    let (dst_bg, dst_fg) = add_color_section(&vbox, &window, "DEST", &c.dest_bg, &c.dest_fg);
-    let (dir_bg, dir_fg) = add_color_section(&vbox, &window, "DIRECTORY", &c.dir_bg, &c.dir_fg);
-    let (file_bg, file_fg) = add_color_section(&vbox, &window, "FILE", &c.file_bg, &c.file_fg);
+    let (src_bg, src_fg) = add_color_section(vbox, &window, "SOURCE", &c.source_bg, &c.source_fg);
+    let (dst_bg, dst_fg) = add_color_section(vbox, &window, "DEST", &c.dest_bg, &c.dest_fg);
+    let (dir_bg, dir_fg) = add_color_section(vbox, &window, "DIRECTORY", &c.dir_bg, &c.dir_fg);
+    let (file_bg, file_fg) = add_color_section(vbox, &window, "FILE", &c.file_bg, &c.file_fg);
     let (sel_bg, sel_fg) =
-        add_color_section(&vbox, &window, "SELECTION", &c.selected_bg, &c.selected_fg);
+        add_color_section(vbox, &window, "SELECTION", &c.selected_bg, &c.selected_fg);
 
     let entries = Rc::new(ColorEntries {
         source_bg: src_bg,
@@ -627,21 +616,8 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
         });
     }
 
-    let scroller = gtk::ScrolledWindow::builder().child(&vbox).vexpand(true).build();
-
-    let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    button_box.set_halign(gtk::Align::End);
-    button_box.set_margin_top(8);
-    button_box.set_margin_bottom(12);
-    button_box.set_margin_start(12);
-    button_box.set_margin_end(12);
-    let cancel_btn = gtk::Button::with_label("Cancel");
-    let save_btn = gtk::Button::with_label("Save");
-
-    {
-        let window = window.clone();
-        cancel_btn.connect_clicked(move |_| window.close());
-    }
+    shell.close_button("Cancel");
+    let save_btn = shell.button("Save");
 
     {
         let window = window.clone();
@@ -664,14 +640,6 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
         });
     }
 
-    button_box.append(&cancel_btn);
-    button_box.append(&save_btn);
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&scroller);
-    root.append(&button_box);
-
-    window.set_child(Some(&root));
-    window.present();
+    shell.present();
 }
 

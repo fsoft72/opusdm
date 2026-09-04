@@ -2,6 +2,12 @@
 
 ## 2026-09-04
 
+- Le requester restituiscono un valore invece di un indice: i bottoni si passano come coppie `(label, valore)` e la callback riceve il valore scelto. `on_conflict` non ha piu un `match` sugli indici e inserire un bottone in mezzo non puo piu dirottare silenziosamente i rami.
+- Rete di sicurezza al posto di `deletable(false)`: la requester e di nuovo chiudibile dal WM, ma `connect_close_request` consegna la scelta di cancel. Un unico `deliver()` guardato da un flag serve bottoni, Esc e chiusura WM, cosi `on_choice` gira esattamente una volta e con lo stesso testo dell'entry qualunque sia la via d'uscita - prima una chiusura via WM lasciava l'hub in attesa di `ConflictReply` per sempre.
+- Migrati a `opusdm_ui::requester` gli ultimi tre `gtk::AlertDialog`: conferma di uscita dell'hub, delete del menu contestuale e delete della palette. Le tre copie della conferma di delete passano ora da `actions::confirm_delete()`, quindi ordine dei bottoni e default sono gli stessi da qualunque punto d'ingresso (prima la palette e il menu contestuale avevano Cancel come primario, la toolbar no).
+- Nuovo `opusdm_ui::DialogShell`: finestra modale + area contenuti + riga bottoni, con margini, spaziature e cablaggio dei bottoni di chiusura in un posto solo. Adottato dai sei dialog che li ricopiavano a mano (errori di job, batch rename, checksum, compare/sync, command palette, settings dell'hub). I margini passano a 12 px uniformi (checksum e compare stavano a 14) e la riga bottoni sparisce del tutto quando il dialog non ne ha (command palette).
+- `crates/ui` diviso in `requester.rs` e `shell.rs`; corretto l'em dash nel titolo del Batch Rename.
+
 - CLEANUP - `crates/ui`: un solo parametro `Body { Text | Markup }` al posto della coppia mutuamente esclusiva `message: &str` / `rich_body: Option<Label>`; `build_rich` eliminata e `build` scesa da 8 a 7 parametri.
 - Le tre label del requester (corpo, dettaglio, rich) passano da `_body_label()`: la larghezza di wrap vive ora nella costante `BODY_MAX_WIDTH_CHARS` invece di essere ripetuta tre volte.
 - Esc ora fa `emit_clicked()` sul bottone di cancel invece di richiamare `on_choice` per conto suo: prima un `requester_entry` chiuso con Esc consegnava una stringa vuota mentre il click sullo stesso bottone consegnava il testo digitato.

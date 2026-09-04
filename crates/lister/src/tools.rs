@@ -158,19 +158,9 @@ pub fn open_checksum_dialog(ui: &Rc<Ui>) {
         return;
     }
 
-    let dialog = gtk::Window::builder()
-        .title("File Checksums (SHA-256 & MD5)")
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(620)
-        .default_height(360)
-        .build();
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    root.set_margin_start(14);
-    root.set_margin_end(14);
-    root.set_margin_top(14);
-    root.set_margin_bottom(14);
+    let shell = opusdm_ui::DialogShell::new(&ui.window, "File Checksums (SHA-256 & MD5)")
+        .size(620, 360);
+    let root = shell.content();
 
     let title_lbl = gtk::Label::new(Some(&format!(
         "Calculating hashes for {} file(s)...",
@@ -285,18 +275,8 @@ pub fn open_checksum_dialog(ui: &Rc<Ui>) {
         title_lbl_clone.set_text(&format!("Checksums for {count} file(s):"));
     });
 
-    let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    btn_box.set_halign(gtk::Align::End);
-    let close_btn = gtk::Button::with_label("Close");
-    {
-        let dlg = dialog.clone();
-        close_btn.connect_clicked(move |_| dlg.close());
-    }
-    btn_box.append(&close_btn);
-    root.append(&btn_box);
-
-    dialog.set_child(Some(&root));
-    dialog.present();
+    shell.close_button("Close");
+    shell.present();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,19 +368,9 @@ pub fn compare_directories(src: &Path, tgt: &Path) -> std::io::Result<Vec<DirDif
 pub fn open_compare_dialog(ui: &Rc<Ui>) {
     let src_path = ui.cwd_path();
 
-    let dialog = gtk::Window::builder()
-        .title("Compare / Sync Directories")
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(720)
-        .default_height(500)
-        .build();
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    root.set_margin_start(14);
-    root.set_margin_end(14);
-    root.set_margin_top(14);
-    root.set_margin_bottom(14);
+    let shell = opusdm_ui::DialogShell::new(&ui.window, "Compare / Sync Directories")
+        .size(720, 500);
+    let root = shell.content();
 
     // Header inputs
     let grid = gtk::Grid::builder()
@@ -450,22 +420,10 @@ pub fn open_compare_dialog(ui: &Rc<Ui>) {
     root.append(&scroller);
 
     // Footer actions
-    let footer_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let select_diff_btn = gtk::Button::with_label("Select Differences in Lister");
+    let select_diff_btn = shell.button("Select Differences in Lister");
     select_diff_btn.set_sensitive(false);
-
-    let close_btn = gtk::Button::with_label("Close");
-    {
-        let dlg = dialog.clone();
-        close_btn.connect_clicked(move |_| dlg.close());
-    }
-
-    footer_box.append(&select_diff_btn);
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    footer_box.append(&spacer);
-    footer_box.append(&close_btn);
-    root.append(&footer_box);
+    shell.button_spacer();
+    shell.close_button("Close");
 
     let diff_names_to_select = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
 
@@ -568,7 +526,7 @@ pub fn open_compare_dialog(ui: &Rc<Ui>) {
     {
         let ui_clone = ui.clone();
         let diff_names = diff_names_to_select.clone();
-        let dlg = dialog.clone();
+        let dlg = shell.window().clone();
         select_diff_btn.connect_clicked(move |_| {
             let names = diff_names.borrow().clone();
             ui_clone.selection.unselect_all();
@@ -587,8 +545,7 @@ pub fn open_compare_dialog(ui: &Rc<Ui>) {
         });
     }
 
-    dialog.set_child(Some(&root));
-    dialog.present();
+    shell.present();
 }
 
 #[cfg(test)]
