@@ -1,7 +1,7 @@
 //! The Lister window: path bar, column view, status line, navigation.
 
 use crate::client::{Client, Inbound, Roles};
-use crate::model::{read_dir_rows, Row};
+use crate::model::{dir_first_cmp, read_dir_rows, Row, SortCol};
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
@@ -190,10 +190,12 @@ fn build_window(
     let filter_bar = Rc::new(crate::filter::FilterBar::new());
     let filter_model = gtk::FilterListModel::new(Some(store.clone()), Some(filter_bar.filter.clone()));
 
-    // Sorting is driven by the column headers: each column carries its own
-    // sorter (see `columns::add_column`), and the ColumnView's own sorter
-    // reflects whichever header is active. It is wired into the SortListModel
-    // once the columns exist, below.
+    // Sorting is driven by the column headers, but the model does NOT use the
+    // ColumnView's own sorter directly: that one reverses the whole comparator
+    // for a descending sort, which would drop directories below files. Instead
+    // the header state (which column, which direction) is read back and fed to
+    // `dir_first_cmp`, which keeps directories as a fixed leading block and
+    // reverses only the key within each block. Wired up once the columns exist.
     let sort_model = gtk::SortListModel::new(Some(filter_model.clone()), None::<gtk::Sorter>);
     let selection = gtk::MultiSelection::new(Some(sort_model.clone()));
     let column_view = gtk::ColumnView::new(Some(selection.clone()));
@@ -207,18 +209,65 @@ fn build_window(
         move || slot.borrow().clone()
     };
 
-    let name_col =
-        crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name, ui_getter.clone());
-    crate::columns::add_column(&column_view, "Size", crate::columns::ColKind::Size, ui_getter.clone());
-    crate::columns::add_column(&column_view, "Date", crate::columns::ColKind::Modified, ui_getter.clone());
-    crate::columns::add_column(&column_view, "User", crate::columns::ColKind::User, ui_getter.clone());
-    crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group, ui_getter.clone());
-    crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access, ui_getter);
+    let col_map: Rc<Vec<(gtk::ColumnViewColumn, SortCol)>> = Rc::new(vec![
+        (
+            crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name, ui_getter.clone()),
+            SortCol::Name,
+        ),
+        (
+            crate::columns::add_column(&column_view, "Size", crate::columns::ColKind::Size, ui_getter.clone()),
+            SortCol::Size,
+        ),
+        (
+            crate::columns::add_column(&column_view, "Date", crate::columns::ColKind::Modified, ui_getter.clone()),
+            SortCol::Modified,
+        ),
+        (
+            crate::columns::add_column(&column_view, "User", crate::columns::ColKind::User, ui_getter.clone()),
+            SortCol::User,
+        ),
+        (
+            crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group, ui_getter.clone()),
+            SortCol::Group,
+        ),
+        (
+            crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access, ui_getter),
+            SortCol::Access,
+        ),
+    ]);
+    let name_col = col_map[0].0.clone();
 
-    // Now that the columns (and their sorters) exist, feed the ColumnView's
-    // own sorter into the model and default to Name ascending. Clicking a
-    // header from here on re-sorts and moves the arrow indicator.
-    sort_model.set_sorter(column_view.sorter().as_ref());
+    // The ColumnView's sorter tracks the active header (column + direction) and
+    // draws the arrow indicator; the model sorter below only reads its state.
+    let cv_sorter = column_view.sorter().and_downcast::<gtk::ColumnViewSorter>();
+
+    let model_sorter = gtk::CustomSorter::new({
+        let cv_sorter = cv_sorter.clone();
+        let col_map = col_map.clone();
+        move |a, b| {
+            let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
+            let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
+            let (col, desc) = cv_sorter
+                .as_ref()
+                .and_then(|s| {
+                    let active = s.primary_sort_column()?;
+                    let col = col_map.iter().find(|(c, _)| *c == active).map(|(_, sc)| *sc)?;
+                    Some((col, s.primary_sort_order() == gtk::SortType::Descending))
+                })
+                .unwrap_or((SortCol::Name, false));
+            dir_first_cmp(&ra, &rb, col, desc).into()
+        }
+    });
+    sort_model.set_sorter(Some(&model_sorter));
+
+    // A header click changes column/direction without touching the row data,
+    // so the model sorter has to be told its criteria moved.
+    if let Some(cv_sorter) = &cv_sorter {
+        let model_sorter = model_sorter.clone();
+        cv_sorter.connect_changed(move |_, _| {
+            model_sorter.changed(gtk::SorterChange::Different);
+        });
+    }
     column_view.sort_by_column(Some(&name_col), gtk::SortType::Ascending);
 
     root.append(&filter_bar.container);

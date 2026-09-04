@@ -2,9 +2,9 @@
 
 ## 2026-09-04
 
-- Sort cliccando sulle intestazioni di colonna. Ogni colonna del Lister (Name, Size, Date, User, Group, Access) porta ora il proprio `gtk::CustomSorter`; il `SortListModel` e pilotato dal sorter nativo del `ColumnView`, quindi GTK gestisce il toggle ascendente/discendente e disegna da solo la freccia indicatrice sulla colonna attiva. Ordinamento predefinito: Name ascendente.
-- `SortCol` esteso con `User`, `Group`, `Access` e i relativi rami in `dir_first_cmp` (utente e gruppo per nome visualizzato, case-insensitive; access per i bit di `mode`). Le directory restano sempre in cima in entrambe le direzioni.
-- Rimossi il `sort_cell` mai aggiornato, il campo `Ui.sorter` e la sveglia manuale `sorter.changed()` dopo lo `splice`: con i sorter per-colonna il `SortListModel` si riordina da solo al cambio dati.
+- Sort cliccando sulle intestazioni di colonna (Name, Size, Date, User, Group, Access), con freccia indicatrice sulla colonna attiva. Gli header sono i pulsanti nativi del `ColumnView`; il `SortListModel` pero non usa il suo sorter, che per il verso discendente invertirebbe l'intero comparatore facendo finire le directory sotto i file. Un `CustomSorter` sul modello legge dal `ColumnViewSorter` solo quale colonna e quale verso sono attivi e li passa a `dir_first_cmp`: doppio blocco, directory sempre in testa, e il verso a->z / z->a inverte solo la chiave dentro ciascun blocco.
+- `SortCol` esteso con `User`, `Group`, `Access` e i relativi rami in `dir_first_cmp` (utente e gruppo per nome visualizzato, case-insensitive; access per i bit di `mode`).
+- Rimossi il `sort_cell` mai aggiornato e il campo `Ui.sorter`. Il sorter del modello viene svegliato con `changed()` sul segnale `changed` del `ColumnViewSorter` (cambio di colonna/verso da header), non piu dopo ogni `splice`.
 
 - Le requester restituiscono un valore invece di un indice: i bottoni si passano come coppie `(label, valore)` e la callback riceve il valore scelto. `on_conflict` non ha piu un `match` sugli indici e inserire un bottone in mezzo non puo piu dirottare silenziosamente i rami.
 - Rete di sicurezza al posto di `deletable(false)`: la requester e di nuovo chiudibile dal WM, ma `connect_close_request` consegna la scelta di cancel. Un unico `deliver()` guardato da un flag serve bottoni, Esc e chiusura WM, cosi `on_choice` gira esattamente una volta e con lo stesso testo dell'entry qualunque sia la via d'uscita - prima una chiusura via WM lasciava l'hub in attesa di `ConflictReply` per sempre.
