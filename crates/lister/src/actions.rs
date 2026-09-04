@@ -99,22 +99,23 @@ pub fn attach(ui: &Rc<Ui>) {
                 flash(&ui, "nothing selected");
                 return;
             }
-            let dialog = gtk::AlertDialog::builder()
-                .message(format!("Delete {} item(s) permanently?", paths.len()))
-                .buttons(["Cancel", "Delete"])
-                .cancel_button(0)
-                .default_button(0)
-                .build();
             let ui2 = ui.clone();
-            dialog.choose(Some(&ui.window), gtk::gio::Cancellable::NONE, move |res| {
-                if res == Ok(1) {
-                    let _ = ui2.client.send(&ToHub::RunJob {
-                        op: Op::Delete,
-                        srcs: ui2.selected_paths(),
-                        dest_dir: Some(ui2.cwd_path()),
-                    });
-                }
-            });
+            opusdm_ui::requester(
+                &ui.window,
+                "Request",
+                &format!("Delete {} item(s) permanently?", paths.len()),
+                None,
+                &["Delete", "Cancel"],
+                move |choice| {
+                    if choice == 0 {
+                        let _ = ui2.client.send(&ToHub::RunJob {
+                            op: Op::Delete,
+                            srcs: ui2.selected_paths(),
+                            dest_dir: Some(ui2.cwd_path()),
+                        });
+                    }
+                },
+            );
         });
     }
 
@@ -351,28 +352,28 @@ fn show_error_dialog(ui: &Rc<Ui>, errors: &[(PathBuf, String)]) {
 
 /// Prompt for an overwrite conflict and reply to the hub.
 pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: FileMeta) {
-    let dialog = gtk::AlertDialog::builder()
-        .message(format!("{} already exists", path.display()))
-        .detail(format!(
-            "source: {} bytes\ndestination: {} bytes",
-            src.size, dst.size
-        ))
-        .buttons(["Skip", "Overwrite", "Skip All", "Overwrite All", "Cancel"])
-        .cancel_button(4)
-        .default_button(0)
-        .build();
     let ui = ui.clone();
     let win = ui.window.clone();
-    dialog.choose(Some(&win), gtk::gio::Cancellable::NONE, move |res| {
-        let resolution = match res {
-            Ok(0) => Resolution::Skip,
-            Ok(1) => Resolution::Overwrite,
-            Ok(2) => Resolution::SkipAll,
-            Ok(3) => Resolution::OverwriteAll,
-            _ => Resolution::Cancel,
-        };
-        let _ = ui.client.send(&ToHub::ConflictReply { req_id, resolution });
-    });
+    opusdm_ui::requester(
+        &win,
+        "Request",
+        &format!("{} already exists", path.display()),
+        Some(&format!(
+            "source: {} bytes\ndestination: {} bytes",
+            src.size, dst.size
+        )),
+        &["Overwrite", "Skip", "Overwrite All", "Skip All", "Cancel"],
+        move |choice| {
+            let resolution = match choice {
+                0 => Resolution::Overwrite,
+                1 => Resolution::Skip,
+                2 => Resolution::OverwriteAll,
+                3 => Resolution::SkipAll,
+                _ => Resolution::Cancel,
+            };
+            let _ = ui.client.send(&ToHub::ConflictReply { req_id, resolution });
+        },
+    );
 }
 
 /// Show `text` in the transient message line for a few seconds.
@@ -394,59 +395,11 @@ pub fn prompt(
     initial: &str,
     on_ok: impl Fn(String) + 'static,
 ) {
-    let dialog = gtk::Window::builder()
-        .title(title)
-        .transient_for(parent)
-        .modal(true)
-        .default_width(320)
-        .build();
-
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    vbox.set_margin_top(10);
-    vbox.set_margin_bottom(10);
-    vbox.set_margin_start(10);
-    vbox.set_margin_end(10);
-
-    let entry = gtk::Entry::new();
-    entry.set_text(initial);
-    entry.set_activates_default(true);
-    vbox.append(&entry);
-
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    buttons.set_halign(gtk::Align::End);
-    let cancel = gtk::Button::with_label("Cancel");
-    let ok = gtk::Button::with_label("OK");
-    buttons.append(&cancel);
-    buttons.append(&ok);
-    vbox.append(&buttons);
-
-    dialog.set_child(Some(&vbox));
-
-    {
-        let dialog = dialog.clone();
-        cancel.connect_clicked(move |_| dialog.close());
-    }
-    {
-        let dialog_ref = dialog.clone();
-        let entry_ref = entry.clone();
-        let commit: Rc<dyn Fn()> = Rc::new(move || {
-            let text = entry_ref.text().to_string();
-            if !text.is_empty() {
-                on_ok(text);
-            }
-            dialog_ref.close();
-        });
-        {
-            let commit = commit.clone();
-            ok.connect_clicked(move |_| commit());
+    opusdm_ui::requester_entry(parent, title, "", initial, &["OK", "Cancel"], move |idx, text| {
+        if idx == 0 && !text.is_empty() {
+            on_ok(text);
         }
-        {
-            let commit = commit.clone();
-            entry.connect_activate(move |_| commit());
-        }
-    }
-
-    dialog.present();
+    });
 }
 
 #[cfg(test)]

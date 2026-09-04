@@ -163,6 +163,9 @@ fn build_window(
     // Top stat bar: D/F/B counts (left) + pin + SOURCE/DEST badge (right).
     // Click the badge to cycle SOURCE -> DEST -> NONE.
     let stat_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    // Constant padding regardless of role - the SOURCE/DEST classes only
+    // recolour, so NONE must not sit tighter to the edge.
+    stat_bar.add_css_class("stat-bar");
     let stat_info = gtk::Label::new(Some("D: [0/0] F: [0/0] B: [0/0]"));
     stat_info.set_xalign(0.0);
     stat_info.set_hexpand(true);

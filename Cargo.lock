@@ -629,6 +629,7 @@ dependencies = [
  "libc",
  "opusdm-fsops",
  "opusdm-ipc",
+ "opusdm-ui",
  "serde",
  "serde_json",
  "signal-hook",
@@ -654,8 +655,16 @@ dependencies = [
  "gtk4",
  "libc",
  "opusdm-ipc",
+ "opusdm-ui",
  "tempfile",
  "walkdir",
+]
+
+[[package]]
+name = "opusdm-ui"
+version = "0.1.0"
+dependencies = [
+ "gtk4",
 ]
 
 [[package]]

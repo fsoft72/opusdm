@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
 opusdm-fsops = { path = "../fsops" }
 async-channel.workspace = true
 signal-hook.workspace = true

@@ -118,6 +118,13 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     let settings_btn = gtk::Button::with_label("Settings");
     bar.append(&settings_btn);
 
+    let about_btn = gtk::Button::with_label("About");
+    {
+        let window = window.clone();
+        about_btn.connect_clicked(move |_| show_about_dialog(&window));
+    }
+    bar.append(&about_btn);
+
     let quit_btn = gtk::Button::with_label("Quit");
     bar.append(&quit_btn);
 
@@ -186,6 +193,20 @@ fn attach_present_gesture(label: &gtk::Label, widgets: &Rc<Widgets>, is_src: boo
         }
     });
     label.add_controller(gesture);
+}
+
+fn show_about_dialog(parent: &gtk::ApplicationWindow) {
+    opusdm_ui::requester_rich(
+        parent,
+        "About OpusDM",
+        "<span size='xx-large' weight='bold'>OpusDM</span>\n\
+         <i>A Linux tribute to Amiga Directory Opus 5</i>\n\n\
+         Written by Fabio Rotondo\n\
+         <a href='https://github.com/fsof72'>https://github.com/fsof72</a>\n\n\
+         <small>This software is Open Source</small>",
+        &["OK"],
+        |_| {},
+    );
 }
 
 fn request_quit(widgets: &Rc<Widgets>) {

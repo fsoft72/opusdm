@@ -1,0 +1,8 @@
+[package]
+name = "opusdm-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gtk4.workspace = true

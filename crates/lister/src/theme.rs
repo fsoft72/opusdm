@@ -35,7 +35,7 @@ pub fn generate_css(settings: &Settings) -> String {
     let base = format!(
         ".stat-source {{ background-color: {}; color: {}; }} \
          .stat-dest {{ background-color: {}; color: {}; }} \
-         .stat-source, .stat-dest {{ padding: 0 4px; }} \
+         .stat-bar {{ padding: 0 4px; }} \
          .row-dir {{ background-color: {}; color: {}; }} \
          .row-file {{ background-color: {}; color: {}; }} \
          .pin-btn {{ min-height: 0; min-width: 0; padding: 2px 6px; }} \
