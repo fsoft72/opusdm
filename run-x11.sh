@@ -15,7 +15,7 @@ set -euo pipefail
 
 # Configuration (overridable via args or environment)
 DISPLAY_NUM="${1:-${XEPHYR_DISPLAY:-:1}}"
-RESOLUTION="${2:-${XEPHYR_RES:-1280x800}}"
+RESOLUTION="${2:-${XEPHYR_RES:-1920x1080}}"
 TERMINAL="${XEPHYR_TERM:-xterm}"
 START_WM="${XEPHYR_WM:-openbox}"   # WM providing decorations; set empty to disable
 OPENBOX_CONFIG="${XEPHYR_OB_CONFIG:-$(pwd)/openbox-rc.xml}"  # rc.xml for openbox
