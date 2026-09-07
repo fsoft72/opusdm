@@ -108,6 +108,7 @@ pub fn run(
         .build();
 
     app.connect_activate(move |app| {
+        crate::dlog!("activate");
         let mut guard = shared.borrow_mut();
         let Some(st) = guard.as_mut() else { return };
         let inbox = st.inbox.take().expect("activate once");
@@ -120,6 +121,7 @@ pub fn run(
                 match inb {
                     Inbound::Msg(m) => ui_for_pump.apply_inbound(m),
                     Inbound::HubGone => {
+                        crate::dlog!("hub connection lost, closing window");
                         ui_for_pump.window.close();
                         break;
                     }
@@ -515,6 +517,7 @@ fn build_window(
     {
         let ui = ui.clone();
         window.connect_close_request(move |_| {
+            crate::dlog!("close request, sending Goodbye to hub");
             let _ = ui.client.send(&ToHub::Goodbye);
             glib::Propagation::Proceed
         });
@@ -607,6 +610,7 @@ impl Ui {
 
     /// Read `dir`, repopulate the store, update title/entry/status, notify the hub.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
+        crate::dlog!("navigate_to {}", dir.display());
         let rows = if let Some((arch, inner)) = crate::archive::parse_archive_path(dir) {
             match crate::archive::read_archive_rows(&arch, &inner) {
                 Ok(r) => r,
@@ -657,6 +661,7 @@ impl Ui {
         let old_len = self.store.n_items();
         self.store.splice(0, old_len, &new_items);
         self.window.set_title(Some(&dir.to_string_lossy()));
+        crate::dlog!("navigate_to {} done: {} items", dir.display(), new_items.len());
         self.refresh_path_entry();
         self.update_status();
         let _ = self.client.send(&ToHub::PathChanged(dir.to_path_buf()));
@@ -763,6 +768,7 @@ impl Ui {
 
     /// Handle a message from the hub.
     pub fn apply_inbound(self: &Rc<Self>, msg: ToLister) {
+        crate::dlog!("hub msg: {msg:?}");
         match msg {
             ToLister::RoleChanged { source, dests, source_locked } => {
                 *self.roles.borrow_mut() = Roles { source, dests, source_locked };
@@ -991,6 +997,7 @@ impl Ui {
     /// auto-refresh would otherwise wipe a filter the user is halfway through
     /// typing. Save it across the reload and put it back.
     fn on_directory_changed(self: &Rc<Self>, dir: &Path) {
+        crate::dlog!("watch event: {}", dir.display());
         if *self.cwd.borrow() != dir {
             return;
         }

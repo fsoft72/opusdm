@@ -5,13 +5,21 @@
 # sandbox for testing OpusDM without touching the real session.
 #
 # Usage:
-#   ./xephyr-sandbox.sh [display] [resolution]
+#   ./xephyr-sandbox.sh [--debug] [display] [resolution]
 #
 # Examples:
 #   ./xephyr-sandbox.sh              # :1 at 1280x800
 #   ./xephyr-sandbox.sh :2 1920x1080
+#   ./xephyr-sandbox.sh --debug      # lister debug log in /ramdisk/opusdm.log
 
 set -euo pipefail
+
+DEBUG=0
+ARGS=()
+for a in "$@"; do
+    if [ "$a" = "--debug" ]; then DEBUG=1; else ARGS+=("$a"); fi
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
 
 # Configuration (overridable via args or environment)
 DISPLAY_NUM="${1:-${XEPHYR_DISPLAY:-:1}}"
@@ -92,7 +100,13 @@ fi
 echo "Starting opusdm-hub"
 # Give the hub its own runtime dir so a stale socket never blocks the sandbox
 export XDG_RUNTIME_DIR="$(mktemp -d /tmp/opusdm-xephyr-XXXXXX)"
-DISPLAY="$DISPLAY_NUM" "$HUB_BIN" &
+if [ "$DEBUG" = "1" ]; then
+    LOG=/ramdisk/opusdm.log
+    echo "Debug log: $LOG"
+    OPUSDM_DEBUG=1 DISPLAY="$DISPLAY_NUM" "$HUB_BIN" >"$LOG" 2>&1 &
+else
+    DISPLAY="$DISPLAY_NUM" "$HUB_BIN" &
+fi
 CHILD_PIDS+=("$!")
 
 # Optional extra terminal for poking around

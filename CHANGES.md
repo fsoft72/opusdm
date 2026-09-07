@@ -1,5 +1,12 @@
 # Changes
 
+## 2026-09-07
+
+- L'hub non e piu una toolbar top-docked ma la finestra desktop del WM: `ApplicationWindow` senza decorazioni a schermo intero sul monitor primario, marcata `_NET_WM_WINDOW_TYPE_DESKTOP` e tenuta sotto ogni altra finestra (`_NET_WM_STATE_BELOW`), ancorata a 0,0. Niente piu `_NET_WM_STRUT`/`_NET_WM_STRUT_PARTIAL`: il desktop e lo sfondo, i Lister ci galleggiano sopra e possono coprirlo (modello Directory Opus).
+- `crates/hub/src/dock.rs` rinominato `desktop.rs`: `make_top_dock` -> `make_desktop_window(win, w, h)` (tipo finestra DESKTOP + keep-below + geometria piena, senza strut), `monitor_width` -> `monitor_geometry(display) -> (i32, i32)`, `pin_geometry` su `(w, h)`. `PANEL_HEIGHT` sostituita da `TOOLBAR_HEIGHT` in `toolbar.rs` (solo layout). `mod dock;` -> `mod desktop;` in `main.rs`.
+- `toolbar.rs`: la finestra full-screen impagina in verticale la toolbar in alto (widget invariati, altezza `TOOLBAR_HEIGHT`), la job box, e una nuova area desktop `hexpand`/`vexpand` con sfondo a tinta piena (`DESKTOP_BG` via `CssProvider`) e una `Label` "OpusDM" centrata. `Widgets.panel_width: i32` -> `monitor_size: (i32, i32)`.
+- `HubEvent::RaiseToolbar` (handoff single-instance): ora ri-asserisce solo tipo finestra e geometria del desktop, senza `present()` che lo porterebbe sopra i Lister; il WM lo tiene comunque in fondo. Messaggi IPC `ToHub::RaiseToolbar`/`HubEvent::RaiseToolbar` invariati.
+
 ## 2026-09-04
 
 - Sort cliccando sulle intestazioni di colonna (Name, Size, Date, User, Group, Access), con freccia indicatrice sulla colonna attiva. Gli header sono i pulsanti nativi del `ColumnView`; il `SortListModel` pero non usa il suo sorter, che per il verso discendente invertirebbe l'intero comparatore facendo finire le directory sotto i file. Un `CustomSorter` sul modello legge dal `ColumnViewSorter` solo quale colonna e quale verso sono attivi e li passa a `dir_first_cmp`: doppio blocco, directory sempre in testa, e il verso a->z / z->a inverte solo la chiave dentro ciascun blocco.

@@ -22,7 +22,18 @@ mod window;
 
 use std::path::PathBuf;
 
+/// Debug log gated on OPUSDM_DEBUG=1: `[lister:<pid>] <msg>` on stderr.
+#[macro_export]
+macro_rules! dlog {
+    ($($arg:tt)*) => {
+        if std::env::var_os("OPUSDM_DEBUG").is_some() {
+            eprintln!("[lister:{}] {}", std::process::id(), format_args!($($arg)*));
+        }
+    };
+}
+
 fn main() {
+    crate::dlog!("starting");
     let sock_path = match std::env::var_os(opusdm_ipc::sockpath::ENV_SOCK) {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => {
@@ -48,6 +59,8 @@ fn main() {
             }
         };
 
+    crate::dlog!("connected to hub, lister_id={lister_id:?}, start={}", start_path.display());
     let code = window::run(client, lister_id, roles, settings, start_path);
+    crate::dlog!("event loop exited, code={code:?}");
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }

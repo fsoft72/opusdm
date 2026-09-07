@@ -32,7 +32,7 @@ pub enum HubEvent {
     /// Progress for a running job.
     JobUpdate { job_id: u64, label: String, done: u64, total: u64 },
     /// A job finished.
-    JobFinished { job_id: u64, ok: bool, errors: usize },
+    JobFinished { job_id: u64, ok: bool, errors: usize, cancelled: bool },
     /// No Listers remain open.
     AllListersGone,
     /// A redundant hub invocation asked us to raise the toolbar.
@@ -513,6 +513,7 @@ fn handle_job_progress(
                 job_id,
                 ok: !cancelled && err_count == 0,
                 errors: err_count,
+                cancelled,
             });
             // Refresh every Lister showing an affected directory.
             let mut affected = vec![meta.dest_dir.clone()];

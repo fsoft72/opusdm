@@ -1,4 +1,6 @@
-//! The always-on toolbar: New Lister, SRC/DST indicators, job progress, Quit.
+//! The always-on desktop: a full-screen background window with the toolbar
+//! (New Lister, SRC/DST indicators, job progress, Quit) docked along its top
+//! edge and a placeholder desktop area below it.
 
 use crate::server::{HubCmd, HubEvent, ServerHandle};
 use super::settings;
@@ -13,7 +15,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
-/// Build and run the toolbar application. Returns on quit.
+/// Natural height of the top toolbar strip, in pixels. Layout only - the
+/// desktop window itself fills the whole monitor.
+const TOOLBAR_HEIGHT: i32 = 42;
+
+/// Background colour of the desktop area. Kept as a constant here so it can
+/// move into the settings model later without touching the layout code.
+const DESKTOP_BG: &str = "#2e3436";
+
+/// Foreground colour of the centred desktop placeholder label.
+const DESKTOP_FG: &str = "#d3d7cf";
+
+/// Build and run the desktop application. Returns on quit.
 pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
     let app = gtk::Application::builder()
         .application_id("org.opusdm.Hub")
@@ -48,11 +61,11 @@ struct Widgets {
     job_box: gtk::Box,
     jobs: RefCell<HashMap<u64, JobRow>>,
     cmd_tx: Sender<HubCmd>,
-    /// Panel width, kept for re-pinning the dock geometry on `RaiseToolbar` -
-    /// a stale hub instance handed a fresh `present()` (single-instance
-    /// handoff, e.g. after the WM/session restarted) needs its dock hints
-    /// re-asserted, not just a window.present().
-    panel_width: i32,
+    /// Primary monitor size, kept for re-asserting the desktop geometry on
+    /// `RaiseToolbar` - a stale hub instance (single-instance handoff, e.g.
+    /// after the WM/session restarted) needs its desktop window type and
+    /// geometry re-applied, not just a window.present().
+    monitor_size: (i32, i32),
 }
 
 struct JobRow {
@@ -61,38 +74,41 @@ struct JobRow {
 }
 
 fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
-    let panel_width = gtk::gdk::Display::default()
+    let (mon_w, mon_h) = gtk::gdk::Display::default()
         .as_ref()
-        .map(crate::dock::monitor_width)
-        .unwrap_or(1280);
+        .map(crate::desktop::monitor_geometry)
+        .unwrap_or((1280, 800));
+
+    install_desktop_css();
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM")
         .decorated(false)
         .resizable(false)
-        .default_width(panel_width)
-        .default_height(crate::dock::PANEL_HEIGHT)
+        .default_width(mon_w)
+        .default_height(mon_h)
         .build();
 
-    // Turn the window into a top-docked X11 panel once its surface exists, then
+    // Turn the window into the WM desktop once its surface exists, then
     // re-assert the geometry after the WM has run its placement policy.
-    window.connect_realize(move |w| crate::dock::make_top_dock(w, panel_width));
+    window.connect_realize(move |w| crate::desktop::make_desktop_window(w, mon_w, mon_h));
     window.connect_map(move |w| {
-        crate::dock::make_top_dock(w, panel_width);
+        crate::desktop::make_desktop_window(w, mon_w, mon_h);
         let w = w.clone();
         glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
-            crate::dock::pin_geometry(&w, panel_width);
+            crate::desktop::pin_geometry(&w, mon_w, mon_h);
         });
     });
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    root.set_margin_top(2);
-    root.set_margin_bottom(2);
-    root.set_margin_start(6);
-    root.set_margin_end(6);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    bar.set_margin_top(2);
+    bar.set_margin_bottom(2);
+    bar.set_margin_start(6);
+    bar.set_margin_end(6);
+    bar.set_size_request(-1, TOOLBAR_HEIGHT);
 
     let new_btn = gtk::Button::with_label("New Lister");
     {
@@ -131,7 +147,11 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     root.append(&bar);
 
     let job_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    job_box.set_margin_start(6);
+    job_box.set_margin_end(6);
     root.append(&job_box);
+
+    root.append(&build_desktop_area());
 
     window.set_child(Some(&root));
 
@@ -144,7 +164,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         job_box: job_box.clone(),
         jobs: RefCell::new(HashMap::new()),
         cmd_tx: cmd_tx.clone(),
-        panel_width,
+        monitor_size: (mon_w, mon_h),
     });
 
     // Click an indicator to raise its Lister.
@@ -181,6 +201,43 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     }
 
     window.present();
+}
+
+/// Register the CSS that paints the desktop background and placeholder. Runs
+/// once per process; a second call just replaces the same provider.
+fn install_desktop_css() {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(&format!(
+        ".opusdm-desktop {{ background-color: {DESKTOP_BG}; }}\n\
+         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}"
+    ));
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
+/// Build the desktop area that fills the window below the toolbar: a flat
+/// background with a centred placeholder label.
+fn build_desktop_area() -> gtk::Box {
+    let area = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    area.add_css_class("opusdm-desktop");
+    area.set_hexpand(true);
+    area.set_vexpand(true);
+
+    let label = gtk::Label::new(Some("OpusDM"));
+    label.add_css_class("opusdm-desktop-label");
+    label.set_hexpand(true);
+    label.set_vexpand(true);
+    label.set_halign(gtk::Align::Center);
+    label.set_valign(gtk::Align::Center);
+    area.append(&label);
+
+    area
 }
 
 fn attach_present_gesture(label: &gtk::Label, widgets: &Rc<Widgets>, is_src: bool) {
@@ -278,7 +335,9 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 let text = gtk::Label::new(Some(&label));
                 let bar = gtk::ProgressBar::new();
                 bar.set_hexpand(true);
+                bar.set_valign(gtk::Align::Center);
                 let cancel = gtk::Button::with_label("Cancel");
+                cancel.set_valign(gtk::Align::Center);
                 let cmd_tx = widgets.cmd_tx.clone();
                 cancel.connect_clicked(move |_| {
                     let _ = cmd_tx.send(HubCmd::CancelJob(job_id));
@@ -292,10 +351,11 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             let fraction = if total > 0 { done as f64 / total as f64 } else { 0.0 };
             row.bar.set_fraction(fraction.clamp(0.0, 1.0));
         }
-        HubEvent::JobFinished { job_id, ok, errors } => {
+        HubEvent::JobFinished { job_id, ok, errors, cancelled } => {
             let mut jobs = widgets.jobs.borrow_mut();
             if let Some(row) = jobs.remove(&job_id) {
-                if ok && errors == 0 {
+                // A cancelled job just disappears; no error to acknowledge.
+                if cancelled || (ok && errors == 0) {
                     widgets.job_box.remove(&row.root);
                 } else {
                     // Keep the row, mark it, let a click dismiss it.
@@ -309,15 +369,16 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             }
         }
         HubEvent::RaiseToolbar => {
-            // Re-assert dock hints, not just present(): a redundant hub
-            // invocation hands this off to a possibly stale instance whose
-            // window may have lost its docked position (WM/session restart).
-            crate::dock::make_top_dock(&widgets.window, widgets.panel_width);
-            widgets.window.present();
+            // Re-assert the desktop window type and geometry, not present():
+            // a redundant hub invocation hands this off to a possibly stale
+            // instance whose window may have lost its desktop role or size
+            // (WM/session restart). The desktop stays below the Listers, so
+            // there is nothing to raise.
+            let (w, h) = widgets.monitor_size;
+            crate::desktop::make_desktop_window(&widgets.window, w, h);
             let window = widgets.window.clone();
-            let panel_width = widgets.panel_width;
             glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
-                crate::dock::pin_geometry(&window, panel_width);
+                crate::desktop::pin_geometry(&window, w, h);
             });
         }
         HubEvent::ListerRegistered { .. }
