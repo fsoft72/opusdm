@@ -5,7 +5,9 @@
 pub mod arrange;
 pub mod dnd;
 pub mod glyphs;
+pub mod item;
 pub mod scan;
 pub mod types;
 
+pub use item::IconItem;
 pub use types::{IconEntry, IconKind, LayoutMode, ThumbSize};
