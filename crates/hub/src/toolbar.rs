@@ -81,6 +81,11 @@ struct Widgets {
     /// inotify watch on the desktop directory, kept alive for the window's
     /// lifetime. `None` when there is no desktop directory or the watch failed.
     desktop_watch: RefCell<Option<opusdm_hub::desktop_files::DesktopWatch>>,
+    /// The desktop icon field, shared with the context menu ("rearrange icons").
+    /// `None` when there is no desktop directory.
+    desktop_field: RefCell<Option<opusdm_iconview::IconField>>,
+    /// The directory the desktop shows, for re-reading on "rearrange icons".
+    desktop_dir: Option<PathBuf>,
 }
 
 struct JobRow {
@@ -184,6 +189,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         monitor_size: (mon_w, mon_h),
         quitting: Cell::new(false),
         desktop_watch: RefCell::new(None),
+        desktop_field: RefCell::new(desktop_field.clone()),
+        desktop_dir: desktop_dir.clone(),
     });
 
     // Click an indicator to raise its Lister.
@@ -446,6 +453,53 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             show_about_dialog(&widgets.window);
         });
         menu.append(&btn);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Desktop submenu: an expander so the hand-rolled flyout can still nest
+    // without a real GtkPopoverMenu (the desktop window cannot grab focus).
+    {
+        let sub = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        sub.set_margin_start(12);
+
+        // Rearrange icons: re-read the desktop, sort dirs-first by name, and
+        // hand the sorted list back so the field auto-slots it into the grid
+        // (set_entries clears any manual positions).
+        {
+            let widgets = widgets.clone();
+            let menu_ref = menu.clone();
+            let btn = menu_button("Rearrange icons");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                let field = widgets.desktop_field.borrow().clone();
+                let (Some(field), Some(dir)) = (field, widgets.desktop_dir.clone()) else {
+                    return;
+                };
+                match opusdm_iconview::scan::read_entries(&dir, false) {
+                    Ok(mut entries) => {
+                        opusdm_iconview::scan::sort_dirs_first(&mut entries);
+                        field.set_entries(&entries);
+                    }
+                    Err(e) => eprintln!("opusdm-hub: rearrange failed: {e}"),
+                }
+            });
+            sub.append(&btn);
+        }
+
+        // Settings: desktop settings dialog, not implemented yet.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Settings");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+            });
+            sub.append(&btn);
+        }
+
+        let expander = gtk::Expander::new(Some("Desktop"));
+        expander.set_child(Some(&sub));
+        menu.append(&expander);
     }
 
     menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));

@@ -51,6 +51,18 @@ pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>>
     Ok(out)
 }
 
+/// Sort entries for a tidy grid: directories first, then files, each block by
+/// name case-insensitively.
+pub fn sort_dirs_first(entries: &mut [IconEntry]) {
+    entries.sort_by(|a, b| {
+        let a_dir = a.kind == IconKind::Dir;
+        let b_dir = b.kind == IconKind::Dir;
+        b_dir
+            .cmp(&a_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +94,25 @@ mod tests {
         let with_hidden = read_entries(base, true).unwrap();
         assert!(with_hidden.iter().any(|e| e.name == ".hidden"));
         assert!(!with_hidden.iter().any(|e| e.name == LAYOUT_FILE));
+    }
+
+    #[test]
+    fn sort_dirs_first_orders_dirs_then_files_by_name() {
+        let mk = |name: &str, kind: IconKind| IconEntry {
+            name: name.into(),
+            path: Path::new("/x").join(name),
+            kind,
+            mode: 0,
+            ext: None,
+        };
+        let mut v = vec![
+            mk("Zebra", IconKind::File),
+            mk("beta", IconKind::Dir),
+            mk("Alpha", IconKind::File),
+            mk("Acme", IconKind::Dir),
+        ];
+        sort_dirs_first(&mut v);
+        let names: Vec<&str> = v.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Acme", "beta", "Alpha", "Zebra"]);
     }
 }
