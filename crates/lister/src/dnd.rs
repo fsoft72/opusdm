@@ -7,6 +7,7 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_iconview::dnd::{paths_to_uri_list, uris_to_paths};
+use opusdm_iconview::IconField;
 use opusdm_ipc::{Op, ToHub};
 use std::rc::Rc;
 
@@ -53,4 +54,18 @@ pub fn attach(ui: &Rc<Ui>, view: &gtk::ColumnView) {
         });
     }
     view.add_controller(target);
+}
+
+/// Wire an `IconField`'s drop callback to `ToHub::RunJob`, mirroring `attach`
+/// for the column view. Shift held at drop time means move, otherwise copy.
+pub fn attach_field(ui: &Rc<Ui>, field: &IconField) {
+    let ui = ui.clone();
+    field.connect_drop_uris(move |srcs, _target, shift| {
+        if srcs.is_empty() {
+            return;
+        }
+        let op = if shift { Op::Move } else { Op::Copy };
+        let dest_dir = Some(ui.cwd_path());
+        let _ = ui.client.send(&ToHub::RunJob { op, srcs, dest_dir });
+    });
 }

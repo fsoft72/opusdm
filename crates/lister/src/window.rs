@@ -599,6 +599,51 @@ fn build_window(
             }
         });
     }
+
+    // Icon-view callbacks: reuse the column view's handlers where they exist.
+    crate::dnd::attach_field(&ui, &ui.icon_field);
+    let icon_field = ui.icon_field.clone();
+    {
+        let ui = ui.clone();
+        icon_field.connect_activate(move |i| ui.activate_row(i as u32));
+    }
+    {
+        let ui = ui.clone();
+        let field = icon_field.clone();
+        icon_field.connect_rename_requested(move |i, new_name| {
+            let Some(entry) = field.entry(i) else { return };
+            let new_path = ui.cwd_path().join(&new_name);
+            if let Err(e) = std::fs::rename(&entry.path, &new_path) {
+                ui.job_line.set_text(&format!("rename failed: {e}"));
+            } else {
+                ui.reload();
+            }
+        });
+    }
+    {
+        let ui = ui.clone();
+        let field = icon_field.clone();
+        icon_field.connect_context_menu(move |idx, x, y| {
+            if idx < 0 {
+                return;
+            }
+            let Some(row) = ui.row_at(idx as u32) else { return };
+            let target = ui.cwd_path().join(&row.name);
+            crate::context_menu::show_context_menu(&ui, field.widget(), &row, target, x, y);
+        });
+    }
+    {
+        let ui = ui.clone();
+        let field = icon_field.clone();
+        icon_field.connect_zoom_requested(move |delta| {
+            const STEPS: [i32; 4] = [48, 64, 96, 128];
+            let cur = ui.icon_size.get();
+            let idx = STEPS.iter().position(|&s| s == cur).unwrap_or(1) as i32;
+            let next = (idx + delta).clamp(0, STEPS.len() as i32 - 1) as usize;
+            ui.icon_size.set(STEPS[next]);
+            field.set_icon_size(STEPS[next]);
+        });
+    }
     ui.update_status();
     ui
 }
