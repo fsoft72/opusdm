@@ -266,6 +266,29 @@ pub fn format_access(mode: u32, is_dir: bool, is_symlink: bool) -> String {
         .collect()
 }
 
+/// Map a listing `Row` to an `opusdm_iconview::IconEntry`. `dir` is the folder
+/// the row lives in, used to build the absolute path.
+pub fn row_to_entry(row: &Row, dir: &Path) -> opusdm_iconview::IconEntry {
+    use opusdm_iconview::IconKind;
+    let kind = if row.broken_link {
+        IconKind::Broken
+    } else if row.is_symlink {
+        IconKind::Symlink
+    } else if row.is_dir {
+        IconKind::Dir
+    } else {
+        IconKind::File
+    };
+    let ext = if row.is_dir { None } else { opusdm_iconview::IconEntry::ext_of(&row.name) };
+    opusdm_iconview::IconEntry {
+        name: row.name.clone(),
+        path: dir.join(&row.name),
+        kind,
+        mode: row.mode,
+        ext,
+    }
+}
+
 /// Best-effort local timezone offset in seconds east of UTC. Falls back to 0.
 pub fn local_tz_offset_secs() -> i32 {
     let now = std::time::SystemTime::now()
@@ -317,6 +340,19 @@ mod tests {
             gid: 0,
             mode: 0,
         }
+    }
+
+    #[test]
+    fn row_to_entry_maps_kind_and_path() {
+        let f = row("photo.JPG", false, 10, 0);
+        let e = row_to_entry(&f, Path::new("/home/x"));
+        assert_eq!(e.path, Path::new("/home/x/photo.JPG"));
+        assert_eq!(e.ext.as_deref(), Some("jpg"));
+        assert_eq!(e.kind, opusdm_iconview::IconKind::File);
+
+        let d = row("src", true, 0, 0);
+        assert_eq!(row_to_entry(&d, Path::new("/home/x")).kind, opusdm_iconview::IconKind::Dir);
+        assert_eq!(row_to_entry(&d, Path::new("/home/x")).ext, None);
     }
 
     #[test]

@@ -20,6 +20,13 @@ fn is_editing(window: &gtk::ApplicationWindow) -> bool {
         .unwrap_or(false)
 }
 
+/// Which representation the file area shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Details,
+    Icons,
+}
+
 /// Everything the window's callbacks need. Shared by `Rc` across Tasks 13-15.
 pub struct Ui {
     /// The top-level window.
@@ -81,6 +88,16 @@ pub struct Ui {
     /// inotify instance (watch limit reached), in which case the Lister simply
     /// keeps working without auto-refresh.
     pub watcher: Option<crate::watcher::DirWatcher>,
+    /// Reusable icon view, shown in place of the column view in
+    /// `ViewMode::Icons`.
+    pub icon_field: opusdm_iconview::IconField,
+    /// Which view is active.
+    pub view_mode: Cell<ViewMode>,
+    /// Stack holding the column-view scroller ("details") and the icon field
+    /// ("icons").
+    pub view_stack: gtk::Stack,
+    /// Icon size in the icon view, cycled by Ctrl+scroll.
+    pub icon_size: Cell<i32>,
 }
 
 /// Build and run the window application.
@@ -185,6 +202,11 @@ fn build_window(
     let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     button_row.set_margin_start(4);
     button_row.set_margin_end(4);
+    let view_toggle = gtk::ToggleButton::new();
+    view_toggle.set_child(Some(&gtk::Label::new(Some("\u{25a6}"))));
+    view_toggle.set_tooltip_text(Some("Toggle icon view"));
+    view_toggle.add_css_class("flat");
+    button_row.append(&view_toggle);
     root.append(&button_row);
 
     // Model + filter + sorter + selection + column view.
@@ -275,9 +297,19 @@ fn build_window(
     root.append(&filter_bar.container);
 
     let scroller = gtk::ScrolledWindow::builder().child(&column_view).vexpand(true).build();
-    scroller.set_margin_start(4);
-    scroller.set_margin_end(4);
-    root.append(&scroller);
+
+    let icon_field = opusdm_iconview::IconField::new();
+    icon_field.set_mode(opusdm_iconview::LayoutMode::Grid);
+    icon_field.set_icon_size(64);
+
+    let view_stack = gtk::Stack::new();
+    view_stack.add_named(&scroller, Some("details"));
+    view_stack.add_named(icon_field.widget(), Some("icons"));
+    view_stack.set_visible_child_name("details");
+    view_stack.set_vexpand(true);
+    view_stack.set_margin_start(4);
+    view_stack.set_margin_end(4);
+    root.append(&view_stack);
 
     // Filter entry interaction
     {
@@ -391,6 +423,10 @@ fn build_window(
         show_hidden: Cell::new(false),
         css_provider,
         watcher,
+        icon_field: icon_field.clone(),
+        view_mode: Cell::new(ViewMode::Details),
+        view_stack: view_stack.clone(),
+        icon_size: Cell::new(64),
     });
 
     // Drain coalesced watch notices on the GTK thread.
@@ -549,6 +585,20 @@ fn build_window(
 
     crate::actions::attach(&ui);
     crate::dnd::attach(&ui, &column_view);
+
+    // Icon-view toggle: swap the stack child and rebuild entries on the way in.
+    {
+        let ui = ui.clone();
+        view_toggle.connect_toggled(move |b| {
+            let on = b.is_active();
+            ui.view_mode.set(if on { ViewMode::Icons } else { ViewMode::Details });
+            ui.view_stack
+                .set_visible_child_name(if on { "icons" } else { "details" });
+            if on {
+                ui.refresh_icon_view();
+            }
+        });
+    }
     ui.update_status();
     ui
 }
@@ -643,6 +693,9 @@ impl Ui {
         let mut total_bytes = 0u64;
         let mut new_items = Vec::new();
         for row in rows {
+            if row.name == opusdm_iconview::scan::LAYOUT_FILE {
+                continue;
+            }
             if !show_hidden && row.name.starts_with('.') {
                 continue;
             }
@@ -664,7 +717,25 @@ impl Ui {
         crate::dlog!("navigate_to {} done: {} items", dir.display(), new_items.len());
         self.refresh_path_entry();
         self.update_status();
+        self.refresh_icon_view();
         let _ = self.client.send(&ToHub::PathChanged(dir.to_path_buf()));
+    }
+
+    /// Rebuild the icon view's entries from the current sorted model. A no-op
+    /// unless the icon view is the active one.
+    pub fn refresh_icon_view(self: &Rc<Self>) {
+        if self.view_mode.get() != ViewMode::Icons {
+            return;
+        }
+        let dir = self.cwd.borrow().clone();
+        let n = self.selection.n_items();
+        let mut entries = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            if let Some(row) = self.row_at(i) {
+                entries.push(crate::model::row_to_entry(&row, &dir));
+            }
+        }
+        self.icon_field.set_entries(&entries);
     }
 
     /// Re-read the current directory, keeping the selection by name.
