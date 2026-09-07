@@ -850,6 +850,21 @@ mod tests {
         it.finish_edit(None); // Esc
         assert_eq!(hits.borrow().len(), 1);
 
+        // --- IconItem: a long unbreakable name does not widen the item ---
+        // `name_label` wraps at character boundaries, so a spaceless, hyphenless
+        // filename stays within `max_width_chars` instead of reporting its full
+        // single-line width and stretching every column of the auto-slot grid.
+        let short = IconItem::new(&entries(1)[0], 64);
+        let long_name = IconEntry {
+            name: "726432604_122131481643172103_8689873794089316539_n.jpg".to_string(),
+            path: PathBuf::from("/tmp/726432604_122131481643172103_8689873794089316539_n.jpg"),
+            kind: IconKind::File,
+            mode: 0o100_644,
+            ext: Some("jpg".into()),
+        };
+        let long = IconItem::new(&long_name, 64);
+        assert_eq!(short.measure().0, long.measure().0);
+
         // --- IconItem: thumbnail slot swaps the glyph out and back ---
         let tex = gtk::gdk::MemoryTexture::new(
             1,

@@ -49,6 +49,11 @@ impl IconItem {
 
         let name_label = gtk::Label::new(Some(&entry.name));
         name_label.set_wrap(true);
+        // Break inside a long token too: a spaceless, hyphenless filename is one
+        // unbreakable word under the default `Word` mode, so `max_width_chars`
+        // is ignored and the label reports its full single-line width. That one
+        // wide item then stretches every column of the auto-slotted grid.
+        name_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         name_label.set_justify(gtk::Justification::Center);
         name_label.set_max_width_chars(14);
         name_label.set_lines(2);
