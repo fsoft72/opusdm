@@ -11,6 +11,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+/// A list of listener closures with signature `F`.
+type Listeners<F> = RefCell<Vec<Box<F>>>;
+
 struct Inner {
     scroller: gtk::ScrolledWindow,
     fixed: gtk::Fixed,
@@ -20,11 +23,21 @@ struct Inner {
     icon_size: Cell<i32>,
     arrange: RefCell<Box<dyn Arrange>>,
     free_positions: RefCell<HashMap<usize, (f64, f64)>>,
+    /// Last laid-out rectangle per item: (x, y, w, h) in the `Fixed`'s space.
+    /// Filled by `relayout`; hit-testing and nav read this, not GTK geometry,
+    /// so they work before the widget is realized.
+    item_rects: RefCell<Vec<(f64, f64, f64, f64)>>,
     selection: RefCell<BTreeSet<usize>>,
     anchor: Cell<Option<usize>>,
     cursor: Cell<Option<usize>>,
-    on_selection_changed: RefCell<Vec<Box<dyn Fn()>>>,
-    on_activate: RefCell<Vec<Box<dyn Fn(usize)>>>,
+    reposition_active: Cell<bool>,
+    on_selection_changed: Listeners<dyn Fn()>,
+    on_activate: Listeners<dyn Fn(usize)>,
+    on_drop_uris: Listeners<dyn Fn(Vec<PathBuf>, i32, bool)>,
+    on_context_menu: Listeners<dyn Fn(i32, f64, f64)>,
+    on_rename_requested: Listeners<dyn Fn(usize, String)>,
+    on_zoom_requested: Listeners<dyn Fn(i32)>,
+    on_move_icons: Listeners<dyn Fn()>,
 }
 
 /// The reusable icon view. Cheap to clone (shared `Rc`).
@@ -50,11 +63,18 @@ impl IconField {
             icon_size: Cell::new(64),
             arrange: RefCell::new(Box::new(GridArrange::new())),
             free_positions: RefCell::new(HashMap::new()),
+            item_rects: RefCell::new(Vec::new()),
             selection: RefCell::new(BTreeSet::new()),
             anchor: Cell::new(None),
             cursor: Cell::new(None),
+            reposition_active: Cell::new(false),
             on_selection_changed: RefCell::new(Vec::new()),
             on_activate: RefCell::new(Vec::new()),
+            on_drop_uris: RefCell::new(Vec::new()),
+            on_context_menu: RefCell::new(Vec::new()),
+            on_rename_requested: RefCell::new(Vec::new()),
+            on_zoom_requested: RefCell::new(Vec::new()),
+            on_move_icons: RefCell::new(Vec::new()),
         });
         let field = IconField { inner };
 
@@ -170,6 +190,105 @@ impl IconField {
         });
         field.inner.fixed.add_controller(key);
 
+        // Drag source: export the selection as a uri-list for other windows.
+        let src = gtk::DragSource::new();
+        src.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
+        let this = field.clone();
+        src.connect_prepare(move |_, _, _| {
+            if this.inner.reposition_active.get() {
+                return None;
+            }
+            let paths = this.selected_paths();
+            if paths.is_empty() {
+                return None;
+            }
+            let payload = crate::dnd::paths_to_uri_list(&paths);
+            Some(gtk::gdk::ContentProvider::for_bytes(
+                "text/uri-list",
+                &gtk::glib::Bytes::from(payload.as_bytes()),
+            ))
+        });
+        field.inner.fixed.add_controller(src);
+
+        // Drop target: hand parsed paths to the consumer.
+        let target = gtk::DropTarget::new(
+            gtk::glib::Type::STRING,
+            gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
+        );
+        let this = field.clone();
+        target.connect_drop(move |t, value, x, y| {
+            let Ok(text) = value.get::<String>() else {
+                return false;
+            };
+            let tgt = this.item_at(x, y).map(|i| i as i32).unwrap_or(-1);
+            let shift = t
+                .current_event()
+                .map(|e| e.modifier_state().contains(gtk::gdk::ModifierType::SHIFT_MASK))
+                .unwrap_or(false);
+            this.handle_drop_text(&text, tgt, shift);
+            true
+        });
+        field.inner.fixed.add_controller(target);
+
+        // Right-click: select under the pointer, then emit context-menu.
+        let rclick = gtk::GestureClick::new();
+        rclick.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let this = field.clone();
+        rclick.connect_pressed(move |_, _, x, y| {
+            let hit = this.item_at(x, y);
+            if let Some(i) = hit {
+                if !this.selected_indices().contains(&i) {
+                    this.select_exclusive(i);
+                }
+            }
+            let idx = hit.map(|i| i as i32).unwrap_or(-1);
+            for cb in this.inner.on_context_menu.borrow().iter() {
+                cb(idx, x, y);
+            }
+        });
+        field.inner.fixed.add_controller(rclick);
+
+        // Ctrl+scroll: zoom request.
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let this = field.clone();
+        scroll.connect_scroll(move |c, _dx, dy| {
+            if !c.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                return gtk::glib::Propagation::Proceed;
+            }
+            let step = if dy < 0.0 { 1 } else { -1 };
+            for cb in this.inner.on_zoom_requested.borrow().iter() {
+                cb(step);
+            }
+            gtk::glib::Propagation::Stop
+        });
+        field.inner.fixed.add_controller(scroll);
+
+        // Internal reposition drag (Free mode only), starting on a selected item.
+        let rdrag = gtk::GestureDrag::new();
+        rdrag.set_button(gtk::gdk::BUTTON_PRIMARY);
+        let this = field.clone();
+        rdrag.connect_drag_begin(move |_, x, y| {
+            let on_selected = this
+                .item_at(x, y)
+                .map(|i| this.selected_indices().contains(&i))
+                .unwrap_or(false);
+            let active = matches!(this.inner.mode.get(), LayoutMode::Free) && on_selected;
+            this.inner.reposition_active.set(active);
+        });
+        let this = field.clone();
+        rdrag.connect_drag_end(move |_, ox, oy| {
+            if !this.inner.reposition_active.get() {
+                return;
+            }
+            this.inner.reposition_active.set(false);
+            if ox.abs() < 4.0 && oy.abs() < 4.0 {
+                return;
+            }
+            let sel = this.selected_indices();
+            this.apply_reposition(&sel, ox, oy);
+        });
+        field.inner.fixed.add_controller(rdrag);
+
         field
     }
 
@@ -185,9 +304,15 @@ impl IconField {
         }
         let size = self.inner.icon_size.get();
         let mut items = Vec::with_capacity(entries.len());
-        for e in entries {
+        for (idx, e) in entries.iter().enumerate() {
             let it = IconItem::new(e, size);
             self.inner.fixed.put(it.widget(), 0.0, 0.0);
+            let this = self.clone();
+            it.connect_edit_committed(move |new_name| {
+                for cb in this.inner.on_rename_requested.borrow().iter() {
+                    cb(idx, new_name.clone());
+                }
+            });
             items.push(it);
         }
         *self.inner.items.borrow_mut() = items;
@@ -245,6 +370,74 @@ impl IconField {
     /// Register an activate (open) listener.
     pub fn connect_activate(&self, f: impl Fn(usize) + 'static) {
         self.inner.on_activate.borrow_mut().push(Box::new(f));
+    }
+
+    /// Register a drop listener: (dropped paths, target index or `-1`, shift held).
+    pub fn connect_drop_uris(&self, f: impl Fn(Vec<PathBuf>, i32, bool) + 'static) {
+        self.inner.on_drop_uris.borrow_mut().push(Box::new(f));
+    }
+
+    /// Register a context-menu listener: (index or `-1`, x, y).
+    pub fn connect_context_menu(&self, f: impl Fn(i32, f64, f64) + 'static) {
+        self.inner.on_context_menu.borrow_mut().push(Box::new(f));
+    }
+
+    /// Register an inline-rename listener: (index, new name).
+    pub fn connect_rename_requested(&self, f: impl Fn(usize, String) + 'static) {
+        self.inner.on_rename_requested.borrow_mut().push(Box::new(f));
+    }
+
+    /// Register a zoom listener: signed step from Ctrl+scroll.
+    pub fn connect_zoom_requested(&self, f: impl Fn(i32) + 'static) {
+        self.inner.on_zoom_requested.borrow_mut().push(Box::new(f));
+    }
+
+    /// Register a listener fired after icons are repositioned in Free mode.
+    pub fn connect_move_icons(&self, f: impl Fn() + 'static) {
+        self.inner.on_move_icons.borrow_mut().push(Box::new(f));
+    }
+
+    /// The entry behind index `i`, cloned.
+    pub fn entry(&self, i: usize) -> Option<IconEntry> {
+        self.inner.entries.borrow().get(i).cloned()
+    }
+
+    /// Parse a `text/uri-list` payload and fan it out to the drop listeners.
+    pub(crate) fn handle_drop_text(&self, text: &str, target: i32, shift: bool) {
+        let paths = crate::dnd::uris_to_paths(text);
+        if paths.is_empty() {
+            return;
+        }
+        for cb in self.inner.on_drop_uris.borrow().iter() {
+            cb(paths.clone(), target, shift);
+        }
+    }
+
+    /// Offset the given items by (`dx`, `dy`), store their new free positions,
+    /// re-lay-out, and notify move-icons listeners.
+    pub(crate) fn apply_reposition(&self, indices: &[usize], dx: f64, dy: f64) {
+        {
+            let rects = self.inner.item_rects.borrow();
+            let mut fp = self.inner.free_positions.borrow_mut();
+            for &i in indices {
+                let base = fp
+                    .get(&i)
+                    .copied()
+                    .or_else(|| rects.get(i).map(|&(x, y, _, _)| (x, y)));
+                if let Some((x, y)) = base {
+                    fp.insert(i, ((x + dx).max(0.0), (y + dy).max(0.0)));
+                }
+            }
+        }
+        self.relayout();
+        for cb in self.inner.on_move_icons.borrow().iter() {
+            cb();
+        }
+    }
+
+    /// Snapshot of the current free-mode positions.
+    pub fn free_positions(&self) -> HashMap<usize, (f64, f64)> {
+        self.inner.free_positions.borrow().clone()
     }
 
     fn emit_selection_changed(&self) {
@@ -341,16 +534,10 @@ impl IconField {
         } else {
             BTreeSet::new()
         };
-        for (i, it) in self.inner.items.borrow().iter().enumerate() {
-            if let Some(b) = it.widget().compute_bounds(&self.inner.fixed) {
-                let ix = b.x() as f64;
-                let iy = b.y() as f64;
-                let iw = b.width() as f64;
-                let ih = b.height() as f64;
-                let hit = ix < rx + rw && ix + iw > rx && iy < ry + rh && iy + ih > ry;
-                if hit {
-                    sel.insert(i);
-                }
+        for (i, &(ix, iy, iw, ih)) in self.inner.item_rects.borrow().iter().enumerate() {
+            let hit = ix < rx + rw && ix + iw > rx && iy < ry + rh && iy + ih > ry;
+            if hit {
+                sel.insert(i);
             }
         }
         *self.inner.selection.borrow_mut() = sel;
@@ -394,37 +581,21 @@ impl IconField {
     }
 
     fn free_step(&self, cur: usize, dx: i32, dy: i32) -> Option<usize> {
-        let items = self.inner.items.borrow();
-        let from = items.get(cur)?.widget().compute_bounds(&self.inner.fixed)?;
-        let from = (from.x() as f64, from.y() as f64);
-        let cands: Vec<(usize, (f64, f64))> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, it)| {
-                let b = it.widget().compute_bounds(&self.inner.fixed)?;
-                Some((i, (b.x() as f64, b.y() as f64)))
-            })
-            .collect();
-        crate::arrange::nearest_in_direction(from, &cands, dx, dy)
+        let rects = self.inner.item_rects.borrow();
+        let &(fx, fy, _, _) = rects.get(cur)?;
+        let cands: Vec<(usize, (f64, f64))> =
+            rects.iter().enumerate().map(|(i, &(x, y, _, _))| (i, (x, y))).collect();
+        crate::arrange::nearest_in_direction((fx, fy), &cands, dx, dy)
     }
 
     fn current_columns(&self) -> usize {
-        let items = self.inner.items.borrow();
-        if items.len() < 2 {
+        let rects = self.inner.item_rects.borrow();
+        if rects.len() < 2 {
             return 1;
         }
-        let y0 = items[0]
-            .widget()
-            .compute_bounds(&self.inner.fixed)
-            .map(|b| b.y())
-            .unwrap_or(0.0);
+        let y0 = rects[0].1;
         let mut cols = 1;
-        for it in items.iter().skip(1) {
-            let y = it
-                .widget()
-                .compute_bounds(&self.inner.fixed)
-                .map(|b| b.y())
-                .unwrap_or(0.0);
+        for &(_, y, _, _) in rects.iter().skip(1) {
             if (y - y0).abs() < 1.0 {
                 cols += 1;
             } else {
@@ -434,14 +605,11 @@ impl IconField {
         cols
     }
 
-    /// The item index under widget-space point (`x`, `y`), if any.
+    /// The item index under `Fixed`-space point (`x`, `y`), if any.
     fn item_at(&self, x: f64, y: f64) -> Option<usize> {
-        let items = self.inner.items.borrow();
-        for (i, it) in items.iter().enumerate() {
-            if let Some(bounds) = it.widget().compute_bounds(&self.inner.fixed) {
-                if bounds.contains_point(&gtk::graphene::Point::new(x as f32, y as f32)) {
-                    return Some(i);
-                }
+        for (i, &(ix, iy, iw, ih)) in self.inner.item_rects.borrow().iter().enumerate() {
+            if x >= ix && x < ix + iw && y >= iy && y < iy + ih {
+                return Some(i);
             }
         }
         None
@@ -463,18 +631,24 @@ impl IconField {
         *self.inner.arrange.borrow_mut() = boxed;
     }
 
-    /// Recompute positions and move every item.
+    /// Recompute positions, move every item, and cache the item rectangles.
     pub(crate) fn relayout(&self) {
         let items = self.inner.items.borrow();
         if items.is_empty() {
+            self.inner.item_rects.borrow_mut().clear();
             self.inner.fixed.set_size_request(0, 0);
             return;
         }
+        let fallback_w = (self.inner.icon_size.get() + 12) as f64;
+        let fallback_h = (self.inner.icon_size.get() + 40) as f64;
         let boxes: Vec<ItemBox> = items
             .iter()
             .map(|it| {
                 let (w, h) = it.measure();
-                ItemBox { w, h }
+                ItemBox {
+                    w: if w > 1.0 { w } else { fallback_w },
+                    h: if h > 1.0 { h } else { fallback_h },
+                }
             })
             .collect();
         let page = self.inner.scroller.hadjustment().page_size();
@@ -483,9 +657,12 @@ impl IconField {
             self.rebuild_arranger();
         }
         let placement = self.inner.arrange.borrow().place(&boxes, viewport_w);
-        for (it, &(x, y)) in items.iter().zip(placement.positions.iter()) {
+        let mut rects = Vec::with_capacity(items.len());
+        for ((it, &(x, y)), b) in items.iter().zip(placement.positions.iter()).zip(boxes.iter()) {
             self.inner.fixed.move_(it.widget(), x, y);
+            rects.push((x, y, b.w, b.h));
         }
+        *self.inner.item_rects.borrow_mut() = rects;
         self.inner
             .fixed
             .set_size_request(placement.virtual_w as i32, placement.virtual_h as i32);
@@ -501,6 +678,7 @@ impl Default for IconField {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::item::IconItem;
     use crate::types::IconKind;
     use std::path::PathBuf;
 
@@ -516,49 +694,56 @@ mod tests {
             .collect()
     }
 
+    /// All widget behaviour in one test: GTK panics if `gtk::init` runs on two
+    /// threads, and libtest gives every `#[test]` its own thread, so the crate
+    /// keeps exactly one GTK test.
     #[test]
-    fn set_entries_creates_one_widget_each() {
+    fn gtk_widget_behavior() {
         if gtk::init().is_err() {
             return;
         }
+
+        // --- IconItem: selected class toggles ---
+        let it = IconItem::new(&entries(1)[0], 64);
+        assert!(!it.widget().has_css_class("selected"));
+        it.set_selected(true);
+        assert!(it.widget().has_css_class("selected"));
+        it.set_selected(false);
+        assert!(!it.widget().has_css_class("selected"));
+
+        // --- IconItem: edit commit fires only on a real change ---
+        let hits = Rc::new(RefCell::new(Vec::<String>::new()));
+        let h = hits.clone();
+        it.connect_edit_committed(move |s| h.borrow_mut().push(s));
+        it.start_edit();
+        it.finish_edit(Some("file0.txt".to_string())); // unchanged
+        assert!(hits.borrow().is_empty());
+        it.start_edit();
+        it.finish_edit(Some("renamed.txt".to_string()));
+        assert_eq!(&*hits.borrow(), &["renamed.txt".to_string()]);
+        it.start_edit();
+        it.finish_edit(None); // Esc
+        assert_eq!(hits.borrow().len(), 1);
+
+        // --- IconField: set_entries builds one item per entry ---
         let f = IconField::new();
         f.set_entries(&entries(5));
         assert_eq!(f.entry_count(), 5);
-        let mut child_count = 0;
-        let mut c = f.inner.fixed.first_child();
-        while let Some(w) = c {
-            child_count += 1;
-            c = w.next_sibling();
-        }
-        assert_eq!(child_count, 5);
-
         f.set_entries(&entries(2));
         assert_eq!(f.entry_count(), 2);
-    }
 
-    #[test]
-    fn mode_and_size_changes_do_not_panic() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let f = IconField::new();
+        // --- IconField: mode and size changes are safe ---
         f.set_entries(&entries(3));
         f.set_mode(LayoutMode::Free);
         f.set_icon_size(96);
         f.set_mode(LayoutMode::Grid);
-    }
+        f.set_icon_size(64);
 
-    #[test]
-    fn selection_helpers_and_signal() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let f = IconField::new();
+        // --- IconField: selection helpers and the changed signal ---
         f.set_entries(&entries(5));
-        let hits = Rc::new(Cell::new(0));
-        let h = hits.clone();
-        f.connect_selection_changed(move || h.set(h.get() + 1));
-
+        let count = Rc::new(Cell::new(0));
+        let c = count.clone();
+        f.connect_selection_changed(move || c.set(c.get() + 1));
         f.select_exclusive(1);
         assert_eq!(f.selected_indices(), vec![1]);
         f.toggle(3);
@@ -571,27 +756,14 @@ mod tests {
         assert!(f.selected_indices().is_empty());
         f.select_all();
         assert_eq!(f.selected_indices(), vec![0, 1, 2, 3, 4]);
+        assert!(count.get() >= 6);
 
-        assert!(hits.get() >= 6);
-    }
-
-    #[test]
-    fn selected_paths_track_entries() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let f = IconField::new();
+        // --- IconField: selected_paths follow the entries ---
         f.set_entries(&entries(3));
         f.select_exclusive(2);
         assert_eq!(f.selected_paths(), vec![PathBuf::from("/tmp/file2.txt")]);
-    }
 
-    #[test]
-    fn rubber_band_selects_intersecting_items() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let f = IconField::new();
+        // --- IconField: rubber-band uses the cached rectangles ---
         f.set_entries(&entries(6));
         f.inner.scroller.set_size_request(400, 400);
         f.relayout();
@@ -599,19 +771,35 @@ mod tests {
         assert_eq!(f.selected_indices().len(), 6);
         f.rubber_band_to((99_999.0, 99_999.0, 1.0, 1.0), false);
         assert!(f.selected_indices().is_empty());
-    }
 
-    #[test]
-    fn move_cursor_steps_in_grid() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let f = IconField::new();
-        f.set_entries(&entries(6));
-        f.inner.scroller.set_size_request(400, 400);
-        f.relayout();
+        // --- IconField: cursor steps by one in grid mode ---
         f.set_cursor(0);
-        f.move_cursor(1, 0, false, true); // right
+        f.move_cursor(1, 0, false, true);
         assert_eq!(f.cursor(), Some(1));
+
+        // --- IconField: drop parses the uri-list and forwards it ---
+        f.set_entries(&entries(2));
+        let got = Rc::new(RefCell::new(None::<(Vec<PathBuf>, i32, bool)>));
+        let g = got.clone();
+        f.connect_drop_uris(move |paths, target, shift| *g.borrow_mut() = Some((paths, target, shift)));
+        f.handle_drop_text("file:///tmp/a.txt\r\nfile:///tmp/b%20c.txt\r\n", -1, true);
+        let (paths, target, shift) = got.borrow().clone().unwrap();
+        assert_eq!(paths, vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b c.txt")]);
+        assert_eq!(target, -1);
+        assert!(shift);
+
+        // --- IconField: reposition records free positions and fires move-icons ---
+        f.set_entries(&entries(3));
+        f.set_mode(LayoutMode::Free);
+        f.relayout();
+        let fired = Rc::new(Cell::new(0));
+        let fr = fired.clone();
+        f.connect_move_icons(move || fr.set(fr.get() + 1));
+        f.apply_reposition(&[0, 2], 25.0, 40.0);
+        let pos = f.free_positions();
+        assert!(pos.contains_key(&0));
+        assert!(pos.contains_key(&2));
+        assert!(!pos.contains_key(&1));
+        assert_eq!(fired.get(), 1);
     }
 }

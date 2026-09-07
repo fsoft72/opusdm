@@ -8,6 +8,9 @@ use gtk::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Optional rename callback: called with the committed new name.
+type CommitFn = RefCell<Option<Box<dyn Fn(String)>>>;
+
 struct Inner {
     root: gtk::Box,
     icon: gtk::Label, // phase 2 swaps in a gtk::Picture
@@ -15,7 +18,7 @@ struct Inner {
     name_label: gtk::Label,
     name_entry: gtk::Entry,
     original_name: RefCell<String>,
-    on_commit: RefCell<Option<Box<dyn Fn(String)>>>,
+    on_commit: CommitFn,
 }
 
 /// A single item widget. Cheap to clone (shared `Rc`).
@@ -95,7 +98,7 @@ impl IconItem {
         self.inner.name_entry.add_controller(key);
     }
 
-    fn finish_edit(&self, new_text: Option<String>) {
+    pub(crate) fn finish_edit(&self, new_text: Option<String>) {
         if self.inner.name_stack.visible_child_name().as_deref() != Some("entry") {
             return;
         }
@@ -168,58 +171,5 @@ fn toggle_class(w: &impl IsA<gtk::Widget>, class: &str, on: bool) {
         w.add_css_class(class);
     } else {
         w.remove_css_class(class);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::IconKind;
-    use std::path::PathBuf;
-
-    fn entry(name: &str) -> IconEntry {
-        IconEntry {
-            name: name.into(),
-            path: PathBuf::from("/tmp").join(name),
-            kind: IconKind::File,
-            mode: 0o100_644,
-            ext: IconEntry::ext_of(name),
-        }
-    }
-
-    #[test]
-    fn selected_class_toggles() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let it = IconItem::new(&entry("a.txt"), 64);
-        assert!(!it.inner.root.has_css_class("selected"));
-        it.set_selected(true);
-        assert!(it.inner.root.has_css_class("selected"));
-        it.set_selected(false);
-        assert!(!it.inner.root.has_css_class("selected"));
-    }
-
-    #[test]
-    fn edit_commit_fires_only_on_change() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let it = IconItem::new(&entry("a.txt"), 64);
-        let hits = Rc::new(RefCell::new(Vec::<String>::new()));
-        let h = hits.clone();
-        it.connect_edit_committed(move |s| h.borrow_mut().push(s));
-
-        it.start_edit();
-        it.finish_edit(Some("a.txt".to_string())); // unchanged
-        assert!(hits.borrow().is_empty());
-
-        it.start_edit();
-        it.finish_edit(Some("b.txt".to_string()));
-        assert_eq!(&*hits.borrow(), &["b.txt".to_string()]);
-
-        it.start_edit();
-        it.finish_edit(None); // Esc
-        assert_eq!(hits.borrow().len(), 1);
     }
 }
