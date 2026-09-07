@@ -18,11 +18,38 @@ pub enum LayoutMode {
     Free,
 }
 
-/// Freedesktop thumbnail bucket. Used in phase 2.
+/// Freedesktop thumbnail bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThumbSize {
     Normal,
     Large,
+}
+
+impl ThumbSize {
+    /// The square pixel size of this bucket.
+    pub fn px(self) -> i32 {
+        match self {
+            ThumbSize::Normal => 128,
+            ThumbSize::Large => 256,
+        }
+    }
+
+    /// The freedesktop cache subdirectory name.
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            ThumbSize::Normal => "normal",
+            ThumbSize::Large => "large",
+        }
+    }
+
+    /// The bucket to use for an icon drawn `icon_px` wide.
+    pub fn for_icon(icon_px: i32) -> ThumbSize {
+        if icon_px <= 128 {
+            ThumbSize::Normal
+        } else {
+            ThumbSize::Large
+        }
+    }
 }
 
 /// One entry shown by `IconField`. Built by the consumer, never mutated here.
@@ -56,6 +83,17 @@ impl IconEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumb_size_mapping() {
+        assert_eq!(ThumbSize::Normal.px(), 128);
+        assert_eq!(ThumbSize::Large.px(), 256);
+        assert_eq!(ThumbSize::Normal.dir_name(), "normal");
+        assert_eq!(ThumbSize::Large.dir_name(), "large");
+        assert_eq!(ThumbSize::for_icon(64), ThumbSize::Normal);
+        assert_eq!(ThumbSize::for_icon(128), ThumbSize::Normal);
+        assert_eq!(ThumbSize::for_icon(129), ThumbSize::Large);
+    }
 
     #[test]
     fn ext_of_rules() {

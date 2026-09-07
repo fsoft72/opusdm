@@ -18,3 +18,4 @@ thiserror = "2"
 gtk4 = { version = "0.10", features = ["v4_10"] }
 tempfile = "3"
 dirs = "5"
+md-5 = "0.10"
