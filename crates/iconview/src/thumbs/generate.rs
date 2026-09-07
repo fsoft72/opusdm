@@ -123,9 +123,11 @@ fn generate_video(path: &Path, px: i32) -> io::Result<Vec<u8>> {
                 .args(["-o", "-", "-c", "png", "-s"])
                 .arg(px.to_string()),
         )?,
+        // No `-ss`: seeking past the end of a very short clip yields no frame.
+        // The first frame is always a keyframe and good enough for an icon.
         VideoTool::Ffmpeg => run_with_timeout(
             Command::new("ffmpeg")
-                .args(["-y", "-ss", "00:00:01", "-i"])
+                .args(["-y", "-i"])
                 .arg(path)
                 .args(["-frames:v", "1", "-f", "image2", "-c:v", "png", "-vf"])
                 .arg(format!("scale={px}:-1"))
@@ -227,5 +229,46 @@ mod tests {
         let fake_pdf = td.path().join("x.pdf");
         std::fs::write(&fake_pdf, b"%PDF-1.4\n").unwrap();
         let _ = generate(&fake_pdf, ThumbKind::Pdf, 128);
+    }
+
+    /// Real PDF and video generation. Ignored by default because it needs
+    /// `pdftoppm`/`pdftocairo` and `ffmpegthumbnailer`/`ffmpeg` on `$PATH`.
+    /// Run with `cargo test -p opusdm-iconview -- --ignored real_generators`.
+    #[test]
+    #[ignore]
+    fn real_generators_produce_pngs() {
+        let td = tempfile::tempdir().unwrap();
+
+        if tools_available().pdf {
+            // A 1-page PDF made from a solid-colour image via ImageMagick.
+            let img = td.path().join("seed.png");
+            let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 8, 8).unwrap();
+            pb.savev(&img, "png", &[]).unwrap();
+            let pdf = td.path().join("doc.pdf");
+            let ok = std::process::Command::new("convert")
+                .arg(&img)
+                .arg(&pdf)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                let out = generate(&pdf, ThumbKind::Pdf, 128).unwrap();
+                assert!(out.len() > 8 && &out[1..4] == b"PNG");
+            }
+        }
+
+        if tools_available().video {
+            let mp4 = td.path().join("clip.mp4");
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-y", "-f", "lavfi", "-i", "color=c=red:s=64x64:d=1", "-pix_fmt", "yuv420p"])
+                .arg(&mp4)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                let out = generate(&mp4, ThumbKind::Video, 128).unwrap();
+                assert!(out.len() > 8 && &out[1..4] == b"PNG");
+            }
+        }
     }
 }
