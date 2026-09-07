@@ -38,6 +38,7 @@ struct Inner {
     on_rename_requested: Listeners<dyn Fn(usize, String)>,
     on_zoom_requested: Listeners<dyn Fn(i32)>,
     on_move_icons: Listeners<dyn Fn()>,
+    thumb_pool: Option<crate::thumbs::ThumbPool>,
 }
 
 /// The reusable icon view. Cheap to clone (shared `Rc`).
@@ -53,6 +54,13 @@ impl IconField {
         let scroller = gtk::ScrolledWindow::builder().child(&fixed).build();
         scroller.set_hexpand(true);
         scroller.set_vexpand(true);
+
+        let (thumb_pool, thumb_rx) = if crate::thumbs::ThumbPool::disabled() {
+            (None, None)
+        } else {
+            let (p, r) = crate::thumbs::ThumbPool::new();
+            (Some(p), Some(r))
+        };
 
         let inner = Rc::new(Inner {
             scroller,
@@ -75,9 +83,20 @@ impl IconField {
             on_rename_requested: RefCell::new(Vec::new()),
             on_zoom_requested: RefCell::new(Vec::new()),
             on_move_icons: RefCell::new(Vec::new()),
+            thumb_pool,
         });
         let field = IconField { inner };
         crate::style::install();
+
+        // Drain finished thumbnails on the main loop.
+        if let Some(rx) = thumb_rx {
+            let this = field.clone();
+            gtk::glib::spawn_future_local(async move {
+                while let Ok(res) = rx.recv().await {
+                    this.apply_thumb_result(res);
+                }
+            });
+        }
 
         // Re-flow when the visible width changes or the field is first shown.
         let this = field.clone();
@@ -324,6 +343,54 @@ impl IconField {
         self.inner.cursor.set(None);
         self.relayout();
         self.emit_selection_changed();
+        self.request_thumbs();
+    }
+
+    /// Queue a thumbnail job for every previewable entry, newest generation.
+    fn request_thumbs(&self) {
+        let Some(pool) = self.inner.thumb_pool.as_ref() else {
+            return;
+        };
+        pool.bump_generation();
+        let size = crate::types::ThumbSize::for_icon(self.inner.icon_size.get());
+        for (index, entry) in self.inner.entries.borrow().iter().enumerate() {
+            let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
+                continue;
+            };
+            pool.submit(crate::thumbs::ThumbRequest {
+                index,
+                path: entry.path.clone(),
+                kind,
+                size,
+            });
+        }
+    }
+
+    /// Turn a finished thumbnail into a texture and show it, unless the entry
+    /// list moved on (generation bumped) or the row now holds a different path.
+    fn apply_thumb_result(&self, res: crate::thumbs::ThumbResult) {
+        let Some(pool) = self.inner.thumb_pool.as_ref() else {
+            return;
+        };
+        if res.generation != pool.generation() {
+            return;
+        }
+        {
+            let entries = self.inner.entries.borrow();
+            let Some(entry) = entries.get(res.index) else {
+                return;
+            };
+            if entry.path != res.path {
+                return;
+            }
+        }
+        let bytes = gtk::glib::Bytes::from_owned(res.png);
+        let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) else {
+            return;
+        };
+        if let Some(item) = self.inner.items.borrow().get(res.index) {
+            item.set_thumbnail(&texture);
+        }
     }
 
     /// Switch arrangement strategy.
@@ -335,11 +402,20 @@ impl IconField {
 
     /// Resize every item's icon box.
     pub fn set_icon_size(&self, px: i32) {
+        let old_px = self.inner.icon_size.get();
         self.inner.icon_size.set(px);
         for it in self.inner.items.borrow().iter() {
             it.set_icon_size(px);
         }
         self.relayout();
+        let before = crate::types::ThumbSize::for_icon(old_px);
+        let after = crate::types::ThumbSize::for_icon(px);
+        if before != after {
+            for it in self.inner.items.borrow().iter() {
+                it.clear_thumbnail();
+            }
+            self.request_thumbs();
+        }
     }
 
     /// Number of entries currently shown.
@@ -813,5 +889,23 @@ mod tests {
         assert!(pos.contains_key(&2));
         assert!(!pos.contains_key(&1));
         assert_eq!(fired.get(), 1);
+
+        // --- IconField: thumbnail wiring is safe with the pool on and off ---
+        std::env::set_var("OPUSDM_NO_THUMBS", "1");
+        let f_off = IconField::new();
+        f_off.set_entries(&entries(2));
+        f_off.set_icon_size(160); // bucket change path, pool disabled
+        std::env::remove_var("OPUSDM_NO_THUMBS");
+
+        let f_on = IconField::new();
+        f_on.set_entries(&[IconEntry {
+            name: "note.rs".into(),
+            path: PathBuf::from("/tmp/note.rs"),
+            kind: IconKind::File,
+            mode: 0o100_644,
+            ext: Some("rs".into()),
+        }]);
+        // "rs" is not previewable, so no job is queued and nothing panics.
+        f_on.set_icon_size(200);
     }
 }
