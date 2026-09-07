@@ -628,6 +628,7 @@ dependencies = [
  "gtk4",
  "libc",
  "opusdm-fsops",
+ "opusdm-iconview",
  "opusdm-ipc",
  "opusdm-ui",
  "serde",
