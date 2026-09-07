@@ -3,6 +3,7 @@
 //! and the hub desktop window.
 
 pub mod arrange;
+pub mod dnd;
 pub mod glyphs;
 pub mod scan;
 pub mod types;
