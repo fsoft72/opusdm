@@ -26,6 +26,15 @@ const DESKTOP_BG: &str = "#2e3436";
 /// Foreground colour of the centred desktop placeholder label.
 const DESKTOP_FG: &str = "#d3d7cf";
 
+/// Background and border of the desktop right-click menu.
+const DESKTOP_MENU_BG: &str = "#3c4043";
+const DESKTOP_MENU_BORDER: &str = "#1b1d1e";
+
+/// Approximate menu width/height, reserved when clamping the menu inside the
+/// desktop so a right-click near an edge still shows the whole menu.
+const DESKTOP_MENU_W: i32 = 180;
+const DESKTOP_MENU_H: i32 = 210;
+
 /// Build and run the desktop application. Returns on quit.
 pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
     let app = gtk::Application::builder()
@@ -66,6 +75,9 @@ struct Widgets {
     /// after the WM/session restarted) needs its desktop window type and
     /// geometry re-applied, not just a window.present().
     monitor_size: (i32, i32),
+    /// Set once the quit confirmation has been accepted, so the `close()` it
+    /// triggers does not re-enter `request_quit` and stack another dialog.
+    quitting: Cell<bool>,
 }
 
 struct JobRow {
@@ -151,7 +163,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     job_box.set_margin_end(6);
     root.append(&job_box);
 
-    root.append(&build_desktop_area());
+    let desktop_area = build_desktop_area();
+    root.append(&desktop_area);
 
     window.set_child(Some(&root));
 
@@ -165,11 +178,15 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         jobs: RefCell::new(HashMap::new()),
         cmd_tx: cmd_tx.clone(),
         monitor_size: (mon_w, mon_h),
+        quitting: Cell::new(false),
     });
 
     // Click an indicator to raise its Lister.
     attach_present_gesture(&src_label, &widgets, true);
     attach_present_gesture(&dst_label, &widgets, false);
+
+    // Right-click the desktop for the context menu.
+    attach_desktop_menu(&desktop_area, &widgets);
 
     // Settings button: open settings dialog.
     {
@@ -177,7 +194,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         settings_btn.connect_clicked(move |_| show_settings_dialog(&widgets.window, &widgets.cmd_tx));
     }
 
-    // Quit button and window close: confirm if jobs are running.
+    // Quit button and window close: always confirm before shutting down.
     {
         let widgets = widgets.clone();
         quit_btn.connect_clicked(move |_| request_quit(&widgets));
@@ -212,7 +229,10 @@ fn install_desktop_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(&format!(
         ".opusdm-desktop {{ background-color: {DESKTOP_BG}; }}\n\
-         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}"
+         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}\n\
+         .opusdm-desktop-menu {{ background-color: {DESKTOP_MENU_BG}; color: {DESKTOP_FG}; \
+             border: 1px solid {DESKTOP_MENU_BORDER}; border-radius: 4px; padding: 4px; }}\n\
+         .opusdm-desktop-menu button {{ padding: 4px 12px; }}"
     ));
     gtk::style_context_add_provider_for_display(
         &display,
@@ -222,12 +242,17 @@ fn install_desktop_css() {
 }
 
 /// Build the desktop area that fills the window below the toolbar: a flat
-/// background with a centred placeholder label.
-fn build_desktop_area() -> gtk::Box {
-    let area = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    area.add_css_class("opusdm-desktop");
-    area.set_hexpand(true);
-    area.set_vexpand(true);
+/// background with a centred placeholder label, wrapped in an overlay so the
+/// context menu can be laid on top of it.
+fn build_desktop_area() -> gtk::Overlay {
+    let overlay = gtk::Overlay::new();
+    overlay.set_hexpand(true);
+    overlay.set_vexpand(true);
+
+    let bg = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    bg.add_css_class("opusdm-desktop");
+    bg.set_hexpand(true);
+    bg.set_vexpand(true);
 
     let label = gtk::Label::new(Some("OpusDM"));
     label.add_css_class("opusdm-desktop-label");
@@ -235,9 +260,140 @@ fn build_desktop_area() -> gtk::Box {
     label.set_vexpand(true);
     label.set_halign(gtk::Align::Center);
     label.set_valign(gtk::Align::Center);
-    area.append(&label);
+    bg.append(&label);
 
-    area
+    overlay.set_child(Some(&bg));
+    overlay
+}
+
+/// Wire the right-click context menu onto the desktop overlay. The desktop
+/// window never holds the input focus, so a `Popover` parented to it can never
+/// grab; the menu is a plain box laid on the overlay instead, positioned with
+/// margins at the click point.
+fn attach_desktop_menu(overlay: &gtk::Overlay, widgets: &Rc<Widgets>) {
+    let menu = build_desktop_menu(widgets);
+    menu.set_halign(gtk::Align::Start);
+    menu.set_valign(gtk::Align::Start);
+    menu.set_visible(false);
+    overlay.add_overlay(&menu);
+
+    // Secondary click: place the menu at the pointer and show it.
+    let open = gtk::GestureClick::new();
+    open.set_button(gtk::gdk::BUTTON_SECONDARY);
+    {
+        let menu = menu.clone();
+        let overlay = overlay.clone();
+        open.connect_pressed(move |gesture, n_press, x, y| {
+            if n_press != 1 {
+                return;
+            }
+            let max_x = (overlay.width() - DESKTOP_MENU_W).max(0);
+            let max_y = (overlay.height() - DESKTOP_MENU_H).max(0);
+            menu.set_margin_start((x as i32).min(max_x));
+            menu.set_margin_top((y as i32).min(max_y));
+            menu.set_visible(true);
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        });
+    }
+    overlay.add_controller(open);
+
+    // Primary click outside the open menu: dismiss it. Clicks on the menu
+    // buttons are handled by the buttons themselves.
+    let dismiss = gtk::GestureClick::new();
+    dismiss.set_button(gtk::gdk::BUTTON_PRIMARY);
+    {
+        let menu = menu.clone();
+        let overlay = overlay.clone();
+        dismiss.connect_pressed(move |_, _, x, y| {
+            if !menu.get_visible() {
+                return;
+            }
+            if let Some(b) = menu.compute_bounds(&overlay) {
+                let (x, y) = (x as f32, y as f32);
+                let inside = x >= b.x()
+                    && x < b.x() + b.width()
+                    && y >= b.y()
+                    && y < b.y() + b.height();
+                if inside {
+                    return;
+                }
+            }
+            menu.set_visible(false);
+        });
+    }
+    overlay.add_controller(dismiss);
+}
+
+/// Flat, left-aligned menu button, matching the Lister context menu look.
+fn menu_button(title: &str) -> gtk::Button {
+    let btn = gtk::Button::with_label(title);
+    btn.add_css_class("flat");
+    btn.set_halign(gtk::Align::Fill);
+    if let Some(child) = btn.child().and_downcast::<gtk::Label>() {
+        child.set_xalign(0.0);
+    }
+    btn
+}
+
+/// The desktop context menu box: New Lister / --- / Settings / About / ---
+/// / Quit. Every item hides the menu before running its action.
+fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
+    let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    menu.add_css_class("opusdm-desktop-menu");
+
+    // New Lister
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("New Lister");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
+        });
+        menu.append(&btn);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Settings
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Settings");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            show_settings_dialog(&widgets.window, &widgets.cmd_tx);
+        });
+        menu.append(&btn);
+    }
+
+    // About
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("About");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            show_about_dialog(&widgets.window);
+        });
+        menu.append(&btn);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Quit always asks for confirmation before closing everything.
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Quit");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            request_quit(&widgets);
+        });
+        menu.append(&btn);
+    }
+
+    menu
 }
 
 fn attach_present_gesture(label: &gtk::Label, widgets: &Rc<Widgets>, is_src: bool) {
@@ -266,28 +422,34 @@ fn show_about_dialog(parent: &gtk::ApplicationWindow) {
     );
 }
 
+/// Always confirm before shutting everything down, whether the request comes
+/// from the toolbar button, the desktop menu, or the window manager closing
+/// the window. On accept: tell the server to shut down, then close.
 fn request_quit(widgets: &Rc<Widgets>) {
-    let running = widgets.jobs.borrow().len();
-    if running == 0 {
-        let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
-        widgets.window.close();
-        if let Some(app) = widgets.window.application() {
-            app.quit();
-        }
+    // The accepted quit calls close(), which re-enters here via
+    // connect_close_request; bail so we do not stack a second dialog.
+    if widgets.quitting.get() {
         return;
     }
+    let running = widgets.jobs.borrow().len();
+    let detail = if running == 0 {
+        "This will close every Lister and the desktop.".to_string()
+    } else {
+        format!("This will close every Lister and the desktop.\n{running} job(s) still running.")
+    };
     let parent = widgets.window.clone();
     let widgets = widgets.clone();
     opusdm_ui::requester(
         &parent,
         "Request",
         "Quit OpusDM?",
-        Some(&format!("{running} job(s) still running.")),
+        Some(&detail),
         &[("Quit", true), ("Cancel", false)],
         move |quit| {
             if !quit {
                 return;
             }
+            widgets.quitting.set(true);
             let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
             widgets.window.close();
             if let Some(app) = widgets.window.application() {
