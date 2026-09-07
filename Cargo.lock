@@ -691,6 +691,7 @@ dependencies = [
 name = "opusdm-iconview"
 version = "0.1.0"
 dependencies = [
+ "filetime",
  "gtk4",
  "md-5",
  "tempfile",
