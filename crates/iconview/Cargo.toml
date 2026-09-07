@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 gtk4.workspace = true
 md-5.workspace = true
+async-channel.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
