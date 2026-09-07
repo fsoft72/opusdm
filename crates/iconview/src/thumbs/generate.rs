@@ -1,0 +1,231 @@
+//! Turn a source file into PNG thumbnail bytes. Images decode in-process with
+//! gdk-pixbuf (thread-safe, no display needed); PDFs and videos shell out to
+//! optional tools with a hard timeout. Every path returns PNG bytes or an
+//! error; the caller falls back to the glyph on error.
+
+use crate::thumbs::ThumbKind;
+use gtk4::gdk_pixbuf;
+use std::io;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// Longest a generator subprocess may run before it is killed.
+const TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Which optional tools were found on `$PATH`.
+pub struct ToolReport {
+    pub pdf: bool,
+    pub video: bool,
+}
+
+#[derive(Clone, Copy)]
+enum PdfTool {
+    Pdftoppm,
+    Pdftocairo,
+}
+
+#[derive(Clone, Copy)]
+enum VideoTool {
+    FfmpegThumbnailer,
+    Ffmpeg,
+}
+
+struct Tools {
+    pdf: Option<PdfTool>,
+    video: Option<VideoTool>,
+}
+
+fn tools() -> &'static Tools {
+    static TOOLS: OnceLock<Tools> = OnceLock::new();
+    TOOLS.get_or_init(|| Tools {
+        pdf: if in_path("pdftoppm") {
+            Some(PdfTool::Pdftoppm)
+        } else if in_path("pdftocairo") {
+            Some(PdfTool::Pdftocairo)
+        } else {
+            None
+        },
+        video: if in_path("ffmpegthumbnailer") {
+            Some(VideoTool::FfmpegThumbnailer)
+        } else if in_path("ffmpeg") {
+            Some(VideoTool::Ffmpeg)
+        } else {
+            None
+        },
+    })
+}
+
+/// Is `name` an executable file on `$PATH`?
+fn in_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        let cand = dir.join(name);
+        std::fs::metadata(&cand).map(|m| m.is_file()).unwrap_or(false)
+    })
+}
+
+/// Diagnostics: which optional tools are present.
+pub fn tools_available() -> ToolReport {
+    let t = tools();
+    ToolReport { pdf: t.pdf.is_some(), video: t.video.is_some() }
+}
+
+/// PNG thumbnail bytes for `path`, at most `px` on the long edge.
+pub fn generate(path: &Path, kind: ThumbKind, px: i32) -> io::Result<Vec<u8>> {
+    match kind {
+        ThumbKind::Image => generate_image(path, px),
+        ThumbKind::Pdf => generate_pdf(path, px),
+        ThumbKind::Video => generate_video(path, px),
+    }
+}
+
+fn generate_image(path: &Path, px: i32) -> io::Result<Vec<u8>> {
+    let pb = gdk_pixbuf::Pixbuf::from_file_at_scale(path, px, px, true)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let bytes = pb
+        .save_to_bufferv("png", &[])
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(bytes)
+}
+
+fn generate_pdf(path: &Path, px: i32) -> io::Result<Vec<u8>> {
+    let tool = tools().pdf.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no pdf tool"))?;
+    let out = match tool {
+        PdfTool::Pdftoppm => run_with_timeout(
+            Command::new("pdftoppm")
+                .args(["-png", "-singlefile", "-scale-to"])
+                .arg(px.to_string())
+                .arg(path),
+        )?,
+        PdfTool::Pdftocairo => run_with_timeout(
+            Command::new("pdftocairo")
+                .args(["-png", "-singlefile", "-scale-to"])
+                .arg(px.to_string())
+                .arg(path)
+                .arg("-"),
+        )?,
+    };
+    non_empty_png(out)
+}
+
+fn generate_video(path: &Path, px: i32) -> io::Result<Vec<u8>> {
+    let tool =
+        tools().video.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no video tool"))?;
+    let out = match tool {
+        VideoTool::FfmpegThumbnailer => run_with_timeout(
+            Command::new("ffmpegthumbnailer")
+                .arg("-i")
+                .arg(path)
+                .args(["-o", "-", "-c", "png", "-s"])
+                .arg(px.to_string()),
+        )?,
+        VideoTool::Ffmpeg => run_with_timeout(
+            Command::new("ffmpeg")
+                .args(["-y", "-ss", "00:00:01", "-i"])
+                .arg(path)
+                .args(["-frames:v", "1", "-f", "image2", "-c:v", "png", "-vf"])
+                .arg(format!("scale={px}:-1"))
+                .arg("-"),
+        )?,
+    };
+    non_empty_png(out)
+}
+
+fn non_empty_png(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+    if bytes.len() > 8 && bytes[1..4] == *b"PNG" {
+        Ok(bytes)
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidData, "generator produced no PNG"))
+    }
+}
+
+/// Run `cmd` capturing stdout, killing it after `TIMEOUT`.
+fn run_with_timeout(cmd: &mut Command) -> io::Result<Vec<u8>> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .spawn()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                let mut out = Vec::new();
+                if let Some(mut so) = child.stdout.take() {
+                    io::Read::read_to_end(&mut so, &mut out)?;
+                }
+                if !status.success() {
+                    return Err(io::Error::other("generator exited non-zero"));
+                }
+                return Ok(out);
+            }
+            None => {
+                if start.elapsed() >= TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "generator timed out"));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+}
+
+impl ThumbKind {
+    /// The thumbnail kind for a lowercase file extension, or `None` when the
+    /// extension is not previewable.
+    pub fn from_ext(ext: Option<&str>) -> Option<ThumbKind> {
+        let ext = ext?;
+        const IMAGE: &[&str] =
+            &["png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "tif", "ico", "svg"];
+        const VIDEO: &[&str] =
+            &["mp4", "mkv", "avi", "mov", "webm", "m4v", "mpg", "mpeg", "wmv", "flv"];
+        if ext == "pdf" {
+            return Some(ThumbKind::Pdf);
+        }
+        if IMAGE.contains(&ext) {
+            return Some(ThumbKind::Image);
+        }
+        if VIDEO.contains(&ext) {
+            return Some(ThumbKind::Video);
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_ext_classifies() {
+        assert_eq!(ThumbKind::from_ext(Some("png")), Some(ThumbKind::Image));
+        assert_eq!(ThumbKind::from_ext(Some("pdf")), Some(ThumbKind::Pdf));
+        assert_eq!(ThumbKind::from_ext(Some("mkv")), Some(ThumbKind::Video));
+        assert_eq!(ThumbKind::from_ext(Some("rs")), None);
+        assert_eq!(ThumbKind::from_ext(None), None);
+    }
+
+    #[test]
+    fn image_generation_produces_a_png() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("in.png");
+        let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 2, 2).unwrap();
+        pb.savev(&src, "png", &[]).unwrap();
+
+        let out = generate(&src, ThumbKind::Image, 64).unwrap();
+        assert!(out.len() > 8 && &out[1..4] == b"PNG");
+    }
+
+    #[test]
+    fn missing_tools_error_rather_than_panic() {
+        let td = tempfile::tempdir().unwrap();
+        let fake_pdf = td.path().join("x.pdf");
+        std::fs::write(&fake_pdf, b"%PDF-1.4\n").unwrap();
+        let _ = generate(&fake_pdf, ThumbKind::Pdf, 128);
+    }
+}
