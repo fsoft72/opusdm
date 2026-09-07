@@ -4,10 +4,12 @@
 
 pub mod arrange;
 pub mod dnd;
+pub mod field;
 pub mod glyphs;
 pub mod item;
 pub mod scan;
 pub mod types;
 
+pub use field::IconField;
 pub use item::IconItem;
 pub use types::{IconEntry, IconKind, LayoutMode, ThumbSize};
