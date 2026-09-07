@@ -77,6 +77,7 @@ impl IconField {
             on_move_icons: RefCell::new(Vec::new()),
         });
         let field = IconField { inner };
+        crate::style::install();
 
         // Re-flow when the visible width changes or the field is first shown.
         let this = field.clone();

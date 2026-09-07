@@ -8,6 +8,7 @@ pub mod field;
 pub mod glyphs;
 pub mod item;
 pub mod scan;
+pub mod style;
 pub mod types;
 
 pub use field::IconField;
