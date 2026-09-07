@@ -14,7 +14,7 @@ type CommitFn = RefCell<Option<Box<dyn Fn(String)>>>;
 struct Inner {
     root: gtk::Box,
     icon: gtk::Label,
-    thumb: gtk::Picture,
+    thumb: gtk::Image,
     name_stack: gtk::Stack,
     name_label: gtk::Label,
     name_entry: gtk::Entry,
@@ -40,11 +40,14 @@ impl IconItem {
         icon.set_width_request(icon_size);
         icon.set_height_request(icon_size);
 
-        let thumb = gtk::Picture::new();
-        thumb.set_content_fit(gtk::ContentFit::Contain);
-        thumb.set_can_shrink(true);
-        thumb.set_width_request(icon_size);
-        thumb.set_height_request(icon_size);
+        // A `gtk::Image` sized to the icon box, not a `gtk::Picture`: a Picture
+        // reports the texture's intrinsic size as its natural size, so a tall
+        // thumbnail (portrait photo, PDF page) would grow the item and, through
+        // `FreeArrange`'s max-of-all-items pitch, space out the whole desktop
+        // grid once thumbnails finish loading. `Image` always measures
+        // `pixel_size` square and scales the paintable to fit.
+        let thumb = gtk::Image::new();
+        thumb.set_pixel_size(icon_size);
         thumb.set_visible(false);
 
         let name_label = gtk::Label::new(Some(&entry.name));
@@ -151,8 +154,7 @@ impl IconItem {
     pub fn set_icon_size(&self, px: i32) {
         self.inner.icon.set_width_request(px);
         self.inner.icon.set_height_request(px);
-        self.inner.thumb.set_width_request(px);
-        self.inner.thumb.set_height_request(px);
+        self.inner.thumb.set_pixel_size(px);
     }
 
     /// Show `texture` in place of the glyph.

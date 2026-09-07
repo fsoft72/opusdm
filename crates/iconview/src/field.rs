@@ -876,6 +876,23 @@ mod tests {
         it.set_thumbnail(tex.upcast_ref::<gtk::gdk::Texture>());
         it.clear_thumbnail();
 
+        // --- IconItem: a tall thumbnail does not change the item's size ---
+        // The thumbnail is a `gtk::Image` at `pixel_size`, so a portrait
+        // texture measures the same as the glyph. Otherwise a thumbnail
+        // loading in asynchronously would grow the item and, via
+        // `FreeArrange`'s max-of-all pitch, re-space the whole desktop grid.
+        let plain = IconItem::new(&entries(1)[0], 64);
+        let before = plain.measure();
+        let tall = gtk::gdk::MemoryTexture::new(
+            2,
+            200,
+            gtk::gdk::MemoryFormat::R8g8b8a8,
+            &gtk::glib::Bytes::from_owned(vec![0u8; 2 * 200 * 4]),
+            2 * 4,
+        );
+        plain.set_thumbnail(tall.upcast_ref::<gtk::gdk::Texture>());
+        assert_eq!(plain.measure(), before);
+
         // --- IconField: set_entries builds one item per entry ---
         let f = IconField::new();
         f.set_entries(&entries(5));
