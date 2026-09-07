@@ -13,7 +13,8 @@ type CommitFn = RefCell<Option<Box<dyn Fn(String)>>>;
 
 struct Inner {
     root: gtk::Box,
-    icon: gtk::Label, // phase 2 swaps in a gtk::Picture
+    icon: gtk::Label,
+    thumb: gtk::Picture,
     name_stack: gtk::Stack,
     name_label: gtk::Label,
     name_entry: gtk::Entry,
@@ -39,6 +40,13 @@ impl IconItem {
         icon.set_width_request(icon_size);
         icon.set_height_request(icon_size);
 
+        let thumb = gtk::Picture::new();
+        thumb.set_content_fit(gtk::ContentFit::Contain);
+        thumb.set_can_shrink(true);
+        thumb.set_width_request(icon_size);
+        thumb.set_height_request(icon_size);
+        thumb.set_visible(false);
+
         let name_label = gtk::Label::new(Some(&entry.name));
         name_label.set_wrap(true);
         name_label.set_justify(gtk::Justification::Center);
@@ -55,11 +63,13 @@ impl IconItem {
         name_stack.set_visible_child_name("label");
 
         root.append(&icon);
+        root.append(&thumb);
         root.append(&name_stack);
 
         let inner = Rc::new(Inner {
             root,
             icon,
+            thumb,
             name_stack,
             name_label,
             name_entry,
@@ -132,10 +142,26 @@ impl IconItem {
         toggle_class(&self.inner.root, "cursor", on);
     }
 
-    /// Resize the icon box.
+    /// Resize the icon box (glyph and thumbnail).
     pub fn set_icon_size(&self, px: i32) {
         self.inner.icon.set_width_request(px);
         self.inner.icon.set_height_request(px);
+        self.inner.thumb.set_width_request(px);
+        self.inner.thumb.set_height_request(px);
+    }
+
+    /// Show `texture` in place of the glyph.
+    pub fn set_thumbnail(&self, texture: &gtk::gdk::Texture) {
+        self.inner.thumb.set_paintable(Some(texture));
+        self.inner.thumb.set_visible(true);
+        self.inner.icon.set_visible(false);
+    }
+
+    /// Drop any thumbnail and show the glyph again.
+    pub fn clear_thumbnail(&self) {
+        self.inner.thumb.set_paintable(gtk::gdk::Paintable::NONE);
+        self.inner.thumb.set_visible(false);
+        self.inner.icon.set_visible(true);
     }
 
     /// Natural size in pixels, for the arranger.

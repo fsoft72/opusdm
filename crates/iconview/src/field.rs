@@ -726,6 +726,17 @@ mod tests {
         it.finish_edit(None); // Esc
         assert_eq!(hits.borrow().len(), 1);
 
+        // --- IconItem: thumbnail slot swaps the glyph out and back ---
+        let tex = gtk::gdk::MemoryTexture::new(
+            1,
+            1,
+            gtk::gdk::MemoryFormat::R8g8b8a8,
+            &gtk::glib::Bytes::from_static(&[0, 0, 0, 255]),
+            4,
+        );
+        it.set_thumbnail(tex.upcast_ref::<gtk::gdk::Texture>());
+        it.clear_thumbnail();
+
         // --- IconField: set_entries builds one item per entry ---
         let f = IconField::new();
         f.set_entries(&entries(5));
