@@ -84,6 +84,92 @@ impl IconField {
         });
         field.inner.fixed.add_controller(click);
 
+        // Rubber-band selection: a drag that begins on empty space.
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(gtk::gdk::BUTTON_PRIMARY);
+        let start: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
+        let this = field.clone();
+        let start_b = start.clone();
+        drag.connect_drag_begin(move |_, x, y| {
+            if this.item_at(x, y).is_some() {
+                start_b.set(None);
+                return;
+            }
+            start_b.set(Some((x, y)));
+        });
+        let this = field.clone();
+        let start_u = start.clone();
+        drag.connect_drag_update(move |g, ox, oy| {
+            let Some((sx, sy)) = start_u.get() else {
+                return;
+            };
+            let additive = g
+                .current_event_state()
+                .contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let rx = sx.min(sx + ox);
+            let ry = sy.min(sy + oy);
+            this.rubber_band_to((rx, ry, ox.abs(), oy.abs()), additive);
+        });
+        field.inner.fixed.add_controller(drag);
+
+        // Keyboard navigation.
+        field.inner.fixed.set_focusable(true);
+        let key = gtk::EventControllerKey::new();
+        let this = field.clone();
+        key.connect_key_pressed(move |_, keyval, _, state| {
+            use gtk::gdk::Key;
+            let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            match keyval {
+                Key::a | Key::A if ctrl => {
+                    this.select_all();
+                    gtk::glib::Propagation::Stop
+                }
+                Key::Escape => {
+                    this.clear_selection();
+                    gtk::glib::Propagation::Stop
+                }
+                Key::Return | Key::KP_Enter => {
+                    if let Some(i) = this.cursor() {
+                        this.emit_activate(i);
+                    }
+                    gtk::glib::Propagation::Stop
+                }
+                Key::space => {
+                    if let Some(i) = this.cursor() {
+                        this.toggle(i);
+                    }
+                    gtk::glib::Propagation::Stop
+                }
+                Key::F2 => {
+                    if let Some(i) = this.cursor() {
+                        if let Some(it) = this.items().get(i) {
+                            it.start_edit();
+                        }
+                    }
+                    gtk::glib::Propagation::Stop
+                }
+                Key::Left => {
+                    this.move_cursor(-1, 0, shift, ctrl);
+                    gtk::glib::Propagation::Stop
+                }
+                Key::Right => {
+                    this.move_cursor(1, 0, shift, ctrl);
+                    gtk::glib::Propagation::Stop
+                }
+                Key::Up => {
+                    this.move_cursor(0, -1, shift, ctrl);
+                    gtk::glib::Propagation::Stop
+                }
+                Key::Down => {
+                    this.move_cursor(0, 1, shift, ctrl);
+                    gtk::glib::Propagation::Stop
+                }
+                _ => gtk::glib::Propagation::Proceed,
+            }
+        });
+        field.inner.fixed.add_controller(key);
+
         field
     }
 
@@ -246,6 +332,108 @@ impl IconField {
         self.inner.cursor.get()
     }
 
+    /// Select every item whose bounds intersect `rect` (x, y, w, h in the
+    /// `Fixed`'s coordinate space). When `additive`, keep the prior selection.
+    pub(crate) fn rubber_band_to(&self, rect: (f64, f64, f64, f64), additive: bool) {
+        let (rx, ry, rw, rh) = rect;
+        let mut sel = if additive {
+            self.inner.selection.borrow().clone()
+        } else {
+            BTreeSet::new()
+        };
+        for (i, it) in self.inner.items.borrow().iter().enumerate() {
+            if let Some(b) = it.widget().compute_bounds(&self.inner.fixed) {
+                let ix = b.x() as f64;
+                let iy = b.y() as f64;
+                let iw = b.width() as f64;
+                let ih = b.height() as f64;
+                let hit = ix < rx + rw && ix + iw > rx && iy < ry + rh && iy + ih > ry;
+                if hit {
+                    sel.insert(i);
+                }
+            }
+        }
+        *self.inner.selection.borrow_mut() = sel;
+        self.emit_selection_changed();
+    }
+
+    /// Move the keyboard cursor by (`dx`, `dy`) in {-1, 0, 1}. `extend` grows
+    /// the selection from the anchor; `move_only` leaves the selection alone.
+    pub(crate) fn move_cursor(&self, dx: i32, dy: i32, extend: bool, move_only: bool) {
+        let n = self.inner.items.borrow().len();
+        if n == 0 {
+            return;
+        }
+        let cur = self.inner.cursor.get().unwrap_or(0);
+        let next = if matches!(self.inner.mode.get(), LayoutMode::Grid) {
+            self.grid_step(cur, dx, dy, n)
+        } else {
+            self.free_step(cur, dx, dy)
+        };
+        let Some(next) = next else {
+            return;
+        };
+        if extend {
+            self.select_range_to(next);
+        } else if move_only {
+            self.set_cursor(next);
+        } else {
+            self.select_exclusive(next);
+        }
+    }
+
+    fn grid_step(&self, cur: usize, dx: i32, dy: i32, n: usize) -> Option<usize> {
+        let cols = self.current_columns().max(1);
+        let mut idx = cur as i64;
+        idx += dx as i64;
+        idx += dy as i64 * cols as i64;
+        if idx < 0 || idx as usize >= n {
+            return None;
+        }
+        Some(idx as usize)
+    }
+
+    fn free_step(&self, cur: usize, dx: i32, dy: i32) -> Option<usize> {
+        let items = self.inner.items.borrow();
+        let from = items.get(cur)?.widget().compute_bounds(&self.inner.fixed)?;
+        let from = (from.x() as f64, from.y() as f64);
+        let cands: Vec<(usize, (f64, f64))> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, it)| {
+                let b = it.widget().compute_bounds(&self.inner.fixed)?;
+                Some((i, (b.x() as f64, b.y() as f64)))
+            })
+            .collect();
+        crate::arrange::nearest_in_direction(from, &cands, dx, dy)
+    }
+
+    fn current_columns(&self) -> usize {
+        let items = self.inner.items.borrow();
+        if items.len() < 2 {
+            return 1;
+        }
+        let y0 = items[0]
+            .widget()
+            .compute_bounds(&self.inner.fixed)
+            .map(|b| b.y())
+            .unwrap_or(0.0);
+        let mut cols = 1;
+        for it in items.iter().skip(1) {
+            let y = it
+                .widget()
+                .compute_bounds(&self.inner.fixed)
+                .map(|b| b.y())
+                .unwrap_or(0.0);
+            if (y - y0).abs() < 1.0 {
+                cols += 1;
+            } else {
+                break;
+            }
+        }
+        cols
+    }
+
     /// The item index under widget-space point (`x`, `y`), if any.
     fn item_at(&self, x: f64, y: f64) -> Option<usize> {
         let items = self.inner.items.borrow();
@@ -396,5 +584,34 @@ mod tests {
         f.set_entries(&entries(3));
         f.select_exclusive(2);
         assert_eq!(f.selected_paths(), vec![PathBuf::from("/tmp/file2.txt")]);
+    }
+
+    #[test]
+    fn rubber_band_selects_intersecting_items() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let f = IconField::new();
+        f.set_entries(&entries(6));
+        f.inner.scroller.set_size_request(400, 400);
+        f.relayout();
+        f.rubber_band_to((0.0, 0.0, 10_000.0, 10_000.0), false);
+        assert_eq!(f.selected_indices().len(), 6);
+        f.rubber_band_to((99_999.0, 99_999.0, 1.0, 1.0), false);
+        assert!(f.selected_indices().is_empty());
+    }
+
+    #[test]
+    fn move_cursor_steps_in_grid() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let f = IconField::new();
+        f.set_entries(&entries(6));
+        f.inner.scroller.set_size_request(400, 400);
+        f.relayout();
+        f.set_cursor(0);
+        f.move_cursor(1, 0, false, true); // right
+        assert_eq!(f.cursor(), Some(1));
     }
 }
