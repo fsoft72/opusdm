@@ -2,6 +2,7 @@
 //! navigation, rubber-band, and drag-and-drop. Used by the Lister (icon view)
 //! and the hub desktop window.
 
+pub mod arrange;
 pub mod glyphs;
 pub mod types;
 
