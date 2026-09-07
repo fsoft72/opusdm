@@ -44,6 +44,9 @@ pub enum HubEvent {
 pub enum HubCmd {
     /// Open another Lister.
     SpawnRequested { start_path: Option<PathBuf> },
+    /// Run a file operation from the hub GUI itself (a drop on the desktop
+    /// window). The destination is always concrete.
+    RunJob { op: Op, srcs: Vec<PathBuf>, dest_dir: PathBuf },
     /// Cancel a running or queued job.
     CancelJob(u64),
     /// Ask a Lister to raise its window.
@@ -351,6 +354,37 @@ fn owner_loop(
             }
 
             OwnerMsg::FromGtk(HubCmd::SpawnRequested { start_path }) => on_spawn(start_path),
+
+            OwnerMsg::FromGtk(HubCmd::RunJob { op, srcs, dest_dir }) => {
+                // A hub-originated job has no requesting Lister, so progress and
+                // completion just do not route back to one; the hub's own job
+                // box still tracks it. `u64::MAX` is the sentinel requester.
+                const GTK_REQUESTER: u64 = u64::MAX;
+                if matches!(op, Op::Copy | Op::Move) {
+                    if let Err(msg) = validate_job(&srcs, &dest_dir) {
+                        eprintln!("opusdm-hub: desktop job rejected: {msg}");
+                        continue;
+                    }
+                }
+                let src_parents: Vec<PathBuf> =
+                    srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
+                let spec = opusdm_fsops::JobSpec {
+                    op: op.clone(),
+                    srcs: srcs.clone(),
+                    dest_dir: dest_dir.clone(),
+                };
+                let out = engine.submit(ListerId(GTK_REQUESTER), spec);
+                jobs.insert(
+                    out.job_id,
+                    JobMeta {
+                        requester: GTK_REQUESTER,
+                        op,
+                        totals: ProgressTotals::default(),
+                        dest_dir,
+                        src_parents,
+                    },
+                );
+            }
 
             OwnerMsg::FromGtk(HubCmd::CancelJob(id)) => engine.cancel(id),
 

@@ -11,7 +11,7 @@ use gtk::prelude::*;
 use opusdm_ipc::ListerId;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
@@ -78,6 +78,9 @@ struct Widgets {
     /// Set once the quit confirmation has been accepted, so the `close()` it
     /// triggers does not re-enter `request_quit` and stack another dialog.
     quitting: Cell<bool>,
+    /// inotify watch on the desktop directory, kept alive for the window's
+    /// lifetime. `None` when there is no desktop directory or the watch failed.
+    desktop_watch: RefCell<Option<opusdm_hub::desktop_files::DesktopWatch>>,
 }
 
 struct JobRow {
@@ -163,7 +166,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     job_box.set_margin_end(6);
     root.append(&job_box);
 
-    let desktop_area = build_desktop_area();
+    let desktop_dir = opusdm_hub::desktop_files::desktop_dir();
+    let (desktop_area, desktop_field) = build_desktop_area(desktop_dir.as_deref());
     root.append(&desktop_area);
 
     window.set_child(Some(&root));
@@ -179,6 +183,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         cmd_tx: cmd_tx.clone(),
         monitor_size: (mon_w, mon_h),
         quitting: Cell::new(false),
+        desktop_watch: RefCell::new(None),
     });
 
     // Click an indicator to raise its Lister.
@@ -187,6 +192,50 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
 
     // Right-click the desktop for the context menu.
     attach_desktop_menu(&desktop_area, &widgets);
+
+    // Desktop icon field: open on activate, copy on drop, live refresh on change.
+    if let (Some(field), Some(dir)) = (desktop_field, desktop_dir.clone()) {
+        {
+            let cmd_tx = cmd_tx.clone();
+            let field_for_open = field.clone();
+            field.connect_activate(move |i| {
+                let Some(entry) = field_for_open.entry(i) else { return };
+                if entry.kind == opusdm_iconview::IconKind::Dir {
+                    let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
+                } else {
+                    let uri = format!("file://{}", entry.path.display());
+                    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                }
+            });
+        }
+        {
+            let cmd_tx = cmd_tx.clone();
+            let dir = dir.clone();
+            field.connect_drop_uris(move |srcs, _target, shift| {
+                if srcs.is_empty() {
+                    return;
+                }
+                let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
+                let _ = cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir: dir.clone() });
+            });
+        }
+        match opusdm_hub::desktop_files::DesktopWatch::start(dir.clone()) {
+            Ok((watch, rx)) => {
+                let field_for_watch = field.clone();
+                let dir_for_watch = dir.clone();
+                glib::spawn_future_local(async move {
+                    while rx.recv().await.is_ok() {
+                        match opusdm_iconview::scan::read_entries(&dir_for_watch, false) {
+                            Ok(entries) => field_for_watch.set_entries(&entries),
+                            Err(e) => eprintln!("opusdm-hub: desktop reload failed: {e}"),
+                        }
+                    }
+                });
+                *widgets.desktop_watch.borrow_mut() = Some(watch);
+            }
+            Err(e) => eprintln!("opusdm-hub: desktop watch unavailable: {e}"),
+        }
+    }
 
     // Settings button: open settings dialog.
     {
@@ -241,10 +290,13 @@ fn install_desktop_css() {
     );
 }
 
-/// Build the desktop area that fills the window below the toolbar: a flat
-/// background with a centred placeholder label, wrapped in an overlay so the
-/// context menu can be laid on top of it.
-fn build_desktop_area() -> gtk::Overlay {
+/// Build the desktop area that fills the window below the toolbar, wrapped in
+/// an overlay so the context menu can be laid on top of it. When `desktop_dir`
+/// is `Some`, an icon field in `Free` mode fills it and its initial entries are
+/// read; otherwise the flat placeholder label is kept.
+fn build_desktop_area(
+    desktop_dir: Option<&Path>,
+) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
     overlay.set_hexpand(true);
     overlay.set_vexpand(true);
@@ -254,16 +306,33 @@ fn build_desktop_area() -> gtk::Overlay {
     bg.set_hexpand(true);
     bg.set_vexpand(true);
 
-    let label = gtk::Label::new(Some("OpusDM"));
-    label.add_css_class("opusdm-desktop-label");
-    label.set_hexpand(true);
-    label.set_vexpand(true);
-    label.set_halign(gtk::Align::Center);
-    label.set_valign(gtk::Align::Center);
-    bg.append(&label);
+    let field = match desktop_dir {
+        Some(dir) => {
+            let f = opusdm_iconview::IconField::new();
+            f.set_mode(opusdm_iconview::LayoutMode::Free);
+            match opusdm_iconview::scan::read_entries(dir, false) {
+                Ok(entries) => f.set_entries(&entries),
+                Err(e) => eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display()),
+            }
+            f.widget().set_hexpand(true);
+            f.widget().set_vexpand(true);
+            bg.append(f.widget());
+            Some(f)
+        }
+        None => {
+            let label = gtk::Label::new(Some("OpusDM"));
+            label.add_css_class("opusdm-desktop-label");
+            label.set_hexpand(true);
+            label.set_vexpand(true);
+            label.set_halign(gtk::Align::Center);
+            label.set_valign(gtk::Align::Center);
+            bg.append(&label);
+            None
+        }
+    };
 
     overlay.set_child(Some(&bg));
-    overlay
+    (overlay, field)
 }
 
 /// Wire the right-click context menu onto the desktop overlay. The desktop
