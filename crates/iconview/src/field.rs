@@ -31,6 +31,8 @@ struct Inner {
     anchor: Cell<Option<usize>>,
     cursor: Cell<Option<usize>>,
     reposition_active: Cell<bool>,
+    /// While a reposition drag is live: (item index, its position at drag start).
+    drag_bases: RefCell<Vec<(usize, (f64, f64))>>,
     on_selection_changed: Listeners<dyn Fn()>,
     on_activate: Listeners<dyn Fn(usize)>,
     on_drop_uris: Listeners<dyn Fn(Vec<PathBuf>, i32, bool)>,
@@ -76,6 +78,7 @@ impl IconField {
             anchor: Cell::new(None),
             cursor: Cell::new(None),
             reposition_active: Cell::new(false),
+            drag_bases: RefCell::new(Vec::new()),
             on_selection_changed: RefCell::new(Vec::new()),
             on_activate: RefCell::new(Vec::new()),
             on_drop_uris: RefCell::new(Vec::new()),
@@ -215,7 +218,10 @@ impl IconField {
         src.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
         let this = field.clone();
         src.connect_prepare(move |_, _, _| {
-            if this.inner.reposition_active.get() {
+            // In Free mode a primary-button drag is an internal reposition, not
+            // an inter-window file drag; leaving this on would let the DnD
+            // machinery steal the gesture and snap the icon back.
+            if !this.inter_window_drag_enabled() {
                 return None;
             }
             let paths = this.selected_paths();
@@ -283,29 +289,20 @@ impl IconField {
         });
         field.inner.fixed.add_controller(scroll);
 
-        // Internal reposition drag (Free mode only), starting on a selected item.
+        // Internal reposition drag (Free mode only), starting on any item.
         let rdrag = gtk::GestureDrag::new();
         rdrag.set_button(gtk::gdk::BUTTON_PRIMARY);
         let this = field.clone();
         rdrag.connect_drag_begin(move |_, x, y| {
-            let on_selected = this
-                .item_at(x, y)
-                .map(|i| this.selected_indices().contains(&i))
-                .unwrap_or(false);
-            let active = matches!(this.inner.mode.get(), LayoutMode::Free) && on_selected;
-            this.inner.reposition_active.set(active);
+            this.begin_reposition(x, y);
+        });
+        let this = field.clone();
+        rdrag.connect_drag_update(move |_, ox, oy| {
+            this.update_reposition(ox, oy);
         });
         let this = field.clone();
         rdrag.connect_drag_end(move |_, ox, oy| {
-            if !this.inner.reposition_active.get() {
-                return;
-            }
-            this.inner.reposition_active.set(false);
-            if ox.abs() < 4.0 && oy.abs() < 4.0 {
-                return;
-            }
-            let sel = this.selected_indices();
-            this.apply_reposition(&sel, ox, oy);
+            this.end_reposition(ox, oy);
         });
         field.inner.fixed.add_controller(rdrag);
 
@@ -490,20 +487,69 @@ impl IconField {
         }
     }
 
-    /// Offset the given items by (`dx`, `dy`), store their new free positions,
-    /// re-lay-out, and notify move-icons listeners.
-    pub(crate) fn apply_reposition(&self, indices: &[usize], dx: f64, dy: f64) {
+    /// Whether a primary-button drag should start an inter-window file drag.
+    /// False in Free mode, where that gesture is an internal reposition.
+    pub(crate) fn inter_window_drag_enabled(&self) -> bool {
+        !matches!(self.inner.mode.get(), LayoutMode::Free)
+    }
+
+    /// Begin a reposition: only in Free mode and only when the press lands on
+    /// an item. Selects that item if it was not already, and snapshots the
+    /// start positions of every item that will move.
+    fn begin_reposition(&self, x: f64, y: f64) {
+        self.inner.reposition_active.set(false);
+        self.inner.drag_bases.borrow_mut().clear();
+        if !matches!(self.inner.mode.get(), LayoutMode::Free) {
+            return;
+        }
+        let Some(hit) = self.item_at(x, y) else {
+            return;
+        };
+        if !self.inner.selection.borrow().contains(&hit) {
+            self.select_exclusive(hit);
+        }
+        let rects = self.inner.item_rects.borrow();
+        let bases: Vec<(usize, (f64, f64))> = self
+            .selected_indices()
+            .into_iter()
+            .filter_map(|i| rects.get(i).map(|&(rx, ry, _, _)| (i, (rx, ry))))
+            .collect();
+        drop(rects);
+        if bases.is_empty() {
+            return;
+        }
+        *self.inner.drag_bases.borrow_mut() = bases;
+        self.inner.reposition_active.set(true);
+    }
+
+    /// Live feedback: move the dragged items to base + offset, no commit.
+    fn update_reposition(&self, ox: f64, oy: f64) {
+        if !self.inner.reposition_active.get() {
+            return;
+        }
+        let items = self.inner.items.borrow();
+        for &(i, (bx, by)) in self.inner.drag_bases.borrow().iter() {
+            if let Some(it) = items.get(i) {
+                self.inner.fixed.move_(it.widget(), (bx + ox).max(0.0), (by + oy).max(0.0));
+            }
+        }
+    }
+
+    /// Commit the reposition: write the final positions, re-lay-out, notify.
+    fn end_reposition(&self, ox: f64, oy: f64) {
+        if !self.inner.reposition_active.get() {
+            return;
+        }
+        self.inner.reposition_active.set(false);
+        let bases = std::mem::take(&mut *self.inner.drag_bases.borrow_mut());
+        if ox.abs() < 4.0 && oy.abs() < 4.0 {
+            self.relayout(); // undo any sub-threshold nudge from update
+            return;
+        }
         {
-            let rects = self.inner.item_rects.borrow();
             let mut fp = self.inner.free_positions.borrow_mut();
-            for &i in indices {
-                let base = fp
-                    .get(&i)
-                    .copied()
-                    .or_else(|| rects.get(i).map(|&(x, y, _, _)| (x, y)));
-                if let Some((x, y)) = base {
-                    fp.insert(i, ((x + dx).max(0.0), (y + dy).max(0.0)));
-                }
+            for (i, (bx, by)) in bases {
+                fp.insert(i, ((bx + ox).max(0.0), (by + oy).max(0.0)));
             }
         }
         self.relayout();
@@ -878,14 +924,20 @@ mod tests {
         assert_eq!(target, -1);
         assert!(shift);
 
-        // --- IconField: reposition records free positions and fires move-icons ---
-        f.set_entries(&entries(3));
+        // --- IconField: reposition moves the selection and fires move-icons ---
         f.set_mode(LayoutMode::Free);
+        f.set_entries(&entries(3));
+        f.inner.scroller.set_size_request(600, 400);
         f.relayout();
         let fired = Rc::new(Cell::new(0));
         let fr = fired.clone();
         f.connect_move_icons(move || fr.set(fr.get() + 1));
-        f.apply_reposition(&[0, 2], 25.0, 40.0);
+        f.select_exclusive(0);
+        f.toggle(2); // selection is {0, 2}
+        let r0 = f.inner.item_rects.borrow()[0];
+        f.begin_reposition(r0.0 + 2.0, r0.1 + 2.0);
+        f.update_reposition(25.0, 40.0);
+        f.end_reposition(25.0, 40.0);
         let pos = f.free_positions();
         assert!(pos.contains_key(&0));
         assert!(pos.contains_key(&2));
@@ -909,5 +961,25 @@ mod tests {
         }]);
         // "rs" is not previewable, so no job is queued and nothing panics.
         f_on.set_icon_size(200);
+
+        // --- IconField: inter-window drag is off in Free mode ---
+        let fd = IconField::new();
+        assert!(fd.inter_window_drag_enabled()); // Grid default
+        fd.set_mode(LayoutMode::Free);
+        assert!(!fd.inter_window_drag_enabled());
+        fd.set_mode(LayoutMode::Grid);
+        assert!(fd.inter_window_drag_enabled());
+
+        // --- IconField: begin/commit reposition moves a selected icon ---
+        fd.set_mode(LayoutMode::Free);
+        fd.set_entries(&entries(3));
+        fd.inner.scroller.set_size_request(600, 400);
+        fd.relayout();
+        let start = fd.inner.item_rects.borrow()[0];
+        fd.begin_reposition(start.0 + 2.0, start.1 + 2.0); // press on item 0
+        fd.update_reposition(50.0, 30.0);
+        fd.end_reposition(50.0, 30.0);
+        let moved = fd.free_positions();
+        assert_eq!(moved.get(&0).copied(), Some((start.0 + 50.0, start.1 + 30.0)));
     }
 }
