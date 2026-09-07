@@ -662,6 +662,7 @@ dependencies = [
  "async-channel",
  "gtk4",
  "libc",
+ "opusdm-iconview",
  "opusdm-ipc",
  "opusdm-ui",
  "tempfile",
