@@ -4,6 +4,7 @@
 
 pub mod arrange;
 pub mod glyphs;
+pub mod scan;
 pub mod types;
 
 pub use types::{IconEntry, IconKind, LayoutMode, ThumbSize};
