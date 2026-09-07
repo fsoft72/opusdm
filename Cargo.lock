@@ -638,6 +638,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-iconview"
+version = "0.1.0"
+dependencies = [
+ "gtk4",
+ "tempfile",
+]
+
+[[package]]
 name = "opusdm-ipc"
 version = "0.1.0"
 dependencies = [
