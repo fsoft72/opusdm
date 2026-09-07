@@ -97,12 +97,23 @@ impl Default for FreeArrange {
 
 impl Arrange for FreeArrange {
     fn place(&self, items: &[ItemBox], viewport_w: f64) -> Placement {
-        let cols = ((viewport_w / self.cell).floor() as i64).max(1);
-        // Cells already claimed by known positions (snapped to the grid).
+        /// Space left between auto-slotted items so their boxes never touch.
+        const SLOT_GAP: f64 = 12.0;
+
+        // The auto-slot pitch is the largest item box plus a gap, never below
+        // the base `cell`. A fixed pitch smaller than the items makes them
+        // overlap, which then makes hit-testing pick the wrong icon.
+        let max_w = items.iter().fold(0.0_f64, |m, b| m.max(b.w));
+        let max_h = items.iter().fold(0.0_f64, |m, b| m.max(b.h));
+        let pitch_x = (max_w + SLOT_GAP).max(self.cell);
+        let pitch_y = (max_h + SLOT_GAP).max(self.cell);
+
+        let cols = ((viewport_w / pitch_x).floor() as i64).max(1);
+        // Cells already claimed by known positions (snapped to the slot grid).
         let mut taken: std::collections::HashSet<(i64, i64)> = self
             .known
             .values()
-            .map(|&(x, y)| ((x / self.cell).round() as i64, (y / self.cell).round() as i64))
+            .map(|&(x, y)| ((x / pitch_x).round() as i64, (y / pitch_y).round() as i64))
             .collect();
         let mut next = 0_i64;
         let mut positions = vec![(0.0, 0.0); items.len()];
@@ -115,7 +126,7 @@ impl Arrange for FreeArrange {
                 let cell = (next % cols, next / cols);
                 next += 1;
                 if taken.insert(cell) {
-                    *pos = (cell.0 as f64 * self.cell, cell.1 as f64 * self.cell);
+                    *pos = (cell.0 as f64 * pitch_x, cell.1 as f64 * pitch_y);
                     break;
                 }
             }
@@ -233,6 +244,31 @@ mod tests {
         let p = f.place(&boxes(2, 64.0, 80.0), 300.0);
         assert_eq!(p.positions[1], (0.0, 0.0));
         assert_ne!(p.positions[0], (0.0, 0.0));
+    }
+
+    /// Two auto-slotted rectangles must never overlap, even when the item box
+    /// is larger than the base `cell`. Overlapping rects make `IconField::item_at`
+    /// resolve clicks in the seam to the wrong (lower-indexed) icon.
+    #[test]
+    fn auto_slotted_items_do_not_overlap_when_larger_than_the_cell() {
+        let f = FreeArrange::new(); // cell = 96
+        let items = boxes(6, 130.0, 105.0); // real IconItem is wider/taller than 96
+        let p = f.place(&items, 1000.0);
+        for a in 0..items.len() {
+            for b in (a + 1)..items.len() {
+                let (ax, ay) = p.positions[a];
+                let (bx, by) = p.positions[b];
+                let overlap_x = ax < bx + items[b].w && bx < ax + items[a].w;
+                let overlap_y = ay < by + items[b].h && by < ay + items[a].h;
+                assert!(
+                    !(overlap_x && overlap_y),
+                    "items {a} at {:?} and {b} at {:?} overlap (box {:?})",
+                    p.positions[a],
+                    p.positions[b],
+                    items[a]
+                );
+            }
+        }
     }
 
     #[test]

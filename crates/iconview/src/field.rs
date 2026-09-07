@@ -684,7 +684,9 @@ impl IconField {
 
     /// The item index under `Fixed`-space point (`x`, `y`), if any.
     fn item_at(&self, x: f64, y: f64) -> Option<usize> {
-        for (i, &(ix, iy, iw, ih)) in self.inner.item_rects.borrow().iter().enumerate() {
+        // Scan back to front: when rectangles overlap (dragged-together icons
+        // in Free mode), the last-placed one is drawn on top and wins the hit.
+        for (i, &(ix, iy, iw, ih)) in self.inner.item_rects.borrow().iter().enumerate().rev() {
             if x >= ix && x < ix + iw && y >= iy && y < iy + ih {
                 return Some(i);
             }
