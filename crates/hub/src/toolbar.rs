@@ -19,10 +19,6 @@ use std::sync::mpsc::Sender;
 /// desktop window itself fills the whole monitor.
 const TOOLBAR_HEIGHT: i32 = 42;
 
-/// Background colour of the desktop area. Kept as a constant here so it can
-/// move into the settings model later without touching the layout code.
-const DESKTOP_BG: &str = "#2e3436";
-
 /// Foreground colour of the centred desktop placeholder label.
 const DESKTOP_FG: &str = "#d3d7cf";
 
@@ -99,7 +95,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         .map(crate::desktop::monitor_geometry)
         .unwrap_or((1280, 800));
 
-    install_desktop_css();
+    let desktop_settings = opusdm_hub::desktop_settings::load();
+    install_desktop_css(&desktop_settings.background);
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -173,6 +170,10 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
 
     let desktop_dir = opusdm_hub::desktop_files::desktop_dir();
     let (desktop_area, desktop_field) = build_desktop_area(desktop_dir.as_deref());
+    if let Some(f) = &desktop_field {
+        f.set_icon_size(desktop_settings.icon_size);
+        f.set_grid_spacing(desktop_settings.grid_spacing);
+    }
     root.append(&desktop_area);
 
     window.set_child(Some(&root));
@@ -276,20 +277,28 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     window.present();
 }
 
-/// Register the CSS that paints the desktop background and placeholder. Runs
-/// once per process; a second call just replaces the same provider.
-fn install_desktop_css() {
+/// The full desktop stylesheet: the `.opusdm-desktop` background rule built
+/// from `bg`, plus the fixed placeholder-label and context-menu rules.
+fn desktop_rule_css(bg: &opusdm_ipc::Background) -> String {
+    format!(
+        ".opusdm-desktop {{ {bgdecl} }}\n\
+         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}\n\
+         .opusdm-desktop-menu {{ background-color: {DESKTOP_MENU_BG}; color: {DESKTOP_FG}; \
+             border: 1px solid {DESKTOP_MENU_BORDER}; border-radius: 4px; padding: 4px; }}\n\
+         .opusdm-desktop-menu button {{ padding: 4px 12px; }}",
+        bgdecl = opusdm_ipc::background_css(bg),
+    )
+}
+
+/// Install (or replace) the desktop stylesheet for `bg`. Safe to call
+/// repeatedly - each call adds a fresh provider at APPLICATION priority,
+/// which overrides earlier ones.
+fn install_desktop_css(bg: &opusdm_ipc::Background) {
     let Some(display) = gtk::gdk::Display::default() else {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(&format!(
-        ".opusdm-desktop {{ background-color: {DESKTOP_BG}; }}\n\
-         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}\n\
-         .opusdm-desktop-menu {{ background-color: {DESKTOP_MENU_BG}; color: {DESKTOP_FG}; \
-             border: 1px solid {DESKTOP_MENU_BORDER}; border-radius: 4px; padding: 4px; }}\n\
-         .opusdm-desktop-menu button {{ padding: 4px 12px; }}"
-    ));
+    provider.load_from_data(&desktop_rule_css(bg));
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
@@ -666,8 +675,13 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 crate::desktop::pin_geometry(&window, w, h);
             });
         }
-        HubEvent::DesktopSettingsChanged(_ds) => {
-            // Applied in Task 8.
+        HubEvent::DesktopSettingsChanged(ds) => {
+            install_desktop_css(&ds.background);
+            if let Some(field) = widgets.desktop_field.borrow().as_ref() {
+                field.set_icon_size(ds.icon_size);
+                field.set_grid_spacing(ds.grid_spacing);
+            }
+            // Desktop-directory changes are handled in Task 9.
         }
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
@@ -992,3 +1006,48 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
     shell.present();
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_rule_css_embeds_the_background_declarations() {
+        let mut bg = opusdm_ipc::Background::default();
+        bg.mode = opusdm_ipc::BackgroundMode::Gradient;
+        bg.gradient_angle = 30;
+        let css = desktop_rule_css(&bg);
+        assert!(css.contains(".opusdm-desktop {"));
+        assert!(css.contains("linear-gradient(30deg,"));
+        assert!(css.contains(".opusdm-desktop-label {")); // other rules kept
+        assert!(css.contains(".opusdm-desktop-menu {"));
+    }
+
+    /// Parse the generated desktop stylesheet with the real GTK CSS parser for
+    /// every background mode. Self-skips when no display is available.
+    #[test]
+    fn desktop_rule_css_parses_without_error() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let provider = gtk::CssProvider::new();
+        let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        {
+            let errors = errors.clone();
+            provider.connect_parsing_error(move |_, section, err| {
+                errors.borrow_mut().push(format!("{section}: {err}"));
+            });
+        }
+        for mode in [
+            opusdm_ipc::BackgroundMode::Solid,
+            opusdm_ipc::BackgroundMode::Gradient,
+            opusdm_ipc::BackgroundMode::Image,
+        ] {
+            let mut bg = opusdm_ipc::Background::default();
+            bg.mode = mode;
+            bg.image_path = Some(std::path::PathBuf::from("/tmp/opusdm-test bg.png"));
+            provider.load_from_data(&desktop_rule_css(&bg));
+            assert!(errors.borrow().is_empty(), "{mode:?}: {:?}", errors.borrow());
+        }
+    }
+}
