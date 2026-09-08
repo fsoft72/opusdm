@@ -101,6 +101,10 @@ pub enum ToHub {
     PresentLister(ListerId),
     /// Answer to a `ToLister::ConflictPrompt`.
     ConflictReply { req_id: u64, resolution: Resolution },
+    /// Sent by `opus-desktop-config` (not a Lister): replace the hub's
+    /// desktop settings. The hub sanitises, persists to
+    /// `~/.config/opusdm/desktop.json`, and applies live. No reply.
+    SetDesktopSettings(crate::desktop::DesktopSettings),
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -324,6 +328,18 @@ mod tests {
         roundtrip_tohub(ToHub::SpawnLister { start_path: Some("/etc".into()) });
         roundtrip_tohub(ToHub::PresentLister(ListerId(5)));
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
+        roundtrip_tohub(ToHub::SetDesktopSettings(crate::desktop::DesktopSettings::default()));
+    }
+
+    #[test]
+    fn set_desktop_settings_carries_the_value() {
+        let mut ds = crate::desktop::DesktopSettings::default();
+        ds.background.mode = crate::desktop::BackgroundMode::Gradient;
+        ds.icon_size = 120;
+        let mut buf = Vec::new();
+        send(&mut buf, &ToHub::SetDesktopSettings(ds.clone())).unwrap();
+        let got: Option<ToHub> = recv(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(got, Some(ToHub::SetDesktopSettings(ds)));
     }
 
     #[test]

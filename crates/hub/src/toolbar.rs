@@ -19,10 +19,6 @@ use std::sync::mpsc::Sender;
 /// desktop window itself fills the whole monitor.
 const TOOLBAR_HEIGHT: i32 = 42;
 
-/// Background colour of the desktop area. Kept as a constant here so it can
-/// move into the settings model later without touching the layout code.
-const DESKTOP_BG: &str = "#2e3436";
-
 /// Foreground colour of the centred desktop placeholder label.
 const DESKTOP_FG: &str = "#d3d7cf";
 
@@ -84,8 +80,9 @@ struct Widgets {
     /// The desktop icon field, shared with the context menu ("rearrange icons").
     /// `None` when there is no desktop directory.
     desktop_field: RefCell<Option<opusdm_iconview::IconField>>,
-    /// The directory the desktop shows, for re-reading on "rearrange icons".
-    desktop_dir: Option<PathBuf>,
+    /// The directory the desktop shows, for re-reading on "rearrange icons"
+    /// and for re-targeting when `DesktopSettings::desktop_dir` changes.
+    desktop_dir: RefCell<Option<PathBuf>>,
 }
 
 struct JobRow {
@@ -99,7 +96,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         .map(crate::desktop::monitor_geometry)
         .unwrap_or((1280, 800));
 
-    install_desktop_css();
+    let desktop_settings = opusdm_hub::desktop_settings::load();
+    install_desktop_css(&desktop_settings.background);
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -171,8 +169,14 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     job_box.set_margin_end(6);
     root.append(&job_box);
 
-    let desktop_dir = opusdm_hub::desktop_files::desktop_dir();
+    let desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
+        desktop_settings.desktop_dir.as_deref(),
+    );
     let (desktop_area, desktop_field) = build_desktop_area(desktop_dir.as_deref());
+    if let Some(f) = &desktop_field {
+        f.set_icon_size(desktop_settings.icon_size);
+        f.set_grid_spacing(desktop_settings.grid_spacing);
+    }
     root.append(&desktop_area);
 
     window.set_child(Some(&root));
@@ -190,7 +194,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         quitting: Cell::new(false),
         desktop_watch: RefCell::new(None),
         desktop_field: RefCell::new(desktop_field.clone()),
-        desktop_dir: desktop_dir.clone(),
+        desktop_dir: RefCell::new(desktop_dir.clone()),
     });
 
     // Click an indicator to raise its Lister.
@@ -216,32 +220,17 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
             });
         }
         {
-            let cmd_tx = cmd_tx.clone();
-            let dir = dir.clone();
+            let widgets = widgets.clone();
             field.connect_drop_uris(move |srcs, _target, shift| {
                 if srcs.is_empty() {
                     return;
                 }
+                let Some(dest_dir) = widgets.desktop_dir.borrow().clone() else { return };
                 let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
-                let _ = cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir: dir.clone() });
+                let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
             });
         }
-        match opusdm_hub::desktop_files::DesktopWatch::start(dir.clone()) {
-            Ok((watch, rx)) => {
-                let field_for_watch = field.clone();
-                let dir_for_watch = dir.clone();
-                glib::spawn_future_local(async move {
-                    while rx.recv().await.is_ok() {
-                        match opusdm_iconview::scan::read_entries(&dir_for_watch, false) {
-                            Ok(entries) => field_for_watch.set_entries(&entries),
-                            Err(e) => eprintln!("opusdm-hub: desktop reload failed: {e}"),
-                        }
-                    }
-                });
-                *widgets.desktop_watch.borrow_mut() = Some(watch);
-            }
-            Err(e) => eprintln!("opusdm-hub: desktop watch unavailable: {e}"),
-        }
+        spawn_desktop_watch(&widgets, &field, &dir);
     }
 
     // Settings button: open settings dialog.
@@ -276,25 +265,82 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     window.present();
 }
 
-/// Register the CSS that paints the desktop background and placeholder. Runs
-/// once per process; a second call just replaces the same provider.
-fn install_desktop_css() {
+/// The full desktop stylesheet: the `.opusdm-desktop` background rule built
+/// from `bg`, plus the fixed placeholder-label and context-menu rules.
+fn desktop_rule_css(bg: &opusdm_ipc::Background) -> String {
+    format!(
+        ".opusdm-desktop {{ {bgdecl} }}\n\
+         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}\n\
+         .opusdm-desktop-menu {{ background-color: {DESKTOP_MENU_BG}; color: {DESKTOP_FG}; \
+             border: 1px solid {DESKTOP_MENU_BORDER}; border-radius: 4px; padding: 4px; }}\n\
+         .opusdm-desktop-menu button {{ padding: 4px 12px; }}",
+        bgdecl = opusdm_ipc::background_css(bg),
+    )
+}
+
+/// Install (or replace) the desktop stylesheet for `bg`. Safe to call
+/// repeatedly - each call adds a fresh provider at APPLICATION priority,
+/// which overrides earlier ones.
+fn install_desktop_css(bg: &opusdm_ipc::Background) {
     let Some(display) = gtk::gdk::Display::default() else {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(&format!(
-        ".opusdm-desktop {{ background-color: {DESKTOP_BG}; }}\n\
-         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}\n\
-         .opusdm-desktop-menu {{ background-color: {DESKTOP_MENU_BG}; color: {DESKTOP_FG}; \
-             border: 1px solid {DESKTOP_MENU_BORDER}; border-radius: 4px; padding: 4px; }}\n\
-         .opusdm-desktop-menu button {{ padding: 4px 12px; }}"
-    ));
+    provider.load_from_data(&desktop_rule_css(bg));
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Start (or restart) the inotify watch on `dir` and the local future that
+/// reloads the desktop icon field when the directory changes. Replaces any
+/// previous watch stored in `widgets.desktop_watch`.
+fn spawn_desktop_watch(
+    widgets: &Rc<Widgets>,
+    field: &opusdm_iconview::IconField,
+    dir: &Path,
+) {
+    // Drop the old watch first so its thread exits before we start another.
+    *widgets.desktop_watch.borrow_mut() = None;
+    match opusdm_hub::desktop_files::DesktopWatch::start(dir.to_path_buf()) {
+        Ok((watch, rx)) => {
+            let field = field.clone();
+            let dir = dir.to_path_buf();
+            glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    match opusdm_iconview::scan::read_entries(&dir, false) {
+                        Ok(entries) => field.set_entries(&entries),
+                        Err(e) => eprintln!("opusdm-hub: desktop reload failed: {e}"),
+                    }
+                }
+            });
+            *widgets.desktop_watch.borrow_mut() = Some(watch);
+        }
+        Err(e) => eprintln!("opusdm-hub: desktop watch unavailable: {e}"),
+    }
+}
+
+/// Resolve the `opus-desktop-config` binary: preferably a sibling of the
+/// running hub executable (so a `cargo run` / installed pair stay together),
+/// otherwise the bare name for a `PATH` lookup.
+fn desktop_config_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("opus-desktop-config");
+        }
+    }
+    PathBuf::from("opus-desktop-config")
+}
+
+/// Spawn the desktop configuration app, detached. Errors are logged and
+/// otherwise ignored - a missing binary must not take down the hub.
+fn launch_desktop_config() {
+    let bin = desktop_config_bin();
+    if let Err(e) = std::process::Command::new(&bin).spawn() {
+        eprintln!("opusdm-hub: cannot launch {}: {e}", bin.display());
+    }
 }
 
 /// Build the desktop area that fills the window below the toolbar, wrapped in
@@ -473,7 +519,8 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
                 let field = widgets.desktop_field.borrow().clone();
-                let (Some(field), Some(dir)) = (field, widgets.desktop_dir.clone()) else {
+                let dir = widgets.desktop_dir.borrow().clone();
+                let (Some(field), Some(dir)) = (field, dir) else {
                     return;
                 };
                 match opusdm_iconview::scan::read_entries(&dir, false) {
@@ -487,12 +534,13 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             sub.append(&btn);
         }
 
-        // Settings: desktop settings dialog, not implemented yet.
+        // Settings: launch the standalone opus-desktop-config app.
         {
             let menu_ref = menu.clone();
             let btn = menu_button("Settings");
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
+                launch_desktop_config();
             });
             sub.append(&btn);
         }
@@ -665,6 +713,31 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
                 crate::desktop::pin_geometry(&window, w, h);
             });
+        }
+        HubEvent::DesktopSettingsChanged(ds) => {
+            install_desktop_css(&ds.background);
+            let field = widgets.desktop_field.borrow().clone();
+            if let Some(field) = field.as_ref() {
+                field.set_icon_size(ds.icon_size);
+                field.set_grid_spacing(ds.grid_spacing);
+            }
+
+            let wanted =
+                opusdm_hub::desktop_files::effective_desktop_dir(ds.desktop_dir.as_deref());
+            if *widgets.desktop_dir.borrow() != wanted {
+                *widgets.desktop_dir.borrow_mut() = wanted.clone();
+                // A desktop that started with no directory has no icon field to
+                // populate; that only comes back on the next hub start.
+                if let (Some(field), Some(dir)) = (field.as_ref(), wanted.as_ref()) {
+                    match opusdm_iconview::scan::read_entries(dir, false) {
+                        Ok(entries) => field.set_entries(&entries),
+                        Err(e) => {
+                            eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display())
+                        }
+                    }
+                    spawn_desktop_watch(widgets, field, dir);
+                }
+            }
         }
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
@@ -989,3 +1062,57 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
     shell.present();
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_config_bin_is_named_correctly_and_absolute_when_possible() {
+        let p = desktop_config_bin();
+        assert_eq!(p.file_name().and_then(|s| s.to_str()), Some("opus-desktop-config"));
+        if std::env::current_exe().is_ok() {
+            assert!(p.is_absolute());
+        }
+    }
+
+    #[test]
+    fn desktop_rule_css_embeds_the_background_declarations() {
+        let mut bg = opusdm_ipc::Background::default();
+        bg.mode = opusdm_ipc::BackgroundMode::Gradient;
+        bg.gradient_angle = 30;
+        let css = desktop_rule_css(&bg);
+        assert!(css.contains(".opusdm-desktop {"));
+        assert!(css.contains("linear-gradient(30deg,"));
+        assert!(css.contains(".opusdm-desktop-label {")); // other rules kept
+        assert!(css.contains(".opusdm-desktop-menu {"));
+    }
+
+    /// Parse the generated desktop stylesheet with the real GTK CSS parser for
+    /// every background mode. Self-skips when no display is available.
+    #[test]
+    fn desktop_rule_css_parses_without_error() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let provider = gtk::CssProvider::new();
+        let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        {
+            let errors = errors.clone();
+            provider.connect_parsing_error(move |_, section, err| {
+                errors.borrow_mut().push(format!("{section}: {err}"));
+            });
+        }
+        for mode in [
+            opusdm_ipc::BackgroundMode::Solid,
+            opusdm_ipc::BackgroundMode::Gradient,
+            opusdm_ipc::BackgroundMode::Image,
+        ] {
+            let mut bg = opusdm_ipc::Background::default();
+            bg.mode = mode;
+            bg.image_path = Some(std::path::PathBuf::from("/tmp/opusdm-test bg.png"));
+            provider.load_from_data(&desktop_rule_css(&bg));
+            assert!(errors.borrow().is_empty(), "{mode:?}: {:?}", errors.borrow());
+        }
+    }
+}

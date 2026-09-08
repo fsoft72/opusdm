@@ -5,9 +5,10 @@
 use crate::jobs::{default_runner, map_progress, validate_job, JobEngine, ProgressTotals};
 use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
 use crate::settings;
+use crate::desktop_settings;
 use opusdm_fsops::Progress;
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::{ListerId, Op, Outcome, Resolution, ToHub, ToLister};
+use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister};
 use std::collections::{BTreeSet, HashMap};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -37,6 +38,9 @@ pub enum HubEvent {
     AllListersGone,
     /// A redundant hub invocation asked us to raise the toolbar.
     RaiseToolbar,
+    /// Desktop settings changed (from `opus-desktop-config`). Carries the
+    /// sanitised value; the GTK side repaints and re-lays the desktop.
+    DesktopSettingsChanged(DesktopSettings),
 }
 
 /// Commands the GTK toolbar (or the SIGCHLD handler) sends to the server.
@@ -152,6 +156,13 @@ fn owner_loop(
     // Loaded once at startup; kept in memory and updated in place by
     // HubCmd::UpdateColors. Never re-read from disk after this.
     let mut current_settings = settings::load_settings();
+    // Same lifecycle for desktop settings; updated in place by
+    // ToHub::SetDesktopSettings and pushed to the GTK side.
+    let mut current_desktop = desktop_settings::load();
+    eprintln!(
+        "opusdm-hub: desktop settings loaded (background mode {:?})",
+        current_desktop.background.mode
+    );
 
     let (jp_tx, jp_rx) = channel::<(u64, Progress)>();
     {
@@ -203,6 +214,14 @@ fn owner_loop(
 
             OwnerMsg::FromLister(_cid, ToHub::RaiseToolbar) => {
                 let _ = evt_tx.send(HubEvent::RaiseToolbar);
+            }
+
+            OwnerMsg::FromLister(_cid, ToHub::SetDesktopSettings(ds)) => {
+                current_desktop = ds.sanitized();
+                if let Err(e) = desktop_settings::save(&current_desktop) {
+                    eprintln!("opusdm-hub: cannot save desktop.json: {e}");
+                }
+                let _ = evt_tx.send(HubEvent::DesktopSettingsChanged(current_desktop.clone()));
             }
 
             OwnerMsg::FromLister(cid, ToHub::Register { pid, initial_path }) => {
@@ -664,6 +683,36 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn set_desktop_settings_emits_a_changed_event() {
+        // Keep desktop.json out of the developer's real config dir.
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut c = connect(&path);
+        let mut ds = DesktopSettings::default();
+        ds.icon_size = 5; // below ICON_SIZE_RANGE.0, hub must clamp
+        ds.background.mode = opusdm_ipc::BackgroundMode::Gradient;
+        send(&mut c, &ToHub::SetDesktopSettings(ds)).unwrap();
+
+        let mut got = None;
+        while let Ok(ev) = handle.evt_rx.recv_timeout(Duration::from_millis(500)) {
+            if let HubEvent::DesktopSettingsChanged(d) = ev {
+                got = Some(d);
+                break;
+            }
+        }
+        let got = got.expect("DesktopSettingsChanged not emitted");
+        assert_eq!(got.background.mode, opusdm_ipc::BackgroundMode::Gradient);
+        assert_eq!(got.icon_size, opusdm_ipc::ICON_SIZE_RANGE.0);
+
+        // desktop.json landed under the temp config dir.
+        assert!(cfg.path().join("opusdm").join("desktop.json").exists());
     }
 
     #[test]

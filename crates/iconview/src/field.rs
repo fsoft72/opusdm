@@ -21,6 +21,9 @@ struct Inner {
     entries: RefCell<Vec<IconEntry>>,
     mode: Cell<LayoutMode>,
     icon_size: Cell<i32>,
+    /// Auto-slot grid pitch for `FreeArrange`, in pixels. Ignored in `Grid`
+    /// mode. Default matches `FreeArrange::new`'s `cell`.
+    grid_spacing: Cell<i32>,
     arrange: RefCell<Box<dyn Arrange>>,
     free_positions: RefCell<HashMap<usize, (f64, f64)>>,
     /// Last laid-out rectangle per item: (x, y, w, h) in the `Fixed`'s space.
@@ -71,6 +74,7 @@ impl IconField {
             entries: RefCell::new(Vec::new()),
             mode: Cell::new(LayoutMode::Grid),
             icon_size: Cell::new(64),
+            grid_spacing: Cell::new(96),
             arrange: RefCell::new(Box::new(GridArrange::new())),
             free_positions: RefCell::new(HashMap::new()),
             item_rects: RefCell::new(Vec::new()),
@@ -393,6 +397,17 @@ impl IconField {
     /// Switch arrangement strategy.
     pub fn set_mode(&self, mode: LayoutMode) {
         self.inner.mode.set(mode);
+        self.rebuild_arranger();
+        self.relayout();
+    }
+
+    /// Set the desktop auto-slot grid pitch in pixels. Takes effect in
+    /// `Free` mode; harmless in `Grid` mode.
+    pub fn set_grid_spacing(&self, px: i32) {
+        if self.inner.grid_spacing.get() == px {
+            return;
+        }
+        self.inner.grid_spacing.set(px);
         self.rebuild_arranger();
         self.relayout();
     }
@@ -750,6 +765,7 @@ impl IconField {
             LayoutMode::Free => {
                 let mut fa = FreeArrange::new();
                 fa.known = self.inner.free_positions.borrow().clone();
+                fa.cell = self.inner.grid_spacing.get() as f64;
                 Box::new(fa)
             }
         };
@@ -1013,5 +1029,21 @@ mod tests {
         fd.end_reposition(50.0, 30.0);
         let moved = fd.free_positions();
         assert_eq!(moved.get(&0).copied(), Some((start.0 + 50.0, start.1 + 30.0)));
+
+        // --- IconField: set_grid_spacing changes the Free auto-slot pitch ---
+        // The headless scroller reports no width, so the auto-slot grid is a
+        // single column: a larger `grid_spacing` shows up as a taller row
+        // pitch, i.e. item 1 sits further down.
+        let fs = IconField::new();
+        fs.set_mode(LayoutMode::Free);
+        fs.set_icon_size(48);
+        fs.set_entries(&entries(4));
+        fs.set_grid_spacing(280);
+        fs.relayout();
+        let wide_y = fs.inner.item_rects.borrow()[1].1;
+        fs.set_grid_spacing(96);
+        fs.relayout();
+        let narrow_y = fs.inner.item_rects.borrow()[1].1;
+        assert!(wide_y > narrow_y, "row pitch should track grid spacing ({wide_y} vs {narrow_y})");
     }
 }

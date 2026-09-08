@@ -738,7 +738,7 @@ impl Ui {
         let mut total_bytes = 0u64;
         let mut new_items = Vec::new();
         for row in rows {
-            if row.name == opusdm_iconview::scan::LAYOUT_FILE {
+            if row.name == opusdm_iconview::scan::OPUSDM_DIR {
                 continue;
             }
             if !show_hidden && row.name.starts_with('.') {

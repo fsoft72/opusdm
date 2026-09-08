@@ -4,10 +4,20 @@ use crate::types::{IconEntry, IconKind};
 use std::io;
 use std::path::Path;
 
-/// The per-directory layout file, always excluded from the listing.
-pub const LAYOUT_FILE: &str = ".opusdm-layout";
+/// The per-folder directory holding OpusDM state scoped to that folder
+/// (icon layout today, room for more later). Always excluded from a listing.
+pub const OPUSDM_DIR: &str = ".opusdm";
 
-/// Read `dir` into entries. `.` and `..` are skipped, so is `LAYOUT_FILE`, and
+/// File name, inside [`OPUSDM_DIR`], that stores desktop icon positions.
+pub const LAYOUT_BASENAME: &str = "layout";
+
+/// Absolute path to `dir`'s icon-layout file: `<dir>/.opusdm/layout`. The
+/// writer must `create_dir_all` the parent first.
+pub fn layout_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(OPUSDM_DIR).join(LAYOUT_BASENAME)
+}
+
+/// Read `dir` into entries. `.` and `..` are skipped, so is the `.opusdm` dir, and
 /// dotfiles unless `show_hidden`. A symlink's kind is `IconKind::Symlink` when
 /// its target resolves and `IconKind::Broken` when it dangles.
 pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>> {
@@ -23,7 +33,7 @@ pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>>
             }
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == LAYOUT_FILE {
+        if name == OPUSDM_DIR {
             continue;
         }
         if !show_hidden && name.starts_with('.') {
@@ -75,7 +85,8 @@ mod tests {
         fs::create_dir(base.join("adir")).unwrap();
         fs::write(base.join("afile.txt"), b"12345").unwrap();
         fs::write(base.join(".hidden"), b"x").unwrap();
-        fs::write(base.join(LAYOUT_FILE), b"{}").unwrap();
+        fs::create_dir(base.join(OPUSDM_DIR)).unwrap();
+        fs::write(base.join(OPUSDM_DIR).join(LAYOUT_BASENAME), b"{}").unwrap();
         std::os::unix::fs::symlink("afile.txt", base.join("good_link")).unwrap();
         std::os::unix::fs::symlink("nope", base.join("bad_link")).unwrap();
 
@@ -93,7 +104,23 @@ mod tests {
 
         let with_hidden = read_entries(base, true).unwrap();
         assert!(with_hidden.iter().any(|e| e.name == ".hidden"));
-        assert!(!with_hidden.iter().any(|e| e.name == LAYOUT_FILE));
+        assert!(!with_hidden.iter().any(|e| e.name == OPUSDM_DIR));
+    }
+
+    #[test]
+    fn layout_path_lives_under_the_per_folder_opusdm_dir() {
+        let p = layout_path(Path::new("/tmp/desk"));
+        assert_eq!(p, Path::new("/tmp/desk/.opusdm/layout"));
+    }
+
+    #[test]
+    fn opusdm_dir_is_hidden_even_with_show_hidden() {
+        let td = tempfile::tempdir().unwrap();
+        fs::create_dir(td.path().join(OPUSDM_DIR)).unwrap();
+        fs::write(td.path().join(".other"), b"x").unwrap();
+        let got = read_entries(td.path(), true).unwrap();
+        assert!(got.iter().any(|e| e.name == ".other"));
+        assert!(!got.iter().any(|e| e.name == OPUSDM_DIR));
     }
 
     #[test]

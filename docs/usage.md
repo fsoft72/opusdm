@@ -178,6 +178,22 @@ Settings live in `~/.config/opusdm/settings.json` and are pushed to every open L
 you press Save. A settings file written by an older build still loads: missing keys fall back to
 their defaults.
 
+### 3.12 Desktop Configuration
+Right-click the desktop and pick **Desktop -> Settings** to open **opus-desktop-config**, a small
+standalone window with three sections:
+- **Background**: choose **Solid colour**, **Gradient** (two colours plus an angle in degrees), or
+  **Image** (pick a file, then a fit mode - `Fill`, `Fit`, `Center`, `Tile`). An image that cannot
+  be read falls back to the solid colour and the window shows a warning.
+- **Icon grid**: the icon size and the grid spacing, each with `S` / `M` / `L` preset buttons and a
+  free spin box.
+- **Desktop folder**: override which directory the desktop shows. Empty means the default
+  (`$XDG_DESKTOP_DIR`, then `~/Desktop`). **Reset to default** clears the override.
+
+**Apply** sends the change to the running hub, which repaints the desktop immediately; **Save** does
+the same and closes. When no hub is running the settings are written to
+`~/.config/opusdm/desktop.json` and take effect the next time the hub starts. Per-folder desktop
+state (icon layout) lives in a `.opusdm/` directory inside the folder.
+
 ---
 
 ## 4. Keyboard Shortcuts Reference
