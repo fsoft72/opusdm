@@ -666,6 +666,9 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 crate::desktop::pin_geometry(&window, w, h);
             });
         }
+        HubEvent::DesktopSettingsChanged(_ds) => {
+            // Applied in Task 8.
+        }
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
         | HubEvent::AllListersGone => {}
