@@ -65,6 +65,18 @@ fn parse_xdg_desktop(file: &Path, home: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The directory to show as the desktop. A readable directory passed as
+/// `override_dir` wins; otherwise fall back to [`desktop_dir`]'s
+/// `$XDG_DESKTOP_DIR` then `~/Desktop` resolution.
+pub fn effective_desktop_dir(override_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = override_dir {
+        if p.is_dir() {
+            return Some(p.to_path_buf());
+        }
+    }
+    desktop_dir()
+}
+
 /// Real-environment resolution: `$XDG_DESKTOP_DIR` then `~/Desktop`.
 pub fn desktop_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
@@ -189,5 +201,19 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let (w, _rx) = DesktopWatch::start(td.path().to_path_buf()).unwrap();
         drop(w);
+    }
+
+    #[test]
+    fn effective_desktop_dir_prefers_a_valid_override() {
+        let td = tempfile::tempdir().unwrap();
+        let over = td.path().join("MyDesk");
+        fs::create_dir(&over).unwrap();
+        assert_eq!(effective_desktop_dir(Some(&over)), Some(over));
+    }
+
+    #[test]
+    fn effective_desktop_dir_ignores_a_missing_override() {
+        let missing = Path::new("/no/such/dir/opusdm-test");
+        assert_ne!(effective_desktop_dir(Some(missing)), Some(missing.to_path_buf()));
     }
 }

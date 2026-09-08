@@ -80,8 +80,9 @@ struct Widgets {
     /// The desktop icon field, shared with the context menu ("rearrange icons").
     /// `None` when there is no desktop directory.
     desktop_field: RefCell<Option<opusdm_iconview::IconField>>,
-    /// The directory the desktop shows, for re-reading on "rearrange icons".
-    desktop_dir: Option<PathBuf>,
+    /// The directory the desktop shows, for re-reading on "rearrange icons"
+    /// and for re-targeting when `DesktopSettings::desktop_dir` changes.
+    desktop_dir: RefCell<Option<PathBuf>>,
 }
 
 struct JobRow {
@@ -168,7 +169,9 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     job_box.set_margin_end(6);
     root.append(&job_box);
 
-    let desktop_dir = opusdm_hub::desktop_files::desktop_dir();
+    let desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
+        desktop_settings.desktop_dir.as_deref(),
+    );
     let (desktop_area, desktop_field) = build_desktop_area(desktop_dir.as_deref());
     if let Some(f) = &desktop_field {
         f.set_icon_size(desktop_settings.icon_size);
@@ -191,7 +194,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         quitting: Cell::new(false),
         desktop_watch: RefCell::new(None),
         desktop_field: RefCell::new(desktop_field.clone()),
-        desktop_dir: desktop_dir.clone(),
+        desktop_dir: RefCell::new(desktop_dir.clone()),
     });
 
     // Click an indicator to raise its Lister.
@@ -217,32 +220,17 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
             });
         }
         {
-            let cmd_tx = cmd_tx.clone();
-            let dir = dir.clone();
+            let widgets = widgets.clone();
             field.connect_drop_uris(move |srcs, _target, shift| {
                 if srcs.is_empty() {
                     return;
                 }
+                let Some(dest_dir) = widgets.desktop_dir.borrow().clone() else { return };
                 let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
-                let _ = cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir: dir.clone() });
+                let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
             });
         }
-        match opusdm_hub::desktop_files::DesktopWatch::start(dir.clone()) {
-            Ok((watch, rx)) => {
-                let field_for_watch = field.clone();
-                let dir_for_watch = dir.clone();
-                glib::spawn_future_local(async move {
-                    while rx.recv().await.is_ok() {
-                        match opusdm_iconview::scan::read_entries(&dir_for_watch, false) {
-                            Ok(entries) => field_for_watch.set_entries(&entries),
-                            Err(e) => eprintln!("opusdm-hub: desktop reload failed: {e}"),
-                        }
-                    }
-                });
-                *widgets.desktop_watch.borrow_mut() = Some(watch);
-            }
-            Err(e) => eprintln!("opusdm-hub: desktop watch unavailable: {e}"),
-        }
+        spawn_desktop_watch(&widgets, &field, &dir);
     }
 
     // Settings button: open settings dialog.
@@ -304,6 +292,34 @@ fn install_desktop_css(bg: &opusdm_ipc::Background) {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Start (or restart) the inotify watch on `dir` and the local future that
+/// reloads the desktop icon field when the directory changes. Replaces any
+/// previous watch stored in `widgets.desktop_watch`.
+fn spawn_desktop_watch(
+    widgets: &Rc<Widgets>,
+    field: &opusdm_iconview::IconField,
+    dir: &Path,
+) {
+    // Drop the old watch first so its thread exits before we start another.
+    *widgets.desktop_watch.borrow_mut() = None;
+    match opusdm_hub::desktop_files::DesktopWatch::start(dir.to_path_buf()) {
+        Ok((watch, rx)) => {
+            let field = field.clone();
+            let dir = dir.to_path_buf();
+            glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    match opusdm_iconview::scan::read_entries(&dir, false) {
+                        Ok(entries) => field.set_entries(&entries),
+                        Err(e) => eprintln!("opusdm-hub: desktop reload failed: {e}"),
+                    }
+                }
+            });
+            *widgets.desktop_watch.borrow_mut() = Some(watch);
+        }
+        Err(e) => eprintln!("opusdm-hub: desktop watch unavailable: {e}"),
+    }
 }
 
 /// Build the desktop area that fills the window below the toolbar, wrapped in
@@ -482,7 +498,8 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
                 let field = widgets.desktop_field.borrow().clone();
-                let (Some(field), Some(dir)) = (field, widgets.desktop_dir.clone()) else {
+                let dir = widgets.desktop_dir.borrow().clone();
+                let (Some(field), Some(dir)) = (field, dir) else {
                     return;
                 };
                 match opusdm_iconview::scan::read_entries(&dir, false) {
@@ -677,11 +694,28 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
         }
         HubEvent::DesktopSettingsChanged(ds) => {
             install_desktop_css(&ds.background);
-            if let Some(field) = widgets.desktop_field.borrow().as_ref() {
+            let field = widgets.desktop_field.borrow().clone();
+            if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);
                 field.set_grid_spacing(ds.grid_spacing);
             }
-            // Desktop-directory changes are handled in Task 9.
+
+            let wanted =
+                opusdm_hub::desktop_files::effective_desktop_dir(ds.desktop_dir.as_deref());
+            if *widgets.desktop_dir.borrow() != wanted {
+                *widgets.desktop_dir.borrow_mut() = wanted.clone();
+                // A desktop that started with no directory has no icon field to
+                // populate; that only comes back on the next hub start.
+                if let (Some(field), Some(dir)) = (field.as_ref(), wanted.as_ref()) {
+                    match opusdm_iconview::scan::read_entries(dir, false) {
+                        Ok(entries) => field.set_entries(&entries),
+                        Err(e) => {
+                            eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display())
+                        }
+                    }
+                    spawn_desktop_watch(widgets, field, dir);
+                }
+            }
         }
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
