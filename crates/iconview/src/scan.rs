@@ -20,6 +20,9 @@ pub fn layout_path(dir: &Path) -> std::path::PathBuf {
 /// Read `dir` into entries. `.` and `..` are skipped, so is the `.opusdm` dir, and
 /// dotfiles unless `show_hidden`. A symlink's kind is `IconKind::Symlink` when
 /// its target resolves and `IconKind::Broken` when it dangles.
+///
+/// The result is sorted for a tidy grid: directories first, then files, each
+/// block by name case-insensitively (see [`sort_dirs_first`]).
 pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>> {
     use std::os::unix::fs::MetadataExt;
 
@@ -58,6 +61,7 @@ pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>>
         let ext = if kind == IconKind::Dir { None } else { IconEntry::ext_of(&name) };
         out.push(IconEntry { name, path: entry.path(), kind, mode, ext });
     }
+    sort_dirs_first(&mut out);
     Ok(out)
 }
 
@@ -105,6 +109,21 @@ mod tests {
         let with_hidden = read_entries(base, true).unwrap();
         assert!(with_hidden.iter().any(|e| e.name == ".hidden"));
         assert!(!with_hidden.iter().any(|e| e.name == OPUSDM_DIR));
+    }
+
+    #[test]
+    fn read_entries_returns_dirs_first_then_files_by_name() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        for d in ["zeta", "Alpha"] {
+            fs::create_dir(base.join(d)).unwrap();
+        }
+        for f in ["yankee.txt", "Bravo.md"] {
+            fs::write(base.join(f), b"x").unwrap();
+        }
+        let got = read_entries(base, false).unwrap();
+        let names: Vec<&str> = got.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "zeta", "Bravo.md", "yankee.txt"]);
     }
 
     #[test]

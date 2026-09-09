@@ -462,10 +462,7 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
                     return;
                 };
                 match opusdm_iconview::scan::read_entries(&dir, false) {
-                    Ok(mut entries) => {
-                        opusdm_iconview::scan::sort_dirs_first(&mut entries);
-                        field.set_entries(&entries);
-                    }
+                    Ok(entries) => field.set_entries(&entries),
                     Err(e) => eprintln!("opusdm-hub: rearrange failed: {e}"),
                 }
             });
