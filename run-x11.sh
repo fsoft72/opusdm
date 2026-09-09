@@ -5,19 +5,25 @@
 # sandbox for testing OpusDM without touching the real session.
 #
 # Usage:
-#   ./xephyr-sandbox.sh [--debug] [display] [resolution]
+#   ./xephyr-sandbox.sh [--debug] [--grid-debug] [display] [resolution]
 #
 # Examples:
 #   ./xephyr-sandbox.sh              # :1 at 1280x800
 #   ./xephyr-sandbox.sh :2 1920x1080
 #   ./xephyr-sandbox.sh --debug      # lister debug log in /ramdisk/opusdm.log
+#   ./xephyr-sandbox.sh --grid-debug # red box around every icon-view item
 
 set -euo pipefail
 
 DEBUG=0
+GRID_DEBUG=0
 ARGS=()
 for a in "$@"; do
-    if [ "$a" = "--debug" ]; then DEBUG=1; else ARGS+=("$a"); fi
+    case "$a" in
+        --debug) DEBUG=1 ;;
+        --grid-debug) GRID_DEBUG=1 ;;
+        *) ARGS+=("$a") ;;
+    esac
 done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 
@@ -100,6 +106,11 @@ fi
 echo "Starting opusdm-hub"
 # Give the hub its own runtime dir so a stale socket never blocks the sandbox
 export XDG_RUNTIME_DIR="$(mktemp -d /tmp/opusdm-xephyr-XXXXXX)"
+# Draw a red box around every icon-view item (hub desktop and every Lister)
+if [ "$GRID_DEBUG" = "1" ]; then
+    echo "Grid debug overlay: on"
+    export GRID_DEBUG=1
+fi
 if [ "$DEBUG" = "1" ]; then
     LOG=/ramdisk/opusdm.log
     echo "Debug log: $LOG"
