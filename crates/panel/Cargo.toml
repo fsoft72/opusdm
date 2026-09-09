@@ -1,0 +1,21 @@
+[package]
+name = "opusdm-panel"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_panel"
+path = "src/lib.rs"
+
+[dependencies]
+opusdm-ui = { path = "../ui" }
+gtk4.workspace = true
+gdk4-x11.workspace = true
+x11rb.workspace = true
+async-channel.workspace = true
+freedesktop-desktop-entry.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
