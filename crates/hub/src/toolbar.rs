@@ -303,6 +303,10 @@ fn build_desktop_area(
             }
             f.widget().set_hexpand(true);
             f.widget().set_vexpand(true);
+            // Keep the icon area clear of the panel dock: the background box
+            // still fills the whole monitor, but the first row of icons must
+            // start below the panel's top strut instead of under it.
+            f.widget().set_margin_top(opusdm_panel::PANEL_HEIGHT);
             bg.append(f.widget());
             Some(f)
         }
