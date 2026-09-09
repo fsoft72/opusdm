@@ -152,36 +152,62 @@ struct State {
     tx_trace: Trace,
 }
 
+/// Trace colours. CPU is one green line; network download ("in") is green,
+/// upload ("out") is blue.
+const CPU_RGB: (f64, f64, f64) = (0.55, 0.79, 0.29);
+const NET_IN_RGB: (f64, f64, f64) = (0.45, 0.82, 0.38);
+const NET_OUT_RGB: (f64, f64, f64) = (0.36, 0.60, 0.90);
+
+/// Build a labelled sparkline "meter": a `DrawingArea` inside an `Overlay`,
+/// with `.opusdm-panel-meter` for the card background. Returns both so the
+/// caller can add its own overlaid labels and drive the drawing.
+fn meter(width: i32) -> (gtk::Overlay, gtk::DrawingArea) {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(width);
+    area.set_content_height(26);
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&area));
+    overlay.add_css_class("opusdm-panel-meter");
+    overlay.set_valign(gtk::Align::Center);
+    (overlay, area)
+}
+
+/// One value label overlaid on a meter, pinned to a top corner.
+fn meter_label(align: gtk::Align, extra_class: Option<&str>) -> gtk::Label {
+    let label = gtk::Label::new(None);
+    label.add_css_class("opusdm-panel-meter-val");
+    if let Some(c) = extra_class {
+        label.add_css_class(c);
+    }
+    label.set_halign(align);
+    label.set_valign(gtk::Align::Start);
+    label.set_margin_start(3);
+    label.set_margin_end(3);
+    label
+}
+
 /// Build the combined CPU + network widget.
 pub fn build() -> gtk::Widget {
-    let root = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     root.set_valign(gtk::Align::Center);
 
     // CPU: the percentage sits inside the sparkline, pinned to the top-right.
-    let cpu_spark = gtk::DrawingArea::new();
-    cpu_spark.set_content_width(56);
-    cpu_spark.set_content_height(24);
-    let cpu_label = gtk::Label::new(Some("--%"));
-    cpu_label.add_css_class("opusdm-panel-cpu-pct");
-    cpu_label.set_halign(gtk::Align::End);
-    cpu_label.set_valign(gtk::Align::Start);
-    cpu_label.set_margin_end(2);
-    let cpu_box = gtk::Overlay::new();
-    cpu_box.set_child(Some(&cpu_spark));
+    let (cpu_box, cpu_spark) = meter(56);
+    let cpu_label = meter_label(gtk::Align::End, None);
+    cpu_label.set_text("--%");
     cpu_box.add_overlay(&cpu_label);
 
-    let net_spark = gtk::DrawingArea::new();
-    net_spark.set_content_width(44);
-    net_spark.set_content_height(24);
-    let net_label = gtk::Label::new(None);
-    net_label.set_markup("<small>\u{2193} --\n\u{2191} --</small>");
-    net_label.set_xalign(0.0);
-    let net_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    net_box.append(&net_spark);
-    net_box.append(&net_label);
+    // Network: two traces (green download, blue upload); the rates sit inside
+    // the graph, download top-left, upload top-right.
+    let (net_box, net_spark) = meter(120);
+    let net_in = meter_label(gtk::Align::Start, Some("opusdm-panel-net-in"));
+    let net_out = meter_label(gtk::Align::End, Some("opusdm-panel-net-out"));
+    net_in.set_text("\u{2193} --");
+    net_out.set_text("\u{2191} --");
+    net_box.add_overlay(&net_in);
+    net_box.add_overlay(&net_out);
 
     root.append(&cpu_box);
-    root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     root.append(&net_box);
 
     let state = Rc::new(RefCell::new(State {
@@ -200,7 +226,7 @@ pub fn build() -> gtk::Widget {
             s.cpu_prev = now;
             s.cpu_trace.push(pct);
             cpu_label.set_text(&format!("{pct:.0}%"));
-            draw_sparkline(&cpu_spark, &[(&s.cpu_trace, (0.55, 0.79, 0.29))], Some(100.0));
+            draw_sparkline(&cpu_spark, &[(&s.cpu_trace, CPU_RGB)], Some(100.0));
         }
 
         let now = parse_net_dev(&read("/proc/net/dev"));
@@ -209,17 +235,11 @@ pub fn build() -> gtk::Widget {
         s.net_prev = now;
         s.rx_trace.push(rx);
         s.tx_trace.push(tx);
-        net_label.set_markup(&format!(
-            "<small>\u{2193} {}\n\u{2191} {}</small>",
-            human_rate(rx),
-            human_rate(tx),
-        ));
+        net_in.set_text(&format!("\u{2193} {}", human_rate(rx)));
+        net_out.set_text(&format!("\u{2191} {}", human_rate(tx)));
         draw_sparkline(
             &net_spark,
-            &[
-                (&s.rx_trace, (0.39, 0.62, 0.85)),
-                (&s.tx_trace, (0.90, 0.55, 0.28)),
-            ],
+            &[(&s.rx_trace, NET_IN_RGB), (&s.tx_trace, NET_OUT_RGB)],
             None,
         );
 

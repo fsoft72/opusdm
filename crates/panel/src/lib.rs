@@ -162,7 +162,10 @@ fn install_css() {
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
          .opusdm-panel-clock-date { font-size: 10px; }\n\
-         .opusdm-panel-cpu-pct { font-size: 10px; text-shadow: 0 1px 2px #000000; }",
+         .opusdm-panel-meter { background-color: #14161a; border-radius: 4px; }\n\
+         .opusdm-panel-meter-val { font-size: 9px; text-shadow: 0 1px 2px #000000; }\n\
+         .opusdm-panel-net-in { color: #74d161; }\n\
+         .opusdm-panel-net-out { color: #5c99e6; }",
     );
     gtk::style_context_add_provider_for_display(
         &display,

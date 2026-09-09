@@ -188,10 +188,11 @@ per-window state change.
 - Sparkline: ring buffer of the last ~60 samples. A `gtk::DrawingArea`
   (~44 px wide) draws a polyline scaled to the window max. CPU: one trace.
   Net: two traces (down, up) in two shades.
-- CPU: the sparkline only, with the percentage (`23%`) overlaid inside it at
-  the top-right (a `gtk::Overlay` of the `DrawingArea` and a small `Label`),
-  no separate text. Net: `[sparkline][text]` with two lines `v 1.2M/s` /
-  `^ 340K/s`.
+- Each meter is a `gtk::Overlay` of a `DrawingArea` over an
+  `.opusdm-panel-meter` card background, with small `Label`s overlaid in the
+  top corners. CPU: one green trace, the percentage (`23%`) top-right. Net:
+  two traces - download green, upload blue - with the download rate top-left
+  and the upload rate top-right, coloured to match their traces.
 
 Pure functions: `cpu_percent(prev: &CpuTimes, now: &CpuTimes) -> f64`,
 `parse_proc_stat(&str) -> CpuTimes`, `parse_net_dev(&str) -> (u64 rx, u64 tx)`,
