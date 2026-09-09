@@ -7,18 +7,36 @@
 
 use gtk4 as gtk;
 use gtk::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
+mod appmenu;
+mod ewmh;
 mod window;
 pub mod widgets;
 
 pub use window::PANEL_HEIGHT;
 
+use ewmh::EwmhEvent;
+use widgets::pager::Pager;
+use widgets::tasklist::Tasklist;
+
 /// Callbacks the panel needs back into the hub for actions it cannot own
 /// itself (the Settings dialog is coupled to the hub command channel).
 pub struct PanelHooks {
     /// Open the hub Settings dialog.
-    pub on_settings: Box<dyn Fn()>,
+    pub on_settings: Box<dyn Fn() + 'static>,
+}
+
+/// The slice of EWMH state the left-hand widgets render from.
+#[derive(Default)]
+struct PanelState {
+    desktop_count: u32,
+    current_desktop: u32,
+    desktop_names: Vec<String>,
+    clients: Vec<ewmh::ClientWin>,
+    active: Option<u32>,
 }
 
 /// Build the panel window on `app`, wire every widget, and return it. The
@@ -53,6 +71,20 @@ pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWind
     bar.add_css_class("opusdm-panel");
     bar.set_height_request(window::PANEL_HEIGHT);
 
+    // Left side: application menu, pager, window list.
+    let pager = Rc::new(Pager::new());
+    let tasklist = Rc::new(Tasklist::new());
+
+    let left = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    left.set_margin_start(6);
+    left.set_hexpand(true);
+    left.append(&appmenu::build(hooks, &win));
+    left.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    left.append(pager.widget());
+    left.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    left.append(tasklist.widget());
+    bar.set_start_widget(Some(&left));
+
     // Right side: CPU, network, clock.
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     right.set_margin_end(8);
@@ -61,11 +93,54 @@ pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWind
     right.append(&widgets::clock::build());
     bar.set_end_widget(Some(&right));
 
-    let _ = &hooks;
-
     win.set_child(Some(&bar));
+
+    // Drain the EWMH observer into the left-hand widgets.
+    let state = Rc::new(RefCell::new(PanelState::default()));
+    let rx = ewmh::spawn();
+    {
+        let (state, pager, tasklist) = (state.clone(), pager.clone(), tasklist.clone());
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(ev) = rx.recv().await {
+                apply_ewmh(&state, &pager, &tasklist, ev);
+            }
+        });
+    }
+
     win.present();
     win
+}
+
+/// Fold one observer snapshot into `state` and repaint whatever it touched.
+fn apply_ewmh(
+    state: &Rc<RefCell<PanelState>>,
+    pager: &Pager,
+    tasklist: &Tasklist,
+    ev: EwmhEvent,
+) {
+    let mut s = state.borrow_mut();
+    match ev {
+        EwmhEvent::Desktops { count, current, names } => {
+            s.desktop_count = count;
+            s.current_desktop = current;
+            s.desktop_names = names;
+            pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
+            tasklist.update(&s.clients, s.current_desktop, s.active);
+        }
+        EwmhEvent::CurrentDesktop(current) => {
+            s.current_desktop = current;
+            pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
+            tasklist.update(&s.clients, s.current_desktop, s.active);
+        }
+        EwmhEvent::Clients(clients) => {
+            s.clients = clients;
+            tasklist.update(&s.clients, s.current_desktop, s.active);
+        }
+        EwmhEvent::ActiveWindow(active) => {
+            s.active = active;
+            tasklist.update(&s.clients, s.current_desktop, s.active);
+        }
+    }
 }
 
 /// The panel stylesheet. Added at APPLICATION priority so it layers over the
@@ -75,7 +150,9 @@ fn install_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(
         ".opusdm-panel { background-color: #2e3436; color: #d3d7cf; }\n\
-         .opusdm-panel button { padding: 2px 8px; }\n\
+         .opusdm-panel button { padding: 2px 8px; min-height: 0; }\n\
+         .opusdm-panel-pager button.active { background-color: #4a90d9; color: #ffffff; }\n\
+         .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
          .opusdm-panel-clock-date { font-size: 10px; }",
     );
