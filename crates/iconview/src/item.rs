@@ -62,12 +62,17 @@ impl IconItem {
         name_label.set_lines(2);
         name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
+        // The entry is added to the stack only while editing (see `start_edit`).
+        // A `gtk::Entry` always requests room for `max_width_chars`, and a
+        // `gtk::Stack` measures the largest of all its children whether shown or
+        // not, so a permanently-parented entry would widen every item to ~130px
+        // regardless of its label. Through `FreeArrange`'s max-of-all-items
+        // pitch that spaces the whole desktop grid out.
         let name_entry = gtk::Entry::new();
         name_entry.set_max_width_chars(14);
 
         let name_stack = gtk::Stack::new();
         name_stack.add_named(&name_label, Some("label"));
-        name_stack.add_named(&name_entry, Some("entry"));
         name_stack.set_visible_child_name("label");
 
         root.append(&icon);
@@ -121,6 +126,10 @@ impl IconItem {
             return;
         }
         self.inner.name_stack.set_visible_child_name("label");
+        // Drop the entry back out of the layout so it stops padding the item.
+        if self.inner.name_stack.child_by_name("entry").is_some() {
+            self.inner.name_stack.remove(&self.inner.name_entry);
+        }
         let Some(text) = new_text else {
             return;
         };
@@ -184,6 +193,10 @@ impl IconItem {
         self.inner.name_entry.set_text(&name);
         let split = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
         self.inner.name_entry.select_region(0, split as i32);
+        // Attach the entry on demand; it lives outside the stack when idle.
+        if self.inner.name_stack.child_by_name("entry").is_none() {
+            self.inner.name_stack.add_named(&self.inner.name_entry, Some("entry"));
+        }
         self.inner.name_stack.set_visible_child_name("entry");
         self.inner.name_entry.grab_focus();
     }

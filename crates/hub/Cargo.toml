@@ -17,6 +17,7 @@ opusdm-ipc = { path = "../ipc" }
 opusdm-ui = { path = "../ui" }
 opusdm-fsops = { path = "../fsops" }
 opusdm-iconview = { path = "../iconview" }
+opusdm-panel = { path = "../panel" }
 async-channel.workspace = true
 signal-hook.workspace = true
 libc.workspace = true

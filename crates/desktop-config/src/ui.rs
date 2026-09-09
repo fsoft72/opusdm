@@ -295,21 +295,25 @@ impl BackgroundSection {
 }
 
 const ICON_PRESETS: [(&str, i32); 3] = [("S", 48), ("M", 64), ("L", 96)];
-const SPACING_PRESETS: [(&str, i32); 3] = [("S", 72), ("M", 96), ("L", 140)];
+const SPACING_PRESETS: [(&str, i32); 3] = [("S", 56), ("M", 96), ("L", 140)];
+const GAP_PRESETS: [(&str, i32); 3] = [("0", 0), ("4", 4), ("12", 12)];
 
-/// The ICON GRID section: two spin buttons (icon size, grid spacing), each
-/// with S/M/L preset buttons that fill the spin value.
+/// The ICON GRID section: three spin buttons (icon size, grid spacing, grid
+/// gap), each with preset buttons that fill the spin value. The pitch of the
+/// desktop grid is `grid spacing + grid gap`, independent of the label widths.
 pub struct GridSection {
     pub root: gtk::Box,
     icon_spin: gtk::SpinButton,
     spacing_spin: gtk::SpinButton,
+    gap_spin: gtk::SpinButton,
 }
 
 impl GridSection {
     /// Build the section seeded from the current values.
-    pub fn new(icon_size: i32, grid_spacing: i32) -> Self {
+    pub fn new(icon_size: i32, grid_spacing: i32, grid_gap: i32) -> Self {
         let (imin, imax) = opusdm_ipc::ICON_SIZE_RANGE;
         let (smin, smax) = opusdm_ipc::GRID_SPACING_RANGE;
+        let (gmin, gmax) = opusdm_ipc::GRID_GAP_RANGE;
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.append(&heading("ICON GRID"));
@@ -322,7 +326,11 @@ impl GridSection {
         spacing_spin.set_value(grid_spacing.clamp(smin, smax) as f64);
         root.append(&preset_row("Grid spacing", &spacing_spin, &SPACING_PRESETS));
 
-        Self { root, icon_spin, spacing_spin }
+        let gap_spin = gtk::SpinButton::with_range(gmin as f64, gmax as f64, 1.0);
+        gap_spin.set_value(grid_gap.clamp(gmin, gmax) as f64);
+        root.append(&preset_row("Grid gap", &gap_spin, &GAP_PRESETS));
+
+        Self { root, icon_spin, spacing_spin, gap_spin }
     }
 
     /// Current icon size in pixels.
@@ -330,9 +338,14 @@ impl GridSection {
         self.icon_spin.value() as i32
     }
 
-    /// Current grid spacing in pixels.
+    /// Current grid spacing (cell size) in pixels.
     pub fn grid_spacing(&self) -> i32 {
         self.spacing_spin.value() as i32
+    }
+
+    /// Current grid gap (space between cells) in pixels.
+    pub fn grid_gap(&self) -> i32 {
+        self.gap_spin.value() as i32
     }
 
     #[cfg(test)]
@@ -442,9 +455,10 @@ mod tests {
         if gtk::init().is_err() {
             return;
         }
-        let s = GridSection::new(64, 96);
+        let s = GridSection::new(64, 96, 4);
         assert_eq!(s.icon_size(), 64);
         assert_eq!(s.grid_spacing(), 96);
+        assert_eq!(s.grid_gap(), 4);
         s.set_icon_size_for_test(120);
         assert_eq!(s.icon_size(), 120);
     }

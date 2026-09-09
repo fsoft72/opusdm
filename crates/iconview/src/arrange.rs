@@ -73,19 +73,30 @@ impl Arrange for GridArrange {
 }
 
 /// Free placement: items with a known (x, y) sit there; the rest fill an
-/// implicit `cell`-sized grid from the top-left, skipping occupied cells.
-/// Used by the hub desktop window.
+/// implicit grid from the top-left, skipping occupied cells. Used by the hub
+/// desktop window.
+///
+/// The slot pitch is `cell.max(min_cell) + gap` on both axes and does **not**
+/// depend on how wide the items measure: one long label must never space out
+/// the whole desktop. Set `cell` below a label's width and neighbouring labels
+/// overlap - that is the caller's explicit trade for a tighter grid.
 #[derive(Debug, Clone)]
 pub struct FreeArrange {
     pub known: HashMap<usize, (f64, f64)>,
+    /// Room each icon gets before `gap`, in pixels (the `grid_spacing` setting).
     pub cell: f64,
+    /// Dead space between cells on both axes, in pixels (the `grid_gap` setting).
+    pub gap: f64,
+    /// Hard floor for `cell`: the icon-box size, so glyphs never physically
+    /// overlap and hit-testing stays unambiguous even at a tiny `cell`.
+    pub min_cell: f64,
     pub margin: f64,
 }
 
 impl FreeArrange {
-    /// Empty layout: every item auto-slots, 96px cells, 24px margin.
+    /// Empty layout: every item auto-slots, 96px cells, 4px gap, 24px margin.
     pub fn new() -> Self {
-        Self { known: HashMap::new(), cell: 96.0, margin: 24.0 }
+        Self { known: HashMap::new(), cell: 96.0, gap: 4.0, min_cell: 0.0, margin: 24.0 }
     }
 }
 
@@ -97,16 +108,11 @@ impl Default for FreeArrange {
 
 impl Arrange for FreeArrange {
     fn place(&self, items: &[ItemBox], viewport_w: f64) -> Placement {
-        /// Space left between auto-slotted items so their boxes never touch.
-        const SLOT_GAP: f64 = 12.0;
-
-        // The auto-slot pitch is the largest item box plus a gap, never below
-        // the base `cell`. A fixed pitch smaller than the items makes them
-        // overlap, which then makes hit-testing pick the wrong icon.
-        let max_w = items.iter().fold(0.0_f64, |m, b| m.max(b.w));
-        let max_h = items.iter().fold(0.0_f64, |m, b| m.max(b.h));
-        let pitch_x = (max_w + SLOT_GAP).max(self.cell);
-        let pitch_y = (max_h + SLOT_GAP).max(self.cell);
+        // Pitch is `cell` (clamped to the glyph floor) plus `gap`, the same on
+        // both axes and independent of the item widths, so a single wide label
+        // cannot stretch the grid. Labels wider than the pitch overlap.
+        let pitch_x = self.cell.max(self.min_cell) + self.gap;
+        let pitch_y = pitch_x;
 
         let cols = ((viewport_w / pitch_x).floor() as i64).max(1);
         // Cells already claimed by known positions (snapped to the slot grid).
@@ -219,7 +225,7 @@ mod tests {
         let mut known = HashMap::new();
         known.insert(0, (240.0, 120.0));
         known.insert(1, (40.0, 40.0));
-        let f = FreeArrange { known, cell: 96.0, margin: 24.0 };
+        let f = FreeArrange { known, cell: 96.0, gap: 4.0, min_cell: 0.0, margin: 24.0 };
         let p = f.place(&boxes(2, 64.0, 80.0), 800.0);
         assert_eq!(p.positions[0], (240.0, 120.0));
         assert_eq!(p.positions[1], (40.0, 40.0));
@@ -240,19 +246,17 @@ mod tests {
     fn unknown_items_skip_cells_taken_by_known_items() {
         let mut known = HashMap::new();
         known.insert(1, (0.0, 0.0)); // item 1 pinned to the first cell
-        let f = FreeArrange { known, cell: 96.0, margin: 24.0 };
+        let f = FreeArrange { known, cell: 96.0, gap: 4.0, min_cell: 0.0, margin: 24.0 };
         let p = f.place(&boxes(2, 64.0, 80.0), 300.0);
         assert_eq!(p.positions[1], (0.0, 0.0));
         assert_ne!(p.positions[0], (0.0, 0.0));
     }
 
-    /// Two auto-slotted rectangles must never overlap, even when the item box
-    /// is larger than the base `cell`. Overlapping rects make `IconField::item_at`
-    /// resolve clicks in the seam to the wrong (lower-indexed) icon.
+    /// When `cell` covers the item box, auto-slotted rectangles do not overlap.
     #[test]
-    fn auto_slotted_items_do_not_overlap_when_larger_than_the_cell() {
-        let f = FreeArrange::new(); // cell = 96
-        let items = boxes(6, 130.0, 105.0); // real IconItem is wider/taller than 96
+    fn auto_slotted_items_do_not_overlap_when_the_cell_covers_them() {
+        let f = FreeArrange { cell: 140.0, ..FreeArrange::new() }; // wider than the items
+        let items = boxes(6, 130.0, 105.0);
         let p = f.place(&items, 1000.0);
         for a in 0..items.len() {
             for b in (a + 1)..items.len() {
@@ -262,13 +266,32 @@ mod tests {
                 let overlap_y = ay < by + items[b].h && by < ay + items[a].h;
                 assert!(
                     !(overlap_x && overlap_y),
-                    "items {a} at {:?} and {b} at {:?} overlap (box {:?})",
+                    "items {a} at {:?} and {b} at {:?} overlap",
                     p.positions[a],
                     p.positions[b],
-                    items[a]
                 );
             }
         }
+    }
+
+    /// The pitch is `cell + gap` regardless of the item width: a wide label does
+    /// not push the neighbours away, and a small `cell` packs icons tight.
+    #[test]
+    fn pitch_is_cell_plus_gap_independent_of_item_width() {
+        let f = FreeArrange { cell: 40.0, gap: 6.0, ..FreeArrange::new() };
+        let p = f.place(&boxes(3, 120.0, 30.0), 10_000.0); // labels far wider than the cell
+        assert_eq!(p.positions[0], (0.0, 0.0));
+        assert_eq!(p.positions[1], (46.0, 0.0));
+        assert_eq!(p.positions[2], (92.0, 0.0));
+    }
+
+    /// `min_cell` is a hard floor: `cell` below it does not tighten the pitch
+    /// past the icon-box size, so glyphs never physically overlap.
+    #[test]
+    fn min_cell_floors_the_pitch() {
+        let f = FreeArrange { cell: 8.0, gap: 0.0, min_cell: 64.0, ..FreeArrange::new() };
+        let p = f.place(&boxes(2, 200.0, 200.0), 10_000.0);
+        assert_eq!(p.positions[1], (64.0, 0.0));
     }
 
     #[test]

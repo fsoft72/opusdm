@@ -21,9 +21,12 @@ struct Inner {
     entries: RefCell<Vec<IconEntry>>,
     mode: Cell<LayoutMode>,
     icon_size: Cell<i32>,
-    /// Auto-slot grid pitch for `FreeArrange`, in pixels. Ignored in `Grid`
+    /// Auto-slot cell size for `FreeArrange`, in pixels. Ignored in `Grid`
     /// mode. Default matches `FreeArrange::new`'s `cell`.
     grid_spacing: Cell<i32>,
+    /// Dead space between auto-slot cells for `FreeArrange`, in pixels. Ignored
+    /// in `Grid` mode. Default matches `FreeArrange::new`'s `gap`.
+    grid_gap: Cell<i32>,
     arrange: RefCell<Box<dyn Arrange>>,
     free_positions: RefCell<HashMap<usize, (f64, f64)>>,
     /// Last laid-out rectangle per item: (x, y, w, h) in the `Fixed`'s space.
@@ -75,6 +78,7 @@ impl IconField {
             mode: Cell::new(LayoutMode::Grid),
             icon_size: Cell::new(64),
             grid_spacing: Cell::new(96),
+            grid_gap: Cell::new(4),
             arrange: RefCell::new(Box::new(GridArrange::new())),
             free_positions: RefCell::new(HashMap::new()),
             item_rects: RefCell::new(Vec::new()),
@@ -401,13 +405,24 @@ impl IconField {
         self.relayout();
     }
 
-    /// Set the desktop auto-slot grid pitch in pixels. Takes effect in
+    /// Set the desktop auto-slot cell size in pixels. Takes effect in
     /// `Free` mode; harmless in `Grid` mode.
     pub fn set_grid_spacing(&self, px: i32) {
         if self.inner.grid_spacing.get() == px {
             return;
         }
         self.inner.grid_spacing.set(px);
+        self.rebuild_arranger();
+        self.relayout();
+    }
+
+    /// Set the dead space between desktop auto-slot cells in pixels. Takes
+    /// effect in `Free` mode; harmless in `Grid` mode.
+    pub fn set_grid_gap(&self, px: i32) {
+        if self.inner.grid_gap.get() == px {
+            return;
+        }
+        self.inner.grid_gap.set(px);
         self.rebuild_arranger();
         self.relayout();
     }
@@ -766,6 +781,10 @@ impl IconField {
                 let mut fa = FreeArrange::new();
                 fa.known = self.inner.free_positions.borrow().clone();
                 fa.cell = self.inner.grid_spacing.get() as f64;
+                fa.gap = self.inner.grid_gap.get() as f64;
+                // Never let the pitch fall below the icon box, or glyphs would
+                // overlap and hit-testing would pick the wrong icon.
+                fa.min_cell = self.inner.icon_size.get() as f64;
                 Box::new(fa)
             }
         };
@@ -870,16 +889,21 @@ mod tests {
         // `name_label` wraps at character boundaries, so a spaceless, hyphenless
         // filename stays within `max_width_chars` instead of reporting its full
         // single-line width and stretching every column of the auto-slot grid.
-        let short = IconItem::new(&entries(1)[0], 64);
+        let long_text = "726432604_122131481643172103_8689873794089316539_n.jpg";
         let long_name = IconEntry {
-            name: "726432604_122131481643172103_8689873794089316539_n.jpg".to_string(),
-            path: PathBuf::from("/tmp/726432604_122131481643172103_8689873794089316539_n.jpg"),
+            name: long_text.to_string(),
+            path: PathBuf::from(format!("/tmp/{long_text}")),
             kind: IconKind::File,
             mode: 0o100_644,
             ext: Some("jpg".into()),
         };
         let long = IconItem::new(&long_name, 64);
-        assert_eq!(short.measure().0, long.measure().0);
+        // Width of the same text on one unwrapped line, for reference.
+        let single_line = gtk::Label::new(Some(long_text));
+        let (_, single_w, _, _) = single_line.measure(gtk::Orientation::Horizontal, -1);
+        // The item stays near the 14-char wrap cap, nowhere near the full
+        // single-line width that would stretch every column of the grid.
+        assert!(long.measure().0 < single_w as f64 / 2.0);
 
         // --- IconItem: thumbnail slot swaps the glyph out and back ---
         let tex = gtk::gdk::MemoryTexture::new(

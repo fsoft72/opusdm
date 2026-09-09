@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/ui", "crates/iconview", "crates/desktop-config"]
+members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/ui", "crates/iconview", "crates/desktop-config", "crates/panel"]
 
 [workspace.package]
 edition = "2021"
@@ -19,3 +19,6 @@ gtk4 = { version = "0.10", features = ["v4_10"] }
 tempfile = "3"
 dirs = "5"
 md-5 = "0.10"
+x11rb = "0.13"
+gdk4-x11 = "0.10"
+freedesktop-desktop-entry = { version = "0.8", default-features = false }

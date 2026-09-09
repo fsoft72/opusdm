@@ -1,6 +1,7 @@
-//! The always-on desktop: a full-screen background window with the toolbar
-//! (New Lister, SRC/DST indicators, job progress, Quit) docked along its top
-//! edge and a placeholder desktop area below it.
+//! The always-on desktop: a full-screen background window that shows the
+//! wallpaper and the desktop icon field, with a right-click context menu.
+//! The chrome (application menu, pager, window list, monitors) lives in the
+//! separate `opusdm-panel` dock window, attached here in `build_ui`.
 
 use crate::server::{HubCmd, HubEvent, ServerHandle};
 use super::settings;
@@ -8,16 +9,11 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_ipc::ListerId;
+use opusdm_panel::PanelHooks;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
-
-/// Natural height of the top toolbar strip, in pixels. Layout only - the
-/// desktop window itself fills the whole monitor.
-const TOOLBAR_HEIGHT: i32 = 42;
 
 /// Foreground colour of the centred desktop placeholder label.
 const DESKTOP_FG: &str = "#d3d7cf";
@@ -59,12 +55,6 @@ pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
 /// Live widget handles shared by the event pump.
 struct Widgets {
     window: gtk::ApplicationWindow,
-    src_label: gtk::Label,
-    dst_label: gtk::Label,
-    src_id: Cell<Option<ListerId>>,
-    dst_id: Cell<Option<ListerId>>,
-    job_box: gtk::Box,
-    jobs: RefCell<HashMap<u64, JobRow>>,
     cmd_tx: Sender<HubCmd>,
     /// Primary monitor size, kept for re-asserting the desktop geometry on
     /// `RaiseToolbar` - a stale hub instance (single-instance handoff, e.g.
@@ -83,11 +73,6 @@ struct Widgets {
     /// The directory the desktop shows, for re-reading on "rearrange icons"
     /// and for re-targeting when `DesktopSettings::desktop_dir` changes.
     desktop_dir: RefCell<Option<PathBuf>>,
-}
-
-struct JobRow {
-    root: gtk::Box,
-    bar: gtk::ProgressBar,
 }
 
 fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
@@ -119,56 +104,6 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         });
     });
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    bar.set_margin_top(2);
-    bar.set_margin_bottom(2);
-    bar.set_margin_start(6);
-    bar.set_margin_end(6);
-    bar.set_size_request(-1, TOOLBAR_HEIGHT);
-
-    let new_btn = gtk::Button::with_label("New Lister");
-    {
-        let cmd_tx = cmd_tx.clone();
-        new_btn.connect_clicked(move |_| {
-            let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
-        });
-    }
-    bar.append(&new_btn);
-
-    let src_label = gtk::Label::new(Some("SRC: -"));
-    let dst_label = gtk::Label::new(Some("DST: -"));
-    src_label.add_css_class("dim-label");
-    dst_label.add_css_class("dim-label");
-    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    bar.append(&src_label);
-    bar.append(&dst_label);
-
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    bar.append(&spacer);
-
-    let settings_btn = gtk::Button::with_label("Settings");
-    bar.append(&settings_btn);
-
-    let about_btn = gtk::Button::with_label("About");
-    {
-        let window = window.clone();
-        about_btn.connect_clicked(move |_| show_about_dialog(&window));
-    }
-    bar.append(&about_btn);
-
-    let quit_btn = gtk::Button::with_label("Quit");
-    bar.append(&quit_btn);
-
-    root.append(&bar);
-
-    let job_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    job_box.set_margin_start(6);
-    job_box.set_margin_end(6);
-    root.append(&job_box);
-
     let desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
         desktop_settings.desktop_dir.as_deref(),
     );
@@ -176,19 +111,13 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     if let Some(f) = &desktop_field {
         f.set_icon_size(desktop_settings.icon_size);
         f.set_grid_spacing(desktop_settings.grid_spacing);
+        f.set_grid_gap(desktop_settings.grid_gap);
     }
-    root.append(&desktop_area);
 
-    window.set_child(Some(&root));
+    window.set_child(Some(&desktop_area));
 
     let widgets = Rc::new(Widgets {
         window: window.clone(),
-        src_label: src_label.clone(),
-        dst_label: dst_label.clone(),
-        src_id: Cell::new(None),
-        dst_id: Cell::new(None),
-        job_box: job_box.clone(),
-        jobs: RefCell::new(HashMap::new()),
         cmd_tx: cmd_tx.clone(),
         monitor_size: (mon_w, mon_h),
         quitting: Cell::new(false),
@@ -196,10 +125,6 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         desktop_field: RefCell::new(desktop_field.clone()),
         desktop_dir: RefCell::new(desktop_dir.clone()),
     });
-
-    // Click an indicator to raise its Lister.
-    attach_present_gesture(&src_label, &widgets, true);
-    attach_present_gesture(&dst_label, &widgets, false);
 
     // Right-click the desktop for the context menu.
     attach_desktop_menu(&desktop_area, &widgets);
@@ -233,17 +158,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         spawn_desktop_watch(&widgets, &field, &dir);
     }
 
-    // Settings button: open settings dialog.
-    {
-        let widgets = widgets.clone();
-        settings_btn.connect_clicked(move |_| show_settings_dialog(&widgets.window, &widgets.cmd_tx));
-    }
-
-    // Quit button and window close: always confirm before shutting down.
-    {
-        let widgets = widgets.clone();
-        quit_btn.connect_clicked(move |_| request_quit(&widgets));
-    }
+    // Window close (from the WM): always confirm before shutting down.
     {
         let widgets = widgets.clone();
         window.connect_close_request(move |_| {
@@ -263,6 +178,25 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     }
 
     window.present();
+
+    // The panel dock lives in its own window on the same application. Its
+    // "Settings" item reuses the hub settings dialog.
+    let on_settings = {
+        let window = window.clone();
+        let cmd_tx = cmd_tx.clone();
+        Box::new(move || show_settings_dialog(&window, &cmd_tx))
+    };
+    opusdm_panel::attach(app, PanelHooks { on_settings });
+
+    // The panel reserves a top strut, which shrinks the work area and makes
+    // GTK clamp this desktop window a strip short. Re-assert the full-monitor
+    // geometry a couple of times once the panel's strut has landed.
+    for delay in [600_u64, 1600] {
+        let window = window.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
+            crate::desktop::pin_geometry(&window, mon_w, mon_h);
+        });
+    }
 }
 
 /// The full desktop stylesheet: the `.opusdm-desktop` background rule built
@@ -369,6 +303,10 @@ fn build_desktop_area(
             }
             f.widget().set_hexpand(true);
             f.widget().set_vexpand(true);
+            // Keep the icon area clear of the panel dock: the background box
+            // still fills the whole monitor, but the first row of icons must
+            // start below the panel's top strut instead of under it.
+            f.widget().set_margin_top(opusdm_panel::PANEL_HEIGHT);
             bg.append(f.widget());
             Some(f)
         }
@@ -524,10 +462,7 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
                     return;
                 };
                 match opusdm_iconview::scan::read_entries(&dir, false) {
-                    Ok(mut entries) => {
-                        opusdm_iconview::scan::sort_dirs_first(&mut entries);
-                        field.set_entries(&entries);
-                    }
+                    Ok(entries) => field.set_entries(&entries),
                     Err(e) => eprintln!("opusdm-hub: rearrange failed: {e}"),
                 }
             });
@@ -567,18 +502,6 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
     menu
 }
 
-fn attach_present_gesture(label: &gtk::Label, widgets: &Rc<Widgets>, is_src: bool) {
-    let gesture = gtk::GestureClick::new();
-    let widgets = widgets.clone();
-    gesture.connect_released(move |_, _, _, _| {
-        let id = if is_src { widgets.src_id.get() } else { widgets.dst_id.get() };
-        if let Some(id) = id {
-            let _ = widgets.cmd_tx.send(HubCmd::PresentLister(id));
-        }
-    });
-    label.add_controller(gesture);
-}
-
 fn show_about_dialog(parent: &gtk::ApplicationWindow) {
     opusdm_ui::requester_rich(
         parent,
@@ -602,19 +525,13 @@ fn request_quit(widgets: &Rc<Widgets>) {
     if widgets.quitting.get() {
         return;
     }
-    let running = widgets.jobs.borrow().len();
-    let detail = if running == 0 {
-        "This will close every Lister and the desktop.".to_string()
-    } else {
-        format!("This will close every Lister and the desktop.\n{running} job(s) still running.")
-    };
     let parent = widgets.window.clone();
     let widgets = widgets.clone();
     opusdm_ui::requester(
         &parent,
         "Request",
         "Quit OpusDM?",
-        Some(&detail),
+        Some("This will close every Lister and the desktop."),
         &[("Quit", true), ("Cancel", false)],
         move |quit| {
             if !quit {
@@ -630,77 +547,8 @@ fn request_quit(widgets: &Rc<Widgets>) {
     );
 }
 
-fn short_path(p: &std::path::Path) -> String {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if home.as_deref() == Some(p) {
-        return "~".to_string();
-    }
-    p.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| p.to_string_lossy().into_owned())
-}
-
 fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     match ev {
-        HubEvent::Roles { source, dests, paths } => {
-            let name_of = |id: ListerId| -> String {
-                paths
-                    .iter()
-                    .find(|(pid, _)| *pid == id)
-                    .map(|(_, p)| short_path(p))
-                    .unwrap_or_else(|| "?".to_string())
-            };
-            let src_text = source.map(name_of).unwrap_or_else(|| "-".to_string());
-            let dst_text = if dests.is_empty() {
-                "-".to_string()
-            } else {
-                dests.iter().map(|d| name_of(*d)).collect::<Vec<_>>().join(", ")
-            };
-            widgets.src_label.set_text(&format!("SRC: {src_text}"));
-            widgets.dst_label.set_text(&format!("DST: {dst_text}"));
-            widgets.src_id.set(source);
-            widgets.dst_id.set(dests.first().copied());
-        }
-        HubEvent::JobUpdate { job_id, label, done, total } => {
-            let mut jobs = widgets.jobs.borrow_mut();
-            let row = jobs.entry(job_id).or_insert_with(|| {
-                let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                let text = gtk::Label::new(Some(&label));
-                let bar = gtk::ProgressBar::new();
-                bar.set_hexpand(true);
-                bar.set_valign(gtk::Align::Center);
-                let cancel = gtk::Button::with_label("Cancel");
-                cancel.set_valign(gtk::Align::Center);
-                let cmd_tx = widgets.cmd_tx.clone();
-                cancel.connect_clicked(move |_| {
-                    let _ = cmd_tx.send(HubCmd::CancelJob(job_id));
-                });
-                root.append(&text);
-                root.append(&bar);
-                root.append(&cancel);
-                widgets.job_box.append(&root);
-                JobRow { root, bar }
-            });
-            let fraction = if total > 0 { done as f64 / total as f64 } else { 0.0 };
-            row.bar.set_fraction(fraction.clamp(0.0, 1.0));
-        }
-        HubEvent::JobFinished { job_id, ok, errors, cancelled } => {
-            let mut jobs = widgets.jobs.borrow_mut();
-            if let Some(row) = jobs.remove(&job_id) {
-                // A cancelled job just disappears; no error to acknowledge.
-                if cancelled || (ok && errors == 0) {
-                    widgets.job_box.remove(&row.root);
-                } else {
-                    // Keep the row, mark it, let a click dismiss it.
-                    row.root.add_css_class("error");
-                    let gesture = gtk::GestureClick::new();
-                    let job_box = widgets.job_box.clone();
-                    let root = row.root.clone();
-                    gesture.connect_released(move |_, _, _, _| job_box.remove(&root));
-                    row.root.add_controller(gesture);
-                }
-            }
-        }
         HubEvent::RaiseToolbar => {
             // Re-assert the desktop window type and geometry, not present():
             // a redundant hub invocation hands this off to a possibly stale
@@ -720,6 +568,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);
                 field.set_grid_spacing(ds.grid_spacing);
+                field.set_grid_gap(ds.grid_gap);
             }
 
             let wanted =
@@ -739,9 +588,15 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 }
             }
         }
+        // Roles and job progress no longer have a home in the hub chrome
+        // (they moved out with the old toolbar strip); the server still emits
+        // them and the requesting Lister still shows its own progress.
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
-        | HubEvent::AllListersGone => {}
+        | HubEvent::AllListersGone
+        | HubEvent::Roles { .. }
+        | HubEvent::JobUpdate { .. }
+        | HubEvent::JobFinished { .. } => {}
     }
 }
 

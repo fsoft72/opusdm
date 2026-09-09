@@ -11,8 +11,13 @@ use std::path::{Path, PathBuf};
 /// icon vanish or fill the screen.
 pub const ICON_SIZE_RANGE: (i32, i32) = (24, 256);
 
-/// Lower/upper bound for [`DesktopSettings::grid_spacing`], in pixels.
-pub const GRID_SPACING_RANGE: (i32, i32) = (48, 320);
+/// Lower/upper bound for [`DesktopSettings::grid_spacing`], in pixels. The low
+/// end is below the smallest icon so a tight grid can pack icons closer than
+/// their labels are wide (labels then overlap, which is the user's choice).
+pub const GRID_SPACING_RANGE: (i32, i32) = (24, 320);
+
+/// Lower/upper bound for [`DesktopSettings::grid_gap`], in pixels.
+pub const GRID_GAP_RANGE: (i32, i32) = (0, 64);
 
 /// Largest accepted gradient angle, in degrees.
 pub const GRADIENT_ANGLE_MAX: u16 = 360;
@@ -91,8 +96,12 @@ pub struct DesktopSettings {
     pub background: Background,
     /// Icon box size in pixels for the desktop icon field.
     pub icon_size: i32,
-    /// Auto-slot grid pitch in pixels for the desktop icon field.
+    /// Auto-slot cell size in pixels for the desktop icon field: the room each
+    /// icon gets before [`Self::grid_gap`] is added. Together they set the grid
+    /// pitch, independent of how wide the labels measure.
     pub grid_spacing: i32,
+    /// Dead space in pixels added between auto-slot cells on both axes.
+    pub grid_gap: i32,
     /// Directory shown as the desktop. `None` means resolve it from
     /// `$XDG_DESKTOP_DIR` then `~/Desktop`, as the hub does today.
     pub desktop_dir: Option<PathBuf>,
@@ -104,6 +113,7 @@ impl Default for DesktopSettings {
             background: Background::default(),
             icon_size: 64,
             grid_spacing: 96,
+            grid_gap: 4,
             desktop_dir: None,
         }
     }
@@ -117,6 +127,8 @@ impl DesktopSettings {
         self.icon_size = self.icon_size.clamp(lo, hi);
         let (lo, hi) = GRID_SPACING_RANGE;
         self.grid_spacing = self.grid_spacing.clamp(lo, hi);
+        let (lo, hi) = GRID_GAP_RANGE;
+        self.grid_gap = self.grid_gap.clamp(lo, hi);
         self.background.gradient_angle = self.background.gradient_angle.min(GRADIENT_ANGLE_MAX);
         self
     }
@@ -193,6 +205,7 @@ mod tests {
         assert_eq!(d.background.image_fit, ImageFit::Fill);
         assert_eq!(d.icon_size, 64);
         assert_eq!(d.grid_spacing, 96);
+        assert_eq!(d.grid_gap, 4);
         assert_eq!(d.desktop_dir, None);
     }
 
@@ -231,18 +244,22 @@ mod tests {
         let mut d = DesktopSettings::default();
         d.icon_size = 5;
         d.grid_spacing = 9999;
+        d.grid_gap = 9999;
         d.background.gradient_angle = 900;
         let d = d.sanitized();
         assert_eq!(d.icon_size, ICON_SIZE_RANGE.0);
         assert_eq!(d.grid_spacing, GRID_SPACING_RANGE.1);
+        assert_eq!(d.grid_gap, GRID_GAP_RANGE.1);
         assert_eq!(d.background.gradient_angle, GRADIENT_ANGLE_MAX);
 
         let mut d = DesktopSettings::default();
         d.icon_size = 999;
         d.grid_spacing = 1;
+        d.grid_gap = -5;
         let d = d.sanitized();
         assert_eq!(d.icon_size, ICON_SIZE_RANGE.1);
         assert_eq!(d.grid_spacing, GRID_SPACING_RANGE.0);
+        assert_eq!(d.grid_gap, GRID_GAP_RANGE.0);
     }
 
     #[test]

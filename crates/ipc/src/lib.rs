@@ -8,7 +8,7 @@ pub mod theme;
 
 pub use desktop::{
     background_css, path_to_file_url, Background, BackgroundMode, DesktopSettings, ImageFit,
-    GRADIENT_ANGLE_MAX, GRID_SPACING_RANGE, ICON_SIZE_RANGE,
+    GRADIENT_ANGLE_MAX, GRID_GAP_RANGE, GRID_SPACING_RANGE, ICON_SIZE_RANGE,
 };
 pub use proto::{
     Appearance, Behavior, ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role,
