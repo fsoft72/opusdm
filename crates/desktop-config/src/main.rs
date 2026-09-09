@@ -33,7 +33,11 @@ fn build_window(app: &gtk::Application) {
     outer.set_margin_end(12);
 
     let bg = std::rc::Rc::new(ui::BackgroundSection::new(&window, &settings.background));
-    let grid = std::rc::Rc::new(ui::GridSection::new(settings.icon_size, settings.grid_spacing));
+    let grid = std::rc::Rc::new(ui::GridSection::new(
+        settings.icon_size,
+        settings.grid_spacing,
+        settings.grid_gap,
+    ));
     let folder = std::rc::Rc::new(ui::FolderSection::new(settings.desktop_dir.as_deref()));
 
     outer.append(&bg.root);
@@ -71,6 +75,7 @@ fn build_window(app: &gtk::Application) {
                 background: bg.read(),
                 icon_size: grid.icon_size(),
                 grid_spacing: grid.grid_spacing(),
+                grid_gap: grid.grid_gap(),
                 desktop_dir: folder.override_dir(),
             }
             .sanitized()

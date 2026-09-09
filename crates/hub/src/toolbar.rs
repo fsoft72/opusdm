@@ -111,6 +111,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     if let Some(f) = &desktop_field {
         f.set_icon_size(desktop_settings.icon_size);
         f.set_grid_spacing(desktop_settings.grid_spacing);
+        f.set_grid_gap(desktop_settings.grid_gap);
     }
 
     window.set_child(Some(&desktop_area));
@@ -566,6 +567,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);
                 field.set_grid_spacing(ds.grid_spacing);
+                field.set_grid_gap(ds.grid_gap);
             }
 
             let wanted =
