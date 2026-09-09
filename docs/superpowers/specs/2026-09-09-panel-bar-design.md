@@ -188,8 +188,10 @@ per-window state change.
 - Sparkline: ring buffer of the last ~60 samples. A `gtk::DrawingArea`
   (~44 px wide) draws a polyline scaled to the window max. CPU: one trace.
   Net: two traces (down, up) in two shades.
-- Per widget: compact `[sparkline][text]` box. CPU text `CPU 23%`. Net text two
-  lines `v 1.2M/s` / `^ 340K/s`.
+- CPU: the sparkline only, with the percentage (`23%`) overlaid inside it at
+  the top-right (a `gtk::Overlay` of the `DrawingArea` and a small `Label`),
+  no separate text. Net: `[sparkline][text]` with two lines `v 1.2M/s` /
+  `^ 340K/s`.
 
 Pure functions: `cpu_percent(prev: &CpuTimes, now: &CpuTimes) -> f64`,
 `parse_proc_stat(&str) -> CpuTimes`, `parse_net_dev(&str) -> (u64 rx, u64 tx)`,

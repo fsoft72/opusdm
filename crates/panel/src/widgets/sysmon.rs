@@ -157,13 +157,18 @@ pub fn build() -> gtk::Widget {
     let root = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     root.set_valign(gtk::Align::Center);
 
+    // CPU: the percentage sits inside the sparkline, pinned to the top-right.
     let cpu_spark = gtk::DrawingArea::new();
-    cpu_spark.set_content_width(44);
+    cpu_spark.set_content_width(56);
     cpu_spark.set_content_height(24);
-    let cpu_label = gtk::Label::new(Some("CPU --%"));
-    let cpu_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    cpu_box.append(&cpu_spark);
-    cpu_box.append(&cpu_label);
+    let cpu_label = gtk::Label::new(Some("--%"));
+    cpu_label.add_css_class("opusdm-panel-cpu-pct");
+    cpu_label.set_halign(gtk::Align::End);
+    cpu_label.set_valign(gtk::Align::Start);
+    cpu_label.set_margin_end(2);
+    let cpu_box = gtk::Overlay::new();
+    cpu_box.set_child(Some(&cpu_spark));
+    cpu_box.add_overlay(&cpu_label);
 
     let net_spark = gtk::DrawingArea::new();
     net_spark.set_content_width(44);
@@ -194,7 +199,7 @@ pub fn build() -> gtk::Widget {
             let pct = cpu_percent(s.cpu_prev, now);
             s.cpu_prev = now;
             s.cpu_trace.push(pct);
-            cpu_label.set_text(&format!("CPU {pct:.0}%"));
+            cpu_label.set_text(&format!("{pct:.0}%"));
             draw_sparkline(&cpu_spark, &[(&s.cpu_trace, (0.55, 0.79, 0.29))], Some(100.0));
         }
 

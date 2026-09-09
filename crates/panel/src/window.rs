@@ -7,8 +7,13 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use x11rb::connection::Connection;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
-use x11rb::protocol::xproto::{self, AtomEnum, ConnectionExt, PropMode};
+use x11rb::protocol::xproto::{
+    self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode, StackMode,
+};
 use x11rb::wrapper::ConnectionExt as _;
+
+/// `_NET_WM_STATE` action: add the listed property.
+const NET_WM_STATE_ADD: u32 = 1;
 
 /// Height of the panel strip, in pixels.
 pub const PANEL_HEIGHT: i32 = 40;
@@ -66,6 +71,37 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, mon_w: i32) {
                 .height(PANEL_HEIGHT.max(1) as u32),
         );
         let _ = conn.flush();
+    }
+}
+
+/// Ask the window manager to keep the panel above every other window and
+/// raise it now. `_NET_WM_STATE` set as a property before mapping is not
+/// honoured by openbox once it has adopted the window, so this goes through a
+/// `ClientMessage` and an explicit restack. Used on `map`, after the desktop
+/// window has finished asserting its own geometry.
+pub fn raise_above(window: &gtk::ApplicationWindow) {
+    let Some(xid) = x11_window_id(window) else { return };
+    let run = || -> Result<(), Box<dyn std::error::Error>> {
+        let (conn, screen_num) = x11rb::connect(None)?;
+        let root = conn.setup().roots[screen_num].root;
+        let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
+        let above = conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
+        let ev = ClientMessageEvent::new(32, xid, wm_state, [NET_WM_STATE_ADD, above, 0, 0, 0]);
+        conn.send_event(
+            false,
+            root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            ev,
+        )?;
+        conn.configure_window(
+            xid,
+            &xproto::ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+        )?;
+        conn.flush()?;
+        Ok(())
+    };
+    if let Err(e) = run() {
+        eprintln!("opusdm-panel: cannot raise panel: {e}");
     }
 }
 

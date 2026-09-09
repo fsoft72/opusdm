@@ -59,10 +59,17 @@ pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWind
     win.connect_realize(move |w| window::make_panel_window(w, mon_w));
     win.connect_map(move |w| {
         window::make_panel_window(w, mon_w);
-        let w = w.clone();
-        gtk::glib::timeout_add_local_once(Duration::from_millis(80), move || {
-            window::pin_geometry(&w, mon_w);
-        });
+        // Re-pin the geometry and re-assert the stacking a few times over the
+        // first second: the window manager runs its placement policy and the
+        // hub's full-screen desktop window settles its own geometry around the
+        // same moment, either of which can bury a just-mapped dock.
+        for delay in [80_u64, 400, 1000] {
+            let w = w.clone();
+            gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+                window::pin_geometry(&w, mon_w);
+                window::raise_above(&w);
+            });
+        }
     });
 
     install_css();
@@ -154,7 +161,8 @@ fn install_css() {
          .opusdm-panel-pager button.active { background-color: #4a90d9; color: #ffffff; }\n\
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
-         .opusdm-panel-clock-date { font-size: 10px; }",
+         .opusdm-panel-clock-date { font-size: 10px; }\n\
+         .opusdm-panel-cpu-pct { font-size: 10px; text-shadow: 0 1px 2px #000000; }",
     );
     gtk::style_context_add_provider_for_display(
         &display,
