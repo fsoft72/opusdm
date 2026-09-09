@@ -3,6 +3,8 @@
 
 mod requester;
 mod shell;
+mod version;
 
 pub use requester::{requester, requester_entry, requester_rich};
 pub use shell::DialogShell;
+pub use version::VERSION;

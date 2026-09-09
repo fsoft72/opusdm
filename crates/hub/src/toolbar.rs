@@ -506,11 +506,15 @@ fn show_about_dialog(parent: &gtk::ApplicationWindow) {
     opusdm_ui::requester_rich(
         parent,
         "About OpusDM",
-        "<span size='xx-large' weight='bold'>OpusDM</span>\n\
-         <i>A Linux tribute to Amiga Directory Opus 5</i>\n\n\
-         Written by Fabio Rotondo\n\
-         <a href='https://github.com/fsof72'>https://github.com/fsof72</a>\n\n\
-         <small>This software is Open Source</small>",
+        &format!(
+            "<span size='xx-large' weight='bold'>OpusDM</span>\n\
+             <i>A Linux tribute to Amiga Directory Opus 5</i>\n\n\
+             Version {version}\n\n\
+             Written by Fabio Rotondo\n\
+             <a href='https://github.com/fsof72'>https://github.com/fsof72</a>\n\n\
+             <small>This software is Open Source</small>",
+            version = opusdm_ui::VERSION,
+        ),
         &[("OK", ())],
         |_| {},
     );

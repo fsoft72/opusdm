@@ -2,6 +2,8 @@
 
 ## 2026-09-09
 
+- Nuovo modulo `crates/ui/src/version.rs` con la sola costante `opusdm_ui::VERSION` (default `"0.1.0"`), pensato per essere editato a mano quando si cambia versione. Il requester About (sia quello dell'hub in `toolbar.rs::show_about_dialog` sia quello del pannello in `appmenu.rs::show_about`) ora costruisce il markup con `format!` e mostra una riga `Version {VERSION}` sotto il sottotitolo.
+
 - Overlay di debug della griglia icone. Con `GRID_DEBUG=1` nell'ambiente, `opusdm_iconview::style::install` carica un secondo `CssProvider` a priorita' `APPLICATION + 1` che disegna un `outline` rosso attorno a ogni `.icon-item` (piu' un contorno rosso semitrasparente su glifo ed etichetta), cosi' si vedono gli ingombri reali senza alterare il layout. Vale sia per il campo icone del desktop dell'hub sia per ogni Lister. Nuovo flag `--grid-debug` in `run-x11.sh` che esporta `GRID_DEBUG=1` prima di lanciare l'hub.
 
 - `IconItem`: il `gtk::Entry` di rinomina inline non e' piu' figlio permanente dello `Stack` del nome. Un `Entry` chiede sempre spazio per `max_width_chars` e uno `Stack` misura il piu' grande dei suoi figli anche nascosti, quindi ogni icona veniva misurata ~130px di larghezza a prescindere dal nome; tramite il passo max-of-all di `FreeArrange` questo distanziava tutta la griglia del desktop. Ora l'entry viene aggiunto in `start_edit` e rimosso in `finish_edit`: a riposo l'item e' largo quanto icona + label.
