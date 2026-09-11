@@ -59,8 +59,9 @@ struct Widgets {
     /// Primary monitor size, kept for re-asserting the desktop geometry on
     /// `RaiseToolbar` - a stale hub instance (single-instance handoff, e.g.
     /// after the WM/session restarted) needs its desktop window type and
-    /// geometry re-applied, not just a window.present().
-    monitor_size: (i32, i32),
+    /// geometry re-applied, not just a window.present(). Updated live when
+    /// the monitor's geometry changes (resolution switch, Xephyr resize).
+    monitor_size: Cell<(i32, i32)>,
     /// Set once the quit confirmation has been accepted, so the `close()` it
     /// triggers does not re-enter `request_quit` and stack another dialog.
     quitting: Cell<bool>,
@@ -119,12 +120,34 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     let widgets = Rc::new(Widgets {
         window: window.clone(),
         cmd_tx: cmd_tx.clone(),
-        monitor_size: (mon_w, mon_h),
+        monitor_size: Cell::new((mon_w, mon_h)),
         quitting: Cell::new(false),
         desktop_watch: RefCell::new(None),
         desktop_field: RefCell::new(desktop_field.clone()),
         desktop_dir: RefCell::new(desktop_dir.clone()),
     });
+
+    // Follow the primary monitor's geometry live: a resolution change (real
+    // mode switch, or Xephyr's `-resizeable`) fires `notify::geometry` on the
+    // GdkMonitor without restarting the app, so re-pin the desktop window to
+    // the new size instead of leaving it at its startup geometry.
+    if let Some(monitor) = gtk::gdk::Display::default()
+        .as_ref()
+        .and_then(|d| d.monitors().item(0))
+        .and_downcast::<gtk::gdk::Monitor>()
+    {
+        let widgets = widgets.clone();
+        monitor.connect_geometry_notify(move |m| {
+            let g = m.geometry();
+            let (w, h) = (g.width(), g.height());
+            if w <= 0 || h <= 0 {
+                return;
+            }
+            widgets.monitor_size.set((w, h));
+            crate::desktop::make_desktop_window(&widgets.window, w, h);
+            crate::desktop::pin_geometry(&widgets.window, w, h);
+        });
+    }
 
     // Right-click the desktop for the context menu.
     attach_desktop_menu(&desktop_area, &widgets);
@@ -559,7 +582,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             // instance whose window may have lost its desktop role or size
             // (WM/session restart). The desktop stays below the Listers, so
             // there is nothing to raise.
-            let (w, h) = widgets.monitor_size;
+            let (w, h) = widgets.monitor_size.get();
             crate::desktop::make_desktop_window(&widgets.window, w, h);
             let window = widgets.window.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {

@@ -72,6 +72,26 @@ pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWind
         }
     });
 
+    // Follow the primary monitor's geometry live: mirrors the same handling
+    // in opusdm-hub's desktop.rs, so the dock tracks a resolution change
+    // (real mode switch, or Xephyr's `-resizeable`) instead of staying
+    // pinned to its startup width.
+    if let Some(monitor) = gtk::gdk::Display::default()
+        .as_ref()
+        .and_then(|d| d.monitors().item(0))
+        .and_downcast::<gtk::gdk::Monitor>()
+    {
+        let win = win.clone();
+        monitor.connect_geometry_notify(move |m| {
+            let w = m.geometry().width();
+            if w <= 0 {
+                return;
+            }
+            window::make_panel_window(&win, w);
+            window::pin_geometry(&win, w);
+        });
+    }
+
     install_css();
 
     let bar = gtk::CenterBox::new();

@@ -142,3 +142,4 @@
 - Fix: openbox was re-centering the DOCK panel. Now sets WM_NORMAL_HINTS user-specified position (0,0) + re-asserts geometry on map. Panel sits flush top-left, full width.
 - Feature: Lock button disabled unless the Lister holds SOURCE or DEST.
 - Feature: multiple DEST Listers. Role model reworked to a per-Lister map (RoleState.source()/dests()); a locked DEST persists, one unlocked DEST is transient. Button Copy/Move fans out to every DEST (one job per destination). Wire: ToLister RoleChanged/Welcome carry dests: Vec<ListerId>.
+- Fix: hub desktop window and panel dock now track a live resolution change (real monitor mode switch, or Xephyr's `-resizeable`) instead of staying pinned to their startup geometry. Both connect to `GdkMonitor::notify::geometry` and re-run their existing make_*_window/pin_geometry setup with the new size. Verified under Xephyr: GDK's X11 backend delivers the geometry change a few seconds after the resize settles, not instantly.
