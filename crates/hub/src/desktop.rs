@@ -7,8 +7,14 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use x11rb::connection::Connection;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
-use x11rb::protocol::xproto::{self, AtomEnum, ConnectionExt, PropMode};
+use x11rb::protocol::xproto::{
+    self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode,
+};
 use x11rb::wrapper::ConnectionExt as _;
+
+/// `_NET_MOVERESIZE_WINDOW` flags: keep the window gravity, all four of x, y,
+/// width and height are supplied, and the request comes from the application.
+const MOVERESIZE_FLAGS: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
 
 /// Geometry of the primary monitor in pixels, or a sane fallback.
 pub fn monitor_geometry(display: &gtk::gdk::Display) -> (i32, i32) {
@@ -42,19 +48,41 @@ pub fn make_desktop_window(window: &gtk::ApplicationWindow, width: i32, height: 
 
 /// Re-assert the full-monitor geometry only. Cheap; used on the `map` signal
 /// after the window manager has run its placement policy.
+///
+/// The geometry goes out twice: a plain `ConfigureWindow`, and a
+/// `_NET_MOVERESIZE_WINDOW` message. Once the window manager has reparented
+/// the window, the position in a `ConfigureWindow` is relative to the frame,
+/// so only the EWMH message can pull the frame itself back to the top-left
+/// corner - openbox otherwise parks the desktop at the work area origin,
+/// which sits below the panel's strut.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, width: i32, height: i32) {
     let Some(xid) = x11_window_id(window) else { return };
-    if let Ok((conn, _)) = x11rb::connect(None) {
-        let _ = conn.configure_window(
-            xid,
-            &xproto::ConfigureWindowAux::new()
-                .x(0)
-                .y(0)
-                .width(width.max(1) as u32)
-                .height(height.max(1) as u32),
+    let Ok((conn, screen_num)) = x11rb::connect(None) else { return };
+    let width = width.max(1) as u32;
+    let height = height.max(1) as u32;
+
+    let _ = conn.configure_window(
+        xid,
+        &xproto::ConfigureWindowAux::new().x(0).y(0).width(width).height(height),
+    );
+
+    let moveresize = conn
+        .intern_atom(false, b"_NET_MOVERESIZE_WINDOW")
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| reply.atom);
+    if let Some(atom) = moveresize {
+        let root = conn.setup().roots[screen_num].root;
+        let ev = ClientMessageEvent::new(32, xid, atom, [MOVERESIZE_FLAGS, 0, 0, width, height]);
+        let _ = conn.send_event(
+            false,
+            root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            ev,
         );
-        let _ = conn.flush();
     }
+
+    let _ = conn.flush();
 }
 
 /// Fetch the X11 window id backing a GTK window, if running under X11.

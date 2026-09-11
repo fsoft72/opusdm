@@ -51,7 +51,11 @@ pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWind
         .application(app)
         .title("OpusDM Panel")
         .decorated(false)
-        .resizable(false)
+        // Resizable on the GTK side so the dock follows the X geometry we pin
+        // when the screen size changes; see the same note in opusdm-hub's
+        // toolbar.rs. The WM is kept from resizing it by the min = max size
+        // hints in `window.rs`.
+        .resizable(true)
         .default_width(mon_w)
         .default_height(window::PANEL_HEIGHT)
         .build();
@@ -72,23 +76,16 @@ pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWind
         }
     });
 
-    // Follow the primary monitor's geometry live: mirrors the same handling
-    // in opusdm-hub's desktop.rs, so the dock tracks a resolution change
-    // (real mode switch, or Xephyr's `-resizeable`) instead of staying
-    // pinned to its startup width.
-    if let Some(monitor) = gtk::gdk::Display::default()
-        .as_ref()
-        .and_then(|d| d.monitors().item(0))
-        .and_downcast::<gtk::gdk::Monitor>()
+    // Follow the screen size live: mirrors the same handling in opusdm-hub's
+    // toolbar.rs, so the dock tracks a resolution change (real mode switch, or
+    // a Xephyr host-window resize) instead of staying pinned to its startup
+    // width.
     {
         let win = win.clone();
-        monitor.connect_geometry_notify(move |m| {
-            let w = m.geometry().width();
-            if w <= 0 {
-                return;
-            }
+        opusdm_ui::watch_screen_size(move |w, _h| {
             window::make_panel_window(&win, w);
             window::pin_geometry(&win, w);
+            window::raise_above(&win);
         });
     }
 

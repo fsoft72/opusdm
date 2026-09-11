@@ -89,7 +89,11 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         .application(app)
         .title("OpusDM")
         .decorated(false)
-        .resizable(false)
+        // Resizable on the GTK side so the window follows the X geometry we
+        // pin when the screen size changes; a non-resizable window would ask
+        // the WM for its old natural size back and never shrink. The WM is
+        // kept from resizing it by the min = max size hints in `desktop.rs`.
+        .resizable(true)
         .default_width(mon_w)
         .default_height(mon_h)
         .build();
@@ -127,25 +131,24 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         desktop_dir: RefCell::new(desktop_dir.clone()),
     });
 
-    // Follow the primary monitor's geometry live: a resolution change (real
-    // mode switch, or Xephyr's `-resizeable`) fires `notify::geometry` on the
-    // GdkMonitor without restarting the app, so re-pin the desktop window to
-    // the new size instead of leaving it at its startup geometry.
-    if let Some(monitor) = gtk::gdk::Display::default()
-        .as_ref()
-        .and_then(|d| d.monitors().item(0))
-        .and_downcast::<gtk::gdk::Monitor>()
+    // Follow the screen size live: a resolution change (real mode switch, or
+    // a Xephyr host-window resize) must re-pin the desktop window to the new
+    // size instead of leaving it at its startup geometry.
     {
         let widgets = widgets.clone();
-        monitor.connect_geometry_notify(move |m| {
-            let g = m.geometry();
-            let (w, h) = (g.width(), g.height());
-            if w <= 0 || h <= 0 {
-                return;
-            }
+        opusdm_ui::watch_screen_size(move |w, h| {
             widgets.monitor_size.set((w, h));
             crate::desktop::make_desktop_window(&widgets.window, w, h);
             crate::desktop::pin_geometry(&widgets.window, w, h);
+            // The window manager reacts to the new screen size on its own -
+            // it shifts the desktop down by the panel's strut - so re-assert
+            // the geometry once it has settled, as the startup path does.
+            for delay in [150_u64, 600] {
+                let window = widgets.window.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
+                    crate::desktop::pin_geometry(&window, w, h);
+                });
+            }
         });
     }
 

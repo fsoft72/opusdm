@@ -783,7 +783,9 @@ dependencies = [
 name = "opusdm-ui"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gtk4",
+ "x11rb",
 ]
 
 [[package]]
