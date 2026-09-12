@@ -13,16 +13,17 @@ pub struct IconSetSection {
 }
 
 impl IconSetSection {
-    pub fn new(current: IconSetId) -> Self {
+    pub fn new(current: &IconSetId) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let heading = gtk::Label::new(Some("ICON SET"));
         heading.set_xalign(0.0);
         heading.add_css_class("heading");
         root.append(&heading);
 
-        let labels: Vec<&str> = IconSetId::ALL.iter().map(|s| s.label()).collect();
-        let dropdown = gtk::DropDown::from_strings(&labels);
-        let selected = IconSetId::ALL.iter().position(|s| *s == current).unwrap_or(0);
+        let labels: Vec<String> = IconSetId::ALL.iter().map(|s| s.label()).collect();
+        let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let dropdown = gtk::DropDown::from_strings(&label_refs);
+        let selected = IconSetId::ALL.iter().position(|s| s == current).unwrap_or(0);
         dropdown.set_selected(selected as u32);
         root.append(&dropdown);
 
@@ -31,7 +32,7 @@ impl IconSetSection {
 
     /// The currently selected icon set.
     pub fn value(&self) -> IconSetId {
-        IconSetId::ALL[self.dropdown.selected() as usize]
+        IconSetId::ALL[self.dropdown.selected() as usize].clone()
     }
 }
 

@@ -30,7 +30,7 @@ fn kind_of(row: &Row) -> IconKind {
 
 /// Real icon bytes for `row` under icon set `set`, or `None` (caller falls
 /// back to the glyph). Extension is derived the same way `IconEntry` does.
-pub fn icon_bytes_for_row(row: &Row, set: opusdm_ipc::IconSetId) -> Option<&'static [u8]> {
+pub fn icon_bytes_for_row(row: &Row, set: &opusdm_ipc::IconSetId) -> Option<std::borrow::Cow<'static, [u8]>> {
     let ext = opusdm_iconview::IconEntry::ext_of(&row.name);
     opusdm_iconview::icon_set::icon_bytes_for(kind_of(row), row.mode, ext.as_deref(), set)
 }
@@ -150,11 +150,19 @@ mod tests {
 
     #[test]
     fn icon_bytes_for_row_is_none_without_a_real_icon_set() {
-        assert_eq!(icon_bytes_for_row(&row("a.rs"), opusdm_ipc::IconSetId::None), None);
+        assert!(icon_bytes_for_row(&row("a.rs"), &opusdm_ipc::IconSetId::None).is_none());
     }
 
     #[test]
     fn icon_bytes_for_row_matches_the_extension() {
-        assert!(icon_bytes_for_row(&row("a.rs"), opusdm_ipc::IconSetId::BreezeDark).is_some());
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        let icons_dir = td.path().join("opusdm").join("themes").join("t").join("icons");
+        std::fs::create_dir_all(&icons_dir).unwrap();
+        std::fs::write(icons_dir.join("code.png"), b"bytes").unwrap();
+        let set = opusdm_ipc::IconSetId::Custom("t".to_string());
+        assert!(icon_bytes_for_row(&row("a.rs"), &set).is_some());
     }
 }

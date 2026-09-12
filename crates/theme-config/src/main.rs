@@ -41,7 +41,7 @@ fn build_window(app: &gtk::Application) {
     desktop_page.set_margin_start(12);
     desktop_page.set_margin_end(12);
 
-    let icon_set = Rc::new(ui::IconSetSection::new(theme.icon_set));
+    let icon_set = Rc::new(ui::IconSetSection::new(&theme.icon_set));
     desktop_page.append(&icon_set.root);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 

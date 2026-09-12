@@ -93,14 +93,14 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         std::env::set_var("OPUSDM_HUB_SOCK", td.path().join("definitely-absent.sock"));
         let mut t = Theme::default();
-        t.icon_set = opusdm_ipc::IconSetId::BreezeDark;
+        t.icon_set = opusdm_ipc::IconSetId::Custom("breeze-dark".to_string());
         match apply(&t) {
             ApplyOutcome::WroteFile => {}
             other => panic!("expected WroteFile, got {other:?}"),
         }
         let written = std::fs::read_to_string(td.path().join("opusdm").join("settings.json")).unwrap();
         let back: Settings = serde_json::from_str(&written).unwrap();
-        assert_eq!(back.theme.icon_set, opusdm_ipc::IconSetId::BreezeDark);
+        assert_eq!(back.theme.icon_set, opusdm_ipc::IconSetId::Custom("breeze-dark".to_string()));
     }
 
     #[test]

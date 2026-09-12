@@ -198,7 +198,7 @@ mod tests {
         }
         // Every toggle on, so the conditional rules are parsed too.
         let settings = Settings {
-            theme: opusdm_ipc::Theme { icon_set: opusdm_ipc::IconSetId::BreezeDark, ..Default::default() },
+            theme: opusdm_ipc::Theme { icon_set: opusdm_ipc::IconSetId::Custom("breeze-dark".to_string()), ..Default::default() },
             appearance: opusdm_ipc::Appearance {
                 type_indicators: true,
                 monospace_list: true,

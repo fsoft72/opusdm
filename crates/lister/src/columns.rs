@@ -150,7 +150,7 @@ pub fn add_column(
                 let (icon_set, indicators) = ui_getter_bind()
                     .map(|ui| {
                         let s = ui.settings.borrow();
-                        (s.theme.icon_set, s.appearance.type_indicators)
+                        (s.theme.icon_set.clone(), s.appearance.type_indicators)
                     })
                     .unwrap_or((opusdm_ipc::IconSetId::None, false));
                 label.set_xalign(0.0);
@@ -161,8 +161,8 @@ pub fn add_column(
                     .first_child()
                     .and_downcast::<gtk::Image>()
                     .unwrap();
-                if let Some(bytes) = crate::glyphs::icon_bytes_for_row(&row, icon_set) {
-                    let gbytes = gtk::glib::Bytes::from_static(bytes);
+                if let Some(bytes) = crate::glyphs::icon_bytes_for_row(&row, &icon_set) {
+                    let gbytes = gtk::glib::Bytes::from_owned(bytes.into_owned());
                     if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
                         icon_widget.set_paintable(Some(&texture));
                         icon_widget.set_visible(true);

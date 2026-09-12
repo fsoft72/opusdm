@@ -765,7 +765,7 @@ mod tests {
 
         let mut c = connect(&path);
         let mut theme = opusdm_ipc::Theme::default();
-        theme.icon_set = opusdm_ipc::IconSetId::BreezeDark;
+        theme.icon_set = opusdm_ipc::IconSetId::Custom("breeze-dark".to_string());
         theme.background.gradient_angle = 900; // above GRADIENT_ANGLE_MAX, hub must clamp
         send(&mut c, &ToHub::SetTheme(theme.clone())).unwrap();
 
@@ -777,7 +777,7 @@ mod tests {
             }
         }
         let got = got.expect("ThemeChanged not emitted");
-        assert_eq!(got.icon_set, opusdm_ipc::IconSetId::BreezeDark);
+        assert_eq!(got.icon_set, opusdm_ipc::IconSetId::Custom("breeze-dark".to_string()));
         assert_eq!(got.background.gradient_angle, opusdm_ipc::GRADIENT_ANGLE_MAX);
 
         // settings.json landed under the temp config dir.
