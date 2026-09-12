@@ -738,6 +738,7 @@ dependencies = [
  "filetime",
  "gtk4",
  "md-5",
+ "opusdm-ipc",
  "tempfile",
 ]
 
@@ -777,6 +778,18 @@ dependencies = [
  "opusdm-ui",
  "tempfile",
  "x11rb",
+]
+
+[[package]]
+name = "opusdm-theme-config"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "gtk4",
+ "opusdm-desktop-config",
+ "opusdm-ipc",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

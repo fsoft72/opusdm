@@ -90,6 +90,11 @@ impl ColorRow {
     pub fn hex(&self) -> String {
         rgba_to_hex(&hex_to_rgba(&self.entry.text()))
     }
+
+    /// Overwrite the entry, which redraws the swatch too.
+    pub fn set_hex(&self, hex: &str) {
+        self.entry.set_text(hex);
+    }
 }
 
 /// The BACKGROUND section: mode radios + a stack of per-mode controls.

@@ -1,5 +1,5 @@
-//! `opusdm-theme`: edit the OpusDM theme - icon set, Lister colours, and
-//! desktop background - and apply it live to the running desktop.
+//! `opusdm-theme`: edit the OpusDM theme - icon set, desktop background, and
+//! Lister colours - and apply it live to the running desktop.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
@@ -31,16 +31,44 @@ fn build_window(app: &gtk::Application) {
     outer.set_margin_start(12);
     outer.set_margin_end(12);
 
-    let icon_set = Rc::new(ui::IconSetSection::new(theme.icon_set));
-    outer.append(&icon_set.root);
-    outer.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let notebook = gtk::Notebook::new();
+    notebook.set_vexpand(true);
 
-    let colors = Rc::new(ui::ColorsSection::new(&window, &theme.colors));
-    outer.append(&colors.root);
-    outer.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    // --- Desktop tab: icon set + background ---
+    let desktop_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    desktop_page.set_margin_top(12);
+    desktop_page.set_margin_bottom(12);
+    desktop_page.set_margin_start(12);
+    desktop_page.set_margin_end(12);
+
+    let icon_set = Rc::new(ui::IconSetSection::new(theme.icon_set));
+    desktop_page.append(&icon_set.root);
+    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let bg = Rc::new(BackgroundSection::new(&window, &theme.background));
-    outer.append(&bg.root);
+    desktop_page.append(&bg.root);
+
+    notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
+
+    // --- Lister tab: preset picker + colours ---
+    let lister_page_outer = gtk::ScrolledWindow::new();
+    let lister_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    lister_page.set_margin_top(12);
+    lister_page.set_margin_bottom(12);
+    lister_page.set_margin_start(12);
+    lister_page.set_margin_end(12);
+
+    let colors = Rc::new(ui::ColorsSection::new(&window, &theme.colors));
+    let preset = ui::PresetSection::new();
+    preset.connect_selected(colors.clone());
+    lister_page.append(&preset.root);
+    lister_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    lister_page.append(&colors.root);
+    lister_page_outer.set_child(Some(&lister_page));
+
+    notebook.append_page(&lister_page_outer, Some(&gtk::Label::new(Some("Lister"))));
+
+    outer.append(&notebook);
 
     let note = gtk::Label::new(None);
     note.set_xalign(0.0);

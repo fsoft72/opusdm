@@ -5,6 +5,7 @@
 use crate::server::HubCmd;
 use gtk4 as gtk;
 use gtk::glib;
+use gtk::pango;
 use gtk::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,6 +21,7 @@ struct Row {
     /// Separator placed above this block, if it isn't the first one.
     separator: Option<gtk::Separator>,
     header: gtk::Box,
+    file_label: gtk::Label,
     file_bar: gtk::ProgressBar,
     total_bar: gtk::ProgressBar,
 }
@@ -77,13 +79,18 @@ impl ProgressWindow {
                 self.list.append(&sep);
                 Some(sep)
             };
+            let file_label = gtk::Label::new(None);
+            file_label.set_xalign(0.0);
+            file_label.set_hexpand(true);
+            file_label.set_ellipsize(pango::EllipsizeMode::Middle);
+
             let abort_btn = gtk::Button::with_label("Abort");
             let cmd_tx = self.cmd_tx.clone();
             abort_btn.connect_clicked(move |_| {
                 let _ = cmd_tx.send(HubCmd::CancelJob(job_id));
             });
             let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            header.set_halign(gtk::Align::End);
+            header.append(&file_label);
             header.append(&abort_btn);
 
             let file_bar = gtk::ProgressBar::new();
@@ -95,11 +102,12 @@ impl ProgressWindow {
             self.list.append(&header);
             self.list.append(&file_bar);
             self.list.append(&total_bar);
-            rows.insert(job_id, Row { separator, header, file_bar, total_bar });
+            rows.insert(job_id, Row { separator, header, file_label, file_bar, total_bar });
             self.window.set_visible(true);
         }
 
         let row = rows.get(&job_id).expect("row inserted above if missing");
+        row.file_label.set_text(&current_file.display().to_string());
 
         let file_frac = if file_bytes_total > 0 {
             file_bytes_done as f64 / file_bytes_total as f64
@@ -107,8 +115,7 @@ impl ProgressWindow {
             0.0
         };
         row.file_bar.set_fraction(file_frac);
-        let pct = (file_frac * 100.0).round() as u32;
-        row.file_bar.set_text(Some(&format!("{} - {pct}%", current_file.display())));
+        row.file_bar.set_text(Some(&format!("{}%", (file_frac * 100.0).round() as u32)));
 
         let total_frac = if files_total > 0 { files_done as f64 / files_total as f64 } else { 0.0 };
         row.total_bar.set_fraction(total_frac);
