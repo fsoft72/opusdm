@@ -2,6 +2,7 @@
 //! progress bar, and a total (n/tot files) progress bar, one block per job.
 //! Shows itself on the first running job and hides once none remain.
 
+use crate::server::HubCmd;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::pango;
@@ -9,11 +10,17 @@ use gtk::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::mpsc::Sender;
+
+/// Height in pixels of each progress bar - taller than GTK's thin default so
+/// the fraction and overlaid text stay readable.
+const BAR_HEIGHT: i32 = 24;
 
 /// Widgets for one running job's block.
 struct Row {
     /// Separator placed above this block, if it isn't the first one.
     separator: Option<gtk::Separator>,
+    header: gtk::Box,
     file_label: gtk::Label,
     file_bar: gtk::ProgressBar,
     total_bar: gtk::ProgressBar,
@@ -23,12 +30,13 @@ struct Row {
 pub struct ProgressWindow {
     window: gtk::Window,
     list: gtk::Box,
+    cmd_tx: Sender<HubCmd>,
     rows: RefCell<HashMap<u64, Row>>,
 }
 
 impl ProgressWindow {
     /// Build the (initially hidden) window, attached to `app`.
-    pub fn new(app: &gtk::Application) -> Self {
+    pub fn new(app: &gtk::Application, cmd_tx: Sender<HubCmd>) -> Self {
         let window = gtk::Window::builder()
             .application(app)
             .title("File Operations")
@@ -47,7 +55,7 @@ impl ProgressWindow {
         list.set_margin_bottom(12);
         window.set_child(Some(&list));
 
-        Self { window, list, rows: RefCell::new(HashMap::new()) }
+        Self { window, list, cmd_tx, rows: RefCell::new(HashMap::new()) }
     }
 
     /// Update (creating on first call) the block for `job_id`.
@@ -71,15 +79,29 @@ impl ProgressWindow {
             };
             let file_label = gtk::Label::new(None);
             file_label.set_xalign(0.0);
+            file_label.set_hexpand(true);
             file_label.set_ellipsize(pango::EllipsizeMode::Middle);
+
+            let abort_btn = gtk::Button::with_label("Abort");
+            let cmd_tx = self.cmd_tx.clone();
+            abort_btn.connect_clicked(move |_| {
+                let _ = cmd_tx.send(HubCmd::CancelJob(job_id));
+            });
+
+            let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            header.append(&file_label);
+            header.append(&abort_btn);
+
             let file_bar = gtk::ProgressBar::new();
             file_bar.set_show_text(true);
+            file_bar.set_height_request(BAR_HEIGHT);
             let total_bar = gtk::ProgressBar::new();
             total_bar.set_show_text(true);
-            self.list.append(&file_label);
+            total_bar.set_height_request(BAR_HEIGHT);
+            self.list.append(&header);
             self.list.append(&file_bar);
             self.list.append(&total_bar);
-            rows.insert(job_id, Row { separator, file_label, file_bar, total_bar });
+            rows.insert(job_id, Row { separator, header, file_label, file_bar, total_bar });
             self.window.set_visible(true);
         }
 
@@ -106,7 +128,7 @@ impl ProgressWindow {
             if let Some(sep) = &row.separator {
                 self.list.remove(sep);
             }
-            self.list.remove(&row.file_label);
+            self.list.remove(&row.header);
             self.list.remove(&row.file_bar);
             self.list.remove(&row.total_bar);
         }

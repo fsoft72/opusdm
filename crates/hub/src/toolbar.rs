@@ -131,7 +131,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         desktop_watch: RefCell::new(None),
         desktop_field: RefCell::new(desktop_field.clone()),
         desktop_dir: RefCell::new(desktop_dir.clone()),
-        progress_window: crate::progress_window::ProgressWindow::new(app),
+        progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
     });
 
     // Follow the screen size live: a resolution change (real mode switch, or
