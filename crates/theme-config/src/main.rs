@@ -6,6 +6,7 @@ use gtk::prelude::*;
 use opusdm_desktop_config::ui::BackgroundSection;
 use std::rc::Rc;
 
+mod apply;
 mod model;
 mod ui;
 
