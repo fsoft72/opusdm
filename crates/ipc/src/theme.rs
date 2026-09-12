@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 /// Which icon library the Lister and desktop icon grid use. No icon set
 /// ships compiled into the binary: `None` falls back to glyphs, and every
 /// other option is a user-imported theme under `~/.config/opusdm/themes/`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub enum IconSetId {
     /// No icon images: Nerd Font glyphs when a patched font is available, a
     /// plain name otherwise.
+    #[default]
     None,
     /// A user-imported theme's icon set, identified by its `manifest.json`
     /// `name` (the theme directory's name under `~/.config/opusdm/themes/`).
@@ -78,12 +79,6 @@ impl IconSetId {
             return Some(IconSetId::None);
         }
         id.strip_prefix("custom:").map(|slug| IconSetId::Custom(slug.to_string()))
-    }
-}
-
-impl Default for IconSetId {
-    fn default() -> Self {
-        IconSetId::None
     }
 }
 

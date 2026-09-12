@@ -97,7 +97,7 @@ mod tests {
     use crate::test_support::ENV_LOCK;
     use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
     use opusdm_ipc::themes::{CustomThemeData, ThemeBackground, ThemeDesktopMetrics};
-    use opusdm_ipc::{Appearance, Behavior, ColorSettings, DesktopSettings, IconSetId, Settings};
+    use opusdm_ipc::{Appearance, ColorSettings, DesktopSettings, IconSetId, Settings};
 
     fn base_settings() -> Settings {
         let mut s = Settings::default();
