@@ -425,7 +425,7 @@ mod tests {
     fn settings_survive_a_full_json_round_trip() {
         let s = Settings {
             theme: crate::theme::Theme {
-                icon_set: crate::theme::IconSetId::BreezeDark,
+                icon_set: crate::theme::IconSetId::Custom("breeze-dark".to_string()),
                 colors: ColorSettings {
                     source_bg: "#111111".into(),
                     file_fg: "#888888".into(),
