@@ -48,6 +48,9 @@ pub enum HubEvent {
     /// Desktop settings changed (from `opus-desktop-config`). Carries the
     /// sanitised value; the GTK side repaints and re-lays the desktop.
     DesktopSettingsChanged(DesktopSettings),
+    /// Theme changed (from `opusdm-theme`). Carries the new theme; the GTK
+    /// side repaints the desktop background and re-renders desktop icons.
+    ThemeChanged(opusdm_ipc::Theme),
 }
 
 /// Commands the GTK toolbar (or the SIGCHLD handler) sends to the server.
@@ -167,8 +170,8 @@ fn owner_loop(
     // ToHub::SetDesktopSettings and pushed to the GTK side.
     let mut current_desktop = desktop_settings::load();
     eprintln!(
-        "opusdm-hub: desktop settings loaded (background mode {:?})",
-        current_desktop.background.mode
+        "opusdm-hub: desktop settings loaded (icon size {})",
+        current_desktop.icon_size
     );
 
     let (jp_tx, jp_rx) = channel::<(u64, Progress)>();
@@ -229,6 +232,20 @@ fn owner_loop(
                     eprintln!("opusdm-hub: cannot save desktop.json: {e}");
                 }
                 let _ = evt_tx.send(HubEvent::DesktopSettingsChanged(current_desktop.clone()));
+            }
+
+            OwnerMsg::FromLister(_cid, ToHub::SetTheme(theme)) => {
+                let mut theme = theme;
+                theme.background = theme.background.sanitized();
+                current_settings.theme = theme;
+                if let Err(e) = settings::save_settings(&current_settings) {
+                    eprintln!("opusdm-hub: cannot save settings.json: {e}");
+                }
+                for c in conns.values_mut().filter(|c| c.registered) {
+                    let _ =
+                        send(&mut c.write, &ToLister::SettingsUpdate(current_settings.clone()));
+                }
+                let _ = evt_tx.send(HubEvent::ThemeChanged(current_settings.theme.clone()));
             }
 
             OwnerMsg::FromLister(cid, ToHub::Register { pid, initial_path }) => {
@@ -621,7 +638,12 @@ fn handle_job_progress(
 mod tests {
     use super::*;
     use opusdm_ipc::frame::{recv, send};
+    use std::sync::Mutex;
     use std::time::Duration;
+
+    /// Guards tests that mutate the process-wide `XDG_CONFIG_HOME` env var,
+    /// which libtest would otherwise race across threads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn bind_temp() -> (tempfile::TempDir, UnixListener, PathBuf) {
         let td = tempfile::tempdir().unwrap();
@@ -704,6 +726,7 @@ mod tests {
 
     #[test]
     fn set_desktop_settings_emits_a_changed_event() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Keep desktop.json out of the developer's real config dir.
         let cfg = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
@@ -714,7 +737,6 @@ mod tests {
         let mut c = connect(&path);
         let mut ds = DesktopSettings::default();
         ds.icon_size = 5; // below ICON_SIZE_RANGE.0, hub must clamp
-        ds.background.mode = opusdm_ipc::BackgroundMode::Gradient;
         send(&mut c, &ToHub::SetDesktopSettings(ds)).unwrap();
 
         let mut got = None;
@@ -725,11 +747,41 @@ mod tests {
             }
         }
         let got = got.expect("DesktopSettingsChanged not emitted");
-        assert_eq!(got.background.mode, opusdm_ipc::BackgroundMode::Gradient);
         assert_eq!(got.icon_size, opusdm_ipc::ICON_SIZE_RANGE.0);
 
         // desktop.json landed under the temp config dir.
         assert!(cfg.path().join("opusdm").join("desktop.json").exists());
+    }
+
+    #[test]
+    fn set_theme_persists_and_emits_a_changed_event() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Keep settings.json out of the developer's real config dir.
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut c = connect(&path);
+        let mut theme = opusdm_ipc::Theme::default();
+        theme.icon_set = opusdm_ipc::IconSetId::BreezeDark;
+        theme.background.gradient_angle = 900; // above GRADIENT_ANGLE_MAX, hub must clamp
+        send(&mut c, &ToHub::SetTheme(theme.clone())).unwrap();
+
+        let mut got = None;
+        while let Ok(ev) = handle.evt_rx.recv_timeout(Duration::from_millis(500)) {
+            if let HubEvent::ThemeChanged(t) = ev {
+                got = Some(t);
+                break;
+            }
+        }
+        let got = got.expect("ThemeChanged not emitted");
+        assert_eq!(got.icon_set, opusdm_ipc::IconSetId::BreezeDark);
+        assert_eq!(got.background.gradient_angle, opusdm_ipc::GRADIENT_ANGLE_MAX);
+
+        // settings.json landed under the temp config dir.
+        assert!(cfg.path().join("opusdm").join("settings.json").exists());
     }
 
     #[test]

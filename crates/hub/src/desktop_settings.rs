@@ -79,10 +79,8 @@ mod tests {
         let path = td.path().join("nested").join("desktop.json");
         let mut d = DesktopSettings::default();
         d.icon_size = 100_000; // out of range on purpose
-        d.background.mode = opusdm_ipc::BackgroundMode::Gradient;
         save_to(&path, &d).unwrap();
         let got = load_from(&path);
-        assert_eq!(got.background.mode, opusdm_ipc::BackgroundMode::Gradient);
         assert_eq!(got.icon_size, opusdm_ipc::ICON_SIZE_RANGE.1); // clamped
     }
 }
