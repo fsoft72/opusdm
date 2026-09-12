@@ -14,7 +14,7 @@ use std::sync::mpsc::Sender;
 
 /// Height in pixels of each progress bar - taller than GTK's thin default so
 /// the fraction and overlaid text stay readable.
-const BAR_HEIGHT: i32 = 24;
+const BAR_HEIGHT: i32 = 40;
 
 /// Widgets for one running job's block.
 struct Row {
@@ -37,6 +37,8 @@ pub struct ProgressWindow {
 impl ProgressWindow {
     /// Build the (initially hidden) window, attached to `app`.
     pub fn new(app: &gtk::Application, cmd_tx: Sender<HubCmd>) -> Self {
+        install_bar_css();
+
         let window = gtk::Window::builder()
             .application(app)
             .title("File Operations")
@@ -136,4 +138,22 @@ impl ProgressWindow {
             self.window.set_visible(false);
         }
     }
+}
+
+/// GTK4's themed progressbar trough ignores `height_request` and stays at
+/// its CSS min-height; grow it directly so the bars actually look taller.
+fn install_bar_css() {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(&format!(
+        "progressbar > trough {{ min-height: {BAR_HEIGHT}px; }}
+         progressbar > trough > progress {{ min-height: {BAR_HEIGHT}px; }}"
+    ));
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
