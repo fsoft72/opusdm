@@ -14,11 +14,13 @@ shareable unit.
 
 ## Goal
 
-Let a user drop a folder under `~/.config/opusdm/themes/<slug>/` and have it
-show up as a selectable theme in `opusdm-theme`, applying its icons, colours,
-appearance/behavior switches, desktop grid metrics, and background in one
-shot - the same way picking `BreezeDark` works today, but data-driven instead
-of compiled in.
+Let a user **import a theme archive** (`.zip`, `.tar.gz`/`.tgz`, `.tar.bz2`)
+through `opusdm-theme`, which extracts it into
+`~/.config/opusdm/themes/<name>/` (name taken from the archive's own
+`manifest.json`), and have it show up as a selectable theme, applying its
+icons, colours, appearance/behavior switches, desktop grid metrics, and
+background in one shot - the same way picking `BreezeDark` works today, but
+data-driven instead of compiled in.
 
 ## Non-goals
 
@@ -46,18 +48,33 @@ of compiled in.
   backgrounds/    # 0+ images the theme ships, referenced by filename from theme.json
 ```
 
-`<slug>` (the directory name) is the theme's stable id, used the same way
-`"none"` / `"breeze-dark"` are used today.
+`<slug>` (the directory name, equal to `manifest.json`'s `name`) is the
+theme's stable id, used the same way `"none"` / `"breeze-dark"` are used
+today. Users never create this directory by hand in the normal flow - see
+"Theme import" below; a hand-placed directory following this exact layout is
+still discovered and works, but is not the supported install path.
 
 ### `manifest.json`
 
 ```json
-{ "label": "My Custom Theme", "author": "optional", "version": "optional" }
+{
+  "name": "my-custom-theme",
+  "label": "My Custom Theme",
+  "author": "optional",
+  "version": "optional"
+}
 ```
 
-Scan-only metadata. `label` is required and non-empty; a dir whose
-`manifest.json` is missing, unparseable, or has an empty label is skipped
-during discovery (logged, not fatal).
+Scan-only metadata. `name` is the stable slug (also the installed directory
+name) - required, non-empty, `[a-z0-9-]+` only (no `.`, `/`, or path
+separators). `label` is the display name shown in the picker - required,
+non-empty. `name` and `label` are independent: renaming/retranslating
+`label` never changes `name`, so an already-applied `icon_set: "custom:
+<name>"` in `settings.json` stays valid across theme updates. A dir whose
+`manifest.json` is missing, unparseable, or fails either validation is
+skipped during discovery (logged, not fatal) - this can only happen for a
+theme placed by hand, since the importer (below) validates `name` before
+ever writing the directory.
 
 ### `theme.json`
 
@@ -172,6 +189,36 @@ which is a GTK binary)
 - Selecting `None`/`BreezeDark` keeps working exactly as today (no theme dir
   involved).
 
+## Theme import (archive)
+
+`opusdm-theme` gains an "Import theme..." action (file chooser filtered to
+`.zip`, `.tar.gz`/`.tgz`, `.tar.bz2`). New dependencies: `zip` for zip
+archives, `tar` + `flate2` (gzip) + `bzip2` for the tarballs. Format is
+picked from the file extension.
+
+Import flow, all-or-nothing:
+
+1. Extract the archive into a fresh `tempfile::tempdir()`, never directly
+   into `themes/`. While extracting, reject any entry whose name contains a
+   `..` component or is an absolute path (zip-slip / tar-slip guard) -
+   abort the whole import on the first such entry.
+2. Require `manifest.json` at the extracted root (flat layout - the
+   archive's top-level entries are the theme's contents, not wrapped in one
+   more folder). Missing -> abort with "not a theme archive".
+3. Parse and validate `manifest.json` (`name` non-empty and
+   `[a-z0-9-]+`-only, `label` non-empty). Invalid -> abort with the specific
+   validation error.
+4. On success: if `~/.config/opusdm/themes/<name>/` already exists, remove
+   it first (overwrite/reinstall semantics - re-importing the same theme's
+   archive, e.g. after an update, replaces it). Move the temp dir's contents
+   into `~/.config/opusdm/themes/<name>/`.
+5. On any failure at steps 1-3: delete the temp dir, show the error, and
+   leave `themes/` untouched - no partial theme is ever installed.
+
+This is the only supported way a theme reaches `themes/`; manual placement
+(dragging a folder in) still works because discovery only cares about the
+final on-disk layout, not how it got there.
+
 ## Apply is an import, not a live link
 
 Once applied, the running desktop's `settings.json`/`desktop.json` hold a
@@ -208,6 +255,11 @@ dependency once chosen).
   lookup returns `None`, i.e. every entry falls back to its glyph. No crash,
   no error dialog; this is the same degrade path a partially-populated
   `icons/` folder already takes per-icon.
+- Theme import failures (corrupt archive, missing/invalid `manifest.json`,
+  a path-traversal entry) - reported to the user as a dialog with the
+  specific reason; `themes/` is left exactly as it was (see "Theme import"
+  above). An unsupported extension is rejected before any extraction is
+  attempted.
 
 ## Testing
 
@@ -229,16 +281,29 @@ dependency once chosen).
   against a starting `Settings`/`DesktopSettings` (theme-supplied fields
   win, absent fields keep the current value) - this merge function should
   be a plain data function, testable without GTK.
+- Theme importer: unit tests (plain data/fs functions, no GTK) covering:
+  valid zip and both tarball formats import correctly; a zip-slip entry
+  (`../../evil`) aborts and leaves `themes/` untouched; missing
+  `manifest.json` aborts; invalid `name` (empty, uppercase, contains `/`)
+  aborts; importing over an existing `<name>` dir replaces it; an
+  unsupported extension is rejected before touching the filesystem. All via
+  `tempfile::tempdir()` + `XDG_CONFIG_HOME` override, building tiny archives
+  in-memory with the `zip`/`tar` crates' writer APIs.
 
 ## Open questions for the implementation plan
 
-1. **New crate or module?** Discovery code (`scan_themes`/`load_theme_data`)
-   needs to be reachable from `opusdm-theme` only (not `opusdm-iconview`,
-   which stays icon-bytes-only, and not the hub, which never reads theme
-   dirs). Simplest: a module inside `opusdm-ipc` (it already owns `Theme`/
-   `IconSetId`/`DesktopSettings` and is a plain data crate with `serde_json`
-   already a dependency) rather than a new crate. Recommend: `opusdm-ipc::
-   themes` module. Confirm during planning.
+1. **New crate or module?** Discovery/parsing code (`scan_themes`/
+   `load_theme_data`) needs to be reachable from `opusdm-theme` only (not
+   `opusdm-iconview`, which stays icon-bytes-only, and not the hub, which
+   never reads theme dirs) - a module inside `opusdm-ipc` fits (it already
+   owns `Theme`/`IconSetId`/`DesktopSettings`, `serde_json` already a
+   dependency): `opusdm-ipc::themes`. The **importer** (archive extraction,
+   pulling in `zip`/`tar`/`flate2`/`bzip2`) should NOT live in `opusdm-ipc`
+   though - those are heavier, GTK-app-only dependencies every IPC consumer
+   (hub, every Lister process) would otherwise link for no reason. Recommend
+   the importer as its own module inside `opusdm-theme` (the only binary
+   that needs it), reusing `opusdm-ipc::themes`' manifest-parsing types.
+   Confirm crate boundary during planning.
 2. **Colours/appearance/behavior merge default** - when a theme's
    `theme.json` omits `colors` entirely, should applying it *reset* colours
    to `ColorSettings::default()`, or *keep the user's current* colours
