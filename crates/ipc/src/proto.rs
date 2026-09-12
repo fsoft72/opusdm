@@ -105,10 +105,12 @@ pub enum ToHub {
     /// desktop settings. The hub sanitises, persists to
     /// `~/.config/opusdm/desktop.json`, and applies live. No reply.
     SetDesktopSettings(crate::desktop::DesktopSettings),
-    /// Sent by `opusdm-theme` (not a Lister): replace the hub's theme (icon
-    /// set, colours, background). The hub sanitises, persists to both
-    /// settings.json and desktop.json, and applies live. No reply.
-    SetTheme(crate::theme::Theme),
+    /// Sent by `opusdm-theme` (not a Lister): replace the hub's whole
+    /// `Settings` (theme, appearance, behavior) atomically. The hub
+    /// sanitises the theme's background, persists to settings.json, applies
+    /// live to its own desktop, and broadcasts the new `Settings` to every
+    /// connected Lister. No reply.
+    SetSettings(Settings),
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -321,7 +323,7 @@ mod tests {
         roundtrip_tohub(ToHub::PresentLister(ListerId(5)));
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
         roundtrip_tohub(ToHub::SetDesktopSettings(crate::desktop::DesktopSettings::default()));
-        roundtrip_tohub(ToHub::SetTheme(crate::theme::Theme::default()));
+        roundtrip_tohub(ToHub::SetSettings(Settings::default()));
     }
 
     #[test]

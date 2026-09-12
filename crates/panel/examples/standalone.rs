@@ -8,10 +8,7 @@ fn main() {
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(|app| {
-        opusdm_panel::attach(
-            app,
-            opusdm_panel::PanelHooks { on_settings: Box::new(|| eprintln!("settings")) },
-        );
+        opusdm_panel::attach(app);
     });
     app.run_with_args::<&str>(&[]);
 }

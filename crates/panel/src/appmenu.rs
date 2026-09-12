@@ -9,7 +9,6 @@ use std::process::Command;
 
 use freedesktop_desktop_entry::{self as fde, DesktopEntry};
 
-use crate::PanelHooks;
 
 /// The fixed set of top-level menu buckets, in display order.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -155,7 +154,7 @@ fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
 }
 
 /// Build the menu button and its popover.
-pub fn build(hooks: PanelHooks, parent: &gtk::ApplicationWindow) -> gtk::Widget {
+pub fn build(parent: &gtk::ApplicationWindow) -> gtk::Widget {
     let button = gtk::MenuButton::new();
     button.set_label("Applications");
     button.add_css_class("flat");
@@ -195,17 +194,6 @@ pub fn build(hooks: PanelHooks, parent: &gtk::ApplicationWindow) -> gtk::Widget 
 
     list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    // Settings -> hub dialog.
-    {
-        let on_settings = hooks.on_settings;
-        let popover = popover.clone();
-        let row = menu_row(Some("preferences-system"), "Settings");
-        row.connect_clicked(move |_| {
-            popover.popdown();
-            on_settings();
-        });
-        list.append(&row);
-    }
     // About.
     {
         let popover = popover.clone();

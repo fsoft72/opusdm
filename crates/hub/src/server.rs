@@ -65,9 +65,6 @@ pub enum HubCmd {
     CancelJob(u64),
     /// Ask a Lister to raise its window.
     PresentLister(ListerId),
-    /// Update settings on all connected Listers. Boxed because `Settings` is
-    /// far larger than every other variant and is sent rarely.
-    UpdateSettings(Box<opusdm_ipc::Settings>),
     /// Tear everything down.
     Shutdown,
     /// A child process exited (from the SIGCHLD reaper).
@@ -234,10 +231,9 @@ fn owner_loop(
                 let _ = evt_tx.send(HubEvent::DesktopSettingsChanged(current_desktop.clone()));
             }
 
-            OwnerMsg::FromLister(_cid, ToHub::SetTheme(theme)) => {
-                let mut theme = theme;
-                theme.background = theme.background.sanitized();
-                current_settings.theme = theme;
+            OwnerMsg::FromLister(_cid, ToHub::SetSettings(mut new_settings)) => {
+                new_settings.theme.background = new_settings.theme.background.sanitized();
+                current_settings = new_settings;
                 if let Err(e) = settings::save_settings(&current_settings) {
                     eprintln!("opusdm-hub: cannot save settings.json: {e}");
                 }
@@ -434,15 +430,6 @@ fn owner_loop(
             OwnerMsg::FromGtk(HubCmd::PresentLister(id)) => {
                 if let Some(c) = conns.get_mut(&id.0) {
                     let _ = send(&mut c.write, &ToLister::Present);
-                }
-            }
-
-            OwnerMsg::FromGtk(HubCmd::UpdateSettings(new_settings)) => {
-                current_settings = *new_settings;
-                let _ = settings::save_settings(&current_settings);
-                for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ =
-                        send(&mut c.write, &ToLister::SettingsUpdate(current_settings.clone()));
                 }
             }
 
@@ -754,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn set_theme_persists_and_emits_a_changed_event() {
+    fn set_settings_persists_and_emits_a_changed_event() {
         let _guard = ENV_LOCK.lock().unwrap();
         // Keep settings.json out of the developer's real config dir.
         let cfg = tempfile::tempdir().unwrap();
@@ -764,10 +751,11 @@ mod tests {
         let handle = spawn_server(listener, Box::new(|_p| {}));
 
         let mut c = connect(&path);
-        let mut theme = opusdm_ipc::Theme::default();
-        theme.icon_set = opusdm_ipc::IconSetId::Custom("breeze-dark".to_string());
-        theme.background.gradient_angle = 900; // above GRADIENT_ANGLE_MAX, hub must clamp
-        send(&mut c, &ToHub::SetTheme(theme.clone())).unwrap();
+        let mut settings = opusdm_ipc::Settings::default();
+        settings.theme.icon_set = opusdm_ipc::IconSetId::Custom("breeze-dark".to_string());
+        settings.theme.background.gradient_angle = 900; // above GRADIENT_ANGLE_MAX, hub must clamp
+        settings.appearance.monospace_list = true;
+        send(&mut c, &ToHub::SetSettings(settings.clone())).unwrap();
 
         let mut got = None;
         while let Ok(ev) = handle.evt_rx.recv_timeout(Duration::from_millis(500)) {
@@ -780,8 +768,10 @@ mod tests {
         assert_eq!(got.icon_set, opusdm_ipc::IconSetId::Custom("breeze-dark".to_string()));
         assert_eq!(got.background.gradient_angle, opusdm_ipc::GRADIENT_ANGLE_MAX);
 
-        // settings.json landed under the temp config dir.
-        assert!(cfg.path().join("opusdm").join("settings.json").exists());
+        // settings.json landed under the temp config dir and carries appearance too.
+        let written = std::fs::read_to_string(cfg.path().join("opusdm").join("settings.json")).unwrap();
+        let back: opusdm_ipc::Settings = serde_json::from_str(&written).unwrap();
+        assert!(back.appearance.monospace_list);
     }
 
     #[test]

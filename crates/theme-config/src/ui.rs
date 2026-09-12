@@ -1,10 +1,11 @@
-//! The ICON SET and COLOURS sections. Background editing reuses
-//! `opusdm_desktop_config::ui::BackgroundSection` directly from `main.rs`.
+//! The ICON SET, COLOURS, APPEARANCE and BEHAVIOUR sections. Background
+//! editing reuses `opusdm_desktop_config::ui::BackgroundSection` directly
+//! from `main.rs`.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_desktop_config::ui::ColorRow;
-use opusdm_ipc::{ColorSettings, IconSetId};
+use opusdm_ipc::{Appearance, Behavior, ColorSettings, IconSetId};
 
 /// The ICON SET section.
 pub struct IconSetSection {
@@ -271,5 +272,76 @@ impl PresetSection {
             };
             colors.write(c);
         });
+    }
+}
+
+/// The APPEARANCE section: the non-theme look-and-feel toggles. Moved here
+/// from the hub's now-removed Settings dialog - icon set, colours and
+/// background already lived in this window, so the rest of the Lister's
+/// look belongs here too.
+pub struct AppearanceSection {
+    pub root: gtk::Box,
+    type_indicators: gtk::CheckButton,
+    monospace_list: gtk::CheckButton,
+    theme_window: gtk::CheckButton,
+}
+
+impl AppearanceSection {
+    pub fn new(initial: &Appearance) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let heading = gtk::Label::new(Some("APPEARANCE"));
+        heading.set_xalign(0.0);
+        heading.add_css_class("heading");
+        root.append(&heading);
+
+        let type_indicators = gtk::CheckButton::with_label("Type indicators after names (/ * @ = |)");
+        let monospace_list = gtk::CheckButton::with_label("Monospace file list");
+        let theme_window = gtk::CheckButton::with_label("Apply theme colours to the whole window");
+        type_indicators.set_active(initial.type_indicators);
+        monospace_list.set_active(initial.monospace_list);
+        theme_window.set_active(initial.theme_window);
+        for c in [&type_indicators, &monospace_list, &theme_window] {
+            root.append(c);
+        }
+
+        Self { root, type_indicators, monospace_list, theme_window }
+    }
+
+    pub fn read(&self) -> Appearance {
+        Appearance {
+            type_indicators: self.type_indicators.is_active(),
+            monospace_list: self.monospace_list.is_active(),
+            theme_window: self.theme_window.is_active(),
+        }
+    }
+}
+
+/// The BEHAVIOUR section: currently just the auto-refresh toggle.
+/// `auto_refresh_debounce_ms` has no control here - same as the dialog this
+/// replaced - so it round-trips untouched through [`Self::read`].
+pub struct BehaviorSection {
+    pub root: gtk::Box,
+    auto_refresh: gtk::CheckButton,
+    debounce_ms: u64,
+}
+
+impl BehaviorSection {
+    pub fn new(initial: &Behavior) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let heading = gtk::Label::new(Some("BEHAVIOUR"));
+        heading.set_xalign(0.0);
+        heading.add_css_class("heading");
+        root.append(&heading);
+
+        let auto_refresh =
+            gtk::CheckButton::with_label("Auto-refresh the list when the directory changes (inotify)");
+        auto_refresh.set_active(initial.auto_refresh);
+        root.append(&auto_refresh);
+
+        Self { root, auto_refresh, debounce_ms: initial.auto_refresh_debounce_ms }
+    }
+
+    pub fn read(&self) -> Behavior {
+        Behavior { auto_refresh: self.auto_refresh.is_active(), auto_refresh_debounce_ms: self.debounce_ms }
     }
 }

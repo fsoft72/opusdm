@@ -1,6 +1,6 @@
 //! Icon set choice and the `Theme` bundle: icon set + colours + desktop
 //! background, edited together by `opusdm-theme` and applied to the running
-//! desktop in one atomic `ToHub::SetTheme`.
+//! desktop as part of an atomic `ToHub::SetSettings`.
 
 use crate::desktop::Background;
 use crate::proto::ColorSettings;
@@ -83,8 +83,8 @@ impl IconSetId {
 }
 
 /// A theme bundle: icon set, Lister colours, and desktop background. What
-/// `opusdm-theme` edits and applies to the hub as one unit via
-/// `ToHub::SetTheme`.
+/// `opusdm-theme` edits, as part of `Settings` sent to the hub via
+/// `ToHub::SetSettings`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Theme {

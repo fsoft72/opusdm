@@ -9,7 +9,7 @@ use opusdm_ipc::themes::CustomThemeData;
 use opusdm_ipc::{Appearance, Behavior, DesktopSettings, IconSetId, Settings, Theme};
 
 /// Everything a successful "apply a custom theme" produces, ready to send
-/// as `SetTheme` + (if changed) `SetDesktopSettings`.
+/// as `SetSettings` + `SetDesktopSettings`.
 pub struct MergedTheme {
     pub theme: Theme,
     pub appearance: Appearance,

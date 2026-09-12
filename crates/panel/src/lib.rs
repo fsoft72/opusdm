@@ -22,13 +22,6 @@ use ewmh::EwmhEvent;
 use widgets::pager::Pager;
 use widgets::tasklist::Tasklist;
 
-/// Callbacks the panel needs back into the hub for actions it cannot own
-/// itself (the Settings dialog is coupled to the hub command channel).
-pub struct PanelHooks {
-    /// Open the hub Settings dialog.
-    pub on_settings: Box<dyn Fn() + 'static>,
-}
-
 /// The slice of EWMH state the left-hand widgets render from.
 #[derive(Default)]
 struct PanelState {
@@ -41,7 +34,7 @@ struct PanelState {
 
 /// Build the panel window on `app`, wire every widget, and return it. The
 /// window is presented before returning.
-pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWindow {
+pub fn attach(app: &gtk::Application) -> gtk::ApplicationWindow {
     let (mon_w, _mon_h) = gtk::gdk::Display::default()
         .as_ref()
         .map(window::monitor_geometry)
@@ -102,7 +95,7 @@ pub fn attach(app: &gtk::Application, hooks: PanelHooks) -> gtk::ApplicationWind
     let left = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     left.set_margin_start(6);
     left.set_hexpand(true);
-    left.append(&appmenu::build(hooks, &win));
+    left.append(&appmenu::build(&win));
     left.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     left.append(pager.widget());
     left.append(&gtk::Separator::new(gtk::Orientation::Vertical));

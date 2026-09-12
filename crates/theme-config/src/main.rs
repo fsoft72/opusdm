@@ -29,7 +29,8 @@ fn main() -> gtk::glib::ExitCode {
 }
 
 fn build_window(app: &gtk::Application) {
-    let theme = model::load();
+    let settings_data = model::load_settings();
+    let theme = settings_data.theme.clone();
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -80,6 +81,15 @@ fn build_window(app: &gtk::Application) {
     lister_page.append(&preset.root);
     lister_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     lister_page.append(&colors.root);
+    lister_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let appearance_section = Rc::new(ui::AppearanceSection::new(&settings_data.appearance));
+    lister_page.append(&appearance_section.root);
+    lister_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let behavior_section = Rc::new(ui::BehaviorSection::new(&settings_data.behavior));
+    lister_page.append(&behavior_section.root);
+
     lister_page_outer.set_child(Some(&lister_page));
 
     notebook.append_page(&lister_page_outer, Some(&gtk::Label::new(Some("Lister"))));
@@ -111,28 +121,23 @@ fn build_window(app: &gtk::Application) {
         let icon_set = icon_set.clone();
         let colors = colors.clone();
         let bg = bg.clone();
+        let appearance_section = appearance_section.clone();
+        let behavior_section = behavior_section.clone();
         let note = note.clone();
         apply.connect_clicked(move |_| {
             let selected = icon_set.borrow().value();
-            let current_settings = model::load_settings();
-            let current_desktop = opusdm_desktop_config::model::load();
-            let result = match &selected {
-                opusdm_ipc::IconSetId::None => model::IconSetApplication {
-                    theme: opusdm_ipc::Theme { icon_set: selected.clone(), colors: colors.read(), background: bg.read() },
-                    appearance: None,
-                    behavior: None,
-                    desktop: None,
+            let ui_settings = opusdm_ipc::Settings {
+                theme: opusdm_ipc::Theme {
+                    icon_set: opusdm_ipc::IconSetId::None,
+                    colors: colors.read(),
+                    background: bg.read(),
                 },
-                opusdm_ipc::IconSetId::Custom(_) => {
-                    model::apply_icon_set(&selected, &current_settings, &current_desktop)
-                }
+                appearance: appearance_section.read(),
+                behavior: behavior_section.read(),
             };
-            match model::apply_full(
-                &result.theme,
-                result.appearance.as_ref(),
-                result.behavior.as_ref(),
-                result.desktop.as_ref(),
-            ) {
+            let ui_desktop = opusdm_desktop_config::model::load();
+            let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);
+            match model::apply_full(&result.settings, &result.desktop) {
                 model::ApplyOutcome::SentToHub => {
                     note.set_text("Applied to the running desktop.");
                     note.set_visible(true);

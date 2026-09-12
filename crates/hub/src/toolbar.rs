@@ -9,7 +9,6 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_panel::PanelHooks;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -217,14 +216,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         show_missing_nerd_font_dialog(&window);
     }
 
-    // The panel dock lives in its own window on the same application. Its
-    // "Settings" item reuses the hub settings dialog.
-    let on_settings = {
-        let window = window.clone();
-        let cmd_tx = cmd_tx.clone();
-        Box::new(move || show_settings_dialog(&window, &cmd_tx))
-    };
-    opusdm_panel::attach(app, PanelHooks { on_settings });
+    // The panel dock lives in its own window on the same application.
+    opusdm_panel::attach(app);
 
     // The panel reserves a top strut, which shrinks the work area and makes
     // GTK clamp this desktop window a strip short. Re-assert the full-monitor
@@ -474,18 +467,6 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
 
     menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    // Settings
-    {
-        let widgets = widgets.clone();
-        let menu_ref = menu.clone();
-        let btn = menu_button("Settings");
-        btn.connect_clicked(move |_| {
-            menu_ref.set_visible(false);
-            show_settings_dialog(&widgets.window, &widgets.cmd_tx);
-        });
-        menu.append(&btn);
-    }
-
     // About
     {
         let widgets = widgets.clone();
@@ -713,99 +694,6 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
         | HubEvent::AllListersGone
         | HubEvent::Roles { .. } => {}
     }
-}
-
-/// The appearance toggles of the settings dialog. Icon set, colours, and
-/// background live in the separate `opusdm-theme` app.
-struct AppearanceChecks {
-    type_indicators: gtk::CheckButton,
-    monospace_list: gtk::CheckButton,
-    theme_window: gtk::CheckButton,
-}
-
-impl AppearanceChecks {
-    fn read(&self) -> opusdm_ipc::Appearance {
-        opusdm_ipc::Appearance {
-            type_indicators: self.type_indicators.is_active(),
-            monospace_list: self.monospace_list.is_active(),
-            theme_window: self.theme_window.is_active(),
-        }
-    }
-}
-
-/// The "Appearance" section: the non-theme look-and-feel toggles.
-fn add_appearance_section(vbox: &gtk::Box, appearance: &opusdm_ipc::Appearance) -> AppearanceChecks {
-    let heading = gtk::Label::new(Some("APPEARANCE"));
-    heading.set_xalign(0.0);
-    heading.add_css_class("heading");
-    vbox.append(&heading);
-
-    let checks = AppearanceChecks {
-        type_indicators: gtk::CheckButton::with_label("Type indicators after names (/ * @ = |)"),
-        monospace_list: gtk::CheckButton::with_label("Monospace file list"),
-        theme_window: gtk::CheckButton::with_label("Apply theme colours to the whole window"),
-    };
-    checks.type_indicators.set_active(appearance.type_indicators);
-    checks.monospace_list.set_active(appearance.monospace_list);
-    checks.theme_window.set_active(appearance.theme_window);
-    for c in [&checks.type_indicators, &checks.monospace_list, &checks.theme_window] {
-        vbox.append(c);
-    }
-
-    checks
-}
-
-/// The "Behaviour" section. Returns the auto-refresh toggle.
-fn add_behavior_section(vbox: &gtk::Box, behavior: &opusdm_ipc::Behavior) -> gtk::CheckButton {
-    let heading = gtk::Label::new(Some("BEHAVIOUR"));
-    heading.set_xalign(0.0);
-    heading.add_css_class("heading");
-    vbox.append(&heading);
-
-    let auto_refresh =
-        gtk::CheckButton::with_label("Auto-refresh the list when the directory changes (inotify)");
-    auto_refresh.set_active(behavior.auto_refresh);
-    vbox.append(&auto_refresh);
-
-    auto_refresh
-}
-
-fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>) {
-    let settings_data = settings::load_settings();
-
-    let shell = opusdm_ui::DialogShell::new(parent, "OpusDM Settings")
-        .size(460, 300)
-        .scrolled();
-    let vbox = shell.content();
-
-    let appearance_checks = add_appearance_section(vbox, &settings_data.appearance);
-    let auto_refresh = add_behavior_section(vbox, &settings_data.behavior);
-
-    shell.close_button("Cancel");
-    let save_btn = shell.button("Save");
-
-    {
-        let window = shell.window().clone();
-        let cmd_tx = cmd_tx.clone();
-        let theme = settings_data.theme.clone();
-        save_btn.connect_clicked(move |_| {
-            let appearance = appearance_checks.read();
-            let behavior = opusdm_ipc::Behavior {
-                auto_refresh: auto_refresh.is_active(),
-                // Not exposed in the dialog yet; keep whatever settings.json has.
-                auto_refresh_debounce_ms: settings_data.behavior.auto_refresh_debounce_ms,
-            };
-            // Server owns the in-memory settings and persists to disk.
-            let _ = cmd_tx.send(HubCmd::UpdateSettings(Box::new(opusdm_ipc::Settings {
-                theme: theme.clone(),
-                appearance,
-                behavior,
-            })));
-            window.close();
-        });
-    }
-
-    shell.present();
 }
 
 
