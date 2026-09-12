@@ -112,11 +112,14 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         });
     });
 
+    let missing_nerd_font = initial_settings.theme.icon_set == opusdm_ipc::IconSetId::None
+        && !opusdm_iconview::font_probe::nerd_font_available();
+
     let desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
         desktop_settings.desktop_dir.as_deref(),
     );
     let (desktop_area, desktop_field) =
-        build_desktop_area(desktop_dir.as_deref(), initial_settings.theme.icon_set);
+        build_desktop_area(desktop_dir.as_deref(), initial_settings.theme.icon_set.clone());
     if let Some(f) = &desktop_field {
         f.set_icon_size(desktop_settings.icon_size);
         f.set_grid_spacing(desktop_settings.grid_spacing);
@@ -209,6 +212,10 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     }
 
     window.present();
+
+    if missing_nerd_font {
+        show_missing_nerd_font_dialog(&window);
+    }
 
     // The panel dock lives in its own window on the same application. Its
     // "Settings" item reuses the hub settings dialog.
@@ -563,6 +570,25 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
     }
 
     menu
+}
+
+/// Shown once at startup when text glyphs are the active icon set but no
+/// patched Nerd Font is installed - without one, `opusdm_iconview::
+/// font_probe` already blanks the glyphs rather than showing hex tofu, but
+/// an empty icon slot is still worse than telling the user how to fix it.
+fn show_missing_nerd_font_dialog(parent: &gtk::ApplicationWindow) {
+    opusdm_ui::requester_rich(
+        parent,
+        "Nerd Font Not Found",
+        "<b>No Nerd Font is installed.</b>\n\n\
+         OpusDM's text-glyph icon set needs a patched \"Nerd Font\" to \
+         show file-type icons; without one, names appear with no icon \
+         instead. You can also pick an image-based theme instead - see \
+         \"Desktop \u{2192} Theme\".\n\n\
+         <a href='https://www.nerdfonts.com/font-downloads'>https://www.nerdfonts.com/font-downloads</a>",
+        &[("OK", ())],
+        |_| {},
+    );
 }
 
 fn show_about_dialog(parent: &gtk::ApplicationWindow) {
