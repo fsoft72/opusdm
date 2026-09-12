@@ -10,6 +10,9 @@ use opusdm_ipc::{ColorSettings, IconSetId};
 pub struct IconSetSection {
     pub root: gtk::Box,
     dropdown: gtk::DropDown,
+    /// Parallel to the dropdown's rows: `None` (index 0) then every
+    /// installed custom theme, in the order shown.
+    options: Vec<IconSetId>,
 }
 
 impl IconSetSection {
@@ -20,19 +23,24 @@ impl IconSetSection {
         heading.add_css_class("heading");
         root.append(&heading);
 
-        let labels: Vec<String> = IconSetId::ALL.iter().map(|s| s.label()).collect();
+        let mut options: Vec<IconSetId> = IconSetId::ALL.to_vec();
+        let mut labels: Vec<String> = options.iter().map(|s| s.label()).collect();
+        for theme in opusdm_ipc::themes::scan_themes() {
+            options.push(IconSetId::Custom(theme.slug));
+            labels.push(theme.label);
+        }
         let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
         let dropdown = gtk::DropDown::from_strings(&label_refs);
-        let selected = IconSetId::ALL.iter().position(|s| s == current).unwrap_or(0);
+        let selected = options.iter().position(|s| s == current).unwrap_or(0);
         dropdown.set_selected(selected as u32);
         root.append(&dropdown);
 
-        Self { root, dropdown }
+        Self { root, dropdown, options }
     }
 
     /// The currently selected icon set.
     pub fn value(&self) -> IconSetId {
-        IconSetId::ALL[self.dropdown.selected() as usize].clone()
+        self.options[self.dropdown.selected() as usize].clone()
     }
 }
 
