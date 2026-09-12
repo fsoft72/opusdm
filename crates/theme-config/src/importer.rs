@@ -7,7 +7,7 @@ use opusdm_ipc::themes::{theme_dir, themes_dir, ThemeManifest};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug)]
 pub enum ImportError {

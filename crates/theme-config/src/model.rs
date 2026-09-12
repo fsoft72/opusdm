@@ -2,7 +2,7 @@
 //! running hub over the socket, or write settings.json's `theme` field
 //! directly when no hub is up.
 
-use opusdm_ipc::{DesktopSettings, IconSetId, Settings, Theme};
+use opusdm_ipc::{Appearance, Behavior, DesktopSettings, IconSetId, Settings, Theme};
 use std::path::PathBuf;
 
 /// Path to `~/.config/opusdm/settings.json`. Same resolution as the hub.
@@ -34,28 +34,40 @@ pub fn load_settings() -> Settings {
         .unwrap_or_default()
 }
 
+/// What applying a selected icon set produces: the `Theme` to send, plus
+/// `appearance`/`behavior`/`desktop` only when a custom theme actually
+/// changed them from their current value.
+pub struct IconSetApplication {
+    pub theme: Theme,
+    pub appearance: Option<Appearance>,
+    pub behavior: Option<Behavior>,
+    pub desktop: Option<DesktopSettings>,
+}
+
 /// Decide what a selected icon set needs applied: `IconSetId::None` needs
 /// only the given `current` theme's other fields (colours/background as
 /// already edited in the UI) with `icon_set = None`; `IconSetId::Custom(slug)`
 /// merges that theme's `theme.json` over `current`/`current_desktop` via
-/// [`crate::apply::merge_custom_theme`], returning a `DesktopSettings` to
-/// send only when the theme actually touches desktop metrics.
+/// [`crate::apply::merge_custom_theme`], surfacing only the fields that
+/// actually changed.
 pub fn apply_icon_set(
     icon_set: &IconSetId,
     current: &Settings,
     current_desktop: &DesktopSettings,
-) -> (Theme, Option<DesktopSettings>) {
+) -> IconSetApplication {
     match icon_set {
         IconSetId::None => {
             let mut theme = current.theme.clone();
             theme.icon_set = IconSetId::None;
-            (theme, None)
+            IconSetApplication { theme, appearance: None, behavior: None, desktop: None }
         }
         IconSetId::Custom(slug) => {
             let data = opusdm_ipc::themes::load_theme_data(slug);
             let merged = crate::apply::merge_custom_theme(slug, &data, current, current_desktop);
-            let desktop_changed = merged.desktop != *current_desktop;
-            (merged.theme, desktop_changed.then_some(merged.desktop))
+            let desktop = (merged.desktop != *current_desktop).then_some(merged.desktop);
+            let appearance = (merged.appearance != current.appearance).then_some(merged.appearance);
+            let behavior = (merged.behavior != current.behavior).then_some(merged.behavior);
+            IconSetApplication { theme: merged.theme, appearance, behavior, desktop }
         }
     }
 }
@@ -109,9 +121,23 @@ fn write_file(theme: &Theme) -> std::io::Result<()> {
     std::fs::write(&path, serde_json::to_string_pretty(&settings)?)
 }
 
-/// Apply `theme`, and `desktop` if a custom theme's metrics changed it.
-/// Same hub-or-file fallback as [`apply`], run for both messages.
-pub fn apply_full(theme: &Theme, desktop: Option<&DesktopSettings>) -> ApplyOutcome {
+/// Apply `theme`, `desktop` if a custom theme's metrics changed it, and
+/// `appearance`/`behavior` if it changed either of those. Same hub-or-file
+/// fallback as [`apply`] for `theme`/`desktop`.
+///
+/// There is no `ToHub` message to push `appearance`/`behavior` to a
+/// *running* hub - only `SetTheme` and `SetDesktopSettings` exist, and
+/// neither carries them. So `appearance`/`behavior` are always persisted
+/// straight into `settings.json` (never sent over the socket): when a hub
+/// is running, that hub's live in-memory copy is unaffected until it next
+/// starts and re-reads the file; when no hub is running, this is exactly
+/// what already happens for every other setting.
+pub fn apply_full(
+    theme: &Theme,
+    appearance: Option<&Appearance>,
+    behavior: Option<&Behavior>,
+    desktop: Option<&DesktopSettings>,
+) -> ApplyOutcome {
     let outcome = apply(theme);
     if let (ApplyOutcome::SentToHub, Some(d)) = (&outcome, desktop) {
         let sock = opusdm_ipc::sockpath::hub_sock_path();
@@ -123,7 +149,32 @@ pub fn apply_full(theme: &Theme, desktop: Option<&DesktopSettings>) -> ApplyOutc
             eprintln!("opusdm-theme: desktop settings write failed: {e}");
         }
     }
+    if appearance.is_some() || behavior.is_some() {
+        if let Err(e) = patch_appearance_behavior(appearance, behavior) {
+            eprintln!("opusdm-theme: appearance/behavior write failed: {e}");
+        }
+    }
     outcome
+}
+
+/// Read-modify-write settings.json, overwriting `appearance`/`behavior`
+/// when given. Never touches `theme` (owned by [`write_file`]/the hub).
+fn patch_appearance_behavior(appearance: Option<&Appearance>, behavior: Option<&Behavior>) -> std::io::Result<()> {
+    let path = config_path();
+    let mut settings: Settings = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_default();
+    if let Some(a) = appearance {
+        settings.appearance = a.clone();
+    }
+    if let Some(b) = behavior {
+        settings.behavior = b.clone();
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&settings)?)
 }
 
 fn send_desktop_to_hub(sock: &std::path::Path, settings: &DesktopSettings) -> std::io::Result<()> {
@@ -192,13 +243,15 @@ mod tests {
 
     #[test]
     fn apply_icon_set_none_needs_no_desktop_merge() {
-        let (theme, desktop) = apply_icon_set(
+        let result = apply_icon_set(
             &opusdm_ipc::IconSetId::None,
             &Settings::default(),
             &opusdm_ipc::DesktopSettings::default(),
         );
-        assert_eq!(theme.icon_set, opusdm_ipc::IconSetId::None);
-        assert!(desktop.is_none());
+        assert_eq!(result.theme.icon_set, opusdm_ipc::IconSetId::None);
+        assert!(result.desktop.is_none());
+        assert!(result.appearance.is_none());
+        assert!(result.behavior.is_none());
     }
 
     #[test]
@@ -213,12 +266,12 @@ mod tests {
 
         let mut current_desktop = opusdm_ipc::DesktopSettings::default();
         current_desktop.icon_size = 64;
-        let (theme, desktop) = apply_icon_set(
+        let result = apply_icon_set(
             &opusdm_ipc::IconSetId::Custom("t".to_string()),
             &Settings::default(),
             &current_desktop,
         );
-        assert_eq!(theme.icon_set, opusdm_ipc::IconSetId::Custom("t".to_string()));
-        assert_eq!(desktop.unwrap().icon_size, 100);
+        assert_eq!(result.theme.icon_set, opusdm_ipc::IconSetId::Custom("t".to_string()));
+        assert_eq!(result.desktop.unwrap().icon_size, 100);
     }
 }
