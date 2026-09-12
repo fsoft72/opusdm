@@ -93,7 +93,6 @@ impl Default for Background {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopSettings {
-    pub background: Background,
     /// Icon box size in pixels for the desktop icon field.
     pub icon_size: i32,
     /// Auto-slot cell size in pixels for the desktop icon field: the room each
@@ -110,7 +109,6 @@ pub struct DesktopSettings {
 impl Default for DesktopSettings {
     fn default() -> Self {
         Self {
-            background: Background::default(),
             icon_size: 64,
             grid_spacing: 96,
             grid_gap: 4,
@@ -129,7 +127,15 @@ impl DesktopSettings {
         self.grid_spacing = self.grid_spacing.clamp(lo, hi);
         let (lo, hi) = GRID_GAP_RANGE;
         self.grid_gap = self.grid_gap.clamp(lo, hi);
-        self.background.gradient_angle = self.background.gradient_angle.min(GRADIENT_ANGLE_MAX);
+        self
+    }
+}
+
+impl Background {
+    /// Clamp the gradient angle into its accepted range. Call right after
+    /// loading from disk and right after receiving a value over IPC.
+    pub fn sanitized(mut self) -> Background {
+        self.gradient_angle = self.gradient_angle.min(GRADIENT_ANGLE_MAX);
         self
     }
 }
@@ -200,35 +206,40 @@ mod tests {
     #[test]
     fn default_reproduces_the_current_desktop_look() {
         let d = DesktopSettings::default();
-        assert_eq!(d.background.mode, BackgroundMode::Solid);
-        assert_eq!(d.background.solid, "#2e3436");
-        assert_eq!(d.background.image_fit, ImageFit::Fill);
         assert_eq!(d.icon_size, 64);
         assert_eq!(d.grid_spacing, 96);
         assert_eq!(d.grid_gap, 4);
         assert_eq!(d.desktop_dir, None);
+
+        let bg = Background::default();
+        assert_eq!(bg.mode, BackgroundMode::Solid);
+        assert_eq!(bg.solid, "#2e3436");
+        assert_eq!(bg.image_fit, ImageFit::Fill);
     }
 
     #[test]
     fn missing_fields_deserialize_to_defaults() {
         let d: DesktopSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(d, DesktopSettings::default());
-        let d: DesktopSettings =
-            serde_json::from_str(r#"{"background":{"mode":"gradient"}}"#).unwrap();
-        assert_eq!(d.background.mode, BackgroundMode::Gradient);
-        assert_eq!(d.background.solid, DesktopSettings::default().background.solid);
+        let bg: Background = serde_json::from_str(r#"{"mode":"gradient"}"#).unwrap();
+        assert_eq!(bg.mode, BackgroundMode::Gradient);
+        assert_eq!(bg.solid, Background::default().solid);
     }
 
     #[test]
     fn roundtrips_through_json() {
         let mut d = DesktopSettings::default();
-        d.background.mode = BackgroundMode::Image;
-        d.background.image_path = Some(PathBuf::from("/home/u/pic.png"));
-        d.background.image_fit = ImageFit::Tile;
         d.icon_size = 96;
         d.desktop_dir = Some(PathBuf::from("/home/u/Desk"));
         let s = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<DesktopSettings>(&s).unwrap(), d);
+
+        let mut bg = Background::default();
+        bg.mode = BackgroundMode::Image;
+        bg.image_path = Some(PathBuf::from("/home/u/pic.png"));
+        bg.image_fit = ImageFit::Tile;
+        let s = serde_json::to_string(&bg).unwrap();
+        assert_eq!(serde_json::from_str::<Background>(&s).unwrap(), bg);
     }
 
     #[test]
@@ -245,12 +256,14 @@ mod tests {
         d.icon_size = 5;
         d.grid_spacing = 9999;
         d.grid_gap = 9999;
-        d.background.gradient_angle = 900;
         let d = d.sanitized();
         assert_eq!(d.icon_size, ICON_SIZE_RANGE.0);
         assert_eq!(d.grid_spacing, GRID_SPACING_RANGE.1);
         assert_eq!(d.grid_gap, GRID_GAP_RANGE.1);
-        assert_eq!(d.background.gradient_angle, GRADIENT_ANGLE_MAX);
+
+        let mut bg = Background::default();
+        bg.gradient_angle = 900;
+        assert_eq!(bg.sanitized().gradient_angle, GRADIENT_ANGLE_MAX);
 
         let mut d = DesktopSettings::default();
         d.icon_size = 999;
