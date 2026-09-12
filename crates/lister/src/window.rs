@@ -911,10 +911,9 @@ impl Ui {
             }
             ToLister::SettingsUpdate(new_settings) => {
                 let names_changed = {
-                    let old = &self.settings.borrow().appearance;
-                    let new = &new_settings.appearance;
-                    old.file_icons != new.file_icons
-                        || old.type_indicators != new.type_indicators
+                    let old = self.settings.borrow();
+                    old.theme.icon_set != new_settings.theme.icon_set
+                        || old.appearance.type_indicators != new_settings.appearance.type_indicators
                 };
                 *self.settings.borrow_mut() = new_settings;
                 self.update_css_for_colors();

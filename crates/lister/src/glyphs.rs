@@ -28,6 +28,13 @@ fn kind_of(row: &Row) -> IconKind {
     IconKind::File
 }
 
+/// Real icon bytes for `row` under icon set `set`, or `None` (caller falls
+/// back to the glyph). Extension is derived the same way `IconEntry` does.
+pub fn icon_bytes_for_row(row: &Row, set: opusdm_ipc::IconSetId) -> Option<&'static [u8]> {
+    let ext = opusdm_iconview::IconEntry::ext_of(&row.name);
+    opusdm_iconview::icon_set::icon_bytes_for(kind_of(row), row.mode, ext.as_deref(), set)
+}
+
 /// The `ls -F` style type character: `/` directory, `@` symlink, `=` socket,
 /// `|` fifo, `*` executable, or `None` for a plain file.
 pub fn type_indicator(row: &Row) -> Option<char> {
@@ -139,5 +146,15 @@ mod tests {
         let mut link = row("l");
         link.is_symlink = true;
         assert_eq!(decorate_name(&link, false, true), "l@");
+    }
+
+    #[test]
+    fn icon_bytes_for_row_is_none_without_a_real_icon_set() {
+        assert_eq!(icon_bytes_for_row(&row("a.rs"), opusdm_ipc::IconSetId::None), None);
+    }
+
+    #[test]
+    fn icon_bytes_for_row_matches_the_extension() {
+        assert!(icon_bytes_for_row(&row("a.rs"), opusdm_ipc::IconSetId::BreezeDark).is_some());
     }
 }

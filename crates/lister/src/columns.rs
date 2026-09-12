@@ -109,7 +109,17 @@ pub fn add_column(
                 label.add_controller(click);
             }
 
-            item.set_child(Some(&label));
+            if matches!(kind, ColKind::Name) {
+                let cell = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+                let icon = gtk::Image::new();
+                icon.set_pixel_size(16);
+                icon.set_visible(false);
+                cell.append(&icon);
+                cell.append(&label);
+                item.set_child(Some(&cell));
+            } else {
+                item.set_child(Some(&label));
+            }
         });
     }
     let tz = local_tz_offset_secs();
@@ -121,7 +131,12 @@ pub fn add_column(
             .and_downcast::<BoxedAnyObject>()
             .map(|o| o.borrow::<Rc<Row>>().clone());
         let Some(row) = row else { return };
-        let label = item.child().and_downcast::<gtk::Label>().unwrap();
+        let label = if matches!(kind, ColKind::Name) {
+            let cell = item.child().and_downcast::<gtk::Box>().unwrap();
+            cell.last_child().and_downcast::<gtk::Label>().unwrap()
+        } else {
+            item.child().and_downcast::<gtk::Label>().unwrap()
+        };
         // Every cell in the row gets the same dir/file background+text CSS
         // class, so the whole row reads as one colored line.
         label.remove_css_class("row-dir");
@@ -132,14 +147,33 @@ pub fn add_column(
         apply_selected_class(&label, item.is_selected());
         match kind {
             ColKind::Name => {
-                let (icons, indicators) = ui_getter_bind()
+                let (icon_set, indicators) = ui_getter_bind()
                     .map(|ui| {
-                        let a = &ui.settings.borrow().appearance;
-                        (a.file_icons, a.type_indicators)
+                        let s = ui.settings.borrow();
+                        (s.theme.icon_set, s.appearance.type_indicators)
                     })
-                    .unwrap_or((false, false));
+                    .unwrap_or((opusdm_ipc::IconSetId::None, false));
                 label.set_xalign(0.0);
-                label.set_text(&crate::glyphs::decorate_name(&row, icons, indicators));
+                let icon_widget = item
+                    .child()
+                    .and_downcast::<gtk::Box>()
+                    .unwrap()
+                    .first_child()
+                    .and_downcast::<gtk::Image>()
+                    .unwrap();
+                if let Some(bytes) = crate::glyphs::icon_bytes_for_row(&row, icon_set) {
+                    let gbytes = gtk::glib::Bytes::from_static(bytes);
+                    if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                        icon_widget.set_paintable(Some(&texture));
+                        icon_widget.set_visible(true);
+                    }
+                    label.set_text(&crate::glyphs::decorate_name(&row, false, indicators));
+                } else {
+                    // No real icon set active: keep the Nerd Font glyph in the
+                    // text itself, same as before the icon-set toggle existed.
+                    icon_widget.set_visible(false);
+                    label.set_text(&crate::glyphs::decorate_name(&row, true, indicators));
+                }
             }
             ColKind::Size => {
                 label.set_xalign(1.0);

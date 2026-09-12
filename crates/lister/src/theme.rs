@@ -4,7 +4,7 @@ use opusdm_ipc::Settings;
 
 /// Generate the CSS string for the settings-driven stylesheet.
 pub fn generate_css(settings: &Settings) -> String {
-    let c = &settings.colors;
+    let c = &settings.theme.colors;
     // Opt-in: carry the file colours into the window chrome as well, so a dark
     // preset does not leave a light toolbar around a dark list. Redefining the
     // two named colours also reaches the button gradients, which are written in
@@ -115,26 +115,32 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_colour_reaches_the_stylesheet() {
-        for preset in opusdm_ipc::ThemePreset::ALL {
-            let settings = Settings {
-                colors: preset.colors(),
-                appearance: Default::default(),
-                behavior: Default::default(),
-            };
-            let css = generate_css(&settings);
-            let c = &settings.colors;
-            for hex in [
-                &c.source_bg, &c.source_fg, &c.dest_bg, &c.dest_fg,
-                &c.dir_bg, &c.dir_fg, &c.file_bg, &c.file_fg,
-                &c.selected_bg, &c.selected_fg,
-            ] {
-                assert!(css.contains(hex.as_str()), "{}: {hex} missing", preset.id());
-            }
-            // The list ground must be painted, or a dark preset shows the GTK
-            // theme's light background below the last row.
-            assert!(css.contains("columnview, columnview > listview"));
+    fn custom_theme_colours_reach_the_stylesheet() {
+        let mut settings = Settings::default();
+        settings.theme.colors = opusdm_ipc::ColorSettings {
+            source_bg: "#111111".into(),
+            source_fg: "#222222".into(),
+            dest_bg: "#333333".into(),
+            dest_fg: "#444444".into(),
+            dir_bg: "#555555".into(),
+            dir_fg: "#666666".into(),
+            file_bg: "#777777".into(),
+            file_fg: "#888888".into(),
+            selected_bg: "#999999".into(),
+            selected_fg: "#aaaaaa".into(),
+        };
+        let css = generate_css(&settings);
+        let c = &settings.theme.colors;
+        for hex in [
+            &c.source_bg, &c.source_fg, &c.dest_bg, &c.dest_fg,
+            &c.dir_bg, &c.dir_fg, &c.file_bg, &c.file_fg,
+            &c.selected_bg, &c.selected_fg,
+        ] {
+            assert!(css.contains(hex.as_str()), "{hex} missing");
         }
+        // The list ground must be painted, or a dark theme shows the GTK
+        // theme's light background below the last row.
+        assert!(css.contains("columnview, columnview > listview"));
     }
 
     #[test]
@@ -151,8 +157,8 @@ mod tests {
     #[test]
     fn selection_colours_are_no_longer_hardcoded_to_the_gtk_theme() {
         let mut settings = Settings::default();
-        settings.colors.selected_bg = "#123456".into();
-        settings.colors.selected_fg = "#ABCDEF".into();
+        settings.theme.colors.selected_bg = "#123456".into();
+        settings.theme.colors.selected_fg = "#ABCDEF".into();
         let css = generate_css(&settings);
         assert!(css.contains(".cell-selected { background-color: #123456; color: #ABCDEF; }"));
         assert!(!css.contains("@theme_selected_bg_color"));
@@ -160,11 +166,9 @@ mod tests {
 
     #[test]
     fn window_chrome_is_only_repainted_when_asked() {
-        let mut settings = Settings {
-            colors: opusdm_ipc::ThemePreset::Cyberpunk.colors(),
-            appearance: Default::default(),
-            behavior: Default::default(),
-        };
+        let mut settings = Settings::default();
+        settings.theme.colors.file_bg = "#1A1B26".into();
+        settings.theme.colors.file_fg = "#C0CAF5".into();
         assert!(!generate_css(&settings).contains("@define-color"));
 
         settings.appearance.theme_window = true;
@@ -174,12 +178,12 @@ mod tests {
         assert!(css.contains("window { background-color: #1A1B26; color: #C0CAF5; }"));
     }
 
-    /// Parse every preset's stylesheet with the real GTK CSS parser. A typo in
-    /// a selector makes GTK drop the rule silently at runtime, so catching it
-    /// here is the only cheap way to know the themes actually apply.
-    /// Skipped when no display is available (gtk::init fails).
+    /// Parse the stylesheet with the real GTK CSS parser. A typo in a selector
+    /// makes GTK drop the rule silently at runtime, so catching it here is the
+    /// only cheap way to know the theme actually applies. Skipped when no
+    /// display is available (gtk::init fails).
     #[test]
-    fn every_preset_stylesheet_parses_without_error() {
+    fn stylesheet_parses_without_error() {
         use gtk4 as gtk;
         if gtk::init().is_err() {
             return;
@@ -192,26 +196,17 @@ mod tests {
                 errors.borrow_mut().push(format!("{section}: {err}"));
             });
         }
-        for preset in opusdm_ipc::ThemePreset::ALL {
-            // Every toggle on, so the conditional rules are parsed too.
-            let settings = Settings {
-                colors: preset.colors(),
-                appearance: opusdm_ipc::Appearance {
-                    preset: preset.id().to_string(),
-                    file_icons: true,
-                    type_indicators: true,
-                    monospace_list: true,
-                    theme_window: true,
-                },
-                behavior: Default::default(),
-            };
-            provider.load_from_data(&generate_css(&settings));
-            assert!(
-                errors.borrow().is_empty(),
-                "{}: {:?}",
-                preset.id(),
-                errors.borrow()
-            );
-        }
+        // Every toggle on, so the conditional rules are parsed too.
+        let settings = Settings {
+            theme: opusdm_ipc::Theme { icon_set: opusdm_ipc::IconSetId::BreezeDark, ..Default::default() },
+            appearance: opusdm_ipc::Appearance {
+                type_indicators: true,
+                monospace_list: true,
+                theme_window: true,
+            },
+            behavior: Default::default(),
+        };
+        provider.load_from_data(&generate_css(&settings));
+        assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
     }
 }
