@@ -264,6 +264,10 @@ pub enum ToLister {
         bytes_total: u64,
         files_done: u64,
         files_total: u64,
+        /// Bytes written so far for `current_file` alone. `0` when not tracked.
+        file_bytes_done: u64,
+        /// Size of `current_file` alone. `0` when not tracked.
+        file_bytes_total: u64,
     },
     /// A job finished.
     JobDone {
@@ -366,6 +370,8 @@ mod tests {
             bytes_total: 100,
             files_done: 1,
             files_total: 9,
+            file_bytes_done: 3,
+            file_bytes_total: 30,
         });
         roundtrip_tolister(ToLister::JobDone {
             job_id: 1,

@@ -23,6 +23,8 @@ pub fn run_delete(srcs: &[PathBuf], tx: &Sender<Progress>, cancel: &CancelToken)
             total_bytes: 0,
             files_done: removed,
             files_total: srcs.len() as u64,
+            file_bytes_done: 0,
+            file_bytes_total: 0,
         });
         match remove_recursive(src) {
             Ok(()) => removed += 1,

@@ -25,6 +25,10 @@ pub enum Progress {
         total_bytes: u64,
         files_done: u64,
         files_total: u64,
+        /// Bytes written so far for `path` alone. `0` when not tracked (e.g. delete).
+        file_bytes_done: u64,
+        /// Size of `path` alone. `0` when not tracked (e.g. delete).
+        file_bytes_total: u64,
     },
     /// A destination entry exists. The worker blocks until `reply` is sent.
     Conflict {

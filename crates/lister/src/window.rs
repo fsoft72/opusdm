@@ -898,9 +898,8 @@ impl Ui {
             }
             ToLister::Present => self.window.present(),
             ToLister::Shutdown => self.window.close(),
-            ToLister::JobProgress { job_id, bytes_done, bytes_total, current_file, .. } => {
-                crate::actions::on_job_progress(self, job_id, bytes_done, bytes_total, &current_file);
-            }
+            // Progress is shown centrally by the hub's progress window now.
+            ToLister::JobProgress { .. } => {}
             ToLister::JobDone { job_id, outcome, errors } => {
                 crate::actions::on_job_done(self, job_id, &outcome, &errors);
             }

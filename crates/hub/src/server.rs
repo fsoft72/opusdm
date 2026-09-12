@@ -31,7 +31,14 @@ pub enum HubEvent {
         paths: Vec<(ListerId, PathBuf)>,
     },
     /// Progress for a running job.
-    JobUpdate { job_id: u64, label: String, done: u64, total: u64 },
+    JobUpdate {
+        job_id: u64,
+        current_file: PathBuf,
+        files_done: u64,
+        files_total: u64,
+        file_bytes_done: u64,
+        file_bytes_total: u64,
+    },
     /// A job finished.
     JobFinished { job_id: u64, ok: bool, errors: usize, cancelled: bool },
     /// No Listers remain open.
@@ -584,12 +591,22 @@ fn handle_job_progress(
         other => {
             let op = meta.op.clone();
             if let Some(msg) = map_progress(job_id, &op, &other, &mut meta.totals) {
-                if let ToLister::JobProgress { bytes_done, bytes_total, .. } = &msg {
+                if let ToLister::JobProgress {
+                    current_file,
+                    files_done,
+                    files_total,
+                    file_bytes_done,
+                    file_bytes_total,
+                    ..
+                } = &msg
+                {
                     let _ = evt_tx.send(HubEvent::JobUpdate {
                         job_id,
-                        label: format!("{op:?}"),
-                        done: *bytes_done,
-                        total: *bytes_total,
+                        current_file: current_file.clone(),
+                        files_done: *files_done,
+                        files_total: *files_total,
+                        file_bytes_done: *file_bytes_done,
+                        file_bytes_total: *file_bytes_total,
                     });
                 }
                 if let Some(c) = conns.get_mut(&requester) {

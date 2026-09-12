@@ -252,12 +252,6 @@ pub fn sync_role_buttons(ui: &Rc<Ui>) {
     ui.role_guard.set(false);
 }
 
-/// Update the in-window job status line.
-pub fn on_job_progress(ui: &Rc<Ui>, _job_id: u64, done: u64, total: u64, current: &Path) {
-    let pct = if total > 0 { done * 100 / total } else { 0 };
-    ui.job_line.set_text(&format!("{pct}%  {}", current.display()));
-}
-
 /// Finish a job: clear the line, show errors, reload the view.
 pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(PathBuf, String)]) {
     match outcome {

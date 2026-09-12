@@ -193,17 +193,23 @@ pub fn map_progress(
                 bytes_total: *bytes,
                 files_done: 0,
                 files_total: *files,
+                file_bytes_done: 0,
+                file_bytes_total: 0,
             })
         }
-        Progress::File { path, done_bytes, files_done, .. } => Some(ToLister::JobProgress {
-            job_id,
-            op: op.clone(),
-            current_file: path.clone(),
-            bytes_done: *done_bytes,
-            bytes_total: totals.bytes_total,
-            files_done: *files_done,
-            files_total: totals.files_total,
-        }),
+        Progress::File { path, done_bytes, files_done, file_bytes_done, file_bytes_total, .. } => {
+            Some(ToLister::JobProgress {
+                job_id,
+                op: op.clone(),
+                current_file: path.clone(),
+                bytes_done: *done_bytes,
+                bytes_total: totals.bytes_total,
+                files_done: *files_done,
+                files_total: totals.files_total,
+                file_bytes_done: *file_bytes_done,
+                file_bytes_total: *file_bytes_total,
+            })
+        }
         Progress::Conflict { .. } => None,
         Progress::Done { copied, skipped, cancelled, errors } => {
             let outcome = if *cancelled {

@@ -203,6 +203,10 @@ struct CopyShared {
     copied: AtomicU64,
     skipped: AtomicU64,
     done_bytes: AtomicU64,
+    /// Bytes written so far for whichever file last called [`Self::add_bytes`].
+    current_file_bytes_done: AtomicU64,
+    /// Size of whichever file last called [`Self::add_bytes`].
+    current_file_bytes_total: AtomicU64,
     /// Microseconds since `started` at the last emitted `Progress::File`.
     last_emit_us: AtomicU64,
     started: Instant,
@@ -224,6 +228,8 @@ impl CopyShared {
             copied: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
             done_bytes: AtomicU64::new(0),
+            current_file_bytes_done: AtomicU64::new(0),
+            current_file_bytes_total: AtomicU64::new(0),
             last_emit_us: AtomicU64::new(0),
             started: Instant::now(),
             errors: Mutex::new(Vec::new()),
@@ -234,9 +240,12 @@ impl CopyShared {
         }
     }
 
-    /// Account for `n` freshly written bytes, then emit a throttled snapshot.
-    fn add_bytes(&self, path: &Path, n: u64) {
+    /// Account for `n` freshly written bytes of `path` (`file_done`/`file_total`
+    /// bytes into that file alone), then emit a throttled snapshot.
+    fn add_bytes(&self, path: &Path, n: u64, file_done: u64, file_total: u64) {
         self.done_bytes.fetch_add(n, Ordering::Relaxed);
+        self.current_file_bytes_done.store(file_done, Ordering::Relaxed);
+        self.current_file_bytes_total.store(file_total, Ordering::Relaxed);
         self.emit(path, false);
     }
 
@@ -266,6 +275,8 @@ impl CopyShared {
             total_bytes: self.total_bytes,
             files_done: self.copied.load(Ordering::Relaxed),
             files_total: self.total_files,
+            file_bytes_done: self.current_file_bytes_done.load(Ordering::Relaxed),
+            file_bytes_total: self.current_file_bytes_total.load(Ordering::Relaxed),
         });
     }
 
@@ -323,7 +334,12 @@ impl CopyShared {
 
 /// `copy_file` plus byte accounting and the success counter.
 fn copy_file_counted(shared: &CopyShared, task: &CopyTask, overwrite: bool) -> io::Result<()> {
-    let mut on_bytes = |n: u64| shared.add_bytes(&task.abs, n);
+    let file_total = std::fs::metadata(&task.abs).map(|m| m.len()).unwrap_or(0);
+    let file_done = AtomicU64::new(0);
+    let mut on_bytes = |n: u64| {
+        let done = file_done.fetch_add(n, Ordering::Relaxed) + n;
+        shared.add_bytes(&task.abs, n, done, file_total);
+    };
     copy_file(&task.abs, &task.dst, overwrite, &shared.cancel, &mut on_bytes)?;
     shared.copied.fetch_add(1, Ordering::Relaxed);
     shared.emit(&task.abs, false);

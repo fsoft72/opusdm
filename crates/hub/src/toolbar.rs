@@ -74,6 +74,8 @@ struct Widgets {
     /// The directory the desktop shows, for re-reading on "rearrange icons"
     /// and for re-targeting when `DesktopSettings::desktop_dir` changes.
     desktop_dir: RefCell<Option<PathBuf>>,
+    /// Shows progress for every running file operation.
+    progress_window: crate::progress_window::ProgressWindow,
 }
 
 fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
@@ -129,6 +131,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         desktop_watch: RefCell::new(None),
         desktop_field: RefCell::new(desktop_field.clone()),
         desktop_dir: RefCell::new(desktop_dir.clone()),
+        progress_window: crate::progress_window::ProgressWindow::new(app),
     });
 
     // Follow the screen size live: a resolution change (real mode switch, or
@@ -618,15 +621,32 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 }
             }
         }
-        // Roles and job progress no longer have a home in the hub chrome
-        // (they moved out with the old toolbar strip); the server still emits
-        // them and the requesting Lister still shows its own progress.
+        HubEvent::JobUpdate {
+            job_id,
+            current_file,
+            files_done,
+            files_total,
+            file_bytes_done,
+            file_bytes_total,
+        } => {
+            widgets.progress_window.update(
+                job_id,
+                &current_file,
+                files_done,
+                files_total,
+                file_bytes_done,
+                file_bytes_total,
+            );
+        }
+        HubEvent::JobFinished { job_id, .. } => {
+            widgets.progress_window.finish(job_id);
+        }
+        // Roles no longer have a home in the hub chrome (they moved out with
+        // the old toolbar strip); the server still emits them.
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
         | HubEvent::AllListersGone
-        | HubEvent::Roles { .. }
-        | HubEvent::JobUpdate { .. }
-        | HubEvent::JobFinished { .. } => {}
+        | HubEvent::Roles { .. } => {}
     }
 }
 
