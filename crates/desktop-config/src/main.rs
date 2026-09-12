@@ -1,11 +1,10 @@
-//! `opus-desktop-config`: configure the OpusDM desktop - background, icon
-//! grid, and which directory is shown as the desktop.
+//! `opus-desktop-config`: configure the OpusDM desktop icon grid and which
+//! directory is shown as the desktop. Background editing lives in
+//! `opusdm-theme`.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
-
-mod model;
-mod ui;
+use opusdm_desktop_config::{model, ui};
 
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder()
@@ -23,7 +22,7 @@ fn build_window(app: &gtk::Application) {
         .application(app)
         .title("OpusDM Desktop")
         .default_width(480)
-        .default_height(600)
+        .default_height(400)
         .build();
 
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -32,7 +31,6 @@ fn build_window(app: &gtk::Application) {
     outer.set_margin_start(12);
     outer.set_margin_end(12);
 
-    let bg = std::rc::Rc::new(ui::BackgroundSection::new(&window, &settings.background));
     let grid = std::rc::Rc::new(ui::GridSection::new(
         settings.icon_size,
         settings.grid_spacing,
@@ -40,8 +38,6 @@ fn build_window(app: &gtk::Application) {
     ));
     let folder = std::rc::Rc::new(ui::FolderSection::new(settings.desktop_dir.as_deref()));
 
-    outer.append(&bg.root);
-    outer.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     outer.append(&grid.root);
     outer.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     outer.append(&folder.root);
@@ -67,12 +63,10 @@ fn build_window(app: &gtk::Application) {
     window.set_child(Some(&outer));
 
     let collect: std::rc::Rc<dyn Fn() -> opusdm_ipc::DesktopSettings> = {
-        let bg = bg.clone();
         let grid = grid.clone();
         let folder = folder.clone();
         std::rc::Rc::new(move || {
             opusdm_ipc::DesktopSettings {
-                background: bg.read(),
                 icon_size: grid.icon_size(),
                 grid_spacing: grid.grid_spacing(),
                 grid_gap: grid.grid_gap(),
@@ -84,12 +78,7 @@ fn build_window(app: &gtk::Application) {
 
     let run_apply: std::rc::Rc<dyn Fn(&opusdm_ipc::DesktopSettings)> = {
         let note = note.clone();
-        let bg = bg.clone();
         std::rc::Rc::new(move |settings: &opusdm_ipc::DesktopSettings| {
-            bg.set_image_warning(
-                settings.background.mode == opusdm_ipc::BackgroundMode::Image
-                    && !ui::image_path_is_usable(settings.background.image_path.as_deref()),
-            );
             match model::apply(settings) {
                 model::ApplyOutcome::SentToHub => note.set_visible(false),
                 model::ApplyOutcome::WroteFile => {

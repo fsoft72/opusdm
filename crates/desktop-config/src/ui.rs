@@ -24,15 +24,15 @@ fn heading(text: &str) -> gtk::Label {
 
 /// A "hex entry + colour swatch" control. Clicking the swatch opens a GTK
 /// colour picker; the entry text is the source of truth (`#rrggbb`).
-struct ColorRow {
-    root: gtk::Box,
+pub struct ColorRow {
+    pub root: gtk::Box,
     entry: gtk::Entry,
 }
 
 impl ColorRow {
     /// Build the control seeded with `initial_hex`, using `window` as the
     /// colour dialog's parent.
-    fn new(window: &gtk::ApplicationWindow, label: &str, initial_hex: &str) -> Self {
+    pub fn new(window: &gtk::ApplicationWindow, label: &str, initial_hex: &str) -> Self {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let name = gtk::Label::new(Some(label));
         name.set_xalign(0.0);
@@ -87,7 +87,7 @@ impl ColorRow {
     }
 
     /// The chosen colour as `#rrggbb`.
-    fn hex(&self) -> String {
+    pub fn hex(&self) -> String {
         rgba_to_hex(&hex_to_rgba(&self.entry.text()))
     }
 }
