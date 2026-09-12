@@ -982,8 +982,15 @@ mod tests {
         plain.set_thumbnail(tall.upcast_ref::<gtk::gdk::Texture>());
         assert_eq!(plain.measure(), before);
 
-        // --- IconField: set_entries builds one item per entry ---
+        // --- IconField: background double-click fires connect_background_activate ---
         let f = IconField::new();
+        let bg_hits = Rc::new(Cell::new(0));
+        let h = bg_hits.clone();
+        f.connect_background_activate(move || h.set(h.get() + 1));
+        f.emit_background_activate();
+        assert_eq!(bg_hits.get(), 1);
+
+        // --- IconField: set_entries builds one item per entry ---
         f.set_entries(&entries(5));
         assert_eq!(f.entry_count(), 5);
         f.set_entries(&entries(2));

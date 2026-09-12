@@ -178,6 +178,12 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
             });
         }
         {
+            let cmd_tx = cmd_tx.clone();
+            field.connect_background_activate(move || {
+                let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
+            });
+        }
+        {
             let widgets = widgets.clone();
             field.connect_drop_uris(move |srcs, _target, shift| {
                 if srcs.is_empty() {
