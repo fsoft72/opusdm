@@ -5,6 +5,7 @@ pub mod frame;
 pub mod proto;
 pub mod sockpath;
 pub mod theme;
+pub mod themes;
 
 pub use desktop::{
     background_css, path_to_file_url, Background, BackgroundMode, DesktopSettings, ImageFit,
