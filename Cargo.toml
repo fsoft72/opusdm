@@ -22,3 +22,7 @@ md-5 = "0.10"
 x11rb = "0.13"
 gdk4-x11 = "0.10"
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
+zip = "2"
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.4"

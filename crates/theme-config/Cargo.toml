@@ -14,6 +14,11 @@ opusdm-desktop-config = { path = "../desktop-config" }
 gtk4.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
+bzip2.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

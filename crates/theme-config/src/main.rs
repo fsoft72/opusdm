@@ -7,8 +7,18 @@ use opusdm_desktop_config::ui::BackgroundSection;
 use std::rc::Rc;
 
 mod apply;
+mod importer;
 mod model;
 mod ui;
+
+/// Shared across every test module in this crate that mutates the
+/// process-wide `XDG_CONFIG_HOME`/`OPUSDM_HUB_SOCK` env vars - libtest runs
+/// `#[test]` fns in different files concurrently, so a per-module lock does
+/// not stop `model::tests` and `importer::tests` racing each other.
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
 
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.Theme").build();

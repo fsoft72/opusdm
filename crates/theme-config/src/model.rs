@@ -149,12 +149,7 @@ fn write_desktop_file(settings: &DesktopSettings) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Guards tests that mutate the process-wide `XDG_CONFIG_HOME`/
-    /// `OPUSDM_HUB_SOCK` env vars, which libtest would otherwise race across
-    /// threads.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_support::ENV_LOCK;
 
     #[test]
     fn apply_writes_the_theme_field_when_no_hub_is_running() {

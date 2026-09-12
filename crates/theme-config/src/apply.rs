@@ -94,6 +94,7 @@ fn merge_background(bg: &mut Background, theme_bg: &opusdm_ipc::themes::ThemeBac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_LOCK;
     use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
     use opusdm_ipc::themes::{CustomThemeData, ThemeBackground, ThemeDesktopMetrics};
     use opusdm_ipc::{Appearance, Behavior, ColorSettings, DesktopSettings, IconSetId, Settings};
@@ -167,6 +168,7 @@ mod tests {
 
     #[test]
     fn image_background_resolves_the_filename_under_the_theme_dir() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         let mut data = CustomThemeData::default();
