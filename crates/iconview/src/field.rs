@@ -890,6 +890,12 @@ mod tests {
             return;
         }
 
+        // --- font_probe: this machine has no Nerd Font installed (verified
+        // via `fc-list` while investigating the hex-tofu glyph bug), so
+        // detection must report false. A flip to true would mean detection
+        // silently broke and icon-less views would show tofu again.
+        assert!(!crate::font_probe::nerd_font_available());
+
         // --- IconItem: selected class toggles ---
         let it = IconItem::new(&entries(1)[0], 64, &opusdm_ipc::IconSetId::None);
         assert!(!it.widget().has_css_class("selected"));

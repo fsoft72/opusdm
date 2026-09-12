@@ -169,10 +169,13 @@ pub fn add_column(
                     }
                     label.set_text(&crate::glyphs::decorate_name(&row, false, indicators));
                 } else {
-                    // No real icon set active: keep the Nerd Font glyph in the
-                    // text itself, same as before the icon-set toggle existed.
+                    // No real icon set active: prefix the Nerd Font glyph
+                    // only when such a font is actually installed - without
+                    // one, Pango renders its codepoint as literal hex tofu,
+                    // which is worse than the plain name alone.
                     icon_widget.set_visible(false);
-                    label.set_text(&crate::glyphs::decorate_name(&row, true, indicators));
+                    let show_glyph = opusdm_iconview::font_probe::nerd_font_available();
+                    label.set_text(&crate::glyphs::decorate_name(&row, show_glyph, indicators));
                 }
             }
             ColKind::Size => {

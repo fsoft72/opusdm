@@ -5,6 +5,7 @@
 pub mod arrange;
 pub mod dnd;
 pub mod field;
+pub mod font_probe;
 pub mod glyphs;
 pub mod icon_set;
 pub mod item;

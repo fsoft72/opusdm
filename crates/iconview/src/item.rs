@@ -37,7 +37,19 @@ impl IconItem {
         root.add_css_class("icon-item");
         root.set_halign(gtk::Align::Center);
 
-        let icon = gtk::Label::new(Some(&glyph_for(entry.kind, entry.mode, &entry.name).to_string()));
+        // No patched Nerd Font installed: its codepoints would render as
+        // literal hex tofu (see font_probe), so show blank text instead -
+        // a missing icon reads better than "F0 7B". The label stays
+        // visible (not hidden) so it keeps reserving its `icon_size`
+        // square, same as every other item and as the thumbnail slot -
+        // hiding it would shrink this item alone and, through
+        // `FreeArrange`'s max-of-all-items pitch, respace the whole grid.
+        let glyph_text = if crate::font_probe::nerd_font_available() {
+            glyph_for(entry.kind, entry.mode, &entry.name).to_string()
+        } else {
+            String::new()
+        };
+        let icon = gtk::Label::new(Some(&glyph_text));
         icon.add_css_class("icon-item-glyph");
         icon.set_width_request(icon_size);
         icon.set_height_request(icon_size);
