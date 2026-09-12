@@ -44,23 +44,15 @@ impl IconSetSection {
     }
 }
 
-/// One "label" + bg/fg colour row pair, e.g. SOURCE.
+/// One category's bg/fg colour pair, e.g. SOURCE. Each `ColorRow` is bare
+/// (no leading name label) - the category name is the grid row's own label.
 struct ColorSection {
-    root: gtk::Box,
     bg: ColorRow,
     fg: ColorRow,
 }
 
-fn color_section(window: &gtk::ApplicationWindow, title: &str, bg_hex: &str, fg_hex: &str) -> ColorSection {
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    let heading = gtk::Label::new(Some(title));
-    heading.set_xalign(0.0);
-    root.append(&heading);
-    let bg = ColorRow::new(window, "Background:", bg_hex);
-    let fg = ColorRow::new(window, "Text:", fg_hex);
-    root.append(&bg.root);
-    root.append(&fg.root);
-    ColorSection { root, bg, fg }
+fn color_section(window: &gtk::ApplicationWindow, bg_hex: &str, fg_hex: &str) -> ColorSection {
+    ColorSection { bg: ColorRow::new(window, None, bg_hex), fg: ColorRow::new(window, None, fg_hex) }
 }
 
 /// A named colour combination the preset dropdown can fill the ten entries
@@ -160,23 +152,52 @@ pub struct ColorsSection {
 
 impl ColorsSection {
     pub fn new(window: &gtk::ApplicationWindow, c: &ColorSettings) -> Self {
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let outer = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let heading = gtk::Label::new(Some("COLOURS"));
         heading.set_xalign(0.0);
         heading.add_css_class("heading");
-        root.append(&heading);
+        outer.append(&heading);
 
-        let source = color_section(window, "SOURCE", &c.source_bg, &c.source_fg);
-        let dest = color_section(window, "DEST", &c.dest_bg, &c.dest_fg);
-        let dir = color_section(window, "DIRECTORY", &c.dir_bg, &c.dir_fg);
-        let file = color_section(window, "FILE", &c.file_bg, &c.file_fg);
-        let selected = color_section(window, "SELECTION", &c.selected_bg, &c.selected_fg);
+        let grid = gtk::Grid::new();
+        grid.set_row_spacing(6);
+        grid.set_column_spacing(12);
 
-        for s in [&source, &dest, &dir, &file, &selected] {
-            root.append(&s.root);
+        let column_header = |text: &str| {
+            let l = gtk::Label::new(Some(text));
+            l.set_xalign(0.0);
+            l.add_css_class("dim-label");
+            l
+        };
+        grid.attach(&column_header("Background"), 1, 0, 1, 1);
+        grid.attach(&column_header("Text"), 2, 0, 1, 1);
+
+        let source = color_section(window, &c.source_bg, &c.source_fg);
+        let dest = color_section(window, &c.dest_bg, &c.dest_fg);
+        let dir = color_section(window, &c.dir_bg, &c.dir_fg);
+        let file = color_section(window, &c.file_bg, &c.file_fg);
+        let selected = color_section(window, &c.selected_bg, &c.selected_fg);
+
+        for (row, (title, section)) in [
+            ("SOURCE", &source),
+            ("DEST", &dest),
+            ("DIRECTORY", &dir),
+            ("FILE", &file),
+            ("SELECTION", &selected),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row = row as i32 + 1;
+            let name = gtk::Label::new(Some(title));
+            name.set_xalign(0.0);
+            grid.attach(&name, 0, row, 1, 1);
+            grid.attach(&section.bg.root, 1, row, 1, 1);
+            grid.attach(&section.fg.root, 2, row, 1, 1);
         }
 
-        Self { root, source, dest, dir, file, selected }
+        outer.append(&grid);
+
+        Self { root: outer, source, dest, dir, file, selected }
     }
 
     pub fn read(&self) -> ColorSettings {

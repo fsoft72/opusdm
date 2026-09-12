@@ -31,12 +31,17 @@ pub struct ColorRow {
 
 impl ColorRow {
     /// Build the control seeded with `initial_hex`, using `window` as the
-    /// colour dialog's parent.
-    pub fn new(window: &gtk::ApplicationWindow, label: &str, initial_hex: &str) -> Self {
+    /// colour dialog's parent. `label` is omitted (no leading name) when
+    /// `None` - used where the caller supplies the row's identity some
+    /// other way, e.g. a grid row label.
+    pub fn new(window: &gtk::ApplicationWindow, label: Option<&str>, initial_hex: &str) -> Self {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let name = gtk::Label::new(Some(label));
-        name.set_xalign(0.0);
-        name.set_size_request(60, -1);
+        let name = label.map(|text| {
+            let name = gtk::Label::new(Some(text));
+            name.set_xalign(0.0);
+            name.set_size_request(60, -1);
+            name
+        });
 
         let entry = gtk::Entry::new();
         entry.set_text(initial_hex);
@@ -80,7 +85,9 @@ impl ColorRow {
             swatch.add_controller(gesture);
         }
 
-        row.append(&name);
+        if let Some(name) = &name {
+            row.append(name);
+        }
         row.append(&entry);
         row.append(&swatch);
         Self { root: row, entry }
@@ -132,12 +139,12 @@ impl BackgroundSection {
         stack.set_margin_top(6);
 
         // solid page
-        let solid = ColorRow::new(window, "Colour", &initial.solid);
+        let solid = ColorRow::new(window, Some("Colour"), &initial.solid);
         stack.add_named(&solid.root, Some("solid"));
 
         // gradient page
-        let grad_start = ColorRow::new(window, "Start", &initial.gradient_start);
-        let grad_end = ColorRow::new(window, "End", &initial.gradient_end);
+        let grad_start = ColorRow::new(window, Some("Start"), &initial.gradient_start);
+        let grad_end = ColorRow::new(window, Some("End"), &initial.gradient_end);
         let grad_angle = gtk::SpinButton::with_range(0.0, 360.0, 1.0);
         grad_angle.set_value(initial.gradient_angle as f64);
         let grad_page = gtk::Box::new(gtk::Orientation::Vertical, 6);
