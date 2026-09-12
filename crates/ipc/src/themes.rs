@@ -243,6 +243,24 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_breeze_dark_package_has_every_icon_and_a_valid_manifest() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let theme_dir = repo_root.join("themes").join("breeze-dark");
+        let manifest: ThemeManifest =
+            serde_json::from_str(&std::fs::read_to_string(theme_dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.name, "breeze-dark");
+        assert!(manifest.is_valid());
+
+        const EXPECTED: [&str; 12] = [
+            "dir.png", "file.png", "symlink.png", "broken.png", "exec.png", "archive.png",
+            "image.png", "audio.png", "video.png", "code.png", "text.png", "pdf.png",
+        ];
+        for name in EXPECTED {
+            assert!(theme_dir.join("icons").join(name).is_file(), "missing icons/{name}");
+        }
+    }
+
+    #[test]
     fn background_image_path_join() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _td = with_config_home();
