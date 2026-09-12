@@ -6,11 +6,12 @@ Status: approved for planning
 ## Problem
 
 OpusDM currently ships exactly one selectable icon set (`IconSetId::None` /
-`BreezeDark`, a closed enum) plus a `Theme` bundle (icon set + `ColorSettings`
-+ `Background`) edited by `opusdm-theme` and applied atomically via
+`BreezeDark`, a closed enum, `BreezeDark`'s 12 PNGs compiled into the binary
+via `include_bytes!`) plus a `Theme` bundle (icon set + `ColorSettings` +
+`Background`) edited by `opusdm-theme` and applied atomically via
 `ToHub::SetTheme`. There is no way for a user to install or author their own
 theme (icons, colours, background, desktop grid metrics) as a self-contained,
-shareable unit.
+shareable unit, and a vanilla install carries icon assets it may never use.
 
 ## Goal
 
@@ -19,8 +20,15 @@ through `opusdm-theme`, which extracts it into
 `~/.config/opusdm/themes/<name>/` (name taken from the archive's own
 `manifest.json`), and have it show up as a selectable theme, applying its
 icons, colours, appearance/behavior switches, desktop grid metrics, and
-background in one shot - the same way picking `BreezeDark` works today, but
-data-driven instead of compiled in.
+background in one shot.
+
+`BreezeDark` stops being a compiled-in, always-available `IconSetId`
+variant. It becomes an ordinary importable theme, built from the same 12
+PNGs the binary embeds today, packaged as `breeze-dark.zip` and shipped
+*alongside* the app (not auto-installed, not linked into any binary) - see
+"Breeze Dark becomes a theme package" below. `IconSetId` shrinks to two
+variants: `None` and `Custom(String)`. A vanilla `opusdm` install therefore
+has zero icon themes until the user imports one.
 
 ## Non-goals
 
@@ -49,8 +57,8 @@ data-driven instead of compiled in.
 ```
 
 `<slug>` (the directory name, equal to `manifest.json`'s `name`) is the
-theme's stable id, used the same way `"none"` / `"breeze-dark"` are used
-today. Users never create this directory by hand in the normal flow - see
+theme's stable id, e.g. `"breeze-dark"` once that package is imported.
+Users never create this directory by hand in the normal flow - see
 "Theme import" below; a hand-placed directory following this exact layout is
 still discovered and works, but is not the supported install path.
 
@@ -113,35 +121,51 @@ below). Everything else in this `background` shape matches
 
 ### `opusdm-ipc`
 
-- `IconSetId` gains a third variant: `Custom(String)` (the slug).
-  - `id()`: `IconSetId::Custom(slug)` -> `format!("custom:{slug}")`.
+- `IconSetId` shrinks to **two** variants: `None` and `Custom(String)` (the
+  slug). The `BreezeDark` variant is removed.
+  - `id()`: `None` -> `"none"`; `Custom(slug)` -> `format!("custom:{slug}")`.
   - `from_id()`: parses the `"custom:"` prefix back into `Custom(slug)`
     unconditionally (no validation that the dir still exists - a stale
     reference just fails to find icons/theme.json later, degrading to
-    glyphs, same as a deleted `BreezeDark`-style asset would).
-  - `ALL`/`label()` stay as they are for the two built-ins; `Custom` is not
-    part of `ALL` since it is not a fixed compile-time list. `opusdm-theme`'s
-    picker builds its full list as `IconSetId::ALL` plus the live scan
-    (below).
+    glyphs, same as a deleted theme would).
+  - `ALL` becomes `[IconSetId::None]` - `Custom` is never part of a fixed
+    compile-time list. `opusdm-theme`'s picker builds its full list as
+    `IconSetId::ALL` (just "None") plus the live scan (below), which is
+    where every installed theme - Breeze Dark included, once imported -
+    actually comes from.
+  - **Backward compatibility**: old `settings.json` files written before
+    this change carry the literal enum tag `"BreezeDark"` (serde's default
+    unit-variant representation) in `icon_set`. Removing the variant would
+    make that field fail to deserialize, and the existing load path
+    (`parsed.unwrap_or_default()` on any parse error) would silently reset
+    *all* of `Settings`, not just the icon set - too broad a regression for
+    one renamed value. Add `#[serde(alias = "BreezeDark")]` (or an explicit
+    manual `Deserialize` match arm) mapping the old tag to `IconSetId::None`
+    on load. The user's icons revert to glyphs after upgrading rather than
+    the whole settings file resetting; importing the new `breeze-dark.zip`
+    and re-selecting it restores real icons.
 - `Theme` struct is unchanged in shape (`icon_set`, `colors`, `background`).
 
 ### `opusdm-iconview` (icon byte lookup - used by Lister, hub desktop grid, `IconField`)
 
-- `icon_set.rs`: `icon_bytes_for` return type changes from
-  `Option<&'static [u8]>` to `Option<Cow<'static, [u8]>>`.
-  - `None` -> `None` (unchanged).
-  - `BreezeDark` -> `Some(Cow::Borrowed(...))` (unchanged bytes, wrapped).
+- `icon_set.rs` drops every `BREEZE_*` const and `include_bytes!` call - no
+  icon bytes are compiled into this crate anymore. `icon_bytes_for` return
+  type changes from `Option<&'static [u8]>` to `Option<Cow<'static, [u8]>>`
+  and collapses to two arms:
+  - `None` -> `None` (unchanged; caller falls back to the glyph).
   - `Custom(slug)` -> on-demand, memoized load: a
     `OnceLock<Mutex<HashMap<String, CustomIcons>>>` process-local cache.
     Cache miss reads `~/.config/opusdm/themes/<slug>/icons/*.png` that
     exist (missing files simply absent from the map). Returns
     `Some(Cow::Owned(bytes.clone()))` per present icon, `None` for an
-    absent one (caller falls back to the glyph, exactly like `IconSetId::
-    None` does for every icon today).
+    absent one.
   - This module does not parse `theme.json` or `manifest.json` at all -
     icons only. Every caller of `icon_bytes_for` already treats `None` as
     "fall back to `glyphs::glyph_for`", so no call site changes needed
     beyond the `Cow` type (a couple of `.as_ref()` / dereferences).
+  - The crate's compiled size drops by the ~12-25KB the 12 PNGs added
+    (bundled at 32px; already bumped to 256px per an earlier fix, so this
+    also undoes that binary-size growth).
 
 ### New: theme discovery (small module, likely `opusdm-ipc::themes` or a new
 `opusdm-theme-data` crate - implementation plan decides; logically it is
@@ -186,8 +210,7 @@ which is a GTK binary)
      is running (falls back to editing `settings.json` / `desktop.json`
      directly, same as the existing `theme-config` and `desktop-config`
      `model.rs::apply` functions already do).
-- Selecting `None`/`BreezeDark` keeps working exactly as today (no theme dir
-  involved).
+- Selecting `None` needs no theme dir at all, unchanged from today.
 
 ## Theme import (archive)
 
@@ -219,6 +242,31 @@ This is the only supported way a theme reaches `themes/`; manual placement
 (dragging a folder in) still works because discovery only cares about the
 final on-disk layout, not how it got there.
 
+## Breeze Dark becomes a theme package
+
+The 12 PNGs currently at `crates/iconview/assets/breeze-dark/*.png` move to
+a new source location, `themes/breeze-dark/` at the repo root (sibling to
+`crates/`, not inside any crate - it is packaged data, not Rust source):
+
+```
+themes/breeze-dark/
+  manifest.json   # { "name": "breeze-dark", "label": "Breeze Dark" }
+  icons/          # the 12 existing PNGs, unchanged
+```
+
+(No `theme.json`, `preview.png`, or `backgrounds/` for the initial package -
+all optional per the format above; can be added later without breaking
+anything.)
+
+A build-time step (a small script or an `xtask`/`cargo make` target - exact
+mechanism is an implementation-plan decision) zips `themes/breeze-dark/`
+into `breeze-dark.zip`, placed next to the built binaries (or attached to a
+release) so a user can immediately import it through `opusdm-theme` after
+installing OpusDM, without needing to author a theme from scratch. This
+packaging step is **not** part of `cargo build` for the app crates
+themselves and produces no compiled-in asset - it only prepares a file for
+the user-driven import flow described above.
+
 ## Apply is an import, not a live link
 
 Once applied, the running desktop's `settings.json`/`desktop.json` hold a
@@ -235,8 +283,7 @@ deleting the theme directory afterwards:
 
 This keeps the hot render path (icon lookup) as the only thing that reads
 the theme dir live, and keeps `Settings`/`DesktopSettings` self-contained on
-disk, matching how `BreezeDark` already behaves (compiled-in, no external
-dependency once chosen).
+disk once a theme has been applied.
 
 ## Error handling
 
@@ -264,18 +311,28 @@ dependency once chosen).
 ## Testing
 
 - `opusdm-ipc`: `IconSetId::id()`/`from_id()` round-trip for `Custom("foo")`
-  including the `"custom:"` prefix; unaffected existing tests
-  (`icon_set_ids_are_unique_and_round_trip` etc.) keep passing unmodified
-  since `ALL` is unchanged.
+  including the `"custom:"` prefix; update
+  `icon_set_ids_are_unique_and_round_trip`/`icon_set_labels_are_distinct`
+  for the now-two-variant `ALL`; add a deserialization test that the literal
+  JSON tag `"BreezeDark"` (simulating a pre-migration settings.json) decodes
+  to `IconSetId::None` rather than failing.
 - `opusdm-iconview`: extend `icon_set.rs` tests with a `Custom` case using a
   `tempfile::tempdir()` theme dir - present icon returns bytes, absent icon
   returns `None`, nonexistent theme dir returns `None` for everything.
 - New discovery module: unit tests for `scan_themes()` (valid dir, missing
-  manifest, empty label, several themes sorted by label) and
-  `load_theme_data()` (full theme.json, partial theme.json, missing file ->
-  all-defaults), all using `tempfile::tempdir()` + `XDG_CONFIG_HOME`
-  override, following the existing pattern in
+  manifest, empty/invalid `name`, empty `label`, several themes sorted by
+  label) and `load_theme_data()` (full theme.json, partial theme.json,
+  missing file -> all-defaults), all using `tempfile::tempdir()` +
+  `XDG_CONFIG_HOME` override, following the existing pattern in
   `desktop-config/model.rs::apply_writes_the_file_when_no_hub_is_running`.
+- `opusdm-iconview`: existing `breeze_dark_covers_every_kind`-style tests
+  are removed along with the `BreezeDark` variant; replaced by the `Custom`
+  tempdir-based cases already listed above. The packaged
+  `themes/breeze-dark/` source dir gets its own lightweight check (e.g. a
+  test asserting all 12 expected PNG filenames exist under
+  `themes/breeze-dark/icons/` and `manifest.json` parses with
+  `name == "breeze-dark"`) so a future edit can't silently break the
+  shipped package.
 - `opusdm-theme`: at minimum, a test that building the `Theme`+
   `DesktopSettings` to send from a `CustomThemeData` merges correctly
   against a starting `Settings`/`DesktopSettings` (theme-supplied fields
