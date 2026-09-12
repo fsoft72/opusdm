@@ -85,7 +85,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         .unwrap_or((1280, 800));
 
     let desktop_settings = opusdm_hub::desktop_settings::load();
-    install_desktop_css(&desktop_settings.background);
+    let initial_settings = settings::load_settings();
+    install_desktop_css(&initial_settings.theme.background);
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -114,7 +115,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     let desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
         desktop_settings.desktop_dir.as_deref(),
     );
-    let (desktop_area, desktop_field) = build_desktop_area(desktop_dir.as_deref());
+    let (desktop_area, desktop_field) =
+        build_desktop_area(desktop_dir.as_deref(), initial_settings.theme.icon_set);
     if let Some(f) = &desktop_field {
         f.set_icon_size(desktop_settings.icon_size);
         f.set_grid_spacing(desktop_settings.grid_spacing);
@@ -306,12 +308,32 @@ fn launch_desktop_config() {
     }
 }
 
+/// Resolve the `opusdm-theme` binary, same lookup strategy as
+/// `desktop_config_bin`.
+fn theme_config_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("opusdm-theme");
+        }
+    }
+    PathBuf::from("opusdm-theme")
+}
+
+/// Spawn the theme configuration app, detached.
+fn launch_theme_config() {
+    let bin = theme_config_bin();
+    if let Err(e) = std::process::Command::new(&bin).spawn() {
+        eprintln!("opusdm-hub: cannot launch {}: {e}", bin.display());
+    }
+}
+
 /// Build the desktop area that fills the window below the toolbar, wrapped in
 /// an overlay so the context menu can be laid on top of it. When `desktop_dir`
 /// is `Some`, an icon field in `Free` mode fills it and its initial entries are
 /// read; otherwise the flat placeholder label is kept.
 fn build_desktop_area(
     desktop_dir: Option<&Path>,
+    icon_set: opusdm_ipc::IconSetId,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
     overlay.set_hexpand(true);
@@ -326,6 +348,7 @@ fn build_desktop_area(
         Some(dir) => {
             let f = opusdm_iconview::IconField::new();
             f.set_mode(opusdm_iconview::LayoutMode::Free);
+            f.set_icon_set(icon_set);
             match opusdm_iconview::scan::read_entries(dir, false) {
                 Ok(entries) => f.set_entries(&entries),
                 Err(e) => eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display()),
@@ -509,6 +532,17 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             sub.append(&btn);
         }
 
+        // Theme: launch the standalone opusdm-theme app.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Theme");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                launch_theme_config();
+            });
+            sub.append(&btn);
+        }
+
         let expander = gtk::Expander::new(Some("Desktop"));
         expander.set_child(Some(&sub));
         menu.append(&expander);
@@ -595,8 +629,13 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 crate::desktop::pin_geometry(&window, w, h);
             });
         }
+        HubEvent::ThemeChanged(theme) => {
+            install_desktop_css(&theme.background);
+            if let Some(field) = widgets.desktop_field.borrow().as_ref() {
+                field.set_icon_set(theme.icon_set);
+            }
+        }
         HubEvent::DesktopSettingsChanged(ds) => {
-            install_desktop_css(&ds.background);
             let field = widgets.desktop_field.borrow().clone();
             if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);
@@ -650,172 +689,17 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     }
 }
 
-fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
-    let r = (rgba.red() * 255.0) as u8;
-    let g = (rgba.green() * 255.0) as u8;
-    let b = (rgba.blue() * 255.0) as u8;
-    format!("#{:02X}{:02X}{:02X}", r, g, b)
-}
-
-fn show_color_dialog(parent: &gtk::Window, entry: &gtk::Entry, initial_rgba: gtk::gdk::RGBA) {
-    let color_dialog = gtk::ColorDialog::new();
-    let entry = entry.clone();
-    color_dialog.choose_rgba(
-        Some(parent),
-        Some(&initial_rgba),
-        gio::Cancellable::NONE,
-        move |result| {
-            if let Ok(color) = result {
-                // set_text fires "changed", which redraws the preview below.
-                entry.set_text(&rgba_to_hex(&color));
-            }
-        },
-    );
-}
-
-/// One "<label> <hex entry> <color preview>" settings row. Click the preview
-/// swatch to open a GTK color picker; typing a hex value redraws it too.
-/// Returns the row box and the entry, so the caller can read the chosen hex.
-fn build_color_row(window: &gtk::Window, label: &str, initial_hex: &str) -> (gtk::Box, gtk::Entry) {
-    let row_label = gtk::Label::new(Some(label));
-    row_label.set_xalign(0.0);
-    row_label.set_size_request(100, -1);
-
-    let entry = gtk::Entry::new();
-    entry.set_text(initial_hex);
-    entry.set_hexpand(true);
-
-    let preview = gtk::DrawingArea::new();
-    preview.set_content_width(50);
-    preview.set_content_height(30);
-    {
-        let entry = entry.clone();
-        preview.set_draw_func(move |_da, cr, w, h| {
-            if let Ok(color) = gtk::gdk::RGBA::parse(entry.text()) {
-                cr.set_source_rgb(color.red() as f64, color.green() as f64, color.blue() as f64);
-                cr.rectangle(0.0, 0.0, w as f64, h as f64);
-                cr.fill().ok();
-            }
-        });
-    }
-    {
-        let preview = preview.clone();
-        entry.connect_changed(move |_| preview.queue_draw());
-    }
-    {
-        let entry = entry.clone();
-        let window = window.clone();
-        let gesture = gtk::GestureClick::new();
-        gesture.connect_released(move |_, _, _, _| {
-            let rgba = gtk::gdk::RGBA::parse(entry.text())
-                .unwrap_or_else(|_| gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0));
-            show_color_dialog(&window, &entry, rgba);
-        });
-        preview.add_controller(gesture);
-    }
-
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    row.append(&row_label);
-    row.append(&entry);
-    row.append(&preview);
-    (row, entry)
-}
-
-/// One settings section: a bold heading plus a Background and a Text color
-/// row. Returns the two entries so the caller can read the chosen hex on
-/// Save.
-fn add_color_section(
-    vbox: &gtk::Box,
-    window: &gtk::Window,
-    title: &str,
-    bg_hex: &str,
-    fg_hex: &str,
-) -> (gtk::Entry, gtk::Entry) {
-    let heading = gtk::Label::new(Some(title));
-    heading.set_xalign(0.0);
-    heading.add_css_class("heading");
-    vbox.append(&heading);
-
-    let (bg_row, bg_entry) = build_color_row(window, "Background:", bg_hex);
-    vbox.append(&bg_row);
-    let (fg_row, fg_entry) = build_color_row(window, "Text:", fg_hex);
-    vbox.append(&fg_row);
-
-    (bg_entry, fg_entry)
-}
-
-/// The ten colour entries of the settings dialog, in the order
-/// [`ThemePreset::colors`] fills them.
-struct ColorEntries {
-    source_bg: gtk::Entry,
-    source_fg: gtk::Entry,
-    dest_bg: gtk::Entry,
-    dest_fg: gtk::Entry,
-    dir_bg: gtk::Entry,
-    dir_fg: gtk::Entry,
-    file_bg: gtk::Entry,
-    file_fg: gtk::Entry,
-    selected_bg: gtk::Entry,
-    selected_fg: gtk::Entry,
-}
-
-impl ColorEntries {
-    /// Read the entries back into a `ColorSettings`.
-    fn read(&self) -> opusdm_ipc::ColorSettings {
-        opusdm_ipc::ColorSettings {
-            source_bg: self.source_bg.text().to_string(),
-            source_fg: self.source_fg.text().to_string(),
-            dest_bg: self.dest_bg.text().to_string(),
-            dest_fg: self.dest_fg.text().to_string(),
-            dir_bg: self.dir_bg.text().to_string(),
-            dir_fg: self.dir_fg.text().to_string(),
-            file_bg: self.file_bg.text().to_string(),
-            file_fg: self.file_fg.text().to_string(),
-            selected_bg: self.selected_bg.text().to_string(),
-            selected_fg: self.selected_fg.text().to_string(),
-        }
-    }
-
-    /// Overwrite every entry, which repaints the preview swatches too.
-    fn write(&self, c: &opusdm_ipc::ColorSettings) {
-        self.source_bg.set_text(&c.source_bg);
-        self.source_fg.set_text(&c.source_fg);
-        self.dest_bg.set_text(&c.dest_bg);
-        self.dest_fg.set_text(&c.dest_fg);
-        self.dir_bg.set_text(&c.dir_bg);
-        self.dir_fg.set_text(&c.dir_fg);
-        self.file_bg.set_text(&c.file_bg);
-        self.file_fg.set_text(&c.file_fg);
-        self.selected_bg.set_text(&c.selected_bg);
-        self.selected_fg.set_text(&c.selected_fg);
-    }
-}
-
-/// Which preset id the given colours correspond to, or `PRESET_CUSTOM` when
-/// they match none. Recomputed on Save so hand-edited colours stop claiming to
-/// be a named preset.
-fn preset_id_for(colors: &opusdm_ipc::ColorSettings) -> String {
-    opusdm_ipc::ThemePreset::ALL
-        .into_iter()
-        .find(|p| &p.colors() == colors)
-        .map(|p| p.id().to_string())
-        .unwrap_or_else(|| opusdm_ipc::PRESET_CUSTOM.to_string())
-}
-
-/// The non-colour appearance toggles of the settings dialog.
+/// The appearance toggles of the settings dialog. Icon set, colours, and
+/// background live in the separate `opusdm-theme` app.
 struct AppearanceChecks {
-    file_icons: gtk::CheckButton,
     type_indicators: gtk::CheckButton,
     monospace_list: gtk::CheckButton,
     theme_window: gtk::CheckButton,
 }
 
 impl AppearanceChecks {
-    /// Read the toggles back, tagging the colours with the preset they match.
-    fn read(&self, colors: &opusdm_ipc::ColorSettings) -> opusdm_ipc::Appearance {
+    fn read(&self) -> opusdm_ipc::Appearance {
         opusdm_ipc::Appearance {
-            preset: preset_id_for(colors),
-            file_icons: self.file_icons.is_active(),
             type_indicators: self.type_indicators.is_active(),
             monospace_list: self.monospace_list.is_active(),
             theme_window: self.theme_window.is_active(),
@@ -823,59 +707,26 @@ impl AppearanceChecks {
     }
 }
 
-/// The "Theme" section: a preset dropdown that fills every colour entry at
-/// once, plus the appearance toggles.
-fn add_theme_section(
-    vbox: &gtk::Box,
-    current_preset: &str,
-    appearance: &opusdm_ipc::Appearance,
-) -> (gtk::DropDown, AppearanceChecks) {
-    let heading = gtk::Label::new(Some("THEME"));
+/// The "Appearance" section: the non-theme look-and-feel toggles.
+fn add_appearance_section(vbox: &gtk::Box, appearance: &opusdm_ipc::Appearance) -> AppearanceChecks {
+    let heading = gtk::Label::new(Some("APPEARANCE"));
     heading.set_xalign(0.0);
     heading.add_css_class("heading");
     vbox.append(&heading);
 
-    // Index 0 is "Custom", so a hand-edited scheme has something to show.
-    let mut labels = vec![opusdm_ipc::PRESET_CUSTOM.to_string()];
-    labels.extend(opusdm_ipc::ThemePreset::ALL.iter().map(|p| p.label().to_string()));
-    let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
-    let dropdown = gtk::DropDown::from_strings(&label_refs);
-    let selected = opusdm_ipc::ThemePreset::ALL
-        .iter()
-        .position(|p| p.id() == current_preset)
-        .map(|i| i as u32 + 1)
-        .unwrap_or(0);
-    dropdown.set_selected(selected);
-
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let row_label = gtk::Label::new(Some("Preset:"));
-    row_label.set_xalign(0.0);
-    row_label.set_size_request(100, -1);
-    dropdown.set_hexpand(true);
-    row.append(&row_label);
-    row.append(&dropdown);
-    vbox.append(&row);
-
     let checks = AppearanceChecks {
-        file_icons: gtk::CheckButton::with_label("File type icons (requires a Nerd Font)"),
         type_indicators: gtk::CheckButton::with_label("Type indicators after names (/ * @ = |)"),
         monospace_list: gtk::CheckButton::with_label("Monospace file list"),
         theme_window: gtk::CheckButton::with_label("Apply theme colours to the whole window"),
     };
-    checks.file_icons.set_active(appearance.file_icons);
     checks.type_indicators.set_active(appearance.type_indicators);
     checks.monospace_list.set_active(appearance.monospace_list);
     checks.theme_window.set_active(appearance.theme_window);
-    for c in [
-        &checks.file_icons,
-        &checks.type_indicators,
-        &checks.monospace_list,
-        &checks.theme_window,
-    ] {
+    for c in [&checks.type_indicators, &checks.monospace_list, &checks.theme_window] {
         vbox.append(c);
     }
 
-    (dropdown, checks)
+    checks
 }
 
 /// The "Behaviour" section. Returns the auto-refresh toggle.
@@ -895,60 +746,24 @@ fn add_behavior_section(vbox: &gtk::Box, behavior: &opusdm_ipc::Behavior) -> gtk
 
 fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>) {
     let settings_data = settings::load_settings();
-    let c = &settings_data.colors;
 
     let shell = opusdm_ui::DialogShell::new(parent, "OpusDM Settings")
-        .size(460, 620)
+        .size(460, 300)
         .scrolled();
-    let window = shell.window().clone();
     let vbox = shell.content();
 
-    let (preset_dd, appearance_checks) =
-        add_theme_section(vbox, &settings_data.appearance.preset, &settings_data.appearance);
+    let appearance_checks = add_appearance_section(vbox, &settings_data.appearance);
     let auto_refresh = add_behavior_section(vbox, &settings_data.behavior);
-
-    let (src_bg, src_fg) = add_color_section(vbox, &window, "SOURCE", &c.source_bg, &c.source_fg);
-    let (dst_bg, dst_fg) = add_color_section(vbox, &window, "DEST", &c.dest_bg, &c.dest_fg);
-    let (dir_bg, dir_fg) = add_color_section(vbox, &window, "DIRECTORY", &c.dir_bg, &c.dir_fg);
-    let (file_bg, file_fg) = add_color_section(vbox, &window, "FILE", &c.file_bg, &c.file_fg);
-    let (sel_bg, sel_fg) =
-        add_color_section(vbox, &window, "SELECTION", &c.selected_bg, &c.selected_fg);
-
-    let entries = Rc::new(ColorEntries {
-        source_bg: src_bg,
-        source_fg: src_fg,
-        dest_bg: dst_bg,
-        dest_fg: dst_fg,
-        dir_bg,
-        dir_fg,
-        file_bg,
-        file_fg,
-        selected_bg: sel_bg,
-        selected_fg: sel_fg,
-    });
-
-    // Selecting a preset fills every entry; index 0 ("Custom") leaves them be.
-    {
-        let entries = entries.clone();
-        preset_dd.connect_selected_notify(move |dd| {
-            let idx = dd.selected() as usize;
-            let Some(preset) = idx.checked_sub(1).and_then(|i| opusdm_ipc::ThemePreset::ALL.get(i))
-            else {
-                return;
-            };
-            entries.write(&preset.colors());
-        });
-    }
 
     shell.close_button("Cancel");
     let save_btn = shell.button("Save");
 
     {
-        let window = window.clone();
+        let window = shell.window().clone();
         let cmd_tx = cmd_tx.clone();
+        let theme = settings_data.theme.clone();
         save_btn.connect_clicked(move |_| {
-            let colors = entries.read();
-            let appearance = appearance_checks.read(&colors);
+            let appearance = appearance_checks.read();
             let behavior = opusdm_ipc::Behavior {
                 auto_refresh: auto_refresh.is_active(),
                 // Not exposed in the dialog yet; keep whatever settings.json has.
@@ -956,7 +771,7 @@ fn show_settings_dialog(parent: &gtk::ApplicationWindow, cmd_tx: &Sender<HubCmd>
             };
             // Server owns the in-memory settings and persists to disk.
             let _ = cmd_tx.send(HubCmd::UpdateSettings(Box::new(opusdm_ipc::Settings {
-                colors,
+                theme: theme.clone(),
                 appearance,
                 behavior,
             })));
