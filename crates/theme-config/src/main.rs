@@ -4,7 +4,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
-use opusdm_desktop_config::ui::BackgroundSection;
+use opusdm_desktop_config::ui::{BackgroundSection, FolderSection, GridSection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -31,6 +31,7 @@ fn main() -> gtk::glib::ExitCode {
 fn build_window(app: &gtk::Application) {
     let settings_data = model::load_settings();
     let theme = settings_data.theme.clone();
+    let desktop_data = opusdm_desktop_config::model::load();
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -64,6 +65,18 @@ fn build_window(app: &gtk::Application) {
 
     let bg = Rc::new(BackgroundSection::new(&window, &theme.background));
     desktop_page.append(&bg.root);
+    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let grid = Rc::new(GridSection::new(
+        desktop_data.icon_size,
+        desktop_data.grid_spacing,
+        desktop_data.grid_gap,
+    ));
+    desktop_page.append(&grid.root);
+    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let folder = Rc::new(FolderSection::new(desktop_data.desktop_dir.as_deref()));
+    desktop_page.append(&folder.root);
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
 
@@ -121,6 +134,8 @@ fn build_window(app: &gtk::Application) {
         let icon_set = icon_set.clone();
         let colors = colors.clone();
         let bg = bg.clone();
+        let grid = grid.clone();
+        let folder = folder.clone();
         let appearance_section = appearance_section.clone();
         let behavior_section = behavior_section.clone();
         let note = note.clone();
@@ -135,7 +150,13 @@ fn build_window(app: &gtk::Application) {
                 appearance: appearance_section.read(),
                 behavior: behavior_section.read(),
             };
-            let ui_desktop = opusdm_desktop_config::model::load();
+            let ui_desktop = opusdm_ipc::DesktopSettings {
+                icon_size: grid.icon_size(),
+                grid_spacing: grid.grid_spacing(),
+                grid_gap: grid.grid_gap(),
+                desktop_dir: folder.override_dir(),
+            }
+            .sanitized();
             let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);
             match model::apply_full(&result.settings, &result.desktop) {
                 model::ApplyOutcome::SentToHub => {

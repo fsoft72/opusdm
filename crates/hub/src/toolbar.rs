@@ -290,26 +290,9 @@ fn spawn_desktop_watch(
 /// Resolve the `opus-desktop-config` binary: preferably a sibling of the
 /// running hub executable (so a `cargo run` / installed pair stay together),
 /// otherwise the bare name for a `PATH` lookup.
-fn desktop_config_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            return dir.join("opus-desktop-config");
-        }
-    }
-    PathBuf::from("opus-desktop-config")
-}
-
-/// Spawn the desktop configuration app, detached. Errors are logged and
-/// otherwise ignored - a missing binary must not take down the hub.
-fn launch_desktop_config() {
-    let bin = desktop_config_bin();
-    if let Err(e) = std::process::Command::new(&bin).spawn() {
-        eprintln!("opusdm-hub: cannot launch {}: {e}", bin.display());
-    }
-}
-
-/// Resolve the `opusdm-theme` binary, same lookup strategy as
-/// `desktop_config_bin`.
+/// Resolve the `opusdm-theme` binary: preferably a sibling of the running
+/// hub executable (so a `cargo run` / installed pair stay together),
+/// otherwise the bare name for a `PATH` lookup.
 fn theme_config_bin() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -509,18 +492,8 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             sub.append(&btn);
         }
 
-        // Settings: launch the standalone opus-desktop-config app.
-        {
-            let menu_ref = menu.clone();
-            let btn = menu_button("Settings");
-            btn.connect_clicked(move |_| {
-                menu_ref.set_visible(false);
-                launch_desktop_config();
-            });
-            sub.append(&btn);
-        }
-
-        // Theme: launch the standalone opusdm-theme app.
+        // Theme: launch the standalone opusdm-theme app. Icon grid metrics
+        // and the desktop folder override live there too now.
         {
             let menu_ref = menu.clone();
             let btn = menu_button("Theme");
@@ -700,15 +673,6 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn desktop_config_bin_is_named_correctly_and_absolute_when_possible() {
-        let p = desktop_config_bin();
-        assert_eq!(p.file_name().and_then(|s| s.to_str()), Some("opus-desktop-config"));
-        if std::env::current_exe().is_ok() {
-            assert!(p.is_absolute());
-        }
-    }
 
     #[test]
     fn desktop_rule_css_embeds_the_background_declarations() {

@@ -1,10 +1,10 @@
-//! Load desktop settings for the config window, and apply edits: send them to
-//! a running hub over the socket, or write `desktop.json` directly when no hub
-//! is up.
+//! Load desktop settings, and colour hex/RGBA conversions shared by
+//! `ColorRow`. Applying settings lives in `opusdm-theme`, the only window
+//! that edits them now.
 
 use gtk4 as gtk;
 use opusdm_ipc::DesktopSettings;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Path to `~/.config/opusdm/desktop.json`. Same resolution as the hub.
 pub fn config_path() -> PathBuf {
@@ -26,51 +26,6 @@ pub fn load() -> DesktopSettings {
         .ok()
         .and_then(|c| serde_json::from_str::<DesktopSettings>(&c).ok());
     parsed.unwrap_or_default().sanitized()
-}
-
-/// What [`apply`] did.
-#[derive(Debug)]
-pub enum ApplyOutcome {
-    /// Sent to a running hub; it will persist and repaint.
-    SentToHub,
-    /// No hub running - wrote `desktop.json`; effective on next hub start.
-    WroteFile,
-    /// Could not send and could not write.
-    Failed(String),
-}
-
-/// Send `settings` to a running hub, or persist to disk if none is running.
-pub fn apply(settings: &DesktopSettings) -> ApplyOutcome {
-    let sock = opusdm_ipc::sockpath::hub_sock_path();
-    if opusdm_ipc::sockpath::probe_live_hub(&sock) {
-        match send_to_hub(&sock, settings) {
-            Ok(()) => return ApplyOutcome::SentToHub,
-            Err(e) => eprintln!("opus-desktop-config: hub send failed, writing file: {e}"),
-        }
-    }
-    match write_file(settings) {
-        Ok(()) => ApplyOutcome::WroteFile,
-        Err(e) => ApplyOutcome::Failed(e.to_string()),
-    }
-}
-
-/// Connect to the hub socket and send one `SetDesktopSettings` frame.
-fn send_to_hub(sock: &Path, settings: &DesktopSettings) -> std::io::Result<()> {
-    use std::os::unix::net::UnixStream;
-    let mut stream = UnixStream::connect(sock)?;
-    opusdm_ipc::frame::send(
-        &mut stream,
-        &opusdm_ipc::ToHub::SetDesktopSettings(settings.clone()),
-    )
-}
-
-/// Write `settings` to `desktop.json`, creating the config directory.
-fn write_file(settings: &DesktopSettings) -> std::io::Result<()> {
-    let path = config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(settings)?)
 }
 
 /// `gdk::RGBA` -> `#rrggbb` (alpha dropped).
@@ -101,18 +56,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_writes_the_file_when_no_hub_is_running() {
+    fn load_defaults_when_file_is_missing() {
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
-        std::env::set_var("OPUSDM_HUB_SOCK", td.path().join("definitely-absent.sock"));
-        let mut d = DesktopSettings::default();
-        d.icon_size = 88;
-        match apply(&d) {
-            ApplyOutcome::WroteFile => {}
-            other => panic!("expected WroteFile, got {other:?}"),
-        }
-        let written =
-            std::fs::read_to_string(td.path().join("opusdm").join("desktop.json")).unwrap();
-        assert!(written.contains("\"icon_size\": 88"));
+        assert_eq!(load(), DesktopSettings::default());
     }
 }

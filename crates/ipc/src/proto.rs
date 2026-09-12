@@ -101,8 +101,8 @@ pub enum ToHub {
     PresentLister(ListerId),
     /// Answer to a `ToLister::ConflictPrompt`.
     ConflictReply { req_id: u64, resolution: Resolution },
-    /// Sent by `opus-desktop-config` (not a Lister): replace the hub's
-    /// desktop settings. The hub sanitises, persists to
+    /// Sent by `opusdm-theme` (not a Lister): replace the hub's desktop
+    /// settings. The hub sanitises, persists to
     /// `~/.config/opusdm/desktop.json`, and applies live. No reply.
     SetDesktopSettings(crate::desktop::DesktopSettings),
     /// Sent by `opusdm-theme` (not a Lister): replace the hub's whole

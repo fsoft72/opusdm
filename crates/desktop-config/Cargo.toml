@@ -4,10 +4,6 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
-[[bin]]
-name = "opus-desktop-config"
-path = "src/main.rs"
-
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
