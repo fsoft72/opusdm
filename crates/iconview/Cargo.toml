@@ -8,6 +8,7 @@ rust-version.workspace = true
 gtk4.workspace = true
 md-5.workspace = true
 async-channel.workspace = true
+opusdm-ipc = { path = "../ipc" }
 
 [dev-dependencies]
 tempfile.workspace = true
