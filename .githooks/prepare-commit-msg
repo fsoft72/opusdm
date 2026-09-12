@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#
+# Setting `core.hooksPath` to .githooks makes git look ONLY here for every hook,
+# which would silence any prepare-commit-msg the developer has configured
+# globally (git template dir, ~/.config/git, ...). Re-run that one here so those
+# global rules still apply on top of this repo's hooks.
+
+set -euo pipefail
+
+GLOBAL_HOOKS_DIR="$(git config --global --get core.hooksPath || true)"
+[ -n "$GLOBAL_HOOKS_DIR" ] || GLOBAL_HOOKS_DIR="${HOME}/.git-templates/hooks"
+
+GLOBAL_HOOK="${GLOBAL_HOOKS_DIR}/prepare-commit-msg"
+
+if [ -x "$GLOBAL_HOOK" ] && [ "$(cd "$(dirname "$GLOBAL_HOOK")" && pwd)" != "$(cd "$(dirname "$0")" && pwd)" ]; then
+	exec "$GLOBAL_HOOK" "$@"
+fi
+
+exit 0

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# Pre-commit: format staged files with dprint (config: ./dprint.json), then
+# re-stage them so the commit always contains dprint-formatted code.
+#
+# Also refreshes the codegraph index when `codegraph` is on PATH. If it is
+# missing or the index run fails, the hook logs a note and lets the commit
+# proceed - codegraph is an optional developer convenience, never a gate.
+#
+# Enabled per-clone by `git config core.hooksPath .githooks`, which the root
+# package.json "prepare" script runs automatically on `pnpm install`.
+
+set -euo pipefail
+
+# Resolve a dprint binary: PATH first, then a locally installed one.
+if command -v dprint > /dev/null 2>&1; then
+	DPRINT="dprint"
+elif pnpm exec dprint --version > /dev/null 2>&1; then
+	DPRINT="pnpm exec dprint"
+else
+	echo "[pre-commit] dprint not found. Install it: https://dprint.dev/install/ (or 'pnpm add -D dprint')" >&2
+	exit 1
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Staged files that still exist on disk (Added / Copied / Modified / Renamed).
+mapfile -t STAGED < <(git diff --cached --name-only --diff-filter=ACMR)
+[ "${#STAGED[@]}" -eq 0 ] && exit 0
+
+# dprint decides which of these it actually understands; unknown paths are ignored.
+# shellcheck disable=SC2086
+$DPRINT fmt --allow-no-files -- "${STAGED[@]}"
+
+# Re-stage only the files that were part of this commit.
+RESTAGE=()
+for f in "${STAGED[@]}"; do
+	[ -f "$f" ] && RESTAGE+=("$f")
+done
+[ "${#RESTAGE[@]}" -gt 0 ] && git add -- "${RESTAGE[@]}"
+
+# Refresh the codegraph index. Optional: skip silently if not installed, and
+# never fail the commit if indexing errors out.
+if command -v codegraph > /dev/null 2>&1; then
+	if ! codegraph index --quiet; then
+		echo "[pre-commit] codegraph index failed; continuing without a fresh index." >&2
+	fi
+else
+	echo "[pre-commit] codegraph not found; skipping index refresh." >&2
+fi
+
+exit 0

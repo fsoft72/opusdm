@@ -42,6 +42,7 @@ struct Inner {
     drag_bases: RefCell<Vec<(usize, (f64, f64))>>,
     on_selection_changed: Listeners<dyn Fn()>,
     on_activate: Listeners<dyn Fn(usize)>,
+    on_background_activate: Listeners<dyn Fn()>,
     on_drop_uris: Listeners<dyn Fn(Vec<PathBuf>, i32, bool)>,
     on_context_menu: Listeners<dyn Fn(i32, f64, f64)>,
     on_rename_requested: Listeners<dyn Fn(usize, String)>,
@@ -91,6 +92,7 @@ impl IconField {
             drag_bases: RefCell::new(Vec::new()),
             on_selection_changed: RefCell::new(Vec::new()),
             on_activate: RefCell::new(Vec::new()),
+            on_background_activate: RefCell::new(Vec::new()),
             on_drop_uris: RefCell::new(Vec::new()),
             on_context_menu: RefCell::new(Vec::new()),
             on_rename_requested: RefCell::new(Vec::new()),
@@ -131,6 +133,7 @@ impl IconField {
                 Some(i) if ctrl => this.toggle(i),
                 Some(i) if shift => this.select_range_to(i),
                 Some(i) => this.select_exclusive(i),
+                None if n_press >= 2 => this.emit_background_activate(),
                 None if !ctrl && !shift => this.clear_selection(),
                 None => {}
             }
@@ -489,6 +492,13 @@ impl IconField {
         self.inner.on_activate.borrow_mut().push(Box::new(f));
     }
 
+    /// Register a listener for a double-click on empty space (no item under
+    /// the pointer) - e.g. to open a new window rooted at this field's
+    /// directory.
+    pub fn connect_background_activate(&self, f: impl Fn() + 'static) {
+        self.inner.on_background_activate.borrow_mut().push(Box::new(f));
+    }
+
     /// Register a drop listener: (dropped paths, target index or `-1`, shift held).
     pub fn connect_drop_uris(&self, f: impl Fn(Vec<PathBuf>, i32, bool) + 'static) {
         self.inner.on_drop_uris.borrow_mut().push(Box::new(f));
@@ -616,6 +626,12 @@ impl IconField {
     pub(crate) fn emit_activate(&self, i: usize) {
         for cb in self.inner.on_activate.borrow().iter() {
             cb(i);
+        }
+    }
+
+    fn emit_background_activate(&self) {
+        for cb in self.inner.on_background_activate.borrow().iter() {
+            cb();
         }
     }
 
