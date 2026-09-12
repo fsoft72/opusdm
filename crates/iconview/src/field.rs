@@ -21,7 +21,7 @@ struct Inner {
     entries: RefCell<Vec<IconEntry>>,
     mode: Cell<LayoutMode>,
     icon_size: Cell<i32>,
-    icon_set: Cell<opusdm_ipc::IconSetId>,
+    icon_set: RefCell<opusdm_ipc::IconSetId>,
     /// Auto-slot cell size for `FreeArrange`, in pixels. Ignored in `Grid`
     /// mode. Default matches `FreeArrange::new`'s `cell`.
     grid_spacing: Cell<i32>,
@@ -78,7 +78,7 @@ impl IconField {
             entries: RefCell::new(Vec::new()),
             mode: Cell::new(LayoutMode::Grid),
             icon_size: Cell::new(64),
-            icon_set: Cell::new(opusdm_ipc::IconSetId::None),
+            icon_set: RefCell::new(opusdm_ipc::IconSetId::None),
             grid_spacing: Cell::new(96),
             grid_gap: Cell::new(4),
             arrange: RefCell::new(Box::new(GridArrange::new())),
@@ -332,7 +332,7 @@ impl IconField {
         let size = self.inner.icon_size.get();
         let mut items = Vec::with_capacity(entries.len());
         for (idx, e) in entries.iter().enumerate() {
-            let it = IconItem::new(e, size, self.inner.icon_set.get());
+            let it = IconItem::new(e, size, &self.inner.icon_set.borrow());
             self.inner.fixed.put(it.widget(), 0.0, 0.0);
             let this = self.clone();
             it.connect_edit_committed(move |new_name| {
@@ -450,10 +450,10 @@ impl IconField {
     /// Switch the icon library used for entries without a content thumbnail.
     /// Rebuilds every item.
     pub fn set_icon_set(&self, set: opusdm_ipc::IconSetId) {
-        if self.inner.icon_set.get() == set {
+        if *self.inner.icon_set.borrow() == set {
             return;
         }
-        self.inner.icon_set.set(set);
+        *self.inner.icon_set.borrow_mut() = set;
         let entries = self.inner.entries.borrow().clone();
         self.set_entries(&entries);
     }
@@ -854,6 +854,20 @@ mod tests {
     use crate::item::IconItem;
     use crate::types::IconKind;
     use std::path::PathBuf;
+    use std::sync::Mutex as StdMutex;
+
+    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    /// A minimal valid 1x1 PNG, needed wherever a test decodes the bytes
+    /// through `gtk::gdk::Texture::from_bytes` (unlike `icon_set.rs`'s own
+    /// tests, which only compare raw bytes and never decode them).
+    const TEST_PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92, 0xef, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
 
     fn entries(n: usize) -> Vec<IconEntry> {
         (0..n)
@@ -877,7 +891,7 @@ mod tests {
         }
 
         // --- IconItem: selected class toggles ---
-        let it = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::None);
+        let it = IconItem::new(&entries(1)[0], 64, &opusdm_ipc::IconSetId::None);
         assert!(!it.widget().has_css_class("selected"));
         it.set_selected(true);
         assert!(it.widget().has_css_class("selected"));
@@ -910,7 +924,7 @@ mod tests {
             mode: 0o100_644,
             ext: Some("jpg".into()),
         };
-        let long = IconItem::new(&long_name, 64, opusdm_ipc::IconSetId::None);
+        let long = IconItem::new(&long_name, 64, &opusdm_ipc::IconSetId::None);
         // Width of the same text on one unwrapped line, for reference.
         let single_line = gtk::Label::new(Some(long_text));
         let (_, single_w, _, _) = single_line.measure(gtk::Orientation::Horizontal, -1);
@@ -934,7 +948,7 @@ mod tests {
         // texture measures the same as the glyph. Otherwise a thumbnail
         // loading in asynchronously would grow the item and, via
         // `FreeArrange`'s max-of-all pitch, re-space the whole desktop grid.
-        let plain = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::None);
+        let plain = IconItem::new(&entries(1)[0], 64, &opusdm_ipc::IconSetId::None);
         let before = plain.measure();
         let tall = gtk::gdk::MemoryTexture::new(
             2,
@@ -961,15 +975,23 @@ mod tests {
         f.set_icon_size(64);
 
         // --- IconField: set_icon_set rebuilds with real icons ---
-        f.set_icon_set(opusdm_ipc::IconSetId::BreezeDark);
+        let _env_guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        let icons_dir = td.path().join("opusdm").join("themes").join("test-theme").join("icons");
+        std::fs::create_dir_all(&icons_dir).unwrap();
+        std::fs::write(icons_dir.join("text.png"), TEST_PNG_1X1).unwrap();
+        let custom = opusdm_ipc::IconSetId::Custom("test-theme".to_string());
+
+        f.set_icon_set(custom.clone());
         assert_eq!(f.entry_count(), 3);
         f.set_icon_set(opusdm_ipc::IconSetId::None);
         assert_eq!(f.entry_count(), 3);
 
         // --- IconItem: a real icon set shows the image, not the glyph ---
-        let themed = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::BreezeDark);
+        let themed = IconItem::new(&entries(1)[0], 64, &custom);
         assert!(themed.shows_image());
-        let plain_glyph = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::None);
+        let plain_glyph = IconItem::new(&entries(1)[0], 64, &opusdm_ipc::IconSetId::None);
         assert!(!plain_glyph.shows_image());
 
         // --- IconField: selection helpers and the changed signal ---

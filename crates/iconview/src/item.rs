@@ -32,7 +32,7 @@ impl IconItem {
     /// Build an item for `entry`, icon box `icon_size` px square, under icon
     /// set `icon_set` (a real icon image when available, the Nerd Font glyph
     /// otherwise).
-    pub fn new(entry: &IconEntry, icon_size: i32, icon_set: opusdm_ipc::IconSetId) -> IconItem {
+    pub fn new(entry: &IconEntry, icon_size: i32, icon_set: &opusdm_ipc::IconSetId) -> IconItem {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
         root.add_css_class("icon-item");
         root.set_halign(gtk::Align::Center);
@@ -61,7 +61,7 @@ impl IconItem {
         if let Some(bytes) =
             crate::icon_set::icon_bytes_for(entry.kind, entry.mode, entry.ext.as_deref(), icon_set)
         {
-            let gbytes = glib::Bytes::from_static(bytes);
+            let gbytes = glib::Bytes::from_owned(bytes.into_owned());
             if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
                 thumb.set_paintable(Some(&texture));
                 thumb.set_pixel_size(icon_size);
