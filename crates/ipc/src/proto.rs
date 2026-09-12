@@ -105,6 +105,10 @@ pub enum ToHub {
     /// desktop settings. The hub sanitises, persists to
     /// `~/.config/opusdm/desktop.json`, and applies live. No reply.
     SetDesktopSettings(crate::desktop::DesktopSettings),
+    /// Sent by `opusdm-theme` (not a Lister): replace the hub's theme (icon
+    /// set, colours, background). The hub sanitises, persists to both
+    /// settings.json and desktop.json, and applies live. No reply.
+    SetTheme(crate::theme::Theme),
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -147,21 +151,11 @@ impl Default for ColorSettings {
     }
 }
 
-/// Id stored in [`Appearance::preset`] once colours have been hand-edited and
-/// no longer match any named preset.
-pub const PRESET_CUSTOM: &str = "custom";
-
-/// Look-and-feel switches that are not colours.
+/// Look-and-feel switches that are not part of the theme (icon set, colours,
+/// background) - those live in [`crate::theme::Theme`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
-    /// Id of the last applied [`crate::theme::ThemePreset`], or
-    /// [`PRESET_CUSTOM`]. Purely informational: the colours themselves always
-    /// live in [`ColorSettings`].
-    pub preset: String,
-    /// Show a Nerd Font glyph before each file name. Off by default because it
-    /// renders as tofu without a patched font installed.
-    pub file_icons: bool,
     /// Append an `ls -F` style type character (`/ * @ = |`) to each name.
     pub type_indicators: bool,
     /// Render the file list in the system monospace font.
@@ -173,13 +167,7 @@ pub struct Appearance {
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self {
-            preset: "default".to_string(),
-            file_icons: false,
-            type_indicators: false,
-            monospace_list: false,
-            theme_window: false,
-        }
+        Self { type_indicators: false, monospace_list: false, theme_window: false }
     }
 }
 
@@ -224,7 +212,7 @@ impl Behavior {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
-    pub colors: ColorSettings,
+    pub theme: crate::theme::Theme,
     pub appearance: Appearance,
     pub behavior: Behavior,
 }
@@ -333,12 +321,12 @@ mod tests {
         roundtrip_tohub(ToHub::PresentLister(ListerId(5)));
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
         roundtrip_tohub(ToHub::SetDesktopSettings(crate::desktop::DesktopSettings::default()));
+        roundtrip_tohub(ToHub::SetTheme(crate::theme::Theme::default()));
     }
 
     #[test]
     fn set_desktop_settings_carries_the_value() {
         let mut ds = crate::desktop::DesktopSettings::default();
-        ds.background.mode = crate::desktop::BackgroundMode::Gradient;
         ds.icon_size = 120;
         let mut buf = Vec::new();
         send(&mut buf, &ToHub::SetDesktopSettings(ds.clone())).unwrap();
@@ -391,21 +379,21 @@ mod tests {
     }
 
     #[test]
-    fn a_settings_file_from_before_presets_still_loads() {
-        // The shape settings.json had before selection colours and appearance
-        // existed. Missing fields must fall back to Default, not fail.
-        let old = r##"{
-            "colors": {
-                "source_bg": "#111111", "source_fg": "#222222",
-                "dest_bg": "#333333", "dest_fg": "#444444",
-                "dir_bg": "#555555", "dir_fg": "#666666",
-                "file_bg": "#777777", "file_fg": "#888888"
+    fn a_partial_settings_file_falls_back_to_defaults_for_missing_fields() {
+        let partial = r##"{
+            "theme": {
+                "colors": {
+                    "source_bg": "#111111", "source_fg": "#222222",
+                    "dest_bg": "#333333", "dest_fg": "#444444",
+                    "dir_bg": "#555555", "dir_fg": "#666666",
+                    "file_bg": "#777777", "file_fg": "#888888"
+                }
             }
         }"##;
-        let s: Settings = serde_json::from_str(old).expect("old settings must still parse");
-        assert_eq!(s.colors.source_bg, "#111111");
-        assert_eq!(s.colors.file_fg, "#888888");
-        assert_eq!(s.colors.selected_bg, ColorSettings::default().selected_bg);
+        let s: Settings = serde_json::from_str(partial).expect("partial settings must still parse");
+        assert_eq!(s.theme.colors.source_bg, "#111111");
+        assert_eq!(s.theme.colors.file_fg, "#888888");
+        assert_eq!(s.theme.colors.selected_bg, ColorSettings::default().selected_bg);
         assert_eq!(s.appearance, Appearance::default());
         assert_eq!(s.behavior, Behavior::default());
     }
@@ -435,21 +423,23 @@ mod tests {
 
     #[test]
     fn settings_survive_a_full_json_round_trip() {
-        let mut s = Settings {
-            colors: crate::theme::ThemePreset::Cyberpunk.colors(),
+        let s = Settings {
+            theme: crate::theme::Theme {
+                icon_set: crate::theme::IconSetId::BreezeDark,
+                colors: ColorSettings {
+                    source_bg: "#111111".into(),
+                    file_fg: "#888888".into(),
+                    ..ColorSettings::default()
+                },
+                background: crate::desktop::Background::default(),
+            },
             appearance: Appearance {
-                preset: crate::theme::ThemePreset::Cyberpunk.id().to_string(),
-                file_icons: true,
                 type_indicators: true,
                 monospace_list: true,
                 theme_window: true,
             },
             behavior: Behavior { auto_refresh: false, auto_refresh_debounce_ms: 900 },
         };
-        let json = serde_json::to_string(&s).unwrap();
-        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
-
-        s.appearance.preset = PRESET_CUSTOM.to_string();
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
     }
