@@ -21,6 +21,7 @@ struct Inner {
     entries: RefCell<Vec<IconEntry>>,
     mode: Cell<LayoutMode>,
     icon_size: Cell<i32>,
+    icon_set: Cell<opusdm_ipc::IconSetId>,
     /// Auto-slot cell size for `FreeArrange`, in pixels. Ignored in `Grid`
     /// mode. Default matches `FreeArrange::new`'s `cell`.
     grid_spacing: Cell<i32>,
@@ -77,6 +78,7 @@ impl IconField {
             entries: RefCell::new(Vec::new()),
             mode: Cell::new(LayoutMode::Grid),
             icon_size: Cell::new(64),
+            icon_set: Cell::new(opusdm_ipc::IconSetId::None),
             grid_spacing: Cell::new(96),
             grid_gap: Cell::new(4),
             arrange: RefCell::new(Box::new(GridArrange::new())),
@@ -330,7 +332,7 @@ impl IconField {
         let size = self.inner.icon_size.get();
         let mut items = Vec::with_capacity(entries.len());
         for (idx, e) in entries.iter().enumerate() {
-            let it = IconItem::new(e, size);
+            let it = IconItem::new(e, size, self.inner.icon_set.get());
             self.inner.fixed.put(it.widget(), 0.0, 0.0);
             let this = self.clone();
             it.connect_edit_committed(move |new_name| {
@@ -443,6 +445,17 @@ impl IconField {
             }
             self.request_thumbs();
         }
+    }
+
+    /// Switch the icon library used for entries without a content thumbnail.
+    /// Rebuilds every item.
+    pub fn set_icon_set(&self, set: opusdm_ipc::IconSetId) {
+        if self.inner.icon_set.get() == set {
+            return;
+        }
+        self.inner.icon_set.set(set);
+        let entries = self.inner.entries.borrow().clone();
+        self.set_entries(&entries);
     }
 
     /// Number of entries currently shown.
@@ -864,7 +877,7 @@ mod tests {
         }
 
         // --- IconItem: selected class toggles ---
-        let it = IconItem::new(&entries(1)[0], 64);
+        let it = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::None);
         assert!(!it.widget().has_css_class("selected"));
         it.set_selected(true);
         assert!(it.widget().has_css_class("selected"));
@@ -897,7 +910,7 @@ mod tests {
             mode: 0o100_644,
             ext: Some("jpg".into()),
         };
-        let long = IconItem::new(&long_name, 64);
+        let long = IconItem::new(&long_name, 64, opusdm_ipc::IconSetId::None);
         // Width of the same text on one unwrapped line, for reference.
         let single_line = gtk::Label::new(Some(long_text));
         let (_, single_w, _, _) = single_line.measure(gtk::Orientation::Horizontal, -1);
@@ -921,7 +934,7 @@ mod tests {
         // texture measures the same as the glyph. Otherwise a thumbnail
         // loading in asynchronously would grow the item and, via
         // `FreeArrange`'s max-of-all pitch, re-space the whole desktop grid.
-        let plain = IconItem::new(&entries(1)[0], 64);
+        let plain = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::None);
         let before = plain.measure();
         let tall = gtk::gdk::MemoryTexture::new(
             2,
@@ -946,6 +959,18 @@ mod tests {
         f.set_icon_size(96);
         f.set_mode(LayoutMode::Grid);
         f.set_icon_size(64);
+
+        // --- IconField: set_icon_set rebuilds with real icons ---
+        f.set_icon_set(opusdm_ipc::IconSetId::BreezeDark);
+        assert_eq!(f.entry_count(), 3);
+        f.set_icon_set(opusdm_ipc::IconSetId::None);
+        assert_eq!(f.entry_count(), 3);
+
+        // --- IconItem: a real icon set shows the image, not the glyph ---
+        let themed = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::BreezeDark);
+        assert!(themed.shows_image());
+        let plain_glyph = IconItem::new(&entries(1)[0], 64, opusdm_ipc::IconSetId::None);
+        assert!(!plain_glyph.shows_image());
 
         // --- IconField: selection helpers and the changed signal ---
         f.set_entries(&entries(5));

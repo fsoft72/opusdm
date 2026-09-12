@@ -29,8 +29,10 @@ pub struct IconItem {
 }
 
 impl IconItem {
-    /// Build an item for `entry`, icon box `icon_size` px square.
-    pub fn new(entry: &IconEntry, icon_size: i32) -> IconItem {
+    /// Build an item for `entry`, icon box `icon_size` px square, under icon
+    /// set `icon_set` (a real icon image when available, the Nerd Font glyph
+    /// otherwise).
+    pub fn new(entry: &IconEntry, icon_size: i32, icon_set: opusdm_ipc::IconSetId) -> IconItem {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
         root.add_css_class("icon-item");
         root.set_halign(gtk::Align::Center);
@@ -49,6 +51,24 @@ impl IconItem {
         let thumb = gtk::Image::new();
         thumb.set_pixel_size(icon_size);
         thumb.set_visible(false);
+
+        // A themed icon set fills the same `thumb` slot a file-content
+        // thumbnail later replaces via `set_thumbnail` - a real preview should
+        // win over a generic per-type icon. `clear_thumbnail` (only called on
+        // a thumbnail-size-bucket change) reverts to the plain glyph rather
+        // than the themed icon; that rare resize path is an accepted
+        // limitation, not a regression.
+        if let Some(bytes) =
+            crate::icon_set::icon_bytes_for(entry.kind, entry.mode, entry.ext.as_deref(), icon_set)
+        {
+            let gbytes = glib::Bytes::from_static(bytes);
+            if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                thumb.set_paintable(Some(&texture));
+                thumb.set_pixel_size(icon_size);
+                thumb.set_visible(true);
+                icon.set_visible(false);
+            }
+        }
 
         let name_label = gtk::Label::new(Some(&entry.name));
         name_label.set_wrap(true);
@@ -164,6 +184,12 @@ impl IconItem {
         self.inner.icon.set_width_request(px);
         self.inner.icon.set_height_request(px);
         self.inner.thumb.set_pixel_size(px);
+    }
+
+    /// Whether the icon box is currently showing an image (real icon-set icon
+    /// or content thumbnail) rather than the glyph label.
+    pub fn shows_image(&self) -> bool {
+        self.inner.thumb.is_visible()
     }
 
     /// Show `texture` in place of the glyph.
