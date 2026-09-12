@@ -98,12 +98,19 @@ fn build_window(app: &gtk::Application) {
         let bg = bg.clone();
         let note = note.clone();
         apply.connect_clicked(move |_| {
-            let theme = opusdm_ipc::Theme {
-                icon_set: icon_set.value(),
-                colors: colors.read(),
-                background: bg.read(),
+            let selected = icon_set.value();
+            let current_settings = model::load_settings();
+            let current_desktop = opusdm_desktop_config::model::load();
+            let (theme, desktop) = match &selected {
+                opusdm_ipc::IconSetId::None => (
+                    opusdm_ipc::Theme { icon_set: selected.clone(), colors: colors.read(), background: bg.read() },
+                    None,
+                ),
+                opusdm_ipc::IconSetId::Custom(_) => {
+                    model::apply_icon_set(&selected, &current_settings, &current_desktop)
+                }
             };
-            match model::apply(&theme) {
+            match model::apply_full(&theme, desktop.as_ref()) {
                 model::ApplyOutcome::SentToHub => {
                     note.set_text("Applied to the running desktop.");
                     note.set_visible(true);
