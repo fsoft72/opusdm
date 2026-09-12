@@ -1059,6 +1059,7 @@ dependencies = [
  "flate2",
  "gtk4",
  "opusdm-desktop-config",
+ "opusdm-iconview",
  "opusdm-ipc",
  "serde_json",
  "tar",

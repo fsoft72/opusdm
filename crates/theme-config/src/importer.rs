@@ -187,6 +187,42 @@ mod tests {
         ]
     }
 
+    /// End-to-end check against the real, xtask-built `breeze-dark.zip` (not
+    /// a synthetic fixture): import it into a scratch config dir and verify
+    /// the result is scannable and its icons load through the same
+    /// `opusdm_iconview` lookup the running app uses. Skipped if the zip
+    /// hasn't been built yet (`cargo run -p xtask -- package-themes`).
+    #[test]
+    fn imports_the_real_breeze_dark_package_end_to_end() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let zip_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/themes/breeze-dark.zip");
+        if !zip_path.is_file() {
+            eprintln!("skipping: {} not built (run cargo run -p xtask -- package-themes)", zip_path.display());
+            return;
+        }
+
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+
+        let slug = import_theme_archive(&zip_path).unwrap();
+        assert_eq!(slug, "breeze-dark");
+
+        let found = opusdm_ipc::themes::scan_themes();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].slug, "breeze-dark");
+        assert_eq!(found[0].label, "Breeze Dark");
+
+        let set = opusdm_ipc::IconSetId::Custom("breeze-dark".to_string());
+        let dir_icon = opusdm_iconview::icon_set::icon_bytes_for(
+            opusdm_iconview::IconKind::Dir,
+            0,
+            None,
+            &set,
+        );
+        assert!(dir_icon.is_some(), "dir icon should load through the real icon lookup path");
+        assert!(dir_icon.unwrap().len() > 100, "should be real PNG bytes, not a stub");
+    }
+
     #[test]
     fn imports_a_valid_zip() {
         let _guard = ENV_LOCK.lock().unwrap();

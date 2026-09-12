@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
 opusdm-desktop-config = { path = "../desktop-config" }
+opusdm-iconview = { path = "../iconview" }
 gtk4.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
