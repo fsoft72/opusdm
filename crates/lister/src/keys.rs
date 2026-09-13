@@ -69,6 +69,9 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
             gdk::Key::a | gdk::Key::A => Some(Action::Command("select_all")),
             gdk::Key::r | gdk::Key::R => Some(Action::Command("reload")),
             gdk::Key::h | gdk::Key::H => Some(Action::Command("toggle_hidden")),
+            gdk::Key::c | gdk::Key::C => Some(Action::Command("clip_copy")),
+            gdk::Key::x | gdk::Key::X => Some(Action::Command("clip_cut")),
+            gdk::Key::v | gdk::Key::V => Some(Action::Command("clip_paste")),
             _ => None,
         };
     }
@@ -209,13 +212,16 @@ mod tests {
             assert_eq!(resolve(gdk::Key::a, true, false, focus), Some(Action::Command("select_all")));
             assert_eq!(resolve(gdk::Key::r, true, false, focus), Some(Action::Command("reload")));
             assert_eq!(resolve(gdk::Key::h, true, false, focus), Some(Action::Command("toggle_hidden")));
+            assert_eq!(resolve(gdk::Key::c, true, false, focus), Some(Action::Command("clip_copy")));
+            assert_eq!(resolve(gdk::Key::x, true, false, focus), Some(Action::Command("clip_cut")));
+            assert_eq!(resolve(gdk::Key::v, true, false, focus), Some(Action::Command("clip_paste")));
         }
     }
 
     #[test]
     fn ctrl_does_not_leak_into_the_plain_letter_bindings() {
-        // Ctrl+C must not delete-or-copy through the vim binding for `c`.
-        assert_eq!(resolve(gdk::Key::c, true, false, Focus::List), None);
+        // Ctrl+C is the clipboard copy, not the source->dest vim binding for `c`.
+        assert_eq!(resolve(gdk::Key::c, true, false, Focus::List), Some(Action::Command("clip_copy")));
         assert_eq!(resolve(gdk::Key::d, true, false, Focus::List), None);
         assert_eq!(resolve(gdk::Key::j, true, false, Focus::List), None);
     }
@@ -238,7 +244,7 @@ mod tests {
             gdk::Key::Delete, gdk::Key::F2, gdk::Key::F7, gdk::Key::Tab,
             gdk::Key::grave, gdk::Key::F3, gdk::Key::space, gdk::Key::slash,
             gdk::Key::BackSpace, gdk::Key::Return, gdk::Key::F4, gdk::Key::Escape,
-            gdk::Key::p, gdk::Key::f, gdk::Key::a, gdk::Key::r,
+            gdk::Key::p, gdk::Key::f, gdk::Key::a, gdk::Key::r, gdk::Key::x, gdk::Key::v,
         ];
         for key in keys {
             for (ctrl, shift) in [(false, false), (false, true), (true, false)] {

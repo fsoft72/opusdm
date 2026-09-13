@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-09-13
+
+- Lister clipboard: Ctrl+C / Ctrl+X / Ctrl+V. New module `crates/lister/src/clip.rs`: Copy/Cut writes the selection to the system text clipboard as `text/uri-list` (reusing `opusdm_iconview::dnd::paths_to_uri_list`) with a leading `#opusdm-clip:cut`/`copy` marker line; Paste reads it back (`uris_to_paths`) and sends `ToHub::RunJob{op, srcs, dest_dir: Some(cwd)}`, the same path already used by drag-and-drop and the Source->Dest toolbar buttons. Works within one Lister, across two Lister instances, and pasting into a plain directory, since the OS clipboard already crosses process boundaries - no new hub/IPC message needed. New commands `clip_copy`/`clip_cut`/`clip_paste` in `palette.rs`, bound in the Ctrl-chord table in `keys.rs`.
+
 ## 2026-09-09
 
 - Nuovo modulo `crates/ui/src/version.rs` con la sola costante `opusdm_ui::VERSION` (default `"0.1.0"`), pensato per essere editato a mano quando si cambia versione. Il requester About (sia quello dell'hub in `toolbar.rs::show_about_dialog` sia quello del pannello in `appmenu.rs::show_about`) ora costruisce il markup con `format!` e mostra una riga `Version {VERSION}` sotto il sottotitolo.

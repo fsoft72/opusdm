@@ -30,6 +30,9 @@ pub fn get_commands() -> Vec<CommandItem> {
         CommandItem { id: "copy", title: "Copy (Source -> Dest)", category: "File Ops", shortcut: Some("c") },
         CommandItem { id: "move", title: "Move (Source -> Dest)", category: "File Ops", shortcut: Some("m") },
         CommandItem { id: "delete", title: "Delete Selected Items", category: "File Ops", shortcut: Some("d / Del") },
+        CommandItem { id: "clip_copy", title: "Copy to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+C") },
+        CommandItem { id: "clip_cut", title: "Cut to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+X") },
+        CommandItem { id: "clip_paste", title: "Paste from Clipboard", category: "Clipboard", shortcut: Some("Ctrl+V") },
         CommandItem { id: "mkdir", title: "Make Directory...", category: "File Ops", shortcut: Some("F7") },
         CommandItem { id: "newfile", title: "New File...", category: "File Ops", shortcut: Some("Shift+F7") },
         CommandItem { id: "rename", title: "Rename...", category: "File Ops", shortcut: Some("F2") },
@@ -140,6 +143,15 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 srcs,
                 dest_dir: None,
             });
+        }
+        "clip_copy" => {
+            crate::clip::copy_or_cut(ui, false);
+        }
+        "clip_cut" => {
+            crate::clip::copy_or_cut(ui, true);
+        }
+        "clip_paste" => {
+            crate::clip::paste(ui);
         }
         "delete" => {
             let paths = ui.selected_paths();
