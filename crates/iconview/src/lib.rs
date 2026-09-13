@@ -2,6 +2,16 @@
 //! navigation, rubber-band, and drag-and-drop. Used by the Lister (icon view)
 //! and the hub desktop window.
 
+/// Debug log gated on OPUSDM_DEBUG=1, mirroring `opusdm-lister`'s `dlog!`.
+#[macro_export]
+macro_rules! dbg_log {
+    ($($arg:tt)*) => {
+        if std::env::var_os("OPUSDM_DEBUG").is_some() {
+            eprintln!("[iconview:{}] {}", std::process::id(), format_args!($($arg)*));
+        }
+    };
+}
+
 pub mod arrange;
 pub mod dnd;
 pub mod field;

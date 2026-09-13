@@ -1,6 +1,28 @@
 //! `text/uri-list` encode/decode for drag-and-drop of file selections.
 
+use gtk4 as gtk;
+use gtk::prelude::*;
 use std::path::PathBuf;
+
+/// Live Shift-key state, queried directly from the seat rather than trusted
+/// off the drop event's modifier bits. During a cross-process drag the
+/// source process holds the pointer grab, so the target's own synthesized
+/// drop event can carry a stale/empty modifier mask - a direct seat query is
+/// unaffected by which process owns the grab.
+pub fn shift_held(widget: &impl IsA<gtk::Widget>) -> bool {
+    let seat = widget.display().default_seat();
+    let pointer_state = seat
+        .as_ref()
+        .and_then(|s| s.pointer())
+        .map(|d| d.modifier_state());
+    let keyboard_state = seat
+        .as_ref()
+        .and_then(|s| s.keyboard())
+        .map(|d| d.modifier_state());
+    crate::dbg_log!("shift_held: pointer_state={pointer_state:?} keyboard_state={keyboard_state:?}");
+    let has_shift = |m: gtk::gdk::ModifierType| m.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+    pointer_state.is_some_and(has_shift) || keyboard_state.is_some_and(has_shift)
+}
 
 /// Build a `text/uri-list` payload (CRLF-separated, trailing CRLF).
 pub fn paths_to_uri_list(paths: &[PathBuf]) -> String {

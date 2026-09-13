@@ -51,6 +51,7 @@ pub fn add_column(
     ui_getter: impl Fn() -> Option<Rc<crate::window::Ui>> + 'static + Clone,
 ) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
+    let title_owned = title.to_string();
     {
         let ui_getter = ui_getter.clone();
         factory.connect_setup(move |_, list_item| {
@@ -107,6 +108,68 @@ pub fn add_column(
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                 });
                 label.add_controller(click);
+            }
+
+            // Drag source: read the row bound to this cell right now, not the
+            // selection model - GtkColumnView applies a click's selection
+            // change on release, which lands after the drag threshold has
+            // already fired `connect_prepare`, so trusting `ui.selection`
+            // here would see stale (often empty) state.
+            {
+                let item_weak = item.downgrade();
+                let ui_getter = ui_getter.clone();
+                let src = gtk::DragSource::new();
+                src.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
+                src.connect_prepare(move |_, x, y| {
+                    crate::dlog!("drag prepare: cell at ({x}, {y})");
+                    let Some(item) = item_weak.upgrade() else {
+                        crate::dlog!("drag prepare: item gone");
+                        return None;
+                    };
+                    let Some(ui) = ui_getter() else {
+                        crate::dlog!("drag prepare: no ui");
+                        return None;
+                    };
+                    let Some(row) = item
+                        .item()
+                        .and_downcast::<BoxedAnyObject>()
+                        .map(|o| o.borrow::<Rc<Row>>().clone())
+                    else {
+                        crate::dlog!("drag prepare: no row bound");
+                        return None;
+                    };
+                    let pos = item.position();
+                    let paths = if ui.selection.is_selected(pos) {
+                        ui.selected_paths()
+                    } else {
+                        vec![ui.cwd_path().join(&row.name)]
+                    };
+                    crate::dlog!("drag prepare: pos={pos} row={} paths={paths:?}", row.name);
+                    if paths.is_empty() {
+                        crate::dlog!("drag prepare: empty paths, aborting");
+                        return None;
+                    }
+                    let payload = opusdm_iconview::dnd::paths_to_uri_list(&paths);
+                    crate::dlog!("drag prepare: payload={payload:?}");
+                    Some(gtk::gdk::ContentProvider::for_bytes(
+                        "text/uri-list",
+                        &gtk::glib::Bytes::from(payload.as_bytes()),
+                    ))
+                });
+                {
+                    let label_id = title_owned.clone();
+                    src.connect_drag_begin(move |_, _| {
+                        crate::dlog!("drag begin on column {label_id}");
+                    });
+                }
+                src.connect_drag_end(move |_, _, delete| {
+                    crate::dlog!("drag end, delete={delete}");
+                });
+                src.connect_drag_cancel(move |_, _, reason| {
+                    crate::dlog!("drag cancel: {reason:?}");
+                    false
+                });
+                label.add_controller(src);
             }
 
             if matches!(kind, ColKind::Name) {
