@@ -206,7 +206,6 @@ fn build_window(
     view_toggle.set_child(Some(&gtk::Label::new(Some("\u{25a6}"))));
     view_toggle.set_tooltip_text(Some("Toggle icon view"));
     view_toggle.add_css_class("flat");
-    button_row.append(&view_toggle);
     root.append(&button_row);
 
     // Model + filter + sorter + selection + column view.
@@ -584,6 +583,7 @@ fn build_window(
     }
 
     crate::actions::attach(&ui);
+    button_row.append(&view_toggle);
     crate::dnd::attach(&ui, &column_view);
 
     // Icon-view toggle: swap the stack child and rebuild entries on the way in.
