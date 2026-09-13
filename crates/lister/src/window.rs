@@ -302,6 +302,7 @@ fn build_window(
     let icon_field = opusdm_iconview::IconField::new();
     icon_field.set_mode(opusdm_iconview::LayoutMode::Grid);
     icon_field.set_icon_size(64);
+    icon_field.set_icon_set(settings.theme.icon_set.clone());
 
     let view_stack = gtk::Stack::new();
     view_stack.add_named(&scroller, Some("details"));
@@ -927,6 +928,7 @@ impl Ui {
                 };
                 *self.settings.borrow_mut() = new_settings;
                 self.update_css_for_colors();
+                self.icon_field.set_icon_set(self.settings.borrow().theme.icon_set.clone());
                 // Auto-refresh may have just been switched on or off.
                 let cwd = self.cwd.borrow().clone();
                 self.sync_watch(&cwd);
