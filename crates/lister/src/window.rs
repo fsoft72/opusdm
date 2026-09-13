@@ -187,6 +187,8 @@ fn build_window(
     stat_info.set_xalign(0.0);
     stat_info.set_hexpand(true);
     stat_bar.append(&stat_info);
+    let star_btn = crate::icons::icon_button(crate::icons::SVG_STAR, "Open New Lister Here", 14);
+    stat_bar.append(&star_btn);
     let pin_btn = crate::icons::icon_toggle_button(crate::icons::SVG_PIN, "Pin / Lock Role", 14);
     pin_btn.add_css_class("pin-btn");
     stat_bar.append(&pin_btn);
@@ -440,6 +442,14 @@ fn build_window(
     *ui_slot.borrow_mut() = Some(ui.clone());
     terminal.attach_events(&ui);
     ui.update_css_for_colors();
+
+    // Star button: open a new Lister at this Lister's current path.
+    {
+        let ui = ui.clone();
+        star_btn.connect_clicked(move |_| {
+            let _ = ui.client.send(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
+        });
+    }
 
     // Click the role badge to cycle SOURCE -> DEST -> NONE. If SOURCE is
     // pinned by another Lister, a SetRole(Source) from here would just be
