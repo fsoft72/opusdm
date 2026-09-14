@@ -353,6 +353,7 @@ fn build_window(
         preview_win: RefCell::new(None),
         terminal: terminal.clone(),
         css_provider,
+        nav_generation: Cell::new(0),
     });
 
     // Drain coalesced watch notices on the GTK thread.

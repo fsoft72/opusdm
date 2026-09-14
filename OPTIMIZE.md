@@ -9,7 +9,7 @@
 
 ## High
 
-- [ ] **Move directory and archive loading off the GTK thread** - `navigate_to` performs `read_dir`, per-entry metadata calls, and archive subprocess execution synchronously, so large, slow, or network-mounted directories freeze the whole Lister UI.
+- [x] **Move directory and archive loading off the GTK thread** - `navigate_to` performs `read_dir`, per-entry metadata calls, and archive subprocess execution synchronously, so large, slow, or network-mounted directories freeze the whole Lister UI.
   - File(s): `crates/lister/src/window.rs`, `crates/lister/src/model.rs`, `crates/lister/src/archive.rs`
 
 - [ ] **Stop accumulating CSS providers** - Every desktop theme update adds a new display-level `CssProvider` without removing or reusing the previous provider, causing process-lifetime memory growth and an ever-growing cascade of obsolete styles.

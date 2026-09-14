@@ -9,6 +9,7 @@ use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
 use opusdm_ipc::{ListerId, Settings, ToHub, ToLister};
 use std::cell::{Cell, RefCell};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -116,6 +117,10 @@ pub struct Ui {
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
     pub css_provider: gtk::CssProvider,
+    /// Bumped on every `navigate_to`; an in-flight background listing whose
+    /// generation no longer matches was superseded by a later navigation and
+    /// its result is dropped instead of applied.
+    pub nav_generation: Cell<u64>,
 }
 
 impl Ui {
@@ -174,23 +179,56 @@ impl Ui {
     }
 
     /// Read `dir`, repopulate the store, update title/entry/status, notify the hub.
+    /// The listing itself (`read_dir` plus per-entry metadata, or the archive
+    /// subprocess) runs on a background thread so a large, slow, or
+    /// network-mounted directory doesn't freeze the window; only the plain
+    /// `Row` data crosses back to the GTK thread, where the store is updated.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
+        self.navigate_to_then(dir, || {});
+    }
+
+    /// `navigate_to`, running `on_done` right after the listing is applied
+    /// (skipped if a later navigation supersedes this one first).
+    pub fn navigate_to_then(self: &Rc<Self>, dir: &Path, on_done: impl Fn() + 'static) {
         crate::dlog!("navigate_to {}", dir.display());
-        let rows = if let Some((arch, inner)) = crate::archive::parse_archive_path(dir) {
-            match crate::archive::read_archive_rows(&arch, &inner) {
-                Ok(r) => r,
-                Err(e) => {
-                    self.status_bar.job_line.set_text(&format!("cannot read archive {}: {e}", arch.display()));
-                    return;
-                }
+        let gen = self.nav_generation.get() + 1;
+        self.nav_generation.set(gen);
+
+        let dir_owned = dir.to_path_buf();
+        let (tx, rx) = async_channel::bounded::<io::Result<Vec<Row>>>(1);
+        std::thread::spawn(move || {
+            let result = if let Some((arch, inner)) = crate::archive::parse_archive_path(&dir_owned) {
+                crate::archive::read_archive_rows(&arch, &inner)
+            } else {
+                read_dir_rows(&dir_owned)
+            };
+            let _ = tx.send_blocking(result);
+        });
+
+        let this = self.clone();
+        let dir_owned = dir.to_path_buf();
+        glib::spawn_future_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            // Superseded by a later navigation while this was loading.
+            if this.nav_generation.get() != gen {
+                return;
             }
-        } else {
-            match read_dir_rows(dir) {
-                Ok(r) => r,
-                Err(e) => {
+            this.apply_navigation(&dir_owned, result);
+            on_done();
+        });
+    }
+
+    /// Apply a listing produced by `navigate_to`'s background read.
+    fn apply_navigation(self: &Rc<Self>, dir: &Path, rows: io::Result<Vec<Row>>) {
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some((arch, _)) = crate::archive::parse_archive_path(dir) {
+                    self.status_bar.job_line.set_text(&format!("cannot read archive {}: {e}", arch.display()));
+                } else {
                     self.status_bar.job_line.set_text(&format!("cannot open {}: {e}", dir.display()));
-                    return;
                 }
+                return;
             }
         };
         self.dismiss_filter();
@@ -291,21 +329,26 @@ impl Ui {
         self.refresh_icon_view();
     }
 
-    /// Re-read the current directory, keeping the selection by name.
+    /// Re-read the current directory, keeping the selection by name. Since
+    /// `navigate_to` reads off-thread, the selection is restored once the new
+    /// listing actually lands rather than right after the call returns.
     pub fn reload(self: &Rc<Self>) {
         let selected = self.selected_names();
-        let cwd = self.cwd.borrow().clone();
-        self.navigate_to(&cwd);
         if selected.is_empty() {
+            self.navigate_to(&self.cwd.borrow().clone());
             return;
         }
-        for i in 0..self.view.selection.n_items() {
-            if let Some(row) = self.row_at(i) {
-                if selected.contains(&row.name) {
-                    self.view.selection.select_item(i, false);
+        let this = self.clone();
+        let cwd = self.cwd.borrow().clone();
+        self.navigate_to_then(&cwd, move || {
+            for i in 0..this.view.selection.n_items() {
+                if let Some(row) = this.row_at(i) {
+                    if selected.contains(&row.name) {
+                        this.view.selection.select_item(i, false);
+                    }
                 }
             }
-        }
+        });
     }
 
     /// Absolute paths of the selected rows.
