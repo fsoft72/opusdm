@@ -14,7 +14,9 @@ use std::rc::Rc;
 /// A list of listener closures with signature `F`.
 type Listeners<F> = RefCell<Vec<Box<F>>>;
 
-struct Inner {
+/// Widget tree, content and arrangement: what to draw, and where. Also owns
+/// the in-progress reposition drag, since that only ever mutates layout.
+struct LayoutState {
     scroller: gtk::ScrolledWindow,
     fixed: gtk::Fixed,
     items: RefCell<Vec<IconItem>>,
@@ -34,12 +36,20 @@ struct Inner {
     /// Filled by `relayout`; hit-testing and nav read this, not GTK geometry,
     /// so they work before the widget is realized.
     item_rects: RefCell<Vec<(f64, f64, f64, f64)>>,
-    selection: RefCell<BTreeSet<usize>>,
-    anchor: Cell<Option<usize>>,
-    cursor: Cell<Option<usize>>,
     reposition_active: Cell<bool>,
     /// While a reposition drag is live: (item index, its position at drag start).
     drag_bases: RefCell<Vec<(usize, (f64, f64))>>,
+}
+
+/// Selection and keyboard-cursor state, independent of how items are laid out.
+struct SelectionState {
+    selected: RefCell<BTreeSet<usize>>,
+    anchor: Cell<Option<usize>>,
+    cursor: Cell<Option<usize>>,
+}
+
+/// Registered listener closures, one list per event kind.
+struct Events {
     on_selection_changed: Listeners<dyn Fn()>,
     on_activate: Listeners<dyn Fn(usize)>,
     on_background_activate: Listeners<dyn Fn()>,
@@ -48,6 +58,12 @@ struct Inner {
     on_rename_requested: Listeners<dyn Fn(usize, String)>,
     on_zoom_requested: Listeners<dyn Fn(i32)>,
     on_move_icons: Listeners<dyn Fn()>,
+}
+
+struct Inner {
+    layout: LayoutState,
+    selection: SelectionState,
+    events: Events,
     thumb_pool: Option<crate::thumbs::ThumbPool>,
 }
 
@@ -73,31 +89,37 @@ impl IconField {
         };
 
         let inner = Rc::new(Inner {
-            scroller,
-            fixed,
-            items: RefCell::new(Vec::new()),
-            entries: RefCell::new(Vec::new()),
-            mode: Cell::new(LayoutMode::Grid),
-            icon_size: Cell::new(64),
-            icon_set: RefCell::new(opusdm_ipc::IconSetId::None),
-            grid_spacing: Cell::new(96),
-            grid_gap: Cell::new(4),
-            arrange: RefCell::new(Box::new(GridArrange::new())),
-            free_positions: RefCell::new(HashMap::new()),
-            item_rects: RefCell::new(Vec::new()),
-            selection: RefCell::new(BTreeSet::new()),
-            anchor: Cell::new(None),
-            cursor: Cell::new(None),
-            reposition_active: Cell::new(false),
-            drag_bases: RefCell::new(Vec::new()),
-            on_selection_changed: RefCell::new(Vec::new()),
-            on_activate: RefCell::new(Vec::new()),
-            on_background_activate: RefCell::new(Vec::new()),
-            on_drop_uris: RefCell::new(Vec::new()),
-            on_context_menu: RefCell::new(Vec::new()),
-            on_rename_requested: RefCell::new(Vec::new()),
-            on_zoom_requested: RefCell::new(Vec::new()),
-            on_move_icons: RefCell::new(Vec::new()),
+            layout: LayoutState {
+                scroller,
+                fixed,
+                items: RefCell::new(Vec::new()),
+                entries: RefCell::new(Vec::new()),
+                mode: Cell::new(LayoutMode::Grid),
+                icon_size: Cell::new(64),
+                icon_set: RefCell::new(opusdm_ipc::IconSetId::None),
+                grid_spacing: Cell::new(96),
+                grid_gap: Cell::new(4),
+                arrange: RefCell::new(Box::new(GridArrange::new())),
+                free_positions: RefCell::new(HashMap::new()),
+                item_rects: RefCell::new(Vec::new()),
+                reposition_active: Cell::new(false),
+                drag_bases: RefCell::new(Vec::new()),
+            },
+            selection: SelectionState {
+                selected: RefCell::new(BTreeSet::new()),
+                anchor: Cell::new(None),
+                cursor: Cell::new(None),
+            },
+            events: Events {
+                on_selection_changed: RefCell::new(Vec::new()),
+                on_activate: RefCell::new(Vec::new()),
+                on_background_activate: RefCell::new(Vec::new()),
+                on_drop_uris: RefCell::new(Vec::new()),
+                on_context_menu: RefCell::new(Vec::new()),
+                on_rename_requested: RefCell::new(Vec::new()),
+                on_zoom_requested: RefCell::new(Vec::new()),
+                on_move_icons: RefCell::new(Vec::new()),
+            },
             thumb_pool,
         });
         let field = IconField { inner };
@@ -115,9 +137,9 @@ impl IconField {
 
         // Re-flow when the visible width changes or the field is first shown.
         let this = field.clone();
-        field.inner.scroller.hadjustment().connect_page_size_notify(move |_| this.relayout());
+        field.inner.layout.scroller.hadjustment().connect_page_size_notify(move |_| this.relayout());
         let this = field.clone();
-        field.inner.fixed.connect_map(move |_| this.relayout());
+        field.inner.layout.fixed.connect_map(move |_| this.relayout());
 
         // Left-click selection.
         let click = gtk::GestureClick::new();
@@ -138,7 +160,7 @@ impl IconField {
                 None => {}
             }
         });
-        field.inner.fixed.add_controller(click);
+        field.inner.layout.fixed.add_controller(click);
 
         // Rubber-band selection: a drag that begins on empty space.
         let drag = gtk::GestureDrag::new();
@@ -166,10 +188,10 @@ impl IconField {
             let ry = sy.min(sy + oy);
             this.rubber_band_to((rx, ry, ox.abs(), oy.abs()), additive);
         });
-        field.inner.fixed.add_controller(drag);
+        field.inner.layout.fixed.add_controller(drag);
 
         // Keyboard navigation.
-        field.inner.fixed.set_focusable(true);
+        field.inner.layout.fixed.set_focusable(true);
         let key = gtk::EventControllerKey::new();
         let this = field.clone();
         key.connect_key_pressed(move |_, keyval, _, state| {
@@ -224,7 +246,7 @@ impl IconField {
                 _ => gtk::glib::Propagation::Proceed,
             }
         });
-        field.inner.fixed.add_controller(key);
+        field.inner.layout.fixed.add_controller(key);
 
         // Drag source: export the selection as a uri-list for other windows.
         let src = gtk::DragSource::new();
@@ -251,7 +273,7 @@ impl IconField {
                 &gtk::glib::Bytes::from(payload.as_bytes()),
             ))
         });
-        field.inner.fixed.add_controller(src);
+        field.inner.layout.fixed.add_controller(src);
 
         // Drop target: hand parsed paths to the consumer. GDK's builtin mime
         // table deserializes `text/uri-list` into `GdkFileList`, not a plain
@@ -277,12 +299,12 @@ impl IconField {
                 .current_event()
                 .map(|e| e.modifier_state().contains(gtk::gdk::ModifierType::SHIFT_MASK))
                 .unwrap_or(false);
-            let shift = crate::dnd::shift_held(&this.inner.fixed);
+            let shift = crate::dnd::shift_held(&this.inner.layout.fixed);
             crate::dbg_log!("icon field drop: event_shift={event_shift} live_shift={shift}");
             this.handle_drop_text(&crate::dnd::paths_to_uri_list(&paths), tgt, shift);
             true
         });
-        field.inner.fixed.add_controller(target);
+        field.inner.layout.fixed.add_controller(target);
 
         // Right-click: select under the pointer, then emit context-menu.
         let rclick = gtk::GestureClick::new();
@@ -296,11 +318,11 @@ impl IconField {
                 }
             }
             let idx = hit.map(|i| i as i32).unwrap_or(-1);
-            for cb in this.inner.on_context_menu.borrow().iter() {
+            for cb in this.inner.events.on_context_menu.borrow().iter() {
                 cb(idx, x, y);
             }
         });
-        field.inner.fixed.add_controller(rclick);
+        field.inner.layout.fixed.add_controller(rclick);
 
         // Ctrl+scroll: zoom request.
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
@@ -310,12 +332,12 @@ impl IconField {
                 return gtk::glib::Propagation::Proceed;
             }
             let step = if dy < 0.0 { 1 } else { -1 };
-            for cb in this.inner.on_zoom_requested.borrow().iter() {
+            for cb in this.inner.events.on_zoom_requested.borrow().iter() {
                 cb(step);
             }
             gtk::glib::Propagation::Stop
         });
-        field.inner.fixed.add_controller(scroll);
+        field.inner.layout.fixed.add_controller(scroll);
 
         // Internal reposition drag (Free mode only), starting on any item.
         let rdrag = gtk::GestureDrag::new();
@@ -332,40 +354,40 @@ impl IconField {
         rdrag.connect_drag_end(move |_, ox, oy| {
             this.end_reposition(ox, oy);
         });
-        field.inner.fixed.add_controller(rdrag);
+        field.inner.layout.fixed.add_controller(rdrag);
 
         field
     }
 
     /// Outer widget for embedding.
     pub fn widget(&self) -> &gtk::Widget {
-        self.inner.scroller.upcast_ref()
+        self.inner.layout.scroller.upcast_ref()
     }
 
     /// Replace all entries. Rebuilds the item widgets and re-lays-out.
     pub fn set_entries(&self, entries: &[IconEntry]) {
-        for it in self.inner.items.borrow().iter() {
-            self.inner.fixed.remove(it.widget());
+        for it in self.inner.layout.items.borrow().iter() {
+            self.inner.layout.fixed.remove(it.widget());
         }
-        let size = self.inner.icon_size.get();
+        let size = self.inner.layout.icon_size.get();
         let mut items = Vec::with_capacity(entries.len());
         for (idx, e) in entries.iter().enumerate() {
-            let it = IconItem::new(e, size, &self.inner.icon_set.borrow());
-            self.inner.fixed.put(it.widget(), 0.0, 0.0);
+            let it = IconItem::new(e, size, &self.inner.layout.icon_set.borrow());
+            self.inner.layout.fixed.put(it.widget(), 0.0, 0.0);
             let this = self.clone();
             it.connect_edit_committed(move |new_name| {
-                for cb in this.inner.on_rename_requested.borrow().iter() {
+                for cb in this.inner.events.on_rename_requested.borrow().iter() {
                     cb(idx, new_name.clone());
                 }
             });
             items.push(it);
         }
-        *self.inner.items.borrow_mut() = items;
-        *self.inner.entries.borrow_mut() = entries.to_vec();
-        self.inner.free_positions.borrow_mut().clear();
-        self.inner.selection.borrow_mut().clear();
-        self.inner.anchor.set(None);
-        self.inner.cursor.set(None);
+        *self.inner.layout.items.borrow_mut() = items;
+        *self.inner.layout.entries.borrow_mut() = entries.to_vec();
+        self.inner.layout.free_positions.borrow_mut().clear();
+        self.inner.selection.selected.borrow_mut().clear();
+        self.inner.selection.anchor.set(None);
+        self.inner.selection.cursor.set(None);
         self.relayout();
         self.emit_selection_changed();
         self.request_thumbs();
@@ -377,8 +399,8 @@ impl IconField {
             return;
         };
         pool.bump_generation();
-        let size = crate::types::ThumbSize::for_icon(self.inner.icon_size.get());
-        for (index, entry) in self.inner.entries.borrow().iter().enumerate() {
+        let size = crate::types::ThumbSize::for_icon(self.inner.layout.icon_size.get());
+        for (index, entry) in self.inner.layout.entries.borrow().iter().enumerate() {
             let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
                 continue;
             };
@@ -401,7 +423,7 @@ impl IconField {
             return;
         }
         {
-            let entries = self.inner.entries.borrow();
+            let entries = self.inner.layout.entries.borrow();
             let Some(entry) = entries.get(res.index) else {
                 return;
             };
@@ -413,14 +435,14 @@ impl IconField {
         let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) else {
             return;
         };
-        if let Some(item) = self.inner.items.borrow().get(res.index) {
+        if let Some(item) = self.inner.layout.items.borrow().get(res.index) {
             item.set_thumbnail(&texture);
         }
     }
 
     /// Switch arrangement strategy.
     pub fn set_mode(&self, mode: LayoutMode) {
-        self.inner.mode.set(mode);
+        self.inner.layout.mode.set(mode);
         self.rebuild_arranger();
         self.relayout();
     }
@@ -428,10 +450,10 @@ impl IconField {
     /// Set the desktop auto-slot cell size in pixels. Takes effect in
     /// `Free` mode; harmless in `Grid` mode.
     pub fn set_grid_spacing(&self, px: i32) {
-        if self.inner.grid_spacing.get() == px {
+        if self.inner.layout.grid_spacing.get() == px {
             return;
         }
-        self.inner.grid_spacing.set(px);
+        self.inner.layout.grid_spacing.set(px);
         self.rebuild_arranger();
         self.relayout();
     }
@@ -439,26 +461,26 @@ impl IconField {
     /// Set the dead space between desktop auto-slot cells in pixels. Takes
     /// effect in `Free` mode; harmless in `Grid` mode.
     pub fn set_grid_gap(&self, px: i32) {
-        if self.inner.grid_gap.get() == px {
+        if self.inner.layout.grid_gap.get() == px {
             return;
         }
-        self.inner.grid_gap.set(px);
+        self.inner.layout.grid_gap.set(px);
         self.rebuild_arranger();
         self.relayout();
     }
 
     /// Resize every item's icon box.
     pub fn set_icon_size(&self, px: i32) {
-        let old_px = self.inner.icon_size.get();
-        self.inner.icon_size.set(px);
-        for it in self.inner.items.borrow().iter() {
+        let old_px = self.inner.layout.icon_size.get();
+        self.inner.layout.icon_size.set(px);
+        for it in self.inner.layout.items.borrow().iter() {
             it.set_icon_size(px);
         }
         self.relayout();
         let before = crate::types::ThumbSize::for_icon(old_px);
         let after = crate::types::ThumbSize::for_icon(px);
         if before != after {
-            for it in self.inner.items.borrow().iter() {
+            for it in self.inner.layout.items.borrow().iter() {
                 it.clear_thumbnail();
             }
             self.request_thumbs();
@@ -468,29 +490,30 @@ impl IconField {
     /// Switch the icon library used for entries without a content thumbnail.
     /// Rebuilds every item.
     pub fn set_icon_set(&self, set: opusdm_ipc::IconSetId) {
-        if *self.inner.icon_set.borrow() == set {
+        if *self.inner.layout.icon_set.borrow() == set {
             return;
         }
-        *self.inner.icon_set.borrow_mut() = set;
-        let entries = self.inner.entries.borrow().clone();
+        *self.inner.layout.icon_set.borrow_mut() = set;
+        let entries = self.inner.layout.entries.borrow().clone();
         self.set_entries(&entries);
     }
 
     /// Number of entries currently shown.
     pub fn entry_count(&self) -> usize {
-        self.inner.items.borrow().len()
+        self.inner.layout.items.borrow().len()
     }
 
     /// Indices of selected items, ascending.
     pub fn selected_indices(&self) -> Vec<usize> {
-        self.inner.selection.borrow().iter().copied().collect()
+        self.inner.selection.selected.borrow().iter().copied().collect()
     }
 
     /// Absolute paths of selected items.
     pub fn selected_paths(&self) -> Vec<PathBuf> {
-        let entries = self.inner.entries.borrow();
+        let entries = self.inner.layout.entries.borrow();
         self.inner
             .selection
+            .selected
             .borrow()
             .iter()
             .filter_map(|&i| entries.get(i).map(|e| e.path.clone()))
@@ -499,49 +522,49 @@ impl IconField {
 
     /// Register a selection-changed listener.
     pub fn connect_selection_changed(&self, f: impl Fn() + 'static) {
-        self.inner.on_selection_changed.borrow_mut().push(Box::new(f));
+        self.inner.events.on_selection_changed.borrow_mut().push(Box::new(f));
     }
 
     /// Register an activate (open) listener.
     pub fn connect_activate(&self, f: impl Fn(usize) + 'static) {
-        self.inner.on_activate.borrow_mut().push(Box::new(f));
+        self.inner.events.on_activate.borrow_mut().push(Box::new(f));
     }
 
     /// Register a listener for a double-click on empty space (no item under
     /// the pointer) - e.g. to open a new window rooted at this field's
     /// directory.
     pub fn connect_background_activate(&self, f: impl Fn() + 'static) {
-        self.inner.on_background_activate.borrow_mut().push(Box::new(f));
+        self.inner.events.on_background_activate.borrow_mut().push(Box::new(f));
     }
 
     /// Register a drop listener: (dropped paths, target index or `-1`, shift held).
     pub fn connect_drop_uris(&self, f: impl Fn(Vec<PathBuf>, i32, bool) + 'static) {
-        self.inner.on_drop_uris.borrow_mut().push(Box::new(f));
+        self.inner.events.on_drop_uris.borrow_mut().push(Box::new(f));
     }
 
     /// Register a context-menu listener: (index or `-1`, x, y).
     pub fn connect_context_menu(&self, f: impl Fn(i32, f64, f64) + 'static) {
-        self.inner.on_context_menu.borrow_mut().push(Box::new(f));
+        self.inner.events.on_context_menu.borrow_mut().push(Box::new(f));
     }
 
     /// Register an inline-rename listener: (index, new name).
     pub fn connect_rename_requested(&self, f: impl Fn(usize, String) + 'static) {
-        self.inner.on_rename_requested.borrow_mut().push(Box::new(f));
+        self.inner.events.on_rename_requested.borrow_mut().push(Box::new(f));
     }
 
     /// Register a zoom listener: signed step from Ctrl+scroll.
     pub fn connect_zoom_requested(&self, f: impl Fn(i32) + 'static) {
-        self.inner.on_zoom_requested.borrow_mut().push(Box::new(f));
+        self.inner.events.on_zoom_requested.borrow_mut().push(Box::new(f));
     }
 
     /// Register a listener fired after icons are repositioned in Free mode.
     pub fn connect_move_icons(&self, f: impl Fn() + 'static) {
-        self.inner.on_move_icons.borrow_mut().push(Box::new(f));
+        self.inner.events.on_move_icons.borrow_mut().push(Box::new(f));
     }
 
     /// The entry behind index `i`, cloned.
     pub fn entry(&self, i: usize) -> Option<IconEntry> {
-        self.inner.entries.borrow().get(i).cloned()
+        self.inner.layout.entries.borrow().get(i).cloned()
     }
 
     /// Parse a `text/uri-list` payload and fan it out to the drop listeners.
@@ -550,7 +573,7 @@ impl IconField {
         if paths.is_empty() {
             return;
         }
-        for cb in self.inner.on_drop_uris.borrow().iter() {
+        for cb in self.inner.events.on_drop_uris.borrow().iter() {
             cb(paths.clone(), target, shift);
         }
     }
@@ -558,25 +581,25 @@ impl IconField {
     /// Whether a primary-button drag should start an inter-window file drag.
     /// False in Free mode, where that gesture is an internal reposition.
     pub(crate) fn inter_window_drag_enabled(&self) -> bool {
-        !matches!(self.inner.mode.get(), LayoutMode::Free)
+        !matches!(self.inner.layout.mode.get(), LayoutMode::Free)
     }
 
     /// Begin a reposition: only in Free mode and only when the press lands on
     /// an item. Selects that item if it was not already, and snapshots the
     /// start positions of every item that will move.
     fn begin_reposition(&self, x: f64, y: f64) {
-        self.inner.reposition_active.set(false);
-        self.inner.drag_bases.borrow_mut().clear();
-        if !matches!(self.inner.mode.get(), LayoutMode::Free) {
+        self.inner.layout.reposition_active.set(false);
+        self.inner.layout.drag_bases.borrow_mut().clear();
+        if !matches!(self.inner.layout.mode.get(), LayoutMode::Free) {
             return;
         }
         let Some(hit) = self.item_at(x, y) else {
             return;
         };
-        if !self.inner.selection.borrow().contains(&hit) {
+        if !self.inner.selection.selected.borrow().contains(&hit) {
             self.select_exclusive(hit);
         }
-        let rects = self.inner.item_rects.borrow();
+        let rects = self.inner.layout.item_rects.borrow();
         let bases: Vec<(usize, (f64, f64))> = self
             .selected_indices()
             .into_iter()
@@ -586,74 +609,74 @@ impl IconField {
         if bases.is_empty() {
             return;
         }
-        *self.inner.drag_bases.borrow_mut() = bases;
-        self.inner.reposition_active.set(true);
+        *self.inner.layout.drag_bases.borrow_mut() = bases;
+        self.inner.layout.reposition_active.set(true);
     }
 
     /// Live feedback: move the dragged items to base + offset, no commit.
     fn update_reposition(&self, ox: f64, oy: f64) {
-        if !self.inner.reposition_active.get() {
+        if !self.inner.layout.reposition_active.get() {
             return;
         }
-        let items = self.inner.items.borrow();
-        for &(i, (bx, by)) in self.inner.drag_bases.borrow().iter() {
+        let items = self.inner.layout.items.borrow();
+        for &(i, (bx, by)) in self.inner.layout.drag_bases.borrow().iter() {
             if let Some(it) = items.get(i) {
-                self.inner.fixed.move_(it.widget(), (bx + ox).max(0.0), (by + oy).max(0.0));
+                self.inner.layout.fixed.move_(it.widget(), (bx + ox).max(0.0), (by + oy).max(0.0));
             }
         }
     }
 
     /// Commit the reposition: write the final positions, re-lay-out, notify.
     fn end_reposition(&self, ox: f64, oy: f64) {
-        if !self.inner.reposition_active.get() {
+        if !self.inner.layout.reposition_active.get() {
             return;
         }
-        self.inner.reposition_active.set(false);
-        let bases = std::mem::take(&mut *self.inner.drag_bases.borrow_mut());
+        self.inner.layout.reposition_active.set(false);
+        let bases = std::mem::take(&mut *self.inner.layout.drag_bases.borrow_mut());
         if ox.abs() < 4.0 && oy.abs() < 4.0 {
             self.relayout(); // undo any sub-threshold nudge from update
             return;
         }
         {
-            let mut fp = self.inner.free_positions.borrow_mut();
+            let mut fp = self.inner.layout.free_positions.borrow_mut();
             for (i, (bx, by)) in bases {
                 fp.insert(i, ((bx + ox).max(0.0), (by + oy).max(0.0)));
             }
         }
         self.relayout();
-        for cb in self.inner.on_move_icons.borrow().iter() {
+        for cb in self.inner.events.on_move_icons.borrow().iter() {
             cb();
         }
     }
 
     /// Snapshot of the current free-mode positions.
     pub fn free_positions(&self) -> HashMap<usize, (f64, f64)> {
-        self.inner.free_positions.borrow().clone()
+        self.inner.layout.free_positions.borrow().clone()
     }
 
     fn emit_selection_changed(&self) {
         self.sync_selection_classes();
-        for cb in self.inner.on_selection_changed.borrow().iter() {
+        for cb in self.inner.events.on_selection_changed.borrow().iter() {
             cb();
         }
     }
 
     pub(crate) fn emit_activate(&self, i: usize) {
-        for cb in self.inner.on_activate.borrow().iter() {
+        for cb in self.inner.events.on_activate.borrow().iter() {
             cb(i);
         }
     }
 
     fn emit_background_activate(&self) {
-        for cb in self.inner.on_background_activate.borrow().iter() {
+        for cb in self.inner.events.on_background_activate.borrow().iter() {
             cb();
         }
     }
 
     fn sync_selection_classes(&self) {
-        let sel = self.inner.selection.borrow();
-        let cur = self.inner.cursor.get();
-        for (i, it) in self.inner.items.borrow().iter().enumerate() {
+        let sel = self.inner.selection.selected.borrow();
+        let cur = self.inner.selection.cursor.get();
+        for (i, it) in self.inner.layout.items.borrow().iter().enumerate() {
             it.set_selected(sel.contains(&i));
             it.set_cursor(cur == Some(i));
         }
@@ -661,45 +684,45 @@ impl IconField {
 
     pub(crate) fn select_exclusive(&self, i: usize) {
         {
-            let mut sel = self.inner.selection.borrow_mut();
+            let mut sel = self.inner.selection.selected.borrow_mut();
             sel.clear();
             sel.insert(i);
         }
-        self.inner.anchor.set(Some(i));
-        self.inner.cursor.set(Some(i));
+        self.inner.selection.anchor.set(Some(i));
+        self.inner.selection.cursor.set(Some(i));
         self.emit_selection_changed();
     }
 
     pub(crate) fn toggle(&self, i: usize) {
         {
-            let mut sel = self.inner.selection.borrow_mut();
+            let mut sel = self.inner.selection.selected.borrow_mut();
             if !sel.remove(&i) {
                 sel.insert(i);
             }
         }
-        self.inner.anchor.set(Some(i));
-        self.inner.cursor.set(Some(i));
+        self.inner.selection.anchor.set(Some(i));
+        self.inner.selection.cursor.set(Some(i));
         self.emit_selection_changed();
     }
 
     pub(crate) fn select_range_to(&self, i: usize) {
-        let a = self.inner.anchor.get().unwrap_or(i);
+        let a = self.inner.selection.anchor.get().unwrap_or(i);
         let (lo, hi) = if a <= i { (a, i) } else { (i, a) };
         {
-            let mut sel = self.inner.selection.borrow_mut();
+            let mut sel = self.inner.selection.selected.borrow_mut();
             sel.clear();
             for k in lo..=hi {
                 sel.insert(k);
             }
         }
-        self.inner.cursor.set(Some(i));
+        self.inner.selection.cursor.set(Some(i));
         self.emit_selection_changed();
     }
 
     pub(crate) fn select_all(&self) {
-        let n = self.inner.items.borrow().len();
+        let n = self.inner.layout.items.borrow().len();
         {
-            let mut sel = self.inner.selection.borrow_mut();
+            let mut sel = self.inner.selection.selected.borrow_mut();
             sel.clear();
             for k in 0..n {
                 sel.insert(k);
@@ -709,17 +732,17 @@ impl IconField {
     }
 
     pub(crate) fn clear_selection(&self) {
-        self.inner.selection.borrow_mut().clear();
+        self.inner.selection.selected.borrow_mut().clear();
         self.emit_selection_changed();
     }
 
     pub(crate) fn set_cursor(&self, i: usize) {
-        self.inner.cursor.set(Some(i));
+        self.inner.selection.cursor.set(Some(i));
         self.sync_selection_classes();
     }
 
     pub(crate) fn cursor(&self) -> Option<usize> {
-        self.inner.cursor.get()
+        self.inner.selection.cursor.get()
     }
 
     /// Select every item whose bounds intersect `rect` (x, y, w, h in the
@@ -727,29 +750,29 @@ impl IconField {
     pub(crate) fn rubber_band_to(&self, rect: (f64, f64, f64, f64), additive: bool) {
         let (rx, ry, rw, rh) = rect;
         let mut sel = if additive {
-            self.inner.selection.borrow().clone()
+            self.inner.selection.selected.borrow().clone()
         } else {
             BTreeSet::new()
         };
-        for (i, &(ix, iy, iw, ih)) in self.inner.item_rects.borrow().iter().enumerate() {
+        for (i, &(ix, iy, iw, ih)) in self.inner.layout.item_rects.borrow().iter().enumerate() {
             let hit = ix < rx + rw && ix + iw > rx && iy < ry + rh && iy + ih > ry;
             if hit {
                 sel.insert(i);
             }
         }
-        *self.inner.selection.borrow_mut() = sel;
+        *self.inner.selection.selected.borrow_mut() = sel;
         self.emit_selection_changed();
     }
 
     /// Move the keyboard cursor by (`dx`, `dy`) in {-1, 0, 1}. `extend` grows
     /// the selection from the anchor; `move_only` leaves the selection alone.
     pub(crate) fn move_cursor(&self, dx: i32, dy: i32, extend: bool, move_only: bool) {
-        let n = self.inner.items.borrow().len();
+        let n = self.inner.layout.items.borrow().len();
         if n == 0 {
             return;
         }
-        let cur = self.inner.cursor.get().unwrap_or(0);
-        let next = if matches!(self.inner.mode.get(), LayoutMode::Grid) {
+        let cur = self.inner.selection.cursor.get().unwrap_or(0);
+        let next = if matches!(self.inner.layout.mode.get(), LayoutMode::Grid) {
             self.grid_step(cur, dx, dy, n)
         } else {
             self.free_step(cur, dx, dy)
@@ -778,7 +801,7 @@ impl IconField {
     }
 
     fn free_step(&self, cur: usize, dx: i32, dy: i32) -> Option<usize> {
-        let rects = self.inner.item_rects.borrow();
+        let rects = self.inner.layout.item_rects.borrow();
         let &(fx, fy, _, _) = rects.get(cur)?;
         let cands: Vec<(usize, (f64, f64))> =
             rects.iter().enumerate().map(|(i, &(x, y, _, _))| (i, (x, y))).collect();
@@ -786,7 +809,7 @@ impl IconField {
     }
 
     fn current_columns(&self) -> usize {
-        let rects = self.inner.item_rects.borrow();
+        let rects = self.inner.layout.item_rects.borrow();
         if rects.len() < 2 {
             return 1;
         }
@@ -806,7 +829,7 @@ impl IconField {
     fn item_at(&self, x: f64, y: f64) -> Option<usize> {
         // Scan back to front: when rectangles overlap (dragged-together icons
         // in Free mode), the last-placed one is drawn on top and wins the hit.
-        for (i, &(ix, iy, iw, ih)) in self.inner.item_rects.borrow().iter().enumerate().rev() {
+        for (i, &(ix, iy, iw, ih)) in self.inner.layout.item_rects.borrow().iter().enumerate().rev() {
             if x >= ix && x < ix + iw && y >= iy && y < iy + ih {
                 return Some(i);
             }
@@ -815,36 +838,36 @@ impl IconField {
     }
 
     pub(crate) fn items(&self) -> Vec<IconItem> {
-        self.inner.items.borrow().clone()
+        self.inner.layout.items.borrow().clone()
     }
 
     fn rebuild_arranger(&self) {
-        let boxed: Box<dyn Arrange> = match self.inner.mode.get() {
+        let boxed: Box<dyn Arrange> = match self.inner.layout.mode.get() {
             LayoutMode::Grid => Box::new(GridArrange::new()),
             LayoutMode::Free => {
                 let mut fa = FreeArrange::new();
-                fa.known = self.inner.free_positions.borrow().clone();
-                fa.cell = self.inner.grid_spacing.get() as f64;
-                fa.gap = self.inner.grid_gap.get() as f64;
+                fa.known = self.inner.layout.free_positions.borrow().clone();
+                fa.cell = self.inner.layout.grid_spacing.get() as f64;
+                fa.gap = self.inner.layout.grid_gap.get() as f64;
                 // Never let the pitch fall below the icon box, or glyphs would
                 // overlap and hit-testing would pick the wrong icon.
-                fa.min_cell = self.inner.icon_size.get() as f64;
+                fa.min_cell = self.inner.layout.icon_size.get() as f64;
                 Box::new(fa)
             }
         };
-        *self.inner.arrange.borrow_mut() = boxed;
+        *self.inner.layout.arrange.borrow_mut() = boxed;
     }
 
     /// Recompute positions, move every item, and cache the item rectangles.
     pub(crate) fn relayout(&self) {
-        let items = self.inner.items.borrow();
+        let items = self.inner.layout.items.borrow();
         if items.is_empty() {
-            self.inner.item_rects.borrow_mut().clear();
-            self.inner.fixed.set_size_request(0, 0);
+            self.inner.layout.item_rects.borrow_mut().clear();
+            self.inner.layout.fixed.set_size_request(0, 0);
             return;
         }
-        let fallback_w = (self.inner.icon_size.get() + 12) as f64;
-        let fallback_h = (self.inner.icon_size.get() + 40) as f64;
+        let fallback_w = (self.inner.layout.icon_size.get() + 12) as f64;
+        let fallback_h = (self.inner.layout.icon_size.get() + 40) as f64;
         let boxes: Vec<ItemBox> = items
             .iter()
             .map(|it| {
@@ -855,19 +878,20 @@ impl IconField {
                 }
             })
             .collect();
-        let page = self.inner.scroller.hadjustment().page_size();
-        let viewport_w = if page > 1.0 { page } else { self.inner.scroller.width().max(1) as f64 };
-        if matches!(self.inner.mode.get(), LayoutMode::Free) {
+        let page = self.inner.layout.scroller.hadjustment().page_size();
+        let viewport_w = if page > 1.0 { page } else { self.inner.layout.scroller.width().max(1) as f64 };
+        if matches!(self.inner.layout.mode.get(), LayoutMode::Free) {
             self.rebuild_arranger();
         }
-        let placement = self.inner.arrange.borrow().place(&boxes, viewport_w);
+        let placement = self.inner.layout.arrange.borrow().place(&boxes, viewport_w);
         let mut rects = Vec::with_capacity(items.len());
         for ((it, &(x, y)), b) in items.iter().zip(placement.positions.iter()).zip(boxes.iter()) {
-            self.inner.fixed.move_(it.widget(), x, y);
+            self.inner.layout.fixed.move_(it.widget(), x, y);
             rects.push((x, y, b.w, b.h));
         }
-        *self.inner.item_rects.borrow_mut() = rects;
+        *self.inner.layout.item_rects.borrow_mut() = rects;
         self.inner
+            .layout
             .fixed
             .set_size_request(placement.virtual_w as i32, placement.virtual_h as i32);
     }
@@ -1064,7 +1088,7 @@ mod tests {
 
         // --- IconField: rubber-band uses the cached rectangles ---
         f.set_entries(&entries(6));
-        f.inner.scroller.set_size_request(400, 400);
+        f.inner.layout.scroller.set_size_request(400, 400);
         f.relayout();
         f.rubber_band_to((0.0, 0.0, 10_000.0, 10_000.0), false);
         assert_eq!(f.selected_indices().len(), 6);
@@ -1090,14 +1114,14 @@ mod tests {
         // --- IconField: reposition moves the selection and fires move-icons ---
         f.set_mode(LayoutMode::Free);
         f.set_entries(&entries(3));
-        f.inner.scroller.set_size_request(600, 400);
+        f.inner.layout.scroller.set_size_request(600, 400);
         f.relayout();
         let fired = Rc::new(Cell::new(0));
         let fr = fired.clone();
         f.connect_move_icons(move || fr.set(fr.get() + 1));
         f.select_exclusive(0);
         f.toggle(2); // selection is {0, 2}
-        let r0 = f.inner.item_rects.borrow()[0];
+        let r0 = f.inner.layout.item_rects.borrow()[0];
         f.begin_reposition(r0.0 + 2.0, r0.1 + 2.0);
         f.update_reposition(25.0, 40.0);
         f.end_reposition(25.0, 40.0);
@@ -1136,9 +1160,9 @@ mod tests {
         // --- IconField: begin/commit reposition moves a selected icon ---
         fd.set_mode(LayoutMode::Free);
         fd.set_entries(&entries(3));
-        fd.inner.scroller.set_size_request(600, 400);
+        fd.inner.layout.scroller.set_size_request(600, 400);
         fd.relayout();
-        let start = fd.inner.item_rects.borrow()[0];
+        let start = fd.inner.layout.item_rects.borrow()[0];
         fd.begin_reposition(start.0 + 2.0, start.1 + 2.0); // press on item 0
         fd.update_reposition(50.0, 30.0);
         fd.end_reposition(50.0, 30.0);
@@ -1155,10 +1179,10 @@ mod tests {
         fs.set_entries(&entries(4));
         fs.set_grid_spacing(280);
         fs.relayout();
-        let wide_y = fs.inner.item_rects.borrow()[1].1;
+        let wide_y = fs.inner.layout.item_rects.borrow()[1].1;
         fs.set_grid_spacing(96);
         fs.relayout();
-        let narrow_y = fs.inner.item_rects.borrow()[1].1;
+        let narrow_y = fs.inner.layout.item_rects.borrow()[1].1;
         assert!(wide_y > narrow_y, "row pitch should track grid spacing ({wide_y} vs {narrow_y})");
     }
 }

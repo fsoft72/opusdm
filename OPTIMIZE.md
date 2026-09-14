@@ -18,7 +18,7 @@
 - [ ] **Icon view is one GTK widget per file** — `IconField` keeps a `Vec<IconItem>` of widgets inside a `gtk::Fixed`; large directories will exhaust widget resources and layout time. For directories beyond a threshold, switch to a `ListView`/grid with factories or a single custom-drawn widget.
   - File(s): `crates/iconview/src/field.rs`, `crates/iconview/src/item.rs`
 
-- [ ] **`IconField` Inner is a god struct** — 20+ fields mixing layout state, selection state, drag state, 8 listener lists and thumbnail plumbing in one struct makes every interaction handler reach across unrelated concerns. Split into `LayoutState`, `SelectionState` and a small event-emitter helper.
+- [x] **`IconField` Inner is a god struct** — 20+ fields mixing layout state, selection state, drag state, 8 listener lists and thumbnail plumbing in one struct makes every interaction handler reach across unrelated concerns. Split into `LayoutState`, `SelectionState` and a small event-emitter helper.
   - File(s): `crates/iconview/src/field.rs`
 
 - [ ] **Two hand-rolled inotify implementations** — `lister/src/watcher.rs` and `hub/src/desktop_files.rs` each implement raw `libc::inotify_*` setup, poll loops and event parsing independently; fixes to one (event parsing, fd lifecycle) will not reach the other. Extract a shared inotify helper (e.g. into `crates/ipc` or a new small crate).
