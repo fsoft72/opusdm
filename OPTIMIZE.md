@@ -7,7 +7,7 @@
 - [x] **Sort comparator does a downcast + `Rc` clone per comparison** — The `CustomSorter` closure in `build_window` downcasts each item to `BoxedAnyObject`, borrows and clones an `Rc<Row>` for every pairwise comparison; on a large directory this turns sorting into the hottest, most allocation-heavy path in the UI. Borrow in place (`o.borrow::<Rc<Row>>()` then compare the refs) instead of cloning the `Rc`.
   - File(s): `crates/lister/src/window.rs` (model_sorter closure)
 
-- [ ] **Size calculation result lookup is O(n) per result and replaces rows by name** — `calculate_dir_sizes_async` scans the entire store for every computed directory and matches on `row.name`, which both costs O(n*m) and silently writes the size into the wrong row if two entries share a name (e.g. after filtering or with symlinked names). Keep the original store index and splice that directly.
+- [x] **Size calculation result lookup is O(n) per result and replaces rows by name** — `calculate_dir_sizes_async` scans the entire store for every computed directory and matches on `row.name`, which both costs O(n*m) and silently writes the size into the wrong row if two entries share a name (e.g. after filtering or with symlinked names). Keep the original store index and splice that directly.
   - File(s): `crates/lister/src/tools.rs`
 
 - [ ] **`reload()` re-reads the whole directory for single-file changes** — Icon rename, thumbnail updates and settings changes all call `reload()`, which runs `navigate_to` (full `read_dir_rows` + store splice of every item). For a 10k-file directory this is a visible stall for a one-entry change; add a targeted "update this row" path.

@@ -39,7 +39,7 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>) {
     for i in 0..n_items {
         if let Some(item) = ui.store.item(i) {
             if let Some(boxed) = item.downcast_ref::<BoxedAnyObject>() {
-                let row = boxed.borrow::<Rc<Row>>().clone();
+                let row = boxed.borrow::<Rc<Row>>();
                 if row.is_dir {
                     let should_calc = if sel_names.is_empty() {
                         true
@@ -77,22 +77,21 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>) {
     glib::spawn_future_local(async move {
         let mut total_calculated = 0u64;
         let mut count = 0;
-        while let Ok((_idx, name, size)) = rx.recv().await {
+        while let Ok((idx, name, size)) = rx.recv().await {
             total_calculated += size;
             count += 1;
 
-            // Find matching row in store by name
-            for i in 0..ui_clone.store.n_items() {
-                if let Some(item) = ui_clone.store.item(i) {
-                    if let Some(boxed) = item.downcast_ref::<BoxedAnyObject>() {
-                        let row = boxed.borrow::<Rc<Row>>().clone();
-                        if row.name == name && row.is_dir {
-                            let mut updated = (*row).clone();
-                            updated.size = size;
-                            let new_item = BoxedAnyObject::new(Rc::new(updated));
-                            ui_clone.store.splice(i, 1, &[new_item]);
-                            break;
-                        }
+            // Splice directly at the original store index; only re-check the
+            // name to guard against the store having changed underneath us.
+            if let Some(item) = ui_clone.store.item(idx) {
+                if let Some(boxed) = item.downcast_ref::<BoxedAnyObject>() {
+                    let row = boxed.borrow::<Rc<Row>>();
+                    if row.name == name && row.is_dir {
+                        let mut updated = (**row).clone();
+                        updated.size = size;
+                        let new_item = BoxedAnyObject::new(Rc::new(updated));
+                        drop(row);
+                        ui_clone.store.splice(idx, 1, &[new_item]);
                     }
                 }
             }
