@@ -38,7 +38,7 @@
 - [ ] **`window.rs` is a 1100-line module doing build, wiring and behavior** — `build_window` alone constructs every widget, wires ~15 signal handlers and defines the sort machinery; navigation, status, preview and key handling also live in the same file. Split into `build.rs` (construction) and keep behavior in focused modules.
   - File(s): `crates/lister/src/window.rs`
 
-- [ ] **Selection scans are O(n) and repeated per event** — `selected_names`, `update_status` and `sync_cursor_from_selection` each walk `0..selection.n_items()` with `is_selected(i)` + `row_at(i)`; the selection-changed signal triggers several of these back to back. Use `gtk::Bitset` from `MultiSelection::selection()` to iterate only selected indices once.
+- [x] **Selection scans are O(n) and repeated per event** — `selected_names`, `update_status` and `sync_cursor_from_selection` each walk `0..selection.n_items()` with `is_selected(i)` + `row_at(i)`; the selection-changed signal triggers several of these back to back. Use `gtk::Bitset` from `MultiSelection::selection()` to iterate only selected indices once.
   - File(s): `crates/lister/src/window.rs`
 
 - [x] **`detect_file_kind` hardcodes long extension lists in a match** — The image/archive/text extension tables are inline string literals duplicated in spirit with `archive::is_archive_file`; one new format means editing two places. Move the tables to a shared const/module (e.g. in `ipc` or `archive`) and reuse.

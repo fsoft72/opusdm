@@ -901,15 +901,23 @@ impl Ui {
 
     /// Names of all currently selected rows.
     pub fn selected_names(&self) -> Vec<String> {
-        let mut names = Vec::new();
-        for i in 0..self.view.selection.n_items() {
-            if self.view.selection.is_selected(i) {
-                if let Some(row) = self.row_at(i) {
-                    names.push(row.name.clone());
-                }
-            }
+        self.selected_positions()
+            .into_iter()
+            .filter_map(|i| self.row_at(i).map(|row| row.name.clone()))
+            .collect()
+    }
+
+    /// Positions of all currently selected rows, without testing every row
+    /// in the list: `MultiSelection::selection()` already tracks them as a
+    /// `gtk::Bitset`, so walk only that instead of scanning `0..n_items()`.
+    fn selected_positions(&self) -> Vec<u32> {
+        let bitset = self.view.selection.selection();
+        let mut out = Vec::with_capacity(bitset.size() as usize);
+        if let Some((iter, first)) = gtk::BitsetIter::init_first(&bitset) {
+            out.push(first);
+            out.extend(iter);
         }
-        names
+        out
     }
 
     /// Retrieve the row model at `position` in the visual list.
@@ -936,15 +944,13 @@ impl Ui {
         let mut sel_files = 0u32;
         let mut sel_bytes = 0u64;
 
-        for i in 0..self.view.selection.n_items() {
-            if self.view.selection.is_selected(i) {
-                if let Some(row) = self.row_at(i) {
-                    if row.is_dir {
-                        sel_dirs += 1;
-                    } else {
-                        sel_files += 1;
-                        sel_bytes += row.size;
-                    }
+        for i in self.selected_positions() {
+            if let Some(row) = self.row_at(i) {
+                if row.is_dir {
+                    sel_dirs += 1;
+                } else {
+                    sel_files += 1;
+                    sel_bytes += row.size;
                 }
             }
         }
@@ -1150,20 +1156,11 @@ impl Ui {
     /// Follow the mouse: a plain click leaves exactly one row selected, and the
     /// cursor should continue from there.
     fn sync_cursor_from_selection(&self) {
-        let n = self.view.selection.n_items();
-        let mut only = None;
-        for i in 0..n {
-            if !self.view.selection.is_selected(i) {
-                continue;
-            }
-            if only.is_some() {
-                return; // more than one selected: leave the cursor alone
-            }
-            only = Some(i);
+        let positions = self.selected_positions();
+        if let [only] = positions[..] {
+            self.view.cursor.set(only);
         }
-        if let Some(i) = only {
-            self.view.cursor.set(i);
-        }
+        // More than one (or zero) selected: leave the cursor alone.
     }
 
     /// Tab: raise the Lister holding the opposite role. A SOURCE jumps to the
