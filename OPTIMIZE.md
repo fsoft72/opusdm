@@ -32,7 +32,7 @@
 - [x] **Make directory scans resilient per entry** - A single metadata or symlink metadata error aborts the entire listing after `read_dir` succeeds, whereas only `file_type` errors are skipped; transient races or one unreadable entry can therefore prevent users from opening an otherwise valid directory.
   - File(s): `crates/lister/src/model.rs`
 
-- [ ] **Replace the sysmon sample vector with a ring buffer** - Every tick removes index zero, shifts the history, clones every trace, and reinstalls the drawing closure; retain one draw function over shared state and use `VecDeque` or a circular index to eliminate recurring copies and callback churn.
+- [x] **Replace the sysmon sample vector with a ring buffer** - Every tick removes index zero, shifts the history, clones every trace, and reinstalls the drawing closure; retain one draw function over shared state and use `VecDeque` or a circular index to eliminate recurring copies and callback churn.
   - File(s): `crates/panel/src/widgets/sysmon.rs`
 
 - [ ] **Split the hub owner-loop message handlers** - The large `owner_loop` combines connection allocation, authentication state, role transitions, settings persistence, job submission, conflict replies, and GTK commands in one match, making lifecycle invariants difficult to test independently and future protocol changes risky.

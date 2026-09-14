@@ -86,50 +86,50 @@ fn read(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// A fixed-length ring of recent samples, oldest first once full.
+/// A fixed-length ring of recent samples, oldest first.
 struct Trace {
-    samples: Vec<f64>,
+    samples: std::collections::VecDeque<f64>,
 }
 
 impl Trace {
     fn new() -> Self {
-        Trace { samples: Vec::with_capacity(HISTORY) }
+        Trace { samples: std::collections::VecDeque::with_capacity(HISTORY) }
     }
     fn push(&mut self, v: f64) {
         if self.samples.len() == HISTORY {
-            self.samples.remove(0);
+            self.samples.pop_front();
         }
-        self.samples.push(v);
+        self.samples.push_back(v);
     }
 }
 
-/// Draw `traces` as polylines into `area`, each scaled to `fixed_max` (or the
-/// observed maximum when `None`), in the given RGB colours. Reinstalls the
-/// draw function each call with a fresh copy of the samples.
-fn draw_sparkline(
+/// Install `area`'s draw function once. The closure reads the shared traces
+/// on every redraw, scaled to `fixed_max` (or the observed maximum when
+/// `None`), so each tick only needs a `queue_draw` - no callback churn.
+fn install_sparkline(
     area: &gtk::DrawingArea,
-    traces: &[(&Trace, (f64, f64, f64))],
+    traces: Vec<(Rc<RefCell<Trace>>, (f64, f64, f64))>,
     fixed_max: Option<f64>,
 ) {
-    let observed = traces
-        .iter()
-        .flat_map(|(t, _)| t.samples.iter().copied())
-        .fold(0.0_f64, f64::max);
-    let max = fixed_max.unwrap_or(observed).max(1e-6);
-    let series: Vec<(Vec<f64>, (f64, f64, f64))> =
-        traces.iter().map(|(t, c)| (t.samples.clone(), *c)).collect();
-
     area.set_draw_func(move |_, cr, width, height| {
         let w = width as f64;
         let h = height as f64;
         let step = w / (HISTORY - 1).max(1) as f64;
-        for (samples, (r, g, b)) in &series {
-            if samples.len() < 2 {
+        let mut observed = 0.0_f64;
+        for (t, _) in &traces {
+            for v in t.borrow().samples.iter() {
+                observed = observed.max(*v);
+            }
+        }
+        let max = fixed_max.unwrap_or(observed).max(1e-6);
+        for (trace, (r, g, b)) in &traces {
+            let trace = trace.borrow();
+            if trace.samples.len() < 2 {
                 continue;
             }
             cr.set_source_rgb(*r, *g, *b);
             cr.set_line_width(1.0);
-            for (i, v) in samples.iter().enumerate() {
+            for (i, v) in trace.samples.iter().enumerate() {
                 let x = i as f64 * step;
                 let y = h - (v / max).clamp(0.0, 1.0) * h;
                 if i == 0 {
@@ -141,15 +141,14 @@ fn draw_sparkline(
             let _ = cr.stroke();
         }
     });
-    area.queue_draw();
 }
 
 struct State {
     cpu_prev: CpuTimes,
     net_prev: (u64, u64),
-    cpu_trace: Trace,
-    rx_trace: Trace,
-    tx_trace: Trace,
+    cpu_trace: Rc<RefCell<Trace>>,
+    rx_trace: Rc<RefCell<Trace>>,
+    tx_trace: Rc<RefCell<Trace>>,
 }
 
 /// Trace colours. CPU is one green line; network download ("in") is green,
@@ -210,12 +209,25 @@ pub fn build() -> gtk::Widget {
     root.append(&cpu_box);
     root.append(&net_box);
 
+    let cpu_trace = Rc::new(RefCell::new(Trace::new()));
+    let rx_trace = Rc::new(RefCell::new(Trace::new()));
+    let tx_trace = Rc::new(RefCell::new(Trace::new()));
+
+    // One draw function per meter, reading the shared traces; a tick only
+    // queues a redraw.
+    install_sparkline(&cpu_spark, vec![(cpu_trace.clone(), CPU_RGB)], Some(100.0));
+    install_sparkline(
+        &net_spark,
+        vec![(rx_trace.clone(), NET_IN_RGB), (tx_trace.clone(), NET_OUT_RGB)],
+        None,
+    );
+
     let state = Rc::new(RefCell::new(State {
         cpu_prev: parse_proc_stat(&read("/proc/stat")).unwrap_or_default(),
         net_prev: parse_net_dev(&read("/proc/net/dev")),
-        cpu_trace: Trace::new(),
-        rx_trace: Trace::new(),
-        tx_trace: Trace::new(),
+        cpu_trace,
+        rx_trace,
+        tx_trace,
     }));
 
     gtk::glib::timeout_add_local(TICK, move || {
@@ -224,24 +236,20 @@ pub fn build() -> gtk::Widget {
         if let Some(now) = parse_proc_stat(&read("/proc/stat")) {
             let pct = cpu_percent(s.cpu_prev, now);
             s.cpu_prev = now;
-            s.cpu_trace.push(pct);
+            s.cpu_trace.borrow_mut().push(pct);
             cpu_label.set_text(&format!("{pct:.0}%"));
-            draw_sparkline(&cpu_spark, &[(&s.cpu_trace, CPU_RGB)], Some(100.0));
+            cpu_spark.queue_draw();
         }
 
         let now = parse_net_dev(&read("/proc/net/dev"));
         let rx = now.0.saturating_sub(s.net_prev.0) as f64 / TICK.as_secs_f64();
         let tx = now.1.saturating_sub(s.net_prev.1) as f64 / TICK.as_secs_f64();
         s.net_prev = now;
-        s.rx_trace.push(rx);
-        s.tx_trace.push(tx);
+        s.rx_trace.borrow_mut().push(rx);
+        s.tx_trace.borrow_mut().push(tx);
         net_in.set_text(&format!("\u{2193} {}", human_rate(rx)));
         net_out.set_text(&format!("\u{2191} {}", human_rate(tx)));
-        draw_sparkline(
-            &net_spark,
-            &[(&s.rx_trace, NET_IN_RGB), (&s.tx_trace, NET_OUT_RGB)],
-            None,
-        );
+        net_spark.queue_draw();
 
         gtk::glib::ControlFlow::Continue
     });
@@ -293,6 +301,18 @@ Inter-|   Receive                                                |  Transmit
         let (rx, tx) = parse_net_dev(text);
         assert_eq!(rx, 5100); // eth0 + wlan0, lo excluded
         assert_eq!(tx, 2050);
+    }
+
+    #[test]
+    fn trace_keeps_the_last_history_samples_oldest_first() {
+        let mut t = Trace::new();
+        for i in 0..(HISTORY + 10) {
+            t.push(i as f64);
+        }
+        assert_eq!(t.samples.len(), HISTORY);
+        let got: Vec<f64> = t.samples.iter().copied().collect();
+        let want: Vec<f64> = (10..(HISTORY + 10)).map(|i| i as f64).collect();
+        assert_eq!(got, want);
     }
 
     #[test]
