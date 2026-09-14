@@ -130,6 +130,34 @@ pub fn compute_file_hashes(path: &Path) -> std::io::Result<(String, String)> {
     Ok((format!("{:x}", sha256.finalize()), format!("{:x}", md5.finalize())))
 }
 
+/// One labeled hash value with a copy-to-clipboard button, as used for both
+/// the SHA-256 and MD5 rows in the checksum dialog.
+fn hash_row(label: &str, value: &str) -> gtk::Box {
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let tag = gtk::Label::new(Some(label));
+    tag.add_css_class("dim-label");
+    let val = gtk::Label::new(Some(value));
+    val.set_xalign(0.0);
+    val.set_hexpand(true);
+    val.set_selectable(true);
+    val.add_css_class("terminal-title");
+
+    let copy_btn = gtk::Button::with_label("Copy");
+    copy_btn.add_css_class("flat");
+    let to_copy = value.to_string();
+    copy_btn.connect_clicked(move |btn| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&to_copy);
+            btn.set_label("Copied!");
+        }
+    });
+
+    hbox.append(&tag);
+    hbox.append(&val);
+    hbox.append(&copy_btn);
+    hbox
+}
+
 /// Open Checksums HUD dialog for the selected file(s).
 pub fn open_checksum_dialog(ui: &Rc<Ui>) {
     let paths: Vec<PathBuf> = ui
@@ -200,59 +228,8 @@ pub fn open_checksum_dialog(ui: &Rc<Ui>) {
             fn_label.add_css_class("palette-title");
             vbox.append(&fn_label);
 
-            // SHA-256 row
-            let sha_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            let sha_tag = gtk::Label::new(Some("SHA-256:"));
-            sha_tag.add_css_class("dim-label");
-            let sha_val = gtk::Label::new(Some(&sha));
-            sha_val.set_xalign(0.0);
-            sha_val.set_hexpand(true);
-            sha_val.set_selectable(true);
-            sha_val.add_css_class("terminal-title");
-
-            let copy_sha_btn = gtk::Button::with_label("Copy");
-            copy_sha_btn.add_css_class("flat");
-            {
-                let sha_to_copy = sha.clone();
-                copy_sha_btn.connect_clicked(move |btn| {
-                    if let Some(display) = gtk::gdk::Display::default() {
-                        display.clipboard().set_text(&sha_to_copy);
-                        btn.set_label("Copied!");
-                    }
-                });
-            }
-
-            sha_box.append(&sha_tag);
-            sha_box.append(&sha_val);
-            sha_box.append(&copy_sha_btn);
-            vbox.append(&sha_box);
-
-            // MD5 row
-            let md5_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            let md5_tag = gtk::Label::new(Some("MD5:    "));
-            md5_tag.add_css_class("dim-label");
-            let md5_val = gtk::Label::new(Some(&md5));
-            md5_val.set_xalign(0.0);
-            md5_val.set_hexpand(true);
-            md5_val.set_selectable(true);
-            md5_val.add_css_class("terminal-title");
-
-            let copy_md5_btn = gtk::Button::with_label("Copy");
-            copy_md5_btn.add_css_class("flat");
-            {
-                let md5_to_copy = md5.clone();
-                copy_md5_btn.connect_clicked(move |btn| {
-                    if let Some(display) = gtk::gdk::Display::default() {
-                        display.clipboard().set_text(&md5_to_copy);
-                        btn.set_label("Copied!");
-                    }
-                });
-            }
-
-            md5_box.append(&md5_tag);
-            md5_box.append(&md5_val);
-            md5_box.append(&copy_md5_btn);
-            vbox.append(&md5_box);
+            vbox.append(&hash_row("SHA-256:", &sha));
+            vbox.append(&hash_row("MD5:    ", &md5));
 
             row.set_child(Some(&vbox));
             list_box_clone.append(&row);

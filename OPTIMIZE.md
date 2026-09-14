@@ -53,7 +53,7 @@
 - [ ] **Hub server spawns unnamed, untracked forwarder threads** — Two `std::thread::spawn` forwarder loops (GTK cmd, job progress) plus per-connection reader threads are created without names or join handles; a leaked Lister connection keeps a reader thread forever. Name them consistently and log thread exit, or consolidate the forwarders into the owner loop's `Receiver` set.
   - File(s): `crates/hub/src/server.rs`
 
-- [ ] **Checksum dialog builds near-identical SHA/MD5 rows by copy-paste** — ~40 lines duplicated for the two hash rows including the Copy-button closure; extract a small `hash_row(label, value)` helper.
+- [x] **Checksum dialog builds near-identical SHA/MD5 rows by copy-paste** — ~40 lines duplicated for the two hash rows including the Copy-button closure; extract a small `hash_row(label, value)` helper.
   - File(s): `crates/lister/src/tools.rs` (`open_checksum_dialog`)
 
 ## Low / Nice to have
