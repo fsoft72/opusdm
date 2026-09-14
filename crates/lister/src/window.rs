@@ -88,9 +88,6 @@ pub struct ViewState {
     pub cursor: Cell<u32>,
     /// Filter bar widget (search entry, filter model, etc.)
     pub filter_bar: Rc<crate::filter::FilterBar>,
-    /// Filter list model wrapping store.
-    #[allow(dead_code)]
-    pub filter_model: gtk::FilterListModel,
     /// Whether dotfiles are shown in the file list. Off by default.
     pub show_hidden: Cell<bool>,
 }

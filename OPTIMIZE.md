@@ -58,7 +58,7 @@
 
 ## Low / Nice to have
 
-- [ ] **`filter_model` field marked `#[allow(dead_code)]`** — The `Ui::filter_model` field is stored but never read (the count closure captures its own clone). Either remove the field or route the count logic through it.
+- [x] **`filter_model` field marked `#[allow(dead_code)]`** — The `Ui::filter_model` field is stored but never read (the count closure captures its own clone). Either remove the field or route the count logic through it.
   - File(s): `crates/lister/src/window.rs`
 
 - [x] **Fallback hash path reads only 64 KiB then reports "unavailable"** — In `compute_file_hashes`, if spawning `sha256sum` fails the code reads one buffer into `file` and discards the result; the `file`/`buffer` are dead work. Drop the fallback or actually hash in-process.

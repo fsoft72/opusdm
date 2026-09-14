@@ -337,7 +337,6 @@ fn build_window(
             store,
             cursor: Cell::new(0),
             filter_bar: filter_bar.clone(),
-            filter_model,
             show_hidden: Cell::new(false),
         },
         status_bar: StatusBar {
