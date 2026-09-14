@@ -249,20 +249,29 @@ fn desktop_rule_css(bg: &opusdm_ipc::Background) -> String {
     )
 }
 
-/// Install (or replace) the desktop stylesheet for `bg`. Safe to call
-/// repeatedly - each call adds a fresh provider at APPLICATION priority,
-/// which overrides earlier ones.
-fn install_desktop_css(bg: &opusdm_ipc::Background) {
-    let Some(display) = gtk::gdk::Display::default() else {
-        return;
+thread_local! {
+    /// The one desktop stylesheet provider, registered on the display once
+    /// and reloaded in place on every theme change so providers never stack
+    /// up. GTK runs single-threaded, so a thread-local suffices and avoids
+    /// requiring `CssProvider: Sync`.
+    static DESKTOP_CSS_PROVIDER: gtk::CssProvider = {
+        let provider = gtk::CssProvider::new();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+        provider
     };
-    let provider = gtk::CssProvider::new();
-    provider.load_from_data(&desktop_rule_css(bg));
-    gtk::style_context_add_provider_for_display(
-        &display,
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+}
+
+/// Install (or replace) the desktop stylesheet for `bg`. Safe to call
+/// repeatedly - it reloads the single shared provider's content rather than
+/// registering a new one each time.
+fn install_desktop_css(bg: &opusdm_ipc::Background) {
+    DESKTOP_CSS_PROVIDER.with(|p| p.load_from_data(&desktop_rule_css(bg)));
 }
 
 /// Start (or restart) the inotify watch on `dir` and the local future that
