@@ -70,5 +70,5 @@
 - [ ] **Preview kind detection reads 512 bytes on the UI thread** — `detect_file_kind` does a synchronous `File::open` + `read` during `load_file`, on the GTK thread; fine for local disk, but it stalls on network mounts. Move the probe off-thread or make it lazy.
   - File(s): `crates/lister/src/preview.rs`
 
-- [ ] **`dlog!`/`eprintln!` used ad hoc for diagnostics** — Hub startup, watcher failures and debug traces go to stderr with no level control; introduce a tiny log macro with an env-var level so production runs are quiet and debugging does not need recompiles.
+- [x] **`dlog!`/`eprintln!` used ad hoc for diagnostics** — Hub startup, watcher failures and debug traces go to stderr with no level control; introduce a tiny log macro with an env-var level so production runs are quiet and debugging does not need recompiles.
   - File(s): `crates/lister/src/window.rs`, `crates/hub/src/server.rs`, `crates/lister/src/watcher.rs`

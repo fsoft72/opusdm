@@ -5,11 +5,7 @@
 /// Debug log gated on OPUSDM_DEBUG=1, mirroring `opusdm-lister`'s `dlog!`.
 #[macro_export]
 macro_rules! dbg_log {
-    ($($arg:tt)*) => {
-        if std::env::var_os("OPUSDM_DEBUG").is_some() {
-            eprintln!("[iconview:{}] {}", std::process::id(), format_args!($($arg)*));
-        }
-    };
+    ($($arg:tt)*) => { opusdm_ipc::debug_log!("iconview", $($arg)*) };
 }
 
 pub mod arrange;

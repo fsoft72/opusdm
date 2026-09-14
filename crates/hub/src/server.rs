@@ -115,7 +115,7 @@ pub fn spawn_server(listener: UnixListener, on_spawn: SpawnFn) -> ServerHandle {
                         break;
                     }
                 }
-                eprintln!("opusdm-hub: gtk command forwarder exiting");
+                opusdm_ipc::debug_log!("hub", "gtk command forwarder exiting");
             })
             .expect("spawn gtk command forwarder thread");
     }
@@ -170,8 +170,9 @@ fn owner_loop(
     // Same lifecycle for desktop settings; updated in place by
     // ToHub::SetDesktopSettings and pushed to the GTK side.
     let mut current_desktop = desktop_settings::load();
-    eprintln!(
-        "opusdm-hub: desktop settings loaded (icon size {})",
+    opusdm_ipc::debug_log!(
+        "hub",
+        "desktop settings loaded (icon size {})",
         current_desktop.icon_size
     );
 
@@ -186,7 +187,7 @@ fn owner_loop(
                         break;
                     }
                 }
-                eprintln!("opusdm-hub: job progress forwarder exiting");
+                opusdm_ipc::debug_log!("hub", "job progress forwarder exiting");
             })
             .expect("spawn job progress forwarder thread");
     }

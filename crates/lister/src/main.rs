@@ -27,11 +27,7 @@ use std::path::PathBuf;
 /// Debug log gated on OPUSDM_DEBUG=1: `[lister:<pid>] <msg>` on stderr.
 #[macro_export]
 macro_rules! dlog {
-    ($($arg:tt)*) => {
-        if std::env::var_os("OPUSDM_DEBUG").is_some() {
-            eprintln!("[lister:{}] {}", std::process::id(), format_args!($($arg)*));
-        }
-    };
+    ($($arg:tt)*) => { opusdm_ipc::debug_log!("lister", $($arg)*) };
 }
 
 fn main() {
