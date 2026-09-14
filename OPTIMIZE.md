@@ -38,8 +38,8 @@
 - [x] **Split the hub owner-loop message handlers** - The large `owner_loop` combines connection allocation, authentication state, role transitions, settings persistence, job submission, conflict replies, and GTK commands in one match, making lifecycle invariants difficult to test independently and future protocol changes risky.
   - File(s): `crates/hub/src/server.rs`
 
-- [ ] **Decompose the icon field implementation** - `IconField` centralizes GTK controller wiring, selection, drag-and-drop, keyboard navigation, virtualization, layout, renaming, and thumbnails in one 1,300-line module; extract behavior-focused controllers while retaining the existing `IconField` facade.
-  - File(s): `crates/iconview/src/field.rs`
+- [x] **Decompose the icon field implementation** - `IconField` centralizes GTK controller wiring, selection, drag-and-drop, keyboard navigation, virtualization, layout, renaming, and thumbnails in one 1,300-line module; extract behavior-focused controllers while retaining the existing `IconField` facade.
+  - File(s): `crates/iconview/src/field.rs`, `crates/iconview/src/field/controllers.rs`, `crates/iconview/src/field/navigation.rs`, `crates/iconview/src/field/virtualization.rs`
 
 ## Low / Nice to have
 

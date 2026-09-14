@@ -1,5 +1,9 @@
 //! The icon field: a `Fixed` in a `ScrolledWindow`, one `IconItem` per entry,
-//! positioned by a pluggable `Arrange`. Interaction is added in later steps.
+//! positioned by a pluggable `Arrange`.
+//!
+//! Controllers and input gestures are in [`controllers`].
+//! Keyboard navigation and coordinate stepping are in [`navigation`].
+//! Layout virtualization and widget recycling are in [`virtualization`].
 //!
 //! Above [`VIRTUALIZE_THRESHOLD`] entries, only items in (or near) the
 //! visible viewport get a live `IconItem` widget - see `sync_realized`.
@@ -7,9 +11,13 @@
 //! already keys off `item_rects`/`entries` by index, not off live widgets,
 //! so none of it needs to know whether an index is currently realized.
 
-use crate::arrange::{Arrange, FreeArrange, GridArrange, ItemBox};
+mod controllers;
+mod navigation;
+mod virtualization;
+
+use crate::arrange::{Arrange, GridArrange, ItemBox};
 use crate::item::IconItem;
-use crate::types::{IconEntry, IconKind, LayoutMode};
+use crate::types::{IconEntry, LayoutMode};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -22,73 +30,73 @@ type Listeners<F> = RefCell<Vec<Box<F>>>;
 
 /// Entry counts at or above this stop getting a live widget per item;
 /// realization becomes viewport-driven instead (see `sync_realized`).
-const VIRTUALIZE_THRESHOLD: usize = 400;
+pub(super) const VIRTUALIZE_THRESHOLD: usize = 400;
 
 /// Widget tree, content and arrangement: what to draw, and where. Also owns
 /// the in-progress reposition drag, since that only ever mutates layout.
-struct LayoutState {
-    scroller: gtk::ScrolledWindow,
-    fixed: gtk::Fixed,
+pub(super) struct LayoutState {
+    pub(super) scroller: gtk::ScrolledWindow,
+    pub(super) fixed: gtk::Fixed,
     /// Live widgets, keyed by entry index. Sparse once virtualized - see
     /// `sync_realized`.
-    realized: RefCell<HashMap<usize, IconItem>>,
+    pub(super) realized: RefCell<HashMap<usize, IconItem>>,
     /// Thumbnail textures survive an item being de-realized and re-realized,
     /// so scrolling away and back doesn't re-request or lose a thumbnail.
-    thumb_cache: RefCell<HashMap<usize, gtk::gdk::Texture>>,
+    pub(super) thumb_cache: RefCell<HashMap<usize, gtk::gdk::Texture>>,
     /// A single worst-case item box (see `worst_case_box`), cached per icon
     /// size so the arrangement never reflows as items realize/de-realize.
-    size_cache: RefCell<Option<(i32, ItemBox)>>,
-    entries: RefCell<Vec<IconEntry>>,
-    mode: Cell<LayoutMode>,
-    icon_size: Cell<i32>,
-    icon_set: RefCell<opusdm_ipc::IconSetId>,
+    pub(super) size_cache: RefCell<Option<(i32, ItemBox)>>,
+    pub(super) entries: RefCell<Vec<IconEntry>>,
+    pub(super) mode: Cell<LayoutMode>,
+    pub(super) icon_size: Cell<i32>,
+    pub(super) icon_set: RefCell<opusdm_ipc::IconSetId>,
     /// Auto-slot cell size for `FreeArrange`, in pixels. Ignored in `Grid`
     /// mode. Default matches `FreeArrange::new`'s `cell`.
-    grid_spacing: Cell<i32>,
+    pub(super) grid_spacing: Cell<i32>,
     /// Dead space between auto-slot cells for `FreeArrange`, in pixels. Ignored
     /// in `Grid` mode. Default matches `FreeArrange::new`'s `gap`.
-    grid_gap: Cell<i32>,
-    arrange: RefCell<Box<dyn Arrange>>,
-    free_positions: RefCell<HashMap<usize, (f64, f64)>>,
+    pub(super) grid_gap: Cell<i32>,
+    pub(super) arrange: RefCell<Box<dyn Arrange>>,
+    pub(super) free_positions: RefCell<HashMap<usize, (f64, f64)>>,
     /// Last laid-out rectangle per item: (x, y, w, h) in the `Fixed`'s space.
     /// Filled by `relayout`; hit-testing and nav read this, not GTK geometry,
     /// so they work before the widget is realized.
-    item_rects: RefCell<Vec<(f64, f64, f64, f64)>>,
-    reposition_active: Cell<bool>,
+    pub(super) item_rects: RefCell<Vec<(f64, f64, f64, f64)>>,
+    pub(super) reposition_active: Cell<bool>,
     /// While a reposition drag is live: (item index, its position at drag start).
-    drag_bases: RefCell<Vec<(usize, (f64, f64))>>,
+    pub(super) drag_bases: RefCell<Vec<(usize, (f64, f64))>>,
 }
 
 /// Selection and keyboard-cursor state, independent of how items are laid out.
-struct SelectionState {
-    selected: RefCell<BTreeSet<usize>>,
-    anchor: Cell<Option<usize>>,
-    cursor: Cell<Option<usize>>,
+pub(super) struct SelectionState {
+    pub(super) selected: RefCell<BTreeSet<usize>>,
+    pub(super) anchor: Cell<Option<usize>>,
+    pub(super) cursor: Cell<Option<usize>>,
 }
 
 /// Registered listener closures, one list per event kind.
-struct Events {
-    on_selection_changed: Listeners<dyn Fn()>,
-    on_activate: Listeners<dyn Fn(usize)>,
-    on_background_activate: Listeners<dyn Fn()>,
-    on_drop_uris: Listeners<dyn Fn(Vec<PathBuf>, i32, bool)>,
-    on_context_menu: Listeners<dyn Fn(i32, f64, f64)>,
-    on_rename_requested: Listeners<dyn Fn(usize, String)>,
-    on_zoom_requested: Listeners<dyn Fn(i32)>,
-    on_move_icons: Listeners<dyn Fn()>,
+pub(super) struct Events {
+    pub(super) on_selection_changed: Listeners<dyn Fn()>,
+    pub(super) on_activate: Listeners<dyn Fn(usize)>,
+    pub(super) on_background_activate: Listeners<dyn Fn()>,
+    pub(super) on_drop_uris: Listeners<dyn Fn(Vec<PathBuf>, i32, bool)>,
+    pub(super) on_context_menu: Listeners<dyn Fn(i32, f64, f64)>,
+    pub(super) on_rename_requested: Listeners<dyn Fn(usize, String)>,
+    pub(super) on_zoom_requested: Listeners<dyn Fn(i32)>,
+    pub(super) on_move_icons: Listeners<dyn Fn()>,
 }
 
-struct Inner {
-    layout: LayoutState,
-    selection: SelectionState,
-    events: Events,
-    thumb_pool: Option<crate::thumbs::ThumbPool>,
+pub(super) struct Inner {
+    pub(super) layout: LayoutState,
+    pub(super) selection: SelectionState,
+    pub(super) events: Events,
+    pub(super) thumb_pool: Option<crate::thumbs::ThumbPool>,
 }
 
 /// The reusable icon view. Cheap to clone (shared `Rc`).
 #[derive(Clone)]
 pub struct IconField {
-    inner: Rc<Inner>,
+    pub(super) inner: Rc<Inner>,
 }
 
 impl IconField {
@@ -165,220 +173,8 @@ impl IconField {
         let this = field.clone();
         field.inner.layout.scroller.vadjustment().connect_value_changed(move |_| this.sync_realized());
 
-        // Left-click selection.
-        let click = gtk::GestureClick::new();
-        click.set_button(gtk::gdk::BUTTON_PRIMARY);
-        let this = field.clone();
-        click.connect_pressed(move |g, n_press, x, y| {
-            let hit = this.item_at(x, y);
-            let state = g.current_event_state();
-            let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
-            let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
-            match hit {
-                Some(i) if n_press >= 2 => this.emit_activate(i),
-                Some(i) if ctrl => this.toggle(i),
-                Some(i) if shift => this.select_range_to(i),
-                Some(i) => this.select_exclusive(i),
-                None if n_press >= 2 => this.emit_background_activate(),
-                None if !ctrl && !shift => this.clear_selection(),
-                None => {}
-            }
-        });
-        field.inner.layout.fixed.add_controller(click);
-
-        // Rubber-band selection: a drag that begins on empty space.
-        let drag = gtk::GestureDrag::new();
-        drag.set_button(gtk::gdk::BUTTON_PRIMARY);
-        let start: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
-        let this = field.clone();
-        let start_b = start.clone();
-        drag.connect_drag_begin(move |_, x, y| {
-            if this.item_at(x, y).is_some() {
-                start_b.set(None);
-                return;
-            }
-            start_b.set(Some((x, y)));
-        });
-        let this = field.clone();
-        let start_u = start.clone();
-        drag.connect_drag_update(move |g, ox, oy| {
-            let Some((sx, sy)) = start_u.get() else {
-                return;
-            };
-            let additive = g
-                .current_event_state()
-                .contains(gtk::gdk::ModifierType::CONTROL_MASK);
-            let rx = sx.min(sx + ox);
-            let ry = sy.min(sy + oy);
-            this.rubber_band_to((rx, ry, ox.abs(), oy.abs()), additive);
-        });
-        field.inner.layout.fixed.add_controller(drag);
-
-        // Keyboard navigation.
-        field.inner.layout.fixed.set_focusable(true);
-        let key = gtk::EventControllerKey::new();
-        let this = field.clone();
-        key.connect_key_pressed(move |_, keyval, _, state| {
-            use gtk::gdk::Key;
-            let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
-            let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
-            match keyval {
-                Key::a | Key::A if ctrl => {
-                    this.select_all();
-                    gtk::glib::Propagation::Stop
-                }
-                Key::Escape => {
-                    this.clear_selection();
-                    gtk::glib::Propagation::Stop
-                }
-                Key::Return | Key::KP_Enter => {
-                    if let Some(i) = this.cursor() {
-                        this.emit_activate(i);
-                    }
-                    gtk::glib::Propagation::Stop
-                }
-                Key::space => {
-                    if let Some(i) = this.cursor() {
-                        this.toggle(i);
-                    }
-                    gtk::glib::Propagation::Stop
-                }
-                Key::F2 => {
-                    if let Some(i) = this.cursor() {
-                        if let Some(it) = this.item_at_index(i) {
-                            it.start_edit();
-                        }
-                    }
-                    gtk::glib::Propagation::Stop
-                }
-                Key::Left => {
-                    this.move_cursor(-1, 0, shift, ctrl);
-                    gtk::glib::Propagation::Stop
-                }
-                Key::Right => {
-                    this.move_cursor(1, 0, shift, ctrl);
-                    gtk::glib::Propagation::Stop
-                }
-                Key::Up => {
-                    this.move_cursor(0, -1, shift, ctrl);
-                    gtk::glib::Propagation::Stop
-                }
-                Key::Down => {
-                    this.move_cursor(0, 1, shift, ctrl);
-                    gtk::glib::Propagation::Stop
-                }
-                _ => gtk::glib::Propagation::Proceed,
-            }
-        });
-        field.inner.layout.fixed.add_controller(key);
-
-        // Drag source: export the selection as a uri-list for other windows.
-        let src = gtk::DragSource::new();
-        src.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
-        let this = field.clone();
-        src.connect_prepare(move |_, x, y| {
-            crate::dbg_log!("icon field drag prepare at ({x}, {y})");
-            // In Free mode a primary-button drag is an internal reposition, not
-            // an inter-window file drag; leaving this on would let the DnD
-            // machinery steal the gesture and snap the icon back.
-            if !this.inter_window_drag_enabled() {
-                crate::dbg_log!("icon field drag prepare: inter-window drag disabled");
-                return None;
-            }
-            let paths = this.selected_paths();
-            crate::dbg_log!("icon field drag prepare: selected paths={paths:?}");
-            if paths.is_empty() {
-                crate::dbg_log!("icon field drag prepare: empty selection, aborting");
-                return None;
-            }
-            let payload = crate::dnd::paths_to_uri_list(&paths);
-            Some(gtk::gdk::ContentProvider::for_bytes(
-                "text/uri-list",
-                &gtk::glib::Bytes::from(payload.as_bytes()),
-            ))
-        });
-        field.inner.layout.fixed.add_controller(src);
-
-        // Drop target: hand parsed paths to the consumer. GDK's builtin mime
-        // table deserializes `text/uri-list` into `GdkFileList`, not a plain
-        // string - requesting `glib::Type::STRING` here left no format in
-        // common with a source that only advertises `text/uri-list`, so the
-        // drop silently failed with `NoTarget` before ever reaching this
-        // callback.
-        let target = gtk::DropTarget::new(
-            gtk::gdk::FileList::static_type(),
-            gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
-        );
-        let this = field.clone();
-        target.connect_drop(move |t, value, x, y| {
-            crate::dbg_log!("icon field drop fired at ({x}, {y}), value type={:?}", value.type_());
-            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
-                crate::dbg_log!("icon field drop: value is not a FileList");
-                return false;
-            };
-            let paths: Vec<_> = file_list.files().into_iter().filter_map(|f| f.path()).collect();
-            crate::dbg_log!("icon field drop: paths={paths:?}");
-            let tgt = this.item_at(x, y).map(|i| i as i32).unwrap_or(-1);
-            let event_shift = t
-                .current_event()
-                .map(|e| e.modifier_state().contains(gtk::gdk::ModifierType::SHIFT_MASK))
-                .unwrap_or(false);
-            let shift = crate::dnd::shift_held(&this.inner.layout.fixed);
-            crate::dbg_log!("icon field drop: event_shift={event_shift} live_shift={shift}");
-            this.handle_drop_text(&crate::dnd::paths_to_uri_list(&paths), tgt, shift);
-            true
-        });
-        field.inner.layout.fixed.add_controller(target);
-
-        // Right-click: select under the pointer, then emit context-menu.
-        let rclick = gtk::GestureClick::new();
-        rclick.set_button(gtk::gdk::BUTTON_SECONDARY);
-        let this = field.clone();
-        rclick.connect_pressed(move |_, _, x, y| {
-            let hit = this.item_at(x, y);
-            if let Some(i) = hit {
-                if !this.selected_indices().contains(&i) {
-                    this.select_exclusive(i);
-                }
-            }
-            let idx = hit.map(|i| i as i32).unwrap_or(-1);
-            for cb in this.inner.events.on_context_menu.borrow().iter() {
-                cb(idx, x, y);
-            }
-        });
-        field.inner.layout.fixed.add_controller(rclick);
-
-        // Ctrl+scroll: zoom request.
-        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-        let this = field.clone();
-        scroll.connect_scroll(move |c, _dx, dy| {
-            if !c.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK) {
-                return gtk::glib::Propagation::Proceed;
-            }
-            let step = if dy < 0.0 { 1 } else { -1 };
-            for cb in this.inner.events.on_zoom_requested.borrow().iter() {
-                cb(step);
-            }
-            gtk::glib::Propagation::Stop
-        });
-        field.inner.layout.fixed.add_controller(scroll);
-
-        // Internal reposition drag (Free mode only), starting on any item.
-        let rdrag = gtk::GestureDrag::new();
-        rdrag.set_button(gtk::gdk::BUTTON_PRIMARY);
-        let this = field.clone();
-        rdrag.connect_drag_begin(move |_, x, y| {
-            this.begin_reposition(x, y);
-        });
-        let this = field.clone();
-        rdrag.connect_drag_update(move |_, ox, oy| {
-            this.update_reposition(ox, oy);
-        });
-        let this = field.clone();
-        rdrag.connect_drag_end(move |_, ox, oy| {
-            this.end_reposition(ox, oy);
-        });
-        field.inner.layout.fixed.add_controller(rdrag);
+        // Install interaction controllers (click, drag, key, dnd, context menu, scroll, reposition).
+        controllers::install_controllers(&field);
 
         field
     }
@@ -692,7 +488,7 @@ impl IconField {
     }
 
     /// Parse a `text/uri-list` payload and fan it out to the drop listeners.
-    pub(crate) fn handle_drop_text(&self, text: &str, target: i32, shift: bool) {
+    pub(super) fn handle_drop_text(&self, text: &str, target: i32, shift: bool) {
         let paths = crate::dnd::uris_to_paths(text);
         if paths.is_empty() {
             return;
@@ -704,14 +500,14 @@ impl IconField {
 
     /// Whether a primary-button drag should start an inter-window file drag.
     /// False in Free mode, where that gesture is an internal reposition.
-    pub(crate) fn inter_window_drag_enabled(&self) -> bool {
+    pub(super) fn inter_window_drag_enabled(&self) -> bool {
         !matches!(self.inner.layout.mode.get(), LayoutMode::Free)
     }
 
     /// Begin a reposition: only in Free mode and only when the press lands on
     /// an item. Selects that item if it was not already, and snapshots the
     /// start positions of every item that will move.
-    fn begin_reposition(&self, x: f64, y: f64) {
+    pub(super) fn begin_reposition(&self, x: f64, y: f64) {
         self.inner.layout.reposition_active.set(false);
         self.inner.layout.drag_bases.borrow_mut().clear();
         if !matches!(self.inner.layout.mode.get(), LayoutMode::Free) {
@@ -738,7 +534,7 @@ impl IconField {
     }
 
     /// Live feedback: move the dragged items to base + offset, no commit.
-    fn update_reposition(&self, ox: f64, oy: f64) {
+    pub(super) fn update_reposition(&self, ox: f64, oy: f64) {
         if !self.inner.layout.reposition_active.get() {
             return;
         }
@@ -751,7 +547,7 @@ impl IconField {
     }
 
     /// Commit the reposition: write the final positions, re-lay-out, notify.
-    fn end_reposition(&self, ox: f64, oy: f64) {
+    pub(super) fn end_reposition(&self, ox: f64, oy: f64) {
         if !self.inner.layout.reposition_active.get() {
             return;
         }
@@ -778,26 +574,26 @@ impl IconField {
         self.inner.layout.free_positions.borrow().clone()
     }
 
-    fn emit_selection_changed(&self) {
+    pub(super) fn emit_selection_changed(&self) {
         self.sync_selection_classes();
         for cb in self.inner.events.on_selection_changed.borrow().iter() {
             cb();
         }
     }
 
-    pub(crate) fn emit_activate(&self, i: usize) {
+    pub(super) fn emit_activate(&self, i: usize) {
         for cb in self.inner.events.on_activate.borrow().iter() {
             cb(i);
         }
     }
 
-    fn emit_background_activate(&self) {
+    pub(super) fn emit_background_activate(&self) {
         for cb in self.inner.events.on_background_activate.borrow().iter() {
             cb();
         }
     }
 
-    fn sync_selection_classes(&self) {
+    pub(super) fn sync_selection_classes(&self) {
         let sel = self.inner.selection.selected.borrow();
         let cur = self.inner.selection.cursor.get();
         for (&i, it) in self.inner.layout.realized.borrow().iter() {
@@ -806,7 +602,7 @@ impl IconField {
         }
     }
 
-    pub(crate) fn select_exclusive(&self, i: usize) {
+    pub(super) fn select_exclusive(&self, i: usize) {
         {
             let mut sel = self.inner.selection.selected.borrow_mut();
             sel.clear();
@@ -817,7 +613,7 @@ impl IconField {
         self.emit_selection_changed();
     }
 
-    pub(crate) fn toggle(&self, i: usize) {
+    pub(super) fn toggle(&self, i: usize) {
         {
             let mut sel = self.inner.selection.selected.borrow_mut();
             if !sel.remove(&i) {
@@ -829,7 +625,7 @@ impl IconField {
         self.emit_selection_changed();
     }
 
-    pub(crate) fn select_range_to(&self, i: usize) {
+    pub(super) fn select_range_to(&self, i: usize) {
         let a = self.inner.selection.anchor.get().unwrap_or(i);
         let (lo, hi) = if a <= i { (a, i) } else { (i, a) };
         {
@@ -843,7 +639,7 @@ impl IconField {
         self.emit_selection_changed();
     }
 
-    pub(crate) fn select_all(&self) {
+    pub(super) fn select_all(&self) {
         let n = self.inner.layout.entries.borrow().len();
         {
             let mut sel = self.inner.selection.selected.borrow_mut();
@@ -855,23 +651,23 @@ impl IconField {
         self.emit_selection_changed();
     }
 
-    pub(crate) fn clear_selection(&self) {
+    pub(super) fn clear_selection(&self) {
         self.inner.selection.selected.borrow_mut().clear();
         self.emit_selection_changed();
     }
 
-    pub(crate) fn set_cursor(&self, i: usize) {
+    pub(super) fn set_cursor(&self, i: usize) {
         self.inner.selection.cursor.set(Some(i));
         self.sync_selection_classes();
     }
 
-    pub(crate) fn cursor(&self) -> Option<usize> {
+    pub(super) fn cursor(&self) -> Option<usize> {
         self.inner.selection.cursor.get()
     }
 
     /// Select every item whose bounds intersect `rect` (x, y, w, h in the
     /// `Fixed`'s coordinate space). When `additive`, keep the prior selection.
-    pub(crate) fn rubber_band_to(&self, rect: (f64, f64, f64, f64), additive: bool) {
+    pub(super) fn rubber_band_to(&self, rect: (f64, f64, f64, f64), additive: bool) {
         let (rx, ry, rw, rh) = rect;
         let mut sel = if additive {
             self.inner.selection.selected.borrow().clone()
@@ -888,251 +684,9 @@ impl IconField {
         self.emit_selection_changed();
     }
 
-    /// Move the keyboard cursor by (`dx`, `dy`) in {-1, 0, 1}. `extend` grows
-    /// the selection from the anchor; `move_only` leaves the selection alone.
-    pub(crate) fn move_cursor(&self, dx: i32, dy: i32, extend: bool, move_only: bool) {
-        let n = self.inner.layout.entries.borrow().len();
-        if n == 0 {
-            return;
-        }
-        let cur = self.inner.selection.cursor.get().unwrap_or(0);
-        let next = if matches!(self.inner.layout.mode.get(), LayoutMode::Grid) {
-            self.grid_step(cur, dx, dy, n)
-        } else {
-            self.free_step(cur, dx, dy)
-        };
-        let Some(next) = next else {
-            return;
-        };
-        if extend {
-            self.select_range_to(next);
-        } else if move_only {
-            self.set_cursor(next);
-        } else {
-            self.select_exclusive(next);
-        }
-    }
-
-    fn grid_step(&self, cur: usize, dx: i32, dy: i32, n: usize) -> Option<usize> {
-        let cols = self.current_columns().max(1);
-        let mut idx = cur as i64;
-        idx += dx as i64;
-        idx += dy as i64 * cols as i64;
-        if idx < 0 || idx as usize >= n {
-            return None;
-        }
-        Some(idx as usize)
-    }
-
-    fn free_step(&self, cur: usize, dx: i32, dy: i32) -> Option<usize> {
-        let rects = self.inner.layout.item_rects.borrow();
-        let &(fx, fy, _, _) = rects.get(cur)?;
-        let cands: Vec<(usize, (f64, f64))> =
-            rects.iter().enumerate().map(|(i, &(x, y, _, _))| (i, (x, y))).collect();
-        crate::arrange::nearest_in_direction((fx, fy), &cands, dx, dy)
-    }
-
-    fn current_columns(&self) -> usize {
-        let rects = self.inner.layout.item_rects.borrow();
-        if rects.len() < 2 {
-            return 1;
-        }
-        let y0 = rects[0].1;
-        let mut cols = 1;
-        for &(_, y, _, _) in rects.iter().skip(1) {
-            if (y - y0).abs() < 1.0 {
-                cols += 1;
-            } else {
-                break;
-            }
-        }
-        cols
-    }
-
-    /// The item index under `Fixed`-space point (`x`, `y`), if any.
-    fn item_at(&self, x: f64, y: f64) -> Option<usize> {
-        // Scan back to front: when rectangles overlap (dragged-together icons
-        // in Free mode), the last-placed one is drawn on top and wins the hit.
-        for (i, &(ix, iy, iw, ih)) in self.inner.layout.item_rects.borrow().iter().enumerate().rev() {
-            if x >= ix && x < ix + iw && y >= iy && y < iy + ih {
-                return Some(i);
-            }
-        }
-        None
-    }
-
     /// The live widget for entry `i`, if it is currently realized.
-    pub(crate) fn item_at_index(&self, i: usize) -> Option<IconItem> {
+    pub(super) fn item_at_index(&self, i: usize) -> Option<IconItem> {
         self.inner.layout.realized.borrow().get(&i).cloned()
-    }
-
-    fn rebuild_arranger(&self) {
-        let boxed: Box<dyn Arrange> = match self.inner.layout.mode.get() {
-            LayoutMode::Grid => Box::new(GridArrange::new()),
-            LayoutMode::Free => {
-                let mut fa = FreeArrange::new();
-                fa.known = self.inner.layout.free_positions.borrow().clone();
-                fa.cell = self.inner.layout.grid_spacing.get() as f64;
-                fa.gap = self.inner.layout.grid_gap.get() as f64;
-                // Never let the pitch fall below the icon box, or glyphs would
-                // overlap and hit-testing would pick the wrong icon.
-                fa.min_cell = self.inner.layout.icon_size.get() as f64;
-                Box::new(fa)
-            }
-        };
-        *self.inner.layout.arrange.borrow_mut() = boxed;
-    }
-
-    /// Recompute every entry's position (realized or not) and cache the item
-    /// rectangles, then reconcile which entries need a live widget.
-    pub(crate) fn relayout(&self) {
-        let n = self.inner.layout.entries.borrow().len();
-        if n == 0 {
-            self.inner.layout.item_rects.borrow_mut().clear();
-            self.inner.layout.fixed.set_size_request(0, 0);
-            self.sync_realized();
-            return;
-        }
-        // A realized item's true measured box; an unrealized one gets the
-        // worst case so the arrangement's cell size (derived from the max
-        // over all boxes - see `GridArrange`) never needs to change as items
-        // realize or de-realize while scrolling.
-        let worst = self.worst_case_box();
-        let boxes: Vec<ItemBox> = {
-            let realized = self.inner.layout.realized.borrow();
-            (0..n)
-                .map(|i| {
-                    realized
-                        .get(&i)
-                        .map(|it| it.measure())
-                        .filter(|&(w, h)| w > 1.0 && h > 1.0)
-                        .map(|(w, h)| ItemBox { w, h })
-                        .unwrap_or(worst)
-                })
-                .collect()
-        };
-        let page = self.inner.layout.scroller.hadjustment().page_size();
-        let viewport_w = if page > 1.0 { page } else { self.inner.layout.scroller.width().max(1) as f64 };
-        if matches!(self.inner.layout.mode.get(), LayoutMode::Free) {
-            self.rebuild_arranger();
-        }
-        let placement = self.inner.layout.arrange.borrow().place(&boxes, viewport_w);
-        let rects: Vec<(f64, f64, f64, f64)> = placement
-            .positions
-            .iter()
-            .zip(boxes.iter())
-            .map(|(&(x, y), b)| (x, y, b.w, b.h))
-            .collect();
-        *self.inner.layout.item_rects.borrow_mut() = rects;
-        self.inner
-            .layout
-            .fixed
-            .set_size_request(placement.virtual_w as i32, placement.virtual_h as i32);
-        self.sync_realized();
-    }
-
-    /// A single representative worst-case item box: `IconItem::new` caps the
-    /// name label at two lines, so a long-enough unbreakable name reliably
-    /// measures the tallest/widest any item ever gets, regardless of which
-    /// entry it is. Cached per icon size (a throwaway probe widget, built
-    /// only on a cache miss).
-    fn worst_case_box(&self) -> ItemBox {
-        let size = self.inner.layout.icon_size.get();
-        if let Some((cached_size, b)) = *self.inner.layout.size_cache.borrow() {
-            if cached_size == size {
-                return b;
-            }
-        }
-        let probe_entry = IconEntry {
-            name: "a-long-unbreakable-filename-used-only-to-measure-worst-case.ext".to_string(),
-            path: PathBuf::new(),
-            kind: IconKind::File,
-            mode: 0,
-            ext: None,
-        };
-        let probe = IconItem::new(&probe_entry, size, &self.inner.layout.icon_set.borrow());
-        let (w, h) = probe.measure();
-        let b = if w > 1.0 && h > 1.0 {
-            ItemBox { w, h }
-        } else {
-            ItemBox { w: (size + 12) as f64, h: (size + 40) as f64 }
-        };
-        *self.inner.layout.size_cache.borrow_mut() = Some((size, b));
-        b
-    }
-
-    /// Which entry indices should currently have a live widget: all of them
-    /// below `VIRTUALIZE_THRESHOLD`, otherwise whatever intersects the
-    /// visible viewport plus one page of padding above and below.
-    fn wanted_indices(&self, n: usize) -> BTreeSet<usize> {
-        if n < VIRTUALIZE_THRESHOLD {
-            return (0..n).collect();
-        }
-        let vadj = self.inner.layout.scroller.vadjustment();
-        let page = vadj.page_size().max(1.0);
-        let want_top = (vadj.value() - page).max(0.0);
-        let want_bottom = vadj.value() + page + page;
-
-        self.inner
-            .layout
-            .item_rects
-            .borrow()
-            .iter()
-            .enumerate()
-            .filter(|(_, &(_, y, _, h))| y + h >= want_top && y <= want_bottom)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// Create or drop widgets so exactly the wanted indices are realized,
-    /// and move every realized widget to its current cached rectangle.
-    fn sync_realized(&self) {
-        let n = self.inner.layout.entries.borrow().len();
-        let wanted = self.wanted_indices(n);
-        let mut realized = self.inner.layout.realized.borrow_mut();
-
-        let stale: Vec<usize> = realized.keys().copied().filter(|i| !wanted.contains(i)).collect();
-        for i in stale {
-            if let Some(it) = realized.remove(&i) {
-                self.inner.layout.fixed.remove(it.widget());
-            }
-        }
-
-        let entries = self.inner.layout.entries.borrow();
-        let rects = self.inner.layout.item_rects.borrow();
-        let size = self.inner.layout.icon_size.get();
-        let icon_set = self.inner.layout.icon_set.borrow();
-        let sel = self.inner.selection.selected.borrow();
-        let cur = self.inner.selection.cursor.get();
-        let thumb_cache = self.inner.layout.thumb_cache.borrow();
-
-        for &i in &wanted {
-            if realized.contains_key(&i) {
-                continue;
-            }
-            let Some(entry) = entries.get(i) else { continue };
-            let it = IconItem::new(entry, size, &icon_set);
-            if let Some(tex) = thumb_cache.get(&i) {
-                it.set_thumbnail(tex);
-            }
-            it.set_selected(sel.contains(&i));
-            it.set_cursor(cur == Some(i));
-            let (x, y, _, _) = rects.get(i).copied().unwrap_or((0.0, 0.0, 0.0, 0.0));
-            self.inner.layout.fixed.put(it.widget(), x, y);
-            let this = self.clone();
-            it.connect_edit_committed(move |new_name| {
-                for cb in this.inner.events.on_rename_requested.borrow().iter() {
-                    cb(i, new_name.clone());
-                }
-            });
-            realized.insert(i, it);
-        }
-
-        for (&i, it) in realized.iter() {
-            if let Some(&(x, y, _, _)) = rects.get(i) {
-                self.inner.layout.fixed.move_(it.widget(), x, y);
-            }
-        }
     }
 }
 
