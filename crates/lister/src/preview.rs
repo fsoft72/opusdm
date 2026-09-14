@@ -3,10 +3,9 @@
 use crate::model::format_size;
 use gtk4 as gtk;
 use gtk::gdk;
-use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -86,12 +85,29 @@ pub fn generate_hex_dump(buf: &[u8]) -> String {
     out
 }
 
+/// What `load_off_thread` computed, before any GTK object is built. Crossing
+/// back to the main thread as plain data keeps every blocking read (and the
+/// archive-listing subprocess) off the GTK thread, since GTK/GDK objects
+/// can't safely be built off it.
+#[derive(Debug)]
+enum Loaded {
+    Image { bytes: Vec<u8>, ext: String, size_str: String },
+    Text { meta: String, numbered_text: String },
+    Archive { meta: String, listing: String },
+    Binary { meta: String, hex: String },
+    Error { message: String },
+}
+
 pub struct PreviewWindow {
     pub window: gtk::Window,
     pub title_label: gtk::Label,
     pub meta_label: gtk::Label,
     pub content_box: gtk::Box,
     pub current_path: RefCell<PathBuf>,
+    /// Bumped on every `load_file`; an in-flight background load whose
+    /// generation no longer matches was superseded by a later navigation and
+    /// its result is dropped instead of rendered.
+    generation: Cell<u64>,
 }
 
 impl PreviewWindow {
@@ -150,6 +166,7 @@ impl PreviewWindow {
             meta_label,
             content_box,
             current_path: RefCell::new(PathBuf::new()),
+            generation: Cell::new(0),
         });
 
         // Key handler to close on Esc or Space or F3
@@ -169,7 +186,11 @@ impl PreviewWindow {
         preview
     }
 
-    /// Update preview content for the given file path.
+    /// Update preview content for the given file path. The directory case is
+    /// resolved synchronously (a `read_dir` listing, no reason to defer it);
+    /// everything else - the binary-vs-text probe, the text/binary byte
+    /// reads, and the archive-listing subprocess - runs on a background
+    /// thread so a slow (e.g. network-mounted) file can't stall the window.
     pub fn load_file(self: &Rc<Self>, path: &Path) {
         *self.current_path.borrow_mut() = path.to_path_buf();
         let filename = path
@@ -179,11 +200,7 @@ impl PreviewWindow {
 
         self.title_label.set_text(&filename);
         self.window.set_title(Some(&format!("Quick Look: {filename}")));
-
-        // Clear previous content
-        while let Some(child) = self.content_box.first_child() {
-            self.content_box.remove(&child);
-        }
+        self.clear_content();
 
         let metadata = match std::fs::metadata(path) {
             Ok(m) => m,
@@ -196,36 +213,74 @@ impl PreviewWindow {
             }
         };
 
-        let file_size = metadata.len();
-        let size_str = format_size(metadata.is_dir(), file_size);
-
         if metadata.is_dir() {
+            let size_str = format_size(true, metadata.len());
             self.meta_label.set_text(&format!("Directory  •  {size_str}"));
             self.render_directory(path);
             return;
         }
 
-        let kind = detect_file_kind(path);
+        let file_size = metadata.len();
+        self.meta_label.set_text("Loading…");
+        let placeholder = gtk::Label::new(Some("Loading preview…"));
+        placeholder.set_margin_top(20);
+        self.content_box.append(&placeholder);
 
-        match kind {
-            FileKind::Image => {
-                self.render_image(path, file_size);
+        let gen = self.generation.get() + 1;
+        self.generation.set(gen);
+
+        let (tx, rx) = async_channel::bounded::<Loaded>(1);
+        let path_owned = path.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(load_off_thread(&path_owned, file_size));
+        });
+
+        let this = self.clone();
+        let want_path = path.to_path_buf();
+        glib::spawn_future_local(async move {
+            let Ok(loaded) = rx.recv().await else { return };
+            // The user may have navigated to another file while this loaded;
+            // drop a superseded result instead of rendering it over the
+            // current one.
+            if this.generation.get() != gen || *this.current_path.borrow() != want_path {
+                return;
             }
-            FileKind::Text => {
-                self.render_text(path, file_size);
+            this.apply_loaded(loaded);
+        });
+    }
+
+    fn clear_content(&self) {
+        while let Some(child) = self.content_box.first_child() {
+            self.content_box.remove(&child);
+        }
+    }
+
+    fn apply_loaded(&self, loaded: Loaded) {
+        self.clear_content();
+        match loaded {
+            Loaded::Image { bytes, ext, size_str } => self.render_image(&bytes, &ext, &size_str),
+            Loaded::Text { meta, numbered_text } => {
+                self.meta_label.set_text(&meta);
+                self.content_box.append(&text_view_scroller(&numbered_text, gtk::WrapMode::WordChar));
             }
-            FileKind::Archive => {
-                self.render_archive(path, file_size);
+            Loaded::Archive { meta, listing } => {
+                self.meta_label.set_text(&meta);
+                self.content_box.append(&text_view_scroller(&listing, gtk::WrapMode::None));
             }
-            FileKind::Binary => {
-                self.render_binary(path, file_size);
+            Loaded::Binary { meta, hex } => {
+                self.meta_label.set_text(&meta);
+                self.content_box.append(&text_view_scroller(&hex, gtk::WrapMode::None));
+            }
+            Loaded::Error { message } => {
+                let err_label = gtk::Label::new(Some(&message));
+                err_label.set_margin_top(20);
+                self.content_box.append(&err_label);
             }
         }
     }
 
-    fn render_image(&self, path: &Path, file_size: u64) {
-        let file = gio::File::for_path(path);
-        let picture = gtk::Picture::for_file(&file);
+    fn render_image(&self, bytes: &[u8], ext: &str, size_str: &str) {
+        let picture = gtk::Picture::new();
         picture.set_can_shrink(true);
         picture.set_content_fit(gtk::ContentFit::Contain);
         picture.set_vexpand(true);
@@ -235,136 +290,25 @@ impl PreviewWindow {
         picture.set_margin_top(16);
         picture.set_margin_bottom(16);
 
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("image");
-        let size_str = format_size(false, file_size);
-
-        // Probe dimensions via gdk::Texture if possible
-        let meta_text = match gdk::Texture::from_file(&file) {
+        let gbytes = glib::Bytes::from(bytes);
+        let meta_text = match gdk::Texture::from_bytes(&gbytes) {
             Ok(texture) => {
-                format!("{} × {} px  •  {}  •  {}", texture.width(), texture.height(), size_str, ext.to_uppercase())
+                let t = format!(
+                    "{} × {} px  •  {}  •  {}",
+                    texture.width(),
+                    texture.height(),
+                    size_str,
+                    ext.to_uppercase()
+                );
+                picture.set_paintable(Some(&texture));
+                t
             }
-            Err(_) => format!("{}  •  {}", size_str, ext.to_uppercase()),
+            Err(_) => format!("{size_str}  •  {}", ext.to_uppercase()),
         };
         self.meta_label.set_text(&meta_text);
 
         let scroller = gtk::ScrolledWindow::builder()
             .child(&picture)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        self.content_box.append(&scroller);
-    }
-
-    fn render_text(&self, path: &Path, file_size: u64) {
-        let max_read = 256 * 1024; // 256 KB max for preview
-        let f = match File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                let err_label = gtk::Label::new(Some(&format!("Cannot open: {e}")));
-                self.content_box.append(&err_label);
-                return;
-            }
-        };
-
-        let mut buf = Vec::new();
-        let _ = f.take(max_read).read_to_end(&mut buf);
-        let text = String::from_utf8_lossy(&buf);
-
-        let line_count = text.lines().count();
-        let size_str = format_size(false, file_size);
-        let truncated = if file_size > max_read { " (preview truncated)" } else { "" };
-        self.meta_label.set_text(&format!("{line_count} lines  •  {size_str}{truncated}"));
-
-        // Format lines with line numbers
-        let mut numbered_text = String::with_capacity(text.len() + line_count * 8);
-        for (i, line) in text.lines().enumerate() {
-            numbered_text.push_str(&format!("{:4} │ {}\n", i + 1, line));
-        }
-
-        let text_view = gtk::TextView::builder()
-            .editable(false)
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .build();
-        text_view.buffer().set_text(&numbered_text);
-        text_view.set_margin_start(8);
-        text_view.set_margin_end(8);
-        text_view.set_margin_top(8);
-        text_view.set_margin_bottom(8);
-
-        let scroller = gtk::ScrolledWindow::builder()
-            .child(&text_view)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        self.content_box.append(&scroller);
-    }
-
-    fn render_archive(&self, path: &Path, file_size: u64) {
-        let size_str = format_size(false, file_size);
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-        self.meta_label.set_text(&format!("Archive ({})  •  {}", ext.to_uppercase(), size_str));
-
-        let listing = if ext == "zip" {
-            Command::new("unzip")
-                .arg("-l")
-                .arg(path)
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                .unwrap_or_else(|_| "Cannot run unzip to inspect archive".into())
-        } else {
-            Command::new("tar")
-                .arg("-tf")
-                .arg(path)
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                .unwrap_or_else(|_| "Cannot run tar to inspect archive".into())
-        };
-
-        let text_view = gtk::TextView::builder()
-            .editable(false)
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::None)
-            .build();
-        text_view.buffer().set_text(&listing);
-        text_view.set_margin_start(8);
-        text_view.set_margin_end(8);
-        text_view.set_margin_top(8);
-        text_view.set_margin_bottom(8);
-
-        let scroller = gtk::ScrolledWindow::builder()
-            .child(&text_view)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        self.content_box.append(&scroller);
-    }
-
-    fn render_binary(&self, path: &Path, file_size: u64) {
-        let size_str = format_size(false, file_size);
-        self.meta_label.set_text(&format!("Binary  •  {size_str}"));
-
-        let mut buf = [0u8; 256];
-        let bytes_read = match File::open(path).and_then(|mut f| f.read(&mut buf)) {
-            Ok(n) => n,
-            Err(_) => 0,
-        };
-
-        let hex_view = generate_hex_dump(&buf[..bytes_read]);
-
-        let text_view = gtk::TextView::builder()
-            .editable(false)
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::None)
-            .build();
-        text_view.buffer().set_text(&hex_view);
-        text_view.set_margin_start(8);
-        text_view.set_margin_end(8);
-        text_view.set_margin_top(8);
-        text_view.set_margin_bottom(8);
-
-        let scroller = gtk::ScrolledWindow::builder()
-            .child(&text_view)
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -390,23 +334,93 @@ impl PreviewWindow {
             }
         }
 
-        let text_view = gtk::TextView::builder()
-            .editable(false)
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::None)
-            .build();
-        text_view.buffer().set_text(&listing);
-        text_view.set_margin_start(8);
-        text_view.set_margin_end(8);
-        text_view.set_margin_top(8);
-        text_view.set_margin_bottom(8);
+        self.content_box.append(&text_view_scroller(&listing, gtk::WrapMode::None));
+    }
+}
 
-        let scroller = gtk::ScrolledWindow::builder()
-            .child(&text_view)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        self.content_box.append(&scroller);
+/// A read-only monospace text view in its own scroller, as used for the
+/// text/archive/binary previews (and the directory listing).
+fn text_view_scroller(text: &str, wrap_mode: gtk::WrapMode) -> gtk::ScrolledWindow {
+    let text_view = gtk::TextView::builder()
+        .editable(false)
+        .monospace(true)
+        .wrap_mode(wrap_mode)
+        .build();
+    text_view.buffer().set_text(text);
+    text_view.set_margin_start(8);
+    text_view.set_margin_end(8);
+    text_view.set_margin_top(8);
+    text_view.set_margin_bottom(8);
+
+    gtk::ScrolledWindow::builder().child(&text_view).vexpand(true).hexpand(true).build()
+}
+
+/// List an archive's contents via an external tool. Pure function (no I/O
+/// beyond the subprocess itself), safe to call off the GTK thread.
+fn archive_listing(path: &Path, ext: &str) -> String {
+    if ext == "zip" {
+        Command::new("unzip")
+            .arg("-l")
+            .arg(path)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_else(|_| "Cannot run unzip to inspect archive".into())
+    } else {
+        Command::new("tar")
+            .arg("-tf")
+            .arg(path)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_else(|_| "Cannot run tar to inspect archive".into())
+    }
+}
+
+/// Everything `load_file` needs that involves blocking I/O or a subprocess:
+/// the binary-vs-text probe (inside `detect_file_kind`), the file read for
+/// text/binary/image previews, and the archive-listing subprocess. Runs on a
+/// background thread; returns plain data so the caller can build GTK objects
+/// from it on the main thread.
+fn load_off_thread(path: &Path, file_size: u64) -> Loaded {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let size_str = format_size(false, file_size);
+
+    match detect_file_kind(path) {
+        FileKind::Image => match std::fs::read(path) {
+            Ok(bytes) => Loaded::Image { bytes, ext, size_str },
+            Err(e) => Loaded::Error { message: format!("Cannot open: {e}") },
+        },
+        FileKind::Text => {
+            const MAX_READ: u64 = 256 * 1024;
+            let f = match File::open(path) {
+                Ok(f) => f,
+                Err(e) => return Loaded::Error { message: format!("Cannot open: {e}") },
+            };
+            let mut buf = Vec::new();
+            let _ = f.take(MAX_READ).read_to_end(&mut buf);
+            let text = String::from_utf8_lossy(&buf);
+
+            let line_count = text.lines().count();
+            let truncated = if file_size > MAX_READ { " (preview truncated)" } else { "" };
+            let meta = format!("{line_count} lines  •  {size_str}{truncated}");
+
+            let mut numbered_text = String::with_capacity(text.len() + line_count * 8);
+            for (i, line) in text.lines().enumerate() {
+                numbered_text.push_str(&format!("{:4} │ {}\n", i + 1, line));
+            }
+            Loaded::Text { meta, numbered_text }
+        }
+        FileKind::Archive => {
+            let listing = archive_listing(path, &ext);
+            let meta = format!("Archive ({})  •  {size_str}", ext.to_uppercase());
+            Loaded::Archive { meta, listing }
+        }
+        FileKind::Binary => {
+            let mut buf = [0u8; 256];
+            let bytes_read = File::open(path).and_then(|mut f| f.read(&mut buf)).unwrap_or(0);
+            let hex = generate_hex_dump(&buf[..bytes_read]);
+            let meta = format!("Binary  •  {size_str}");
+            Loaded::Binary { meta, hex }
+        }
     }
 }
 
@@ -431,5 +445,42 @@ mod tests {
         let dump = generate_hex_dump(data);
         assert!(dump.contains("48 65 6c 6c 6f"));
         assert!(dump.contains("|Hello, World!.|"));
+    }
+
+    #[test]
+    fn load_off_thread_reads_text_with_line_numbers() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("notes.txt");
+        std::fs::write(&path, "first\nsecond\n").unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        match load_off_thread(&path, size) {
+            Loaded::Text { meta, numbered_text } => {
+                assert!(meta.contains("2 lines"));
+                assert!(numbered_text.contains("1 │ first"));
+                assert!(numbered_text.contains("2 │ second"));
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_off_thread_reads_binary_as_hex() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("blob.bin");
+        std::fs::write(&path, [0u8, 1, 2, 3, 255]).unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        match load_off_thread(&path, size) {
+            Loaded::Binary { hex, .. } => assert!(hex.contains("00 01 02 03 ff")),
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_off_thread_reports_error_for_missing_file() {
+        let missing = Path::new("/nonexistent/opusdm-preview-test/file.txt");
+        match load_off_thread(missing, 0) {
+            Loaded::Error { message } => assert!(message.contains("Cannot open")),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 }
