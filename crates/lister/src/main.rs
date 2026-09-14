@@ -3,6 +3,7 @@
 mod actions;
 mod archive;
 mod batch_rename;
+mod build;
 mod client;
 mod clip;
 mod columns;
@@ -61,7 +62,7 @@ fn main() {
         };
 
     crate::dlog!("connected to hub, lister_id={lister_id:?}, start={}", start_path.display());
-    let code = window::run(client, lister_id, roles, settings, start_path);
+    let code = build::run(client, lister_id, roles, settings, start_path);
     crate::dlog!("event loop exited, code={code:?}");
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }

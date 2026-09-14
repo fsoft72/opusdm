@@ -167,7 +167,7 @@ pub fn attach(ui: &Rc<Ui>) {
     }
 
     // Pin: locks this Lister's role against focus changes. Role itself is
-    // set by clicking the stat-bar badge (see window::build_window), which
+    // set by clicking the stat-bar badge (see build::build_window), which
     // cycles SOURCE -> DEST -> NONE.
     {
         let ui = ui.clone();
