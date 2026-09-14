@@ -29,11 +29,12 @@ pub fn detect_file_kind(path: &Path) -> FileKind {
         .unwrap_or("")
         .to_lowercase();
 
+    if crate::archive::ARCHIVE_EXTS.contains(&ext.as_str()) {
+        return FileKind::Archive;
+    }
+
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "tiff" => FileKind::Image,
-        "zip" | "tar" | "gz" | "tgz" | "bz2" | "tbz2" | "xz" | "txz" | "zst" | "7z" | "rar" => {
-            FileKind::Archive
-        }
         "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "py" | "js" | "ts" | "jsx" | "tsx" | "html"
         | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "md" | "txt" | "sh" | "bash"
         | "xml" | "ini" | "conf" | "log" | "diff" | "patch" | "sql" | "csv" | "tsv" | "lock" => {

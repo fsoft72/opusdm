@@ -41,7 +41,7 @@
 - [ ] **Selection scans are O(n) and repeated per event** — `selected_names`, `update_status` and `sync_cursor_from_selection` each walk `0..selection.n_items()` with `is_selected(i)` + `row_at(i)`; the selection-changed signal triggers several of these back to back. Use `gtk::Bitset` from `MultiSelection::selection()` to iterate only selected indices once.
   - File(s): `crates/lister/src/window.rs`
 
-- [ ] **`detect_file_kind` hardcodes long extension lists in a match** — The image/archive/text extension tables are inline string literals duplicated in spirit with `archive::is_archive_file`; one new format means editing two places. Move the tables to a shared const/module (e.g. in `ipc` or `archive`) and reuse.
+- [x] **`detect_file_kind` hardcodes long extension lists in a match** — The image/archive/text extension tables are inline string literals duplicated in spirit with `archive::is_archive_file`; one new format means editing two places. Move the tables to a shared const/module (e.g. in `ipc` or `archive`) and reuse.
   - File(s): `crates/lister/src/preview.rs`, `crates/lister/src/archive.rs`
 
 - [x] **Icon zoom steps are magic numbers with a fragile `unwrap_or(1)` fallback** — `STEPS: [48, 64, 96, 128]` in the zoom handler silently resets to index 1 if `icon_size` was ever set to a value not in the list; the default 64 in `build_window` and `IconField::new` is also repeated by literal. Define the steps and default as shared constants.

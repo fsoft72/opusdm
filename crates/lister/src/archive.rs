@@ -14,6 +14,13 @@ pub struct ArchiveItem {
     pub mode: u32,
 }
 
+/// Single-extension markers recognized as archive-like content, for icon and
+/// preview classification (`preview::detect_file_kind`). A narrower subset -
+/// what this app can actually extract/browse - is checked by
+/// [`is_archive_file`], which also recognizes `.tar.<ext>` compound suffixes.
+pub const ARCHIVE_EXTS: &[&str] =
+    &["zip", "tar", "tgz", "7z", "gz", "bz2", "tbz2", "xz", "txz", "zst", "rar"];
+
 /// Check if a path points to a supported archive file.
 pub fn is_archive_file(path: &Path) -> bool {
     let name = path
