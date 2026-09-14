@@ -270,8 +270,8 @@ fn build_window(
         let cv_sorter = cv_sorter.clone();
         let col_map = col_map.clone();
         move |a, b| {
-            let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
-            let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
+            let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>();
+            let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>();
             let (col, desc) = cv_sorter
                 .as_ref()
                 .and_then(|s| {
