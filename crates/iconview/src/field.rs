@@ -95,7 +95,7 @@ impl IconField {
                 items: RefCell::new(Vec::new()),
                 entries: RefCell::new(Vec::new()),
                 mode: Cell::new(LayoutMode::Grid),
-                icon_size: Cell::new(64),
+                icon_size: Cell::new(crate::types::DEFAULT_ICON_SIZE),
                 icon_set: RefCell::new(opusdm_ipc::IconSetId::None),
                 grid_spacing: Cell::new(96),
                 grid_gap: Cell::new(4),

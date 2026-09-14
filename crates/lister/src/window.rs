@@ -327,7 +327,7 @@ fn build_window(
 
     let icon_field = opusdm_iconview::IconField::new();
     icon_field.set_mode(opusdm_iconview::LayoutMode::Grid);
-    icon_field.set_icon_size(64);
+    icon_field.set_icon_size(opusdm_iconview::DEFAULT_ICON_SIZE);
     icon_field.set_icon_set(settings.theme.icon_set.clone());
 
     let view_stack = gtk::Stack::new();
@@ -438,7 +438,7 @@ fn build_window(
             mode: Cell::new(ViewMode::Details),
             stack: view_stack.clone(),
             icon_field: icon_field.clone(),
-            icon_size: Cell::new(64),
+            icon_size: Cell::new(opusdm_iconview::DEFAULT_ICON_SIZE),
             column_view: column_view.clone(),
             selection: selection.clone(),
             store,
@@ -679,9 +679,21 @@ fn build_window(
         let ui = ui.clone();
         let field = icon_field.clone();
         icon_field.connect_zoom_requested(move |delta| {
-            const STEPS: [i32; 4] = [48, 64, 96, 128];
+            use opusdm_iconview::ICON_ZOOM_STEPS as STEPS;
             let cur = ui.view.icon_size.get();
-            let idx = STEPS.iter().position(|&s| s == cur).unwrap_or(1) as i32;
+            // If icon_size was ever set to a value outside STEPS, snap to the
+            // nearest step instead of silently resetting to a fixed index.
+            let idx = STEPS
+                .iter()
+                .position(|&s| s == cur)
+                .unwrap_or_else(|| {
+                    STEPS
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, &s)| (s - cur).abs())
+                        .map(|(i, _)| i)
+                        .unwrap_or(0)
+                }) as i32;
             let next = (idx + delta).clamp(0, STEPS.len() as i32 - 1) as usize;
             ui.view.icon_size.set(STEPS[next]);
             field.set_icon_size(STEPS[next]);

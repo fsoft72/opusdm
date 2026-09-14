@@ -26,4 +26,6 @@ pub mod types;
 
 pub use field::IconField;
 pub use item::IconItem;
-pub use types::{IconEntry, IconKind, LayoutMode, ThumbSize};
+pub use types::{
+    IconEntry, IconKind, LayoutMode, ThumbSize, DEFAULT_ICON_SIZE, ICON_ZOOM_STEPS,
+};

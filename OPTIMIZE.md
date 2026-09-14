@@ -44,7 +44,7 @@
 - [ ] **`detect_file_kind` hardcodes long extension lists in a match** — The image/archive/text extension tables are inline string literals duplicated in spirit with `archive::is_archive_file`; one new format means editing two places. Move the tables to a shared const/module (e.g. in `ipc` or `archive`) and reuse.
   - File(s): `crates/lister/src/preview.rs`, `crates/lister/src/archive.rs`
 
-- [ ] **Icon zoom steps are magic numbers with a fragile `unwrap_or(1)` fallback** — `STEPS: [48, 64, 96, 128]` in the zoom handler silently resets to index 1 if `icon_size` was ever set to a value not in the list; the default 64 in `build_window` and `IconField::new` is also repeated by literal. Define the steps and default as shared constants.
+- [x] **Icon zoom steps are magic numbers with a fragile `unwrap_or(1)` fallback** — `STEPS: [48, 64, 96, 128]` in the zoom handler silently resets to index 1 if `icon_size` was ever set to a value not in the list; the default 64 in `build_window` and `IconField::new` is also repeated by literal. Define the steps and default as shared constants.
   - File(s): `crates/lister/src/window.rs`, `crates/iconview/src/field.rs`
 
 - [ ] **Settings `Welcome` variant handled with a comment, not the type system** — `ToLister::Welcome` is documented as "consumed synchronously, never reaches here" yet still has a match arm every Lister must write. Split the handshake message from the steady-state protocol (separate enum or a dedicated connect function returning the welcome payload).

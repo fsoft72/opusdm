@@ -2,6 +2,13 @@
 
 use std::path::PathBuf;
 
+/// Icon pixel sizes selectable via Ctrl+scroll, smallest to largest.
+pub const ICON_ZOOM_STEPS: [i32; 4] = [48, 64, 96, 128];
+
+/// The icon size a new `IconField` and a fresh Lister window start at.
+/// Must be one of `ICON_ZOOM_STEPS`.
+pub const DEFAULT_ICON_SIZE: i32 = 64;
+
 /// What a directory entry is, for icon and glyph selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IconKind {
