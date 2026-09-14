@@ -1,9 +1,15 @@
 //! The icon field: a `Fixed` in a `ScrolledWindow`, one `IconItem` per entry,
 //! positioned by a pluggable `Arrange`. Interaction is added in later steps.
+//!
+//! Above [`VIRTUALIZE_THRESHOLD`] entries, only items in (or near) the
+//! visible viewport get a live `IconItem` widget - see `sync_realized`.
+//! Everything else (selection, rubber-band, keyboard nav, DnD, reposition)
+//! already keys off `item_rects`/`entries` by index, not off live widgets,
+//! so none of it needs to know whether an index is currently realized.
 
 use crate::arrange::{Arrange, FreeArrange, GridArrange, ItemBox};
 use crate::item::IconItem;
-use crate::types::{IconEntry, LayoutMode};
+use crate::types::{IconEntry, IconKind, LayoutMode};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -14,12 +20,24 @@ use std::rc::Rc;
 /// A list of listener closures with signature `F`.
 type Listeners<F> = RefCell<Vec<Box<F>>>;
 
+/// Entry counts at or above this stop getting a live widget per item;
+/// realization becomes viewport-driven instead (see `sync_realized`).
+const VIRTUALIZE_THRESHOLD: usize = 400;
+
 /// Widget tree, content and arrangement: what to draw, and where. Also owns
 /// the in-progress reposition drag, since that only ever mutates layout.
 struct LayoutState {
     scroller: gtk::ScrolledWindow,
     fixed: gtk::Fixed,
-    items: RefCell<Vec<IconItem>>,
+    /// Live widgets, keyed by entry index. Sparse once virtualized - see
+    /// `sync_realized`.
+    realized: RefCell<HashMap<usize, IconItem>>,
+    /// Thumbnail textures survive an item being de-realized and re-realized,
+    /// so scrolling away and back doesn't re-request or lose a thumbnail.
+    thumb_cache: RefCell<HashMap<usize, gtk::gdk::Texture>>,
+    /// A single worst-case item box (see `worst_case_box`), cached per icon
+    /// size so the arrangement never reflows as items realize/de-realize.
+    size_cache: RefCell<Option<(i32, ItemBox)>>,
     entries: RefCell<Vec<IconEntry>>,
     mode: Cell<LayoutMode>,
     icon_size: Cell<i32>,
@@ -92,7 +110,9 @@ impl IconField {
             layout: LayoutState {
                 scroller,
                 fixed,
-                items: RefCell::new(Vec::new()),
+                realized: RefCell::new(HashMap::new()),
+                thumb_cache: RefCell::new(HashMap::new()),
+                size_cache: RefCell::new(None),
                 entries: RefCell::new(Vec::new()),
                 mode: Cell::new(LayoutMode::Grid),
                 icon_size: Cell::new(crate::types::DEFAULT_ICON_SIZE),
@@ -140,6 +160,10 @@ impl IconField {
         field.inner.layout.scroller.hadjustment().connect_page_size_notify(move |_| this.relayout());
         let this = field.clone();
         field.inner.layout.fixed.connect_map(move |_| this.relayout());
+        // Scrolling doesn't move anything, just changes which items need a
+        // live widget once virtualized - a cheap resync, not a full relayout.
+        let this = field.clone();
+        field.inner.layout.scroller.vadjustment().connect_value_changed(move |_| this.sync_realized());
 
         // Left-click selection.
         let click = gtk::GestureClick::new();
@@ -221,7 +245,7 @@ impl IconField {
                 }
                 Key::F2 => {
                     if let Some(i) = this.cursor() {
-                        if let Some(it) = this.items().get(i) {
+                        if let Some(it) = this.item_at_index(i) {
                             it.start_edit();
                         }
                     }
@@ -366,23 +390,10 @@ impl IconField {
 
     /// Replace all entries. Rebuilds the item widgets and re-lays-out.
     pub fn set_entries(&self, entries: &[IconEntry]) {
-        for it in self.inner.layout.items.borrow().iter() {
-            self.inner.layout.fixed.remove(it.widget());
+        for it in self.inner.layout.realized.borrow_mut().drain() {
+            self.inner.layout.fixed.remove(it.1.widget());
         }
-        let size = self.inner.layout.icon_size.get();
-        let mut items = Vec::with_capacity(entries.len());
-        for (idx, e) in entries.iter().enumerate() {
-            let it = IconItem::new(e, size, &self.inner.layout.icon_set.borrow());
-            self.inner.layout.fixed.put(it.widget(), 0.0, 0.0);
-            let this = self.clone();
-            it.connect_edit_committed(move |new_name| {
-                for cb in this.inner.events.on_rename_requested.borrow().iter() {
-                    cb(idx, new_name.clone());
-                }
-            });
-            items.push(it);
-        }
-        *self.inner.layout.items.borrow_mut() = items;
+        self.inner.layout.thumb_cache.borrow_mut().clear();
         *self.inner.layout.entries.borrow_mut() = entries.to_vec();
         self.inner.layout.free_positions.borrow_mut().clear();
         self.inner.selection.selected.borrow_mut().clear();
@@ -435,9 +446,12 @@ impl IconField {
         let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) else {
             return;
         };
-        if let Some(item) = self.inner.layout.items.borrow().get(res.index) {
+        if let Some(item) = self.inner.layout.realized.borrow().get(&res.index) {
             item.set_thumbnail(&texture);
         }
+        // Cached regardless of realization, so scrolling this index back
+        // into view doesn't need a fresh thumbnail job.
+        self.inner.layout.thumb_cache.borrow_mut().insert(res.index, texture);
     }
 
     /// Switch arrangement strategy.
@@ -473,16 +487,17 @@ impl IconField {
     pub fn set_icon_size(&self, px: i32) {
         let old_px = self.inner.layout.icon_size.get();
         self.inner.layout.icon_size.set(px);
-        for it in self.inner.layout.items.borrow().iter() {
+        for it in self.inner.layout.realized.borrow().values() {
             it.set_icon_size(px);
         }
         self.relayout();
         let before = crate::types::ThumbSize::for_icon(old_px);
         let after = crate::types::ThumbSize::for_icon(px);
         if before != after {
-            for it in self.inner.layout.items.borrow().iter() {
+            for it in self.inner.layout.realized.borrow().values() {
                 it.clear_thumbnail();
             }
+            self.inner.layout.thumb_cache.borrow_mut().clear();
             self.request_thumbs();
         }
     }
@@ -500,7 +515,7 @@ impl IconField {
 
     /// Number of entries currently shown.
     pub fn entry_count(&self) -> usize {
-        self.inner.layout.items.borrow().len()
+        self.inner.layout.entries.borrow().len()
     }
 
     /// Indices of selected items, ascending.
@@ -618,9 +633,9 @@ impl IconField {
         if !self.inner.layout.reposition_active.get() {
             return;
         }
-        let items = self.inner.layout.items.borrow();
+        let realized = self.inner.layout.realized.borrow();
         for &(i, (bx, by)) in self.inner.layout.drag_bases.borrow().iter() {
-            if let Some(it) = items.get(i) {
+            if let Some(it) = realized.get(&i) {
                 self.inner.layout.fixed.move_(it.widget(), (bx + ox).max(0.0), (by + oy).max(0.0));
             }
         }
@@ -676,7 +691,7 @@ impl IconField {
     fn sync_selection_classes(&self) {
         let sel = self.inner.selection.selected.borrow();
         let cur = self.inner.selection.cursor.get();
-        for (i, it) in self.inner.layout.items.borrow().iter().enumerate() {
+        for (&i, it) in self.inner.layout.realized.borrow().iter() {
             it.set_selected(sel.contains(&i));
             it.set_cursor(cur == Some(i));
         }
@@ -720,7 +735,7 @@ impl IconField {
     }
 
     pub(crate) fn select_all(&self) {
-        let n = self.inner.layout.items.borrow().len();
+        let n = self.inner.layout.entries.borrow().len();
         {
             let mut sel = self.inner.selection.selected.borrow_mut();
             sel.clear();
@@ -767,7 +782,7 @@ impl IconField {
     /// Move the keyboard cursor by (`dx`, `dy`) in {-1, 0, 1}. `extend` grows
     /// the selection from the anchor; `move_only` leaves the selection alone.
     pub(crate) fn move_cursor(&self, dx: i32, dy: i32, extend: bool, move_only: bool) {
-        let n = self.inner.layout.items.borrow().len();
+        let n = self.inner.layout.entries.borrow().len();
         if n == 0 {
             return;
         }
@@ -837,8 +852,9 @@ impl IconField {
         None
     }
 
-    pub(crate) fn items(&self) -> Vec<IconItem> {
-        self.inner.layout.items.borrow().clone()
+    /// The live widget for entry `i`, if it is currently realized.
+    pub(crate) fn item_at_index(&self, i: usize) -> Option<IconItem> {
+        self.inner.layout.realized.borrow().get(&i).cloned()
     }
 
     fn rebuild_arranger(&self) {
@@ -858,42 +874,156 @@ impl IconField {
         *self.inner.layout.arrange.borrow_mut() = boxed;
     }
 
-    /// Recompute positions, move every item, and cache the item rectangles.
+    /// Recompute every entry's position (realized or not) and cache the item
+    /// rectangles, then reconcile which entries need a live widget.
     pub(crate) fn relayout(&self) {
-        let items = self.inner.layout.items.borrow();
-        if items.is_empty() {
+        let n = self.inner.layout.entries.borrow().len();
+        if n == 0 {
             self.inner.layout.item_rects.borrow_mut().clear();
             self.inner.layout.fixed.set_size_request(0, 0);
+            self.sync_realized();
             return;
         }
-        let fallback_w = (self.inner.layout.icon_size.get() + 12) as f64;
-        let fallback_h = (self.inner.layout.icon_size.get() + 40) as f64;
-        let boxes: Vec<ItemBox> = items
-            .iter()
-            .map(|it| {
-                let (w, h) = it.measure();
-                ItemBox {
-                    w: if w > 1.0 { w } else { fallback_w },
-                    h: if h > 1.0 { h } else { fallback_h },
-                }
-            })
-            .collect();
+        // A realized item's true measured box; an unrealized one gets the
+        // worst case so the arrangement's cell size (derived from the max
+        // over all boxes - see `GridArrange`) never needs to change as items
+        // realize or de-realize while scrolling.
+        let worst = self.worst_case_box();
+        let boxes: Vec<ItemBox> = {
+            let realized = self.inner.layout.realized.borrow();
+            (0..n)
+                .map(|i| {
+                    realized
+                        .get(&i)
+                        .map(|it| it.measure())
+                        .filter(|&(w, h)| w > 1.0 && h > 1.0)
+                        .map(|(w, h)| ItemBox { w, h })
+                        .unwrap_or(worst)
+                })
+                .collect()
+        };
         let page = self.inner.layout.scroller.hadjustment().page_size();
         let viewport_w = if page > 1.0 { page } else { self.inner.layout.scroller.width().max(1) as f64 };
         if matches!(self.inner.layout.mode.get(), LayoutMode::Free) {
             self.rebuild_arranger();
         }
         let placement = self.inner.layout.arrange.borrow().place(&boxes, viewport_w);
-        let mut rects = Vec::with_capacity(items.len());
-        for ((it, &(x, y)), b) in items.iter().zip(placement.positions.iter()).zip(boxes.iter()) {
-            self.inner.layout.fixed.move_(it.widget(), x, y);
-            rects.push((x, y, b.w, b.h));
-        }
+        let rects: Vec<(f64, f64, f64, f64)> = placement
+            .positions
+            .iter()
+            .zip(boxes.iter())
+            .map(|(&(x, y), b)| (x, y, b.w, b.h))
+            .collect();
         *self.inner.layout.item_rects.borrow_mut() = rects;
         self.inner
             .layout
             .fixed
             .set_size_request(placement.virtual_w as i32, placement.virtual_h as i32);
+        self.sync_realized();
+    }
+
+    /// A single representative worst-case item box: `IconItem::new` caps the
+    /// name label at two lines, so a long-enough unbreakable name reliably
+    /// measures the tallest/widest any item ever gets, regardless of which
+    /// entry it is. Cached per icon size (a throwaway probe widget, built
+    /// only on a cache miss).
+    fn worst_case_box(&self) -> ItemBox {
+        let size = self.inner.layout.icon_size.get();
+        if let Some((cached_size, b)) = *self.inner.layout.size_cache.borrow() {
+            if cached_size == size {
+                return b;
+            }
+        }
+        let probe_entry = IconEntry {
+            name: "a-long-unbreakable-filename-used-only-to-measure-worst-case.ext".to_string(),
+            path: PathBuf::new(),
+            kind: IconKind::File,
+            mode: 0,
+            ext: None,
+        };
+        let probe = IconItem::new(&probe_entry, size, &self.inner.layout.icon_set.borrow());
+        let (w, h) = probe.measure();
+        let b = if w > 1.0 && h > 1.0 {
+            ItemBox { w, h }
+        } else {
+            ItemBox { w: (size + 12) as f64, h: (size + 40) as f64 }
+        };
+        *self.inner.layout.size_cache.borrow_mut() = Some((size, b));
+        b
+    }
+
+    /// Which entry indices should currently have a live widget: all of them
+    /// below `VIRTUALIZE_THRESHOLD`, otherwise whatever intersects the
+    /// visible viewport plus one page of padding above and below.
+    fn wanted_indices(&self, n: usize) -> BTreeSet<usize> {
+        if n < VIRTUALIZE_THRESHOLD {
+            return (0..n).collect();
+        }
+        let vadj = self.inner.layout.scroller.vadjustment();
+        let page = vadj.page_size().max(1.0);
+        let want_top = (vadj.value() - page).max(0.0);
+        let want_bottom = vadj.value() + page + page;
+
+        self.inner
+            .layout
+            .item_rects
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, &(_, y, _, h))| y + h >= want_top && y <= want_bottom)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Create or drop widgets so exactly the wanted indices are realized,
+    /// and move every realized widget to its current cached rectangle.
+    fn sync_realized(&self) {
+        let n = self.inner.layout.entries.borrow().len();
+        let wanted = self.wanted_indices(n);
+        let mut realized = self.inner.layout.realized.borrow_mut();
+
+        let stale: Vec<usize> = realized.keys().copied().filter(|i| !wanted.contains(i)).collect();
+        for i in stale {
+            if let Some(it) = realized.remove(&i) {
+                self.inner.layout.fixed.remove(it.widget());
+            }
+        }
+
+        let entries = self.inner.layout.entries.borrow();
+        let rects = self.inner.layout.item_rects.borrow();
+        let size = self.inner.layout.icon_size.get();
+        let icon_set = self.inner.layout.icon_set.borrow();
+        let sel = self.inner.selection.selected.borrow();
+        let cur = self.inner.selection.cursor.get();
+        let thumb_cache = self.inner.layout.thumb_cache.borrow();
+
+        for &i in &wanted {
+            if realized.contains_key(&i) {
+                continue;
+            }
+            let Some(entry) = entries.get(i) else { continue };
+            let it = IconItem::new(entry, size, &icon_set);
+            if let Some(tex) = thumb_cache.get(&i) {
+                it.set_thumbnail(tex);
+            }
+            it.set_selected(sel.contains(&i));
+            it.set_cursor(cur == Some(i));
+            let (x, y, _, _) = rects.get(i).copied().unwrap_or((0.0, 0.0, 0.0, 0.0));
+            self.inner.layout.fixed.put(it.widget(), x, y);
+            let this = self.clone();
+            it.connect_edit_committed(move |new_name| {
+                for cb in this.inner.events.on_rename_requested.borrow().iter() {
+                    cb(i, new_name.clone());
+                }
+            });
+            realized.insert(i, it);
+        }
+
+        for (&i, it) in realized.iter() {
+            if let Some(&(x, y, _, _)) = rects.get(i) {
+                self.inner.layout.fixed.move_(it.widget(), x, y);
+            }
+        }
     }
 }
 
@@ -1184,5 +1314,41 @@ mod tests {
         fs.relayout();
         let narrow_y = fs.inner.layout.item_rects.borrow()[1].1;
         assert!(wide_y > narrow_y, "row pitch should track grid spacing ({wide_y} vs {narrow_y})");
+
+        // --- IconField: virtualization above VIRTUALIZE_THRESHOLD ---
+        let big = entries(VIRTUALIZE_THRESHOLD + 100);
+        let v = IconField::new();
+        v.inner.layout.scroller.set_size_request(400, 400);
+        v.set_entries(&big);
+        assert_eq!(v.entry_count(), big.len());
+        // Positions are known for every entry even though most have no widget.
+        assert_eq!(v.inner.layout.item_rects.borrow().len(), big.len());
+        let realized_count = v.inner.layout.realized.borrow().len();
+        assert!(
+            realized_count < big.len(),
+            "expected fewer live widgets than entries, got {realized_count} of {}",
+            big.len()
+        );
+        assert!(realized_count > 0, "expected the initially visible items to be realized");
+        // Selection and rubber-band are index/rect based, not widget based,
+        // so they still cover every entry regardless of realization.
+        v.select_all();
+        assert_eq!(v.selected_indices().len(), big.len());
+        v.clear_selection();
+        v.rubber_band_to((0.0, 0.0, 100_000.0, 100_000.0), false);
+        assert_eq!(v.selected_indices().len(), big.len());
+        // Scrolling changes which indices are realized. The headless
+        // scroller never runs a real layout pass, so its adjustment is
+        // configured directly rather than relying on actual allocation.
+        let before: BTreeSet<usize> = v.inner.layout.realized.borrow().keys().copied().collect();
+        let total_h = v.inner.layout.item_rects.borrow().last().map(|&(_, y, _, h)| y + h).unwrap_or(0.0);
+        let vadj = v.inner.layout.scroller.vadjustment();
+        vadj.set_upper(total_h);
+        vadj.set_page_size(400.0);
+        vadj.set_value(total_h - 400.0);
+        v.sync_realized();
+        let after: BTreeSet<usize> = v.inner.layout.realized.borrow().keys().copied().collect();
+        assert_ne!(before, after, "scrolling to the end should realize different indices");
+        assert!(after.contains(&(big.len() - 1)), "the last entry should be realized once scrolled to");
     }
 }

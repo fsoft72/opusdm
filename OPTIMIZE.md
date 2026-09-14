@@ -4,7 +4,7 @@
 
 ## High
 
-- [ ] **Icon view is one GTK widget per file** — `IconField` keeps a `Vec<IconItem>` of widgets inside a `gtk::Fixed`; large directories will exhaust widget resources and layout time. For directories beyond a threshold, switch to a `ListView`/grid with factories or a single custom-drawn widget.
+- [x] **Icon view is one GTK widget per file** — `IconField` keeps a `Vec<IconItem>` of widgets inside a `gtk::Fixed`; large directories will exhaust widget resources and layout time. For directories beyond a threshold, switch to a `ListView`/grid with factories or a single custom-drawn widget.
   - File(s): `crates/iconview/src/field.rs`, `crates/iconview/src/item.rs`
 
 ## Low / Nice to have
