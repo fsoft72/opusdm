@@ -1,7 +1,10 @@
 //! Resolve and watch the directory shown on the hub desktop window.
+//!
+//! Fd lifecycle, poll and raw event draining are shared with `lister`'s
+//! directory watcher via `opusdm_ipc::inotify`.
 
+use opusdm_ipc::inotify::{read_raw, wait_readable, InotifyFd, Wait};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -96,30 +99,13 @@ pub struct DesktopWatch {
 impl DesktopWatch {
     /// Start watching `dir`. The receiver yields one `()` per coalesced burst.
     pub fn start(dir: PathBuf) -> io::Result<(DesktopWatch, async_channel::Receiver<()>)> {
-        // SAFETY: no arguments to get wrong; the fd is checked below.
-        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let cpath = std::ffi::CString::new(dir.as_os_str().as_bytes())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path has an interior NUL"))?;
-        // SAFETY: cpath is a valid NUL-terminated string for the call.
-        let wd = unsafe { libc::inotify_add_watch(fd, cpath.as_ptr(), WATCH_MASK) };
-        if wd < 0 {
-            let err = io::Error::last_os_error();
-            // SAFETY: fd is ours and unused past this point.
-            unsafe { libc::close(fd) };
-            return Err(err);
-        }
+        let inotify = InotifyFd::new(libc::IN_CLOEXEC | libc::IN_NONBLOCK)?;
+        inotify.add_watch(&dir, WATCH_MASK)?;
 
         let (tx, rx) = async_channel::unbounded::<()>();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
-        let handle = std::thread::spawn(move || {
-            watch_loop(fd, &stop_thread, &tx);
-            // SAFETY: the loop has returned, nothing else touches fd.
-            unsafe { libc::close(fd) };
-        });
+        let handle = std::thread::spawn(move || watch_loop(&inotify, &stop_thread, &tx));
 
         Ok((DesktopWatch { stop, handle: Some(handle) }, rx))
     }
@@ -136,33 +122,23 @@ impl Drop for DesktopWatch {
 
 /// Block on the inotify fd, draining and coalescing events into `tx`, until the
 /// stop flag is set.
-fn watch_loop(fd: i32, stop: &AtomicBool, tx: &async_channel::Sender<()>) {
+fn watch_loop(inotify: &InotifyFd, stop: &AtomicBool, tx: &async_channel::Sender<()>) {
+    let fd = inotify.raw();
     let mut buf = [0u8; 8 * 1024];
     while !stop.load(Ordering::SeqCst) {
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        // SAFETY: a single valid pollfd for the duration of the call.
-        let n = unsafe { libc::poll(&mut pfd, 1, POLL_TIMEOUT_MS) };
-        if n <= 0 {
-            continue;
+        match wait_readable(fd, POLL_TIMEOUT_MS) {
+            Wait::Ready => {}
+            Wait::Timeout => continue,
+            Wait::Failed => return,
         }
         // Drain everything currently readable.
-        loop {
-            // SAFETY: buf is valid for `buf.len()` bytes; a negative return is
-            // handled below.
-            let r = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-            if r <= 0 {
-                break;
-            }
-        }
+        while matches!(read_raw(fd, &mut buf), Some(n) if n > 0) {}
         // Coalesce a burst: keep draining until the directory goes quiet.
         let deadline = Instant::now() + DEBOUNCE;
         while Instant::now() < deadline && !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(20));
-            let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-            // SAFETY: as above.
-            if unsafe { libc::poll(&mut p, 1, 0) } > 0 {
-                // SAFETY: as above.
-                let _ = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if matches!(wait_readable(fd, 0), Wait::Ready) {
+                read_raw(fd, &mut buf);
             }
         }
         if tx.send_blocking(()).is_err() {

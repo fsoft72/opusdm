@@ -21,7 +21,7 @@
 - [x] **`IconField` Inner is a god struct** — 20+ fields mixing layout state, selection state, drag state, 8 listener lists and thumbnail plumbing in one struct makes every interaction handler reach across unrelated concerns. Split into `LayoutState`, `SelectionState` and a small event-emitter helper.
   - File(s): `crates/iconview/src/field.rs`
 
-- [ ] **Two hand-rolled inotify implementations** — `lister/src/watcher.rs` and `hub/src/desktop_files.rs` each implement raw `libc::inotify_*` setup, poll loops and event parsing independently; fixes to one (event parsing, fd lifecycle) will not reach the other. Extract a shared inotify helper (e.g. into `crates/ipc` or a new small crate).
+- [x] **Two hand-rolled inotify implementations** — `lister/src/watcher.rs` and `hub/src/desktop_files.rs` each implement raw `libc::inotify_*` setup, poll loops and event parsing independently; fixes to one (event parsing, fd lifecycle) will not reach the other. Extract a shared inotify helper (e.g. into `crates/ipc` or a new small crate).
   - File(s): `crates/lister/src/watcher.rs`, `crates/hub/src/desktop_files.rs`
 
 - [ ] **Checksums computed by spawning external processes** — `compute_file_hashes` shells out to `sha256sum` and `md5sum` per file, adding process-spawn overhead per file and a hard runtime dependency on coreutils, while `md-5` is already a workspace dependency and sha2 is trivially addable. Hash in-process with a streaming reader.
