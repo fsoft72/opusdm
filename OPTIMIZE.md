@@ -47,7 +47,7 @@
 - [x] **Icon zoom steps are magic numbers with a fragile `unwrap_or(1)` fallback** — `STEPS: [48, 64, 96, 128]` in the zoom handler silently resets to index 1 if `icon_size` was ever set to a value not in the list; the default 64 in `build_window` and `IconField::new` is also repeated by literal. Define the steps and default as shared constants.
   - File(s): `crates/lister/src/window.rs`, `crates/iconview/src/field.rs`
 
-- [ ] **Settings `Welcome` variant handled with a comment, not the type system** — `ToLister::Welcome` is documented as "consumed synchronously, never reaches here" yet still has a match arm every Lister must write. Split the handshake message from the steady-state protocol (separate enum or a dedicated connect function returning the welcome payload).
+- [x] **Settings `Welcome` variant handled with a comment, not the type system** — `ToLister::Welcome` is documented as "consumed synchronously, never reaches here" yet still has a match arm every Lister must write. Split the handshake message from the steady-state protocol (separate enum or a dedicated connect function returning the welcome payload).
   - File(s): `crates/lister/src/window.rs` (`apply_inbound`), `crates/lister/src/client.rs`, `crates/ipc/src/proto.rs`
 
 - [x] **Hub server spawns unnamed, untracked forwarder threads** — Two `std::thread::spawn` forwarder loops (GTK cmd, job progress) plus per-connection reader threads are created without names or join handles; a leaked Lister connection keeps a reader thread forever. Name them consistently and log thread exit, or consolidate the forwarders into the owner loop's `Receiver` set.

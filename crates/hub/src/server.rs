@@ -8,7 +8,7 @@ use crate::settings;
 use crate::desktop_settings;
 use opusdm_fsops::Progress;
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister};
+use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
 use std::collections::{BTreeSet, HashMap};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -266,7 +266,7 @@ fn owner_loop(
                     c.path = initial_path.clone();
                     let _ = send(
                         &mut c.write,
-                        &ToLister::Welcome {
+                        &Welcome {
                             lister_id: ListerId(cid),
                             source: roles.source(),
                             dests: roles.dests(),
@@ -667,15 +667,10 @@ mod tests {
 
         let mut a = connect(&path);
         send(&mut a, &ToHub::Register { pid: 1000, initial_path: "/home/a".into() }).unwrap();
-        let welcome: ToLister = recv(&mut a).unwrap().unwrap();
-        let id_a = match welcome {
-            ToLister::Welcome { lister_id, source, dests, .. } => {
-                assert_eq!(source, None);
-                assert!(dests.is_empty());
-                lister_id
-            }
-            other => panic!("expected Welcome, got {other:?}"),
-        };
+        let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+        assert_eq!(welcome.source, None);
+        assert!(welcome.dests.is_empty());
+        let id_a = welcome.lister_id;
 
         send(&mut a, &ToHub::FocusGained).unwrap();
         let rc: ToLister = recv(&mut a).unwrap().unwrap();
@@ -707,9 +702,9 @@ mod tests {
         let mut a = connect(&path);
         let mut b = connect(&path);
         send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
-        let _wa: ToLister = recv(&mut a).unwrap().unwrap();
+        let _wa: Welcome = recv(&mut a).unwrap().unwrap();
         send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
-        let _wb: ToLister = recv(&mut b).unwrap().unwrap();
+        let _wb: Welcome = recv(&mut b).unwrap().unwrap();
 
         send(&mut a, &ToHub::FocusGained).unwrap();
         let _ra: ToLister = recv(&mut a).unwrap().unwrap();
@@ -795,7 +790,7 @@ mod tests {
         let handle = spawn_server(listener, Box::new(|_p| {}));
         let mut a = connect(&path);
         send(&mut a, &ToHub::Register { pid: 9, initial_path: "/a".into() }).unwrap();
-        let _wa: ToLister = recv(&mut a).unwrap().unwrap();
+        let _wa: Welcome = recv(&mut a).unwrap().unwrap();
         send(&mut a, &ToHub::Goodbye).unwrap();
         drop(a);
         let mut saw_gone = false;

@@ -2,7 +2,7 @@
 //! forwards every `ToLister` onto an async channel the GTK loop drains.
 
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::{ListerId, Settings, ToHub, ToLister};
+use opusdm_ipc::{ListerId, Settings, ToHub, ToLister, Welcome};
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -52,16 +52,10 @@ impl Client {
     ) -> io::Result<(Client, ListerId, Roles, Settings)> {
         let mut stream = UnixStream::connect(sock_path)?;
         send(&mut stream, &ToHub::Register { pid, initial_path: initial_path.to_path_buf() })?;
-        let welcome: ToLister = recv(&mut stream)?
+        let welcome: Welcome = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
-        let (id, roles, settings) = match welcome {
-            ToLister::Welcome { lister_id, source, dests, source_locked, settings } => {
-                (lister_id, Roles { source, dests, source_locked }, settings)
-            }
-            other => {
-                return Err(io::Error::other(format!("expected Welcome, got {other:?}")));
-            }
-        };
+        let Welcome { lister_id: id, source, dests, source_locked, settings } = welcome;
+        let roles = Roles { source, dests, source_locked };
         let reader_stream = stream.try_clone()?;
         let inbox = start_reader(reader_stream);
         Ok((
@@ -110,7 +104,7 @@ pub fn start_reader(mut stream: UnixStream) -> async_channel::Receiver<Inbound> 
 mod tests {
     use super::*;
     use opusdm_ipc::frame::{recv, send};
-    use opusdm_ipc::{ListerId, ToHub, ToLister};
+    use opusdm_ipc::{ListerId, ToHub, ToLister, Welcome};
     use std::os::unix::net::UnixListener;
 
     #[test]
@@ -123,7 +117,7 @@ mod tests {
             let (mut s, _) = listener.accept().unwrap();
             let got: ToHub = recv(&mut s).unwrap().unwrap();
             assert!(matches!(got, ToHub::Register { pid: 77, .. }));
-            send(&mut s, &ToLister::Welcome {
+            send(&mut s, &Welcome {
                 lister_id: ListerId(5),
                 source: Some(ListerId(5)),
                 dests: vec![],
@@ -156,7 +150,7 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
             let _got: ToHub = recv(&mut s).unwrap().unwrap();
-            send(&mut s, &ToLister::Welcome {
+            send(&mut s, &Welcome {
                 lister_id: ListerId(1), source: None, dests: vec![],
                 source_locked: false,
                 settings: opusdm_ipc::Settings::default(),

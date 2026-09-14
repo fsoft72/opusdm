@@ -1005,9 +1005,6 @@ impl Ui {
             ToLister::ConflictPrompt { req_id, path, src, dst, .. } => {
                 crate::actions::on_conflict(self, req_id, &path, src, dst);
             }
-            ToLister::Welcome { .. } => {
-                // Consumed synchronously in Client::connect(); never reaches here.
-            }
             ToLister::SettingsUpdate(new_settings) => {
                 let names_changed = {
                     let old = self.hub.settings.borrow();

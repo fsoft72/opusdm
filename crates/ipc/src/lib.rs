@@ -14,6 +14,6 @@ pub use desktop::{
 };
 pub use proto::{
     Appearance, Behavior, ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role,
-    Settings, ToHub, ToLister, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
+    Settings, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
 };
 pub use theme::{IconSetId, Theme};

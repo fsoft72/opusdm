@@ -6,16 +6,13 @@
 
 use opusdm_hub::server::spawn_server;
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::{Op, ToHub, ToLister};
+use opusdm_ipc::{Op, ToHub, ToLister, Welcome};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
 fn reg(s: &mut UnixStream, pid: u32, path: &str) -> opusdm_ipc::ListerId {
     send(s, &ToHub::Register { pid, initial_path: path.into() }).unwrap();
-    match recv::<_, ToLister>(s).unwrap().unwrap() {
-        ToLister::Welcome { lister_id, .. } => lister_id,
-        other => panic!("{other:?}"),
-    }
+    recv::<_, Welcome>(s).unwrap().unwrap().lister_id
 }
 
 #[test]

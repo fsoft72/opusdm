@@ -219,18 +219,22 @@ pub struct Settings {
     pub behavior: Behavior,
 }
 
-/// Messages the hub sends to a Lister.
+/// Reply to `Register`, sent once as its own frame before the connection
+/// switches to steady-state `ToLister` traffic. Kept out of `ToLister` so the
+/// handshake can't be represented as a message every `ToLister` match has to
+/// account for (and then never see, since `Client::connect` consumes it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Welcome {
+    pub lister_id: ListerId,
+    pub source: Option<ListerId>,
+    pub dests: Vec<ListerId>,
+    pub source_locked: bool,
+    pub settings: Settings,
+}
+
+/// Messages the hub sends to a Lister once it is registered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToLister {
-    /// Reply to `Register`; carries the assigned id, current roles, and the
-    /// hub's current settings.
-    Welcome {
-        lister_id: ListerId,
-        source: Option<ListerId>,
-        dests: Vec<ListerId>,
-        source_locked: bool,
-        settings: Settings,
-    },
     /// Reply to `Ping`.
     Pong,
     /// Ask this Lister to raise and focus its window.
@@ -337,14 +341,22 @@ mod tests {
     }
 
     #[test]
-    fn every_tolister_variant_roundtrips() {
-        roundtrip_tolister(ToLister::Welcome {
+    fn welcome_roundtrips() {
+        let msg = Welcome {
             lister_id: ListerId(1),
             source: Some(ListerId(1)),
             dests: vec![],
             source_locked: false,
             settings: Settings::default(),
-        });
+        };
+        let mut buf = Vec::new();
+        send(&mut buf, &msg).unwrap();
+        let got: Option<Welcome> = recv(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(got, Some(msg));
+    }
+
+    #[test]
+    fn every_tolister_variant_roundtrips() {
         roundtrip_tolister(ToLister::Pong);
         roundtrip_tolister(ToLister::Present);
         roundtrip_tolister(ToLister::RoleChanged {
