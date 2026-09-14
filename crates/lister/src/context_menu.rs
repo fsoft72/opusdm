@@ -51,11 +51,11 @@ pub fn show_context_menu(
         let btn = menu_button("Copy (Source -> Dest)");
         btn.connect_clicked(move |_| {
             pop.popdown();
-            if let Err(msg) = crate::actions::resolve_copy_target(&ui.roles.borrow(), ui.id) {
+            if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
                 crate::actions::flash(&ui, &msg);
                 return;
             }
-            let _ = ui.client.send(&ToHub::RunJob {
+            let _ = ui.hub.client.send(&ToHub::RunJob {
                 op: Op::Copy,
                 srcs: vec![target_path.clone()],
                 dest_dir: None,
@@ -95,11 +95,11 @@ pub fn show_context_menu(
         let btn = menu_button("Move (Source -> Dest)");
         btn.connect_clicked(move |_| {
             pop.popdown();
-            if let Err(msg) = crate::actions::resolve_copy_target(&ui.roles.borrow(), ui.id) {
+            if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
                 crate::actions::flash(&ui, &msg);
                 return;
             }
-            let _ = ui.client.send(&ToHub::RunJob {
+            let _ = ui.hub.client.send(&ToHub::RunJob {
                 op: Op::Move,
                 srcs: vec![target_path.clone()],
                 dest_dir: None,

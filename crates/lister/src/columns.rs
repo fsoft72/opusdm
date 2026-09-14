@@ -99,8 +99,8 @@ pub fn add_column(
 
                     // If clicked item is not selected, select it
                     let pos = item.position();
-                    if !ui.selection.is_selected(pos) {
-                        ui.selection.select_item(pos, true);
+                    if !ui.view.selection.is_selected(pos) {
+                        ui.view.selection.select_item(pos, true);
                     }
 
                     let target_path = ui.cwd_path().join(&row.name);
@@ -113,7 +113,7 @@ pub fn add_column(
             // Drag source: read the row bound to this cell right now, not the
             // selection model - GtkColumnView applies a click's selection
             // change on release, which lands after the drag threshold has
-            // already fired `connect_prepare`, so trusting `ui.selection`
+            // already fired `connect_prepare`, so trusting `ui.view.selection`
             // here would see stale (often empty) state.
             {
                 let item_weak = item.downgrade();
@@ -139,7 +139,7 @@ pub fn add_column(
                         return None;
                     };
                     let pos = item.position();
-                    let paths = if ui.selection.is_selected(pos) {
+                    let paths = if ui.view.selection.is_selected(pos) {
                         ui.selected_paths()
                     } else {
                         vec![ui.cwd_path().join(&row.name)]
@@ -212,7 +212,7 @@ pub fn add_column(
             ColKind::Name => {
                 let (icon_set, indicators) = ui_getter_bind()
                     .map(|ui| {
-                        let s = ui.settings.borrow();
+                        let s = ui.hub.settings.borrow();
                         (s.theme.icon_set.clone(), s.appearance.type_indicators)
                     })
                     .unwrap_or((opusdm_ipc::IconSetId::None, false));

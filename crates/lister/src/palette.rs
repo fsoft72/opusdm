@@ -64,18 +64,18 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
             ui.toggle_terminal();
         }
         "select_all" => {
-            ui.selection.select_all();
+            ui.view.selection.select_all();
         }
         "deselect_all" => {
-            ui.selection.unselect_all();
+            ui.view.selection.unselect_all();
         }
         "invert_selection" => {
-            let n = ui.selection.n_items();
+            let n = ui.view.selection.n_items();
             for i in 0..n {
-                if ui.selection.is_selected(i) {
-                    ui.selection.unselect_item(i);
+                if ui.view.selection.is_selected(i) {
+                    ui.view.selection.unselect_item(i);
                 } else {
-                    ui.selection.select_item(i, false);
+                    ui.view.selection.select_item(i, false);
                 }
             }
         }
@@ -83,11 +83,11 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "Select files matching pattern (e.g. *.rs)", "*", move |pattern| {
-                let n = ui_clone.selection.n_items();
+                let n = ui_clone.view.selection.n_items();
                 for i in 0..n {
                     if let Some(row) = ui_clone.row_at(i) {
                         if glob_match(&pattern, &row.name) {
-                            ui_clone.selection.select_item(i, false);
+                            ui_clone.view.selection.select_item(i, false);
                         }
                     }
                 }
@@ -97,23 +97,23 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "Deselect files matching pattern (e.g. *.tmp)", "*", move |pattern| {
-                let n = ui_clone.selection.n_items();
+                let n = ui_clone.view.selection.n_items();
                 for i in 0..n {
                     if let Some(row) = ui_clone.row_at(i) {
                         if glob_match(&pattern, &row.name) {
-                            ui_clone.selection.unselect_item(i);
+                            ui_clone.view.selection.unselect_item(i);
                         }
                     }
                 }
             });
         }
         "toggle_hidden" => {
-            let active = !ui.show_hidden.get();
-            ui.show_hidden.set(active);
+            let active = !ui.view.show_hidden.get();
+            ui.view.show_hidden.set(active);
             ui.reload();
         }
         "copy" => {
-            if let Err(msg) = crate::actions::resolve_copy_target(&ui.roles.borrow(), ui.id) {
+            if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
                 crate::actions::flash(ui, &msg);
                 return;
             }
@@ -122,14 +122,14 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 crate::actions::flash(ui, "nothing selected");
                 return;
             }
-            let _ = ui.client.send(&ToHub::RunJob {
+            let _ = ui.hub.client.send(&ToHub::RunJob {
                 op: Op::Copy,
                 srcs,
                 dest_dir: None,
             });
         }
         "move" => {
-            if let Err(msg) = crate::actions::resolve_copy_target(&ui.roles.borrow(), ui.id) {
+            if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
                 crate::actions::flash(ui, &msg);
                 return;
             }
@@ -138,7 +138,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 crate::actions::flash(ui, "nothing selected");
                 return;
             }
-            let _ = ui.client.send(&ToHub::RunJob {
+            let _ = ui.hub.client.send(&ToHub::RunJob {
                 op: Op::Move,
                 srcs,
                 dest_dir: None,
@@ -169,7 +169,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "New directory name", "", move |name| {
-                let _ = ui_clone.client.send(&ToHub::RunJob {
+                let _ = ui_clone.hub.client.send(&ToHub::RunJob {
                     op: Op::MakeDir { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui_clone.cwd_path()),
@@ -180,7 +180,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "New file name", "", move |name| {
-                let _ = ui_clone.client.send(&ToHub::RunJob {
+                let _ = ui_clone.hub.client.send(&ToHub::RunJob {
                     op: Op::NewFile { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui_clone.cwd_path()),
@@ -239,19 +239,19 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
             crate::tools::open_compare_dialog(ui);
         }
         "set_source" => {
-            let _ = ui.client.send(&ToHub::SetRole(Role::Source));
+            let _ = ui.hub.client.send(&ToHub::SetRole(Role::Source));
         }
         "set_dest" => {
-            let _ = ui.client.send(&ToHub::SetRole(Role::Dest));
+            let _ = ui.hub.client.send(&ToHub::SetRole(Role::Dest));
         }
         "set_none" => {
-            let _ = ui.client.send(&ToHub::SetRole(Role::None));
+            let _ = ui.hub.client.send(&ToHub::SetRole(Role::None));
         }
         "toggle_pin" => {
-            let active = !ui.role_lock_btn.is_active();
-            ui.role_lock_btn.set_active(active);
+            let active = !ui.status_bar.role_lock_btn.is_active();
+            ui.status_bar.role_lock_btn.set_active(active);
             let msg = if active { ToHub::LockRole } else { ToHub::UnlockRole };
-            let _ = ui.client.send(&msg);
+            let _ = ui.hub.client.send(&msg);
         }
         _ => {}
     }

@@ -34,7 +34,7 @@ pub fn attach(ui: &Rc<Ui>) {
     let newfile_btn = crate::icons::icon_button(crate::icons::SVG_NEWFILE, "New File", icon_size);
     let rename_btn = crate::icons::icon_button(crate::icons::SVG_RENAME, "Rename", icon_size);
     
-    let is_hidden_active = ui.show_hidden.get();
+    let is_hidden_active = ui.view.show_hidden.get();
     let hidden_btn = crate::icons::icon_toggle_button(
         if is_hidden_active { crate::icons::SVG_EYE } else { crate::icons::SVG_EYE_OFF },
         "Toggle Hidden Files",
@@ -82,7 +82,7 @@ pub fn attach(ui: &Rc<Ui>) {
         let ui = ui.clone();
         hidden_btn.connect_toggled(move |btn| {
             let active = btn.is_active();
-            ui.show_hidden.set(active);
+            ui.view.show_hidden.set(active);
             btn.set_child(Some(&crate::icons::svg_image(
                 if active { crate::icons::SVG_EYE } else { crate::icons::SVG_EYE_OFF },
                 icon_size,
@@ -113,7 +113,7 @@ pub fn attach(ui: &Rc<Ui>) {
             let ui = ui.clone();
             let win = ui.window.clone();
             prompt(&win, "New directory name", "", move |name| {
-                let _ = ui.client.send(&ToHub::RunJob {
+                let _ = ui.hub.client.send(&ToHub::RunJob {
                     op: Op::MakeDir { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui.cwd_path()),
@@ -128,7 +128,7 @@ pub fn attach(ui: &Rc<Ui>) {
             let ui = ui.clone();
             let win = ui.window.clone();
             prompt(&win, "New file name", "", move |name| {
-                let _ = ui.client.send(&ToHub::RunJob {
+                let _ = ui.hub.client.send(&ToHub::RunJob {
                     op: Op::NewFile { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui.cwd_path()),
@@ -171,13 +171,13 @@ pub fn attach(ui: &Rc<Ui>) {
     // cycles SOURCE -> DEST -> NONE.
     {
         let ui = ui.clone();
-        let btn = ui.role_lock_btn.clone();
+        let btn = ui.status_bar.role_lock_btn.clone();
         btn.connect_toggled(move |b| {
-            if ui.role_guard.get() {
+            if ui.status_bar.role_guard.get() {
                 return;
             }
             let msg = if b.is_active() { ToHub::LockRole } else { ToHub::UnlockRole };
-            let _ = ui.client.send(&msg);
+            let _ = ui.hub.client.send(&msg);
         });
     }
 
@@ -188,7 +188,7 @@ pub fn attach(ui: &Rc<Ui>) {
 fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
     let ui = ui.clone();
     btn.connect_clicked(move |_| {
-        if let Err(msg) = resolve_copy_target(&ui.roles.borrow(), ui.id) {
+        if let Err(msg) = resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
             flash(&ui, &msg);
             return;
         }
@@ -214,7 +214,7 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
                 .collect();
             match crate::archive::extract_items_to_dir(&arch, &full_items, &temp_extract) {
                 Ok(extracted) => {
-                    let _ = ui.client.send(&ToHub::RunJob {
+                    let _ = ui.hub.client.send(&ToHub::RunJob {
                         op: op.clone(),
                         srcs: extracted,
                         dest_dir: None,
@@ -230,7 +230,7 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
             flash(&ui, "nothing selected");
             return;
         }
-        let _ = ui.client.send(&ToHub::RunJob {
+        let _ = ui.hub.client.send(&ToHub::RunJob {
             op: op.clone(),
             srcs,
             dest_dir: None, // hub fills this from the DEST Lister's path
@@ -241,15 +241,15 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
 /// Sync the pin control from the hub's role state without re-emitting. Pin
 /// is only usable while this Lister holds a role (SOURCE or DEST).
 pub fn sync_role_buttons(ui: &Rc<Ui>) {
-    ui.role_guard.set(true);
-    let roles = ui.roles.borrow();
-    let has_role = roles.source == Some(ui.id) || roles.is_dest(ui.id);
-    ui.role_lock_btn.set_sensitive(has_role);
-    if !has_role && ui.role_lock_btn.is_active() {
-        ui.role_lock_btn.set_active(false);
+    ui.status_bar.role_guard.set(true);
+    let roles = ui.hub.roles.borrow();
+    let has_role = roles.source == Some(ui.hub.id) || roles.is_dest(ui.hub.id);
+    ui.status_bar.role_lock_btn.set_sensitive(has_role);
+    if !has_role && ui.status_bar.role_lock_btn.is_active() {
+        ui.status_bar.role_lock_btn.set_active(false);
     }
     drop(roles);
-    ui.role_guard.set(false);
+    ui.status_bar.role_guard.set(false);
 }
 
 /// Finish a job: clear the line, show errors, reload the view.
@@ -258,9 +258,9 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
         Outcome::Error { message } => flash(ui, &format!("job failed: {message}")),
         _ if !errors.is_empty() => {
             show_error_dialog(ui, errors);
-            ui.job_line.set_text("");
+            ui.status_bar.job_line.set_text("");
         }
-        _ => ui.job_line.set_text(""),
+        _ => ui.status_bar.job_line.set_text(""),
     }
     ui.reload();
 }
@@ -332,7 +332,7 @@ pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: Fi
             ("Cancel", Resolution::Cancel),
         ],
         move |resolution| {
-            let _ = ui.client.send(&ToHub::ConflictReply { req_id, resolution });
+            let _ = ui.hub.client.send(&ToHub::ConflictReply { req_id, resolution });
         },
     );
 }
@@ -354,7 +354,7 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>) {
             if !confirmed {
                 return;
             }
-            let _ = ui.client.send(&ToHub::RunJob {
+            let _ = ui.hub.client.send(&ToHub::RunJob {
                 op: Op::Delete,
                 srcs: srcs.clone(),
                 dest_dir: Some(ui.cwd_path()),
@@ -365,8 +365,8 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>) {
 
 /// Show `text` in the transient message line for a few seconds.
 pub fn flash(ui: &Rc<Ui>, text: &str) {
-    ui.job_line.set_text(text);
-    let line = ui.job_line.clone();
+    ui.status_bar.job_line.set_text(text);
+    let line = ui.status_bar.job_line.clone();
     let expected = text.to_string();
     glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
         if line.text() == expected {

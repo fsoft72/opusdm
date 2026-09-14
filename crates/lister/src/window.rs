@@ -27,55 +27,90 @@ pub enum ViewMode {
     Icons,
 }
 
-/// Everything the window's callbacks need. Shared by `Rc` across Tasks 13-15.
-pub struct Ui {
-    /// The top-level window.
-    pub window: gtk::ApplicationWindow,
+/// This Lister's connection to the hub: identity, role state and the
+/// settings/watch state the hub keeps it in sync with.
+pub struct HubConnection {
     /// Hub connection (send half).
     pub client: Rc<Client>,
     /// This Lister's id.
     pub id: ListerId,
-    /// Current directory.
-    pub cwd: RefCell<PathBuf>,
-    /// Backing store of `BoxedAnyObject`-wrapped `Rc<Row>`.
-    pub store: gio::ListStore,
-    /// Selection model feeding the column view.
-    pub selection: gtk::MultiSelection,
-    /// The file list itself, kept for cursor movement and scrolling.
-    pub column_view: gtk::ColumnView,
-    /// Row the keyboard cursor sits on. Kept in step with the mouse by
-    /// `selection`'s changed signal.
-    pub cursor: Cell<u32>,
-    /// Status line (top bar with D/F/B counts).
-    pub status: gtk::Label,
-    /// Stat bar box (for background color based on role).
-    pub stat_bar: gtk::Box,
-    /// SOURCE / DEST badge.
-    pub role_badge: gtk::Label,
     /// Latest known global roles.
     pub roles: RefCell<Roles>,
-    /// Editable path bar.
-    pub path_entry: gtk::Entry,
-    /// Cached directory totals: (total_dirs, total_files, total_bytes)
-    pub totals: Cell<(u32, u32, u64)>,
+    /// inotify watch on the open directory. `None` when the kernel refused an
+    /// inotify instance (watch limit reached), in which case the Lister simply
+    /// keeps working without auto-refresh.
+    pub watcher: Option<crate::watcher::DirWatcher>,
+    /// Current settings (colors, and whatever else joins later). Updated
+    /// wholesale from `Welcome` and `SettingsUpdate`.
+    pub settings: RefCell<Settings>,
+}
+
+/// The top status bar: D/F/B counts, the role badge and pin, and the
+/// transient message line below the file area.
+pub struct StatusBar {
+    /// Status line (top bar with D/F/B counts).
+    pub label: gtk::Label,
+    /// Stat bar box (for background color based on role).
+    pub container: gtk::Box,
+    /// SOURCE / DEST badge.
+    pub role_badge: gtk::Label,
     /// Pin: locks this Lister's current role against focus changes (stat bar).
     pub role_lock_btn: gtk::ToggleButton,
     /// Guards against feedback while syncing toggle state from the hub.
     pub role_guard: Cell<bool>,
     /// In-window transient message line (errors, job status).
     pub job_line: gtk::Label,
-    /// Empty box the button row is built into by `actions::attach`.
-    pub button_row: gtk::Box,
-    /// Current settings (colors, and whatever else joins later). Updated
-    /// wholesale from `Welcome` and `SettingsUpdate`.
-    pub settings: RefCell<Settings>,
-    /// Whether dotfiles are shown in the file list. Off by default.
-    pub show_hidden: Cell<bool>,
+    /// Cached directory totals: (total_dirs, total_files, total_bytes)
+    pub totals: Cell<(u32, u32, u64)>,
+}
+
+/// The file area: which representation is shown and the model/selection
+/// feeding whichever one is active.
+pub struct ViewState {
+    /// Which view is active.
+    pub mode: Cell<ViewMode>,
+    /// Stack holding the column-view scroller ("details") and the icon field
+    /// ("icons").
+    pub stack: gtk::Stack,
+    /// Reusable icon view, shown in place of the column view in
+    /// `ViewMode::Icons`.
+    pub icon_field: opusdm_iconview::IconField,
+    /// Icon size in the icon view, cycled by Ctrl+scroll.
+    pub icon_size: Cell<i32>,
+    /// The file list itself, kept for cursor movement and scrolling.
+    pub column_view: gtk::ColumnView,
+    /// Selection model feeding the column view.
+    pub selection: gtk::MultiSelection,
+    /// Backing store of `BoxedAnyObject`-wrapped `Rc<Row>`.
+    pub store: gio::ListStore,
+    /// Row the keyboard cursor sits on. Kept in step with the mouse by
+    /// `selection`'s changed signal.
+    pub cursor: Cell<u32>,
     /// Filter bar widget (search entry, filter model, etc.)
     pub filter_bar: Rc<crate::filter::FilterBar>,
     /// Filter list model wrapping store.
     #[allow(dead_code)]
     pub filter_model: gtk::FilterListModel,
+    /// Whether dotfiles are shown in the file list. Off by default.
+    pub show_hidden: Cell<bool>,
+}
+
+/// Everything the window's callbacks need. Shared by `Rc` across Tasks 13-15.
+pub struct Ui {
+    /// The top-level window.
+    pub window: gtk::ApplicationWindow,
+    /// Hub connection and role/settings state.
+    pub hub: HubConnection,
+    /// Current directory.
+    pub cwd: RefCell<PathBuf>,
+    /// The file area's model, selection and view-mode state.
+    pub view: ViewState,
+    /// Top status bar widgets and cached totals.
+    pub status_bar: StatusBar,
+    /// Editable path bar.
+    pub path_entry: gtk::Entry,
+    /// Empty box the button row is built into by `actions::attach`.
+    pub button_row: gtk::Box,
     /// Active Quick Look preview window, if open.
     pub preview_win: RefCell<Option<Rc<crate::preview::PreviewWindow>>>,
     /// Quake-style dropdown terminal drawer.
@@ -84,20 +119,6 @@ pub struct Ui {
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
     pub css_provider: gtk::CssProvider,
-    /// inotify watch on the open directory. `None` when the kernel refused an
-    /// inotify instance (watch limit reached), in which case the Lister simply
-    /// keeps working without auto-refresh.
-    pub watcher: Option<crate::watcher::DirWatcher>,
-    /// Reusable icon view, shown in place of the column view in
-    /// `ViewMode::Icons`.
-    pub icon_field: opusdm_iconview::IconField,
-    /// Which view is active.
-    pub view_mode: Cell<ViewMode>,
-    /// Stack holding the column-view scroller ("details") and the icon field
-    /// ("icons").
-    pub view_stack: gtk::Stack,
-    /// Icon size in the icon view, cycled by Ctrl+scroll.
-    pub icon_size: Cell<i32>,
 }
 
 /// Build and run the window application.
@@ -400,35 +421,41 @@ fn build_window(
 
     let ui = Rc::new(Ui {
         window: window.clone(),
-        client,
-        id,
+        hub: HubConnection {
+            client,
+            id,
+            roles: RefCell::new(roles),
+            watcher,
+            settings: RefCell::new(settings),
+        },
         cwd: RefCell::new(PathBuf::from("/")),
-        store,
-        filter_bar: filter_bar.clone(),
-        filter_model,
-        selection: selection.clone(),
-        column_view: column_view.clone(),
-        cursor: Cell::new(0),
-        status: stat_info,
-        stat_bar: stat_bar.clone(),
-        role_badge,
-        roles: RefCell::new(roles),
+        view: ViewState {
+            mode: Cell::new(ViewMode::Details),
+            stack: view_stack.clone(),
+            icon_field: icon_field.clone(),
+            icon_size: Cell::new(64),
+            column_view: column_view.clone(),
+            selection: selection.clone(),
+            store,
+            cursor: Cell::new(0),
+            filter_bar: filter_bar.clone(),
+            filter_model,
+            show_hidden: Cell::new(false),
+        },
+        status_bar: StatusBar {
+            label: stat_info,
+            container: stat_bar.clone(),
+            role_badge,
+            role_lock_btn: pin_btn,
+            role_guard: Cell::new(false),
+            job_line,
+            totals: Cell::new((0, 0, 0)),
+        },
         path_entry: path_entry.clone(),
-        totals: Cell::new((0, 0, 0)),
-        role_lock_btn: pin_btn,
-        role_guard: Cell::new(false),
+        button_row: button_row.clone(),
         preview_win: RefCell::new(None),
         terminal: terminal.clone(),
-        job_line,
-        button_row: button_row.clone(),
-        settings: RefCell::new(settings),
-        show_hidden: Cell::new(false),
         css_provider,
-        watcher,
-        icon_field: icon_field.clone(),
-        view_mode: Cell::new(ViewMode::Details),
-        view_stack: view_stack.clone(),
-        icon_size: Cell::new(64),
     });
 
     // Drain coalesced watch notices on the GTK thread.
@@ -448,7 +475,7 @@ fn build_window(
     {
         let ui = ui.clone();
         star_btn.connect_clicked(move |_| {
-            let _ = ui.client.send(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
+            let _ = ui.hub.client.send(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
         });
     }
 
@@ -460,11 +487,11 @@ fn build_window(
         let ui_for_click = ui.clone();
         let gesture = gtk::GestureClick::new();
         gesture.connect_released(move |_, _, _, _| {
-            let roles = ui_for_click.roles.borrow();
-            let is_source = roles.source == Some(ui_for_click.id);
-            let is_dest = roles.is_dest(ui_for_click.id);
+            let roles = ui_for_click.hub.roles.borrow();
+            let is_source = roles.source == Some(ui_for_click.hub.id);
+            let is_dest = roles.is_dest(ui_for_click.hub.id);
             let source_unreachable =
-                roles.source_locked && roles.source != Some(ui_for_click.id);
+                roles.source_locked && roles.source != Some(ui_for_click.hub.id);
             drop(roles);
             let next = if is_source {
                 Role::Dest
@@ -475,9 +502,9 @@ fn build_window(
             } else {
                 Role::Source
             };
-            let _ = ui_for_click.client.send(&ToHub::SetRole(next));
+            let _ = ui_for_click.hub.client.send(&ToHub::SetRole(next));
         });
-        ui.role_badge.add_controller(gesture);
+        ui.status_bar.role_badge.add_controller(gesture);
     }
 
     // Navigation.
@@ -554,7 +581,7 @@ fn build_window(
         let ui = ui.clone();
         let focus = gtk::EventControllerFocus::new();
         focus.connect_enter(move |_| {
-            let _ = ui.client.send(&ToHub::FocusGained);
+            let _ = ui.hub.client.send(&ToHub::FocusGained);
         });
         window.add_controller(focus);
     }
@@ -564,7 +591,7 @@ fn build_window(
         let ui = ui.clone();
         window.connect_close_request(move |_| {
             crate::dlog!("close request, sending Goodbye to hub");
-            let _ = ui.client.send(&ToHub::Goodbye);
+            let _ = ui.hub.client.send(&ToHub::Goodbye);
             glib::Propagation::Proceed
         });
     }
@@ -602,8 +629,8 @@ fn build_window(
         let ui = ui.clone();
         view_toggle.connect_toggled(move |b| {
             let on = b.is_active();
-            ui.view_mode.set(if on { ViewMode::Icons } else { ViewMode::Details });
-            ui.view_stack
+            ui.view.mode.set(if on { ViewMode::Icons } else { ViewMode::Details });
+            ui.view.stack
                 .set_visible_child_name(if on { "icons" } else { "details" });
             if on {
                 ui.refresh_icon_view();
@@ -612,8 +639,8 @@ fn build_window(
     }
 
     // Icon-view callbacks: reuse the column view's handlers where they exist.
-    crate::dnd::attach_field(&ui, &ui.icon_field);
-    let icon_field = ui.icon_field.clone();
+    crate::dnd::attach_field(&ui, &ui.view.icon_field);
+    let icon_field = ui.view.icon_field.clone();
     {
         let ui = ui.clone();
         icon_field.connect_activate(move |i| ui.activate_row(i as u32));
@@ -625,7 +652,7 @@ fn build_window(
             let Some(entry) = field.entry(i) else { return };
             let new_path = ui.cwd_path().join(&new_name);
             if let Err(e) = std::fs::rename(&entry.path, &new_path) {
-                ui.job_line.set_text(&format!("rename failed: {e}"));
+                ui.status_bar.job_line.set_text(&format!("rename failed: {e}"));
             } else {
                 ui.rename_row(&entry.name, &new_name);
             }
@@ -648,10 +675,10 @@ fn build_window(
         let field = icon_field.clone();
         icon_field.connect_zoom_requested(move |delta| {
             const STEPS: [i32; 4] = [48, 64, 96, 128];
-            let cur = ui.icon_size.get();
+            let cur = ui.view.icon_size.get();
             let idx = STEPS.iter().position(|&s| s == cur).unwrap_or(1) as i32;
             let next = (idx + delta).clamp(0, STEPS.len() as i32 - 1) as usize;
-            ui.icon_size.set(STEPS[next]);
+            ui.view.icon_size.set(STEPS[next]);
             field.set_icon_size(STEPS[next]);
         });
     }
@@ -662,12 +689,12 @@ fn build_window(
 impl Ui {
     /// Reveal and focus the filter bar.
     pub fn reveal_filter(&self) {
-        self.filter_bar.reveal();
+        self.view.filter_bar.reveal();
     }
 
     /// Dismiss and reset the filter bar.
     pub fn dismiss_filter(&self) {
-        self.filter_bar.dismiss();
+        self.view.filter_bar.dismiss();
     }
 
     /// Toggle or open Quick Look preview for the currently selected item.
@@ -721,7 +748,7 @@ impl Ui {
             match crate::archive::read_archive_rows(&arch, &inner) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.job_line.set_text(&format!("cannot read archive {}: {e}", arch.display()));
+                    self.status_bar.job_line.set_text(&format!("cannot read archive {}: {e}", arch.display()));
                     return;
                 }
             }
@@ -729,7 +756,7 @@ impl Ui {
             match read_dir_rows(dir) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.job_line.set_text(&format!("cannot open {}: {e}", dir.display()));
+                    self.status_bar.job_line.set_text(&format!("cannot open {}: {e}", dir.display()));
                     return;
                 }
             }
@@ -743,7 +770,7 @@ impl Ui {
             self.terminal.sync_cwd(dir);
         }
         *self.cwd.borrow_mut() = dir.to_path_buf();
-        let show_hidden = self.show_hidden.get();
+        let show_hidden = self.view.show_hidden.get();
         let mut total_dirs = 0u32;
         let mut total_files = 0u32;
         let mut total_bytes = 0u64;
@@ -764,42 +791,42 @@ impl Ui {
             new_items.push(BoxedAnyObject::new(Rc::new(row)));
         }
         self.sync_watch(dir);
-        self.totals.set((total_dirs, total_files, total_bytes));
+        self.status_bar.totals.set((total_dirs, total_files, total_bytes));
         // A new listing invalidates the old cursor row.
-        self.cursor.set(0);
-        let old_len = self.store.n_items();
-        self.store.splice(0, old_len, &new_items);
+        self.view.cursor.set(0);
+        let old_len = self.view.store.n_items();
+        self.view.store.splice(0, old_len, &new_items);
         self.window.set_title(Some(&dir.to_string_lossy()));
         crate::dlog!("navigate_to {} done: {} items", dir.display(), new_items.len());
         self.refresh_path_entry();
         self.update_status();
         self.refresh_icon_view();
-        let _ = self.client.send(&ToHub::PathChanged(dir.to_path_buf()));
+        let _ = self.hub.client.send(&ToHub::PathChanged(dir.to_path_buf()));
     }
 
     /// Rebuild the icon view's entries from the current sorted model. A no-op
     /// unless the icon view is the active one.
     pub fn refresh_icon_view(self: &Rc<Self>) {
-        if self.view_mode.get() != ViewMode::Icons {
+        if self.view.mode.get() != ViewMode::Icons {
             return;
         }
         let dir = self.cwd.borrow().clone();
-        let n = self.selection.n_items();
+        let n = self.view.selection.n_items();
         let mut entries = Vec::with_capacity(n as usize);
         for i in 0..n {
             if let Some(row) = self.row_at(i) {
                 entries.push(crate::model::row_to_entry(&row, &dir));
             }
         }
-        self.icon_field.set_entries(&entries);
+        self.view.icon_field.set_entries(&entries);
     }
 
     /// Rename one row in the store in place, without re-reading the
     /// directory. Falls back to a full `reload` if the row is gone (e.g. it
     /// was removed by something else between the rename and this call).
     pub fn rename_row(self: &Rc<Self>, old_name: &str, new_name: &str) {
-        for i in 0..self.store.n_items() {
-            let Some(item) = self.store.item(i) else { continue };
+        for i in 0..self.view.store.n_items() {
+            let Some(item) = self.view.store.item(i) else { continue };
             let Some(boxed) = item.downcast_ref::<BoxedAnyObject>() else { continue };
             let row = boxed.borrow::<Rc<Row>>();
             if row.name != old_name {
@@ -808,12 +835,12 @@ impl Ui {
             let mut updated = (**row).clone();
             updated.name = new_name.to_string();
             drop(row);
-            self.store.splice(i, 1, &[BoxedAnyObject::new(Rc::new(updated))]);
+            self.view.store.splice(i, 1, &[BoxedAnyObject::new(Rc::new(updated))]);
             self.refresh_icon_view();
             self.update_status();
-            for j in 0..self.selection.n_items() {
+            for j in 0..self.view.selection.n_items() {
                 if self.row_at(j).is_some_and(|r| r.name == new_name) {
-                    self.selection.select_item(j, true);
+                    self.view.selection.select_item(j, true);
                     break;
                 }
             }
@@ -826,9 +853,9 @@ impl Ui {
     /// setting change) by resplicing the store's current rows, without
     /// touching disk.
     pub fn touch_rows(self: &Rc<Self>) {
-        let n = self.store.n_items();
-        let items: Vec<_> = (0..n).filter_map(|i| self.store.item(i)).collect();
-        self.store.splice(0, n, &items);
+        let n = self.view.store.n_items();
+        let items: Vec<_> = (0..n).filter_map(|i| self.view.store.item(i)).collect();
+        self.view.store.splice(0, n, &items);
         self.refresh_icon_view();
     }
 
@@ -840,10 +867,10 @@ impl Ui {
         if selected.is_empty() {
             return;
         }
-        for i in 0..self.selection.n_items() {
+        for i in 0..self.view.selection.n_items() {
             if let Some(row) = self.row_at(i) {
                 if selected.contains(&row.name) {
-                    self.selection.select_item(i, false);
+                    self.view.selection.select_item(i, false);
                 }
             }
         }
@@ -858,8 +885,8 @@ impl Ui {
     /// Names of all currently selected rows.
     pub fn selected_names(&self) -> Vec<String> {
         let mut names = Vec::new();
-        for i in 0..self.selection.n_items() {
-            if self.selection.is_selected(i) {
+        for i in 0..self.view.selection.n_items() {
+            if self.view.selection.is_selected(i) {
                 if let Some(row) = self.row_at(i) {
                     names.push(row.name.clone());
                 }
@@ -870,7 +897,7 @@ impl Ui {
 
     /// Retrieve the row model at `position` in the visual list.
     pub fn row_at(&self, position: u32) -> Option<Rc<Row>> {
-        self.selection
+        self.view.selection
             .item(position)
             .and_downcast::<BoxedAnyObject>()
             .map(|o| o.borrow::<Rc<Row>>().clone())
@@ -887,13 +914,13 @@ impl Ui {
 
     /// Recompute the status line and the role badge.
     pub fn update_status(&self) {
-        let (total_dirs, total_files, total_bytes) = self.totals.get();
+        let (total_dirs, total_files, total_bytes) = self.status_bar.totals.get();
         let mut sel_dirs = 0u32;
         let mut sel_files = 0u32;
         let mut sel_bytes = 0u64;
 
-        for i in 0..self.selection.n_items() {
-            if self.selection.is_selected(i) {
+        for i in 0..self.view.selection.n_items() {
+            if self.view.selection.is_selected(i) {
                 if let Some(row) = self.row_at(i) {
                     if row.is_dir {
                         sel_dirs += 1;
@@ -905,25 +932,25 @@ impl Ui {
             }
         }
 
-        let roles = self.roles.borrow();
-        let (badge, stat_class) = if roles.source == Some(self.id) {
+        let roles = self.hub.roles.borrow();
+        let (badge, stat_class) = if roles.source == Some(self.hub.id) {
             ("SOURCE", "stat-source")
-        } else if roles.is_dest(self.id) {
+        } else if roles.is_dest(self.hub.id) {
             ("DEST", "stat-dest")
         } else {
             ("NONE", "")
         };
-        self.role_badge.set_text(badge);
+        self.status_bar.role_badge.set_text(badge);
 
         // Update stat bar background color based on role.
-        self.stat_bar.remove_css_class("stat-source");
-        self.stat_bar.remove_css_class("stat-dest");
+        self.status_bar.container.remove_css_class("stat-source");
+        self.status_bar.container.remove_css_class("stat-dest");
         if !stat_class.is_empty() {
-            self.stat_bar.add_css_class(stat_class);
+            self.status_bar.container.add_css_class(stat_class);
         }
         drop(roles);
 
-        self.status.set_text(&format!(
+        self.status_bar.label.set_text(&format!(
             "D: [{}/{}]  F: [{}/{}]  B: [{}/{}]",
             sel_dirs, total_dirs,
             sel_files, total_files,
@@ -936,7 +963,7 @@ impl Ui {
         crate::dlog!("hub msg: {msg:?}");
         match msg {
             ToLister::RoleChanged { source, dests, source_locked } => {
-                *self.roles.borrow_mut() = Roles { source, dests, source_locked };
+                *self.hub.roles.borrow_mut() = Roles { source, dests, source_locked };
                 self.update_status();
                 crate::actions::sync_role_buttons(self);
             }
@@ -960,13 +987,13 @@ impl Ui {
             }
             ToLister::SettingsUpdate(new_settings) => {
                 let names_changed = {
-                    let old = self.settings.borrow();
+                    let old = self.hub.settings.borrow();
                     old.theme.icon_set != new_settings.theme.icon_set
                         || old.appearance.type_indicators != new_settings.appearance.type_indicators
                 };
-                *self.settings.borrow_mut() = new_settings;
+                *self.hub.settings.borrow_mut() = new_settings;
                 self.update_css_for_colors();
-                self.icon_field.set_icon_set(self.settings.borrow().theme.icon_set.clone());
+                self.view.icon_field.set_icon_set(self.hub.settings.borrow().theme.icon_set.clone());
                 // Auto-refresh may have just been switched on or off.
                 let cwd = self.cwd.borrow().clone();
                 self.sync_watch(&cwd);
@@ -986,7 +1013,7 @@ impl Ui {
         match action {
             Action::Command(id) => crate::palette::execute_command(self, id),
             Action::Move(motion) => self.move_cursor(motion),
-            Action::Enter => self.activate_row(self.cursor.get()),
+            Action::Enter => self.activate_row(self.view.cursor.get()),
             Action::ToggleSelectAndAdvance => self.toggle_select_and_advance(),
             Action::SwapRoleFocus => self.swap_role_focus(),
             Action::OpenPalette => crate::palette::open_command_palette(self),
@@ -1008,17 +1035,17 @@ impl Ui {
     /// Escape unwinds one layer at a time: filter bar, then terminal drawer,
     /// then - only once the focus is already back on the list - the selection.
     fn dismiss_topmost(self: &Rc<Self>) {
-        if self.filter_bar.container.is_visible() {
+        if self.view.filter_bar.container.is_visible() {
             self.dismiss_filter();
         } else if self.terminal.container.is_visible() {
             self.terminal.container.set_visible(false);
         } else if is_editing(&self.window) {
             // Escape out of the path entry without touching the selection.
         } else {
-            self.selection.unselect_all();
+            self.view.selection.unselect_all();
             return;
         }
-        self.column_view.grab_focus();
+        self.view.column_view.grab_focus();
     }
 
     /// Open the row at `position`: descend into a directory, step into an
@@ -1057,47 +1084,48 @@ impl Ui {
     /// selection, the way arrow keys already behave.
     pub fn move_cursor(&self, motion: crate::keys::Motion) {
         use crate::keys::Motion;
-        let n = self.selection.n_items();
+        let n = self.view.selection.n_items();
         if n == 0 {
             return;
         }
         let last = n - 1;
-        let here = self.cursor.get().min(last);
+        let here = self.view.cursor.get().min(last);
         let pos = match motion {
             Motion::Down => (here + 1).min(last),
             Motion::Up => here.saturating_sub(1),
             Motion::First => 0,
             Motion::Last => last,
         };
-        self.cursor.set(pos);
-        self.selection.select_item(pos, true);
+        self.view.cursor.set(pos);
+        self.view.selection.select_item(pos, true);
         self.scroll_to_cursor();
     }
 
     /// Toggle the row under the cursor and step down, so a run of `Insert`
     /// marks consecutive files the way Directory Opus does.
     pub fn toggle_select_and_advance(&self) {
-        let n = self.selection.n_items();
+        let n = self.view.selection.n_items();
         if n == 0 {
             return;
         }
-        let pos = self.cursor.get().min(n - 1);
-        if self.selection.is_selected(pos) {
-            self.selection.unselect_item(pos);
+        let pos = self.view.cursor.get().min(n - 1);
+        if self.view.selection.is_selected(pos) {
+            self.view.selection.unselect_item(pos);
         } else {
-            self.selection.select_item(pos, false);
+            self.view.selection.select_item(pos, false);
         }
         // Set the cursor after toggling: the selection-changed handler would
         // otherwise drag it back to whatever is selected.
-        self.cursor.set((pos + 1).min(n - 1));
+        self.view.cursor.set((pos + 1).min(n - 1));
         self.scroll_to_cursor();
     }
 
     /// Bring the cursor row into view. `ColumnView::scroll_to` needs GTK 4.12,
     /// so this goes through the `GtkListBase` action available at 4.10.
     fn scroll_to_cursor(&self) {
-        let pos = self.cursor.get();
+        let pos = self.view.cursor.get();
         let _ = self
+            .view
             .column_view
             .activate_action("list.scroll-to-item", Some(&pos.to_variant()));
     }
@@ -1105,10 +1133,10 @@ impl Ui {
     /// Follow the mouse: a plain click leaves exactly one row selected, and the
     /// cursor should continue from there.
     fn sync_cursor_from_selection(&self) {
-        let n = self.selection.n_items();
+        let n = self.view.selection.n_items();
         let mut only = None;
         for i in 0..n {
-            if !self.selection.is_selected(i) {
+            if !self.view.selection.is_selected(i) {
                 continue;
             }
             if only.is_some() {
@@ -1117,7 +1145,7 @@ impl Ui {
             only = Some(i);
         }
         if let Some(i) = only {
-            self.cursor.set(i);
+            self.view.cursor.set(i);
         }
     }
 
@@ -1125,28 +1153,28 @@ impl Ui {
     /// first DEST and vice versa; a Lister with no role jumps to SOURCE.
     fn swap_role_focus(self: &Rc<Self>) {
         let target = {
-            let roles = self.roles.borrow();
-            let picked = if roles.source == Some(self.id) {
+            let roles = self.hub.roles.borrow();
+            let picked = if roles.source == Some(self.hub.id) {
                 roles.dests.first().copied()
-            } else if roles.is_dest(self.id) {
+            } else if roles.is_dest(self.hub.id) {
                 roles.source
             } else {
                 roles.source.or_else(|| roles.dests.first().copied())
             };
-            picked.filter(|t| *t != self.id)
+            picked.filter(|t| *t != self.hub.id)
         };
         let Some(target) = target else {
             crate::actions::flash(self, "no other SOURCE/DEST Lister to switch to");
             return;
         };
-        let _ = self.client.send(&ToHub::PresentLister(target));
+        let _ = self.hub.client.send(&ToHub::PresentLister(target));
     }
 
     /// Point the inotify watch at `dir`, or drop it when auto-refresh is off or
     /// the path is a virtual archive (nothing on disk to watch).
     fn sync_watch(&self, dir: &Path) {
-        let Some(watcher) = &self.watcher else { return };
-        let enabled = self.settings.borrow().behavior.auto_refresh;
+        let Some(watcher) = &self.hub.watcher else { return };
+        let enabled = self.hub.settings.borrow().behavior.auto_refresh;
         if enabled && crate::archive::parse_archive_path(dir).is_none() {
             watcher.watch(dir);
         } else {
@@ -1165,28 +1193,28 @@ impl Ui {
         if *self.cwd.borrow() != dir {
             return;
         }
-        let filtering = self.filter_bar.container.is_visible();
-        let query = filtering.then(|| self.filter_bar.entry.text().to_string());
-        let had_focus = filtering && self.filter_bar.entry.has_focus();
+        let filtering = self.view.filter_bar.container.is_visible();
+        let query = filtering.then(|| self.view.filter_bar.entry.text().to_string());
+        let had_focus = filtering && self.view.filter_bar.entry.has_focus();
 
         self.reload();
 
         let Some(query) = query else { return };
-        self.filter_bar.container.set_visible(true);
+        self.view.filter_bar.container.set_visible(true);
         // set_text re-fires "changed", which re-applies the filter.
-        self.filter_bar.entry.set_text(&query);
-        self.filter_bar.entry.set_position(-1);
+        self.view.filter_bar.entry.set_text(&query);
+        self.view.filter_bar.entry.set_position(-1);
         if had_focus {
             // Hiding the entry during the reload took the focus with it.
-            self.filter_bar.entry.grab_focus();
-            self.filter_bar.entry.set_position(-1);
+            self.view.filter_bar.entry.grab_focus();
+            self.view.filter_bar.entry.set_position(-1);
         }
     }
 
     /// Reload the settings-driven stylesheet in place (same provider, new
     /// content) instead of registering a fresh provider each time.
     fn update_css_for_colors(&self) {
-        let s = self.settings.borrow();
+        let s = self.hub.settings.borrow();
         let css_data = crate::theme::generate_css(&s);
         self.css_provider.load_from_data(&css_data);
     }
