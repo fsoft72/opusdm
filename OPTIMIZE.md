@@ -15,7 +15,7 @@
 - [x] **Stop accumulating CSS providers** - Every desktop theme update adds a new display-level `CssProvider` without removing or reusing the previous provider, causing process-lifetime memory growth and an ever-growing cascade of obsolete styles.
   - File(s): `crates/hub/src/toolbar.rs`
 
-- [ ] **Keep blocking socket and disk I/O out of the hub owner loop** - The single owner thread synchronously writes IPC responses to every client and persists settings, so one non-reading client or slow filesystem can stall connection lifecycle, role changes, job progress, and all other clients.
+- [x] **Keep blocking socket and disk I/O out of the hub owner loop** - The single owner thread synchronously writes IPC responses to every client and persists settings, so one non-reading client or slow filesystem can stall connection lifecycle, role changes, job progress, and all other clients.
   - File(s): `crates/hub/src/server.rs`, `crates/hub/src/settings.rs`, `crates/hub/src/desktop_settings.rs`
 
 - [ ] **Add timeouts and output limits to archive commands** - Archive browsing launches `zipinfo`, `unzip`, `tar`, and `7z` with blocking `output()` calls and captures complete output, allowing a hung tool or huge/malicious archive listing to block indefinitely or exhaust memory.

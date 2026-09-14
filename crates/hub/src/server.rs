@@ -138,11 +138,59 @@ enum OwnerMsg {
 }
 
 /// One connected peer. `registered` flips true after `Register`.
+///
+/// Writes go through `tx` to a dedicated writer thread rather than a
+/// blocking `send()` on the owner thread, so a stalled or non-reading
+/// client cannot stall connection lifecycle, role changes, or job
+/// progress for every other Lister. `shutdown` is a separate socket
+/// clone kept only to tear the connection down from `drop_conn`.
 struct Conn {
-    write: UnixStream,
+    tx: Sender<OutMsg>,
+    shutdown: UnixStream,
     registered: bool,
     pid: u32,
     path: PathBuf,
+}
+
+/// Either of the two message types the hub writes to a Lister socket.
+/// `Welcome` is sent exactly once, right after `Register`; everything
+/// else after that is a `ToLister`.
+enum OutMsg {
+    Welcome(Welcome),
+    ToLister(ToLister),
+}
+
+impl From<ToLister> for OutMsg {
+    fn from(msg: ToLister) -> Self {
+        OutMsg::ToLister(msg)
+    }
+}
+
+impl From<Welcome> for OutMsg {
+    fn from(msg: Welcome) -> Self {
+        OutMsg::Welcome(msg)
+    }
+}
+
+/// Messages persisted to disk off the owner thread.
+enum PersistMsg {
+    Settings(opusdm_ipc::Settings),
+    Desktop(DesktopSettings),
+}
+
+/// Owns one Lister's write half; runs on its own thread so a blocking
+/// `send()` (a non-reading peer, a full socket buffer) never stalls the
+/// owner loop.
+fn writer_loop(mut stream: UnixStream, rx: Receiver<OutMsg>) {
+    for msg in rx {
+        let result = match msg {
+            OutMsg::Welcome(w) => send(&mut stream, &w),
+            OutMsg::ToLister(m) => send(&mut stream, &m),
+        };
+        if result.is_err() {
+            break;
+        }
+    }
 }
 
 /// Per-job bookkeeping the owner keeps until `Done`.
@@ -176,6 +224,31 @@ fn owner_loop(
         current_desktop.icon_size
     );
 
+    // Settings/desktop-settings writes go to disk on their own thread so a
+    // slow filesystem cannot stall the owner loop; the owner keeps the
+    // authoritative in-memory copy and only hands off the bytes to persist.
+    let (persist_tx, persist_rx) = channel::<PersistMsg>();
+    std::thread::Builder::new()
+        .name("opusdm-persist".into())
+        .spawn(move || {
+            for msg in persist_rx {
+                match msg {
+                    PersistMsg::Settings(s) => {
+                        if let Err(e) = settings::save_settings(&s) {
+                            eprintln!("opusdm-hub: cannot save settings.json: {e}");
+                        }
+                    }
+                    PersistMsg::Desktop(d) => {
+                        if let Err(e) = desktop_settings::save(&d) {
+                            eprintln!("opusdm-hub: cannot save desktop.json: {e}");
+                        }
+                    }
+                }
+            }
+            opusdm_ipc::debug_log!("hub", "persist thread exiting");
+        })
+        .expect("spawn persist thread");
+
     let (jp_tx, jp_rx) = channel::<(u64, Progress)>();
     {
         let owner_tx = owner_tx.clone();
@@ -207,13 +280,24 @@ fn owner_loop(
                     next_conn += 1;
                     id
                 };
-                let Ok(write) = stream.try_clone() else {
+                let (Ok(write_stream), Ok(shutdown)) =
+                    (stream.try_clone(), stream.try_clone())
+                else {
                     free_conns.insert(cid);
                     continue;
                 };
+                let (tx, writer_rx) = channel::<OutMsg>();
+                let writer_spawned = std::thread::Builder::new()
+                    .name(format!("opusdm-writer-{cid}"))
+                    .spawn(move || writer_loop(write_stream, writer_rx));
+                if let Err(e) = writer_spawned {
+                    eprintln!("opusdm-hub: cannot spawn writer thread for conn {cid}: {e}");
+                    free_conns.insert(cid);
+                    continue;
+                }
                 conns.insert(
                     cid,
-                    Conn { write, registered: false, pid: 0, path: PathBuf::new() },
+                    Conn { tx, shutdown, registered: false, pid: 0, path: PathBuf::new() },
                 );
                 let owner_tx = owner_tx.clone();
                 let spawned = std::thread::Builder::new()
@@ -231,7 +315,7 @@ fn owner_loop(
 
             OwnerMsg::FromLister(cid, ToHub::Ping) => {
                 if let Some(c) = conns.get_mut(&cid) {
-                    let _ = send(&mut c.write, &ToLister::Pong);
+                    let _ = c.tx.send(ToLister::Pong.into());
                 }
             }
 
@@ -241,21 +325,16 @@ fn owner_loop(
 
             OwnerMsg::FromLister(_cid, ToHub::SetDesktopSettings(ds)) => {
                 current_desktop = ds.sanitized();
-                if let Err(e) = desktop_settings::save(&current_desktop) {
-                    eprintln!("opusdm-hub: cannot save desktop.json: {e}");
-                }
+                let _ = persist_tx.send(PersistMsg::Desktop(current_desktop.clone()));
                 let _ = evt_tx.send(HubEvent::DesktopSettingsChanged(current_desktop.clone()));
             }
 
             OwnerMsg::FromLister(_cid, ToHub::SetSettings(mut new_settings)) => {
                 new_settings.theme.background = new_settings.theme.background.sanitized();
                 current_settings = new_settings;
-                if let Err(e) = settings::save_settings(&current_settings) {
-                    eprintln!("opusdm-hub: cannot save settings.json: {e}");
-                }
+                let _ = persist_tx.send(PersistMsg::Settings(current_settings.clone()));
                 for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ =
-                        send(&mut c.write, &ToLister::SettingsUpdate(current_settings.clone()));
+                    let _ = c.tx.send(ToLister::SettingsUpdate(current_settings.clone()).into());
                 }
                 let _ = evt_tx.send(HubEvent::ThemeChanged(current_settings.theme.clone()));
             }
@@ -265,15 +344,15 @@ fn owner_loop(
                     c.registered = true;
                     c.pid = pid;
                     c.path = initial_path.clone();
-                    let _ = send(
-                        &mut c.write,
-                        &Welcome {
+                    let _ = c.tx.send(
+                        Welcome {
                             lister_id: ListerId(cid),
                             source: roles.source(),
                             dests: roles.dests(),
                             source_locked: roles.source_locked(),
                             settings: current_settings.clone(),
-                        },
+                        }
+                        .into(),
                     );
                     let _ = evt_tx.send(HubEvent::ListerRegistered {
                         id: ListerId(cid),
@@ -319,13 +398,13 @@ fn owner_loop(
             OwnerMsg::FromLister(cid, ToHub::RunJob { op, srcs, dest_dir }) => {
                 let fail = |conns: &mut HashMap<u64, Conn>, msg: String| {
                     if let Some(c) = conns.get_mut(&cid) {
-                        let _ = send(
-                            &mut c.write,
-                            &ToLister::JobDone {
+                        let _ = c.tx.send(
+                            ToLister::JobDone {
                                 job_id: 0,
                                 outcome: Outcome::Error { message: msg },
                                 errors: Vec::new(),
-                            },
+                            }
+                            .into(),
                         );
                     }
                 };
@@ -385,7 +464,7 @@ fn owner_loop(
             // Tab in a Lister: raise the pane holding the opposite role.
             OwnerMsg::FromLister(_cid, ToHub::PresentLister(target)) => {
                 if let Some(c) = conns.get_mut(&target.0).filter(|c| c.registered) {
-                    let _ = send(&mut c.write, &ToLister::Present);
+                    let _ = c.tx.send(ToLister::Present.into());
                 }
             }
 
@@ -445,13 +524,13 @@ fn owner_loop(
 
             OwnerMsg::FromGtk(HubCmd::PresentLister(id)) => {
                 if let Some(c) = conns.get_mut(&id.0) {
-                    let _ = send(&mut c.write, &ToLister::Present);
+                    let _ = c.tx.send(ToLister::Present.into());
                 }
             }
 
             OwnerMsg::FromGtk(HubCmd::Shutdown) => {
                 for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = send(&mut c.write, &ToLister::Shutdown);
+                    let _ = c.tx.send(ToLister::Shutdown.into());
                 }
                 return;
             }
@@ -491,7 +570,7 @@ fn drop_conn(
 ) {
     let Some(c) = conns.remove(&cid) else { return };
     free_conns.insert(cid);
-    let _ = c.write.shutdown(std::net::Shutdown::Both);
+    let _ = c.shutdown.shutdown(std::net::Shutdown::Both);
     if !c.registered {
         return;
     }
@@ -514,26 +593,26 @@ fn apply_role(
         match effect {
             RoleEffect::Broadcast => {
                 for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = send(
-                        &mut c.write,
-                        &ToLister::RoleChanged {
+                    let _ = c.tx.send(
+                        ToLister::RoleChanged {
                             source: roles.source(),
                             dests: roles.dests(),
                             source_locked: roles.source_locked(),
-                        },
+                        }
+                        .into(),
                     );
                 }
                 emit_roles(roles, conns, evt_tx);
             }
             RoleEffect::Reject(id) => {
                 if let Some(c) = conns.get_mut(&id.0) {
-                    let _ = send(
-                        &mut c.write,
-                        &ToLister::RoleChanged {
+                    let _ = c.tx.send(
+                        ToLister::RoleChanged {
                             source: roles.source(),
                             dests: roles.dests(),
                             source_locked: roles.source_locked(),
-                        },
+                        }
+                        .into(),
                     );
                 }
             }
@@ -570,9 +649,8 @@ fn handle_job_progress(
             *next_req += 1;
             replies.insert(req_id, reply);
             if let Some(c) = conns.get_mut(&requester) {
-                let _ = send(
-                    &mut c.write,
-                    &ToLister::ConflictPrompt { req_id, job_id, path, src, dst },
+                let _ = c.tx.send(
+                    ToLister::ConflictPrompt { req_id, job_id, path, src, dst }.into(),
                 );
             }
         }
@@ -584,10 +662,7 @@ fn handle_job_progress(
             };
             let err_count = errors.len();
             if let Some(c) = conns.get_mut(&requester) {
-                let _ = send(
-                    &mut c.write,
-                    &ToLister::JobDone { job_id, outcome, errors },
-                );
+                let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
             }
             let _ = evt_tx.send(HubEvent::JobFinished {
                 job_id,
@@ -602,7 +677,7 @@ fn handle_job_progress(
             }
             for dir in affected {
                 for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = send(&mut c.write, &ToLister::InvalidatePath(dir.clone()));
+                    let _ = c.tx.send(ToLister::InvalidatePath(dir.clone()).into());
                 }
             }
             engine.on_done(job_id);
@@ -630,7 +705,7 @@ fn handle_job_progress(
                     });
                 }
                 if let Some(c) = conns.get_mut(&requester) {
-                    let _ = send(&mut c.write, &msg);
+                    let _ = c.tx.send(msg.into());
                 }
             }
         }
@@ -653,6 +728,22 @@ mod tests {
         let path = td.path().join("hub.sock");
         let l = UnixListener::bind(&path).unwrap();
         (td, l, path)
+    }
+
+    /// Settings/desktop-settings persistence now happens on its own thread
+    /// (see `PersistMsg`), so the file may not exist yet the instant the
+    /// owner loop emits its "changed" event; poll instead of a bare check.
+    fn wait_for_file(path: &std::path::Path) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                return content;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("{path:?} was not written in time");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn connect(path: &std::path::Path) -> UnixStream {
@@ -748,7 +839,7 @@ mod tests {
         assert_eq!(got.icon_size, opusdm_ipc::ICON_SIZE_RANGE.0);
 
         // desktop.json landed under the temp config dir.
-        assert!(cfg.path().join("opusdm").join("desktop.json").exists());
+        wait_for_file(&cfg.path().join("opusdm").join("desktop.json"));
     }
 
     #[test]
@@ -780,7 +871,7 @@ mod tests {
         assert_eq!(got.background.gradient_angle, opusdm_ipc::GRADIENT_ANGLE_MAX);
 
         // settings.json landed under the temp config dir and carries appearance too.
-        let written = std::fs::read_to_string(cfg.path().join("opusdm").join("settings.json")).unwrap();
+        let written = wait_for_file(&cfg.path().join("opusdm").join("settings.json"));
         let back: opusdm_ipc::Settings = serde_json::from_str(&written).unwrap();
         assert!(back.appearance.monospace_list);
     }
