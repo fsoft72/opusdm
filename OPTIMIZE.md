@@ -23,7 +23,7 @@
 
 ## Medium
 
-- [ ] **Preserve view state when changing icon sets** - `set_icon_set` delegates to `set_entries`, which clears selection, cursor, free positions, thumbnail cache, and requeues all thumbnails even though only fallback icon rendering changed.
+- [x] **Preserve view state when changing icon sets** - `set_icon_set` delegates to `set_entries`, which clears selection, cursor, free positions, thumbnail cache, and requeues all thumbnails even though only fallback icon rendering changed.
   - File(s): `crates/iconview/src/field.rs`
 
 - [ ] **Avoid full icon-model rebuilds for small updates** - Rename, row rebinding, sorting, and refresh paths repeatedly clone every visible row and call `set_entries`, rebuilding layout, selection, caches, and thumbnail work instead of applying an incremental update.

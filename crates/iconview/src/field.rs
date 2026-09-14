@@ -505,14 +505,21 @@ impl IconField {
     }
 
     /// Switch the icon library used for entries without a content thumbnail.
-    /// Rebuilds every item.
+    /// Only the fallback icon rendering changes, so entries, selection,
+    /// cursor, free positions and the thumbnail cache are all preserved;
+    /// the realized item widgets are rebuilt to pick up the new set.
     pub fn set_icon_set(&self, set: opusdm_ipc::IconSetId) {
         if *self.inner.layout.icon_set.borrow() == set {
             return;
         }
         *self.inner.layout.icon_set.borrow_mut() = set;
-        let entries = self.inner.layout.entries.borrow().clone();
-        self.set_entries(&entries);
+        for (_, it) in self.inner.layout.realized.borrow_mut().drain() {
+            self.inner.layout.fixed.remove(it.widget());
+        }
+        // A glyph and an image can measure differently; drop the cached
+        // worst-case box so the relayout re-probes with the new set.
+        *self.inner.layout.size_cache.borrow_mut() = None;
+        self.relayout();
     }
 
     /// Number of entries currently shown.
@@ -1185,8 +1192,15 @@ mod tests {
 
         f.set_icon_set(custom.clone());
         assert_eq!(f.entry_count(), 3);
+        // View state survives an icon-set switch: selection, cursor and free
+        // positions are about content, not about how icons render.
+        f.select_exclusive(1);
+        f.inner.layout.free_positions.borrow_mut().insert(1, (12.0, 34.0));
         f.set_icon_set(opusdm_ipc::IconSetId::None);
         assert_eq!(f.entry_count(), 3);
+        assert_eq!(f.selected_indices(), vec![1]);
+        assert_eq!(f.cursor(), Some(1));
+        assert_eq!(f.free_positions().get(&1), Some(&(12.0, 34.0)));
 
         // --- IconItem: a real icon set shows the image, not the glyph ---
         let themed = IconItem::new(&entries(1)[0], 64, &custom);
