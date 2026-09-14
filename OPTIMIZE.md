@@ -64,7 +64,7 @@
 - [x] **Fallback hash path reads only 64 KiB then reports "unavailable"** — In `compute_file_hashes`, if spawning `sha256sum` fails the code reads one buffer into `file` and discards the result; the `file`/`buffer` are dead work. Drop the fallback or actually hash in-process.
   - File(s): `crates/lister/src/tools.rs`
 
-- [ ] **`Role` cycle logic embedded in a gesture closure** — The SOURCE -> DEST -> NONE transition with the pinned-source shortcut is business logic hidden inside a `connect_released` closure; move it to a pure function on `Roles` so it can be unit tested.
+- [x] **`Role` cycle logic embedded in a gesture closure** — The SOURCE -> DEST -> NONE transition with the pinned-source shortcut is business logic hidden inside a `connect_released` closure; move it to a pure function on `Roles` so it can be unit tested.
   - File(s): `crates/lister/src/window.rs`, `crates/lister/src/client.rs`
 
 - [ ] **Preview kind detection reads 512 bytes on the UI thread** — `detect_file_kind` does a synchronous `File::open` + `read` during `load_file`, on the GTK thread; fine for local disk, but it stalls on network mounts. Move the probe off-thread or make it lazy.

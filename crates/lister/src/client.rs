@@ -2,7 +2,7 @@
 //! forwards every `ToLister` onto an async channel the GTK loop drains.
 
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::{ListerId, Settings, ToHub, ToLister, Welcome};
+use opusdm_ipc::{ListerId, Role, Settings, ToHub, ToLister, Welcome};
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -25,6 +25,26 @@ impl Roles {
     /// Whether `id` holds a DEST role.
     pub fn is_dest(&self, id: ListerId) -> bool {
         self.dests.contains(&id)
+    }
+
+    /// The role clicking the badge should request next for `id`:
+    /// SOURCE -> DEST -> NONE. If SOURCE is pinned by another Lister, a
+    /// SetRole(Source) request would just be rejected every time (see the
+    /// hub's roles.rs), so skip straight to DEST instead of retrying a
+    /// doomed request and looking stuck.
+    pub fn next_role(&self, id: ListerId) -> Role {
+        let is_source = self.source == Some(id);
+        let is_dest = self.is_dest(id);
+        let source_unreachable = self.source_locked && self.source != Some(id);
+        if is_source {
+            Role::Dest
+        } else if is_dest {
+            Role::None
+        } else if source_unreachable {
+            Role::Dest
+        } else {
+            Role::Source
+        }
     }
 }
 
@@ -106,6 +126,27 @@ mod tests {
     use opusdm_ipc::frame::{recv, send};
     use opusdm_ipc::{ListerId, ToHub, ToLister, Welcome};
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn next_role_cycles_source_dest_none() {
+        let me = ListerId(1);
+        let roles = Roles::default();
+        assert_eq!(roles.next_role(me), Role::Source);
+
+        let roles = Roles { source: Some(me), ..Default::default() };
+        assert_eq!(roles.next_role(me), Role::Dest);
+
+        let roles = Roles { dests: vec![me], ..Default::default() };
+        assert_eq!(roles.next_role(me), Role::None);
+    }
+
+    #[test]
+    fn next_role_skips_to_dest_when_source_is_locked_elsewhere() {
+        let me = ListerId(1);
+        let other = ListerId(2);
+        let roles = Roles { source: Some(other), source_locked: true, ..Default::default() };
+        assert_eq!(roles.next_role(me), Role::Dest);
+    }
 
     #[test]
     fn connect_sends_register_and_parses_welcome() {

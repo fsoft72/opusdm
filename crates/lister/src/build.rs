@@ -9,7 +9,7 @@ use gtk::gdk;
 use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
-use opusdm_ipc::{ListerId, Role, Settings, ToHub};
+use opusdm_ipc::{ListerId, Settings, ToHub};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -376,29 +376,12 @@ fn build_window(
         });
     }
 
-    // Click the role badge to cycle SOURCE -> DEST -> NONE. If SOURCE is
-    // pinned by another Lister, a SetRole(Source) from here would just be
-    // rejected every time (see roles.rs) - skip straight to DEST instead of
-    // retrying a doomed request and looking stuck.
+    // Click the role badge to cycle its role; see Roles::next_role.
     {
         let ui_for_click = ui.clone();
         let gesture = gtk::GestureClick::new();
         gesture.connect_released(move |_, _, _, _| {
-            let roles = ui_for_click.hub.roles.borrow();
-            let is_source = roles.source == Some(ui_for_click.hub.id);
-            let is_dest = roles.is_dest(ui_for_click.hub.id);
-            let source_unreachable =
-                roles.source_locked && roles.source != Some(ui_for_click.hub.id);
-            drop(roles);
-            let next = if is_source {
-                Role::Dest
-            } else if is_dest {
-                Role::None
-            } else if source_unreachable {
-                Role::Dest
-            } else {
-                Role::Source
-            };
+            let next = ui_for_click.hub.roles.borrow().next_role(ui_for_click.hub.id);
             let _ = ui_for_click.hub.client.send(&ToHub::SetRole(next));
         });
         ui.status_bar.role_badge.add_controller(gesture);
