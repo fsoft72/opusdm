@@ -35,7 +35,7 @@
 - [x] **Replace the sysmon sample vector with a ring buffer** - Every tick removes index zero, shifts the history, clones every trace, and reinstalls the drawing closure; retain one draw function over shared state and use `VecDeque` or a circular index to eliminate recurring copies and callback churn.
   - File(s): `crates/panel/src/widgets/sysmon.rs`
 
-- [ ] **Split the hub owner-loop message handlers** - The large `owner_loop` combines connection allocation, authentication state, role transitions, settings persistence, job submission, conflict replies, and GTK commands in one match, making lifecycle invariants difficult to test independently and future protocol changes risky.
+- [x] **Split the hub owner-loop message handlers** - The large `owner_loop` combines connection allocation, authentication state, role transitions, settings persistence, job submission, conflict replies, and GTK commands in one match, making lifecycle invariants difficult to test independently and future protocol changes risky.
   - File(s): `crates/hub/src/server.rs`
 
 - [ ] **Decompose the icon field implementation** - `IconField` centralizes GTK controller wiring, selection, drag-and-drop, keyboard navigation, virtualization, layout, renaming, and thumbnails in one 1,300-line module; extract behavior-focused controllers while retaining the existing `IconField` facade.

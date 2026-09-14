@@ -202,28 +202,393 @@ struct JobMeta {
     src_parents: Vec<PathBuf>,
 }
 
+/// All mutable hub state, owned by the owner loop. Splitting the loop's big
+/// match into methods on this struct keeps each concern - connection
+/// lifecycle, authentication/registration, role transitions, settings
+/// persistence, job submission, conflict replies, GTK commands - in its own
+/// handler, where its invariants are easier to follow and test.
+struct Hub {
+    conns: HashMap<u64, Conn>,
+    free_conns: BTreeSet<u64>,
+    next_conn: u64,
+    roles: RoleState,
+    /// Loaded once at startup; kept in memory and updated in place by
+    /// `ToHub::SetSettings`. Never re-read from disk after this.
+    current_settings: opusdm_ipc::Settings,
+    /// Same lifecycle for desktop settings; updated in place by
+    /// `ToHub::SetDesktopSettings` and pushed to the GTK side.
+    current_desktop: DesktopSettings,
+    persist_tx: Sender<PersistMsg>,
+    engine: JobEngine,
+    jobs: HashMap<u64, JobMeta>,
+    replies: HashMap<u64, Sender<Resolution>>,
+    next_req: u64,
+    evt_tx: Sender<HubEvent>,
+    on_spawn: SpawnFn,
+}
+
+impl Hub {
+    /// A new peer connected: allocate a connection id, spawn its writer and
+    /// reader threads. A spawn failure drops just this connection.
+    fn accepted(&mut self, stream: UnixStream, owner_tx: &Sender<OwnerMsg>) {
+        let cid = if let Some(&first) = self.free_conns.iter().next() {
+            self.free_conns.remove(&first);
+            first
+        } else {
+            let id = self.next_conn;
+            self.next_conn += 1;
+            id
+        };
+        let (Ok(write_stream), Ok(shutdown)) = (stream.try_clone(), stream.try_clone()) else {
+            self.free_conns.insert(cid);
+            return;
+        };
+        let (tx, writer_rx) = channel::<OutMsg>();
+        let writer_spawned = std::thread::Builder::new()
+            .name(format!("opusdm-writer-{cid}"))
+            .spawn(move || writer_loop(write_stream, writer_rx));
+        if let Err(e) = writer_spawned {
+            eprintln!("opusdm-hub: cannot spawn writer thread for conn {cid}: {e}");
+            self.free_conns.insert(cid);
+            return;
+        }
+        self.conns.insert(
+            cid,
+            Conn { tx, shutdown, registered: false, pid: 0, path: PathBuf::new() },
+        );
+        let owner_tx = owner_tx.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("opusdm-reader-{cid}"))
+            .spawn(move || reader_loop(cid, stream, owner_tx));
+        // A thread-spawn failure (e.g. the process thread limit) must
+        // not take down every other Lister connected to this hub;
+        // drop just this one and let the caller retry.
+        if let Err(e) = spawned {
+            eprintln!("opusdm-hub: cannot spawn reader thread for conn {cid}: {e}");
+            self.conns.remove(&cid);
+            self.free_conns.insert(cid);
+        }
+    }
+
+    /// A message arrived from Lister connection `cid`.
+    fn lister_msg(&mut self, cid: u64, msg: ToHub) {
+        match msg {
+            ToHub::Ping => {
+                if let Some(c) = self.conns.get_mut(&cid) {
+                    let _ = c.tx.send(ToLister::Pong.into());
+                }
+            }
+
+            ToHub::RaiseToolbar => {
+                let _ = self.evt_tx.send(HubEvent::RaiseToolbar);
+            }
+
+            ToHub::SetDesktopSettings(ds) => {
+                self.current_desktop = ds.sanitized();
+                let _ = self.persist_tx.send(PersistMsg::Desktop(self.current_desktop.clone()));
+                let _ = self
+                    .evt_tx
+                    .send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
+            }
+
+            ToHub::SetSettings(mut new_settings) => {
+                new_settings.theme.background = new_settings.theme.background.sanitized();
+                self.current_settings = new_settings;
+                let _ = self.persist_tx.send(PersistMsg::Settings(self.current_settings.clone()));
+                for c in self.conns.values_mut().filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::SettingsUpdate(self.current_settings.clone()).into());
+                }
+                let _ = self.evt_tx.send(HubEvent::ThemeChanged(self.current_settings.theme.clone()));
+            }
+
+            ToHub::Register { pid, initial_path } => {
+                if let Some(c) = self.conns.get_mut(&cid) {
+                    c.registered = true;
+                    c.pid = pid;
+                    c.path = initial_path.clone();
+                    let _ = c.tx.send(
+                        Welcome {
+                            lister_id: ListerId(cid),
+                            source: self.roles.source(),
+                            dests: self.roles.dests(),
+                            source_locked: self.roles.source_locked(),
+                            settings: self.current_settings.clone(),
+                        }
+                        .into(),
+                    );
+                    let _ = self.evt_tx.send(HubEvent::ListerRegistered {
+                        id: ListerId(cid),
+                        pid,
+                        path: initial_path,
+                    });
+                    emit_roles(&self.roles, &self.conns, &self.evt_tx);
+                }
+            }
+
+            ToHub::FocusGained => {
+                apply_role(&mut self.roles, RoleEvent::FocusGained(ListerId(cid)), &mut self.conns, &self.evt_tx);
+            }
+
+            ToHub::SetRole(role) => {
+                apply_role(&mut self.roles, RoleEvent::SetRole(ListerId(cid), role), &mut self.conns, &self.evt_tx);
+            }
+
+            ToHub::LockRole => {
+                apply_role(&mut self.roles, RoleEvent::Lock(ListerId(cid)), &mut self.conns, &self.evt_tx);
+            }
+
+            ToHub::UnlockRole => {
+                apply_role(&mut self.roles, RoleEvent::Unlock(ListerId(cid)), &mut self.conns, &self.evt_tx);
+            }
+
+            ToHub::PathChanged(p) => {
+                if let Some(c) = self.conns.get_mut(&cid) {
+                    c.path = p;
+                }
+                emit_roles(&self.roles, &self.conns, &self.evt_tx);
+            }
+
+            ToHub::SpawnLister { start_path } => {
+                (self.on_spawn)(start_path);
+            }
+
+            ToHub::RunJob { op, srcs, dest_dir } => {
+                self.lister_run_job(cid, op, srcs, dest_dir);
+            }
+
+            // Tab in a Lister: raise the pane holding the opposite role.
+            ToHub::PresentLister(target) => {
+                if let Some(c) = self.conns.get_mut(&target.0).filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::Present.into());
+                }
+            }
+
+            ToHub::ConflictReply { req_id, resolution } => {
+                if let Some(tx) = self.replies.remove(&req_id) {
+                    let _ = tx.send(resolution);
+                }
+            }
+
+            ToHub::Goodbye => {
+                drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
+            }
+        }
+    }
+
+    /// `ToHub::RunJob` from a Lister: resolve the destinations (a `None`
+    /// destination fans out from the SOURCE to every DEST Lister's current
+    /// directory), validate, and submit each job to the engine.
+    fn lister_run_job(&mut self, cid: u64, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf>) {
+        let fail = |conns: &mut HashMap<u64, Conn>, msg: String| {
+            if let Some(c) = conns.get_mut(&cid) {
+                let _ = c.tx.send(
+                    ToLister::JobDone {
+                        job_id: 0,
+                        outcome: Outcome::Error { message: msg },
+                        errors: Vec::new(),
+                    }
+                    .into(),
+                );
+            }
+        };
+        // A `None` destination means a button Copy/Move: the requester
+        // must be the SOURCE and the job fans out to every DEST
+        // Lister's current directory. A `Some` destination is explicit
+        // (drag-drop, Delete, MakeDir, NewFile) and is a single target.
+        let dest_dirs: Vec<PathBuf> = match dest_dir {
+            Some(p) => vec![p],
+            None => {
+                if self.roles.source() != Some(ListerId(cid)) {
+                    fail(&mut self.conns, "this Lister is not the SOURCE".into());
+                    return;
+                }
+                let dirs: Vec<PathBuf> = self
+                    .roles
+                    .dests()
+                    .iter()
+                    .filter_map(|d| self.conns.get(&d.0).map(|c| c.path.clone()))
+                    .collect();
+                if dirs.is_empty() {
+                    fail(&mut self.conns, "no DEST Lister set".into());
+                    return;
+                }
+                dirs
+            }
+        };
+        let src_parents: Vec<PathBuf> = srcs
+            .iter()
+            .filter_map(|s| s.parent().map(PathBuf::from))
+            .collect();
+        for dest_dir in dest_dirs {
+            if matches!(op, Op::Copy | Op::Move) {
+                if let Err(msg) = validate_job(&srcs, &dest_dir) {
+                    fail(&mut self.conns, msg);
+                    continue;
+                }
+            }
+            let spec = opusdm_fsops::JobSpec {
+                op: op.clone(),
+                srcs: srcs.clone(),
+                dest_dir: dest_dir.clone(),
+            };
+            let out = self.engine.submit(ListerId(cid), spec);
+            self.jobs.insert(
+                out.job_id,
+                JobMeta {
+                    requester: cid,
+                    op: op.clone(),
+                    totals: ProgressTotals::default(),
+                    dest_dir,
+                    src_parents: src_parents.clone(),
+                },
+            );
+        }
+    }
+
+    /// A command arrived from the GTK toolbar (or the SIGCHLD reaper).
+    /// Returns `false` when the owner loop should shut down.
+    fn gtk_cmd(&mut self, cmd: HubCmd) -> bool {
+        match cmd {
+            HubCmd::SpawnRequested { start_path } => (self.on_spawn)(start_path),
+
+            HubCmd::RunJob { op, srcs, dest_dir } => {
+                // A hub-originated job has no requesting Lister, so progress and
+                // completion just do not route back to one; the hub's own job
+                // box still tracks it. `u64::MAX` is the sentinel requester.
+                const GTK_REQUESTER: u64 = u64::MAX;
+                if matches!(op, Op::Copy | Op::Move) {
+                    if let Err(msg) = validate_job(&srcs, &dest_dir) {
+                        eprintln!("opusdm-hub: desktop job rejected: {msg}");
+                        return true;
+                    }
+                }
+                let src_parents: Vec<PathBuf> =
+                    srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
+                let spec = opusdm_fsops::JobSpec {
+                    op: op.clone(),
+                    srcs: srcs.clone(),
+                    dest_dir: dest_dir.clone(),
+                };
+                let out = self.engine.submit(ListerId(GTK_REQUESTER), spec);
+                self.jobs.insert(
+                    out.job_id,
+                    JobMeta {
+                        requester: GTK_REQUESTER,
+                        op,
+                        totals: ProgressTotals::default(),
+                        dest_dir,
+                        src_parents,
+                    },
+                );
+            }
+
+            HubCmd::CancelJob(id) => self.engine.cancel(id),
+
+            HubCmd::PresentLister(id) => {
+                if let Some(c) = self.conns.get_mut(&id.0) {
+                    let _ = c.tx.send(ToLister::Present.into());
+                }
+            }
+
+            HubCmd::Shutdown => {
+                for c in self.conns.values_mut().filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::Shutdown.into());
+                }
+                return false;
+            }
+
+            HubCmd::ChildExited(pid) => {
+                let hit = self.conns.iter().find(|(_, c)| c.pid == pid).map(|(k, _)| *k);
+                if let Some(cid) = hit {
+                    drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
+                }
+            }
+        }
+        true
+    }
+
+    /// A job engine progress event: conflict prompts, completion routing
+    /// and lister invalidation, or a plain progress update.
+    fn job_progress(&mut self, job_id: u64, prog: Progress) {
+        let Some(meta) = self.jobs.get_mut(&job_id) else { return };
+        let requester = meta.requester;
+
+        match prog {
+            Progress::Conflict { path, src, dst, reply } => {
+                let req_id = self.next_req;
+                self.next_req += 1;
+                self.replies.insert(req_id, reply);
+                if let Some(c) = self.conns.get_mut(&requester) {
+                    let _ = c.tx.send(
+                        ToLister::ConflictPrompt { req_id, job_id, path, src, dst }.into(),
+                    );
+                }
+            }
+            Progress::Done { copied, skipped, cancelled, errors } => {
+                let outcome = if cancelled {
+                    Outcome::Cancelled { copied, skipped }
+                } else {
+                    Outcome::Ok { copied, skipped }
+                };
+                let err_count = errors.len();
+                if let Some(c) = self.conns.get_mut(&requester) {
+                    let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
+                }
+                let _ = self.evt_tx.send(HubEvent::JobFinished {
+                    job_id,
+                    ok: !cancelled && err_count == 0,
+                    errors: err_count,
+                    cancelled,
+                });
+                // Refresh every Lister showing an affected directory.
+                let mut affected = vec![meta.dest_dir.clone()];
+                if matches!(meta.op, Op::Move | Op::Delete) {
+                    affected.extend(meta.src_parents.iter().cloned());
+                }
+                for dir in affected {
+                    for c in self.conns.values_mut().filter(|c| c.registered) {
+                        let _ = c.tx.send(ToLister::InvalidatePath(dir.clone()).into());
+                    }
+                }
+                self.engine.on_done(job_id);
+                self.jobs.remove(&job_id);
+            }
+            other => {
+                let op = meta.op.clone();
+                if let Some(msg) = map_progress(job_id, &op, &other, &mut meta.totals) {
+                    if let ToLister::JobProgress {
+                        current_file,
+                        files_done,
+                        files_total,
+                        file_bytes_done,
+                        file_bytes_total,
+                        ..
+                    } = &msg
+                    {
+                        let _ = self.evt_tx.send(HubEvent::JobUpdate {
+                            job_id,
+                            current_file: current_file.clone(),
+                            files_done: *files_done,
+                            files_total: *files_total,
+                            file_bytes_done: *file_bytes_done,
+                            file_bytes_total: *file_bytes_total,
+                        });
+                    }
+                    if let Some(c) = self.conns.get_mut(&requester) {
+                        let _ = c.tx.send(msg.into());
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn owner_loop(
     rx: Receiver<OwnerMsg>,
     owner_tx: Sender<OwnerMsg>,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
 ) {
-    let mut conns: HashMap<u64, Conn> = HashMap::new();
-    let mut free_conns: BTreeSet<u64> = BTreeSet::new();
-    let mut next_conn: u64 = 1;
-    let mut roles = RoleState::default();
-    // Loaded once at startup; kept in memory and updated in place by
-    // HubCmd::UpdateColors. Never re-read from disk after this.
-    let mut current_settings = settings::load_settings();
-    // Same lifecycle for desktop settings; updated in place by
-    // ToHub::SetDesktopSettings and pushed to the GTK side.
-    let mut current_desktop = desktop_settings::load();
-    opusdm_ipc::debug_log!(
-        "hub",
-        "desktop settings loaded (icon size {})",
-        current_desktop.icon_size
-    );
-
     // Settings/desktop-settings writes go to disk on their own thread so a
     // slow filesystem cannot stall the owner loop; the owner keeps the
     // authoritative in-memory copy and only hands off the bytes to persist.
@@ -264,283 +629,51 @@ fn owner_loop(
             })
             .expect("spawn job progress forwarder thread");
     }
-    let mut engine = JobEngine::new(default_runner(), jp_tx);
-    let mut jobs: HashMap<u64, JobMeta> = HashMap::new();
-    let mut replies: HashMap<u64, Sender<Resolution>> = HashMap::new();
-    let mut next_req: u64 = 1;
+
+    let current_desktop = desktop_settings::load();
+    opusdm_ipc::debug_log!(
+        "hub",
+        "desktop settings loaded (icon size {})",
+        current_desktop.icon_size
+    );
+    let mut hub = Hub {
+        conns: HashMap::new(),
+        free_conns: BTreeSet::new(),
+        next_conn: 1,
+        roles: RoleState::default(),
+        current_settings: settings::load_settings(),
+        current_desktop,
+        persist_tx,
+        engine: JobEngine::new(default_runner(), jp_tx),
+        jobs: HashMap::new(),
+        replies: HashMap::new(),
+        next_req: 1,
+        evt_tx,
+        on_spawn,
+    };
 
     for msg in rx {
-        match msg {
+        let keep_running = match msg {
             OwnerMsg::Accepted(stream) => {
-                let cid = if let Some(&first) = free_conns.iter().next() {
-                    free_conns.remove(&first);
-                    first
-                } else {
-                    let id = next_conn;
-                    next_conn += 1;
-                    id
-                };
-                let (Ok(write_stream), Ok(shutdown)) =
-                    (stream.try_clone(), stream.try_clone())
-                else {
-                    free_conns.insert(cid);
-                    continue;
-                };
-                let (tx, writer_rx) = channel::<OutMsg>();
-                let writer_spawned = std::thread::Builder::new()
-                    .name(format!("opusdm-writer-{cid}"))
-                    .spawn(move || writer_loop(write_stream, writer_rx));
-                if let Err(e) = writer_spawned {
-                    eprintln!("opusdm-hub: cannot spawn writer thread for conn {cid}: {e}");
-                    free_conns.insert(cid);
-                    continue;
-                }
-                conns.insert(
-                    cid,
-                    Conn { tx, shutdown, registered: false, pid: 0, path: PathBuf::new() },
-                );
-                let owner_tx = owner_tx.clone();
-                let spawned = std::thread::Builder::new()
-                    .name(format!("opusdm-reader-{cid}"))
-                    .spawn(move || reader_loop(cid, stream, owner_tx));
-                // A thread-spawn failure (e.g. the process thread limit) must
-                // not take down every other Lister connected to this hub;
-                // drop just this one and let the caller retry.
-                if let Err(e) = spawned {
-                    eprintln!("opusdm-hub: cannot spawn reader thread for conn {cid}: {e}");
-                    conns.remove(&cid);
-                    free_conns.insert(cid);
-                }
+                hub.accepted(stream, &owner_tx);
+                true
             }
-
-            OwnerMsg::FromLister(cid, ToHub::Ping) => {
-                if let Some(c) = conns.get_mut(&cid) {
-                    let _ = c.tx.send(ToLister::Pong.into());
-                }
+            OwnerMsg::FromLister(cid, msg) => {
+                hub.lister_msg(cid, msg);
+                true
             }
-
-            OwnerMsg::FromLister(_cid, ToHub::RaiseToolbar) => {
-                let _ = evt_tx.send(HubEvent::RaiseToolbar);
+            OwnerMsg::ListerEof(cid) => {
+                drop_conn(cid, &mut hub.conns, &mut hub.free_conns, &mut hub.roles, &hub.evt_tx);
+                true
             }
-
-            OwnerMsg::FromLister(_cid, ToHub::SetDesktopSettings(ds)) => {
-                current_desktop = ds.sanitized();
-                let _ = persist_tx.send(PersistMsg::Desktop(current_desktop.clone()));
-                let _ = evt_tx.send(HubEvent::DesktopSettingsChanged(current_desktop.clone()));
-            }
-
-            OwnerMsg::FromLister(_cid, ToHub::SetSettings(mut new_settings)) => {
-                new_settings.theme.background = new_settings.theme.background.sanitized();
-                current_settings = new_settings;
-                let _ = persist_tx.send(PersistMsg::Settings(current_settings.clone()));
-                for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::SettingsUpdate(current_settings.clone()).into());
-                }
-                let _ = evt_tx.send(HubEvent::ThemeChanged(current_settings.theme.clone()));
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::Register { pid, initial_path }) => {
-                if let Some(c) = conns.get_mut(&cid) {
-                    c.registered = true;
-                    c.pid = pid;
-                    c.path = initial_path.clone();
-                    let _ = c.tx.send(
-                        Welcome {
-                            lister_id: ListerId(cid),
-                            source: roles.source(),
-                            dests: roles.dests(),
-                            source_locked: roles.source_locked(),
-                            settings: current_settings.clone(),
-                        }
-                        .into(),
-                    );
-                    let _ = evt_tx.send(HubEvent::ListerRegistered {
-                        id: ListerId(cid),
-                        pid,
-                        path: initial_path,
-                    });
-                    emit_roles(&roles, &conns, &evt_tx);
-                }
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::Goodbye) | OwnerMsg::ListerEof(cid) => {
-                drop_conn(cid, &mut conns, &mut free_conns, &mut roles, &evt_tx);
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::FocusGained) => {
-                apply_role(&mut roles, RoleEvent::FocusGained(ListerId(cid)), &mut conns, &evt_tx);
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::SetRole(role)) => {
-                apply_role(&mut roles, RoleEvent::SetRole(ListerId(cid), role), &mut conns, &evt_tx);
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::LockRole) => {
-                apply_role(&mut roles, RoleEvent::Lock(ListerId(cid)), &mut conns, &evt_tx);
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::UnlockRole) => {
-                apply_role(&mut roles, RoleEvent::Unlock(ListerId(cid)), &mut conns, &evt_tx);
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::PathChanged(p)) => {
-                if let Some(c) = conns.get_mut(&cid) {
-                    c.path = p;
-                }
-                emit_roles(&roles, &conns, &evt_tx);
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::SpawnLister { start_path }) => {
-                let _ = cid;
-                on_spawn(start_path);
-            }
-
-            OwnerMsg::FromLister(cid, ToHub::RunJob { op, srcs, dest_dir }) => {
-                let fail = |conns: &mut HashMap<u64, Conn>, msg: String| {
-                    if let Some(c) = conns.get_mut(&cid) {
-                        let _ = c.tx.send(
-                            ToLister::JobDone {
-                                job_id: 0,
-                                outcome: Outcome::Error { message: msg },
-                                errors: Vec::new(),
-                            }
-                            .into(),
-                        );
-                    }
-                };
-                // A `None` destination means a button Copy/Move: the requester
-                // must be the SOURCE and the job fans out to every DEST
-                // Lister's current directory. A `Some` destination is explicit
-                // (drag-drop, Delete, MakeDir, NewFile) and is a single target.
-                let dest_dirs: Vec<PathBuf> = match dest_dir {
-                    Some(p) => vec![p],
-                    None => {
-                        if roles.source() != Some(ListerId(cid)) {
-                            fail(&mut conns, "this Lister is not the SOURCE".into());
-                            continue;
-                        }
-                        let dirs: Vec<PathBuf> = roles
-                            .dests()
-                            .iter()
-                            .filter_map(|d| conns.get(&d.0).map(|c| c.path.clone()))
-                            .collect();
-                        if dirs.is_empty() {
-                            fail(&mut conns, "no DEST Lister set".into());
-                            continue;
-                        }
-                        dirs
-                    }
-                };
-                let src_parents: Vec<PathBuf> = srcs
-                    .iter()
-                    .filter_map(|s| s.parent().map(PathBuf::from))
-                    .collect();
-                for dest_dir in dest_dirs {
-                    if matches!(op, Op::Copy | Op::Move) {
-                        if let Err(msg) = validate_job(&srcs, &dest_dir) {
-                            fail(&mut conns, msg);
-                            continue;
-                        }
-                    }
-                    let spec = opusdm_fsops::JobSpec {
-                        op: op.clone(),
-                        srcs: srcs.clone(),
-                        dest_dir: dest_dir.clone(),
-                    };
-                    let out = engine.submit(ListerId(cid), spec);
-                    jobs.insert(
-                        out.job_id,
-                        JobMeta {
-                            requester: cid,
-                            op: op.clone(),
-                            totals: ProgressTotals::default(),
-                            dest_dir,
-                            src_parents: src_parents.clone(),
-                        },
-                    );
-                }
-            }
-
-            // Tab in a Lister: raise the pane holding the opposite role.
-            OwnerMsg::FromLister(_cid, ToHub::PresentLister(target)) => {
-                if let Some(c) = conns.get_mut(&target.0).filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::Present.into());
-                }
-            }
-
-            OwnerMsg::FromLister(_cid, ToHub::ConflictReply { req_id, resolution }) => {
-                if let Some(tx) = replies.remove(&req_id) {
-                    let _ = tx.send(resolution);
-                }
-            }
-
             OwnerMsg::JobProgress(job_id, prog) => {
-                handle_job_progress(
-                    job_id,
-                    prog,
-                    &mut jobs,
-                    &mut conns,
-                    &mut engine,
-                    &mut replies,
-                    &mut next_req,
-                    &evt_tx,
-                );
+                hub.job_progress(job_id, prog);
+                true
             }
-
-            OwnerMsg::FromGtk(HubCmd::SpawnRequested { start_path }) => on_spawn(start_path),
-
-            OwnerMsg::FromGtk(HubCmd::RunJob { op, srcs, dest_dir }) => {
-                // A hub-originated job has no requesting Lister, so progress and
-                // completion just do not route back to one; the hub's own job
-                // box still tracks it. `u64::MAX` is the sentinel requester.
-                const GTK_REQUESTER: u64 = u64::MAX;
-                if matches!(op, Op::Copy | Op::Move) {
-                    if let Err(msg) = validate_job(&srcs, &dest_dir) {
-                        eprintln!("opusdm-hub: desktop job rejected: {msg}");
-                        continue;
-                    }
-                }
-                let src_parents: Vec<PathBuf> =
-                    srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
-                let spec = opusdm_fsops::JobSpec {
-                    op: op.clone(),
-                    srcs: srcs.clone(),
-                    dest_dir: dest_dir.clone(),
-                };
-                let out = engine.submit(ListerId(GTK_REQUESTER), spec);
-                jobs.insert(
-                    out.job_id,
-                    JobMeta {
-                        requester: GTK_REQUESTER,
-                        op,
-                        totals: ProgressTotals::default(),
-                        dest_dir,
-                        src_parents,
-                    },
-                );
-            }
-
-            OwnerMsg::FromGtk(HubCmd::CancelJob(id)) => engine.cancel(id),
-
-            OwnerMsg::FromGtk(HubCmd::PresentLister(id)) => {
-                if let Some(c) = conns.get_mut(&id.0) {
-                    let _ = c.tx.send(ToLister::Present.into());
-                }
-            }
-
-            OwnerMsg::FromGtk(HubCmd::Shutdown) => {
-                for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::Shutdown.into());
-                }
-                return;
-            }
-
-            OwnerMsg::FromGtk(HubCmd::ChildExited(pid)) => {
-                let hit = conns.iter().find(|(_, c)| c.pid == pid).map(|(k, _)| *k);
-                if let Some(cid) = hit {
-                    drop_conn(cid, &mut conns, &mut free_conns, &mut roles, &evt_tx);
-                }
-            }
+            OwnerMsg::FromGtk(cmd) => hub.gtk_cmd(cmd),
+        };
+        if !keep_running {
+            return;
         }
     }
 }
@@ -627,89 +760,6 @@ fn emit_roles(roles: &RoleState, conns: &HashMap<u64, Conn>, evt_tx: &Sender<Hub
         .map(|(k, c)| (ListerId(*k), c.path.clone()))
         .collect();
     let _ = evt_tx.send(HubEvent::Roles { source: roles.source(), dests: roles.dests(), paths });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_job_progress(
-    job_id: u64,
-    prog: Progress,
-    jobs: &mut HashMap<u64, JobMeta>,
-    conns: &mut HashMap<u64, Conn>,
-    engine: &mut JobEngine,
-    replies: &mut HashMap<u64, Sender<Resolution>>,
-    next_req: &mut u64,
-    evt_tx: &Sender<HubEvent>,
-) {
-    let Some(meta) = jobs.get_mut(&job_id) else { return };
-    let requester = meta.requester;
-
-    match prog {
-        Progress::Conflict { path, src, dst, reply } => {
-            let req_id = *next_req;
-            *next_req += 1;
-            replies.insert(req_id, reply);
-            if let Some(c) = conns.get_mut(&requester) {
-                let _ = c.tx.send(
-                    ToLister::ConflictPrompt { req_id, job_id, path, src, dst }.into(),
-                );
-            }
-        }
-        Progress::Done { copied, skipped, cancelled, errors } => {
-            let outcome = if cancelled {
-                Outcome::Cancelled { copied, skipped }
-            } else {
-                Outcome::Ok { copied, skipped }
-            };
-            let err_count = errors.len();
-            if let Some(c) = conns.get_mut(&requester) {
-                let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
-            }
-            let _ = evt_tx.send(HubEvent::JobFinished {
-                job_id,
-                ok: !cancelled && err_count == 0,
-                errors: err_count,
-                cancelled,
-            });
-            // Refresh every Lister showing an affected directory.
-            let mut affected = vec![meta.dest_dir.clone()];
-            if matches!(meta.op, Op::Move | Op::Delete) {
-                affected.extend(meta.src_parents.iter().cloned());
-            }
-            for dir in affected {
-                for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::InvalidatePath(dir.clone()).into());
-                }
-            }
-            engine.on_done(job_id);
-            jobs.remove(&job_id);
-        }
-        other => {
-            let op = meta.op.clone();
-            if let Some(msg) = map_progress(job_id, &op, &other, &mut meta.totals) {
-                if let ToLister::JobProgress {
-                    current_file,
-                    files_done,
-                    files_total,
-                    file_bytes_done,
-                    file_bytes_total,
-                    ..
-                } = &msg
-                {
-                    let _ = evt_tx.send(HubEvent::JobUpdate {
-                        job_id,
-                        current_file: current_file.clone(),
-                        files_done: *files_done,
-                        files_total: *files_total,
-                        file_bytes_done: *file_bytes_done,
-                        file_bytes_total: *file_bytes_total,
-                    });
-                }
-                if let Some(c) = conns.get_mut(&requester) {
-                    let _ = c.tx.send(msg.into());
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
