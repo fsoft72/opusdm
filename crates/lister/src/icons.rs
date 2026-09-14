@@ -17,6 +17,7 @@ pub const SVG_EYE_OFF: &[u8] = include_bytes!("../../../assets/icons/eye-off.svg
 pub const SVG_HOME: &[u8] = include_bytes!("../../../assets/icons/home.svg");
 pub const SVG_PARENT: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
 pub const SVG_PIN: &[u8] = include_bytes!("../../../assets/icons/pin.svg");
+pub const SVG_STAR: &[u8] = include_bytes!("../../../assets/icons/star.svg");
 
 /// Create a `gtk::Image` widget from raw SVG bytes with the desired pixel size.
 pub fn svg_image(svg_bytes: &'static [u8], pixel_size: i32) -> gtk::Image {

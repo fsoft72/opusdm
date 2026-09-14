@@ -187,6 +187,8 @@ fn build_window(
     stat_info.set_xalign(0.0);
     stat_info.set_hexpand(true);
     stat_bar.append(&stat_info);
+    let star_btn = crate::icons::icon_button(crate::icons::SVG_STAR, "Open New Lister Here", 14);
+    stat_bar.append(&star_btn);
     let pin_btn = crate::icons::icon_toggle_button(crate::icons::SVG_PIN, "Pin / Lock Role", 14);
     pin_btn.add_css_class("pin-btn");
     stat_bar.append(&pin_btn);
@@ -206,7 +208,6 @@ fn build_window(
     view_toggle.set_child(Some(&gtk::Label::new(Some("\u{25a6}"))));
     view_toggle.set_tooltip_text(Some("Toggle icon view"));
     view_toggle.add_css_class("flat");
-    button_row.append(&view_toggle);
     root.append(&button_row);
 
     // Model + filter + sorter + selection + column view.
@@ -301,6 +302,7 @@ fn build_window(
     let icon_field = opusdm_iconview::IconField::new();
     icon_field.set_mode(opusdm_iconview::LayoutMode::Grid);
     icon_field.set_icon_size(64);
+    icon_field.set_icon_set(settings.theme.icon_set.clone());
 
     let view_stack = gtk::Stack::new();
     view_stack.add_named(&scroller, Some("details"));
@@ -441,6 +443,14 @@ fn build_window(
     *ui_slot.borrow_mut() = Some(ui.clone());
     terminal.attach_events(&ui);
     ui.update_css_for_colors();
+
+    // Star button: open a new Lister at this Lister's current path.
+    {
+        let ui = ui.clone();
+        star_btn.connect_clicked(move |_| {
+            let _ = ui.client.send(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
+        });
+    }
 
     // Click the role badge to cycle SOURCE -> DEST -> NONE. If SOURCE is
     // pinned by another Lister, a SetRole(Source) from here would just be
@@ -584,6 +594,7 @@ fn build_window(
     }
 
     crate::actions::attach(&ui);
+    button_row.append(&view_toggle);
     crate::dnd::attach(&ui, &column_view);
 
     // Icon-view toggle: swap the stack child and rebuild entries on the way in.
@@ -917,6 +928,7 @@ impl Ui {
                 };
                 *self.settings.borrow_mut() = new_settings;
                 self.update_css_for_colors();
+                self.icon_field.set_icon_set(self.settings.borrow().theme.icon_set.clone());
                 // Auto-refresh may have just been switched on or off.
                 let cwd = self.cwd.borrow().clone();
                 self.sync_watch(&cwd);

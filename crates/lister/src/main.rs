@@ -4,6 +4,7 @@ mod actions;
 mod archive;
 mod batch_rename;
 mod client;
+mod clip;
 mod columns;
 mod context_menu;
 mod dnd;

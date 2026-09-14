@@ -230,15 +230,19 @@ impl IconField {
         let src = gtk::DragSource::new();
         src.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
         let this = field.clone();
-        src.connect_prepare(move |_, _, _| {
+        src.connect_prepare(move |_, x, y| {
+            crate::dbg_log!("icon field drag prepare at ({x}, {y})");
             // In Free mode a primary-button drag is an internal reposition, not
             // an inter-window file drag; leaving this on would let the DnD
             // machinery steal the gesture and snap the icon back.
             if !this.inter_window_drag_enabled() {
+                crate::dbg_log!("icon field drag prepare: inter-window drag disabled");
                 return None;
             }
             let paths = this.selected_paths();
+            crate::dbg_log!("icon field drag prepare: selected paths={paths:?}");
             if paths.is_empty() {
+                crate::dbg_log!("icon field drag prepare: empty selection, aborting");
                 return None;
             }
             let payload = crate::dnd::paths_to_uri_list(&paths);
@@ -249,22 +253,33 @@ impl IconField {
         });
         field.inner.fixed.add_controller(src);
 
-        // Drop target: hand parsed paths to the consumer.
+        // Drop target: hand parsed paths to the consumer. GDK's builtin mime
+        // table deserializes `text/uri-list` into `GdkFileList`, not a plain
+        // string - requesting `glib::Type::STRING` here left no format in
+        // common with a source that only advertises `text/uri-list`, so the
+        // drop silently failed with `NoTarget` before ever reaching this
+        // callback.
         let target = gtk::DropTarget::new(
-            gtk::glib::Type::STRING,
+            gtk::gdk::FileList::static_type(),
             gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
         );
         let this = field.clone();
         target.connect_drop(move |t, value, x, y| {
-            let Ok(text) = value.get::<String>() else {
+            crate::dbg_log!("icon field drop fired at ({x}, {y}), value type={:?}", value.type_());
+            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
+                crate::dbg_log!("icon field drop: value is not a FileList");
                 return false;
             };
+            let paths: Vec<_> = file_list.files().into_iter().filter_map(|f| f.path()).collect();
+            crate::dbg_log!("icon field drop: paths={paths:?}");
             let tgt = this.item_at(x, y).map(|i| i as i32).unwrap_or(-1);
-            let shift = t
+            let event_shift = t
                 .current_event()
                 .map(|e| e.modifier_state().contains(gtk::gdk::ModifierType::SHIFT_MASK))
                 .unwrap_or(false);
-            this.handle_drop_text(&text, tgt, shift);
+            let shift = crate::dnd::shift_held(&this.inner.fixed);
+            crate::dbg_log!("icon field drop: event_shift={event_shift} live_shift={shift}");
+            this.handle_drop_text(&crate::dnd::paths_to_uri_list(&paths), tgt, shift);
             true
         });
         field.inner.fixed.add_controller(target);
