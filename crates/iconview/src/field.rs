@@ -410,6 +410,7 @@ impl IconField {
             return;
         };
         pool.bump_generation();
+        let generation = pool.generation();
         let size = crate::types::ThumbSize::for_icon(self.inner.layout.icon_size.get());
         for (index, entry) in self.inner.layout.entries.borrow().iter().enumerate() {
             let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
@@ -420,6 +421,7 @@ impl IconField {
                 path: entry.path.clone(),
                 kind,
                 size,
+                generation,
             });
         }
     }

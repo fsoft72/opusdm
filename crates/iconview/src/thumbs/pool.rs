@@ -20,6 +20,11 @@ pub struct ThumbRequest {
     pub path: PathBuf,
     pub kind: ThumbKind,
     pub size: ThumbSize,
+    /// Generation the request was submitted under. Checked against the
+    /// pool's current generation before any decoding starts, so a request
+    /// made stale by a directory change is skipped instead of paying for a
+    /// full decode or subprocess run that will only be discarded.
+    pub generation: u64,
 }
 
 /// A produced thumbnail, as PNG bytes (texture creation is the caller's job).
@@ -61,7 +66,12 @@ impl ThumbPool {
                         _ => break,
                     };
                     let gen_at_start = generation.load(Ordering::SeqCst);
-                    let ThumbRequest { index, path, kind, size } = req;
+                    if req.generation != gen_at_start {
+                        // Stale before any work started: the directory moved
+                        // on since this was queued. Skip the decode entirely.
+                        continue;
+                    }
+                    let ThumbRequest { index, path, kind, size, generation: _ } = req;
                     let png = match cache::load_valid(&path, size) {
                         Some(bytes) => Some(bytes),
                         None => match generate::generate(&path, kind, size.px()) {
@@ -146,6 +156,7 @@ mod tests {
             path: src.clone(),
             kind: ThumbKind::Image,
             size: ThumbSize::Normal,
+            generation: pool.generation(),
         });
         let res = rx.recv_blocking().expect("a result");
         assert_eq!(res.index, 3);
