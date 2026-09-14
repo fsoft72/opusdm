@@ -21,11 +21,34 @@ pub fn config_path() -> PathBuf {
 /// Load current desktop settings, or defaults if the file is missing or
 /// unparseable. Always clamped.
 pub fn load() -> DesktopSettings {
-    let path = config_path();
-    let parsed = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<DesktopSettings>(&c).ok());
-    parsed.unwrap_or_default().sanitized()
+    load_from(&config_path())
+}
+
+/// Testable core of [`load`].
+pub fn load_from(path: &std::path::Path) -> DesktopSettings {
+    if !path.exists() {
+        return DesktopSettings::default();
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "opus-desktop-config: cannot read desktop settings from {}: {e}",
+                path.display()
+            );
+            return DesktopSettings::default();
+        }
+    };
+    match serde_json::from_str::<DesktopSettings>(&content) {
+        Ok(settings) => settings.sanitized(),
+        Err(e) => {
+            eprintln!(
+                "opus-desktop-config: malformed desktop settings in {}: {e}",
+                path.display()
+            );
+            DesktopSettings::default().sanitized()
+        }
+    }
 }
 
 /// `gdk::RGBA` -> `#rrggbb` (alpha dropped).
@@ -60,5 +83,13 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         assert_eq!(load(), DesktopSettings::default());
+    }
+
+    #[test]
+    fn load_defaults_when_file_is_malformed() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("desktop.json");
+        std::fs::write(&path, b"bad json").unwrap();
+        assert_eq!(load_from(&path), DesktopSettings::default());
     }
 }

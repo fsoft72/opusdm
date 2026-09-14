@@ -39,10 +39,20 @@ fn load_from(path: &Path) -> DesktopSettings {
     if !path.exists() {
         return DesktopSettings::default();
     }
-    let parsed = fs::read_to_string(path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<DesktopSettings>(&c).ok());
-    parsed.unwrap_or_default().sanitized()
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("opusdm-hub: cannot read desktop settings from {}: {e}", path.display());
+            return DesktopSettings::default();
+        }
+    };
+    match serde_json::from_str::<DesktopSettings>(&content) {
+        Ok(settings) => settings.sanitized(),
+        Err(e) => {
+            eprintln!("opusdm-hub: malformed desktop settings in {}: {e}", path.display());
+            DesktopSettings::default().sanitized()
+        }
+    }
 }
 
 /// Testable core of [`save`].

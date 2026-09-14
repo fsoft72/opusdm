@@ -19,11 +19,28 @@ pub fn config_path() -> PathBuf {
 
 /// Load the full current `Settings` (defaults if missing/unparseable).
 pub fn load_settings() -> Settings {
-    let path = config_path();
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<Settings>(&c).ok())
-        .unwrap_or_default()
+    load_settings_from(&config_path())
+}
+
+/// Testable core of [`load_settings`].
+pub fn load_settings_from(path: &std::path::Path) -> Settings {
+    if !path.exists() {
+        return Settings::default();
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("opusdm-theme: cannot read settings from {}: {e}", path.display());
+            return Settings::default();
+        }
+    };
+    match serde_json::from_str::<Settings>(&content) {
+        Ok(settings) => settings,
+        Err(e) => {
+            eprintln!("opusdm-theme: malformed settings in {}: {e}", path.display());
+            Settings::default()
+        }
+    }
 }
 
 /// What applying a selected icon set produces: the full `Settings` and
@@ -182,5 +199,20 @@ mod tests {
         assert_eq!(result.desktop.icon_size, 100);
         // theme.json didn't touch appearance - the UI's live edit survives.
         assert!(result.settings.appearance.monospace_list);
+    }
+
+    #[test]
+    fn load_settings_from_missing_file_is_default() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        assert_eq!(load_settings_from(&path), Settings::default());
+    }
+
+    #[test]
+    fn load_settings_from_malformed_file_reports_and_returns_default() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        std::fs::write(&path, b"invalid json").unwrap();
+        assert_eq!(load_settings_from(&path), Settings::default());
     }
 }
