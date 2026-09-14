@@ -274,6 +274,24 @@ fn install_desktop_css(bg: &opusdm_ipc::Background) {
     DESKTOP_CSS_PROVIDER.with(|p| p.load_from_data(&desktop_rule_css(bg)));
 }
 
+/// Read `dir` into desktop entries on a background thread and invoke
+/// `on_done` with the result back on the GTK main loop, so scanning a large
+/// or slow desktop directory never freezes the desktop and panel.
+fn read_entries_async(
+    dir: PathBuf,
+    on_done: impl Fn(std::io::Result<Vec<opusdm_iconview::IconEntry>>) + 'static,
+) {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking(opusdm_iconview::scan::read_entries(&dir, false));
+    });
+    glib::spawn_future_local(async move {
+        if let Ok(result) = rx.recv().await {
+            on_done(result);
+        }
+    });
+}
+
 /// Start (or restart) the inotify watch on `dir` and the local future that
 /// reloads the desktop icon field when the directory changes. Replaces any
 /// previous watch stored in `widgets.desktop_watch`.
@@ -289,11 +307,27 @@ fn spawn_desktop_watch(
             let field = field.clone();
             let dir = dir.to_path_buf();
             glib::spawn_future_local(async move {
+                // Reloads run off-thread, so several can be in flight at
+                // once; a generation counter drops any read superseded by a
+                // later event instead of applying stale entries out of order.
+                let generation = Rc::new(Cell::new(0_u64));
                 while rx.recv().await.is_ok() {
-                    match opusdm_iconview::scan::read_entries(&dir, false) {
-                        Ok(entries) => field.set_entries(&entries),
-                        Err(e) => eprintln!("opusdm-hub: desktop reload failed: {e}"),
-                    }
+                    let gen = generation.get() + 1;
+                    generation.set(gen);
+                    let generation = generation.clone();
+                    let field = field.clone();
+                    let dir = dir.clone();
+                    read_entries_async(dir.clone(), move |result| {
+                        if generation.get() != gen {
+                            return;
+                        }
+                        match result {
+                            Ok(entries) => field.set_entries(&entries),
+                            Err(e) => {
+                                eprintln!("opusdm-hub: desktop reload failed for {}: {e}", dir.display())
+                            }
+                        }
+                    });
                 }
             });
             *widgets.desktop_watch.borrow_mut() = Some(watch);
@@ -347,9 +381,13 @@ fn build_desktop_area(
             let f = opusdm_iconview::IconField::new();
             f.set_mode(opusdm_iconview::LayoutMode::Free);
             f.set_icon_set(icon_set);
-            match opusdm_iconview::scan::read_entries(dir, false) {
-                Ok(entries) => f.set_entries(&entries),
-                Err(e) => eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display()),
+            {
+                let f = f.clone();
+                let dir = dir.to_path_buf();
+                read_entries_async(dir.clone(), move |result| match result {
+                    Ok(entries) => f.set_entries(&entries),
+                    Err(e) => eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display()),
+                });
             }
             f.widget().set_hexpand(true);
             f.widget().set_vexpand(true);
@@ -499,10 +537,10 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
                 let (Some(field), Some(dir)) = (field, dir) else {
                     return;
                 };
-                match opusdm_iconview::scan::read_entries(&dir, false) {
+                read_entries_async(dir, move |result| match result {
                     Ok(entries) => field.set_entries(&entries),
                     Err(e) => eprintln!("opusdm-hub: rearrange failed: {e}"),
-                }
+                });
             });
             sub.append(&btn);
         }
@@ -645,13 +683,19 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 // A desktop that started with no directory has no icon field to
                 // populate; that only comes back on the next hub start.
                 if let (Some(field), Some(dir)) = (field.as_ref(), wanted.as_ref()) {
-                    match opusdm_iconview::scan::read_entries(dir, false) {
-                        Ok(entries) => field.set_entries(&entries),
-                        Err(e) => {
-                            eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display())
-                        }
+                    let field = field.clone();
+                    let dir = dir.clone();
+                    {
+                        let field = field.clone();
+                        let dir = dir.clone();
+                        read_entries_async(dir.clone(), move |result| match result {
+                            Ok(entries) => field.set_entries(&entries),
+                            Err(e) => {
+                                eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display())
+                            }
+                        });
                     }
-                    spawn_desktop_watch(widgets, field, dir);
+                    spawn_desktop_watch(widgets, &field, &dir);
                 }
             }
         }

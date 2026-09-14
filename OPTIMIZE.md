@@ -18,7 +18,7 @@
 - [x] **Keep blocking socket and disk I/O out of the hub owner loop** - The single owner thread synchronously writes IPC responses to every client and persists settings, so one non-reading client or slow filesystem can stall connection lifecycle, role changes, job progress, and all other clients.
   - File(s): `crates/hub/src/server.rs`, `crates/hub/src/settings.rs`, `crates/hub/src/desktop_settings.rs`
 
-- [ ] **Reload desktop entries outside the GTK executor** - The desktop watcher future calls `read_entries` synchronously on the main loop for every coalesced event, which can make the panel and desktop unresponsive during large directory rescans.
+- [x] **Reload desktop entries outside the GTK executor** - The desktop watcher future calls `read_entries` synchronously on the main loop for every coalesced event, which can make the panel and desktop unresponsive during large directory rescans.
   - File(s): `crates/hub/src/toolbar.rs`, `crates/iconview/src/scan.rs`
 
 ## Medium
