@@ -17,6 +17,7 @@ pub mod desktop;
 pub mod frame;
 pub mod inotify;
 pub mod proto;
+pub mod settings;
 pub mod sockpath;
 pub mod theme;
 pub mod themes;

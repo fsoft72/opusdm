@@ -1,72 +1,42 @@
 //! Desktop settings persistence: `~/.config/opusdm/desktop.json`.
 //!
-//! Same three-roles-one-struct design as [`crate::settings`]: the on-disk
-//! shape is `opusdm_ipc::DesktopSettings`, which is also the hub's in-memory
-//! copy and the payload of `ToHub::SetDesktopSettings`.
+//! Delegated to `opusdm_ipc::settings` so configuration path resolution,
+//! directory creation, and error diagnostics are shared across all crates.
 
 use opusdm_ipc::DesktopSettings;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Path to `~/.config/opusdm/desktop.json`. Falls back to `$HOME/.config`
-/// then the temp dir when `dirs::config_dir()` yields nothing, exactly like
-/// [`crate::settings`].
+/// Path to `~/.config/opusdm/desktop.json`.
 pub fn config_path() -> PathBuf {
-    let mut path = dirs::config_dir().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".config"))
-            .unwrap_or_else(std::env::temp_dir)
-    });
-    path.push("opusdm");
-    path.push("desktop.json");
-    path
+    opusdm_ipc::settings::desktop_settings_path()
 }
 
 /// Load desktop settings from the standard path. Missing or unparseable ->
 /// [`DesktopSettings::default`]. Always clamped via
 /// [`DesktopSettings::sanitized`].
 pub fn load() -> DesktopSettings {
-    load_from(&config_path())
+    opusdm_ipc::settings::load_desktop_settings("opusdm-hub")
 }
 
 /// Persist `settings` to the standard path, creating the directory.
 pub fn save(settings: &DesktopSettings) -> std::io::Result<()> {
-    save_to(&config_path(), settings)
+    opusdm_ipc::settings::save_desktop_settings(settings)
 }
 
 /// Testable core of [`load`].
-fn load_from(path: &Path) -> DesktopSettings {
-    if !path.exists() {
-        return DesktopSettings::default();
-    }
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("opusdm-hub: cannot read desktop settings from {}: {e}", path.display());
-            return DesktopSettings::default();
-        }
-    };
-    match serde_json::from_str::<DesktopSettings>(&content) {
-        Ok(settings) => settings.sanitized(),
-        Err(e) => {
-            eprintln!("opusdm-hub: malformed desktop settings in {}: {e}", path.display());
-            DesktopSettings::default().sanitized()
-        }
-    }
+pub fn load_from(path: &Path) -> DesktopSettings {
+    opusdm_ipc::settings::load_desktop_settings_from(path, "opusdm-hub")
 }
 
 /// Testable core of [`save`].
-fn save_to(path: &Path, settings: &DesktopSettings) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(settings)?;
-    fs::write(path, json)
+pub fn save_to(path: &Path, settings: &DesktopSettings) -> std::io::Result<()> {
+    opusdm_ipc::settings::save_desktop_settings_to(path, settings)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn load_from_missing_file_is_the_default() {

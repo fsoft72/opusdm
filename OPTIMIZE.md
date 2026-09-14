@@ -43,7 +43,7 @@
 
 ## Low / Nice to have
 
-- [ ] **Centralize settings persistence** - Configuration path fallback, JSON loading, directory creation, and default-on-error behavior are duplicated across the hub and desktop configuration app, which can drift as persistence behavior evolves.
+- [x] **Centralize settings persistence** - Configuration path fallback, JSON loading, directory creation, and default-on-error behavior are duplicated across the hub and desktop configuration app, which can drift as persistence behavior evolves.
   - File(s): `crates/hub/src/settings.rs`, `crates/hub/src/desktop_settings.rs`, `crates/desktop-config/src/model.rs`
 
 - [x] **Report malformed settings instead of silently resetting them** - JSON parse and read failures currently collapse to defaults without diagnostics, hiding configuration corruption and making unexpected resets difficult to troubleshoot.

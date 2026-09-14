@@ -1,71 +1,37 @@
 //! Settings persistence: stored in ~/.config/opusdm/settings.json.
 //!
-//! The on-disk shape is `opusdm_ipc::Settings` itself - the same struct the
-//! hub keeps in memory (`server::owner_loop`'s `current_settings`) and sends
-//! to Listers in `Welcome`/`SettingsUpdate`. One struct, three roles (file
-//! format, in-memory state, wire format), so a new setting is one field
-//! added in one place rather than three kept in sync by hand.
+//! Delegated to `opusdm_ipc::settings` so configuration path resolution,
+//! directory creation, and error diagnostics are shared across all crates.
 
 use opusdm_ipc::Settings;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-fn config_path() -> PathBuf {
-    // dirs::config_dir() fails only when neither XDG_CONFIG_HOME nor HOME is
-    // set; fall back to $HOME/.config built by hand rather than a literal
-    // "~" path, which fs calls never expand.
-    let mut path = dirs::config_dir().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".config"))
-            .unwrap_or_else(std::env::temp_dir)
-    });
-    path.push("opusdm");
-    path.push("settings.json");
-    path
+pub fn config_path() -> PathBuf {
+    opusdm_ipc::settings::settings_path()
 }
 
 pub fn load_settings() -> Settings {
-    load_settings_from(&config_path())
+    opusdm_ipc::settings::load_settings("opusdm-hub")
 }
 
 /// Testable core of [`load_settings`].
 pub fn load_settings_from(path: &Path) -> Settings {
-    if !path.exists() {
-        return Settings::default();
-    }
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("opusdm-hub: cannot read settings from {}: {e}", path.display());
-            return Settings::default();
-        }
-    };
-    match serde_json::from_str(&content) {
-        Ok(settings) => settings,
-        Err(e) => {
-            eprintln!("opusdm-hub: malformed settings in {}: {e}", path.display());
-            Settings::default()
-        }
-    }
+    opusdm_ipc::settings::load_settings_from(path, "opusdm-hub")
 }
 
 pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
-    save_settings_to(&config_path(), settings)
+    opusdm_ipc::settings::save_settings(settings)
 }
 
 /// Testable core of [`save_settings`].
 pub fn save_settings_to(path: &Path, settings: &Settings) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(settings)?;
-    fs::write(path, json)?;
-    Ok(())
+    opusdm_ipc::settings::save_settings_to(path, settings)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn load_from_missing_file_is_default() {

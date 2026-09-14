@@ -8,47 +8,18 @@ use std::path::PathBuf;
 
 /// Path to `~/.config/opusdm/desktop.json`. Same resolution as the hub.
 pub fn config_path() -> PathBuf {
-    let mut path = dirs::config_dir().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".config"))
-            .unwrap_or_else(std::env::temp_dir)
-    });
-    path.push("opusdm");
-    path.push("desktop.json");
-    path
+    opusdm_ipc::settings::desktop_settings_path()
 }
 
 /// Load current desktop settings, or defaults if the file is missing or
 /// unparseable. Always clamped.
 pub fn load() -> DesktopSettings {
-    load_from(&config_path())
+    opusdm_ipc::settings::load_desktop_settings("opus-desktop-config")
 }
 
 /// Testable core of [`load`].
 pub fn load_from(path: &std::path::Path) -> DesktopSettings {
-    if !path.exists() {
-        return DesktopSettings::default();
-    }
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "opus-desktop-config: cannot read desktop settings from {}: {e}",
-                path.display()
-            );
-            return DesktopSettings::default();
-        }
-    };
-    match serde_json::from_str::<DesktopSettings>(&content) {
-        Ok(settings) => settings.sanitized(),
-        Err(e) => {
-            eprintln!(
-                "opus-desktop-config: malformed desktop settings in {}: {e}",
-                path.display()
-            );
-            DesktopSettings::default().sanitized()
-        }
-    }
+    opusdm_ipc::settings::load_desktop_settings_from(path, "opus-desktop-config")
 }
 
 /// `gdk::RGBA` -> `#rrggbb` (alpha dropped).

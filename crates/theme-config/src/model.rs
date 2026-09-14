@@ -3,44 +3,16 @@
 //! write settings.json directly when no hub is up.
 
 use opusdm_ipc::{DesktopSettings, IconSetId, Settings};
-use std::path::PathBuf;
-
-/// Path to `~/.config/opusdm/settings.json`. Same resolution as the hub.
-pub fn config_path() -> PathBuf {
-    let mut path = dirs::config_dir().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".config"))
-            .unwrap_or_else(std::env::temp_dir)
-    });
-    path.push("opusdm");
-    path.push("settings.json");
-    path
-}
 
 /// Load the full current `Settings` (defaults if missing/unparseable).
 pub fn load_settings() -> Settings {
-    load_settings_from(&config_path())
+    opusdm_ipc::settings::load_settings("opusdm-theme")
 }
 
 /// Testable core of [`load_settings`].
+#[cfg(test)]
 pub fn load_settings_from(path: &std::path::Path) -> Settings {
-    if !path.exists() {
-        return Settings::default();
-    }
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("opusdm-theme: cannot read settings from {}: {e}", path.display());
-            return Settings::default();
-        }
-    };
-    match serde_json::from_str::<Settings>(&content) {
-        Ok(settings) => settings,
-        Err(e) => {
-            eprintln!("opusdm-theme: malformed settings in {}: {e}", path.display());
-            Settings::default()
-        }
-    }
+    opusdm_ipc::settings::load_settings_from(path, "opusdm-theme")
 }
 
 /// What applying a selected icon set produces: the full `Settings` and
@@ -114,20 +86,8 @@ fn send_to_hub(sock: &std::path::Path, settings: &Settings, desktop: &DesktopSet
 /// Overwrite settings.json and desktop.json with the given, already-complete
 /// values.
 fn write_files(settings: &Settings, desktop: &DesktopSettings) -> std::io::Result<()> {
-    let settings_path = config_path();
-    if let Some(parent) = settings_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&settings_path, serde_json::to_string_pretty(settings)?)?;
-
-    let mut desktop_path = dirs::config_dir().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".config"))
-            .unwrap_or_else(std::env::temp_dir)
-    });
-    desktop_path.push("opusdm");
-    desktop_path.push("desktop.json");
-    std::fs::write(&desktop_path, serde_json::to_string_pretty(desktop)?)
+    opusdm_ipc::settings::save_settings(settings)?;
+    opusdm_ipc::settings::save_desktop_settings(desktop)
 }
 
 #[cfg(test)]

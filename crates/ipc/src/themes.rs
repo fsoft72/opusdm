@@ -8,17 +8,10 @@ use crate::proto::{Appearance, Behavior, ColorSettings};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// `~/.config/opusdm/themes`. Same `dirs::config_dir()` resolution used
+/// `~/.config/opusdm/themes`. Same `config_dir()` resolution used
 /// throughout the app.
 pub fn themes_dir() -> PathBuf {
-    let mut path = dirs::config_dir().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".config"))
-            .unwrap_or_else(std::env::temp_dir)
-    });
-    path.push("opusdm");
-    path.push("themes");
-    path
+    crate::settings::config_dir().join("themes")
 }
 
 /// The directory for one installed theme.
