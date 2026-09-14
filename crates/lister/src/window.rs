@@ -149,7 +149,12 @@ pub fn run(
         crate::dlog!("activate");
         let mut guard = shared.borrow_mut();
         let Some(st) = guard.as_mut() else { return };
-        let inbox = st.inbox.take().expect("activate once");
+        // `connect_activate` should fire once for a NON_UNIQUE application,
+        // but a stray re-activation must not crash an already-running window.
+        let Some(inbox) = st.inbox.take() else {
+            crate::dlog!("activate: ignoring re-activation, window already built");
+            return;
+        };
         let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone());
         ui.navigate_to(&st.start);
 
@@ -402,7 +407,7 @@ fn build_window(
     // Registered once; update_css_for_colors() reloads its content in place.
     let css_provider = gtk::CssProvider::new();
     gtk::style_context_add_provider_for_display(
-        &gdk::Display::default().unwrap(),
+        &gdk::Display::default().expect("no default GDK display: cannot run without one"),
         &css_provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );

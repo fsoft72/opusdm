@@ -30,7 +30,7 @@
 - [x] **`Ui` struct is a god object shared by every callback** — 30+ public fields on `Ui` (window, models, labels, settings, watcher, terminal, preview...) mean any callback can touch anything, and modules like `actions.rs`/`palette.rs`/`tools.rs` couple to the whole window. Group into sub-structs (status bar, view state, hub connection) and pass only what each module needs.
   - File(s): `crates/lister/src/window.rs`
 
-- [ ] **409 `unwrap()` calls across crates** — Many are on GTK downcasts and `Display::default()` in UI code, which is mostly benign, but the same habit in hub/fsops paths (e.g. `expect("activate once")`, thread spawns, sorter downcasts) can panic on legitimate runtime conditions. Audit unwraps outside tests and downgrade to logged errors where the app can continue.
+- [x] **409 `unwrap()` calls across crates** — Many are on GTK downcasts and `Display::default()` in UI code, which is mostly benign, but the same habit in hub/fsops paths (e.g. `expect("activate once")`, thread spawns, sorter downcasts) can panic on legitimate runtime conditions. Audit unwraps outside tests and downgrade to logged errors where the app can continue.
   - File(s): repo-wide, notably `crates/lister/src/window.rs`, `crates/hub/src/server.rs`
 
 ## Medium

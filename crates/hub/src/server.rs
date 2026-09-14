@@ -207,10 +207,17 @@ fn owner_loop(
                     Conn { write, registered: false, pid: 0, path: PathBuf::new() },
                 );
                 let owner_tx = owner_tx.clone();
-                std::thread::Builder::new()
+                let spawned = std::thread::Builder::new()
                     .name(format!("opusdm-reader-{cid}"))
-                    .spawn(move || reader_loop(cid, stream, owner_tx))
-                    .expect("spawn reader thread");
+                    .spawn(move || reader_loop(cid, stream, owner_tx));
+                // A thread-spawn failure (e.g. the process thread limit) must
+                // not take down every other Lister connected to this hub;
+                // drop just this one and let the caller retry.
+                if let Err(e) = spawned {
+                    eprintln!("opusdm-hub: cannot spawn reader thread for conn {cid}: {e}");
+                    conns.remove(&cid);
+                    free_conns.insert(cid);
+                }
             }
 
             OwnerMsg::FromLister(cid, ToHub::Ping) => {
