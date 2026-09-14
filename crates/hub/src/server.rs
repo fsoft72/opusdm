@@ -107,13 +107,17 @@ pub fn spawn_server(listener: UnixListener, on_spawn: SpawnFn) -> ServerHandle {
     // GTK command forwarder.
     {
         let owner_tx = owner_tx.clone();
-        std::thread::spawn(move || {
-            for cmd in cmd_rx {
-                if owner_tx.send(OwnerMsg::FromGtk(cmd)).is_err() {
-                    break;
+        std::thread::Builder::new()
+            .name("opusdm-gtk-cmd".into())
+            .spawn(move || {
+                for cmd in cmd_rx {
+                    if owner_tx.send(OwnerMsg::FromGtk(cmd)).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+                eprintln!("opusdm-hub: gtk command forwarder exiting");
+            })
+            .expect("spawn gtk command forwarder thread");
     }
     // Owner loop.
     std::thread::Builder::new()
@@ -174,13 +178,17 @@ fn owner_loop(
     let (jp_tx, jp_rx) = channel::<(u64, Progress)>();
     {
         let owner_tx = owner_tx.clone();
-        std::thread::spawn(move || {
-            for (id, ev) in jp_rx {
-                if owner_tx.send(OwnerMsg::JobProgress(id, ev)).is_err() {
-                    break;
+        std::thread::Builder::new()
+            .name("opusdm-job-progress".into())
+            .spawn(move || {
+                for (id, ev) in jp_rx {
+                    if owner_tx.send(OwnerMsg::JobProgress(id, ev)).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+                eprintln!("opusdm-hub: job progress forwarder exiting");
+            })
+            .expect("spawn job progress forwarder thread");
     }
     let mut engine = JobEngine::new(default_runner(), jp_tx);
     let mut jobs: HashMap<u64, JobMeta> = HashMap::new();

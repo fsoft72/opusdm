@@ -50,7 +50,7 @@
 - [ ] **Settings `Welcome` variant handled with a comment, not the type system** — `ToLister::Welcome` is documented as "consumed synchronously, never reaches here" yet still has a match arm every Lister must write. Split the handshake message from the steady-state protocol (separate enum or a dedicated connect function returning the welcome payload).
   - File(s): `crates/lister/src/window.rs` (`apply_inbound`), `crates/lister/src/client.rs`, `crates/ipc/src/proto.rs`
 
-- [ ] **Hub server spawns unnamed, untracked forwarder threads** — Two `std::thread::spawn` forwarder loops (GTK cmd, job progress) plus per-connection reader threads are created without names or join handles; a leaked Lister connection keeps a reader thread forever. Name them consistently and log thread exit, or consolidate the forwarders into the owner loop's `Receiver` set.
+- [x] **Hub server spawns unnamed, untracked forwarder threads** — Two `std::thread::spawn` forwarder loops (GTK cmd, job progress) plus per-connection reader threads are created without names or join handles; a leaked Lister connection keeps a reader thread forever. Name them consistently and log thread exit, or consolidate the forwarders into the owner loop's `Receiver` set.
   - File(s): `crates/hub/src/server.rs`
 
 - [x] **Checksum dialog builds near-identical SHA/MD5 rows by copy-paste** — ~40 lines duplicated for the two hash rows including the Copy-button closure; extract a small `hash_row(label, value)` helper.
