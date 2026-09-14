@@ -60,7 +60,7 @@ impl ThumbSize {
 }
 
 /// One entry shown by `IconField`. Built by the consumer, never mutated here.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IconEntry {
     /// File name, no directory part.
     pub name: String,

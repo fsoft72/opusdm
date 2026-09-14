@@ -274,8 +274,9 @@ impl Ui {
         let _ = self.hub.client.send(&ToHub::PathChanged(dir.to_path_buf()));
     }
 
-    /// Rebuild the icon view's entries from the current sorted model. A no-op
-    /// unless the icon view is the active one.
+    /// Reconcile the icon view's entries with the current sorted model. A
+    /// no-op unless the icon view is the active one. Incremental: selection,
+    /// cached thumbnails and unchanged item widgets survive the update.
     pub fn refresh_icon_view(self: &Rc<Self>) {
         if self.view.mode.get() != ViewMode::Icons {
             return;
@@ -288,7 +289,7 @@ impl Ui {
                 entries.push(crate::model::row_to_entry(&row, &dir));
             }
         }
-        self.view.icon_field.set_entries(&entries);
+        self.view.icon_field.refresh_entries(&entries);
     }
 
     /// Rename one row in the store in place, without re-reading the

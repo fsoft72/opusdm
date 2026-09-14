@@ -404,6 +404,106 @@ impl IconField {
         self.request_thumbs();
     }
 
+    /// Reconcile the field with a fresh listing of the same directory,
+    /// preserving view state across the update. Unlike `set_entries`, the
+    /// selection, anchor, cursor and free positions follow their entries by
+    /// path (surviving reorders and renames land as a plain update), cached
+    /// thumbnails are re-keyed to the new indices and reused, and only
+    /// entries that actually changed get their widget rebuilt and their
+    /// thumbnail re-requested. Use `set_entries` for a different directory.
+    pub fn refresh_entries(&self, entries: &[IconEntry]) {
+        let old = std::mem::replace(&mut *self.inner.layout.entries.borrow_mut(), entries.to_vec());
+        let new_index_of: HashMap<&std::path::Path, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.path.as_path(), i))
+            .collect();
+        let remap = |i: usize| old.get(i).and_then(|e| new_index_of.get(e.path.as_path()).copied());
+
+        // Selection, anchor and cursor follow their entries by path.
+        {
+            let mut sel = self.inner.selection.selected.borrow_mut();
+            *sel = sel.iter().filter_map(|&i| remap(i)).collect();
+        }
+        if let Some(a) = self.inner.selection.anchor.get() {
+            self.inner.selection.anchor.set(remap(a));
+        }
+        if let Some(c) = self.inner.selection.cursor.get() {
+            self.inner.selection.cursor.set(remap(c));
+        }
+
+        // Free positions follow their entries too.
+        {
+            let mut fp = self.inner.layout.free_positions.borrow_mut();
+            let prev: Vec<_> = fp.drain().collect();
+            for (i, pos) in prev {
+                if let Some(ni) = remap(i) {
+                    fp.insert(ni, pos);
+                }
+            }
+        }
+
+        // Re-key cached thumbnails to the new indices; entries that kept
+        // their path keep their thumbnail.
+        {
+            let mut cache = self.inner.layout.thumb_cache.borrow_mut();
+            let prev: Vec<_> = cache.drain().collect();
+            for (i, tex) in prev {
+                if let Some(ni) = remap(i) {
+                    cache.insert(ni, tex);
+                }
+            }
+        }
+
+        // Rebuild only the realized widgets whose entry changed; unchanged
+        // ones survive in place (their thumbnails included).
+        {
+            let mut realized = self.inner.layout.realized.borrow_mut();
+            let stale: Vec<usize> = realized
+                .keys()
+                .copied()
+                .filter(|&i| old.get(i) != entries.get(i))
+                .collect();
+            for i in stale {
+                if let Some(it) = realized.remove(&i) {
+                    self.inner.layout.fixed.remove(it.widget());
+                }
+            }
+        }
+
+        self.relayout();
+        self.emit_selection_changed();
+        self.request_missing_thumbs();
+    }
+
+    /// Queue thumbnail jobs for previewable entries not already covered by
+    /// the thumbnail cache. Keeps the current generation: an in-flight
+    /// result for a stale path is still dropped by `apply_thumb_result`'s
+    /// per-entry path check.
+    fn request_missing_thumbs(&self) {
+        let Some(pool) = self.inner.thumb_pool.as_ref() else {
+            return;
+        };
+        let generation = pool.generation();
+        let size = crate::types::ThumbSize::for_icon(self.inner.layout.icon_size.get());
+        let cache = self.inner.layout.thumb_cache.borrow();
+        for (index, entry) in self.inner.layout.entries.borrow().iter().enumerate() {
+            if cache.contains_key(&index) {
+                continue;
+            }
+            let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
+                continue;
+            };
+            pool.submit(crate::thumbs::ThumbRequest {
+                index,
+                path: entry.path.clone(),
+                kind,
+                size,
+                generation,
+            });
+        }
+    }
+
     /// Queue a thumbnail job for every previewable entry, newest generation.
     fn request_thumbs(&self) {
         let Some(pool) = self.inner.thumb_pool.as_ref() else {
@@ -1276,6 +1376,28 @@ mod tests {
         assert!(pos.contains_key(&2));
         assert!(!pos.contains_key(&1));
         assert_eq!(fired.get(), 1);
+
+        // --- IconField: refresh_entries keeps view state, keyed by path ---
+        f.set_mode(LayoutMode::Free);
+        f.set_entries(&entries(4));
+        f.select_exclusive(2); // /tmp/file2.txt
+        f.inner.layout.free_positions.borrow_mut().insert(2, (5.0, 6.0));
+        let mut reordered = entries(4);
+        reordered.swap(0, 2); // same entries, new order
+        f.refresh_entries(&reordered);
+        // The selection, cursor and free position followed file2 to index 0.
+        assert_eq!(f.entry_count(), 4);
+        assert_eq!(f.selected_indices(), vec![0]);
+        assert_eq!(f.cursor(), Some(0));
+        assert_eq!(f.free_positions().get(&0), Some(&(5.0, 6.0)));
+        // A vanished entry drops out of the selection cleanly.
+        let mut shrunk = reordered.clone();
+        shrunk.remove(0); // removes file2.txt, the selected one
+        f.refresh_entries(&shrunk);
+        assert_eq!(f.entry_count(), 3);
+        assert!(f.selected_indices().is_empty());
+        assert!(f.cursor().is_none());
+        assert!(f.free_positions().is_empty());
 
         // --- IconField: thumbnail wiring is safe with the pool on and off ---
         std::env::set_var("OPUSDM_NO_THUMBS", "1");
