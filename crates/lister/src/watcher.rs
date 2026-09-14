@@ -9,25 +9,17 @@
 //! Fd lifecycle, poll and raw event parsing are shared with `hub`'s desktop
 //! watcher via `opusdm_ipc::inotify`.
 
-use opusdm_ipc::inotify::{read_raw, wait_readable, InotifyFd, Wait};
+use opusdm_ipc::inotify::{
+    run_debounce_loop, DebounceConfig, InotifyFd, DEFAULT_WATCH_MASK,
+};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Events worth reloading for: an entry appearing, disappearing, being renamed,
-/// finishing a write, or changing its metadata.
-const WATCH_MASK: u32 = libc::IN_CREATE
-    | libc::IN_DELETE
-    | libc::IN_MOVED_FROM
-    | libc::IN_MOVED_TO
-    | libc::IN_CLOSE_WRITE
-    | libc::IN_ATTRIB
-    | libc::IN_DELETE_SELF
-    | libc::IN_MOVE_SELF;
-
-/// Read buffer for one `read(2)` on the inotify fd.
-const EVENT_BUF: usize = 8 * 1024;
+/// finishing a write, changing its metadata, or target itself being moved/deleted.
+const WATCH_MASK: u32 = DEFAULT_WATCH_MASK;
 
 /// How long the idle wait blocks before looking up again whether the receiver
 /// is still there, so the thread retires after the window closes.
@@ -70,12 +62,6 @@ impl Inotify {
     }
 }
 
-/// Read one batch of events. `None` means the fd failed.
-fn read_events(fd: i32, buf: &mut [u8]) -> Option<Vec<i32>> {
-    let n = read_raw(fd, buf)?;
-    Some(opusdm_ipc::inotify::parse_wds(&buf[..n]))
-}
-
 /// A live watch on whatever directory the Lister is showing.
 ///
 /// Dropping it stops the thread at its next idle wakeup.
@@ -113,52 +99,37 @@ impl DirWatcher {
 
 /// The watcher thread: wait, drain, coalesce, notify, repeat.
 fn watch_loop(inotify: &Inotify, tx: &async_channel::Sender<PathBuf>, debounce: Duration) {
-    let mut buf = vec![0u8; EVENT_BUF];
-    loop {
-        match wait_readable(inotify.fd.raw(), IDLE_POLL_MS) {
-            Wait::Failed => return,
-            Wait::Timeout => {
-                if tx.is_closed() {
-                    return;
-                }
-                continue;
-            }
-            Wait::Ready => {}
-        }
+    let config = DebounceConfig {
+        idle_poll_ms: IDLE_POLL_MS,
+        debounce,
+        max_coalesce: MAX_COALESCE,
+    };
 
-        let Some(wds) = read_events(inotify.fd.raw(), &mut buf) else { return };
-        let mut changed = wds.iter().find_map(|wd| inotify.path_for(*wd));
-
-        // Keep swallowing events while they keep arriving, so one `cargo build`
-        // produces one reload rather than one per file.
-        let deadline = Instant::now() + MAX_COALESCE;
-        loop {
-            let left = debounce.as_millis().min(i32::MAX as u128) as i32;
-            if Instant::now() >= deadline {
-                break;
+    let changed = std::cell::RefCell::new(None);
+    run_debounce_loop(
+        inotify.fd.raw(),
+        config,
+        || tx.is_closed(),
+        |wds| {
+            let mut guard = changed.borrow_mut();
+            if guard.is_none() {
+                *guard = wds.iter().find_map(|wd| inotify.path_for(*wd));
             }
-            match wait_readable(inotify.fd.raw(), left) {
-                Wait::Ready => {}
-                Wait::Failed => return,
-                Wait::Timeout => break,
+        },
+        || {
+            if let Some(dir) = changed.borrow_mut().take() {
+                tx.send_blocking(dir).is_ok()
+            } else {
+                true
             }
-            let Some(more) = read_events(inotify.fd.raw(), &mut buf) else { return };
-            if changed.is_none() {
-                changed = more.iter().find_map(|wd| inotify.path_for(*wd));
-            }
-        }
-
-        // Events for an already-abandoned directory leave `changed` empty.
-        let Some(dir) = changed else { continue };
-        if tx.send_blocking(dir).is_err() {
-            return;
-        }
-    }
+        },
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     // `parse_wds`/`EVENT_HEADER` fd-parsing coverage lives with the shared
     // helper in `opusdm_ipc::inotify`; this module tests the watcher's own

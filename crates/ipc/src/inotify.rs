@@ -125,6 +125,124 @@ pub fn parse_wds(buf: &[u8]) -> Vec<i32> {
     wds
 }
 
+/// Standard watch mask for directory watchers: an entry appearing, disappearing,
+/// being renamed, finishing a write, changing metadata, or the watched target itself
+/// being moved/deleted.
+pub const DEFAULT_WATCH_MASK: u32 = libc::IN_CREATE
+    | libc::IN_DELETE
+    | libc::IN_MOVED_FROM
+    | libc::IN_MOVED_TO
+    | libc::IN_CLOSE_WRITE
+    | libc::IN_ATTRIB
+    | libc::IN_DELETE_SELF
+    | libc::IN_MOVE_SELF;
+
+/// Configuration for the shared inotify debounce and coalescing loop.
+#[derive(Debug, Clone, Copy)]
+pub struct DebounceConfig {
+    /// Idle poll timeout in milliseconds while waiting for initial activity.
+    pub idle_poll_ms: i32,
+    /// Quiet period required to consider a burst of events finished.
+    pub debounce: std::time::Duration,
+    /// Maximum duration a continuous burst of events can be coalesced before
+    /// forcing notification.
+    pub max_coalesce: std::time::Duration,
+}
+
+impl Default for DebounceConfig {
+    fn default() -> Self {
+        Self {
+            idle_poll_ms: 500,
+            debounce: std::time::Duration::from_millis(150),
+            max_coalesce: std::time::Duration::from_secs(2),
+        }
+    }
+}
+
+/// Run a shared poll, drain, coalesce and debounce loop over an inotify file descriptor.
+///
+/// For each burst of activity:
+/// - `should_stop`: called periodically to check if the loop should terminate early.
+/// - `on_event`: called for each non-empty batch of watch descriptors detected during the burst.
+/// - `on_burst_complete`: called after the burst settles (or reaches `max_coalesce`).
+///   If it returns `false`, the loop terminates.
+pub fn run_debounce_loop<S, E, F>(
+    fd: i32,
+    config: DebounceConfig,
+    mut should_stop: S,
+    mut on_event: E,
+    mut on_burst_complete: F,
+) where
+    S: FnMut() -> bool,
+    E: FnMut(&[i32]),
+    F: FnMut() -> bool,
+{
+    use std::time::Instant;
+
+    let mut buf = vec![0u8; 8 * 1024];
+
+    loop {
+        if should_stop() {
+            return;
+        }
+
+        match wait_readable(fd, config.idle_poll_ms) {
+            Wait::Failed => return,
+            Wait::Timeout => continue,
+            Wait::Ready => {}
+        }
+
+        if should_stop() {
+            return;
+        }
+
+        let Some(n) = read_raw(fd, &mut buf) else { return };
+        if n == 0 {
+            continue;
+        }
+        let wds = parse_wds(&buf[..n]);
+        if !wds.is_empty() {
+            on_event(&wds);
+        }
+
+        // Coalesce burst: drain incoming events until quiet for `debounce` or until
+        // `max_coalesce` is reached.
+        let deadline = Instant::now() + config.max_coalesce;
+        loop {
+            if should_stop() {
+                return;
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+
+            let time_to_deadline = deadline - now;
+            let wait_duration = config.debounce.min(time_to_deadline);
+            let wait_ms = wait_duration.as_millis().min(i32::MAX as u128) as i32;
+
+            match wait_readable(fd, wait_ms) {
+                Wait::Ready => {}
+                Wait::Failed => return,
+                Wait::Timeout => break,
+            }
+
+            let Some(n) = read_raw(fd, &mut buf) else { return };
+            if n > 0 {
+                let more_wds = parse_wds(&buf[..n]);
+                if !more_wds.is_empty() {
+                    on_event(&more_wds);
+                }
+            }
+        }
+
+        if !on_burst_complete() {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +290,59 @@ mod tests {
         let n = read_raw(inotify.raw(), &mut buf).unwrap();
         assert!(n > 0);
         assert!(!parse_wds(&buf[..n]).is_empty());
+    }
+
+    #[test]
+    fn debounce_loop_coalesces_bursts_and_stops_cleanly() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let td = tempfile::tempdir().unwrap();
+        let inotify = InotifyFd::new(libc::IN_CLOEXEC | libc::IN_NONBLOCK).unwrap();
+        let _wd = inotify.add_watch(td.path(), libc::IN_CREATE).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let bursts = Arc::new(AtomicUsize::new(0));
+        let events_seen = Arc::new(AtomicUsize::new(0));
+
+        let stop_clone = stop.clone();
+        let bursts_clone = bursts.clone();
+        let events_clone = events_seen.clone();
+        let fd = inotify.raw();
+
+        let handle = std::thread::spawn(move || {
+            let config = DebounceConfig {
+                idle_poll_ms: 50,
+                debounce: std::time::Duration::from_millis(60),
+                max_coalesce: std::time::Duration::from_millis(300),
+            };
+            run_debounce_loop(
+                fd,
+                config,
+                || stop_clone.load(Ordering::SeqCst),
+                |wds| {
+                    events_clone.fetch_add(wds.len(), Ordering::SeqCst);
+                },
+                || {
+                    bursts_clone.fetch_add(1, Ordering::SeqCst);
+                    true
+                },
+            );
+        });
+
+        // Write several files in a tight burst.
+        for i in 0..10 {
+            std::fs::write(td.path().join(format!("burst_{i}.txt")), b"test").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Wait for debounce to settle.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        stop.store(true, Ordering::SeqCst);
+        handle.join().unwrap();
+
+        assert!(events_seen.load(Ordering::SeqCst) >= 10);
+        // Coalesced into very few bursts (typically 1, at most 2 depending on timing).
+        assert!(bursts.load(Ordering::SeqCst) >= 1 && bursts.load(Ordering::SeqCst) <= 2);
     }
 }

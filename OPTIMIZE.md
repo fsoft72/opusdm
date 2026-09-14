@@ -49,5 +49,5 @@
 - [ ] **Report malformed settings instead of silently resetting them** - JSON parse and read failures currently collapse to defaults without diagnostics, hiding configuration corruption and making unexpected resets difficult to troubleshoot.
   - File(s): `crates/hub/src/settings.rs`, `crates/hub/src/desktop_settings.rs`, `crates/desktop-config/src/model.rs`
 
-- [ ] **Share the inotify debounce loop** - The hub desktop watcher and Lister watcher independently implement poll, drain, coalesce, shutdown, and channel notification logic with different timing behavior; move the reusable loop behind the IPC inotify utility to reduce Linux event-handling drift.
+- [x] **Share the inotify debounce loop** - The hub desktop watcher and Lister watcher independently implement poll, drain, coalesce, shutdown, and channel notification logic with different timing behavior; move the reusable loop behind the IPC inotify utility to reduce Linux event-handling drift.
   - File(s): `crates/hub/src/desktop_files.rs`, `crates/lister/src/watcher.rs`, `crates/ipc/src/inotify.rs`

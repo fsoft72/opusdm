@@ -3,25 +3,17 @@
 //! Fd lifecycle, poll and raw event draining are shared with `lister`'s
 //! directory watcher via `opusdm_ipc::inotify`.
 
-use opusdm_ipc::inotify::{read_raw, wait_readable, InotifyFd, Wait};
+use opusdm_ipc::inotify::{run_debounce_loop, DebounceConfig, InotifyFd, DEFAULT_WATCH_MASK};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// inotify events worth a reload: an entry appearing, disappearing, being
 /// renamed, finishing a write, or changing its metadata.
-const WATCH_MASK: u32 = libc::IN_CREATE
-    | libc::IN_DELETE
-    | libc::IN_MOVED_FROM
-    | libc::IN_MOVED_TO
-    | libc::IN_CLOSE_WRITE
-    | libc::IN_ATTRIB;
-
-/// Poll timeout so the watch thread notices the stop flag between events.
-const POLL_TIMEOUT_MS: i32 = 500;
+const WATCH_MASK: u32 = DEFAULT_WATCH_MASK;
 
 /// Hold a burst of events back this long, then emit a single notice.
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -121,30 +113,20 @@ impl Drop for DesktopWatch {
 }
 
 /// Block on the inotify fd, draining and coalescing events into `tx`, until the
-/// stop flag is set.
+/// stop flag is set or the channel is closed.
 fn watch_loop(inotify: &InotifyFd, stop: &AtomicBool, tx: &async_channel::Sender<()>) {
-    let fd = inotify.raw();
-    let mut buf = [0u8; 8 * 1024];
-    while !stop.load(Ordering::SeqCst) {
-        match wait_readable(fd, POLL_TIMEOUT_MS) {
-            Wait::Ready => {}
-            Wait::Timeout => continue,
-            Wait::Failed => return,
-        }
-        // Drain everything currently readable.
-        while matches!(read_raw(fd, &mut buf), Some(n) if n > 0) {}
-        // Coalesce a burst: keep draining until the directory goes quiet.
-        let deadline = Instant::now() + DEBOUNCE;
-        while Instant::now() < deadline && !stop.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(20));
-            if matches!(wait_readable(fd, 0), Wait::Ready) {
-                read_raw(fd, &mut buf);
-            }
-        }
-        if tx.send_blocking(()).is_err() {
-            return;
-        }
-    }
+    let config = DebounceConfig {
+        idle_poll_ms: 500,
+        debounce: DEBOUNCE,
+        max_coalesce: Duration::from_secs(2),
+    };
+    run_debounce_loop(
+        inotify.raw(),
+        config,
+        || stop.load(Ordering::SeqCst) || tx.is_closed(),
+        |_wds| {},
+        || tx.send_blocking(()).is_ok(),
+    );
 }
 
 #[cfg(test)]
