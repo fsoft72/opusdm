@@ -24,7 +24,7 @@
 - [x] **Two hand-rolled inotify implementations** — `lister/src/watcher.rs` and `hub/src/desktop_files.rs` each implement raw `libc::inotify_*` setup, poll loops and event parsing independently; fixes to one (event parsing, fd lifecycle) will not reach the other. Extract a shared inotify helper (e.g. into `crates/ipc` or a new small crate).
   - File(s): `crates/lister/src/watcher.rs`, `crates/hub/src/desktop_files.rs`
 
-- [ ] **Checksums computed by spawning external processes** — `compute_file_hashes` shells out to `sha256sum` and `md5sum` per file, adding process-spawn overhead per file and a hard runtime dependency on coreutils, while `md-5` is already a workspace dependency and sha2 is trivially addable. Hash in-process with a streaming reader.
+- [x] **Checksums computed by spawning external processes** — `compute_file_hashes` shells out to `sha256sum` and `md5sum` per file, adding process-spawn overhead per file and a hard runtime dependency on coreutils, while `md-5` is already a workspace dependency and sha2 is trivially addable. Hash in-process with a streaming reader.
   - File(s): `crates/lister/src/tools.rs`
 
 - [ ] **`Ui` struct is a god object shared by every callback** — 30+ public fields on `Ui` (window, models, labels, settings, watcher, terminal, preview...) mean any callback can touch anything, and modules like `actions.rs`/`palette.rs`/`tools.rs` couple to the whole window. Group into sub-structs (status bar, view state, hub connection) and pass only what each module needs.
@@ -61,7 +61,7 @@
 - [ ] **`filter_model` field marked `#[allow(dead_code)]`** — The `Ui::filter_model` field is stored but never read (the count closure captures its own clone). Either remove the field or route the count logic through it.
   - File(s): `crates/lister/src/window.rs`
 
-- [ ] **Fallback hash path reads only 64 KiB then reports "unavailable"** — In `compute_file_hashes`, if spawning `sha256sum` fails the code reads one buffer into `file` and discards the result; the `file`/`buffer` are dead work. Drop the fallback or actually hash in-process.
+- [x] **Fallback hash path reads only 64 KiB then reports "unavailable"** — In `compute_file_hashes`, if spawning `sha256sum` fails the code reads one buffer into `file` and discards the result; the `file`/`buffer` are dead work. Drop the fallback or actually hash in-process.
   - File(s): `crates/lister/src/tools.rs`
 
 - [ ] **`Role` cycle logic embedded in a gesture closure** — The SOURCE -> DEST -> NONE transition with the pinned-source shortcut is business logic hidden inside a `connect_released` closure; move it to a pure function on `Roles` so it can be unit tested.

@@ -107,41 +107,27 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>) {
     });
 }
 
-/// Compute SHA-256 and MD5 hashes of a file.
+/// Compute SHA-256 and MD5 hashes of a file by streaming it through both
+/// digests in one pass, in-process (no `sha256sum`/`md5sum` subprocesses).
 pub fn compute_file_hashes(path: &Path) -> std::io::Result<(String, String)> {
+    use md5::{Digest, Md5};
+    use sha2::Sha256;
+
     let mut file = std::fs::File::open(path)?;
     let mut buffer = [0u8; 65536];
+    let mut sha256 = Sha256::new();
+    let mut md5 = Md5::new();
 
-    let sha256_output = std::process::Command::new("sha256sum")
-        .arg(path)
-        .output();
-    let md5_output = std::process::Command::new("md5sum")
-        .arg(path)
-        .output();
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        sha256.update(&buffer[..n]);
+        md5.update(&buffer[..n]);
+    }
 
-    let sha256_str = if let Ok(out) = sha256_output {
-        String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string()
-    } else {
-        // Fallback: read bytes
-        let _ = file.read(&mut buffer);
-        "unavailable".into()
-    };
-
-    let md5_str = if let Ok(out) = md5_output {
-        String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string()
-    } else {
-        "unavailable".into()
-    };
-
-    Ok((sha256_str, md5_str))
+    Ok((format!("{:x}", sha256.finalize()), format!("{:x}", md5.finalize())))
 }
 
 /// Open Checksums HUD dialog for the selected file(s).
@@ -555,5 +541,15 @@ mod tests {
     fn test_compute_dir_size_nonexistent() {
         let size = compute_dir_size(Path::new("/nonexistent/test/path"));
         assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn compute_file_hashes_matches_known_digests() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("hello.txt");
+        std::fs::write(&path, b"hello world").unwrap();
+        let (sha256, md5) = compute_file_hashes(&path).unwrap();
+        assert_eq!(sha256, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(md5, "5eb63bbbe01eeed093cb22bb8f5acdc3");
     }
 }

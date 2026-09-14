@@ -19,6 +19,7 @@ gtk4 = { version = "0.10", features = ["v4_10"] }
 tempfile = "3"
 dirs = "5"
 md-5 = "0.10"
+sha2 = "0.10"
 x11rb = "0.13"
 gdk4-x11 = "0.10"
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
