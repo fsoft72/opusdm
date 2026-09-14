@@ -29,7 +29,7 @@
 - [x] **Avoid full icon-model rebuilds for small updates** - Rename, row rebinding, sorting, and refresh paths repeatedly clone every visible row and call `set_entries`, rebuilding layout, selection, caches, and thumbnail work instead of applying an incremental update.
   - File(s): `crates/lister/src/window.rs`, `crates/iconview/src/field.rs`
 
-- [ ] **Make directory scans resilient per entry** - A single metadata or symlink metadata error aborts the entire listing after `read_dir` succeeds, whereas only `file_type` errors are skipped; transient races or one unreadable entry can therefore prevent users from opening an otherwise valid directory.
+- [x] **Make directory scans resilient per entry** - A single metadata or symlink metadata error aborts the entire listing after `read_dir` succeeds, whereas only `file_type` errors are skipped; transient races or one unreadable entry can therefore prevent users from opening an otherwise valid directory.
   - File(s): `crates/lister/src/model.rs`
 
 - [ ] **Replace the sysmon sample vector with a ring buffer** - Every tick removes index zero, shifts the history, clones every trace, and reinstalls the drawing closure; retain one draw function over shared state and use `VecDeque` or a circular index to eliminate recurring copies and callback churn.

@@ -51,7 +51,12 @@ pub enum SortCol {
 pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
     let mut rows = Vec::new();
     for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
+        // Per-entry failures (transient races, one unreadable file) skip just
+        // that entry instead of aborting an otherwise valid listing.
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
         let ft = match entry.file_type() {
             Ok(ft) => ft,
@@ -59,7 +64,10 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
         };
         let is_symlink = ft.is_symlink();
         let (is_dir, size, broken_link, modified_unix, uid, gid, mode) = if is_symlink {
-            let link_meta = std::fs::symlink_metadata(entry.path())?;
+            let link_meta = match std::fs::symlink_metadata(entry.path()) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
             let target_meta = std::fs::metadata(entry.path()); // follows symlinks
             let (is_dir, size, broken_link) = match &target_meta {
                 Ok(m) => (m.is_dir(), if m.is_dir() { 0 } else { m.len() }, false),
@@ -79,7 +87,10 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
             (is_dir, size, broken_link, modified_unix, uid, gid, mode)
         } else {
             // Direct entry (not a symlink) - single metadata call needed!
-            let meta = entry.metadata()?;
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
             let is_dir = meta.is_dir();
             let size = if is_dir { 0 } else { meta.len() };
             let modified_unix = meta
@@ -407,5 +418,38 @@ mod tests {
         assert_eq!(by("afile").size, 5);
         assert!(by("good_link").is_symlink && !by("good_link").is_dir && !by("good_link").broken_link);
         assert!(by("bad_link").is_symlink && by("bad_link").broken_link);
+    }
+
+    /// One unreadable entry must not abort the whole listing: a directory
+    /// with read-but-not-execute permission lists names via `read_dir`, but
+    /// `stat` on its children fails - those entries are skipped, not fatal.
+    /// (Trivially passes when running as root, which bypasses permissions.)
+    #[test]
+    #[cfg(unix)]
+    fn read_dir_rows_skips_entries_whose_metadata_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        let locked = base.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("inner.txt"), b"x").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o444)).unwrap();
+        let rows = read_dir_rows(&locked);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let rows = rows.expect("one unreadable entry must not abort the listing");
+        if !nix_is_root() {
+            assert!(rows.is_empty(), "the unreadable entry is skipped, not listed");
+        }
+    }
+
+    #[cfg(unix)]
+    fn nix_is_root() -> bool {
+        // No libc dependency in this crate; uid 0 bypasses file permissions.
+        std::env::var_os("USER").is_some_and(|u| u == "root")
+            || std::process::Command::new("id").arg("-u")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .is_some_and(|s| s.trim() == "0")
     }
 }
