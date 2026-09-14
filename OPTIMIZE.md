@@ -10,7 +10,7 @@
 - [x] **Size calculation result lookup is O(n) per result and replaces rows by name** — `calculate_dir_sizes_async` scans the entire store for every computed directory and matches on `row.name`, which both costs O(n*m) and silently writes the size into the wrong row if two entries share a name (e.g. after filtering or with symlinked names). Keep the original store index and splice that directly.
   - File(s): `crates/lister/src/tools.rs`
 
-- [ ] **`reload()` re-reads the whole directory for single-file changes** — Icon rename, thumbnail updates and settings changes all call `reload()`, which runs `navigate_to` (full `read_dir_rows` + store splice of every item). For a 10k-file directory this is a visible stall for a one-entry change; add a targeted "update this row" path.
+- [x] **`reload()` re-reads the whole directory for single-file changes** — Icon rename, thumbnail updates and settings changes all call `reload()`, which runs `navigate_to` (full `read_dir_rows` + store splice of every item). For a 10k-file directory this is a visible stall for a one-entry change; add a targeted "update this row" path.
   - File(s): `crates/lister/src/window.rs` (`reload`, icon rename handler), `crates/lister/src/tools.rs`
 
 ## High

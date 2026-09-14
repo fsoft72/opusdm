@@ -627,7 +627,7 @@ fn build_window(
             if let Err(e) = std::fs::rename(&entry.path, &new_path) {
                 ui.job_line.set_text(&format!("rename failed: {e}"));
             } else {
-                ui.reload();
+                ui.rename_row(&entry.name, &new_name);
             }
         });
     }
@@ -794,6 +794,44 @@ impl Ui {
         self.icon_field.set_entries(&entries);
     }
 
+    /// Rename one row in the store in place, without re-reading the
+    /// directory. Falls back to a full `reload` if the row is gone (e.g. it
+    /// was removed by something else between the rename and this call).
+    pub fn rename_row(self: &Rc<Self>, old_name: &str, new_name: &str) {
+        for i in 0..self.store.n_items() {
+            let Some(item) = self.store.item(i) else { continue };
+            let Some(boxed) = item.downcast_ref::<BoxedAnyObject>() else { continue };
+            let row = boxed.borrow::<Rc<Row>>();
+            if row.name != old_name {
+                continue;
+            }
+            let mut updated = (**row).clone();
+            updated.name = new_name.to_string();
+            drop(row);
+            self.store.splice(i, 1, &[BoxedAnyObject::new(Rc::new(updated))]);
+            self.refresh_icon_view();
+            self.update_status();
+            for j in 0..self.selection.n_items() {
+                if self.row_at(j).is_some_and(|r| r.name == new_name) {
+                    self.selection.select_item(j, true);
+                    break;
+                }
+            }
+            return;
+        }
+        self.reload();
+    }
+
+    /// Force every row to rebind (e.g. after an icon-set or type-indicator
+    /// setting change) by resplicing the store's current rows, without
+    /// touching disk.
+    pub fn touch_rows(self: &Rc<Self>) {
+        let n = self.store.n_items();
+        let items: Vec<_> = (0..n).filter_map(|i| self.store.item(i)).collect();
+        self.store.splice(0, n, &items);
+        self.refresh_icon_view();
+    }
+
     /// Re-read the current directory, keeping the selection by name.
     pub fn reload(self: &Rc<Self>) {
         let selected = self.selected_names();
@@ -935,7 +973,7 @@ impl Ui {
                 // Name-column text is built at bind time, so glyph and
                 // indicator changes only show after the rows are rebound.
                 if names_changed {
-                    self.reload();
+                    self.touch_rows();
                 }
             }
             ToLister::Pong => {}
