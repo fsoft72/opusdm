@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-09-15
+
+- Nuovo script `scripts/build-breeze.sh`: costruisce il pacchetto del tema Breeze Dark a partire da `themes/breeze-dark/`, invocando il comando esistente `cargo run -p xtask -- package-themes` e verificando che `target/themes/breeze-dark.zip` sia stato prodotto.
+
 ## 2026-09-13
 
 - Lister clipboard: Ctrl+C / Ctrl+X / Ctrl+V. New module `crates/lister/src/clip.rs`: Copy/Cut writes the selection to the system text clipboard as `text/uri-list` (reusing `opusdm_iconview::dnd::paths_to_uri_list`) with a leading `#opusdm-clip:cut`/`copy` marker line; Paste reads it back (`uris_to_paths`) and sends `ToHub::RunJob{op, srcs, dest_dir: Some(cwd)}`, the same path already used by drag-and-drop and the Source->Dest toolbar buttons. Works within one Lister, across two Lister instances, and pasting into a plain directory, since the OS clipboard already crosses process boundaries - no new hub/IPC message needed. New commands `clip_copy`/`clip_cut`/`clip_paste` in `palette.rs`, bound in the Ctrl-chord table in `keys.rs`.
