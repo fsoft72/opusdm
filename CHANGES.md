@@ -3,6 +3,7 @@
 ## 2026-09-15
 
 - Nuovo script `scripts/build-breeze.sh`: costruisce il pacchetto del tema Breeze Dark a partire da `themes/breeze-dark/`, invocando il comando esistente `cargo run -p xtask -- package-themes` e verificando che `target/themes/breeze-dark.zip` sia stato prodotto.
+- Menu applicazioni dell'hub (`crates/panel/src/appmenu.rs::build`): la label testuale "Applications" del `MenuButton` e' sostituita dall'immagine `assets/ball.png`, incorporata a compile-time via `include_bytes!` (stesso pattern gia' usato per le icone SVG in `crates/lister/src/icons.rs`).
 
 ## 2026-09-13
 

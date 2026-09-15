@@ -3,11 +3,16 @@
 //! whose popover lists one expander per non-empty category.
 
 use gtk4 as gtk;
+use gtk::gdk;
 use gtk::gio;
+use gtk::glib;
 use gtk::prelude::*;
 use std::process::Command;
 
 use freedesktop_desktop_entry::{self as fde, DesktopEntry};
+
+// Embedded at compile-time so the binary has zero runtime file dependencies.
+const BALL_PNG: &[u8] = include_bytes!("../../../assets/ball.png");
 
 
 /// The fixed set of top-level menu buckets, in display order.
@@ -156,7 +161,11 @@ fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
 /// Build the menu button and its popover.
 pub fn build(parent: &gtk::ApplicationWindow) -> gtk::Widget {
     let button = gtk::MenuButton::new();
-    button.set_label("Applications");
+    let ball_bytes = glib::Bytes::from_static(BALL_PNG);
+    let ball_texture = gdk::Texture::from_bytes(&ball_bytes).expect("valid ball.png asset");
+    let ball_image = gtk::Image::from_paintable(Some(&ball_texture));
+    ball_image.set_pixel_size(18);
+    button.set_child(Some(&ball_image));
     button.add_css_class("flat");
 
     let popover = gtk::Popover::new();
