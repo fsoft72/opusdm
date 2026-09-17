@@ -32,6 +32,13 @@ pub fn scan(srcs: &[PathBuf]) -> io::Result<Plan> {
     let mut plan = Plan { total_files: 0, total_bytes: 0, items: Vec::new() };
     for src in srcs {
         let base = src.parent().unwrap_or_else(|| Path::new("/"));
+        // `sort_by_file_name` is purely cosmetic: it makes the per-directory
+        // walk order (and so the `Progress::File` messages the work pass
+        // emits from this plan) predictable and alphabetical instead of
+        // whatever the OS returns, at the cost of buffering each directory's
+        // entries before descending. Worth it at the sizes a file manager
+        // copies; drop it if this is ever used on trees large enough for
+        // that buffering to matter.
         for entry in WalkDir::new(src).follow_links(false).sort_by_file_name() {
             let entry = entry.map_err(io::Error::other)?;
             let rel = entry
