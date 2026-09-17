@@ -105,27 +105,38 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
         };
         let is_symlink = ft.is_symlink();
         let (is_dir, size, broken_link, modified_unix, uid, gid, mode) = if is_symlink {
-            let link_meta = match std::fs::symlink_metadata(entry.path()) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let target_meta = std::fs::metadata(entry.path()); // follows symlinks
-            let (is_dir, size, broken_link) = match &target_meta {
-                Ok(m) => (m.is_dir(), if m.is_dir() { 0 } else { m.len() }, false),
-                Err(_) => (false, 0, true),
-            };
-            let mtime_source = match &target_meta {
-                Ok(m) => m,
-                Err(_) => &link_meta,
-            };
-            let modified_unix = mtime_source
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let (uid, gid, mode) = metadata_perms(&link_meta);
-            (is_dir, size, broken_link, modified_unix, uid, gid, mode)
+            // The common case (a live target) needs only one metadata call:
+            // size, mtime and permissions all come from the target, same as
+            // a plain file. The `lstat` on the link itself is only needed as
+            // a fallback when the target doesn't resolve.
+            match std::fs::metadata(entry.path()) {
+                Ok(m) => {
+                    let is_dir = m.is_dir();
+                    let size = if is_dir { 0 } else { m.len() };
+                    let modified_unix = m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let (uid, gid, mode) = metadata_perms(&m);
+                    (is_dir, size, false, modified_unix, uid, gid, mode)
+                }
+                Err(_) => {
+                    let link_meta = match std::fs::symlink_metadata(entry.path()) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    let modified_unix = link_meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let (uid, gid, mode) = metadata_perms(&link_meta);
+                    (false, 0, true, modified_unix, uid, gid, mode)
+                }
+            }
         } else {
             // Direct entry (not a symlink) - single metadata call needed!
             let meta = match entry.metadata() {
@@ -430,6 +441,26 @@ mod tests {
         assert_eq!(by("afile").size, 5);
         assert!(by("good_link").is_symlink && !by("good_link").is_dir && !by("good_link").broken_link);
         assert!(by("bad_link").is_symlink && by("bad_link").broken_link);
+    }
+
+    /// A live symlink's size, mtime and mode reflect its target, matching
+    /// the target's own row - the single `metadata` (stat) call the fast
+    /// path uses gets all three from the same place a plain file's row does.
+    #[test]
+    fn live_symlink_reports_target_size_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        fs::write(base.join("target.txt"), b"12345").unwrap();
+        fs::set_permissions(base.join("target.txt"), fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink("target.txt", base.join("link")).unwrap();
+
+        let rows = read_dir_rows(base).unwrap();
+        let link = rows.iter().find(|r| r.name == "link").unwrap();
+        let target = rows.iter().find(|r| r.name == "target.txt").unwrap();
+        assert_eq!(link.size, target.size);
+        assert_eq!(link.mode & 0o777, target.mode & 0o777);
+        assert!(!link.broken_link);
     }
 
     /// One unreadable entry must not abort the whole listing: a directory
