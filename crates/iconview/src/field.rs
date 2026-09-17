@@ -273,20 +273,28 @@ impl IconField {
     }
 
     /// Queue thumbnail jobs for previewable entries not already covered by
-    /// the thumbnail cache. Keeps the current generation: an in-flight
-    /// result for a stale path is still dropped by `apply_thumb_result`'s
-    /// per-entry path check.
-    fn request_missing_thumbs(&self) {
+    /// the thumbnail cache, limited to `wanted_indices()` (plus its one-page
+    /// padding) so a huge directory doesn't queue thousands of decodes for
+    /// entries that are nowhere near the viewport. `sync_realized` submits
+    /// the rest as items scroll into range. Keeps the current generation: an
+    /// in-flight result for a stale path is still dropped by
+    /// `apply_thumb_result`'s per-entry path check.
+    pub(super) fn request_missing_thumbs(&self) {
         let Some(pool) = self.inner.thumb_pool.as_ref() else {
             return;
         };
         let generation = pool.generation();
         let size = crate::types::ThumbSize::for_icon(self.inner.layout.icon_size.get());
         let cache = self.inner.layout.thumb_cache.borrow();
-        for (index, entry) in self.inner.layout.entries.borrow().iter().enumerate() {
+        let entries = self.inner.layout.entries.borrow();
+        let wanted = self.wanted_indices(entries.len());
+        for index in wanted {
             if cache.contains_key(&index) {
                 continue;
             }
+            let Some(entry) = entries.get(index) else {
+                continue;
+            };
             let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
                 continue;
             };
@@ -300,26 +308,14 @@ impl IconField {
         }
     }
 
-    /// Queue a thumbnail job for every previewable entry, newest generation.
+    /// Queue thumbnail jobs for the wanted entries under a fresh generation,
+    /// discarding results still in flight for the previous entry list.
     fn request_thumbs(&self) {
         let Some(pool) = self.inner.thumb_pool.as_ref() else {
             return;
         };
         pool.bump_generation();
-        let generation = pool.generation();
-        let size = crate::types::ThumbSize::for_icon(self.inner.layout.icon_size.get());
-        for (index, entry) in self.inner.layout.entries.borrow().iter().enumerate() {
-            let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
-                continue;
-            };
-            pool.submit(crate::thumbs::ThumbRequest {
-                index,
-                path: entry.path.clone(),
-                kind,
-                size,
-                generation,
-            });
-        }
+        self.request_missing_thumbs();
     }
 
     /// Turn a finished thumbnail into a texture and show it, unless the entry

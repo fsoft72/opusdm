@@ -189,5 +189,14 @@ impl IconField {
                 self.inner.layout.fixed.move_(it.widget(), x, y);
             }
         }
+        drop(realized);
+        drop(entries);
+        drop(rects);
+        drop(icon_set);
+        drop(sel);
+        drop(thumb_cache);
+        // Items newly in range may have no thumbnail yet (e.g. scrolled in
+        // without ever being submitted).
+        self.request_missing_thumbs();
     }
 }
