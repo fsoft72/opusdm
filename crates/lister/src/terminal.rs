@@ -248,28 +248,11 @@ pub fn detect_user_shell() -> String {
         }
     }
 
-    // Query user database via libc getpwuid_r
     let uid = unsafe { libc::getuid() };
-    let mut passwd_buf = vec![0u8; 1024];
-    let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut passwd_ptr = std::ptr::null_mut();
-
-    let ret = unsafe {
-        libc::getpwuid_r(
-            uid,
-            &mut passwd,
-            passwd_buf.as_mut_ptr() as *mut libc::c_char,
-            passwd_buf.len(),
-            &mut passwd_ptr,
-        )
-    };
-
-    if ret == 0 && !passwd_ptr.is_null() && !unsafe { (*passwd_ptr).pw_shell }.is_null() {
-        if let Ok(shell_str) = unsafe { std::ffi::CStr::from_ptr((*passwd_ptr).pw_shell) }.to_str() {
-            let trimmed = shell_str.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
+    if let Some(entry) = crate::passwd::lookup(uid) {
+        let trimmed = entry.shell.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
         }
     }
 

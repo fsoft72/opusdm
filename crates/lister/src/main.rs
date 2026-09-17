@@ -15,6 +15,7 @@ mod icons;
 mod keys;
 mod model;
 mod palette;
+mod passwd;
 mod preview;
 mod terminal;
 mod theme;

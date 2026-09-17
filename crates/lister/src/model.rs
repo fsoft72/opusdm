@@ -243,22 +243,7 @@ pub fn format_user(uid: u32) -> String {
 }
 
 fn resolve_user_nss(uid: u32) -> String {
-    #[cfg(unix)]
-    {
-        use std::ffi::CStr;
-        let mut passwd_buf = [0u8; 16384];
-        let mut passwd_ptr = std::ptr::null_mut();
-        let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
-        let uid_ctype = uid as libc::uid_t;
-        // SAFETY: buffers are properly sized; function fills or returns error.
-        let ret = unsafe { libc::getpwuid_r(uid_ctype, &mut passwd, passwd_buf.as_mut_ptr() as *mut _, passwd_buf.len(), &mut passwd_ptr) };
-        if ret == 0 && !passwd_ptr.is_null() {
-            if let Ok(name) = unsafe { CStr::from_ptr((*passwd_ptr).pw_name) }.to_str() {
-                return name.to_string();
-            }
-        }
-    }
-    uid.to_string()
+    crate::passwd::lookup(uid).map(|e| e.name).unwrap_or_else(|| uid.to_string())
 }
 
 /// Human-readable group name or GID fallback (cached globally).
