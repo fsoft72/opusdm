@@ -80,17 +80,7 @@ mod tests {
     use opusdm_iconview::glyphs::GLYPH_DIR;
 
     fn row(name: &str) -> Row {
-        Row {
-            name: name.into(),
-            is_dir: false,
-            is_symlink: false,
-            broken_link: false,
-            size: 0,
-            modified_unix: 0,
-            uid: 0,
-            gid: 0,
-            mode: 0o100_644,
-        }
+        Row::new(name.into(), false, false, false, 0, 0, 0, 0, 0o100_644)
     }
 
     #[test]

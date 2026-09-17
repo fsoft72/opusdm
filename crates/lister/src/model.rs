@@ -27,6 +27,47 @@ pub struct Row {
     pub gid: u32,
     /// File mode (permissions + type bits).
     pub mode: u32,
+    /// Lowercased `name`, precomputed once so the sort comparator never
+    /// allocates or re-lowercases per comparison.
+    pub name_lower: String,
+    /// Lowercased owner user name, precomputed once (also avoids taking the
+    /// `format_user` cache lock inside the comparator).
+    pub user_lower: String,
+    /// Lowercased owner group name, precomputed once, same reason.
+    pub group_lower: String,
+}
+
+impl Row {
+    /// Build a `Row`, deriving the precomputed sort keys from the given fields.
+    pub fn new(
+        name: String,
+        is_dir: bool,
+        is_symlink: bool,
+        broken_link: bool,
+        size: u64,
+        modified_unix: i64,
+        uid: u32,
+        gid: u32,
+        mode: u32,
+    ) -> Self {
+        let name_lower = name.to_lowercase();
+        let user_lower = format_user(uid).to_lowercase();
+        let group_lower = format_group(gid).to_lowercase();
+        Row {
+            name,
+            is_dir,
+            is_symlink,
+            broken_link,
+            size,
+            modified_unix,
+            uid,
+            gid,
+            mode,
+            name_lower,
+            user_lower,
+            group_lower,
+        }
+    }
 }
 
 /// Which column an ordering is keyed on.
@@ -102,7 +143,7 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
             let (uid, gid, mode) = metadata_perms(&meta);
             (is_dir, size, false, modified_unix, uid, gid, mode)
         };
-        rows.push(Row { name, is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode });
+        rows.push(Row::new(name, is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode));
     }
     Ok(rows)
 }
@@ -167,15 +208,11 @@ pub fn dir_first_cmp(a: &Row, b: &Row, col: SortCol, desc: bool) -> Ordering {
         return if a.is_dir { Ordering::Less } else { Ordering::Greater };
     }
     let base = match col {
-        SortCol::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        SortCol::Name => a.name_lower.cmp(&b.name_lower),
         SortCol::Size => a.size.cmp(&b.size),
         SortCol::Modified => a.modified_unix.cmp(&b.modified_unix),
-        SortCol::User => format_user(a.uid)
-            .to_lowercase()
-            .cmp(&format_user(b.uid).to_lowercase()),
-        SortCol::Group => format_group(a.gid)
-            .to_lowercase()
-            .cmp(&format_group(b.gid).to_lowercase()),
+        SortCol::User => a.user_lower.cmp(&b.user_lower),
+        SortCol::Group => a.group_lower.cmp(&b.group_lower),
         SortCol::Access => a.mode.cmp(&b.mode),
     };
     if desc {
@@ -340,17 +377,7 @@ mod tests {
     }
 
     fn row(name: &str, is_dir: bool, size: u64, mtime: i64) -> Row {
-        Row {
-            name: name.into(),
-            is_dir,
-            is_symlink: false,
-            broken_link: false,
-            size,
-            modified_unix: mtime,
-            uid: 0,
-            gid: 0,
-            mode: 0,
-        }
+        Row::new(name.into(), is_dir, false, false, size, mtime, 0, 0, 0)
     }
 
     #[test]

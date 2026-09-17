@@ -256,32 +256,32 @@ pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec
 
         if let Some((dir_name, _)) = rel.split_once('/') {
             if seen_dirs.insert(dir_name.to_string()) {
-                rows.push(Row {
-                    name: dir_name.to_string(),
-                    is_dir: true,
-                    is_symlink: false,
-                    broken_link: false,
-                    size: 0,
-                    modified_unix: 0,
-                    uid: 1000,
-                    gid: 1000,
-                    mode: 0o755,
-                });
+                rows.push(Row::new(
+                    dir_name.to_string(),
+                    true,
+                    false,
+                    false,
+                    0,
+                    0,
+                    1000,
+                    1000,
+                    0o755,
+                ));
             }
         } else {
             let is_dir = item.is_dir;
             let name = rel.to_string();
-            rows.push(Row {
+            rows.push(Row::new(
                 name,
                 is_dir,
-                is_symlink: false,
-                broken_link: false,
-                size: if is_dir { 0 } else { item.size },
-                modified_unix: 0,
-                uid: 1000,
-                gid: 1000,
-                mode: item.mode,
-            });
+                false,
+                false,
+                if is_dir { 0 } else { item.size },
+                0,
+                1000,
+                1000,
+                item.mode,
+            ));
         }
     }
 
