@@ -125,6 +125,11 @@ impl TerminalDrawer {
                         }
                     }
                 });
+                // Shell exit in the detached window (e.g. Ctrl-D) closes it.
+                let detached_win = win.clone();
+                term.connect_child_exited(move |_, _| {
+                    detached_win.close();
+                });
                 win.set_child(Some(&term));
                 win.present();
                 term.grab_focus();
