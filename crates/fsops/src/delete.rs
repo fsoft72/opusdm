@@ -26,24 +26,78 @@ pub fn run_delete(srcs: &[PathBuf], tx: &Sender<Progress>, cancel: &CancelToken)
             file_bytes_done: 0,
             file_bytes_total: 0,
         });
-        match remove_recursive(src) {
-            Ok(()) => removed += 1,
-            Err(e) => errors.push((src.clone(), e.to_string())),
+        let tree_errors = remove_recursive(src);
+        if tree_errors.is_empty() {
+            removed += 1;
+        } else {
+            errors.extend(tree_errors);
         }
     }
 
     Progress::Done { copied: removed, skipped: 0, cancelled: false, errors }
 }
 
+/// One step of the explicit-stack walk in `remove_recursive`: either visit a
+/// path (deciding whether it's a file to remove or a directory to descend
+/// into) or remove a directory once every entry `Visit` pushed for it has
+/// already been popped and handled (LIFO order puts a directory's children
+/// on top of its own `RemoveDir`, so they are always popped first).
+enum Step {
+    Visit(PathBuf),
+    RemoveDir(PathBuf),
+}
+
 /// Remove a file or directory tree, chmod-retrying read-only entries once.
-fn remove_recursive(path: &Path) -> io::Result<()> {
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            remove_recursive(&entry?.path())?;
+/// One unreadable subdirectory or one file that resists deletion does not
+/// abort the rest of the tree: every failure is collected and the walk
+/// continues. An explicit stack replaces call-stack recursion so a very deep
+/// tree can't overflow the worker thread's stack.
+fn remove_recursive(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut errors = Vec::new();
+    let mut stack = vec![Step::Visit(root.to_path_buf())];
+
+    while let Some(step) = stack.pop() {
+        match step {
+            Step::Visit(path) => {
+                let meta = match std::fs::symlink_metadata(&path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        errors.push((path, e.to_string()));
+                        continue;
+                    }
+                };
+                if meta.is_dir() {
+                    let entries = match std::fs::read_dir(&path) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            errors.push((path, e.to_string()));
+                            continue;
+                        }
+                    };
+                    stack.push(Step::RemoveDir(path.clone()));
+                    for entry in entries {
+                        match entry {
+                            Ok(e) => stack.push(Step::Visit(e.path())),
+                            Err(e) => errors.push((path.clone(), e.to_string())),
+                        }
+                    }
+                } else if let Err(e) = remove_file_retrying(&path, &meta) {
+                    errors.push((path, e.to_string()));
+                }
+            }
+            Step::RemoveDir(path) => {
+                if let Err(e) = std::fs::remove_dir(&path) {
+                    errors.push((path, e.to_string()));
+                }
+            }
         }
-        return std::fs::remove_dir(path);
     }
+    errors
+}
+
+/// Remove one file, retrying once after adding write permission if the
+/// first attempt fails (read-only entries).
+fn remove_file_retrying(path: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(_) => {
@@ -119,6 +173,69 @@ mod tests {
             _ => panic!(),
         }
         assert!(!d.exists());
+    }
+
+    /// One unreadable subdirectory must not abort deletion of the rest of
+    /// the tree: siblings still get removed and the failure is reported,
+    /// not silently dropped. (Trivially passes when running as root, which
+    /// bypasses permissions.)
+    #[test]
+    #[cfg(unix)]
+    fn one_unreadable_subdir_does_not_abort_the_rest_of_the_tree() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("victim");
+        let locked = root.join("locked");
+        let sibling = root.join("sibling");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("inner.txt"), b"x").unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("ok.txt"), b"y").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let done = drive_delete(vec![root.clone()]);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        if !nix_is_root() {
+            match done {
+                Progress::Done { errors, .. } => assert!(!errors.is_empty(), "expected the locked entry to be reported"),
+                _ => panic!(),
+            }
+            assert!(!sibling.exists(), "the readable sibling should still be removed");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A deeply nested tree must still delete cleanly with an explicit
+    /// stack instead of call-stack recursion (bounded well under `PATH_MAX`,
+    /// which a real overflow-sized tree would hit before the stack would).
+    #[test]
+    fn deeply_nested_tree_deletes_cleanly() {
+        let td = tempfile::tempdir().unwrap();
+        let mut path = td.path().to_path_buf();
+        const DEPTH: usize = 1500;
+        for _ in 0..DEPTH {
+            path.push("d");
+        }
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("leaf.txt"), b"x").unwrap();
+
+        let root = td.path().join("d");
+        let done = drive_delete(vec![root.clone()]);
+        match done {
+            Progress::Done { errors, .. } => assert!(errors.is_empty(), "{errors:?}"),
+            _ => panic!(),
+        }
+        assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    fn nix_is_root() -> bool {
+        std::env::var_os("USER").is_some_and(|u| u == "root")
+            || std::process::Command::new("id").arg("-u")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .is_some_and(|s| s.trim() == "0")
     }
 
     #[test]
