@@ -468,7 +468,7 @@ fn spawn_desktop_watch(
                         match result {
                             Ok(entries) => field.set_entries(&entries),
                             Err(e) => {
-                                eprintln!("opusdm-hub: desktop reload failed for {}: {e}", dir.display())
+                                opusdm_ipc::err_log!("hub", "desktop reload failed for {}: {e}", dir.display())
                             }
                         }
                     });
@@ -476,7 +476,7 @@ fn spawn_desktop_watch(
             });
             *widgets.desktop_watch.borrow_mut() = Some(watch);
         }
-        Err(e) => eprintln!("opusdm-hub: desktop watch unavailable: {e}"),
+        Err(e) => opusdm_ipc::err_log!("hub", "desktop watch unavailable: {e}"),
     }
 }
 
@@ -499,7 +499,7 @@ fn theme_config_bin() -> PathBuf {
 fn launch_theme_config() {
     let bin = theme_config_bin();
     if let Err(e) = std::process::Command::new(&bin).spawn() {
-        eprintln!("opusdm-hub: cannot launch {}: {e}", bin.display());
+        opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", bin.display());
     }
 }
 
@@ -533,7 +533,7 @@ fn build_desktop_area(
                 let dir = dir.to_path_buf();
                 read_entries_async(dir.clone(), move |result| match result {
                     Ok(entries) => f.set_entries(&entries),
-                    Err(e) => eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display()),
+                    Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
                 });
             }
             f.widget().set_hexpand(true);
@@ -688,7 +688,7 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
                 };
                 read_entries_async(dir, move |result| match result {
                     Ok(entries) => field.set_entries(&entries),
-                    Err(e) => eprintln!("opusdm-hub: rearrange failed: {e}"),
+                    Err(e) => opusdm_ipc::err_log!("hub", "rearrange failed: {e}"),
                 });
             });
             sub.append(&btn);
@@ -847,7 +847,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                         read_entries_async(dir.clone(), move |result| match result {
                             Ok(entries) => field.set_entries(&entries),
                             Err(e) => {
-                                eprintln!("opusdm-hub: cannot read desktop {}: {e}", dir.display())
+                                opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display())
                             }
                         });
                     }

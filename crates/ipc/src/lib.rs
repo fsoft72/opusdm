@@ -13,6 +13,17 @@ macro_rules! debug_log {
     };
 }
 
+/// Always-on warning/error trace, same tag format as `debug_log!` but never
+/// gated: failures should stay visible without a recompile or an env var.
+/// Every non-debug `eprintln!` in the workspace goes through this instead,
+/// so there is one place that controls the format.
+#[macro_export]
+macro_rules! err_log {
+    ($tag:literal, $($arg:tt)*) => {
+        eprintln!("[{}:{}] {}", $tag, std::process::id(), format_args!($($arg)*));
+    };
+}
+
 pub mod desktop;
 pub mod frame;
 pub mod inotify;

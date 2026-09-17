@@ -80,8 +80,9 @@ impl ThumbPool {
                                 Some(bytes)
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "opusdm-iconview: thumbnail failed for {}: {e}",
+                                opusdm_ipc::err_log!(
+                                    "iconview",
+                                    "thumbnail failed for {}: {e}",
                                     path.display()
                                 );
                                 None

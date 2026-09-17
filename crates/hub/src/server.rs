@@ -248,7 +248,7 @@ impl Hub {
             .name(format!("opusdm-writer-{cid}"))
             .spawn(move || writer_loop(write_stream, writer_rx));
         if let Err(e) = writer_spawned {
-            eprintln!("opusdm-hub: cannot spawn writer thread for conn {cid}: {e}");
+            opusdm_ipc::err_log!("hub", "cannot spawn writer thread for conn {cid}: {e}");
             self.free_conns.insert(cid);
             return;
         }
@@ -264,7 +264,7 @@ impl Hub {
         // not take down every other Lister connected to this hub;
         // drop just this one and let the caller retry.
         if let Err(e) = spawned {
-            eprintln!("opusdm-hub: cannot spawn reader thread for conn {cid}: {e}");
+            opusdm_ipc::err_log!("hub", "cannot spawn reader thread for conn {cid}: {e}");
             self.conns.remove(&cid);
             self.free_conns.insert(cid);
         }
@@ -458,7 +458,7 @@ impl Hub {
                 const GTK_REQUESTER: u64 = u64::MAX;
                 if matches!(op, Op::Copy | Op::Move) {
                     if let Err(msg) = validate_job(&srcs, &dest_dir) {
-                        eprintln!("opusdm-hub: desktop job rejected: {msg}");
+                        opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
                         return true;
                     }
                 }
@@ -600,12 +600,12 @@ fn owner_loop(
                 match msg {
                     PersistMsg::Settings(s) => {
                         if let Err(e) = settings::save_settings(&s) {
-                            eprintln!("opusdm-hub: cannot save settings.json: {e}");
+                            opusdm_ipc::err_log!("hub", "cannot save settings.json: {e}");
                         }
                     }
                     PersistMsg::Desktop(d) => {
                         if let Err(e) = desktop_settings::save(&d) {
-                            eprintln!("opusdm-hub: cannot save desktop.json: {e}");
+                            opusdm_ipc::err_log!("hub", "cannot save desktop.json: {e}");
                         }
                     }
                 }

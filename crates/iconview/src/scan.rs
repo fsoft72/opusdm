@@ -31,7 +31,7 @@ pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>>
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("opusdm-iconview: skipping unreadable entry in {}: {e}", dir.display());
+                opusdm_ipc::err_log!("iconview", "skipping unreadable entry in {}: {e}", dir.display());
                 continue;
             }
         };
