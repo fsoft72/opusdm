@@ -18,8 +18,10 @@ pub struct CommandItem {
     pub shortcut: Option<&'static str>,
 }
 
-pub fn get_commands() -> Vec<CommandItem> {
-    vec![
+/// The command palette's entries. Entirely static, so this is a `const`
+/// array instead of a `Vec` rebuilt (and heap-allocated) on every palette
+/// open; `get_commands` just borrows it.
+const COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::Filter, title: "Filter Files in Current View", category: "View", shortcut: Some("/") },
         CommandItem { id: CommandId::Preview, title: "Quick Look File Preview", category: "View", shortcut: Some("F3 / Space") },
         CommandItem { id: CommandId::SelectAll, title: "Select All", category: "Selection", shortcut: Some("Ctrl+A") },
@@ -49,7 +51,11 @@ pub fn get_commands() -> Vec<CommandItem> {
         CommandItem { id: CommandId::SetDest, title: "Set Role: DEST", category: "Roles", shortcut: None },
         CommandItem { id: CommandId::SetNone, title: "Set Role: NONE", category: "Roles", shortcut: None },
         CommandItem { id: CommandId::TogglePin, title: "Toggle Role Pin / Lock", category: "Roles", shortcut: None },
-    ]
+];
+
+/// Borrow the command palette's entries.
+pub fn get_commands() -> &'static [CommandItem] {
+    COMMANDS
 }
 
 /// Execute a command by ID. The match is exhaustive (no wildcard arm): a
@@ -279,7 +285,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     let commands = get_commands();
     let mut rows: Vec<(gtk::ListBoxRow, CommandItem)> = Vec::new();
 
-    for cmd in &commands {
+    for cmd in commands {
         let row = gtk::ListBoxRow::new();
         let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         hbox.set_margin_start(8);
