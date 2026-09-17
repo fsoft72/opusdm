@@ -13,11 +13,20 @@ use std::rc::Rc;
 /// appear in order within haystack.
 pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
     let needle = needle.trim().to_lowercase();
+    let haystack = haystack.to_lowercase();
+    fuzzy_match_lower(&needle, &haystack)
+}
+
+/// Same as [`fuzzy_match`], but assumes both arguments are already
+/// lowercased and trimmed. Used on the filter-bar hot path, where the
+/// needle is lowercased once per keystroke and each row's haystack is
+/// precomputed on `Row` (see `Row::name_lower`), instead of re-lowercasing
+/// every row on every keystroke.
+pub fn fuzzy_match_lower(needle: &str, haystack: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
-    let haystack = haystack.to_lowercase();
-    if haystack.contains(&needle) {
+    if haystack.contains(needle) {
         return true;
     }
     let mut needle_chars = needle.chars();
@@ -38,29 +47,37 @@ pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
 }
 
 /// Simple glob matcher supporting `*` and `?` wildcards.
+///
+/// Two-pointer greedy match with backtracking to the most recent `*`
+/// (the standard wildcard-matching algorithm): O(pattern + text) space,
+/// instead of allocating a full DP matrix per call.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let pattern = pattern.to_lowercase();
-    let text = text.to_lowercase();
-    let p_chars: Vec<char> = pattern.chars().collect();
-    let t_chars: Vec<char> = text.chars().collect();
-    let (p_len, t_len) = (p_chars.len(), t_chars.len());
-    let mut dp = vec![vec![false; t_len + 1]; p_len + 1];
-    dp[0][0] = true;
-    for i in 1..=p_len {
-        if p_chars[i - 1] == '*' {
-            dp[i][0] = dp[i - 1][0];
+    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+    let text: Vec<char> = text.to_lowercase().chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_match = 0usize;
+
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star = Some(pi);
+            star_match = ti;
+            pi += 1;
+        } else if let Some(si) = star {
+            pi = si + 1;
+            star_match += 1;
+            ti = star_match;
+        } else {
+            return false;
         }
     }
-    for i in 1..=p_len {
-        for j in 1..=t_len {
-            if p_chars[i - 1] == '*' {
-                dp[i][j] = dp[i - 1][j] || dp[i][j - 1];
-            } else if p_chars[i - 1] == '?' || p_chars[i - 1] == t_chars[j - 1] {
-                dp[i][j] = dp[i - 1][j - 1];
-            }
-        }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
     }
-    dp[p_len][t_len]
+    pi == pattern.len()
 }
 
 /// The inline fuzzy filter bar widget.
@@ -78,13 +95,16 @@ impl FilterBar {
         let q_clone = query.clone();
 
         let filter = gtk::CustomFilter::new(move |obj| {
+            // `query` is kept pre-lowercased and pre-trimmed (see build.rs's
+            // `connect_search_changed`), so this hot path (once per row, per
+            // keystroke) never re-lowercases the needle or the haystack.
             let q = q_clone.borrow();
             if q.is_empty() {
                 return true;
             }
             if let Some(boxed) = obj.downcast_ref::<BoxedAnyObject>() {
                 let row = boxed.borrow::<Rc<Row>>();
-                fuzzy_match(&q, &row.name)
+                fuzzy_match_lower(&q, &row.name_lower)
             } else {
                 true
             }
@@ -208,5 +228,19 @@ mod tests {
         assert!(glob_match("file?.txt", "file1.txt"));
         assert!(!glob_match("file?.txt", "file12.txt"));
         assert!(!glob_match("*.rs", "main.toml"));
+    }
+
+    /// Multiple stars force backtracking to the most recent one, the case
+    /// the two-pointer rewrite has to get right.
+    #[test]
+    fn test_glob_match_multiple_stars_backtrack() {
+        assert!(glob_match("*a*b*", "xaxbx"));
+        assert!(glob_match("*a*b*", "ab"));
+        assert!(!glob_match("*a*b*", "bx"));
+        assert!(glob_match("a*b*c", "aXXbXXc"));
+        assert!(!glob_match("a*b*c", "aXXbXX"));
+        assert!(glob_match("**", "anything"));
+        assert!(glob_match("*", ""));
+        assert!(!glob_match("a*b", "a"));
     }
 }

@@ -239,7 +239,9 @@ fn build_window(
         let q = filter_bar.query.clone();
         let filt = filter_bar.filter.clone();
         filter_bar.entry.connect_search_changed(move |e| {
-            *q.borrow_mut() = e.text().to_string();
+            // Pre-lowercase once per keystroke; the filter closure compares
+            // it against each row's precomputed `name_lower` per row.
+            *q.borrow_mut() = e.text().trim().to_lowercase();
             filt.changed(gtk::FilterChange::Different);
             let filtered = filter_model_for_count.n_items();
             let total = store_for_count.n_items();
