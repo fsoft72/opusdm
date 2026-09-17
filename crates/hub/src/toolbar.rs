@@ -61,6 +61,43 @@ struct DesktopWindow {
     h: i32,
 }
 
+/// Desktop-icon state: what's shown on the primary monitor's icon field and
+/// how it's kept in sync with disk and with `DesktopSettings`. Grouped into
+/// one struct (instead of six loose `Widgets` fields) so these invariants
+/// live next to the data they govern:
+/// - `watch`, `field` and `dir` are always torn down together (`None`) by a
+///   full rebuild, and set together by `full_rebuild_desktop_windows`, so
+///   the field, its watch and the directory it's watching never diverge.
+/// - `desired_dir` is independent of monitor layout: it is what the user
+///   configured (via `DesktopSettings::desktop_dir`), kept so a full rebuild
+///   triggered by monitor hotplug shows the same folder instead of
+///   re-resolving it, whereas `dir` is only set once a desktop window
+///   actually exists to show it.
+/// - `icon_set` and `settings` are cached so a desktop window built later
+///   (monitor plugged in after startup) starts with the current icons and
+///   grid metrics instead of stale ones from construction time.
+#[derive(Default)]
+struct DesktopState {
+    /// inotify watch on the desktop directory, kept alive for the window's
+    /// lifetime. `None` when there is no desktop directory or the watch failed.
+    watch: RefCell<Option<opusdm_hub::desktop_files::DesktopWatch>>,
+    /// The desktop icon field, shared with the context menu ("rearrange icons").
+    /// `None` when there is no desktop directory.
+    field: RefCell<Option<opusdm_iconview::IconField>>,
+    /// The directory the desktop shows, for re-reading on "rearrange icons"
+    /// and for re-targeting when `DesktopSettings::desktop_dir` changes.
+    dir: RefCell<Option<PathBuf>>,
+    /// Current icon set, kept so a desktop window built later (monitor
+    /// plugged in after startup) starts with the right icons.
+    icon_set: RefCell<opusdm_ipc::IconSetId>,
+    /// Current icon grid metrics, kept for the same reason as `icon_set`.
+    settings: RefCell<opusdm_ipc::DesktopSettings>,
+    /// The desktop directory the user has configured (independent of monitor
+    /// layout), kept so a full rebuild on monitor hotplug shows the same
+    /// folder rather than re-reading it from disk.
+    desired_dir: RefCell<Option<PathBuf>>,
+}
+
 /// Live widget handles shared by the event pump.
 struct Widgets {
     /// One window per distinct monitor rect (mirrored outputs collapse to
@@ -73,24 +110,7 @@ struct Widgets {
     /// Set once the quit confirmation has been accepted, so the `close()` it
     /// triggers does not re-enter `request_quit` and stack another dialog.
     quitting: Cell<bool>,
-    /// inotify watch on the desktop directory, kept alive for the window's
-    /// lifetime. `None` when there is no desktop directory or the watch failed.
-    desktop_watch: RefCell<Option<opusdm_hub::desktop_files::DesktopWatch>>,
-    /// The desktop icon field, shared with the context menu ("rearrange icons").
-    /// `None` when there is no desktop directory.
-    desktop_field: RefCell<Option<opusdm_iconview::IconField>>,
-    /// The directory the desktop shows, for re-reading on "rearrange icons"
-    /// and for re-targeting when `DesktopSettings::desktop_dir` changes.
-    desktop_dir: RefCell<Option<PathBuf>>,
-    /// Current icon set, kept so a desktop window built later (monitor
-    /// plugged in after startup) starts with the right icons.
-    icon_set: RefCell<opusdm_ipc::IconSetId>,
-    /// Current icon grid metrics, kept for the same reason as `icon_set`.
-    desktop_settings: RefCell<opusdm_ipc::DesktopSettings>,
-    /// The desktop directory the user has configured (independent of monitor
-    /// layout), kept so a full rebuild on monitor hotplug shows the same
-    /// folder rather than re-reading it from disk.
-    desired_desktop_dir: RefCell<Option<PathBuf>>,
+    desktop: DesktopState,
     /// Shows progress for every running file operation.
     progress_window: crate::progress_window::ProgressWindow,
 }
@@ -120,12 +140,12 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         windows: RefCell::new(Vec::new()),
         cmd_tx: cmd_tx.clone(),
         quitting: Cell::new(false),
-        desktop_watch: RefCell::new(None),
-        desktop_field: RefCell::new(None),
-        desktop_dir: RefCell::new(None),
-        icon_set: RefCell::new(initial_settings.theme.icon_set.clone()),
-        desktop_settings: RefCell::new(desktop_settings),
-        desired_desktop_dir: RefCell::new(desired_desktop_dir),
+        desktop: DesktopState {
+            icon_set: RefCell::new(initial_settings.theme.icon_set.clone()),
+            settings: RefCell::new(desktop_settings),
+            desired_dir: RefCell::new(desired_desktop_dir),
+            ..Default::default()
+        },
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
     });
 
@@ -237,16 +257,16 @@ fn full_rebuild_desktop_windows(
     for dw in widgets.windows.borrow_mut().drain(..) {
         dw.window.close();
     }
-    *widgets.desktop_watch.borrow_mut() = None;
-    *widgets.desktop_field.borrow_mut() = None;
-    *widgets.desktop_dir.borrow_mut() = None;
+    *widgets.desktop.watch.borrow_mut() = None;
+    *widgets.desktop.field.borrow_mut() = None;
+    *widgets.desktop.dir.borrow_mut() = None;
 
     if rects.is_empty() {
         rects.push((0, 0, 1280, 800));
     }
 
-    let icon_set = widgets.icon_set.borrow().clone();
-    let desired_dir = widgets.desired_desktop_dir.borrow().clone();
+    let icon_set = widgets.desktop.icon_set.borrow().clone();
+    let desired_dir = widgets.desktop.desired_dir.borrow().clone();
     let built = rects
         .into_iter()
         .enumerate()
@@ -328,10 +348,10 @@ fn build_one_desktop_window(
     }
 
     if is_primary {
-        *widgets.desktop_dir.borrow_mut() = desktop_dir.map(Path::to_path_buf);
-        *widgets.desktop_field.borrow_mut() = field.clone();
+        *widgets.desktop.dir.borrow_mut() = desktop_dir.map(Path::to_path_buf);
+        *widgets.desktop.field.borrow_mut() = field.clone();
         if let (Some(f), Some(dir)) = (field, desktop_dir) {
-            let ds = widgets.desktop_settings.borrow();
+            let ds = widgets.desktop.settings.borrow();
             f.set_icon_size(ds.icon_size);
             f.set_grid_spacing(ds.grid_spacing);
             f.set_grid_gap(ds.grid_gap);
@@ -373,7 +393,7 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
             if srcs.is_empty() {
                 return;
             }
-            let Some(dest_dir) = widgets.desktop_dir.borrow().clone() else { return };
+            let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
             let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
             let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
         });
@@ -438,14 +458,14 @@ fn read_entries_async(
 
 /// Start (or restart) the inotify watch on `dir` and the local future that
 /// reloads the desktop icon field when the directory changes. Replaces any
-/// previous watch stored in `widgets.desktop_watch`.
+/// previous watch stored in `widgets.desktop.watch`.
 fn spawn_desktop_watch(
     widgets: &Rc<Widgets>,
     field: &opusdm_iconview::IconField,
     dir: &Path,
 ) {
     // Drop the old watch first so its thread exits before we start another.
-    *widgets.desktop_watch.borrow_mut() = None;
+    *widgets.desktop.watch.borrow_mut() = None;
     match opusdm_hub::desktop_files::DesktopWatch::start(dir.to_path_buf()) {
         Ok((watch, rx)) => {
             let field = field.clone();
@@ -474,7 +494,7 @@ fn spawn_desktop_watch(
                     });
                 }
             });
-            *widgets.desktop_watch.borrow_mut() = Some(watch);
+            *widgets.desktop.watch.borrow_mut() = Some(watch);
         }
         Err(e) => opusdm_ipc::err_log!("hub", "desktop watch unavailable: {e}"),
     }
@@ -681,8 +701,8 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             let btn = menu_button("Rearrange icons");
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
-                let field = widgets.desktop_field.borrow().clone();
-                let dir = widgets.desktop_dir.borrow().clone();
+                let field = widgets.desktop.field.borrow().clone();
+                let dir = widgets.desktop.dir.borrow().clone();
                 let (Some(field), Some(dir)) = (field, dir) else {
                     return;
                 };
@@ -817,14 +837,14 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
         }
         HubEvent::ThemeChanged(theme) => {
             install_desktop_css(&theme.background);
-            *widgets.icon_set.borrow_mut() = theme.icon_set.clone();
-            if let Some(field) = widgets.desktop_field.borrow().as_ref() {
+            *widgets.desktop.icon_set.borrow_mut() = theme.icon_set.clone();
+            if let Some(field) = widgets.desktop.field.borrow().as_ref() {
                 field.set_icon_set(theme.icon_set);
             }
         }
         HubEvent::DesktopSettingsChanged(ds) => {
-            *widgets.desktop_settings.borrow_mut() = ds.clone();
-            let field = widgets.desktop_field.borrow().clone();
+            *widgets.desktop.settings.borrow_mut() = ds.clone();
+            let field = widgets.desktop.field.borrow().clone();
             if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);
                 field.set_grid_spacing(ds.grid_spacing);
@@ -833,9 +853,9 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
 
             let wanted =
                 opusdm_hub::desktop_files::effective_desktop_dir(ds.desktop_dir.as_deref());
-            *widgets.desired_desktop_dir.borrow_mut() = wanted.clone();
-            if *widgets.desktop_dir.borrow() != wanted {
-                *widgets.desktop_dir.borrow_mut() = wanted.clone();
+            *widgets.desktop.desired_dir.borrow_mut() = wanted.clone();
+            if *widgets.desktop.dir.borrow() != wanted {
+                *widgets.desktop.dir.borrow_mut() = wanted.clone();
                 // A desktop that started with no directory has no icon field to
                 // populate; that only comes back on the next hub start.
                 if let (Some(field), Some(dir)) = (field.as_ref(), wanted.as_ref()) {
