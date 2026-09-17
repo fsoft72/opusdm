@@ -230,7 +230,6 @@ fn build_window(
     view_stack.set_vexpand(true);
     view_stack.set_margin_start(4);
     view_stack.set_margin_end(4);
-    root.append(&view_stack);
 
     // Filter entry interaction
     {
@@ -270,9 +269,32 @@ fn build_window(
         });
     }
 
-    // Quake-style dropdown terminal drawer
+    // Quake-style dropdown terminal drawer, resized via the standard GTK
+    // vertical GtkPaned handle (not a hand-rolled drag gesture).
     let terminal = crate::terminal::TerminalDrawer::new();
-    root.append(&terminal.container);
+    let view_paned = gtk::Paned::new(gtk::Orientation::Vertical);
+    view_paned.set_vexpand(true);
+    view_paned.set_start_child(Some(&view_stack));
+    view_paned.set_resize_start_child(true);
+    view_paned.set_shrink_start_child(true);
+    view_paned.set_end_child(Some(&terminal.container));
+    view_paned.set_resize_end_child(false);
+    view_paned.set_shrink_end_child(false);
+    root.append(&view_paned);
+
+    // The drawer starts hidden; give the paned a sane split the first time
+    // it becomes visible instead of GTK's default 50/50.
+    {
+        let view_paned = view_paned.clone();
+        terminal.container.connect_visible_notify(move |cont| {
+            if cont.is_visible() {
+                let total = view_paned.height();
+                if total > 0 {
+                    view_paned.set_position(total - crate::terminal::DEFAULT_DRAWER_HEIGHT);
+                }
+            }
+        });
+    }
 
     // Transient message line.
     let job_line = gtk::Label::new(None);

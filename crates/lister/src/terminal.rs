@@ -12,6 +12,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
+/// Minimum drawer height: header row plus ~2 terminal rows. Enforced via
+/// `set_size_request` and `Paned::set_shrink_end_child(false)` in `build.rs`
+/// so GTK's own paned handle refuses to drag the VTE below this.
+pub const MIN_DRAWER_HEIGHT: i32 = 90;
+
+/// Default drawer height on first show.
+pub const DEFAULT_DRAWER_HEIGHT: i32 = 260;
+
 pub struct TerminalDrawer {
     pub container: gtk::Box,
     pub title_label: gtk::Label,
@@ -27,49 +35,13 @@ pub struct TerminalDrawer {
 impl TerminalDrawer {
     pub fn new() -> Rc<Self> {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        container.set_size_request(-1, 260);
+        container.set_size_request(-1, MIN_DRAWER_HEIGHT);
         container.add_css_class("terminal-drawer");
         container.set_visible(false);
 
-        // Drag handle at the top edge: drag vertically to resize the drawer.
-        let handle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        handle.set_size_request(-1, 5);
-        handle.add_css_class("terminal-resize-handle");
-        handle.set_cursor_from_name(Some("ns-resize"));
-        {
-            let drag = gtk::GestureDrag::new();
-            // Ignore the gesture's own deltas: they are reported in handle
-            // coordinates, but the handle moves with the pointer as the
-            // drawer resizes, which corrupts them. Read the absolute pointer
-            // position from the GDK device (surface coordinates are stable)
-            // and anchor the math to the drawer's fixed bottom edge.
-            let bottom_y = Rc::new(std::cell::Cell::new(f64::NAN));
-            {
-                let (container, bottom_y) = (container.clone(), bottom_y.clone());
-                drag.connect_drag_begin(move |_, _, _| {
-                    if let Some(win) = container.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
-                        if let Some((_, y)) = container
-                            .translate_coordinates(&win, 0.0, container.height() as f64)
-                        {
-                            bottom_y.set(y);
-                        }
-                    }
-                });
-            }
-            let container2 = container.clone();
-            drag.connect_drag_update(move |g, _, _| {
-                let bottom = bottom_y.get();
-                if bottom.is_nan() {
-                    return;
-                }
-                let Some(device) = g.device() else { return };
-                let (_, _, py) = device.surface_at_position();
-                let h = (bottom - py).clamp(60.0, 1200.0);
-                container2.set_size_request(-1, h as i32);
-            });
-            handle.add_controller(drag);
-        }
-        container.append(&handle);
+        // Height is resized via the standard GtkPaned handle the caller
+        // wraps this container in (see `build.rs`); no custom drag logic
+        // lives here.
 
         // Header bar
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
