@@ -8,9 +8,6 @@ use opusdm_ipc::Resolution;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Sender};
 
-/// Linux `EXDEV`: "cross-device link". Raw OS error number.
-const EXDEV: i32 = 18;
-
 /// Emit a `Conflict` event and block for the reply. `None` if the channel closed.
 fn ask_conflict(tx: &Sender<Progress>, dst: &Path, src: &Path) -> Option<Resolution> {
     let (reply_tx, reply_rx) = channel::<Resolution>();
@@ -66,7 +63,7 @@ pub fn run_move(
 
         match std::fs::rename(src, &target) {
             Ok(()) => moved += 1,
-            Err(e) if e.raw_os_error() == Some(EXDEV) => cross_fs.push(src.clone()),
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => cross_fs.push(src.clone()),
             Err(e) => errors.push((src.clone(), e.to_string())),
         }
     }
