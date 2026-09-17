@@ -56,14 +56,15 @@ pub fn detect_file_kind(path: &Path) -> FileKind {
 
 /// Generate a formatted hex dump string for a buffer.
 pub fn generate_hex_dump(buf: &[u8]) -> String {
+    use std::fmt::Write;
     let mut out = String::new();
     for (chunk_idx, chunk) in buf.chunks(16).enumerate() {
         let offset = chunk_idx * 16;
-        out.push_str(&format!("{offset:08x}:  "));
+        let _ = write!(out, "{offset:08x}:  ");
         // Hex bytes
         for i in 0..16 {
             if i < chunk.len() {
-                out.push_str(&format!("{:02x} ", chunk[i]));
+                let _ = write!(out, "{:02x} ", chunk[i]);
             } else {
                 out.push_str("   ");
             }
