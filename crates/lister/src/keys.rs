@@ -8,6 +8,43 @@
 
 use gtk4::gdk;
 
+/// One entry in the command palette / a target `Action::Command` can name.
+/// A single enum shared by `keys::resolve`, `palette::get_commands` and
+/// `palette::execute_command` so a typo in any one of them is a compile
+/// error instead of a silently dead-ending shortcut.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CommandId {
+    Filter,
+    Preview,
+    SelectAll,
+    DeselectAll,
+    InvertSelection,
+    SelectPattern,
+    DeselectPattern,
+    ToggleHidden,
+    Copy,
+    Move,
+    Delete,
+    ClipCopy,
+    ClipCut,
+    ClipPaste,
+    Mkdir,
+    NewFile,
+    Rename,
+    BatchRename,
+    Reload,
+    ParentDir,
+    HomeDir,
+    Terminal,
+    CalcSizes,
+    CalcChecksums,
+    CompareDirs,
+    SetSource,
+    SetDest,
+    SetNone,
+    TogglePin,
+}
+
 /// Where the keyboard focus is when the key arrives.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -34,7 +71,7 @@ pub enum Motion {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     /// Run the command palette entry with this id.
-    Command(&'static str),
+    Command(CommandId),
     /// Move the list cursor.
     Move(Motion),
     /// Open the row under the cursor (enter directory, open file).
@@ -66,12 +103,12 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         return match key {
             gdk::Key::p | gdk::Key::P => Some(Action::OpenPalette),
             gdk::Key::f | gdk::Key::F => Some(Action::RevealFilter),
-            gdk::Key::a | gdk::Key::A => Some(Action::Command("select_all")),
-            gdk::Key::r | gdk::Key::R => Some(Action::Command("reload")),
-            gdk::Key::h | gdk::Key::H => Some(Action::Command("toggle_hidden")),
-            gdk::Key::c | gdk::Key::C => Some(Action::Command("clip_copy")),
-            gdk::Key::x | gdk::Key::X => Some(Action::Command("clip_cut")),
-            gdk::Key::v | gdk::Key::V => Some(Action::Command("clip_paste")),
+            gdk::Key::a | gdk::Key::A => Some(Action::Command(CommandId::SelectAll)),
+            gdk::Key::r | gdk::Key::R => Some(Action::Command(CommandId::Reload)),
+            gdk::Key::h | gdk::Key::H => Some(Action::Command(CommandId::ToggleHidden)),
+            gdk::Key::c | gdk::Key::C => Some(Action::Command(CommandId::ClipCopy)),
+            gdk::Key::x | gdk::Key::X => Some(Action::Command(CommandId::ClipCut)),
+            gdk::Key::v | gdk::Key::V => Some(Action::Command(CommandId::ClipPaste)),
             _ => None,
         };
     }
@@ -94,22 +131,22 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         gdk::Key::g => Some(Action::Move(Motion::First)),
         gdk::Key::G => Some(Action::Move(Motion::Last)),
         gdk::Key::l | gdk::Key::Return | gdk::Key::KP_Enter => Some(Action::Enter),
-        gdk::Key::h | gdk::Key::BackSpace => Some(Action::Command("parent_dir")),
-        gdk::Key::asciitilde => Some(Action::Command("home_dir")),
+        gdk::Key::h | gdk::Key::BackSpace => Some(Action::Command(CommandId::ParentDir)),
+        gdk::Key::asciitilde => Some(Action::Command(CommandId::HomeDir)),
 
         // Selection.
         gdk::Key::Insert | gdk::Key::KP_Insert => Some(Action::ToggleSelectAndAdvance),
-        gdk::Key::asterisk => Some(Action::Command("invert_selection")),
-        gdk::Key::plus | gdk::Key::KP_Add => Some(Action::Command("select_pattern")),
-        gdk::Key::minus | gdk::Key::KP_Subtract => Some(Action::Command("deselect_pattern")),
+        gdk::Key::asterisk => Some(Action::Command(CommandId::InvertSelection)),
+        gdk::Key::plus | gdk::Key::KP_Add => Some(Action::Command(CommandId::SelectPattern)),
+        gdk::Key::minus | gdk::Key::KP_Subtract => Some(Action::Command(CommandId::DeselectPattern)),
 
         // File operations.
-        gdk::Key::c => Some(Action::Command("copy")),
-        gdk::Key::m => Some(Action::Command("move")),
-        gdk::Key::d | gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command("delete")),
-        gdk::Key::F2 => Some(Action::Command("rename")),
-        gdk::Key::F7 if shift => Some(Action::Command("newfile")),
-        gdk::Key::F7 => Some(Action::Command("mkdir")),
+        gdk::Key::c => Some(Action::Command(CommandId::Copy)),
+        gdk::Key::m => Some(Action::Command(CommandId::Move)),
+        gdk::Key::d | gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command(CommandId::Delete)),
+        gdk::Key::F2 => Some(Action::Command(CommandId::Rename)),
+        gdk::Key::F7 if shift => Some(Action::Command(CommandId::NewFile)),
+        gdk::Key::F7 => Some(Action::Command(CommandId::Mkdir)),
 
         // Roles and panels.
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab => Some(Action::SwapRoleFocus),
@@ -146,24 +183,24 @@ mod tests {
     fn h_and_l_leave_and_enter_directories() {
         assert_eq!(list(gdk::Key::l), Some(Action::Enter));
         assert_eq!(list(gdk::Key::Return), Some(Action::Enter));
-        assert_eq!(list(gdk::Key::h), Some(Action::Command("parent_dir")));
-        assert_eq!(list(gdk::Key::BackSpace), Some(Action::Command("parent_dir")));
+        assert_eq!(list(gdk::Key::h), Some(Action::Command(CommandId::ParentDir)));
+        assert_eq!(list(gdk::Key::BackSpace), Some(Action::Command(CommandId::ParentDir)));
     }
 
     #[test]
     fn file_operation_letters_are_bound() {
-        assert_eq!(list(gdk::Key::c), Some(Action::Command("copy")));
-        assert_eq!(list(gdk::Key::m), Some(Action::Command("move")));
-        assert_eq!(list(gdk::Key::d), Some(Action::Command("delete")));
-        assert_eq!(list(gdk::Key::Delete), Some(Action::Command("delete")));
+        assert_eq!(list(gdk::Key::c), Some(Action::Command(CommandId::Copy)));
+        assert_eq!(list(gdk::Key::m), Some(Action::Command(CommandId::Move)));
+        assert_eq!(list(gdk::Key::d), Some(Action::Command(CommandId::Delete)));
+        assert_eq!(list(gdk::Key::Delete), Some(Action::Command(CommandId::Delete)));
     }
 
     #[test]
     fn selection_keys_are_bound() {
         assert_eq!(list(gdk::Key::Insert), Some(Action::ToggleSelectAndAdvance));
-        assert_eq!(list(gdk::Key::asterisk), Some(Action::Command("invert_selection")));
-        assert_eq!(list(gdk::Key::plus), Some(Action::Command("select_pattern")));
-        assert_eq!(list(gdk::Key::minus), Some(Action::Command("deselect_pattern")));
+        assert_eq!(list(gdk::Key::asterisk), Some(Action::Command(CommandId::InvertSelection)));
+        assert_eq!(list(gdk::Key::plus), Some(Action::Command(CommandId::SelectPattern)));
+        assert_eq!(list(gdk::Key::minus), Some(Action::Command(CommandId::DeselectPattern)));
     }
 
     #[test]
@@ -176,13 +213,13 @@ mod tests {
     fn backtick_opens_the_terminal_and_tilde_goes_home() {
         // Two different keyvals, so they can mean two different things.
         assert_eq!(list(gdk::Key::grave), Some(Action::ToggleTerminal));
-        assert_eq!(list(gdk::Key::asciitilde), Some(Action::Command("home_dir")));
+        assert_eq!(list(gdk::Key::asciitilde), Some(Action::Command(CommandId::HomeDir)));
     }
 
     #[test]
     fn shift_only_matters_where_the_keyval_does_not_encode_it() {
-        assert_eq!(resolve(gdk::Key::F7, false, false, Focus::List), Some(Action::Command("mkdir")));
-        assert_eq!(resolve(gdk::Key::F7, false, true, Focus::List), Some(Action::Command("newfile")));
+        assert_eq!(resolve(gdk::Key::F7, false, false, Focus::List), Some(Action::Command(CommandId::Mkdir)));
+        assert_eq!(resolve(gdk::Key::F7, false, true, Focus::List), Some(Action::Command(CommandId::NewFile)));
     }
 
     #[test]
@@ -209,19 +246,19 @@ mod tests {
         for focus in [Focus::List, Focus::Editing] {
             assert_eq!(resolve(gdk::Key::p, true, false, focus), Some(Action::OpenPalette));
             assert_eq!(resolve(gdk::Key::f, true, false, focus), Some(Action::RevealFilter));
-            assert_eq!(resolve(gdk::Key::a, true, false, focus), Some(Action::Command("select_all")));
-            assert_eq!(resolve(gdk::Key::r, true, false, focus), Some(Action::Command("reload")));
-            assert_eq!(resolve(gdk::Key::h, true, false, focus), Some(Action::Command("toggle_hidden")));
-            assert_eq!(resolve(gdk::Key::c, true, false, focus), Some(Action::Command("clip_copy")));
-            assert_eq!(resolve(gdk::Key::x, true, false, focus), Some(Action::Command("clip_cut")));
-            assert_eq!(resolve(gdk::Key::v, true, false, focus), Some(Action::Command("clip_paste")));
+            assert_eq!(resolve(gdk::Key::a, true, false, focus), Some(Action::Command(CommandId::SelectAll)));
+            assert_eq!(resolve(gdk::Key::r, true, false, focus), Some(Action::Command(CommandId::Reload)));
+            assert_eq!(resolve(gdk::Key::h, true, false, focus), Some(Action::Command(CommandId::ToggleHidden)));
+            assert_eq!(resolve(gdk::Key::c, true, false, focus), Some(Action::Command(CommandId::ClipCopy)));
+            assert_eq!(resolve(gdk::Key::x, true, false, focus), Some(Action::Command(CommandId::ClipCut)));
+            assert_eq!(resolve(gdk::Key::v, true, false, focus), Some(Action::Command(CommandId::ClipPaste)));
         }
     }
 
     #[test]
     fn ctrl_does_not_leak_into_the_plain_letter_bindings() {
         // Ctrl+C is the clipboard copy, not the source->dest vim binding for `c`.
-        assert_eq!(resolve(gdk::Key::c, true, false, Focus::List), Some(Action::Command("clip_copy")));
+        assert_eq!(resolve(gdk::Key::c, true, false, Focus::List), Some(Action::Command(CommandId::ClipCopy)));
         assert_eq!(resolve(gdk::Key::d, true, false, Focus::List), None);
         assert_eq!(resolve(gdk::Key::j, true, false, Focus::List), None);
     }
@@ -235,7 +272,7 @@ mod tests {
 
     #[test]
     fn every_command_id_the_map_emits_exists_in_the_palette() {
-        let known: Vec<&str> = crate::palette::get_commands().iter().map(|c| c.id).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id).collect();
         // Sweep the whole keyval space we bind from, in both focus modes.
         let keys = [
             gdk::Key::j, gdk::Key::k, gdk::Key::g, gdk::Key::G, gdk::Key::l,

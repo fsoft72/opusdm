@@ -1,6 +1,7 @@
 //! Command Palette HUD dialog (Ctrl+P / Ctrl+Shift+P).
 
 use crate::filter::{fuzzy_match, glob_match};
+use crate::keys::CommandId;
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::gdk;
@@ -11,7 +12,7 @@ use std::rc::Rc;
 
 #[derive(Clone)]
 pub struct CommandItem {
-    pub id: &'static str,
+    pub id: CommandId,
     pub title: &'static str,
     pub category: &'static str,
     pub shortcut: Option<&'static str>,
@@ -19,57 +20,59 @@ pub struct CommandItem {
 
 pub fn get_commands() -> Vec<CommandItem> {
     vec![
-        CommandItem { id: "filter", title: "Filter Files in Current View", category: "View", shortcut: Some("/") },
-        CommandItem { id: "preview", title: "Quick Look File Preview", category: "View", shortcut: Some("F3 / Space") },
-        CommandItem { id: "select_all", title: "Select All", category: "Selection", shortcut: Some("Ctrl+A") },
-        CommandItem { id: "deselect_all", title: "Deselect All", category: "Selection", shortcut: Some("Esc") },
-        CommandItem { id: "invert_selection", title: "Invert Selection", category: "Selection", shortcut: Some("*") },
-        CommandItem { id: "select_pattern", title: "Select by Pattern (*.rs, etc.)", category: "Selection", shortcut: Some("+") },
-        CommandItem { id: "deselect_pattern", title: "Deselect by Pattern", category: "Selection", shortcut: Some("-") },
-        CommandItem { id: "toggle_hidden", title: "Toggle Hidden Files", category: "View", shortcut: Some("Ctrl+H") },
-        CommandItem { id: "copy", title: "Copy (Source -> Dest)", category: "File Ops", shortcut: Some("c") },
-        CommandItem { id: "move", title: "Move (Source -> Dest)", category: "File Ops", shortcut: Some("m") },
-        CommandItem { id: "delete", title: "Delete Selected Items", category: "File Ops", shortcut: Some("d / Del") },
-        CommandItem { id: "clip_copy", title: "Copy to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+C") },
-        CommandItem { id: "clip_cut", title: "Cut to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+X") },
-        CommandItem { id: "clip_paste", title: "Paste from Clipboard", category: "Clipboard", shortcut: Some("Ctrl+V") },
-        CommandItem { id: "mkdir", title: "Make Directory...", category: "File Ops", shortcut: Some("F7") },
-        CommandItem { id: "newfile", title: "New File...", category: "File Ops", shortcut: Some("Shift+F7") },
-        CommandItem { id: "rename", title: "Rename...", category: "File Ops", shortcut: Some("F2") },
-        CommandItem { id: "batch_rename", title: "Batch Rename Selected Files (Regex/Numbering)...", category: "File Ops", shortcut: Some("F2 (multi)") },
-        CommandItem { id: "reload", title: "Reload / Refresh Current Directory", category: "View", shortcut: Some("Ctrl+R") },
-        CommandItem { id: "parent_dir", title: "Go to Parent Directory", category: "Navigation", shortcut: Some("h / Backspace") },
-        CommandItem { id: "home_dir", title: "Go to Home Directory (~)", category: "Navigation", shortcut: Some("~") },
-        CommandItem { id: "terminal", title: "Toggle Terminal Drawer", category: "Tools", shortcut: Some("F4 / `") },
-        CommandItem { id: "calc_sizes", title: "Calculate Directory Sizes", category: "Tools", shortcut: Some("Space (on dir)") },
-        CommandItem { id: "calc_checksums", title: "Calculate Checksums (SHA-256 / MD5)...", category: "Tools", shortcut: None },
-        CommandItem { id: "compare_dirs", title: "Compare / Sync Directories (Visual Diff)...", category: "Tools", shortcut: None },
-        CommandItem { id: "set_source", title: "Set Role: SOURCE", category: "Roles", shortcut: None },
-        CommandItem { id: "set_dest", title: "Set Role: DEST", category: "Roles", shortcut: None },
-        CommandItem { id: "set_none", title: "Set Role: NONE", category: "Roles", shortcut: None },
-        CommandItem { id: "toggle_pin", title: "Toggle Role Pin / Lock", category: "Roles", shortcut: None },
+        CommandItem { id: CommandId::Filter, title: "Filter Files in Current View", category: "View", shortcut: Some("/") },
+        CommandItem { id: CommandId::Preview, title: "Quick Look File Preview", category: "View", shortcut: Some("F3 / Space") },
+        CommandItem { id: CommandId::SelectAll, title: "Select All", category: "Selection", shortcut: Some("Ctrl+A") },
+        CommandItem { id: CommandId::DeselectAll, title: "Deselect All", category: "Selection", shortcut: Some("Esc") },
+        CommandItem { id: CommandId::InvertSelection, title: "Invert Selection", category: "Selection", shortcut: Some("*") },
+        CommandItem { id: CommandId::SelectPattern, title: "Select by Pattern (*.rs, etc.)", category: "Selection", shortcut: Some("+") },
+        CommandItem { id: CommandId::DeselectPattern, title: "Deselect by Pattern", category: "Selection", shortcut: Some("-") },
+        CommandItem { id: CommandId::ToggleHidden, title: "Toggle Hidden Files", category: "View", shortcut: Some("Ctrl+H") },
+        CommandItem { id: CommandId::Copy, title: "Copy (Source -> Dest)", category: "File Ops", shortcut: Some("c") },
+        CommandItem { id: CommandId::Move, title: "Move (Source -> Dest)", category: "File Ops", shortcut: Some("m") },
+        CommandItem { id: CommandId::Delete, title: "Delete Selected Items", category: "File Ops", shortcut: Some("d / Del") },
+        CommandItem { id: CommandId::ClipCopy, title: "Copy to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+C") },
+        CommandItem { id: CommandId::ClipCut, title: "Cut to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+X") },
+        CommandItem { id: CommandId::ClipPaste, title: "Paste from Clipboard", category: "Clipboard", shortcut: Some("Ctrl+V") },
+        CommandItem { id: CommandId::Mkdir, title: "Make Directory...", category: "File Ops", shortcut: Some("F7") },
+        CommandItem { id: CommandId::NewFile, title: "New File...", category: "File Ops", shortcut: Some("Shift+F7") },
+        CommandItem { id: CommandId::Rename, title: "Rename...", category: "File Ops", shortcut: Some("F2") },
+        CommandItem { id: CommandId::BatchRename, title: "Batch Rename Selected Files (Regex/Numbering)...", category: "File Ops", shortcut: Some("F2 (multi)") },
+        CommandItem { id: CommandId::Reload, title: "Reload / Refresh Current Directory", category: "View", shortcut: Some("Ctrl+R") },
+        CommandItem { id: CommandId::ParentDir, title: "Go to Parent Directory", category: "Navigation", shortcut: Some("h / Backspace") },
+        CommandItem { id: CommandId::HomeDir, title: "Go to Home Directory (~)", category: "Navigation", shortcut: Some("~") },
+        CommandItem { id: CommandId::Terminal, title: "Toggle Terminal Drawer", category: "Tools", shortcut: Some("F4 / `") },
+        CommandItem { id: CommandId::CalcSizes, title: "Calculate Directory Sizes", category: "Tools", shortcut: Some("Space (on dir)") },
+        CommandItem { id: CommandId::CalcChecksums, title: "Calculate Checksums (SHA-256 / MD5)...", category: "Tools", shortcut: None },
+        CommandItem { id: CommandId::CompareDirs, title: "Compare / Sync Directories (Visual Diff)...", category: "Tools", shortcut: None },
+        CommandItem { id: CommandId::SetSource, title: "Set Role: SOURCE", category: "Roles", shortcut: None },
+        CommandItem { id: CommandId::SetDest, title: "Set Role: DEST", category: "Roles", shortcut: None },
+        CommandItem { id: CommandId::SetNone, title: "Set Role: NONE", category: "Roles", shortcut: None },
+        CommandItem { id: CommandId::TogglePin, title: "Toggle Role Pin / Lock", category: "Roles", shortcut: None },
     ]
 }
 
-/// Execute a command by ID.
-pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
+/// Execute a command by ID. The match is exhaustive (no wildcard arm): a
+/// `CommandId` added without a handler here is a compile error, not a
+/// silently dead-ended shortcut.
+pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
     match cmd_id {
-        "filter" => {
+        CommandId::Filter => {
             ui.reveal_filter();
         }
-        "preview" => {
+        CommandId::Preview => {
             ui.toggle_preview();
         }
-        "terminal" => {
+        CommandId::Terminal => {
             ui.toggle_terminal();
         }
-        "select_all" => {
+        CommandId::SelectAll => {
             ui.view.selection.select_all();
         }
-        "deselect_all" => {
+        CommandId::DeselectAll => {
             ui.view.selection.unselect_all();
         }
-        "invert_selection" => {
+        CommandId::InvertSelection => {
             let n = ui.view.selection.n_items();
             for i in 0..n {
                 if ui.view.selection.is_selected(i) {
@@ -79,7 +82,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 }
             }
         }
-        "select_pattern" => {
+        CommandId::SelectPattern => {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "Select files matching pattern (e.g. *.rs)", "*", move |pattern| {
@@ -93,7 +96,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 }
             });
         }
-        "deselect_pattern" => {
+        CommandId::DeselectPattern => {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "Deselect files matching pattern (e.g. *.tmp)", "*", move |pattern| {
@@ -107,12 +110,12 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 }
             });
         }
-        "toggle_hidden" => {
+        CommandId::ToggleHidden => {
             let active = !ui.view.show_hidden.get();
             ui.view.show_hidden.set(active);
             ui.reload();
         }
-        "copy" => {
+        CommandId::Copy => {
             if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
                 crate::actions::flash(ui, &msg);
                 return;
@@ -128,7 +131,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 dest_dir: None,
             });
         }
-        "move" => {
+        CommandId::Move => {
             if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
                 crate::actions::flash(ui, &msg);
                 return;
@@ -144,16 +147,16 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 dest_dir: None,
             });
         }
-        "clip_copy" => {
+        CommandId::ClipCopy => {
             crate::clip::copy_or_cut(ui, false);
         }
-        "clip_cut" => {
+        CommandId::ClipCut => {
             crate::clip::copy_or_cut(ui, true);
         }
-        "clip_paste" => {
+        CommandId::ClipPaste => {
             crate::clip::paste(ui);
         }
-        "delete" => {
+        CommandId::Delete => {
             let paths = ui.selected_paths();
             if paths.is_empty() {
                 crate::actions::flash(ui, "nothing selected");
@@ -165,7 +168,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 paths,
             );
         }
-        "mkdir" => {
+        CommandId::Mkdir => {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "New directory name", "", move |name| {
@@ -176,7 +179,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 });
             });
         }
-        "newfile" => {
+        CommandId::NewFile => {
             let ui_clone = ui.clone();
             let win = ui.window.clone();
             crate::actions::prompt(&win, "New file name", "", move |name| {
@@ -187,7 +190,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 });
             });
         }
-        "rename" => {
+        CommandId::Rename => {
             let sel = ui.selected_paths();
             if sel.is_empty() {
                 crate::actions::flash(ui, "nothing selected to rename");
@@ -212,48 +215,47 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: &str) {
                 }
             });
         }
-        "batch_rename" => {
+        CommandId::BatchRename => {
             crate::batch_rename::open_batch_rename_dialog(ui);
         }
-        "reload" => {
+        CommandId::Reload => {
             ui.reload();
         }
-        "parent_dir" => {
+        CommandId::ParentDir => {
             let parent = ui.cwd.borrow().parent().map(std::path::PathBuf::from);
             if let Some(p) = parent {
                 ui.navigate_to(&p);
             }
         }
-        "home_dir" => {
+        CommandId::HomeDir => {
             if let Ok(home) = std::env::var("HOME") {
                 ui.navigate_to(std::path::Path::new(&home));
             }
         }
-        "calc_sizes" => {
+        CommandId::CalcSizes => {
             crate::tools::calculate_dir_sizes_async(ui);
         }
-        "calc_checksums" => {
+        CommandId::CalcChecksums => {
             crate::tools::open_checksum_dialog(ui);
         }
-        "compare_dirs" => {
+        CommandId::CompareDirs => {
             crate::tools::open_compare_dialog(ui);
         }
-        "set_source" => {
+        CommandId::SetSource => {
             let _ = ui.hub.client.send(&ToHub::SetRole(Role::Source));
         }
-        "set_dest" => {
+        CommandId::SetDest => {
             let _ = ui.hub.client.send(&ToHub::SetRole(Role::Dest));
         }
-        "set_none" => {
+        CommandId::SetNone => {
             let _ = ui.hub.client.send(&ToHub::SetRole(Role::None));
         }
-        "toggle_pin" => {
+        CommandId::TogglePin => {
             let active = !ui.status_bar.role_lock_btn.is_active();
             ui.status_bar.role_lock_btn.set_active(active);
             let msg = if active { ToHub::LockRole } else { ToHub::UnlockRole };
             let _ = ui.hub.client.send(&msg);
         }
-        _ => {}
     }
 }
 
