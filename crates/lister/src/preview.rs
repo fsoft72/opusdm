@@ -95,6 +95,7 @@ enum Loaded {
     Text { meta: String, numbered_text: String },
     Archive { meta: String, listing: String },
     Binary { meta: String, hex: String },
+    Directory { meta: String, listing: String },
     Error { message: String },
 }
 
@@ -186,11 +187,12 @@ impl PreviewWindow {
         preview
     }
 
-    /// Update preview content for the given file path. The directory case is
-    /// resolved synchronously (a `read_dir` listing, no reason to defer it);
-    /// everything else - the binary-vs-text probe, the text/binary byte
+    /// Update preview content for the given file path. Every kind of read -
+    /// the directory listing, the binary-vs-text probe, the text/binary byte
     /// reads, and the archive-listing subprocess - runs on a background
-    /// thread so a slow (e.g. network-mounted) file can't stall the window.
+    /// thread so a slow (e.g. network-mounted) directory or file can't stall
+    /// the window; only the resulting `Loaded` data crosses back to build
+    /// GTK objects on the main thread.
     pub fn load_file(self: &Rc<Self>, path: &Path) {
         *self.current_path.borrow_mut() = path.to_path_buf();
         let filename = path
@@ -213,13 +215,7 @@ impl PreviewWindow {
             }
         };
 
-        if metadata.is_dir() {
-            let size_str = format_size(true, metadata.len());
-            self.meta_label.set_text(&format!("Directory  •  {size_str}"));
-            self.render_directory(path);
-            return;
-        }
-
+        let is_dir = metadata.is_dir();
         let file_size = metadata.len();
         self.meta_label.set_text("Loading…");
         let placeholder = gtk::Label::new(Some("Loading preview…"));
@@ -232,7 +228,12 @@ impl PreviewWindow {
         let (tx, rx) = async_channel::bounded::<Loaded>(1);
         let path_owned = path.to_path_buf();
         std::thread::spawn(move || {
-            let _ = tx.send_blocking(load_off_thread(&path_owned, file_size));
+            let loaded = if is_dir {
+                load_directory_off_thread(&path_owned, file_size)
+            } else {
+                load_off_thread(&path_owned, file_size)
+            };
+            let _ = tx.send_blocking(loaded);
         });
 
         let this = self.clone();
@@ -270,6 +271,10 @@ impl PreviewWindow {
             Loaded::Binary { meta, hex } => {
                 self.meta_label.set_text(&meta);
                 self.content_box.append(&text_view_scroller(&hex, gtk::WrapMode::None));
+            }
+            Loaded::Directory { meta, listing } => {
+                self.meta_label.set_text(&meta);
+                self.content_box.append(&text_view_scroller(&listing, gtk::WrapMode::None));
             }
             Loaded::Error { message } => {
                 let err_label = gtk::Label::new(Some(&message));
@@ -315,27 +320,6 @@ impl PreviewWindow {
         self.content_box.append(&scroller);
     }
 
-    fn render_directory(&self, path: &Path) {
-        let mut listing = String::new();
-        if let Ok(entries) = std::fs::read_dir(path) {
-            let mut items = Vec::new();
-            for entry in entries.filter_map(Result::ok) {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                items.push((name, is_dir));
-            }
-            items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
-            for (name, is_dir) in items {
-                if is_dir {
-                    listing.push_str(&format!("📁  {name}/\n"));
-                } else {
-                    listing.push_str(&format!("📄  {name}\n"));
-                }
-            }
-        }
-
-        self.content_box.append(&text_view_scroller(&listing, gtk::WrapMode::None));
-    }
 }
 
 /// A read-only monospace text view in its own scroller, as used for the
@@ -380,6 +364,30 @@ fn archive_listing(path: &Path, ext: &str) -> String {
 /// text/binary/image previews, and the archive-listing subprocess. Runs on a
 /// background thread; returns plain data so the caller can build GTK objects
 /// from it on the main thread.
+/// Directory listing, off the GTK thread like every other preview kind (a
+/// slow, e.g. network-mounted, directory must not freeze the window).
+fn load_directory_off_thread(path: &Path, size: u64) -> Loaded {
+    let mut listing = String::new();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        let mut items = Vec::new();
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            items.push((name, is_dir));
+        }
+        items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        for (name, is_dir) in items {
+            if is_dir {
+                listing.push_str(&format!("📁  {name}/\n"));
+            } else {
+                listing.push_str(&format!("📄  {name}\n"));
+            }
+        }
+    }
+    let meta = format!("Directory  •  {}", format_size(true, size));
+    Loaded::Directory { meta, listing }
+}
+
 fn load_off_thread(path: &Path, file_size: u64) -> Loaded {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let size_str = format_size(false, file_size);
@@ -481,6 +489,26 @@ mod tests {
         match load_off_thread(missing, 0) {
             Loaded::Error { message } => assert!(message.contains("Cannot open")),
             other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_directory_off_thread_lists_dirs_before_files_case_insensitively() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("zeta.txt"), b"x").unwrap();
+        std::fs::write(td.path().join("Apple.txt"), b"x").unwrap();
+        std::fs::create_dir(td.path().join("banana_dir")).unwrap();
+
+        match load_directory_off_thread(td.path(), 4096) {
+            Loaded::Directory { meta, listing } => {
+                assert!(meta.contains("Directory"));
+                let dir_pos = listing.find("banana_dir").unwrap();
+                let apple_pos = listing.find("Apple.txt").unwrap();
+                let zeta_pos = listing.find("zeta.txt").unwrap();
+                assert!(dir_pos < apple_pos, "directories should sort before files");
+                assert!(apple_pos < zeta_pos, "files should sort case-insensitively");
+            }
+            other => panic!("expected Directory, got {other:?}"),
         }
     }
 }
