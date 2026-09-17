@@ -13,10 +13,11 @@ use std::sync::Arc;
 pub const MAX_CONCURRENT: usize = 4;
 
 /// The function that actually performs a job. Injected so tests can fake it.
-/// It must forward every `opusdm_fsops::Progress` as `(job_id, progress)` and
-/// end with exactly one `Progress::Done`. The real runner emits id `0`; the
-/// engine's per-job wrapper rewrites it to the real job id.
-pub type Runner = Arc<dyn Fn(JobSpec, Sender<(u64, Progress)>, CancelToken) + Send + Sync>;
+/// It must emit its `opusdm_fsops::Progress` events on `tx` (untagged - the
+/// caller has no job id to tag with) and end with exactly one
+/// `Progress::Done`. `JobEngine::start` owns tagging each event with the
+/// real job id as it relays it onward, so the runner itself never has to.
+pub type Runner = Arc<dyn Fn(JobSpec, Sender<Progress>, CancelToken) + Send + Sync>;
 
 /// Result of [`JobEngine::submit`].
 pub struct SubmitOutcomeStarted {
@@ -129,36 +130,31 @@ impl JobEngine {
         std::thread::Builder::new()
             .name(format!("opusdm-job-{job_id}"))
             .spawn(move || {
-                // Re-tag every event with this job's id.
-                let (job_tx, job_rx) = std::sync::mpsc::channel::<(u64, Progress)>();
-                let pump = std::thread::spawn(move || {
-                    for (_placeholder, ev) in job_rx {
+                // One relay thread re-tags every event with this job's id as
+                // the runner produces them (it has no job id to tag with
+                // itself). This is the only extra thread: the runner call
+                // below is synchronous, so something else has to be reading
+                // concurrently for progress to reach the UI live.
+                let (raw_tx, raw_rx) = std::sync::mpsc::channel::<Progress>();
+                let relay = std::thread::spawn(move || {
+                    for ev in raw_rx {
                         if shared_tx.send((job_id, ev)).is_err() {
                             break;
                         }
                     }
                 });
-                runner(spec, job_tx, cancel);
-                let _ = pump.join();
+                runner(spec, raw_tx, cancel);
+                let _ = relay.join();
             })
             .expect("spawn job thread");
     }
 }
 
-/// The production runner: `opusdm_fsops::run_job` with each event tagged id `0`
-/// (the engine's per-job wrapper rewrites it to the real job id).
+/// The production runner: plain `opusdm_fsops::run_job`. Tagging with the
+/// job id happens in `JobEngine::start`, so this needs no thread of its own.
 pub fn default_runner() -> Runner {
-    Arc::new(|spec: JobSpec, tx: Sender<(u64, Progress)>, cancel: CancelToken| {
-        let (inner_tx, inner_rx) = std::sync::mpsc::channel::<Progress>();
-        let forward = std::thread::spawn(move || {
-            for ev in inner_rx {
-                if tx.send((0, ev)).is_err() {
-                    break;
-                }
-            }
-        });
-        opusdm_fsops::run_job(spec, inner_tx, cancel);
-        let _ = forward.join();
+    Arc::new(|spec: JobSpec, tx: Sender<Progress>, cancel: CancelToken| {
+        opusdm_fsops::run_job(spec, tx, cancel);
     })
 }
 
