@@ -14,6 +14,9 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// How long the path entry's "error" CSS class (invalid path flash) stays on.
+const PATH_ENTRY_ERROR_FLASH_MS: u64 = 600;
+
 /// Build and run the window application.
 pub fn run(
     mut client: Client,
@@ -457,7 +460,7 @@ fn build_window(
             } else {
                 entry.add_css_class("error");
                 let entry = entry.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
+                glib::timeout_add_local_once(std::time::Duration::from_millis(PATH_ENTRY_ERROR_FLASH_MS), move || {
                     entry.remove_css_class("error");
                 });
                 ui.refresh_path_entry();

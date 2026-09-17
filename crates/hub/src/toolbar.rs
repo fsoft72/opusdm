@@ -26,6 +26,22 @@ const DESKTOP_MENU_BORDER: &str = "#1b1d1e";
 const DESKTOP_MENU_W: i32 = 180;
 const DESKTOP_MENU_H: i32 = 210;
 
+/// Delay before re-asserting a desktop window's geometry once, after the WM
+/// has had a chance to run its placement policy (on first map) or after a
+/// redundant `RaiseToolbar` finds a possibly stale window.
+const WM_PLACEMENT_SETTLE_DELAY_MS: u64 = 80;
+
+/// Delays for re-asserting a desktop window's geometry a couple of times
+/// after a resolution change: the WM reacts to the new screen size on its
+/// own (shifting the desktop down by the panel's strut), so this re-asserts
+/// once it has settled.
+const RESOLUTION_CHANGE_SETTLE_DELAYS_MS: [u64; 2] = [150, 600];
+
+/// Delays for re-asserting every desktop window's geometry a couple of times
+/// at startup, once the panel's struts have landed (they shrink the work
+/// area, which otherwise clamps the desktop windows a strip short).
+const PANEL_STRUT_SETTLE_DELAYS_MS: [u64; 2] = [600, 1600];
+
 /// Build and run the desktop application. Returns on quit.
 pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
     let app = gtk::Application::builder()
@@ -194,7 +210,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     // The panel reserves a top strut, which shrinks the work area and makes
     // GTK clamp the desktop windows a strip short. Re-assert the full-monitor
     // geometry a couple of times once the panel's struts have landed.
-    for delay in [600_u64, 1600] {
+    for delay in PANEL_STRUT_SETTLE_DELAYS_MS {
         let widgets = widgets.clone();
         glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
             for dw in widgets.windows.borrow().iter() {
@@ -238,7 +254,7 @@ fn reposition_desktop_windows(widgets: &Rc<Widgets>, rects: &[(i32, i32, i32, i3
         // The window manager reacts to the new screen size on its own - it
         // shifts the desktop down by the panel's strut - so re-assert the
         // geometry once it has settled, as the startup path does.
-        for delay in [150_u64, 600] {
+        for delay in RESOLUTION_CHANGE_SETTLE_DELAYS_MS {
             let window = dw.window.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
                 crate::desktop::pin_geometry(&window, x, y, w, h);
@@ -322,7 +338,7 @@ fn build_one_desktop_window(
     window.connect_map(move |win| {
         crate::desktop::make_desktop_window(win, x, y, w, h);
         let win = win.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(WM_PLACEMENT_SETTLE_DELAY_MS), move || {
             crate::desktop::pin_geometry(&win, x, y, w, h);
         });
     });
@@ -830,7 +846,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             for dw in widgets.windows.borrow().iter() {
                 crate::desktop::make_desktop_window(&dw.window, dw.x, dw.y, dw.w, dw.h);
                 let (window, x, y, w, h) = (dw.window.clone(), dw.x, dw.y, dw.w, dw.h);
-                glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
+                glib::timeout_add_local_once(std::time::Duration::from_millis(WM_PLACEMENT_SETTLE_DELAY_MS), move || {
                     crate::desktop::pin_geometry(&window, x, y, w, h);
                 });
             }
