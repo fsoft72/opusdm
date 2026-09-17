@@ -366,7 +366,7 @@ fn build_window(
         });
     }
     *ui_slot.borrow_mut() = Some(ui.clone());
-    terminal.attach_events(&ui);
+    terminal.attach(&ui);
     ui.update_css_for_colors();
 
     // Star button: open a new Lister at this Lister's current path.

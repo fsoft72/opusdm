@@ -18,6 +18,7 @@ gtk4.workspace = true
 walkdir.workspace = true
 sha2.workspace = true
 md-5.workspace = true
+vte4 = "0.9"
 
 [dev-dependencies]
 tempfile.workspace = true

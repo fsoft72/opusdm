@@ -1,35 +1,75 @@
-//! Quake-style dropdown embedded terminal drawer (F4 / `).
+//! Quake-style dropdown terminal drawer (F4 / `), backed by a real VTE
+//! terminal running the user's login shell.
 
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
+use vte4::prelude::*;
 use std::cell::RefCell;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::rc::Rc;
 
 pub struct TerminalDrawer {
     pub container: gtk::Box,
     pub title_label: gtk::Label,
-    pub text_view: gtk::TextView,
-    pub entry: gtk::Entry,
-    pub prompt_label: gtk::Label,
-    #[allow(dead_code)]
-    pub scroller: gtk::ScrolledWindow,
-    pub cwd: RefCell<PathBuf>,
-    pub history: RefCell<Vec<String>>,
-    pub history_idx: RefCell<Option<usize>>,
+    /// Slot holding the live `vte4::Terminal` (moved out on detach).
+    term_slot: gtk::Box,
+    /// The live terminal widget, `None` before the first spawn, after the
+    /// shell exited, and after a detach.
+    terminal: RefCell<Option<vte4::Terminal>>,
+    /// Last known Lister directory: the spawn cwd for the next shell.
+    cwd: RefCell<PathBuf>,
 }
 
 impl TerminalDrawer {
     pub fn new() -> Rc<Self> {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        container.set_size_request(-1, 200);
+        container.set_size_request(-1, 260);
         container.add_css_class("terminal-drawer");
         container.set_visible(false);
+
+        // Drag handle at the top edge: drag vertically to resize the drawer.
+        let handle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        handle.set_size_request(-1, 5);
+        handle.add_css_class("terminal-resize-handle");
+        handle.set_cursor_from_name(Some("ns-resize"));
+        {
+            let drag = gtk::GestureDrag::new();
+            // Ignore the gesture's own deltas: they are reported in handle
+            // coordinates, but the handle moves with the pointer as the
+            // drawer resizes, which corrupts them. Read the absolute pointer
+            // position from the GDK device (surface coordinates are stable)
+            // and anchor the math to the drawer's fixed bottom edge.
+            let bottom_y = Rc::new(std::cell::Cell::new(f64::NAN));
+            {
+                let (container, bottom_y) = (container.clone(), bottom_y.clone());
+                drag.connect_drag_begin(move |_, _, _| {
+                    if let Some(win) = container.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+                        if let Some((_, y)) = container
+                            .translate_coordinates(&win, 0.0, container.height() as f64)
+                        {
+                            bottom_y.set(y);
+                        }
+                    }
+                });
+            }
+            let container2 = container.clone();
+            drag.connect_drag_update(move |g, _, _| {
+                let bottom = bottom_y.get();
+                if bottom.is_nan() {
+                    return;
+                }
+                let Some(device) = g.device() else { return };
+                let (_, _, py) = device.surface_at_position();
+                let h = (bottom - py).clamp(60.0, 1200.0);
+                container2.set_size_request(-1, h as i32);
+            });
+            handle.add_controller(drag);
+        }
+        container.append(&handle);
 
         // Header bar
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -39,7 +79,7 @@ impl TerminalDrawer {
         header.set_margin_bottom(2);
         header.add_css_class("terminal-header");
 
-        let title_label = gtk::Label::new(Some("💻 Terminal: /"));
+        let title_label = gtk::Label::new(Some("Terminal: /"));
         title_label.set_xalign(0.0);
         title_label.set_hexpand(true);
         title_label.add_css_class("terminal-title");
@@ -49,77 +89,73 @@ impl TerminalDrawer {
         clear_btn.add_css_class("flat");
         clear_btn.set_tooltip_text(Some("Clear console"));
 
+        let detach_btn = gtk::Button::with_label("Detach");
+        detach_btn.add_css_class("flat");
+        detach_btn.set_tooltip_text(Some("Move the shell into its own window"));
+
         let xterm_btn = gtk::Button::with_label("External");
         xterm_btn.add_css_class("flat");
         xterm_btn.set_tooltip_text(Some("Open in external terminal (xterm)"));
 
         let close_btn = gtk::Button::with_label("✕");
         close_btn.add_css_class("flat");
-        close_btn.set_tooltip_text(Some("Close terminal (F4 / `)"));
+        close_btn.set_tooltip_text(Some("Close terminal (F4)"));
 
         header.append(&clear_btn);
+        header.append(&detach_btn);
         header.append(&xterm_btn);
         header.append(&close_btn);
         container.append(&header);
 
-        // Terminal output TextView
-        let text_view = gtk::TextView::builder()
-            .editable(false)
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::Char)
-            .build();
-        text_view.add_css_class("terminal-view");
-        text_view.set_left_margin(8);
-        text_view.set_right_margin(8);
-        text_view.set_top_margin(6);
-        text_view.set_bottom_margin(6);
-
-        let buffer = text_view.buffer();
-        buffer.set_text("OpusDM Embedded Terminal — Type commands or 'cd <dir>' to navigate (Esc/F4 to hide)\n");
-
-        let scroller = gtk::ScrolledWindow::builder()
-            .child(&text_view)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        container.append(&scroller);
-
-        // Prompt row
-        let prompt_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        prompt_box.set_margin_start(6);
-        prompt_box.set_margin_end(6);
-        prompt_box.set_margin_top(4);
-        prompt_box.set_margin_bottom(4);
-
-        let prompt_label = gtk::Label::new(Some("$ "));
-        prompt_label.add_css_class("terminal-prompt");
-        prompt_box.append(&prompt_label);
-
-        let entry = gtk::Entry::new();
-        entry.set_hexpand(true);
-        entry.add_css_class("terminal-entry");
-        entry.set_placeholder_text(Some("Run shell command or cd..."));
-        prompt_box.append(&entry);
-
-        container.append(&prompt_box);
+        // Slot for the VTE widget.
+        let term_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        term_slot.set_vexpand(true);
+        container.append(&term_slot);
 
         let drawer = Rc::new(Self {
             container,
             title_label,
-            text_view,
-            entry,
-            prompt_label,
-            scroller,
+            term_slot,
+            terminal: RefCell::new(None),
             cwd: RefCell::new(PathBuf::from("/")),
-            history: RefCell::new(Vec::new()),
-            history_idx: RefCell::new(None),
         });
 
         // Clear button
         {
-            let tv = drawer.text_view.clone();
+            let drawer = drawer.clone();
             clear_btn.connect_clicked(move |_| {
-                tv.buffer().set_text("");
+                if let Some(term) = drawer.terminal.borrow().as_ref() {
+                    term.reset(true, true);
+                }
+            });
+        }
+
+        // Detach button: move the live VTE widget into its own window. The
+        // widget IS the shell session, so scrollback and process survive.
+        {
+            let drawer = drawer.clone();
+            detach_btn.connect_clicked(move |_| {
+                let Some(term) = drawer.terminal.borrow_mut().take() else {
+                    return;
+                };
+                drawer.term_slot.remove(&term);
+                drawer.container.set_visible(false);
+
+                let win = gtk::Window::builder()
+                    .title("OpusDM Terminal")
+                    .default_width(900)
+                    .default_height(500)
+                    .build();
+                term.connect_window_title_changed(move |t| {
+                    if let Some(w) = t.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+                        if let Some(title) = t.window_title() {
+                            w.set_title(Some(&title));
+                        }
+                    }
+                });
+                win.set_child(Some(&term));
+                win.present();
+                term.grab_focus();
             });
         }
 
@@ -145,230 +181,86 @@ impl TerminalDrawer {
         drawer
     }
 
-    /// Sync the drawer working directory with the Lister CWD.
+    /// Wire window-level integration: F4 toggling while the terminal has
+    /// focus (VTE swallows function keys before bubble-phase controllers see
+    /// them, so this must run in the capture phase).
+    pub fn attach(self: &Rc<Self>, ui: &Rc<Ui>) {
+        let ui = ui.clone();
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let ui_keys = ui.clone();
+        key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gdk::Key::F4 {
+                ui_keys.toggle_terminal();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        ui.window.add_controller(key_ctrl);
+    }
+
+    /// Create a fresh VTE running the user's login shell in `cwd`, wire its
+    /// lifecycle signals and drop it into the slot.
+    fn spawn_terminal(self: &Rc<Self>) {
+        let cwd = self.cwd.borrow().clone();
+        let term = vte4::Terminal::new();
+        term.set_scrollback_lines(10_000);
+        term.set_vexpand(true);
+        term.set_hexpand(true);
+
+        // Shell exit -> tear the drawer down; the next F4 respawns fresh.
+        let drawer = self.clone();
+        term.connect_child_exited(move |_, _| {
+            drawer.term_slot_remove();
+            *drawer.terminal.borrow_mut() = None;
+            drawer.container.set_visible(false);
+        });
+
+        term.spawn_async(
+            vte4::PtyFlags::DEFAULT,
+            Some(&cwd.to_string_lossy()),
+            &[&detect_user_shell(), "-l"],
+            &[],
+            glib::SpawnFlags::DEFAULT,
+            || {},
+            -1,
+            None::<&gtk::gio::Cancellable>,
+            |_| {},
+        );
+
+        self.term_slot.append(&term);
+        *self.terminal.borrow_mut() = Some(term);
+    }
+
+    /// Remove the current terminal widget from the slot, if present.
+    fn term_slot_remove(&self) {
+        if let Some(term) = self.terminal.borrow().as_ref() {
+            self.term_slot.remove(term);
+        }
+    }
+
+    /// Sync the drawer working directory with the Lister CWD. Only affects
+    /// the title and the spawn directory of the NEXT shell: a running shell
+    /// is left alone.
     pub fn sync_cwd(&self, new_cwd: &Path) {
         *self.cwd.borrow_mut() = new_cwd.to_path_buf();
         self.title_label
-            .set_text(&format!("💻 Terminal: {}", new_cwd.display()));
-        let dir_name = new_cwd
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".into());
-        self.prompt_label.set_text(&format!("{dir_name} $ "));
+            .set_text(&format!("Terminal: {}", new_cwd.display()));
     }
 
-    /// Toggle drawer visibility and focus.
-    pub fn toggle(&self) {
+    /// Toggle drawer visibility and focus. Spawns the shell lazily on first
+    /// show (or after the previous one exited / was detached).
+    pub fn toggle(self: &Rc<Self>) {
         let is_vis = self.container.is_visible();
         self.container.set_visible(!is_vis);
         if !is_vis {
-            self.entry.grab_focus();
+            if self.terminal.borrow().is_none() {
+                self.spawn_terminal();
+            }
+            if let Some(term) = self.terminal.borrow().as_ref() {
+                term.grab_focus();
+            }
         }
-    }
-
-    /// Append text to terminal output and scroll to end.
-    pub fn append_output(&self, text: &str) {
-        let buf = self.text_view.buffer();
-        let mut iter = buf.end_iter();
-        buf.insert(&mut iter, text);
-        // Scroll to end
-        let mark = buf.create_mark(None, &iter, false);
-        self.text_view.scroll_to_mark(&mark, 0.0, true, 0.0, 1.0);
-    }
-
-    /// Wire command execution and input history.
-    pub fn attach_events(self: &Rc<Self>, ui: &Rc<Ui>) {
-        let drawer_for_act = self.clone();
-        let ui_clone = ui.clone();
-
-        self.entry.connect_activate(move |entry| {
-            let cmd_str = entry.text().trim().to_string();
-            if cmd_str.is_empty() {
-                return;
-            }
-            entry.set_text("");
-
-            // Add to history
-            {
-                let mut hist = drawer_for_act.history.borrow_mut();
-                if hist.last() != Some(&cmd_str) {
-                    hist.push(cmd_str.clone());
-                }
-                *drawer_for_act.history_idx.borrow_mut() = None;
-            }
-
-            let current_dir = drawer_for_act.cwd.borrow().clone();
-            drawer_for_act.append_output(&format!("\n$ {cmd_str}\n"));
-
-            // Check for built-in 'cd' command
-            if cmd_str == "cd" || cmd_str.starts_with("cd ") {
-                let target_arg = if cmd_str == "cd" {
-                    std::env::var("HOME").unwrap_or_else(|_| "/".into())
-                } else {
-                    cmd_str[3..].trim().to_string()
-                };
-
-                let target_path = resolve_path(&current_dir, &target_arg);
-                if target_path.is_dir() {
-                    drawer_for_act.sync_cwd(&target_path);
-                    ui_clone.navigate_to(&target_path);
-                    drawer_for_act.append_output(&format!("↳ navigated to {}\n", target_path.display()));
-                } else {
-                    drawer_for_act.append_output(&format!("cd: no such file or directory: {target_arg}\n"));
-                }
-                return;
-            }
-
-            // Built-in 'clear'
-            if cmd_str == "clear" {
-                drawer_for_act.text_view.buffer().set_text("");
-                return;
-            }
-
-            // Asynchronous command execution
-            let drawer_clone = drawer_for_act.clone();
-            let (tx, rx) = async_channel::unbounded::<String>();
-
-            std::thread::spawn(move || {
-                let shell = detect_user_shell();
-                let mut cmd = Command::new(&shell);
-                // Pass `-l` (login shell) so that user profile/environment (/etc/profile, ~/.bash_profile,
-                // ~/.bash_login, or ~/.profile) is sourced, ensuring the full user environment is present.
-                cmd.arg("-l")
-                    .arg("-c")
-                    .arg(&cmd_str)
-                    .current_dir(&current_dir)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-
-                let child = cmd.spawn();
-
-                match child {
-                    Ok(mut process) => {
-                        if let Some(stdout) = process.stdout.take() {
-                            let tx_out = tx.clone();
-                            std::thread::spawn(move || {
-                                let reader = BufReader::new(stdout);
-                                for line in reader.lines().map_while(Result::ok) {
-                                    let _ = tx_out.send_blocking(format!("{line}\n"));
-                                }
-                            });
-                        }
-                        if let Some(stderr) = process.stderr.take() {
-                            let tx_err = tx.clone();
-                            std::thread::spawn(move || {
-                                let reader = BufReader::new(stderr);
-                                for line in reader.lines().map_while(Result::ok) {
-                                    let _ = tx_err.send_blocking(format!("{line}\n"));
-                                }
-                            });
-                        }
-                        let status = process.wait();
-                        match status {
-                            Ok(code) => {
-                                if !code.success() {
-                                    let _ = tx.send_blocking(format!("[exited with status: {code}]\n"));
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send_blocking(format!("[error waiting for process: {e}]\n"));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.send_blocking(format!("failed to execute process: {e}\n"));
-                    }
-                }
-            });
-
-            glib::spawn_future_local(async move {
-                while let Ok(msg) = rx.recv().await {
-                    drawer_clone.append_output(&msg);
-                }
-            });
-        });
-
-        // Key handler for Entry (Up/Down history, Esc / ` to hide)
-        {
-            let drawer_clone = self.clone();
-            let key_ctrl = gtk::EventControllerKey::new();
-            key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
-                match keyval {
-                    gdk::Key::Escape => {
-                        drawer_clone.container.set_visible(false);
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::grave | gdk::Key::F4 => {
-                        if drawer_clone.entry.text().is_empty() {
-                            drawer_clone.container.set_visible(false);
-                            glib::Propagation::Stop
-                        } else {
-                            glib::Propagation::Proceed
-                        }
-                    }
-                    gdk::Key::Up => {
-                        let hist = drawer_clone.history.borrow();
-                        if hist.is_empty() {
-                            return glib::Propagation::Stop;
-                        }
-                        let new_idx = match *drawer_clone.history_idx.borrow() {
-                            None => hist.len().saturating_sub(1),
-                            Some(idx) => idx.saturating_sub(1),
-                        };
-                        drop(hist);
-                        *drawer_clone.history_idx.borrow_mut() = Some(new_idx);
-                        if let Some(cmd) = drawer_clone.history.borrow().get(new_idx) {
-                            drawer_clone.entry.set_text(cmd);
-                            drawer_clone.entry.set_position(-1);
-                        }
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::Down => {
-                        let hist = drawer_clone.history.borrow();
-                        if hist.is_empty() {
-                            return glib::Propagation::Stop;
-                        }
-                        if let Some(idx) = *drawer_clone.history_idx.borrow() {
-                            if idx + 1 < hist.len() {
-                                let next_idx = idx + 1;
-                                drop(hist);
-                                *drawer_clone.history_idx.borrow_mut() = Some(next_idx);
-                                if let Some(cmd) = drawer_clone.history.borrow().get(next_idx) {
-                                    drawer_clone.entry.set_text(cmd);
-                                    drawer_clone.entry.set_position(-1);
-                                }
-                            } else {
-                                drop(hist);
-                                *drawer_clone.history_idx.borrow_mut() = None;
-                                drawer_clone.entry.set_text("");
-                            }
-                        }
-                        glib::Propagation::Stop
-                    }
-                    _ => glib::Propagation::Proceed,
-                }
-            });
-            self.entry.add_controller(key_ctrl);
-        }
-    }
-}
-
-/// Resolve a directory argument against the current directory, supporting `~` and `..`.
-pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
-    let trimmed = arg.trim();
-    if trimmed.is_empty() || trimmed == "~" {
-        return std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"));
-    }
-    if let Some(rest) = trimmed.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    let p = Path::new(trimmed);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        cwd.join(p)
     }
 }
 
@@ -417,18 +309,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_path() {
-        let cwd = Path::new("/home/user/project");
-        assert_eq!(resolve_path(cwd, "src"), PathBuf::from("/home/user/project/src"));
-        assert_eq!(resolve_path(cwd, "/etc"), PathBuf::from("/etc"));
-        assert_eq!(resolve_path(cwd, ".."), PathBuf::from("/home/user/project/.."));
-    }
-
-    #[test]
     fn test_detect_user_shell() {
         let shell = detect_user_shell();
         assert!(!shell.is_empty());
         assert!(shell.starts_with('/') || shell.contains("sh"));
     }
 }
-
