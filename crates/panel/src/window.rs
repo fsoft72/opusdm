@@ -18,55 +18,46 @@ const NET_WM_STATE_ADD: u32 = 1;
 /// Height of the panel strip, in pixels.
 pub const PANEL_HEIGHT: i32 = 40;
 
-/// Geometry of the primary monitor in pixels, or a sane fallback.
-pub fn monitor_geometry(display: &gtk::gdk::Display) -> (i32, i32) {
-    display
-        .monitors()
-        .item(0)
-        .and_downcast::<gtk::gdk::Monitor>()
-        .map(|m| {
-            let g = m.geometry();
-            (g.width(), g.height())
-        })
-        .filter(|(w, h)| *w > 0 && *h > 0)
-        .unwrap_or((1280, 800))
-}
-
-/// The `_NET_WM_STRUT_PARTIAL` 12-tuple for a top panel of `height` on a
-/// monitor `mon_w` wide: only the `top`, `top_start_x` and `top_end_x` slots
-/// are non-zero.
+/// The `_NET_WM_STRUT_PARTIAL` 12-tuple for a top panel of `height` sitting on
+/// a monitor at horizontal offset `mon_x`, `mon_w` wide: only the `top`,
+/// `top_start_x` and `top_end_x` slots are non-zero. The strut's `start_x`/
+/// `end_x` are root-relative, so a monitor that isn't at the origin (a second
+/// or third head) needs its own `mon_x` here, not just its width.
 ///
 /// Order: left, right, top, bottom, left_start_y, left_end_y, right_start_y,
 /// right_end_y, top_start_x, top_end_x, bottom_start_x, bottom_end_x.
-pub fn strut_partial(height: i32, mon_w: i32) -> [u32; 12] {
+pub fn strut_partial(height: i32, mon_x: i32, mon_w: i32) -> [u32; 12] {
     let h = height.max(0) as u32;
-    let end_x = (mon_w.max(1) - 1) as u32;
-    [0, 0, h, 0, 0, 0, 0, 0, 0, end_x, 0, 0]
+    let start_x = mon_x.max(0) as u32;
+    let end_x = (mon_x.max(0) + mon_w.max(1) - 1) as u32;
+    [0, 0, h, 0, 0, 0, 0, 0, start_x, end_x, 0, 0]
 }
 
 /// Apply the DOCK window type, the keep-above state, the struts and a fixed
-/// full-width geometry to the realized `window`. Safe to call more than once
-/// (realize and map). Errors are logged and swallowed.
-pub fn make_panel_window(window: &gtk::ApplicationWindow, mon_w: i32) {
+/// full-width geometry to the realized `window`, placed at `(mon_x, mon_y)`
+/// and `mon_w` wide - the origin and width of the monitor this bar belongs
+/// to. Safe to call more than once (realize and map). Errors are logged and
+/// swallowed.
+pub fn make_panel_window(window: &gtk::ApplicationWindow, mon_x: i32, mon_y: i32, mon_w: i32) {
     let Some(xid) = x11_window_id(window) else {
         eprintln!("opusdm-panel: window is not on X11; skipping dock setup");
         return;
     };
-    if let Err(e) = apply(xid, mon_w) {
+    if let Err(e) = apply(xid, mon_x, mon_y, mon_w) {
         eprintln!("opusdm-panel: cannot set dock window hints: {e}");
     }
 }
 
 /// Re-assert position and size only. Cheap; used on `map` after the window
 /// manager has run its placement policy.
-pub fn pin_geometry(window: &gtk::ApplicationWindow, mon_w: i32) {
+pub fn pin_geometry(window: &gtk::ApplicationWindow, mon_x: i32, mon_y: i32, mon_w: i32) {
     let Some(xid) = x11_window_id(window) else { return };
     if let Ok((conn, _)) = x11rb::connect(None) {
         let _ = conn.configure_window(
             xid,
             &xproto::ConfigureWindowAux::new()
-                .x(0)
-                .y(0)
+                .x(mon_x)
+                .y(mon_y)
                 .width(mon_w.max(1) as u32)
                 .height(PANEL_HEIGHT.max(1) as u32),
         );
@@ -112,7 +103,7 @@ fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
     Some(x11_surface.xid() as u32)
 }
 
-fn apply(xid: u32, mon_w: i32) -> Result<(), Box<dyn std::error::Error>> {
+fn apply(xid: u32, mon_x: i32, mon_y: i32, mon_w: i32) -> Result<(), Box<dyn std::error::Error>> {
     let (conn, _screen) = x11rb::connect(None)?;
     let width = mon_w.max(1) as u32;
     let height = PANEL_HEIGHT.max(1) as u32;
@@ -141,12 +132,12 @@ fn apply(xid: u32, mon_w: i32) -> Result<(), Box<dyn std::error::Error>> {
         xid,
         strut_partial,
         AtomEnum::CARDINAL,
-        &strut_partial_values(height as i32, width as i32),
+        &strut_partial_values(height as i32, mon_x, width as i32),
     )?;
 
     // Position is user-specified so openbox does not re-center us.
     let mut hints = WmSizeHints::new();
-    hints.position = Some((WmSizeHintsSpecification::UserSpecified, 0, 0));
+    hints.position = Some((WmSizeHintsSpecification::UserSpecified, mon_x, mon_y));
     hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, height as i32));
     hints.min_size = Some((width as i32, height as i32));
     hints.max_size = Some((width as i32, height as i32));
@@ -154,7 +145,7 @@ fn apply(xid: u32, mon_w: i32) -> Result<(), Box<dyn std::error::Error>> {
 
     conn.configure_window(
         xid,
-        &xproto::ConfigureWindowAux::new().x(0).y(0).width(width).height(height),
+        &xproto::ConfigureWindowAux::new().x(mon_x).y(mon_y).width(width).height(height),
     )?;
 
     conn.flush()?;
@@ -162,8 +153,8 @@ fn apply(xid: u32, mon_w: i32) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// `strut_partial` as an owned array `change_property32` can borrow.
-fn strut_partial_values(height: i32, mon_w: i32) -> [u32; 12] {
-    strut_partial(height, mon_w)
+fn strut_partial_values(height: i32, mon_x: i32, mon_w: i32) -> [u32; 12] {
+    strut_partial(height, mon_x, mon_w)
 }
 
 #[cfg(test)]
@@ -172,7 +163,7 @@ mod tests {
 
     #[test]
     fn strut_partial_only_fills_the_top_slots() {
-        let s = strut_partial(40, 1920);
+        let s = strut_partial(40, 0, 1920);
         assert_eq!(s[0], 0, "left");
         assert_eq!(s[1], 0, "right");
         assert_eq!(s[2], 40, "top");
@@ -184,7 +175,14 @@ mod tests {
 
     #[test]
     fn strut_partial_clamps_a_degenerate_width() {
-        let s = strut_partial(40, 0);
+        let s = strut_partial(40, 0, 0);
         assert_eq!(s[9], 0, "top_end_x never underflows");
+    }
+
+    #[test]
+    fn strut_partial_offsets_by_the_monitor_origin() {
+        let s = strut_partial(40, 1920, 1280);
+        assert_eq!(s[8], 1920, "top_start_x");
+        assert_eq!(s[9], 3199, "top_end_x");
     }
 }

@@ -7,6 +7,6 @@ mod shell;
 mod version;
 
 pub use requester::{requester, requester_entry, requester_rich};
-pub use screen::watch_screen_size;
+pub use screen::{list_monitors, watch_monitors, watch_screen_size};
 pub use shell::DialogShell;
 pub use version::VERSION;

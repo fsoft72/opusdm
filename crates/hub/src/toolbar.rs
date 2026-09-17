@@ -51,16 +51,25 @@ pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
     app.run_with_args::<&str>(&[])
 }
 
+/// One desktop background window and the monitor rect it was placed on -
+/// kept for re-asserting its geometry on `RaiseToolbar` and monitor changes.
+struct DesktopWindow {
+    window: gtk::ApplicationWindow,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
 /// Live widget handles shared by the event pump.
 struct Widgets {
-    window: gtk::ApplicationWindow,
+    /// One window per distinct monitor rect (mirrored outputs collapse to
+    /// one - see `opusdm_ui::list_monitors`). Index 0 is the primary monitor:
+    /// the only one carrying the interactive icon field: duplicating one
+    /// folder's icons across monitors would make drag-and-drop and selection
+    /// ambiguous, so the rest are background-only.
+    windows: RefCell<Vec<DesktopWindow>>,
     cmd_tx: Sender<HubCmd>,
-    /// Primary monitor size, kept for re-asserting the desktop geometry on
-    /// `RaiseToolbar` - a stale hub instance (single-instance handoff, e.g.
-    /// after the WM/session restarted) needs its desktop window type and
-    /// geometry re-applied, not just a window.present(). Updated live when
-    /// the monitor's geometry changes (resolution switch, Xephyr resize).
-    monitor_size: Cell<(i32, i32)>,
     /// Set once the quit confirmation has been accepted, so the `close()` it
     /// triggers does not re-enter `request_quit` and stack another dialog.
     quitting: Cell<bool>,
@@ -73,136 +82,75 @@ struct Widgets {
     /// The directory the desktop shows, for re-reading on "rearrange icons"
     /// and for re-targeting when `DesktopSettings::desktop_dir` changes.
     desktop_dir: RefCell<Option<PathBuf>>,
+    /// Current icon set, kept so a desktop window built later (monitor
+    /// plugged in after startup) starts with the right icons.
+    icon_set: RefCell<opusdm_ipc::IconSetId>,
+    /// Current icon grid metrics, kept for the same reason as `icon_set`.
+    desktop_settings: RefCell<opusdm_ipc::DesktopSettings>,
+    /// The desktop directory the user has configured (independent of monitor
+    /// layout), kept so a full rebuild on monitor hotplug shows the same
+    /// folder rather than re-reading it from disk.
+    desired_desktop_dir: RefCell<Option<PathBuf>>,
     /// Shows progress for every running file operation.
     progress_window: crate::progress_window::ProgressWindow,
 }
 
-fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
-    let (mon_w, mon_h) = gtk::gdk::Display::default()
-        .as_ref()
-        .map(crate::desktop::monitor_geometry)
-        .unwrap_or((1280, 800));
+impl Widgets {
+    /// The primary monitor's window - parent for dialogs and the one
+    /// carrying the interactive icon field. Always present: `list_monitors`
+    /// falls back to a single synthetic rect when it finds none.
+    fn primary_window(&self) -> gtk::ApplicationWindow {
+        self.windows.borrow()[0].window.clone()
+    }
+}
 
+fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
     let desktop_settings = opusdm_hub::desktop_settings::load();
     let initial_settings = settings::load_settings();
     install_desktop_css(&initial_settings.theme.background);
 
-    let window = gtk::ApplicationWindow::builder()
-        .application(app)
-        .title("OpusDM")
-        .decorated(false)
-        // Resizable on the GTK side so the window follows the X geometry we
-        // pin when the screen size changes; a non-resizable window would ask
-        // the WM for its old natural size back and never shrink. The WM is
-        // kept from resizing it by the min = max size hints in `desktop.rs`.
-        .resizable(true)
-        .default_width(mon_w)
-        .default_height(mon_h)
-        .build();
-
-    // Turn the window into the WM desktop once its surface exists, then
-    // re-assert the geometry after the WM has run its placement policy.
-    window.connect_realize(move |w| crate::desktop::make_desktop_window(w, mon_w, mon_h));
-    window.connect_map(move |w| {
-        crate::desktop::make_desktop_window(w, mon_w, mon_h);
-        let w = w.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
-            crate::desktop::pin_geometry(&w, mon_w, mon_h);
-        });
-    });
-
     let missing_nerd_font = initial_settings.theme.icon_set == opusdm_ipc::IconSetId::None
         && !opusdm_iconview::font_probe::nerd_font_available();
 
-    let desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
+    let desired_desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
         desktop_settings.desktop_dir.as_deref(),
     );
-    let (desktop_area, desktop_field) =
-        build_desktop_area(desktop_dir.as_deref(), initial_settings.theme.icon_set.clone());
-    if let Some(f) = &desktop_field {
-        f.set_icon_size(desktop_settings.icon_size);
-        f.set_grid_spacing(desktop_settings.grid_spacing);
-        f.set_grid_gap(desktop_settings.grid_gap);
-    }
-
-    window.set_child(Some(&desktop_area));
 
     let widgets = Rc::new(Widgets {
-        window: window.clone(),
+        windows: RefCell::new(Vec::new()),
         cmd_tx: cmd_tx.clone(),
-        monitor_size: Cell::new((mon_w, mon_h)),
         quitting: Cell::new(false),
         desktop_watch: RefCell::new(None),
-        desktop_field: RefCell::new(desktop_field.clone()),
-        desktop_dir: RefCell::new(desktop_dir.clone()),
+        desktop_field: RefCell::new(None),
+        desktop_dir: RefCell::new(None),
+        icon_set: RefCell::new(initial_settings.theme.icon_set.clone()),
+        desktop_settings: RefCell::new(desktop_settings),
+        desired_desktop_dir: RefCell::new(desired_desktop_dir),
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
     });
 
-    // Follow the screen size live: a resolution change (real mode switch, or
-    // a Xephyr host-window resize) must re-pin the desktop window to the new
-    // size instead of leaving it at its startup geometry.
-    {
-        let widgets = widgets.clone();
-        opusdm_ui::watch_screen_size(move |w, h| {
-            widgets.monitor_size.set((w, h));
-            crate::desktop::make_desktop_window(&widgets.window, w, h);
-            crate::desktop::pin_geometry(&widgets.window, w, h);
-            // The window manager reacts to the new screen size on its own -
-            // it shifts the desktop down by the panel's strut - so re-assert
-            // the geometry once it has settled, as the startup path does.
-            for delay in [150_u64, 600] {
-                let window = widgets.window.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
-                    crate::desktop::pin_geometry(&window, w, h);
-                });
-            }
-        });
+    // Build one desktop window per monitor, primary first.
+    let display = gtk::gdk::Display::default();
+    let rects = display.as_ref().map(opusdm_ui::list_monitors).unwrap_or_default();
+    full_rebuild_desktop_windows(app, &widgets, rects);
+
+    // Follow the monitor layout live: a resolution change (real mode switch,
+    // or a Xephyr host-window resize), a monitor plugged/unplugged, or a
+    // mirror layout toggled at runtime must all re-place the desktop windows.
+    // Same count -> just re-pin each in place (cheap, keeps the primary's
+    // icon field and inotify watch alive); different count -> full rebuild.
+    if let Some(d) = display.as_ref() {
+        let (app, widgets) = (app.clone(), widgets.clone());
+        opusdm_ui::watch_monitors(d, move |rects| reconcile_desktop_windows(&app, &widgets, rects));
     }
-
-    // Right-click the desktop for the context menu.
-    attach_desktop_menu(&desktop_area, &widgets);
-
-    // Desktop icon field: open on activate, copy on drop, live refresh on change.
-    if let (Some(field), Some(dir)) = (desktop_field, desktop_dir.clone()) {
-        {
-            let cmd_tx = cmd_tx.clone();
-            let field_for_open = field.clone();
-            field.connect_activate(move |i| {
-                let Some(entry) = field_for_open.entry(i) else { return };
-                if entry.kind == opusdm_iconview::IconKind::Dir {
-                    let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
-                } else {
-                    let uri = format!("file://{}", entry.path.display());
-                    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
-                }
-            });
-        }
-        {
-            let cmd_tx = cmd_tx.clone();
-            field.connect_background_activate(move || {
-                let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
-            });
-        }
-        {
-            let widgets = widgets.clone();
-            field.connect_drop_uris(move |srcs, _target, shift| {
-                if srcs.is_empty() {
-                    return;
-                }
-                let Some(dest_dir) = widgets.desktop_dir.borrow().clone() else { return };
-                let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
-                let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
-            });
-        }
-        spawn_desktop_watch(&widgets, &field, &dir);
-    }
-
-    // Window close (from the WM): always confirm before shutting down.
     {
-        let widgets = widgets.clone();
-        window.connect_close_request(move |_| {
-            request_quit(&widgets);
-            glib::Propagation::Stop
+        let (app, widgets) = (app.clone(), widgets.clone());
+        opusdm_ui::watch_screen_size(move |_w, _h| {
+            let rects = gtk::gdk::Display::default()
+                .as_ref()
+                .map(opusdm_ui::list_monitors)
+                .unwrap_or_default();
+            reconcile_desktop_windows(&app, &widgets, rects);
         });
     }
 
@@ -216,22 +164,218 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         });
     }
 
-    window.present();
-
     if missing_nerd_font {
-        show_missing_nerd_font_dialog(&window);
+        show_missing_nerd_font_dialog(&widgets.primary_window());
     }
 
-    // The panel dock lives in its own window on the same application.
+    // The panel dock lives in its own windows on the same application.
     opusdm_panel::attach(app);
 
     // The panel reserves a top strut, which shrinks the work area and makes
-    // GTK clamp this desktop window a strip short. Re-assert the full-monitor
-    // geometry a couple of times once the panel's strut has landed.
+    // GTK clamp the desktop windows a strip short. Re-assert the full-monitor
+    // geometry a couple of times once the panel's struts have landed.
     for delay in [600_u64, 1600] {
-        let window = window.clone();
+        let widgets = widgets.clone();
         glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
-            crate::desktop::pin_geometry(&window, mon_w, mon_h);
+            for dw in widgets.windows.borrow().iter() {
+                crate::desktop::pin_geometry(&dw.window, dw.x, dw.y, dw.w, dw.h);
+            }
+        });
+    }
+}
+
+/// Re-place the desktop windows for a new monitor layout `rects`. Reuses the
+/// existing windows (and the primary's icon field/watch) when the monitor
+/// count hasn't changed - the common case, a plain resolution change - and
+/// only tears everything down and rebuilds when monitors were added, removed,
+/// or a mirror layout was toggled.
+fn reconcile_desktop_windows(
+    app: &gtk::Application,
+    widgets: &Rc<Widgets>,
+    mut rects: Vec<(i32, i32, i32, i32)>,
+) {
+    if rects.is_empty() {
+        rects.push((0, 0, 1280, 800));
+    }
+    if widgets.windows.borrow().len() == rects.len() {
+        reposition_desktop_windows(widgets, &rects);
+    } else {
+        full_rebuild_desktop_windows(app, widgets, rects);
+    }
+}
+
+/// Re-pin every existing desktop window to its (possibly new) rect, matched
+/// by index - index 0 stays the primary monitor's window.
+fn reposition_desktop_windows(widgets: &Rc<Widgets>, rects: &[(i32, i32, i32, i32)]) {
+    let mut windows = widgets.windows.borrow_mut();
+    for (dw, &(x, y, w, h)) in windows.iter_mut().zip(rects.iter()) {
+        crate::desktop::make_desktop_window(&dw.window, x, y, w, h);
+        crate::desktop::pin_geometry(&dw.window, x, y, w, h);
+        dw.x = x;
+        dw.y = y;
+        dw.w = w;
+        dw.h = h;
+        // The window manager reacts to the new screen size on its own - it
+        // shifts the desktop down by the panel's strut - so re-assert the
+        // geometry once it has settled, as the startup path does.
+        for delay in [150_u64, 600] {
+            let window = dw.window.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
+                crate::desktop::pin_geometry(&window, x, y, w, h);
+            });
+        }
+    }
+}
+
+/// Tear down every desktop window (and the primary's icon field/watch) and
+/// rebuild the whole set from `rects` - index 0 becomes the new primary.
+fn full_rebuild_desktop_windows(
+    app: &gtk::Application,
+    widgets: &Rc<Widgets>,
+    mut rects: Vec<(i32, i32, i32, i32)>,
+) {
+    for dw in widgets.windows.borrow_mut().drain(..) {
+        dw.window.close();
+    }
+    *widgets.desktop_watch.borrow_mut() = None;
+    *widgets.desktop_field.borrow_mut() = None;
+    *widgets.desktop_dir.borrow_mut() = None;
+
+    if rects.is_empty() {
+        rects.push((0, 0, 1280, 800));
+    }
+
+    let icon_set = widgets.icon_set.borrow().clone();
+    let desired_dir = widgets.desired_desktop_dir.borrow().clone();
+    let built = rects
+        .into_iter()
+        .enumerate()
+        .map(|(i, (x, y, w, h))| {
+            let is_primary = i == 0;
+            let window = build_one_desktop_window(
+                app,
+                widgets,
+                x,
+                y,
+                w,
+                h,
+                is_primary,
+                desired_dir.as_deref(),
+                icon_set.clone(),
+            );
+            DesktopWindow { window, x, y, w, h }
+        })
+        .collect();
+    *widgets.windows.borrow_mut() = built;
+}
+
+/// Build one desktop window at `(x, y)`, `w` x `h`. Only the primary monitor
+/// (`is_primary`) gets the interactive icon field, its drag/drop wiring and
+/// the inotify watch; the rest are background-only.
+fn build_one_desktop_window(
+    app: &gtk::Application,
+    widgets: &Rc<Widgets>,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    is_primary: bool,
+    desktop_dir: Option<&Path>,
+    icon_set: opusdm_ipc::IconSetId,
+) -> gtk::ApplicationWindow {
+    let window = gtk::ApplicationWindow::builder()
+        .application(app)
+        .title("OpusDM")
+        .decorated(false)
+        // Resizable on the GTK side so the window follows the X geometry we
+        // pin when the screen size changes; a non-resizable window would ask
+        // the WM for its old natural size back and never shrink. The WM is
+        // kept from resizing it by the min = max size hints in `desktop.rs`.
+        .resizable(true)
+        .default_width(w)
+        .default_height(h)
+        .build();
+
+    // Turn the window into the WM desktop once its surface exists, then
+    // re-assert the geometry after the WM has run its placement policy.
+    window.connect_realize(move |win| crate::desktop::make_desktop_window(win, x, y, w, h));
+    window.connect_map(move |win| {
+        crate::desktop::make_desktop_window(win, x, y, w, h);
+        let win = win.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
+            crate::desktop::pin_geometry(&win, x, y, w, h);
+        });
+    });
+
+    let show_placeholder = is_primary && desktop_dir.is_none();
+    let (desktop_area, field) = build_desktop_area(
+        if is_primary { desktop_dir } else { None },
+        icon_set,
+        show_placeholder,
+    );
+    window.set_child(Some(&desktop_area));
+
+    // Right-click the desktop for the context menu.
+    attach_desktop_menu(&desktop_area, widgets);
+
+    // Window close (from the WM): always confirm before shutting down.
+    {
+        let widgets = widgets.clone();
+        window.connect_close_request(move |_| {
+            request_quit(&widgets);
+            glib::Propagation::Stop
+        });
+    }
+
+    if is_primary {
+        *widgets.desktop_dir.borrow_mut() = desktop_dir.map(Path::to_path_buf);
+        *widgets.desktop_field.borrow_mut() = field.clone();
+        if let (Some(f), Some(dir)) = (field, desktop_dir) {
+            let ds = widgets.desktop_settings.borrow();
+            f.set_icon_size(ds.icon_size);
+            f.set_grid_spacing(ds.grid_spacing);
+            f.set_grid_gap(ds.grid_gap);
+            drop(ds);
+            wire_primary_icon_field(widgets, &f);
+            spawn_desktop_watch(widgets, &f, dir);
+        }
+    }
+
+    window.present();
+    window
+}
+
+/// Wire the primary monitor's icon field: open on activate, copy/move on
+/// drop, and spawn a new Lister on a background double-click.
+fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconField) {
+    {
+        let cmd_tx = widgets.cmd_tx.clone();
+        let field_for_open = field.clone();
+        field.connect_activate(move |i| {
+            let Some(entry) = field_for_open.entry(i) else { return };
+            if entry.kind == opusdm_iconview::IconKind::Dir {
+                let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
+            } else {
+                let uri = format!("file://{}", entry.path.display());
+                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+            }
+        });
+    }
+    {
+        let cmd_tx = widgets.cmd_tx.clone();
+        field.connect_background_activate(move || {
+            let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
+        });
+    }
+    {
+        let widgets = widgets.clone();
+        field.connect_drop_uris(move |srcs, _target, shift| {
+            if srcs.is_empty() {
+                return;
+            }
+            let Some(dest_dir) = widgets.desktop_dir.borrow().clone() else { return };
+            let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
+            let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
         });
     }
 }
@@ -361,11 +505,14 @@ fn launch_theme_config() {
 
 /// Build the desktop area that fills the window below the toolbar, wrapped in
 /// an overlay so the context menu can be laid on top of it. When `desktop_dir`
-/// is `Some`, an icon field in `Free` mode fills it and its initial entries are
-/// read; otherwise the flat placeholder label is kept.
+/// is `Some`, an icon field in `Free` mode fills it and its initial entries
+/// are read. Otherwise, the flat "OpusDM" placeholder label is shown only
+/// when `show_placeholder` is set - a background-only monitor window keeps a
+/// plain background instead, so the label doesn't repeat across monitors.
 fn build_desktop_area(
     desktop_dir: Option<&Path>,
     icon_set: opusdm_ipc::IconSetId,
+    show_placeholder: bool,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
     overlay.set_hexpand(true);
@@ -399,13 +546,15 @@ fn build_desktop_area(
             Some(f)
         }
         None => {
-            let label = gtk::Label::new(Some("OpusDM"));
-            label.add_css_class("opusdm-desktop-label");
-            label.set_hexpand(true);
-            label.set_vexpand(true);
-            label.set_halign(gtk::Align::Center);
-            label.set_valign(gtk::Align::Center);
-            bg.append(&label);
+            if show_placeholder {
+                let label = gtk::Label::new(Some("OpusDM"));
+                label.add_css_class("opusdm-desktop-label");
+                label.set_hexpand(true);
+                label.set_vexpand(true);
+                label.set_halign(gtk::Align::Center);
+                label.set_valign(gtk::Align::Center);
+                bg.append(&label);
+            }
             None
         }
     };
@@ -510,7 +659,7 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
         let btn = menu_button("About");
         btn.connect_clicked(move |_| {
             menu_ref.set_visible(false);
-            show_about_dialog(&widgets.window);
+            show_about_dialog(&widgets.primary_window());
         });
         menu.append(&btn);
     }
@@ -625,7 +774,7 @@ fn request_quit(widgets: &Rc<Widgets>) {
     if widgets.quitting.get() {
         return;
     }
-    let parent = widgets.window.clone();
+    let parent = widgets.primary_window();
     let widgets = widgets.clone();
     opusdm_ui::requester(
         &parent,
@@ -639,8 +788,11 @@ fn request_quit(widgets: &Rc<Widgets>) {
             }
             widgets.quitting.set(true);
             let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
-            widgets.window.close();
-            if let Some(app) = widgets.window.application() {
+            let app = widgets.primary_window().application();
+            for dw in widgets.windows.borrow().iter() {
+                dw.window.close();
+            }
+            if let Some(app) = app {
                 app.quit();
             }
         },
@@ -650,25 +802,28 @@ fn request_quit(widgets: &Rc<Widgets>) {
 fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     match ev {
         HubEvent::RaiseToolbar => {
-            // Re-assert the desktop window type and geometry, not present():
-            // a redundant hub invocation hands this off to a possibly stale
-            // instance whose window may have lost its desktop role or size
-            // (WM/session restart). The desktop stays below the Listers, so
-            // there is nothing to raise.
-            let (w, h) = widgets.monitor_size.get();
-            crate::desktop::make_desktop_window(&widgets.window, w, h);
-            let window = widgets.window.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
-                crate::desktop::pin_geometry(&window, w, h);
-            });
+            // Re-assert every desktop window's type and geometry, not
+            // present(): a redundant hub invocation hands this off to a
+            // possibly stale instance whose windows may have lost their
+            // desktop role or size (WM/session restart). The desktop stays
+            // below the Listers, so there is nothing to raise.
+            for dw in widgets.windows.borrow().iter() {
+                crate::desktop::make_desktop_window(&dw.window, dw.x, dw.y, dw.w, dw.h);
+                let (window, x, y, w, h) = (dw.window.clone(), dw.x, dw.y, dw.w, dw.h);
+                glib::timeout_add_local_once(std::time::Duration::from_millis(80), move || {
+                    crate::desktop::pin_geometry(&window, x, y, w, h);
+                });
+            }
         }
         HubEvent::ThemeChanged(theme) => {
             install_desktop_css(&theme.background);
+            *widgets.icon_set.borrow_mut() = theme.icon_set.clone();
             if let Some(field) = widgets.desktop_field.borrow().as_ref() {
                 field.set_icon_set(theme.icon_set);
             }
         }
         HubEvent::DesktopSettingsChanged(ds) => {
+            *widgets.desktop_settings.borrow_mut() = ds.clone();
             let field = widgets.desktop_field.borrow().clone();
             if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);
@@ -678,6 +833,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
 
             let wanted =
                 opusdm_hub::desktop_files::effective_desktop_dir(ds.desktop_dir.as_deref());
+            *widgets.desired_desktop_dir.borrow_mut() = wanted.clone();
             if *widgets.desktop_dir.borrow() != wanted {
                 *widgets.desktop_dir.borrow_mut() = wanted.clone();
                 // A desktop that started with no directory has no icon field to

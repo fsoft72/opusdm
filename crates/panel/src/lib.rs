@@ -32,14 +32,24 @@ struct PanelState {
     active: Option<u32>,
 }
 
-/// Build the panel window on `app`, wire every widget, and return it. The
-/// window is presented before returning.
-pub fn attach(app: &gtk::Application) -> gtk::ApplicationWindow {
-    let (mon_w, _mon_h) = gtk::gdk::Display::default()
-        .as_ref()
-        .map(window::monitor_geometry)
-        .unwrap_or((1280, 800));
+/// One bar window and the widgets on it that need repainting on EWMH events.
+struct BarWindow {
+    window: gtk::ApplicationWindow,
+    pager: Rc<Pager>,
+    tasklist: Rc<Tasklist>,
+}
 
+/// Build one full bar (menu, pager, tasklist, sysmon, clock) on the monitor
+/// at `(mon_x, mon_y)`, `mon_w` wide, and present it. `state` seeds the pager
+/// and tasklist immediately, so a bar created after startup (monitor plugged
+/// in later) doesn't show empty widgets until the next EWMH event.
+fn build_bar_window(
+    app: &gtk::Application,
+    mon_x: i32,
+    mon_y: i32,
+    mon_w: i32,
+    state: &Rc<RefCell<PanelState>>,
+) -> BarWindow {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM Panel")
@@ -53,9 +63,9 @@ pub fn attach(app: &gtk::Application) -> gtk::ApplicationWindow {
         .default_height(window::PANEL_HEIGHT)
         .build();
 
-    win.connect_realize(move |w| window::make_panel_window(w, mon_w));
+    win.connect_realize(move |w| window::make_panel_window(w, mon_x, mon_y, mon_w));
     win.connect_map(move |w| {
-        window::make_panel_window(w, mon_w);
+        window::make_panel_window(w, mon_x, mon_y, mon_w);
         // Re-pin the geometry and re-assert the stacking a few times over the
         // first second: the window manager runs its placement policy and the
         // hub's full-screen desktop window settles its own geometry around the
@@ -63,24 +73,11 @@ pub fn attach(app: &gtk::Application) -> gtk::ApplicationWindow {
         for delay in [80_u64, 400, 1000] {
             let w = w.clone();
             gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                window::pin_geometry(&w, mon_w);
+                window::pin_geometry(&w, mon_x, mon_y, mon_w);
                 window::raise_above(&w);
             });
         }
     });
-
-    // Follow the screen size live: mirrors the same handling in opusdm-hub's
-    // toolbar.rs, so the dock tracks a resolution change (real mode switch, or
-    // a Xephyr host-window resize) instead of staying pinned to its startup
-    // width.
-    {
-        let win = win.clone();
-        opusdm_ui::watch_screen_size(move |w, _h| {
-            window::make_panel_window(&win, w);
-            window::pin_geometry(&win, w);
-            window::raise_above(&win);
-        });
-    }
 
     install_css();
 
@@ -91,6 +88,11 @@ pub fn attach(app: &gtk::Application) -> gtk::ApplicationWindow {
     // Left side: application menu, pager, window list.
     let pager = Rc::new(Pager::new());
     let tasklist = Rc::new(Tasklist::new());
+    {
+        let s = state.borrow();
+        pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
+        tasklist.update(&s.clients, s.current_desktop, s.active);
+    }
 
     let left = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     left.set_margin_start(6);
@@ -111,52 +113,87 @@ pub fn attach(app: &gtk::Application) -> gtk::ApplicationWindow {
     bar.set_end_widget(Some(&right));
 
     win.set_child(Some(&bar));
+    win.present();
 
-    // Drain the EWMH observer into the left-hand widgets.
+    BarWindow { window: win, pager, tasklist }
+}
+
+/// Build one bar window per monitor, wire every widget, and keep them in sync
+/// with monitor hotplug and mirror changes. Identical monitor rects (a
+/// mirrored output) share a single bar, since X shows the same pixels twice
+/// there - see `opusdm_ui::list_monitors`.
+pub fn attach(app: &gtk::Application) {
     let state = Rc::new(RefCell::new(PanelState::default()));
-    let rx = ewmh::spawn();
-    {
-        let (state, pager, tasklist) = (state.clone(), pager.clone(), tasklist.clone());
-        gtk::glib::spawn_future_local(async move {
-            while let Ok(ev) = rx.recv().await {
-                apply_ewmh(&state, &pager, &tasklist, ev);
+    let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let rebuild: Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)> = {
+        let app = app.clone();
+        let state = state.clone();
+        let windows = windows.clone();
+        Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
+            for bw in windows.borrow_mut().drain(..) {
+                bw.window.close();
             }
+            if rects.is_empty() {
+                rects.push((0, 0, 1280, 800));
+            }
+            let built = rects
+                .into_iter()
+                .map(|(x, y, w, _h)| build_bar_window(&app, x, y, w, &state))
+                .collect();
+            *windows.borrow_mut() = built;
+        })
+    };
+
+    let display = gtk::gdk::Display::default();
+    rebuild(display.as_ref().map(opusdm_ui::list_monitors).unwrap_or_default());
+
+    if let Some(display) = display.as_ref() {
+        let rebuild = rebuild.clone();
+        opusdm_ui::watch_monitors(display, move |rects| rebuild(rects));
+    }
+    // Mirrors opusdm-hub's toolbar.rs: under Xephyr, GDK's monitor list can
+    // lag a host-window resize, so also re-scan on the reliable root
+    // `ConfigureNotify` signal, not just GDK's own change notifications.
+    {
+        let rebuild = rebuild.clone();
+        opusdm_ui::watch_screen_size(move |_w, _h| {
+            let rects = gtk::gdk::Display::default()
+                .as_ref()
+                .map(opusdm_ui::list_monitors)
+                .unwrap_or_default();
+            rebuild(rects);
         });
     }
 
-    win.present();
-    win
+    // Drain the EWMH observer into every bar's widgets.
+    let rx = ewmh::spawn();
+    {
+        let (state, windows) = (state.clone(), windows.clone());
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(ev) = rx.recv().await {
+                apply_ewmh(&state, &windows.borrow(), ev);
+            }
+        });
+    }
 }
 
-/// Fold one observer snapshot into `state` and repaint whatever it touched.
-fn apply_ewmh(
-    state: &Rc<RefCell<PanelState>>,
-    pager: &Pager,
-    tasklist: &Tasklist,
-    ev: EwmhEvent,
-) {
+/// Fold one observer snapshot into `state` and repaint every bar it touched.
+fn apply_ewmh(state: &Rc<RefCell<PanelState>>, windows: &[BarWindow], ev: EwmhEvent) {
     let mut s = state.borrow_mut();
     match ev {
         EwmhEvent::Desktops { count, current, names } => {
             s.desktop_count = count;
             s.current_desktop = current;
             s.desktop_names = names;
-            pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
-            tasklist.update(&s.clients, s.current_desktop, s.active);
         }
-        EwmhEvent::CurrentDesktop(current) => {
-            s.current_desktop = current;
-            pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
-            tasklist.update(&s.clients, s.current_desktop, s.active);
-        }
-        EwmhEvent::Clients(clients) => {
-            s.clients = clients;
-            tasklist.update(&s.clients, s.current_desktop, s.active);
-        }
-        EwmhEvent::ActiveWindow(active) => {
-            s.active = active;
-            tasklist.update(&s.clients, s.current_desktop, s.active);
-        }
+        EwmhEvent::CurrentDesktop(current) => s.current_desktop = current,
+        EwmhEvent::Clients(clients) => s.clients = clients,
+        EwmhEvent::ActiveWindow(active) => s.active = active,
+    }
+    for bw in windows {
+        bw.pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
+        bw.tasklist.update(&s.clients, s.current_desktop, s.active);
     }
 }
 

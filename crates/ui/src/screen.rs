@@ -13,7 +13,12 @@
 //! module listens for it on a dedicated connection and hands the size to the
 //! GTK main loop.
 
+use gtk4::gdk;
+use gtk4::gio;
 use gtk4::glib;
+use gtk4::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::{self, MonitorInfo};
 use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt, EventMask, Window};
@@ -107,9 +112,106 @@ fn choose_monitor(monitors: &[MonitorInfo], root_size: (i32, i32)) -> (i32, i32)
         .unwrap_or(root_size)
 }
 
+/// Distinct on-screen monitor rectangles `(x, y, width, height)`, in root
+/// window coordinates. Monitors reporting an identical rect (mirrored
+/// outputs) collapse to one entry: X draws a single pixel buffer for them, so
+/// a window per raw monitor would just stack duplicates at the same spot.
+/// Works unchanged for horizontal, vertical or mixed layouts - callers place
+/// one window per returned rect, using its own `(x, y)` as origin.
+pub fn list_monitors(display: &gdk::Display) -> Vec<(i32, i32, i32, i32)> {
+    rects_from_model(&display.monitors())
+}
+
+fn rects_from_model(monitors: &gio::ListModel) -> Vec<(i32, i32, i32, i32)> {
+    let rects = (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i))
+        .filter_map(|o| o.downcast::<gdk::Monitor>().ok())
+        .map(|m| {
+            let g = m.geometry();
+            (g.x(), g.y(), g.width(), g.height())
+        })
+        .filter(|(_, _, w, h)| *w > 0 && *h > 0)
+        .collect();
+    dedupe_rects(rects)
+}
+
+/// Collapse duplicate rects (mirrored monitors), keeping first-seen order.
+fn dedupe_rects(rects: Vec<(i32, i32, i32, i32)>) -> Vec<(i32, i32, i32, i32)> {
+    let mut out: Vec<(i32, i32, i32, i32)> = Vec::new();
+    for r in rects {
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// Call `on_change` with the current `list_monitors` result every time the
+/// monitor list changes (hotplug) or any monitor's geometry changes
+/// (resolution switch, or a mirror layout toggled at runtime). Not called
+/// immediately - callers already apply the initial layout at startup.
+pub fn watch_monitors<F>(display: &gdk::Display, on_change: F)
+where
+    F: Fn(Vec<(i32, i32, i32, i32)>) + 'static,
+{
+    let on_change: Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)> = Rc::new(on_change);
+    let monitors = display.monitors();
+    let handlers: Rc<RefCell<Vec<(gdk::Monitor, glib::SignalHandlerId)>>> =
+        Rc::new(RefCell::new(Vec::new()));
+
+    fn rewire(
+        monitors: &gio::ListModel,
+        on_change: &Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)>,
+        handlers: &Rc<RefCell<Vec<(gdk::Monitor, glib::SignalHandlerId)>>>,
+    ) {
+        for (m, id) in handlers.borrow_mut().drain(..) {
+            m.disconnect(id);
+        }
+        for i in 0..monitors.n_items() {
+            let Some(m) = monitors.item(i).and_then(|o| o.downcast::<gdk::Monitor>().ok()) else {
+                continue;
+            };
+            let monitors = monitors.clone();
+            let on_change = on_change.clone();
+            let id = m.connect_notify_local(Some("geometry"), move |_, _| {
+                on_change(rects_from_model(&monitors));
+            });
+            handlers.borrow_mut().push((m, id));
+        }
+    }
+
+    rewire(&monitors, &on_change, &handlers);
+    {
+        let handlers = handlers.clone();
+        let on_change = on_change.clone();
+        monitors.connect_items_changed(move |monitors, _, _, _| {
+            rewire(monitors, &on_change, &handlers);
+            on_change(rects_from_model(monitors));
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distinct_rects_pass_through_unchanged() {
+        let rects = vec![(0, 0, 1920, 1080), (1920, 0, 1280, 1024)];
+        assert_eq!(dedupe_rects(rects.clone()), rects);
+    }
+
+    #[test]
+    fn identical_rects_collapse_to_one_mirror_case() {
+        let rects = vec![(0, 0, 1920, 1080), (0, 0, 1920, 1080)];
+        assert_eq!(dedupe_rects(rects), vec![(0, 0, 1920, 1080)]);
+    }
+
+    #[test]
+    fn vertical_layout_keeps_both_distinct_rects() {
+        let rects = vec![(0, 0, 1920, 1080), (0, 1080, 1920, 1080)];
+        assert_eq!(dedupe_rects(rects.clone()), rects);
+    }
 
     /// Build a `MonitorInfo` carrying only the fields `choose_monitor` reads.
     fn monitor(primary: bool, width: u16, height: u16) -> MonitorInfo {
