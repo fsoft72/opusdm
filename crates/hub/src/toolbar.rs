@@ -343,12 +343,8 @@ fn build_one_desktop_window(
         });
     });
 
-    let show_placeholder = is_primary && desktop_dir.is_none();
-    let (desktop_area, field) = build_desktop_area(
-        if is_primary { desktop_dir } else { None },
-        icon_set,
-        show_placeholder,
-    );
+    let (desktop_area, field) =
+        build_desktop_area(if is_primary { desktop_dir } else { None }, icon_set);
     window.set_child(Some(&desktop_area));
 
     // Right-click the desktop for the context menu.
@@ -417,11 +413,10 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
 }
 
 /// The full desktop stylesheet: the `.opusdm-desktop` background rule built
-/// from `bg`, plus the fixed placeholder-label and context-menu rules.
+/// from `bg`, plus the fixed context-menu rules.
 fn desktop_rule_css(bg: &opusdm_ipc::Background) -> String {
     format!(
         ".opusdm-desktop {{ {bgdecl} }}\n\
-         .opusdm-desktop-label {{ color: {DESKTOP_FG}; font-size: 24px; font-weight: bold; }}\n\
          .opusdm-desktop-menu {{ background-color: {DESKTOP_MENU_BG}; color: {DESKTOP_FG}; \
              border: 1px solid {DESKTOP_MENU_BORDER}; border-radius: 4px; padding: 4px; }}\n\
          .opusdm-desktop-menu button {{ padding: 4px 12px; }}",
@@ -542,13 +537,10 @@ fn launch_theme_config() {
 /// Build the desktop area that fills the window below the toolbar, wrapped in
 /// an overlay so the context menu can be laid on top of it. When `desktop_dir`
 /// is `Some`, an icon field in `Free` mode fills it and its initial entries
-/// are read. Otherwise, the flat "OpusDM" placeholder label is shown only
-/// when `show_placeholder` is set - a background-only monitor window keeps a
-/// plain background instead, so the label doesn't repeat across monitors.
+/// are read. Otherwise the background stays plain.
 fn build_desktop_area(
     desktop_dir: Option<&Path>,
     icon_set: opusdm_ipc::IconSetId,
-    show_placeholder: bool,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
     overlay.set_hexpand(true);
@@ -581,18 +573,7 @@ fn build_desktop_area(
             bg.append(f.widget());
             Some(f)
         }
-        None => {
-            if show_placeholder {
-                let label = gtk::Label::new(Some("OpusDM"));
-                label.add_css_class("opusdm-desktop-label");
-                label.set_hexpand(true);
-                label.set_vexpand(true);
-                label.set_halign(gtk::Align::Center);
-                label.set_valign(gtk::Align::Center);
-                bg.append(&label);
-            }
-            None
-        }
+        None => None,
     };
 
     overlay.set_child(Some(&bg));
@@ -933,8 +914,7 @@ mod tests {
         let css = desktop_rule_css(&bg);
         assert!(css.contains(".opusdm-desktop {"));
         assert!(css.contains("linear-gradient(30deg,"));
-        assert!(css.contains(".opusdm-desktop-label {")); // other rules kept
-        assert!(css.contains(".opusdm-desktop-menu {"));
+        assert!(css.contains(".opusdm-desktop-menu {")); // other rules kept
     }
 
     /// Parse the generated desktop stylesheet with the real GTK CSS parser for
