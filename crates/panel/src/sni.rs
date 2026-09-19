@@ -82,9 +82,12 @@ impl Watcher {
         if already {
             return;
         }
-        if let Ok(item) = fetch_item(service) {
-            let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.to_string(), item });
-            watch_item(service.to_string(), self.tx.clone());
+        match fetch_item(service) {
+            Ok(item) => {
+                let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.to_string(), item });
+                watch_item(service.to_string(), self.tx.clone());
+            }
+            Err(e) => eprintln!("opusdm-panel: cannot fetch SNI item {service}: {e}"),
         }
     }
 
