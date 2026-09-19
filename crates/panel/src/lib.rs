@@ -22,6 +22,7 @@ pub use window::PANEL_HEIGHT;
 use ewmh::EwmhEvent;
 use widgets::pager::Pager;
 use widgets::tasklist::Tasklist;
+use widgets::tray::Tray;
 
 /// The slice of EWMH state the left-hand widgets render from.
 #[derive(Default)]
@@ -31,6 +32,11 @@ struct PanelState {
     desktop_names: Vec<String>,
     clients: Vec<ewmh::ClientWin>,
     active: Option<u32>,
+    /// Docked tray icon xids, in dock order. Only the primary bar's `Tray`
+    /// widget reads this (see `BarWindow.tray`); kept in shared state so a
+    /// monitor-hotplug rebuild can reseed a freshly built primary bar
+    /// without waiting for the next dock/undock event.
+    tray_order: Vec<u32>,
 }
 
 /// One bar window and the widgets on it that need repainting on EWMH events.
@@ -38,6 +44,9 @@ struct BarWindow {
     window: gtk::ApplicationWindow,
     pager: Rc<Pager>,
     tasklist: Rc<Tasklist>,
+    /// `Some` only for the primary bar (the one built from the first
+    /// monitor rect) - one tray manager total, not one per monitor.
+    tray: Option<Rc<Tray>>,
 }
 
 /// Build one full bar (menu, pager, tasklist, sysmon, clock) on the monitor
@@ -50,6 +59,8 @@ fn build_bar_window(
     mon_y: i32,
     mon_w: i32,
     state: &Rc<RefCell<PanelState>>,
+    is_primary: bool,
+    tray_cmd_tx: std::sync::mpsc::Sender<systray::TrayCmd>,
 ) -> BarWindow {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
@@ -64,21 +75,43 @@ fn build_bar_window(
         .default_height(window::PANEL_HEIGHT)
         .build();
 
+    // Built before `connect_map` so the reposition call below can capture it;
+    // used again when assembling the right-side box further down.
+    let tray = if is_primary {
+        let icon_size = systray::icon_square_size(window::PANEL_HEIGHT);
+        let tray = Tray::new(icon_size, tray_cmd_tx);
+        tray.set_origin(mon_x, mon_y);
+        tray.update(&state.borrow().tray_order);
+        Some(tray)
+    } else {
+        None
+    };
+
     win.connect_realize(move |w| window::make_panel_window(w, mon_x, mon_y, mon_w));
-    win.connect_map(move |w| {
-        window::make_panel_window(w, mon_x, mon_y, mon_w);
-        // Re-pin the geometry and re-assert the stacking a few times over the
-        // first second: the window manager runs its placement policy and the
-        // hub's full-screen desktop window settles its own geometry around the
-        // same moment, either of which can bury a just-mapped dock.
-        for delay in [80_u64, 400, 1000] {
-            let w = w.clone();
-            gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                window::pin_geometry(&w, mon_x, mon_y, mon_w);
-                window::raise_above(&w);
-            });
-        }
-    });
+    {
+        let tray_for_map = tray.clone();
+        win.connect_map(move |w| {
+            window::make_panel_window(w, mon_x, mon_y, mon_w);
+            // Re-pin the geometry and re-assert the stacking a few times over
+            // the first second: the window manager runs its placement policy
+            // and the hub's full-screen desktop window settles its own
+            // geometry around the same moment, either of which can bury a
+            // just-mapped dock. A tray reposition rides along, since a
+            // rebuilt primary bar's placeholders haven't been laid out yet
+            // when this closure is first scheduled.
+            for delay in [80_u64, 400, 1000] {
+                let w = w.clone();
+                let tray = tray_for_map.clone();
+                gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+                    window::pin_geometry(&w, mon_x, mon_y, mon_w);
+                    window::raise_above(&w);
+                    if let Some(tray) = &tray {
+                        tray.reposition_now();
+                    }
+                });
+            }
+        });
+    }
 
     install_css();
 
@@ -105,9 +138,13 @@ fn build_bar_window(
     left.append(tasklist.widget());
     bar.set_start_widget(Some(&left));
 
-    // Right side: CPU, network, clock.
+    // Right side: tray (primary bar only), CPU, network, clock.
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     right.set_margin_end(8);
+    if let Some(tray) = &tray {
+        right.append(tray.widget());
+        right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    }
     right.append(&widgets::sysmon::build());
     right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     right.append(&widgets::clock::build());
@@ -116,7 +153,7 @@ fn build_bar_window(
     win.set_child(Some(&bar));
     win.present();
 
-    BarWindow { window: win, pager, tasklist }
+    BarWindow { window: win, pager, tasklist, tray }
 }
 
 /// Build one bar window per monitor, wire every widget, and keep them in sync
@@ -126,11 +163,13 @@ fn build_bar_window(
 pub fn attach(app: &gtk::Application) {
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
+    let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
 
     let rebuild: Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)> = {
         let app = app.clone();
         let state = state.clone();
         let windows = windows.clone();
+        let tray_cmd_tx = tray_cmd_tx.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -140,7 +179,10 @@ pub fn attach(app: &gtk::Application) {
             }
             let built = rects
                 .into_iter()
-                .map(|(x, y, w, _h)| build_bar_window(&app, x, y, w, &state))
+                .enumerate()
+                .map(|(i, (x, y, w, _h))| {
+                    build_bar_window(&app, x, y, w, &state, i == 0, tray_cmd_tx.clone())
+                })
                 .collect();
             *windows.borrow_mut() = built;
         })
@@ -174,6 +216,27 @@ pub fn attach(app: &gtk::Application) {
         gtk::glib::spawn_future_local(async move {
             while let Ok(ev) = rx.recv().await {
                 apply_ewmh(&state, &windows.borrow(), ev);
+            }
+        });
+    }
+
+    // Drain the tray thread into shared state and the primary bar's widget.
+    {
+        let (state, windows) = (state.clone(), windows.clone());
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(ev) = tray_evt_rx.recv().await {
+                let mut s = state.borrow_mut();
+                match ev {
+                    systray::TrayEvent::IconDocked(xid) => s.tray_order.push(xid),
+                    systray::TrayEvent::IconRemoved(xid) => s.tray_order.retain(|&x| x != xid),
+                }
+                let order = s.tray_order.clone();
+                drop(s);
+                for bw in windows.borrow().iter() {
+                    if let Some(tray) = &bw.tray {
+                        tray.update(&order);
+                    }
+                }
             }
         });
     }
