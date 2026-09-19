@@ -9,7 +9,12 @@ use std::sync::mpsc;
 use crate::ewmh::IconRgba;
 
 /// The state the GTK side needs to render one hosted item's icon and know
-/// whether clicking it should show a DBusMenu.
+/// whether clicking it should show a DBusMenu. `path` is the item's actual
+/// `org.kde.StatusNotifierItem` object path on `service` - apps built on
+/// libappindicator/ayatana register a custom path (e.g.
+/// `/org/ayatana/NotificationItem/nm_applet`), not the spec's default
+/// `/StatusNotifierItem`, so this can't be assumed and must be carried
+/// alongside every item.
 #[derive(Clone, Debug)]
 pub struct SniItem {
     pub icon: Option<IconRgba>,
@@ -17,10 +22,12 @@ pub struct SniItem {
     pub title: String,
     pub item_is_menu: bool,
     pub menu_path: Option<zbus::zvariant::OwnedObjectPath>,
+    pub path: String,
 }
 
 /// Snapshots the SNI thread sends to the GTK side, keyed by the item's
-/// DBus service name (unique per registered item).
+/// resolved DBus bus name (unique per registered item - see
+/// `resolve_service`).
 #[derive(Clone, Debug)]
 pub enum SniEvent {
     ItemAdded { service: String, item: SniItem },
@@ -28,11 +35,13 @@ pub enum SniEvent {
     ItemRemoved { service: String },
 }
 
-/// Commands the GTK side sends to the SNI thread.
+/// Commands the GTK side sends to the SNI thread. `path` is the item's
+/// `SniItem::path`, since `Activate`/`ContextMenu` are called on the
+/// item's actual object, not a spec-default one.
 #[derive(Clone, Debug)]
 pub enum SniCmd {
-    Activate { service: String, x: i32, y: i32 },
-    ContextMenu { service: String, x: i32, y: i32 },
+    Activate { service: String, path: String, x: i32, y: i32 },
+    ContextMenu { service: String, path: String, x: i32, y: i32 },
 }
 
 /// Start the SNI thread. Returns a command sender and event receiver; if no
@@ -67,27 +76,47 @@ struct Watcher {
     tx: async_channel::Sender<SniEvent>,
 }
 
+/// Resolve a `RegisterStatusNotifierItem` argument into `(bus_name,
+/// object_path)`, per the freedesktop spec: an argument starting with `/`
+/// is an object path *on the calling connection* (`sender`'s unique name);
+/// anything else is a bus name, and the item is assumed to live at the
+/// spec-default `/StatusNotifierItem`.
+fn resolve_service(service: &str, sender: &str) -> (String, String) {
+    if let Some(path) = service.strip_prefix('/') {
+        (sender.to_string(), format!("/{path}"))
+    } else {
+        (service.to_string(), "/StatusNotifierItem".to_string())
+    }
+}
+
 #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
 impl Watcher {
-    async fn register_status_notifier_item(&self, service: &str) {
+    async fn register_status_notifier_item(
+        &self,
+        service: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) {
+        let sender = header.sender().map(|n| n.to_string()).unwrap_or_default();
+        let (service, path) = resolve_service(service, &sender);
+
         let already = {
             let mut s = self.state.lock().unwrap();
-            if s.items.iter().any(|i| i == service) {
+            if s.items.iter().any(|i| i == &service) {
                 true
             } else {
-                s.items.push(service.to_string());
+                s.items.push(service.clone());
                 false
             }
         };
         if already {
             return;
         }
-        match fetch_item(service) {
+        match fetch_item(&service, &path) {
             Ok(item) => {
-                let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.to_string(), item });
-                watch_item(service.to_string(), self.tx.clone());
+                let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
+                watch_item(service, path, self.tx.clone());
             }
-            Err(e) => eprintln!("opusdm-panel: cannot fetch SNI item {service}: {e}"),
+            Err(e) => eprintln!("opusdm-panel: cannot fetch SNI item {service} at {path}: {e}"),
         }
     }
 
@@ -116,9 +145,9 @@ impl Watcher {
 /// interface and read the properties the widget needs. A fresh short-lived
 /// connection per call, same throwaway style as `ewmh.rs`'s click actions -
 /// this only runs once per (un)registration, not per frame.
-fn fetch_item(service: &str) -> Result<SniItem, Box<dyn std::error::Error>> {
+fn fetch_item(service: &str, path: &str) -> Result<SniItem, Box<dyn std::error::Error>> {
     let conn = zbus::blocking::Connection::session()?;
-    let proxy = zbus::blocking::Proxy::new(&conn, service, "/StatusNotifierItem", "org.kde.StatusNotifierItem")?;
+    let proxy = zbus::blocking::Proxy::new(&conn, service, path, "org.kde.StatusNotifierItem")?;
 
     let title: String = proxy.get_property("Title").unwrap_or_default();
     let item_is_menu: bool = proxy.get_property("ItemIsMenu").unwrap_or(false);
@@ -134,7 +163,7 @@ fn fetch_item(service: &str) -> Result<SniItem, Box<dyn std::error::Error>> {
         .ok()
         .and_then(|pixmaps| pick_sni_icon(&pixmaps, 24));
 
-    Ok(SniItem { icon, icon_name, title, item_is_menu, menu_path })
+    Ok(SniItem { icon, icon_name, title, item_is_menu, menu_path, path: path.to_string() })
 }
 
 /// Pick the pixmap closest to `target` px and unpack its big-endian ARGB32
@@ -154,7 +183,7 @@ fn pick_sni_icon(pixmaps: &[(i32, i32, Vec<u8>)], target: i32) -> Option<IconRgb
 /// changes, for as long as the item stays registered. Runs on its own
 /// thread since each needs an independent blocking signal stream; sends
 /// `ItemChanged`/`ItemRemoved` back through `tx`.
-fn watch_item(service: String, tx: async_channel::Sender<SniEvent>) {
+fn watch_item(service: String, path: String, tx: async_channel::Sender<SniEvent>) {
     std::thread::spawn(move || {
         let Ok(conn) = zbus::blocking::Connection::session() else { return };
         let Ok(dbus_proxy) = zbus::blocking::fdo::DBusProxy::new(&conn) else { return };
@@ -163,7 +192,7 @@ fn watch_item(service: String, tx: async_channel::Sender<SniEvent>) {
         let Ok(props_proxy) = zbus::blocking::Proxy::new(
             &conn,
             service.as_str(),
-            "/StatusNotifierItem",
+            path.as_str(),
             "org.freedesktop.DBus.Properties",
         ) else {
             return;
@@ -178,7 +207,7 @@ fn watch_item(service: String, tx: async_channel::Sender<SniEvent>) {
             if owner_changes.next().is_none() && changes.next().is_none() {
                 break;
             }
-            match fetch_item(&service) {
+            match fetch_item(&service, &path) {
                 Ok(item) => {
                     let _ = tx.send_blocking(SniEvent::ItemChanged { service: service.clone(), item });
                 }
@@ -239,17 +268,19 @@ fn event_loop(
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match cmd_rx.recv_timeout(POLL_INTERVAL) {
-            Ok(SniCmd::Activate { service, x, y }) => send_activate(conn, &service, x, y),
-            Ok(SniCmd::ContextMenu { service, x, y }) => send_context_menu(conn, &service, x, y),
+            Ok(SniCmd::Activate { service, path, x, y }) => send_activate(conn, &service, &path, x, y),
+            Ok(SniCmd::ContextMenu { service, path, x, y }) => {
+                send_context_menu(conn, &service, &path, x, y)
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
     }
 }
 
-fn send_activate(conn: &zbus::blocking::Connection, service: &str, x: i32, y: i32) {
+fn send_activate(conn: &zbus::blocking::Connection, service: &str, path: &str, x: i32, y: i32) {
     let run = || -> Result<(), Box<dyn std::error::Error>> {
-        let proxy = zbus::blocking::Proxy::new(conn, service, "/StatusNotifierItem", "org.kde.StatusNotifierItem")?;
+        let proxy = zbus::blocking::Proxy::new(conn, service, path, "org.kde.StatusNotifierItem")?;
         proxy.call_method("Activate", &(x, y))?;
         Ok(())
     };
@@ -258,9 +289,9 @@ fn send_activate(conn: &zbus::blocking::Connection, service: &str, x: i32, y: i3
     }
 }
 
-fn send_context_menu(conn: &zbus::blocking::Connection, service: &str, x: i32, y: i32) {
+fn send_context_menu(conn: &zbus::blocking::Connection, service: &str, path: &str, x: i32, y: i32) {
     let run = || -> Result<(), Box<dyn std::error::Error>> {
-        let proxy = zbus::blocking::Proxy::new(conn, service, "/StatusNotifierItem", "org.kde.StatusNotifierItem")?;
+        let proxy = zbus::blocking::Proxy::new(conn, service, path, "org.kde.StatusNotifierItem")?;
         proxy.call_method("ContextMenu", &(x, y))?;
         Ok(())
     };

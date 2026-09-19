@@ -21,6 +21,10 @@ use crate::sni::{SniCmd, SniEvent, SniItem};
 struct ItemButton {
     button: gtk::Button,
     menu_path: Rc<RefCell<Option<zbus::zvariant::OwnedObjectPath>>>,
+    /// The item's actual `org.kde.StatusNotifierItem` object path - needed
+    /// for `Activate`/`ContextMenu`, which are NOT always at the spec's
+    /// default `/StatusNotifierItem` (see `sni::resolve_service`).
+    item_path: Rc<RefCell<String>>,
 }
 
 /// Build the (initially empty) SNI icon strip and start draining `evt_rx`
@@ -57,14 +61,16 @@ fn apply_event(
             if let Some(entry) = buttons.get(&service) {
                 entry.button.set_child(Some(&icon_widget(&item)));
                 *entry.menu_path.borrow_mut() = item.menu_path.clone();
+                *entry.item_path.borrow_mut() = item.path.clone();
             } else {
                 let btn = gtk::Button::new();
                 btn.add_css_class("flat");
                 btn.set_child(Some(&icon_widget(&item)));
                 let menu_path = Rc::new(RefCell::new(item.menu_path.clone()));
-                wire_click(&btn, service.clone(), menu_path.clone(), cmd_tx.clone());
+                let item_path = Rc::new(RefCell::new(item.path.clone()));
+                wire_click(&btn, service.clone(), menu_path.clone(), item_path.clone(), cmd_tx.clone());
                 root.append(&btn);
-                buttons.insert(service, ItemButton { button: btn, menu_path });
+                buttons.insert(service, ItemButton { button: btn, menu_path, item_path });
             }
         }
         SniEvent::ItemRemoved { service } => {
@@ -82,22 +88,25 @@ fn wire_click(
     btn: &gtk::Button,
     service: String,
     menu_path: Rc<RefCell<Option<zbus::zvariant::OwnedObjectPath>>>,
+    item_path: Rc<RefCell<String>>,
     cmd_tx: Sender<SniCmd>,
 ) {
     let click = |button_id: u32| {
         let btn = btn.clone();
         let service = service.clone();
         let menu_path = menu_path.clone();
+        let item_path = item_path.clone();
         let cmd_tx = cmd_tx.clone();
         move |_gesture: &gtk::GestureClick, _n: i32, x: f64, y: f64| {
             if let Some(path) = menu_path.borrow().clone() {
                 show_menu(&btn, &service, &path);
                 return;
             }
+            let path = item_path.borrow().clone();
             let cmd = if button_id == 1 {
-                SniCmd::Activate { service: service.clone(), x: x as i32, y: y as i32 }
+                SniCmd::Activate { service: service.clone(), path, x: x as i32, y: y as i32 }
             } else {
-                SniCmd::ContextMenu { service: service.clone(), x: x as i32, y: y as i32 }
+                SniCmd::ContextMenu { service: service.clone(), path, x: x as i32, y: y as i32 }
             };
             let _ = cmd_tx.send(cmd);
         }
