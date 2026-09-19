@@ -5,3 +5,4 @@ pub mod clock;
 pub mod pager;
 pub mod sysmon;
 pub mod tasklist;
+pub mod tray;
