@@ -243,16 +243,94 @@ fn run(
     event_loop(&conn, &state, &cmd_rx, &tx)
 }
 
-/// Fallback when another process already owns the watcher name: just
-/// process commands (no items to track ourselves - the design's non-goal
-/// "never runs two watchers" means we don't duplicate its registry here).
+/// Split one of an *existing* watcher's `RegisteredStatusNotifierItems`
+/// entries into `(bus_name, object_path)`. Established watchers store
+/// items pre-joined as `"<bus_name>/<path-without-leading-slash>"` (e.g.
+/// `":1.81/StatusNotifierItem"` or
+/// `"org.kde.StatusNotifierItem-4449-1/StatusNotifierItem"`) - this is the
+/// read side of that convention; `resolve_service` (above) is the write
+/// side for when *we* are the watcher being registered with.
+fn split_registered_item(entry: &str) -> (String, String) {
+    match entry.split_once('/') {
+        Some((bus, rest)) => (bus.to_string(), format!("/{rest}")),
+        None => (entry.to_string(), "/StatusNotifierItem".to_string()),
+    }
+}
+
+/// Fallback when another process already owns the watcher name: connect to
+/// it as a plain `StatusNotifierHost` - seed from its current
+/// `RegisteredStatusNotifierItems`, then stay in sync via its
+/// `StatusNotifierItemRegistered`/`Unregistered` signals. We never run a
+/// second registry (the design's "never runs two watchers" non-goal), but
+/// we still need to actually show what the real one is hosting - a silent
+/// fallback here is why an app's icon can vanish into someone else's tray
+/// (e.g. the host desktop's own) with opusdm-panel showing nothing.
 fn run_as_host_client(
     cmd_rx: mpsc::Receiver<SniCmd>,
     tx: async_channel::Sender<SniEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = zbus::blocking::Connection::session()?;
+    let watcher = zbus::blocking::Proxy::new(
+        &conn,
+        "org.kde.StatusNotifierWatcher",
+        "/StatusNotifierWatcher",
+        "org.kde.StatusNotifierWatcher",
+    )?;
+
+    if let Ok(items) = watcher.get_property::<Vec<String>>("RegisteredStatusNotifierItems") {
+        for entry in items {
+            let (service, path) = split_registered_item(&entry);
+            match fetch_item(&service, &path) {
+                Ok(item) => {
+                    let _ = tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
+                    watch_item(service, path, tx.clone());
+                }
+                Err(e) => eprintln!("opusdm-panel: cannot fetch existing SNI item {service} at {path}: {e}"),
+            }
+        }
+    }
+
+    watch_host_registrations(watcher, tx.clone());
+
     let state = Arc::new(Mutex::new(WatcherState::default()));
     event_loop(&conn, &state, &cmd_rx, &tx)
+}
+
+/// Subscribe to the real watcher's registration signals for as long as the
+/// session bus connection lives, so items docked/withdrawn after our
+/// initial seed still show up. Runs on its own thread - a blocking signal
+/// stream, same pattern as `watch_item`.
+fn watch_host_registrations(watcher: zbus::blocking::Proxy<'static>, tx: async_channel::Sender<SniEvent>) {
+    std::thread::spawn(move || {
+        let Ok(mut registered) = watcher.receive_signal("StatusNotifierItemRegistered") else { return };
+        let Ok(mut unregistered) = watcher.receive_signal("StatusNotifierItemUnregistered") else { return };
+
+        loop {
+            if let Some(msg) = registered.next() {
+                if let Ok(entry) = msg.body().deserialize::<String>() {
+                    let (service, path) = split_registered_item(&entry);
+                    match fetch_item(&service, &path) {
+                        Ok(item) => {
+                            let _ = tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
+                            watch_item(service, path, tx.clone());
+                        }
+                        Err(e) => {
+                            eprintln!("opusdm-panel: cannot fetch newly-registered SNI item {service} at {path}: {e}")
+                        }
+                    }
+                }
+                continue;
+            }
+            if let Some(msg) = unregistered.next() {
+                if let Ok(entry) = msg.body().deserialize::<String>() {
+                    let (service, _path) = split_registered_item(&entry);
+                    let _ = tx.send_blocking(SniEvent::ItemRemoved { service });
+                }
+                continue;
+            }
+            break;
+        }
+    });
 }
 
 /// Poll interval for draining `SniCmd`s; the watcher interface itself is
