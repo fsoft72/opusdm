@@ -152,10 +152,11 @@ fn build_bar_window(
     right.set_margin_end(8);
     if let Some(tray) = &tray {
         right.append(tray.widget());
-        right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
     if let Some(sni_widget) = &sni_widget {
         right.append(sni_widget);
+    }
+    if tray.is_some() || sni_widget.is_some() {
         right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
     right.append(&widgets::sysmon::build());
