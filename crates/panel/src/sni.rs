@@ -52,11 +52,174 @@ pub fn spawn() -> (mpsc::Sender<SniCmd>, async_channel::Receiver<SniEvent>) {
     (cmd_tx, evt_rx)
 }
 
+use std::sync::{Arc, Mutex};
+
+/// Shared registry the watcher interface mutates and the event loop reads.
+/// `Mutex` (not `RefCell`) because zbus's interface methods run on its own
+/// internal executor thread, separate from this module's own loop below.
+#[derive(Default)]
+struct WatcherState {
+    items: Vec<String>, // registered service names
+}
+
+struct Watcher {
+    state: Arc<Mutex<WatcherState>>,
+    tx: async_channel::Sender<SniEvent>,
+}
+
+#[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+impl Watcher {
+    async fn register_status_notifier_item(&self, service: &str) {
+        let already = {
+            let mut s = self.state.lock().unwrap();
+            if s.items.iter().any(|i| i == service) {
+                true
+            } else {
+                s.items.push(service.to_string());
+                false
+            }
+        };
+        if already {
+            return;
+        }
+        if let Ok(item) = fetch_item(service) {
+            let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.to_string(), item });
+        }
+    }
+
+    async fn register_status_notifier_host(&self, _service: &str) {
+        // Accepted for spec completeness; see the design doc's note on
+        // `IsStatusNotifierHostRegistered`.
+    }
+
+    #[zbus(property)]
+    async fn registered_status_notifier_items(&self) -> Vec<String> {
+        self.state.lock().unwrap().items.clone()
+    }
+
+    #[zbus(property)]
+    async fn is_status_notifier_host_registered(&self) -> bool {
+        true
+    }
+
+    #[zbus(property)]
+    async fn protocol_version(&self) -> i32 {
+        0
+    }
+}
+
+/// Build a blocking proxy to `service`'s `org.kde.StatusNotifierItem`
+/// interface and read the properties the widget needs. A fresh short-lived
+/// connection per call, same throwaway style as `ewmh.rs`'s click actions -
+/// this only runs once per (un)registration, not per frame.
+fn fetch_item(service: &str) -> Result<SniItem, Box<dyn std::error::Error>> {
+    let conn = zbus::blocking::Connection::session()?;
+    let proxy = zbus::blocking::Proxy::new(&conn, service, "/StatusNotifierItem", "org.kde.StatusNotifierItem")?;
+
+    let title: String = proxy.get_property("Title").unwrap_or_default();
+    let item_is_menu: bool = proxy.get_property("ItemIsMenu").unwrap_or(false);
+    let icon_name: Option<String> = proxy.get_property::<String>("IconName").ok().filter(|s| !s.is_empty());
+    let menu_path: Option<zbus::zvariant::OwnedObjectPath> = proxy.get_property("Menu").ok();
+
+    // IconPixmap: array of (i32 width, i32 height, Vec<u8> ARGB32 rows),
+    // same wire shape `ewmh::pick_icon` already unpacks for _NET_WM_ICON,
+    // but SNI hands it over pre-split per-icon rather than as one flat
+    // word stream - convert the closest (to 24px) entry directly here.
+    let icon = proxy
+        .get_property::<Vec<(i32, i32, Vec<u8>)>>("IconPixmap")
+        .ok()
+        .and_then(|pixmaps| pick_sni_icon(&pixmaps, 24));
+
+    Ok(SniItem { icon, icon_name, title, item_is_menu, menu_path })
+}
+
+/// Pick the pixmap closest to `target` px and unpack its big-endian ARGB32
+/// bytes into tightly packed RGBA8 - mirrors `ewmh::pick_icon`'s pixel
+/// unpacking, adapted to SNI's already-split-by-icon wire shape.
+fn pick_sni_icon(pixmaps: &[(i32, i32, Vec<u8>)], target: i32) -> Option<IconRgba> {
+    let (w, h, bytes) = pixmaps.iter().min_by_key(|(w, _, _)| (*w - target).abs())?;
+    let mut rgba = Vec::with_capacity(bytes.len());
+    for px in bytes.chunks_exact(4) {
+        let (a, r, g, b) = (px[0], px[1], px[2], px[3]);
+        rgba.extend_from_slice(&[r, g, b, a]);
+    }
+    Some(IconRgba { width: *w, height: *h, rgba })
+}
+
 fn run(
-    _cmd_rx: mpsc::Receiver<SniCmd>,
-    _tx: async_channel::Sender<SniEvent>,
+    cmd_rx: mpsc::Receiver<SniCmd>,
+    tx: async_channel::Sender<SniEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _conn = zbus::blocking::Connection::session()?;
-    // Watcher registration and the event loop land in Task 2-3.
-    Ok(())
+    let state = Arc::new(Mutex::new(WatcherState::default()));
+    let watcher = Watcher { state: state.clone(), tx: tx.clone() };
+
+    let conn = zbus::blocking::connection::Builder::session()
+        .and_then(|b| b.name("org.kde.StatusNotifierWatcher"))
+        .and_then(|b| b.serve_at("/StatusNotifierWatcher", watcher))
+        .and_then(|b| b.build());
+
+    let conn = match conn {
+        Ok(conn) => conn,
+        Err(_) => {
+            eprintln!("opusdm-panel: SNI watcher already running, connecting as host only");
+            return run_as_host_client(cmd_rx, tx);
+        }
+    };
+
+    event_loop(&conn, &state, &cmd_rx, &tx)
+}
+
+/// Fallback when another process already owns the watcher name: just
+/// process commands (no items to track ourselves - the design's non-goal
+/// "never runs two watchers" means we don't duplicate its registry here).
+fn run_as_host_client(
+    cmd_rx: mpsc::Receiver<SniCmd>,
+    tx: async_channel::Sender<SniEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = zbus::blocking::Connection::session()?;
+    let state = Arc::new(Mutex::new(WatcherState::default()));
+    event_loop(&conn, &state, &cmd_rx, &tx)
+}
+
+/// Poll interval for draining `SniCmd`s; the watcher interface itself is
+/// served by zbus's own internal executor, so this loop only needs to
+/// forward GTK-side commands to DBus method calls.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+fn event_loop(
+    conn: &zbus::blocking::Connection,
+    _state: &Arc<Mutex<WatcherState>>,
+    cmd_rx: &mpsc::Receiver<SniCmd>,
+    _tx: &async_channel::Sender<SniEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        match cmd_rx.recv_timeout(POLL_INTERVAL) {
+            Ok(SniCmd::Activate { service, x, y }) => send_activate(conn, &service, x, y),
+            Ok(SniCmd::ContextMenu { service, x, y }) => send_context_menu(conn, &service, x, y),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+    }
+}
+
+fn send_activate(conn: &zbus::blocking::Connection, service: &str, x: i32, y: i32) {
+    let run = || -> Result<(), Box<dyn std::error::Error>> {
+        let proxy = zbus::blocking::Proxy::new(conn, service, "/StatusNotifierItem", "org.kde.StatusNotifierItem")?;
+        proxy.call_method("Activate", &(x, y))?;
+        Ok(())
+    };
+    if let Err(e) = run() {
+        eprintln!("opusdm-panel: SNI Activate failed for {service}: {e}");
+    }
+}
+
+fn send_context_menu(conn: &zbus::blocking::Connection, service: &str, x: i32, y: i32) {
+    let run = || -> Result<(), Box<dyn std::error::Error>> {
+        let proxy = zbus::blocking::Proxy::new(conn, service, "/StatusNotifierItem", "org.kde.StatusNotifierItem")?;
+        proxy.call_method("ContextMenu", &(x, y))?;
+        Ok(())
+    };
+    if let Err(e) = run() {
+        eprintln!("opusdm-panel: SNI ContextMenu failed for {service}: {e}");
+    }
 }
