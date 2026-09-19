@@ -84,6 +84,7 @@ impl Watcher {
         }
         if let Ok(item) = fetch_item(service) {
             let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.to_string(), item });
+            watch_item(service.to_string(), self.tx.clone());
         }
     }
 
@@ -144,6 +145,47 @@ fn pick_sni_icon(pixmaps: &[(i32, i32, Vec<u8>)], target: i32) -> Option<IconRgb
         rgba.extend_from_slice(&[r, g, b, a]);
     }
     Some(IconRgba { width: *w, height: *h, rgba })
+}
+
+/// Watch one item's DBus name for loss (app exit) and its properties for
+/// changes, for as long as the item stays registered. Runs on its own
+/// thread since each needs an independent blocking signal stream; sends
+/// `ItemChanged`/`ItemRemoved` back through `tx`.
+fn watch_item(service: String, tx: async_channel::Sender<SniEvent>) {
+    std::thread::spawn(move || {
+        let Ok(conn) = zbus::blocking::Connection::session() else { return };
+        let Ok(dbus_proxy) = zbus::blocking::fdo::DBusProxy::new(&conn) else { return };
+        let Ok(mut owner_changes) = dbus_proxy.receive_name_owner_changed() else { return };
+
+        let Ok(props_proxy) = zbus::blocking::Proxy::new(
+            &conn,
+            service.as_str(),
+            "/StatusNotifierItem",
+            "org.freedesktop.DBus.Properties",
+        ) else {
+            return;
+        };
+        let Ok(mut changes) = props_proxy.receive_signal("PropertiesChanged") else { return };
+
+        loop {
+            // Either signal stream waking up means "re-check this item":
+            // a real removal will fail `fetch_item` on the next iteration
+            // once the name is fully gone, which is simpler than parsing
+            // the NameOwnerChanged/PropertiesChanged payloads themselves.
+            if owner_changes.next().is_none() && changes.next().is_none() {
+                break;
+            }
+            match fetch_item(&service) {
+                Ok(item) => {
+                    let _ = tx.send_blocking(SniEvent::ItemChanged { service: service.clone(), item });
+                }
+                Err(_) => {
+                    let _ = tx.send_blocking(SniEvent::ItemRemoved { service: service.clone() });
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn run(
