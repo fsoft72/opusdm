@@ -89,6 +89,64 @@ pub fn send_event_clicked(
     }
 }
 
+use gtk4 as gtk;
+use gtk::prelude::*;
+use gtk::gio;
+
+/// Build a `gtk::PopoverMenu` from `root`'s children (the root node itself
+/// is never shown - it's the menu's invisible container). Each visible,
+/// non-separator leaf/branch becomes one action; separators become menu
+/// section breaks. Submenus nest as `gio::Menu` submenus. `on_click` fires
+/// with the clicked node's dbusmenu id.
+pub fn build_popover(root: &MenuNode, on_click: impl Fn(i32) + 'static) -> gtk::PopoverMenu {
+    let actions = gio::SimpleActionGroup::new();
+    let menu = build_gio_menu(&root.children, &actions, &std::rc::Rc::new(on_click));
+
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.insert_action_group("dbusmenu", Some(&actions));
+    popover
+}
+
+fn build_gio_menu(
+    nodes: &[MenuNode],
+    actions: &gio::SimpleActionGroup,
+    on_click: &std::rc::Rc<impl Fn(i32) + 'static>,
+) -> gio::Menu {
+    let menu = gio::Menu::new();
+    let mut section = gio::Menu::new();
+    for node in nodes {
+        if !node.visible {
+            continue;
+        }
+        if node.is_separator {
+            if section.n_items() > 0 {
+                menu.append_section(None, &section);
+                section = gio::Menu::new();
+            }
+            continue;
+        }
+        let action_name = format!("item{}", node.id);
+        if node.children.is_empty() {
+            let action = gio::SimpleAction::new(&action_name, None);
+            action.set_enabled(node.enabled);
+            {
+                let on_click = on_click.clone();
+                let id = node.id;
+                action.connect_activate(move |_, _| on_click(id));
+            }
+            actions.add_action(&action);
+            section.append(Some(&node.label), Some(&format!("dbusmenu.{action_name}")));
+        } else {
+            let submenu = build_gio_menu(&node.children, actions, on_click);
+            section.append_submenu(Some(&node.label), &submenu);
+        }
+    }
+    if section.n_items() > 0 {
+        menu.append_section(None, &section);
+    }
+    menu
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
