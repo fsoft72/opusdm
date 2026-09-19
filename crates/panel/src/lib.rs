@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 mod appmenu;
+mod dbusmenu;
 mod ewmh;
 mod sni;
 mod systray;
