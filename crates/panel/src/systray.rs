@@ -42,6 +42,269 @@ pub fn parse_dock_request(data: [u32; 5]) -> Option<u32> {
     }
 }
 
+// --------------------------------------------------------------------------
+// Protocol thread
+// --------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::{
+    ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux, ConnectionExt,
+    CreateWindowAux, EventMask, PropMode, Window, WindowClass,
+};
+use x11rb::protocol::Event;
+use x11rb::rust_connection::RustConnection;
+use x11rb::wrapper::ConnectionExt as _;
+use x11rb::{COPY_FROM_PARENT, CURRENT_TIME};
+
+x11rb::atom_manager! {
+    pub Atoms: AtomsCookie {
+        MANAGER,
+        _NET_SYSTEM_TRAY_OPCODE,
+        _NET_SYSTEM_TRAY_ORIENTATION,
+        _XEMBED,
+    }
+}
+
+/// Snapshots the tray thread sends to the GTK side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrayEvent {
+    /// A new icon was docked, appended to the end of the display order.
+    IconDocked(u32),
+    /// A docked icon's owner withdrew it or exited.
+    IconRemoved(u32),
+}
+
+/// Commands the GTK side sends to the tray thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrayCmd {
+    /// Move/resize a docked icon's container window to this root-relative rect.
+    PlaceIcon { xid: u32, x: i32, y: i32, w: i32, h: i32 },
+}
+
+/// Poll interval when there is no pending X event: fast enough that a
+/// `TrayCmd::PlaceIcon` lands within one frame, cheap enough to idle at.
+const POLL_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Start the tray thread. Returns a command sender and event receiver; if no
+/// X11 connection is available, or the tray selection is already owned by
+/// another process, the thread logs once and exits - the channels stay
+/// open but nothing is ever sent or received.
+pub fn spawn(panel_height: i32) -> (mpsc::Sender<TrayCmd>, async_channel::Receiver<TrayEvent>) {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<TrayCmd>();
+    let (evt_tx, evt_rx) = async_channel::unbounded::<TrayEvent>();
+    std::thread::Builder::new()
+        .name("opusdm-panel-systray".into())
+        .spawn(move || {
+            if let Err(e) = run(panel_height, cmd_rx, evt_tx) {
+                eprintln!("opusdm-panel: system tray stopped: {e}");
+            }
+        })
+        .expect("spawn systray thread");
+    (cmd_tx, evt_rx)
+}
+
+fn run(
+    panel_height: i32,
+    cmd_rx: mpsc::Receiver<TrayCmd>,
+    tx: async_channel::Sender<TrayEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (conn, screen_num) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen_num].root;
+    let atoms = Atoms::new(&conn)?.reply()?;
+
+    let selection_name = format!("_NET_SYSTEM_TRAY_S{screen_num}");
+    let selection_atom = conn.intern_atom(false, selection_name.as_bytes())?.reply()?.atom;
+
+    let owner = conn.get_selection_owner(selection_atom)?.reply()?.owner;
+    if owner != 0 {
+        eprintln!("opusdm-panel: system tray already running, tray disabled");
+        return Ok(());
+    }
+
+    let manager = conn.generate_id()?;
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        manager,
+        root,
+        -1,
+        -1,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        COPY_FROM_PARENT,
+        &CreateWindowAux::new(),
+    )?;
+    conn.set_selection_owner(manager, selection_atom, CURRENT_TIME)?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        manager,
+        atoms._NET_SYSTEM_TRAY_ORIENTATION,
+        x11rb::protocol::xproto::AtomEnum::CARDINAL,
+        &[0], // horizontal
+    )?;
+    let ev = ClientMessageEvent::new(
+        32,
+        root,
+        atoms.MANAGER,
+        manager_message_data(CURRENT_TIME, selection_atom, manager),
+    );
+    conn.send_event(false, root, EventMask::STRUCTURE_NOTIFY, ev)?;
+    conn.change_window_attributes(
+        manager,
+        &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
+    )?;
+    conn.flush()?;
+
+    let icon_size = icon_square_size(panel_height);
+    let mut containers: HashMap<u32, u32> = HashMap::new();
+
+    event_loop(&conn, root, &atoms, manager, icon_size, &mut containers, &cmd_rx, &tx)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn event_loop(
+    conn: &RustConnection,
+    root: Window,
+    atoms: &Atoms,
+    manager: Window,
+    icon_size: i32,
+    containers: &mut HashMap<u32, u32>,
+    cmd_rx: &mpsc::Receiver<TrayCmd>,
+    tx: &async_channel::Sender<TrayEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        while let Some(event) = conn.poll_for_event()? {
+            match event {
+                Event::ClientMessage(e)
+                    if e.window == manager && e.type_ == atoms._NET_SYSTEM_TRAY_OPCODE =>
+                {
+                    if let Some(icon_xid) = parse_dock_request(e.data.as_data32()) {
+                        dock_icon(conn, atoms, containers, root, icon_size, icon_xid, tx);
+                    }
+                }
+                Event::DestroyNotify(e) if containers.contains_key(&e.window) => {
+                    undock_icon(conn, containers, e.window, tx);
+                }
+                Event::UnmapNotify(e) if containers.contains_key(&e.window) => {
+                    undock_icon(conn, containers, e.window, tx);
+                }
+                Event::ReparentNotify(e)
+                    if containers.get(&e.window).is_some_and(|c| *c != e.parent) =>
+                {
+                    undock_icon(conn, containers, e.window, tx);
+                }
+                _ => {}
+            }
+        }
+        match cmd_rx.try_recv() {
+            Ok(TrayCmd::PlaceIcon { xid, x, y, w, h }) => {
+                place_icon(conn, containers, xid, x, y, w, h)?
+            }
+            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(POLL_INTERVAL),
+            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+        }
+    }
+}
+
+/// Handle a `SYSTEM_TRAY_REQUEST_DOCK`: create a small container window,
+/// reparent the client's icon into it, complete the XEmbed handshake, and
+/// map both. Errors for one icon are logged and swallowed so a single
+/// misbehaving client can't take down the tray thread.
+fn dock_icon(
+    conn: &RustConnection,
+    atoms: &Atoms,
+    containers: &mut HashMap<u32, u32>,
+    root: Window,
+    icon_size: i32,
+    icon_xid: u32,
+    tx: &async_channel::Sender<TrayEvent>,
+) {
+    let run = || -> Result<Window, Box<dyn std::error::Error>> {
+        let container = conn.generate_id()?;
+        conn.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            container,
+            root,
+            0,
+            0,
+            icon_size.max(1) as u16,
+            icon_size.max(1) as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            COPY_FROM_PARENT,
+            &CreateWindowAux::new().override_redirect(1),
+        )?;
+        conn.change_window_attributes(
+            icon_xid,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
+        )?;
+        conn.reparent_window(icon_xid, container, 0, 0)?;
+        conn.configure_window(
+            icon_xid,
+            &ConfigureWindowAux::new()
+                .width(icon_size.max(1) as u32)
+                .height(icon_size.max(1) as u32),
+        )?;
+        let ev = ClientMessageEvent::new(
+            32,
+            icon_xid,
+            atoms._XEMBED,
+            xembed_embedded_notify_data(container, 0),
+        );
+        conn.send_event(false, icon_xid, EventMask::NO_EVENT, ev)?;
+        conn.map_window(icon_xid)?;
+        conn.map_window(container)?;
+        conn.flush()?;
+        Ok(container)
+    };
+    match run() {
+        Ok(container) => {
+            containers.insert(icon_xid, container);
+            let _ = tx.send_blocking(TrayEvent::IconDocked(icon_xid));
+        }
+        Err(e) => eprintln!("opusdm-panel: cannot dock tray icon {icon_xid}: {e}"),
+    }
+}
+
+/// Destroy `icon_xid`'s container (if any tracked) and report its removal.
+fn undock_icon(
+    conn: &RustConnection,
+    containers: &mut HashMap<u32, u32>,
+    icon_xid: u32,
+    tx: &async_channel::Sender<TrayEvent>,
+) {
+    if let Some(container) = containers.remove(&icon_xid) {
+        let _ = conn.destroy_window(container);
+        let _ = conn.flush();
+        let _ = tx.send_blocking(TrayEvent::IconRemoved(icon_xid));
+    }
+}
+
+/// Move/resize a docked icon's container window. A no-op if `xid` isn't
+/// currently docked (e.g. it was removed just before the command arrived).
+fn place_icon(
+    conn: &RustConnection,
+    containers: &HashMap<u32, u32>,
+    xid: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(&container) = containers.get(&xid) else { return Ok(()) };
+    conn.configure_window(
+        container,
+        &ConfigureWindowAux::new().x(x).y(y).width(w as u32).height(h as u32),
+    )?;
+    conn.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
