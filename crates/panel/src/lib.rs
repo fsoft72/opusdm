@@ -13,6 +13,7 @@ use std::time::Duration;
 
 mod appmenu;
 mod ewmh;
+mod systray;
 mod window;
 pub mod widgets;
 
