@@ -45,7 +45,7 @@ pub fn build(cmd_tx: Sender<SniCmd>, evt_rx: async_channel::Receiver<SniEvent>) 
 }
 
 /// Reconcile one `SniEvent` into the displayed buttons: add/update/remove.
-pub fn apply_event(
+fn apply_event(
     root: &gtk::Box,
     buttons: &Rc<RefCell<HashMap<String, ItemButton>>>,
     cmd_tx: &Sender<SniCmd>,

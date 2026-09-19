@@ -63,6 +63,8 @@ fn build_bar_window(
     state: &Rc<RefCell<PanelState>>,
     is_primary: bool,
     tray_cmd_tx: std::sync::mpsc::Sender<systray::TrayCmd>,
+    sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
+    sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
 ) -> BarWindow {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
@@ -85,6 +87,11 @@ fn build_bar_window(
         tray.set_origin(mon_x, mon_y);
         tray.update(&state.borrow().tray_order);
         Some(tray)
+    } else {
+        None
+    };
+    let sni_widget = if is_primary {
+        sni_evt_rx.map(|rx| widgets::sni::build(sni_cmd_tx, rx))
     } else {
         None
     };
@@ -147,6 +154,10 @@ fn build_bar_window(
         right.append(tray.widget());
         right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
+    if let Some(sni_widget) = &sni_widget {
+        right.append(sni_widget);
+        right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    }
     right.append(&widgets::sysmon::build());
     right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     right.append(&widgets::clock::build());
@@ -166,12 +177,19 @@ pub fn attach(app: &gtk::Application) {
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
+    let (sni_cmd_tx, sni_evt_rx) = sni::spawn();
+    // Only the primary bar's widget ever drains this receiver - it isn't
+    // `Clone`, and a monitor-hotplug rebuild after the first one won't have
+    // it to hand the new primary bar (known v1 gap, see the SNI plan).
+    let sni_evt_rx = Rc::new(RefCell::new(Some(sni_evt_rx)));
 
     let rebuild: Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)> = {
         let app = app.clone();
         let state = state.clone();
         let windows = windows.clone();
         let tray_cmd_tx = tray_cmd_tx.clone();
+        let sni_cmd_tx = sni_cmd_tx.clone();
+        let sni_evt_rx = sni_evt_rx.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -179,13 +197,16 @@ pub fn attach(app: &gtk::Application) {
             if rects.is_empty() {
                 rects.push((0, 0, 1280, 800));
             }
+            let mut rx_slot = sni_evt_rx.borrow_mut();
             let built = rects
                 .into_iter()
                 .enumerate()
                 .map(|(i, (x, y, w, _h))| {
-                    build_bar_window(&app, x, y, w, &state, i == 0, tray_cmd_tx.clone())
+                    let rx = if i == 0 { rx_slot.take() } else { None };
+                    build_bar_window(&app, x, y, w, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx)
                 })
                 .collect();
+            drop(rx_slot);
             *windows.borrow_mut() = built;
         })
     };
