@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-09-27 (4)
+
+- Fix: build warning in `crates/lister/src/terminal.rs` - unused `gtk::prelude::*` import (VTE's own `vte4::prelude::*` already brings in what's used). `cargo build --all` and `cargo test --all` are now warning-free.
+
 ## 2026-09-27 (3)
 
 - Menu tab polish: "Add Folder"/"Add App"/new "Reset Default" now sit above the tree in a fixed row (the tree scrolls in its own `gtk::ScrolledWindow`, so the buttons stay visible while scrolling). "Reset Default" asks for confirmation through the same `opusdm_ui::requester` shape as the Lister's delete confirmation, then discards the tree and reseeds it. Each app row now shows its resolved icon, not just its name.
