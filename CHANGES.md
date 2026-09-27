@@ -2,6 +2,7 @@
 
 ## 2026-09-27
 
+- New design document `docs/dock.md` for `opusdm-dock`, a launcher-only dock (no strut, opaque, no zoom, no window list, never on the panel's edge). No code yet.
 - Removed every Nerd Font dependency: deleted `iconview::glyphs` and `iconview::font_probe`, the "Nerd Font Not Found" startup dialog, the Nerd Font CSS and `scripts/install-font.sh`. Icons now always come from an installed theme; a theme lacking an icon leaves a blank slot. `IconSetId::None` is gone (`IconSetId` is now `Custom(slug)` only, default `breeze-dark`); legacy `"None"`/`"BreezeDark"` values in `settings.json` map to the default. The `breeze-dark` theme is embedded in `opusdm-ipc` and written to `~/.config/opusdm/themes/` by `themes::ensure_default_theme()` whenever it is missing (called by `scan_themes` and the icon loader). `decorate_name` in the Lister lost its glyph parameter.
 - Desktop context menu: the "Theme" entry is now called "Settings" (it still launches `opusdm-theme`); the missing-font dialog hint follows.
 - New "Panel" setting in the Desktop tab of `opusdm-theme`: choose whether the panel is docked to the top (default) or the bottom of the screen. New `opusdm_ipc::PanelPosition` and `DesktopSettings::panel_position` (`"top"`/`"bottom"` in `desktop.json`; missing field means top), edited through the new `PanelSection` in `crates/desktop-config/src/ui.rs`.
