@@ -4,7 +4,7 @@
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_ipc::{Background, BackgroundMode, ImageFit};
+use opusdm_ipc::{Background, BackgroundMode, ImageFit, PanelPosition};
 use std::path::{Path, PathBuf};
 
 use crate::model::{hex_to_rgba, rgba_to_hex};
@@ -447,6 +447,44 @@ impl FolderSection {
     pub fn override_dir(&self) -> Option<PathBuf> {
         let t = self.entry.text().to_string();
         (!t.is_empty()).then(|| PathBuf::from(t))
+    }
+}
+
+/// The PANEL section: a drop-down choosing which screen edge the panel is
+/// docked to.
+pub struct PanelSection {
+    pub root: gtk::Box,
+    position: gtk::DropDown,
+}
+
+impl PanelSection {
+    /// Build the section seeded with the current panel position.
+    pub fn new(initial: PanelPosition) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        root.append(&heading("PANEL"));
+
+        let position = gtk::DropDown::from_strings(&["Top", "Bottom"]);
+        position.set_selected(match initial {
+            PanelPosition::Top => 0,
+            PanelPosition::Bottom => 1,
+        });
+
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let name = gtk::Label::new(Some("Position"));
+        name.set_xalign(0.0);
+        name.set_size_request(90, -1);
+        row.append(&name);
+        row.append(&position);
+        root.append(&row);
+        Self { root, position }
+    }
+
+    /// The chosen panel position.
+    pub fn position(&self) -> PanelPosition {
+        match self.position.selected() {
+            1 => PanelPosition::Bottom,
+            _ => PanelPosition::Top,
+        }
     }
 }
 

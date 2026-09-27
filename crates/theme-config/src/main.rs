@@ -4,7 +4,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
-use opusdm_desktop_config::ui::{BackgroundSection, FolderSection, GridSection};
+use opusdm_desktop_config::ui::{BackgroundSection, FolderSection, GridSection, PanelSection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -77,6 +77,10 @@ fn build_window(app: &gtk::Application) {
 
     let folder = Rc::new(FolderSection::new(desktop_data.desktop_dir.as_deref()));
     desktop_page.append(&folder.root);
+    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let panel = Rc::new(PanelSection::new(desktop_data.panel_position));
+    desktop_page.append(&panel.root);
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
 
@@ -136,6 +140,7 @@ fn build_window(app: &gtk::Application) {
         let bg = bg.clone();
         let grid = grid.clone();
         let folder = folder.clone();
+        let panel = panel.clone();
         let appearance_section = appearance_section.clone();
         let behavior_section = behavior_section.clone();
         let note = note.clone();
@@ -155,6 +160,7 @@ fn build_window(app: &gtk::Application) {
                 grid_spacing: grid.grid_spacing(),
                 grid_gap: grid.grid_gap(),
                 desktop_dir: folder.override_dir(),
+                panel_position: panel.position(),
             }
             .sanitized();
             let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);

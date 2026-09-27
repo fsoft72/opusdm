@@ -8,7 +8,8 @@ fn main() {
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(|app| {
-        opusdm_panel::attach(app);
+        let position = opusdm_ipc::settings::load_desktop_settings("panel-standalone").panel_position;
+        opusdm_panel::attach(app, position);
     });
     app.run_with_args::<&str>(&[]);
 }

@@ -1,5 +1,14 @@
 # Changes
 
+## 2026-09-27
+
+- Desktop context menu: the "Theme" entry is now called "Settings" (it still launches `opusdm-theme`); the missing-font dialog hint follows.
+- New "Panel" setting in the Desktop tab of `opusdm-theme`: choose whether the panel is docked to the top (default) or the bottom of the screen. New `opusdm_ipc::PanelPosition` and `DesktopSettings::panel_position` (`"top"`/`"bottom"` in `desktop.json`; missing field means top), edited through the new `PanelSection` in `crates/desktop-config/src/ui.rs`.
+- Panel (`crates/panel`): new `window::Placement` (edge + monitor rect). A bottom bar sits at `mon_y + mon_h - PANEL_HEIGHT` and reserves its space with the bottom slots of `_NET_WM_STRUT_PARTIAL` (including the gap between the monitor and the screen bottom on multi-head setups). `strut_partial` now takes the position.
+- The application menu popover opens upwards when the panel is at the bottom (`appmenu::set_direction` flips the `MenuButton` arrow direction).
+- `opusdm_panel::attach(app, position)` now returns a setter; the hub calls it on `DesktopSettingsChanged`, so the panel moves live without a restart. Bars are re-docked in place (`redock_bar`) rather than rebuilt, so the primary bar keeps its tray and SNI widgets.
+- The desktop icon field keeps its clearance margin on the panel's edge (`keep_clear_of_panel` in `toolbar.rs`): top margin for a top panel, bottom margin for a bottom one.
+
 ## 2026-09-15
 
 - Nuovo script `scripts/build-breeze.sh`: costruisce il pacchetto del tema Breeze Dark a partire da `themes/breeze-dark/`, invocando il comando esistente `cargo run -p xtask -- package-themes` e verificando che `target/themes/breeze-dark.zip` sia stato prodotto.

@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 opusdm-ui = { path = "../ui" }
+opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
 gdk4-x11.workspace = true
 x11rb.workspace = true

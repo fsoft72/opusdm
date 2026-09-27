@@ -35,6 +35,7 @@ pub mod themes;
 
 pub use desktop::{
     background_css, path_to_file_url, Background, BackgroundMode, DesktopSettings, ImageFit,
+    PanelPosition,
     GRADIENT_ANGLE_MAX, GRID_GAP_RANGE, GRID_SPACING_RANGE, ICON_SIZE_RANGE,
 };
 pub use proto::{

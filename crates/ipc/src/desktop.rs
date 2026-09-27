@@ -22,6 +22,17 @@ pub const GRID_GAP_RANGE: (i32, i32) = (0, 64);
 /// Largest accepted gradient angle, in degrees.
 pub const GRADIENT_ANGLE_MAX: u16 = 360;
 
+/// Which screen edge the panel (`opusdm-hub`'s dock bar) is docked to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelPosition {
+    /// Docked along the top edge of every monitor.
+    #[default]
+    Top,
+    /// Docked along the bottom edge of every monitor.
+    Bottom,
+}
+
 /// Which kind of background the desktop window paints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +115,8 @@ pub struct DesktopSettings {
     /// Directory shown as the desktop. `None` means resolve it from
     /// `$XDG_DESKTOP_DIR` then `~/Desktop`, as the hub does today.
     pub desktop_dir: Option<PathBuf>,
+    /// Screen edge the panel is docked to.
+    pub panel_position: PanelPosition,
 }
 
 impl Default for DesktopSettings {
@@ -113,6 +126,7 @@ impl Default for DesktopSettings {
             grid_spacing: 96,
             grid_gap: 4,
             desktop_dir: None,
+            panel_position: PanelPosition::Top,
         }
     }
 }
@@ -281,6 +295,18 @@ mod tests {
         bg.mode = BackgroundMode::Solid;
         bg.solid = "#123456".into();
         assert_eq!(background_css(&bg), "background: #123456;");
+    }
+
+    #[test]
+    fn panel_position_defaults_to_top_and_roundtrips() {
+        assert_eq!(DesktopSettings::default().panel_position, PanelPosition::Top);
+        let d = DesktopSettings { panel_position: PanelPosition::Bottom, ..Default::default() };
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("\"bottom\""));
+        assert_eq!(serde_json::from_str::<DesktopSettings>(&json).unwrap(), d);
+        // An older desktop.json without the field keeps the panel on top.
+        let old: DesktopSettings = serde_json::from_str("{\"icon_size\":64}").unwrap();
+        assert_eq!(old.panel_position, PanelPosition::Top);
     }
 
     #[test]

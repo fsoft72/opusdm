@@ -129,6 +129,9 @@ struct Widgets {
     desktop: DesktopState,
     /// Shows progress for every running file operation.
     progress_window: crate::progress_window::ProgressWindow,
+    /// Re-docks the panel bars to another screen edge. Set once the panel
+    /// is attached, which happens after the `Widgets` are built.
+    set_panel_position: RefCell<Option<Rc<dyn Fn(opusdm_ipc::PanelPosition)>>>,
 }
 
 impl Widgets {
@@ -163,6 +166,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
             ..Default::default()
         },
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
+        set_panel_position: RefCell::new(None),
     });
 
     // Build one desktop window per monitor, primary first.
@@ -205,7 +209,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     }
 
     // The panel dock lives in its own windows on the same application.
-    opusdm_panel::attach(app);
+    let panel_position = widgets.desktop.settings.borrow().panel_position;
+    *widgets.set_panel_position.borrow_mut() = Some(opusdm_panel::attach(app, panel_position));
 
     // The panel reserves a top strut, which shrinks the work area and makes
     // GTK clamp the desktop windows a strip short. Re-assert the full-monitor
@@ -343,8 +348,12 @@ fn build_one_desktop_window(
         });
     });
 
-    let (desktop_area, field) =
-        build_desktop_area(if is_primary { desktop_dir } else { None }, icon_set);
+    let panel_position = widgets.desktop.settings.borrow().panel_position;
+    let (desktop_area, field) = build_desktop_area(
+        if is_primary { desktop_dir } else { None },
+        icon_set,
+        panel_position,
+    );
     window.set_child(Some(&desktop_area));
 
     // Right-click the desktop for the context menu.
@@ -541,6 +550,7 @@ fn launch_theme_config() {
 fn build_desktop_area(
     desktop_dir: Option<&Path>,
     icon_set: opusdm_ipc::IconSetId,
+    panel_position: opusdm_ipc::PanelPosition,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
     overlay.set_hexpand(true);
@@ -566,10 +576,7 @@ fn build_desktop_area(
             }
             f.widget().set_hexpand(true);
             f.widget().set_vexpand(true);
-            // Keep the icon area clear of the panel dock: the background box
-            // still fills the whole monitor, but the first row of icons must
-            // start below the panel's top strut instead of under it.
-            f.widget().set_margin_top(opusdm_panel::PANEL_HEIGHT);
+            keep_clear_of_panel(f.widget(), panel_position);
             bg.append(f.widget());
             Some(f)
         }
@@ -578,6 +585,19 @@ fn build_desktop_area(
 
     overlay.set_child(Some(&bg));
     (overlay, field)
+}
+
+/// Keep the icon area clear of the panel dock: the background box still
+/// fills the whole monitor, but the icons must stay inside the strip the
+/// panel's strut leaves free instead of sitting under it. The margin goes on
+/// the edge the panel is docked to and is cleared on the other.
+fn keep_clear_of_panel(field: &impl IsA<gtk::Widget>, position: opusdm_ipc::PanelPosition) {
+    let (top, bottom) = match position {
+        opusdm_ipc::PanelPosition::Top => (opusdm_panel::PANEL_HEIGHT, 0),
+        opusdm_ipc::PanelPosition::Bottom => (0, opusdm_panel::PANEL_HEIGHT),
+    };
+    field.set_margin_top(top);
+    field.set_margin_bottom(bottom);
 }
 
 /// Wire the right-click context menu onto the desktop overlay. The desktop
@@ -711,11 +731,11 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             sub.append(&btn);
         }
 
-        // Theme: launch the standalone opusdm-theme app. Icon grid metrics
+        // Settings: launch the standalone opusdm-theme app. Icon grid metrics
         // and the desktop folder override live there too now.
         {
             let menu_ref = menu.clone();
-            let btn = menu_button("Theme");
+            let btn = menu_button("Settings");
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
                 launch_theme_config();
@@ -757,7 +777,7 @@ fn show_missing_nerd_font_dialog(parent: &gtk::ApplicationWindow) {
          OpusDM's text-glyph icon set needs a patched \"Nerd Font\" to \
          show file-type icons; without one, names appear with no icon \
          instead. You can also pick an image-based theme instead - see \
-         \"Desktop \u{2192} Theme\".\n\n\
+         \"Desktop \u{2192} Settings\".\n\n\
          <a href='https://www.nerdfonts.com/font-downloads'>https://www.nerdfonts.com/font-downloads</a>",
         &[("OK", ())],
         |_| {},
@@ -846,6 +866,10 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 field.set_icon_size(ds.icon_size);
                 field.set_grid_spacing(ds.grid_spacing);
                 field.set_grid_gap(ds.grid_gap);
+                keep_clear_of_panel(field.widget(), ds.panel_position);
+            }
+            if let Some(set_position) = widgets.set_panel_position.borrow().as_ref() {
+                set_position(ds.panel_position);
             }
 
             let wanted =

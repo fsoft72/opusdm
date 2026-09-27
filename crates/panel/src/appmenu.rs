@@ -7,6 +7,7 @@ use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
+use opusdm_ipc::PanelPosition;
 use std::process::Command;
 
 use freedesktop_desktop_entry::{self as fde, DesktopEntry};
@@ -158,8 +159,9 @@ fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
     btn
 }
 
-/// Build the menu button and its popover.
-pub fn build(parent: &gtk::ApplicationWindow) -> gtk::Widget {
+/// Build the menu button and its popover. The popover opens downwards from a
+/// top panel and upwards from a bottom one (`position`).
+pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::MenuButton {
     let button = gtk::MenuButton::new();
     let ball_bytes = glib::Bytes::from_static(BALL_PNG);
     let ball_texture = gdk::Texture::from_bytes(&ball_bytes).expect("valid ball.png asset");
@@ -167,6 +169,7 @@ pub fn build(parent: &gtk::ApplicationWindow) -> gtk::Widget {
     ball_image.set_pixel_size(18);
     button.set_child(Some(&ball_image));
     button.add_css_class("flat");
+    set_direction(&button, position);
 
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
@@ -245,7 +248,17 @@ pub fn build(parent: &gtk::ApplicationWindow) -> gtk::Widget {
     scroll.set_child(Some(&list));
     popover.set_child(Some(&scroll));
     button.set_popover(Some(&popover));
-    button.upcast()
+    button
+}
+
+/// Point `button`'s popover away from the panel edge: down from a top panel,
+/// up from a bottom one. MenuButton derives the popover's side from its
+/// arrow direction.
+pub fn set_direction(button: &gtk::MenuButton, position: PanelPosition) {
+    button.set_direction(match position {
+        PanelPosition::Top => gtk::ArrowType::Down,
+        PanelPosition::Bottom => gtk::ArrowType::Up,
+    });
 }
 
 /// Launch a `.desktop` file through GIO so field codes and terminal handling

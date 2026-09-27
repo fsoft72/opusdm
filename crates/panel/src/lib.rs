@@ -7,7 +7,8 @@
 
 use gtk4 as gtk;
 use gtk::prelude::*;
-use std::cell::RefCell;
+use opusdm_ipc::PanelPosition;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -20,6 +21,8 @@ mod window;
 pub mod widgets;
 
 pub use window::PANEL_HEIGHT;
+
+use window::Placement;
 
 use ewmh::EwmhEvent;
 use widgets::pager::Pager;
@@ -44,6 +47,11 @@ struct PanelState {
 /// One bar window and the widgets on it that need repainting on EWMH events.
 struct BarWindow {
     window: gtk::ApplicationWindow,
+    /// Edge and monitor rect; the map/settle closures read it live so a
+    /// position change re-docks the window without rebuilding it.
+    place: Rc<Cell<Placement>>,
+    /// The application menu button, whose popover direction follows `place`.
+    menu: gtk::MenuButton,
     pager: Rc<Pager>,
     tasklist: Rc<Tasklist>,
     /// `Some` only for the primary bar (the one built from the first
@@ -52,14 +60,12 @@ struct BarWindow {
 }
 
 /// Build one full bar (menu, pager, tasklist, sysmon, clock) on the monitor
-/// at `(mon_x, mon_y)`, `mon_w` wide, and present it. `state` seeds the pager
+/// and edge `place` describes, and present it. `state` seeds the pager
 /// and tasklist immediately, so a bar created after startup (monitor plugged
 /// in later) doesn't show empty widgets until the next EWMH event.
 fn build_bar_window(
     app: &gtk::Application,
-    mon_x: i32,
-    mon_y: i32,
-    mon_w: i32,
+    place: Placement,
     state: &Rc<RefCell<PanelState>>,
     is_primary: bool,
     tray_cmd_tx: std::sync::mpsc::Sender<systray::TrayCmd>,
@@ -75,16 +81,17 @@ fn build_bar_window(
         // toolbar.rs. The WM is kept from resizing it by the min = max size
         // hints in `window.rs`.
         .resizable(true)
-        .default_width(mon_w)
+        .default_width(place.mon_w)
         .default_height(window::PANEL_HEIGHT)
         .build();
+    let place = Rc::new(Cell::new(place));
 
     // Built before `connect_map` so the reposition call below can capture it;
     // used again when assembling the right-side box further down.
     let tray = if is_primary {
         let icon_size = systray::icon_square_size(window::PANEL_HEIGHT);
         let tray = Tray::new(icon_size, tray_cmd_tx);
-        tray.set_origin(mon_x, mon_y);
+        tray.set_origin(place.get().mon_x, place.get().bar_y());
         tray.update(&state.borrow().tray_order);
         Some(tray)
     } else {
@@ -96,11 +103,15 @@ fn build_bar_window(
         None
     };
 
-    win.connect_realize(move |w| window::make_panel_window(w, mon_x, mon_y, mon_w));
+    {
+        let place = place.clone();
+        win.connect_realize(move |w| window::make_panel_window(w, place.get()));
+    }
     {
         let tray_for_map = tray.clone();
+        let place = place.clone();
         win.connect_map(move |w| {
-            window::make_panel_window(w, mon_x, mon_y, mon_w);
+            window::make_panel_window(w, place.get());
             // Re-pin the geometry and re-assert the stacking a few times over
             // the first second: the window manager runs its placement policy
             // and the hub's full-screen desktop window settles its own
@@ -111,8 +122,9 @@ fn build_bar_window(
             for delay in [80_u64, 400, 1000] {
                 let w = w.clone();
                 let tray = tray_for_map.clone();
+                let place = place.clone();
                 gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                    window::pin_geometry(&w, mon_x, mon_y, mon_w);
+                    window::pin_geometry(&w, place.get());
                     window::raise_above(&w);
                     if let Some(tray) = &tray {
                         tray.reposition_now();
@@ -140,7 +152,8 @@ fn build_bar_window(
     let left = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     left.set_margin_start(6);
     left.set_hexpand(true);
-    left.append(&appmenu::build(&win));
+    let menu = appmenu::build(&win, place.get().position);
+    left.append(&menu);
     left.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     left.append(pager.widget());
     left.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -167,14 +180,19 @@ fn build_bar_window(
     win.set_child(Some(&bar));
     win.present();
 
-    BarWindow { window: win, pager, tasklist, tray }
+    BarWindow { window: win, place, menu, pager, tasklist, tray }
 }
 
 /// Build one bar window per monitor, wire every widget, and keep them in sync
 /// with monitor hotplug and mirror changes. Identical monitor rects (a
 /// mirrored output) share a single bar, since X shows the same pixels twice
 /// there - see `opusdm_ui::list_monitors`.
-pub fn attach(app: &gtk::Application) {
+///
+/// The bars start docked to `position`. The returned function re-docks them
+/// to another edge live (rebuilding every bar); call it when the desktop
+/// settings change.
+pub fn attach(app: &gtk::Application, position: PanelPosition) -> Rc<dyn Fn(PanelPosition)> {
+    let position = Rc::new(Cell::new(position));
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
@@ -191,6 +209,7 @@ pub fn attach(app: &gtk::Application) {
         let tray_cmd_tx = tray_cmd_tx.clone();
         let sni_cmd_tx = sni_cmd_tx.clone();
         let sni_evt_rx = sni_evt_rx.clone();
+        let position = position.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -202,9 +221,10 @@ pub fn attach(app: &gtk::Application) {
             let built = rects
                 .into_iter()
                 .enumerate()
-                .map(|(i, (x, y, w, _h))| {
+                .map(|(i, (x, y, w, h))| {
                     let rx = if i == 0 { rx_slot.take() } else { None };
-                    build_bar_window(&app, x, y, w, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx)
+                    let place = Placement { position: position.get(), mon_x: x, mon_y: y, mon_w: w, mon_h: h };
+                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx)
                 })
                 .collect();
             drop(rx_slot);
@@ -261,6 +281,45 @@ pub fn attach(app: &gtk::Application) {
                         tray.update(&order);
                     }
                 }
+            }
+        });
+    }
+
+    // Live re-dock: move the existing bars to the new edge in place, so the
+    // primary bar keeps its tray and SNI widgets.
+    Rc::new(move |new_position: PanelPosition| {
+        if position.replace(new_position) == new_position {
+            return;
+        }
+        for bw in windows.borrow().iter() {
+            redock_bar(bw, new_position);
+        }
+    })
+}
+
+/// Move one bar to `position`: update its placement, flip the app menu's
+/// popover direction, re-apply the dock hints and struts, and re-pin the
+/// geometry a few times while the window manager settles (see `connect_map`
+/// in [`build_bar_window`]).
+fn redock_bar(bw: &BarWindow, position: PanelPosition) {
+    let mut place = bw.place.get();
+    place.position = position;
+    bw.place.set(place);
+    appmenu::set_direction(&bw.menu, position);
+    if let Some(tray) = &bw.tray {
+        tray.set_origin(place.mon_x, place.bar_y());
+    }
+    window::make_panel_window(&bw.window, place);
+    window::pin_geometry(&bw.window, place);
+    window::raise_above(&bw.window);
+    for delay in [80_u64, 400, 1000] {
+        let win = bw.window.clone();
+        let cell = bw.place.clone();
+        let tray = bw.tray.clone();
+        gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+            window::pin_geometry(&win, cell.get());
+            if let Some(tray) = &tray {
+                tray.reposition_now();
             }
         });
     }
