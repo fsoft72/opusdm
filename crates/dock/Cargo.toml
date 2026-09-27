@@ -1,0 +1,19 @@
+[package]
+name = "opusdm-dock"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_dock"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-dock"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ui = { path = "../ui" }
+gtk4.workspace = true
+gdk4-x11.workspace = true
+x11rb.workspace = true

@@ -24,7 +24,7 @@ Out of scope: zoom, transparency, window list, running-app indicators, previews,
 
 - Window type `_NET_WM_WINDOW_TYPE_DOCK` with `_NET_WM_STATE_BELOW`.
 - **No strut**: the dock does NOT reserve screen space. Maximized windows cover it; it is visible only over the desktop.
-- Opaque background with rounded corners (CSS). No compositor required.
+- Opaque background with a thin border and square corners: rounded corners would need transparency or an X shape mask, so they are left out. No compositor required.
 - Centered along its edge inside the monitor work area.
 
 ## Position

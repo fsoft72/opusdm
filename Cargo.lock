@@ -1164,6 +1164,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-dock"
+version = "0.1.0"
+dependencies = [
+ "gdk4-x11",
+ "gtk4",
+ "opusdm-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "opusdm-fsops"
 version = "0.1.0"
 dependencies = [
