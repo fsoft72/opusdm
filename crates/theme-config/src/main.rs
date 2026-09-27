@@ -1,10 +1,11 @@
-//! `opusdm-theme`: edit the OpusDM theme - icon set, desktop background, and
-//! Lister colours - and apply it live to the running desktop.
+//! `opusdm-settings`: edit the OpusDM theme - icon set, desktop background,
+//! and Lister colours - and apply it live to the running desktop.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
 use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
+use opusdm_desktop_config::menu_ui::MenuSection;
 use opusdm_desktop_config::ui::{BackgroundSection, FolderSection, GridSection, PanelSection};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,7 +25,7 @@ pub(crate) mod test_support {
 }
 
 fn main() -> gtk::glib::ExitCode {
-    let app = gtk::Application::builder().application_id("org.opusdm.Theme").build();
+    let app = gtk::Application::builder().application_id("org.opusdm.Settings").build();
     app.connect_activate(build_window);
     app.run()
 }
@@ -36,7 +37,7 @@ fn build_window(app: &gtk::Application) {
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("OpusDM Theme")
+        .title("OpusDM Settings")
         .default_width(480)
         .default_height(680)
         .build();
@@ -114,6 +115,21 @@ fn build_window(app: &gtk::Application) {
         panel.connect_position_changed(move |position| dock_section.set_panel(position));
     }
 
+    // --- Menu tab: custom folders and apps for the application menu ---
+    // No outer ScrolledWindow here: MenuSection scrolls only its tree, so
+    // "Add Folder"/"Add App"/"Reset Default" stay fixed above it.
+    let menu_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    menu_page.set_margin_top(12);
+    menu_page.set_margin_bottom(12);
+    menu_page.set_margin_start(12);
+    menu_page.set_margin_end(12);
+
+    let menu_items = opusdm_ipc::menu::load_menu_config().map(|c| c.items).unwrap_or_default();
+    let menu_section = Rc::new(MenuSection::new(&window, menu_items));
+    menu_page.append(&menu_section.root);
+
+    notebook.append_page(&menu_page, Some(&gtk::Label::new(Some("Menu"))));
+
     // --- Lister tab: preset picker + colours ---
     let lister_page_outer = gtk::ScrolledWindow::new();
     let lister_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -173,6 +189,7 @@ fn build_window(app: &gtk::Application) {
         let panel = panel.clone();
         let dock_section = dock_section.clone();
         let dock_apps_section = dock_apps_section.clone();
+        let menu_section = menu_section.clone();
         let appearance_section = appearance_section.clone();
         let behavior_section = behavior_section.clone();
         let note = note.clone();
@@ -201,6 +218,11 @@ fn build_window(app: &gtk::Application) {
                 apps: dock_apps_section.apps(),
             }) {
                 opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
+            }
+            if let Err(e) = opusdm_ipc::menu::save_menu_config(&opusdm_ipc::MenuConfig {
+                items: menu_section.items(),
+            }) {
+                opusdm_ipc::err_log!("theme-config", "cannot write menu.json: {e}");
             }
             let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);
             match model::apply_full(&result.settings, &result.desktop) {

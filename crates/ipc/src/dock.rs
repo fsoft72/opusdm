@@ -1,6 +1,6 @@
 //! Dock launcher list: `~/.config/opusdm/dock.json`.
 //!
-//! Owned by `opusdm-dock` (drag and drop edits) and `opusdm-theme` (the Dock
+//! Owned by `opusdm-dock` (drag and drop edits) and `opusdm-settings` (the Dock
 //! tab); the dock watches the file, so either side can write it.
 
 use crate::settings::{config_dir, save_json};

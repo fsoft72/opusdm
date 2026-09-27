@@ -48,7 +48,7 @@ pub enum HubEvent {
     /// Desktop settings changed (from `opus-desktop-config`). Carries the
     /// sanitised value; the GTK side repaints and re-lays the desktop.
     DesktopSettingsChanged(DesktopSettings),
-    /// Theme changed (from `opusdm-theme`). Carries the new theme; the GTK
+    /// Theme changed (from `opusdm-settings`). Carries the new theme; the GTK
     /// side repaints the desktop background and re-renders desktop icons.
     ThemeChanged(opusdm_ipc::Theme),
 }

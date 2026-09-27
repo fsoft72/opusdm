@@ -483,6 +483,16 @@ impl IconField {
         self.inner.layout.entries.borrow().get(i).cloned()
     }
 
+    /// Translate a Fixed-space point - as reported to a `connect_context_menu`
+    /// or `connect_drop_uris` listener - into `ancestor`'s coordinate space.
+    /// Accounts for the field's placement and any scroll offset, so a caller
+    /// that lays its own menu on some enclosing widget (rather than a
+    /// `Popover` parented to this field) can still position it at the click.
+    /// `None` if `ancestor` is not actually an ancestor of this field.
+    pub fn translate_from_canvas(&self, ancestor: &impl IsA<gtk::Widget>, x: f64, y: f64) -> Option<(f64, f64)> {
+        self.inner.layout.fixed.translate_coordinates(ancestor, x, y)
+    }
+
     /// Parse a `text/uri-list` payload and fan it out to the drop listeners.
     pub(super) fn handle_drop_text(&self, text: &str, target: i32, shift: bool) {
         let paths = crate::dnd::uris_to_paths(text);

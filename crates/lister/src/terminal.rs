@@ -5,7 +5,6 @@ use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::glib;
-use gtk::prelude::*;
 use vte4::prelude::*;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};

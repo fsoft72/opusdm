@@ -1160,6 +1160,7 @@ dependencies = [
  "gtk4",
  "opusdm-dock",
  "opusdm-ipc",
+ "opusdm-ui",
  "serde_json",
  "tempfile",
 ]
@@ -1168,6 +1169,7 @@ dependencies = [
 name = "opusdm-dock"
 version = "0.1.0"
 dependencies = [
+ "freedesktop-desktop-entry",
  "gdk4-x11",
  "gtk4",
  "opusdm-ipc",
@@ -1256,9 +1258,9 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "dirs",
- "freedesktop-desktop-entry",
  "gdk4-x11",
  "gtk4",
+ "opusdm-dock",
  "opusdm-ipc",
  "opusdm-ui",
  "tempfile",

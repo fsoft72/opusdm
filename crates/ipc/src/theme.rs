@@ -1,5 +1,5 @@
 //! Icon set choice and the `Theme` bundle: icon set + colours + desktop
-//! background, edited together by `opusdm-theme` and applied to the running
+//! background, edited together by `opusdm-settings` and applied to the running
 //! desktop as part of an atomic `ToHub::SetSettings`.
 
 use crate::desktop::Background;
@@ -73,7 +73,7 @@ impl IconSetId {
 }
 
 /// A theme bundle: icon set, Lister colours, and desktop background. What
-/// `opusdm-theme` edits, as part of `Settings` sent to the hub via
+/// `opusdm-settings` edits, as part of `Settings` sent to the hub via
 /// `ToHub::SetSettings`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]

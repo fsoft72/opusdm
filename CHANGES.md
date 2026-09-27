@@ -1,5 +1,19 @@
 # Changes
 
+## 2026-09-27 (4)
+
+- Fix: build warning in `crates/lister/src/terminal.rs` - unused `gtk::prelude::*` import (VTE's own `vte4::prelude::*` already brings in what's used). `cargo build --all` and `cargo test --all` are now warning-free.
+
+## 2026-09-27 (3)
+
+- Menu tab polish: "Add Folder"/"Add App"/new "Reset Default" now sit above the tree in a fixed row (the tree scrolls in its own `gtk::ScrolledWindow`, so the buttons stay visible while scrolling). "Reset Default" asks for confirmation through the same `opusdm_ui::requester` shape as the Lister's delete confirmation, then discards the tree and reseeds it. Each app row now shows its resolved icon, not just its name.
+- Moved the default-menu generation (freedesktop category buckets, `.desktop` scanning) out of `opusdm-panel` into a new `opusdm_dock::menu_defaults` (`default_menu_items`), reused by both the panel's first-run seeding and the new "Reset Default" button - both crates already depended on `opusdm-dock` for app resolution, so this adds no new dependency.
+
+## 2026-09-27 (2)
+
+- Renamed the `opusdm-theme` app to `opusdm-settings` (binary name, `application_id`, window title, and every source comment naming it). The `opusdm-theme-config` crate/package name is unchanged.
+- Editable application menu: new `opusdm_ipc::menu` (`MenuConfig`/`MenuItem`, a tree of folders and apps persisted to `~/.config/opusdm/menu.json`; pure `add_app`/`add_folder`/`rename_folder`/`remove_at`/`move_up`/`move_down` operate on a `path: &[usize]`). `opusdm-panel`'s application menu now renders this tree (folders as nested expanders); on first run, or whenever the file is emptied, it is seeded from the installed apps grouped by freedesktop category (one folder per category) and the seed is written back to `menu.json`, mirroring how `opusdm-dock` seeds `dock.json`. New "Menu" tab in `opusdm-settings` (`crates/desktop-config/src/menu_ui.rs`, `MenuSection`): a tree editor with per-row move up/down/remove, per-folder add-app/add-folder/rename, "Add App..." (file chooser starting at the user's home) and "Add Folder..." for the root.
+
 ## 2026-09-27
 
 - Fix: the dock stayed on top of maximised windows despite `_NET_WM_STATE_BELOW`. Cause: it used `_NET_WM_WINDOW_TYPE_DOCK`, which by EWMH spec tells the window manager to always keep the window raised - the same type the panel uses, for the opposite reason. Switched to `_NET_WM_WINDOW_TYPE_NORMAL` (still undecorated, still no strut) plus `SKIP_TASKBAR`/`SKIP_PAGER` so it stays out of the taskbar and pager; `BELOW` now actually keeps it under normal windows.
@@ -191,3 +205,9 @@
 ## 2026-09-19
 
 - Fix: dropped the "OpusDM" placeholder label shown centered on the primary desktop window's background when no desktop directory resolves. `build_desktop_area` no longer takes a `show_placeholder` flag; the `.opusdm-desktop-label` CSS rule and its test assertion are gone too.
+
+## 2026-09-27
+
+- Feature: the desktop window now offers the core Lister file operations from its right-click menus (no toolbar exists there). Right-clicking a desktop icon shows a per-item menu - Open, Cut, Copy, Rename..., Delete... - built in `crates/hub/src/toolbar.rs::fill_icon_menu`; right-clicking empty desktop space adds Paste, New Folder..., New File... and Open Terminal Here to the existing background menu. New `crates/hub/src/desktop_ops.rs` holds the action logic (clipboard cut/copy/paste via the system clipboard, mirroring `lister::clip`; rename/delete/mkdir/newfile via `HubCmd::RunJob`; terminal launch via `$TERMINAL` or a common fallback list with `current_dir` set). `attach_desktop_menu` now dispatches through `IconField::connect_context_menu` (idx >= 0 = icon menu, idx < 0 = background menu) instead of a bare overlay-level click, using a new `IconField::translate_from_canvas` (`crates/iconview/src/field.rs`) to map its Fixed-space click coordinates into the overlay's coordinate space for positioning the hand-rolled menu box (the desktop window can't grab a `Popover`).
+- Verified (code review, not newly added): dragging files from a Lister onto the desktop already worked end-to-end - `IconField`'s drag source (Grid mode, used by Lister) and the desktop's `connect_drop_uris` -> `HubCmd::RunJob` (wired in `wire_primary_icon_field`) were already in place, sharing the same `text/uri-list` codec as Lister-to-Lister drops. No changes made there.
+- Known gap (pre-existing, not addressed here): a hub-originated job's overwrite conflicts (`Progress::Conflict`) are never routed anywhere, since `GTK_REQUESTER` is not a real Lister connection - a Copy/Move/Paste run from the desktop that hits an existing-file conflict currently has no prompt and will stall. Same limitation already existed for drag-drop-onto-desktop before this change.
