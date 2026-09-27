@@ -132,6 +132,9 @@ struct Widgets {
     /// Re-docks the panel bars to another screen edge. Set once the panel
     /// is attached, which happens after the `Widgets` are built.
     set_panel_position: RefCell<Option<Rc<dyn Fn(opusdm_ipc::PanelPosition)>>>,
+    /// Re-lays out the dock (edge, icon size, panel edge). Set once the dock
+    /// window exists.
+    set_dock_layout: RefCell<Option<Rc<dyn Fn(opusdm_dock::DockLayout)>>>,
 }
 
 impl Widgets {
@@ -164,6 +167,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         },
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
         set_panel_position: RefCell::new(None),
+        set_dock_layout: RefCell::new(None),
     });
 
     // Build one desktop window per monitor, primary first.
@@ -204,6 +208,10 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     // The panel dock lives in its own windows on the same application.
     let panel_position = widgets.desktop.settings.borrow().panel_position;
     *widgets.set_panel_position.borrow_mut() = Some(opusdm_panel::attach(app, panel_position));
+
+    // The launcher dock is one more window on the same application.
+    let dock_layout = dock_layout(&widgets.desktop.settings.borrow());
+    *widgets.set_dock_layout.borrow_mut() = Some(opusdm_dock::attach(app, dock_layout));
 
     // The panel reserves a top strut, which shrinks the work area and makes
     // GTK clamp the desktop windows a strip short. Re-assert the full-monitor
@@ -580,6 +588,17 @@ fn build_desktop_area(
     (overlay, field)
 }
 
+/// The dock layout `ds` asks for: its own edge and icon size, plus the
+/// panel's edge and height so it can keep clear of the panel.
+fn dock_layout(ds: &opusdm_ipc::DesktopSettings) -> opusdm_dock::DockLayout {
+    opusdm_dock::DockLayout {
+        position: ds.dock_position,
+        icon_size: ds.dock_icon_size,
+        panel: ds.panel_position,
+        panel_height: opusdm_panel::PANEL_HEIGHT,
+    }
+}
+
 /// Keep the icon area clear of the panel dock: the background box still
 /// fills the whole monitor, but the icons must stay inside the strip the
 /// panel's strut leaves free instead of sitting under it. The margin goes on
@@ -844,6 +863,9 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             }
             if let Some(set_position) = widgets.set_panel_position.borrow().as_ref() {
                 set_position(ds.panel_position);
+            }
+            if let Some(set_layout) = widgets.set_dock_layout.borrow().as_ref() {
+                set_layout(dock_layout(&ds));
             }
 
             let wanted =

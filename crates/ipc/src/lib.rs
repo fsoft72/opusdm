@@ -25,6 +25,7 @@ macro_rules! err_log {
 }
 
 pub mod desktop;
+pub mod dock;
 pub mod frame;
 pub mod inotify;
 pub mod proto;
@@ -35,9 +36,10 @@ pub mod themes;
 
 pub use desktop::{
     background_css, path_to_file_url, Background, BackgroundMode, DesktopSettings, ImageFit,
-    PanelPosition,
+    DockPosition, PanelPosition, DOCK_ICON_SIZE_RANGE,
     GRADIENT_ANGLE_MAX, GRID_GAP_RANGE, GRID_SPACING_RANGE, ICON_SIZE_RANGE,
 };
+pub use dock::DockConfig;
 pub use proto::{
     Appearance, Behavior, ColorSettings, FileMeta, ListerId, Op, Outcome, Resolution, Role,
     Settings, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,

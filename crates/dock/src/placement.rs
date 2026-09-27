@@ -1,18 +1,8 @@
 //! Pure geometry of the dock: which edge it sits on and the rectangle it
 //! occupies inside a monitor. No X11 or GTK here, so it is unit-testable.
 
-/// Screen edge the dock is docked to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DockEdge {
-    Top,
-    #[default]
-    Bottom,
-    Left,
-    Right,
-}
+use opusdm_ipc::{DockPosition, PanelPosition};
 
-/// Size of one launcher icon, in pixels.
-pub const ICON_SIZE: i32 = 48;
 /// Empty space around each icon, in pixels.
 pub const ITEM_PAD: i32 = 6;
 /// Empty space between the dock border and the first/last icon, in pixels.
@@ -20,40 +10,77 @@ pub const DOCK_PAD: i32 = 6;
 /// Gap between the dock and the monitor edge it is docked to, in pixels.
 pub const EDGE_MARGIN: i32 = 8;
 
-/// Where the dock sits: the edge and the monitor rect it belongs to.
+/// Where the dock sits: the requested edge, the icon size, the panel it must
+/// keep clear of, and the monitor rect it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placement {
-    pub edge: DockEdge,
+    pub position: DockPosition,
+    pub icon_size: i32,
+    pub panel: PanelPosition,
+    pub panel_height: i32,
     pub mon_x: i32,
     pub mon_y: i32,
     pub mon_w: i32,
     pub mon_h: i32,
 }
 
-/// Size of the dock window `(width, height)` for `count` icons on `edge`.
-pub fn dock_size(edge: DockEdge, count: usize) -> (i32, i32) {
-    let slot = ICON_SIZE + 2 * ITEM_PAD;
-    let length = count as i32 * slot + 2 * DOCK_PAD;
+/// Whether icons run left to right (top and bottom edges) rather than top to
+/// bottom.
+pub fn is_horizontal(position: DockPosition) -> bool {
+    matches!(position, DockPosition::Top | DockPosition::Bottom)
+}
+
+/// Size of one icon slot (icon plus padding), in pixels.
+pub fn slot_size(icon_size: i32) -> i32 {
+    icon_size + 2 * ITEM_PAD
+}
+
+/// Size of the dock window `(width, height)` for `count` icons. An empty dock
+/// keeps one slot of room so it can still be right-clicked and dropped on.
+pub fn dock_size(position: DockPosition, count: usize, icon_size: i32) -> (i32, i32) {
+    let slot = slot_size(icon_size);
+    let length = count.max(1) as i32 * slot + 2 * DOCK_PAD;
     let thickness = slot + 2 * DOCK_PAD;
-    match edge {
-        DockEdge::Top | DockEdge::Bottom => (length, thickness),
-        DockEdge::Left | DockEdge::Right => (thickness, length),
+    if is_horizontal(position) {
+        (length, thickness)
+    } else {
+        (thickness, length)
     }
 }
 
 impl Placement {
+    /// The edge the dock really uses: never the panel's edge.
+    pub fn position(&self) -> DockPosition {
+        self.position.avoiding(self.panel)
+    }
+
     /// Root-relative rectangle `(x, y, w, h)` of the dock for `count` icons:
-    /// centered along its edge, `EDGE_MARGIN` away from it.
+    /// centered along its edge, `EDGE_MARGIN` away from it. A left or right
+    /// dock is centered in the strip the panel leaves free.
     pub fn rect(&self, count: usize) -> (i32, i32, i32, i32) {
-        let (w, h) = dock_size(self.edge, count);
+        let position = self.position();
+        let (w, h) = dock_size(position, count, self.icon_size);
         let center_x = self.mon_x + (self.mon_w - w) / 2;
-        let center_y = self.mon_y + (self.mon_h - h) / 2;
-        match self.edge {
-            DockEdge::Top => (center_x, self.mon_y + EDGE_MARGIN, w, h),
-            DockEdge::Bottom => (center_x, self.mon_y + self.mon_h - h - EDGE_MARGIN, w, h),
-            DockEdge::Left => (self.mon_x + EDGE_MARGIN, center_y, w, h),
-            DockEdge::Right => (self.mon_x + self.mon_w - w - EDGE_MARGIN, center_y, w, h),
+        let top_band = if self.panel == PanelPosition::Top { self.panel_height } else { 0 };
+        let bottom_band = if self.panel == PanelPosition::Bottom { self.panel_height } else { 0 };
+        let free_top = self.mon_y + top_band;
+        let free_h = self.mon_h - top_band - bottom_band;
+        let center_y = free_top + (free_h - h) / 2;
+        match position {
+            DockPosition::Top => (center_x, self.mon_y + EDGE_MARGIN, w, h),
+            DockPosition::Bottom => (center_x, self.mon_y + self.mon_h - h - EDGE_MARGIN, w, h),
+            DockPosition::Left => (self.mon_x + EDGE_MARGIN, center_y, w, h),
+            DockPosition::Right => (self.mon_x + self.mon_w - w - EDGE_MARGIN, center_y, w, h),
         }
+    }
+
+    /// Index at which a drop at window coordinates `(x, y)` inserts, for a
+    /// dock holding `count` icons: the slot boundary nearest the pointer.
+    pub fn insert_index(&self, count: usize, x: f64, y: f64) -> usize {
+        let pos = if is_horizontal(self.position()) { x } else { y };
+        let slot = slot_size(self.icon_size) as f64;
+        let idx = ((pos - DOCK_PAD as f64) / slot + 0.5).floor();
+        idx.clamp(0.0, count as f64) as usize
     }
 }
 
@@ -61,35 +88,69 @@ impl Placement {
 mod tests {
     use super::*;
 
-    fn place(edge: DockEdge) -> Placement {
-        Placement { edge, mon_x: 100, mon_y: 50, mon_w: 1920, mon_h: 1080 }
+    fn place(position: DockPosition, panel: PanelPosition) -> Placement {
+        Placement {
+            position,
+            icon_size: 48,
+            panel,
+            panel_height: 40,
+            mon_x: 100,
+            mon_y: 50,
+            mon_w: 1920,
+            mon_h: 1080,
+        }
     }
 
     #[test]
     fn size_swaps_axes_for_vertical_edges() {
-        let (w, h) = dock_size(DockEdge::Bottom, 3);
-        assert_eq!(dock_size(DockEdge::Left, 3), (h, w));
+        let (w, h) = dock_size(DockPosition::Bottom, 3, 48);
+        assert_eq!(dock_size(DockPosition::Left, 3, 48), (h, w));
         assert_eq!((w, h), (3 * 60 + 12, 60 + 12));
     }
 
     #[test]
+    fn empty_dock_keeps_one_slot() {
+        assert_eq!(dock_size(DockPosition::Bottom, 0, 48), dock_size(DockPosition::Bottom, 1, 48));
+    }
+
+    #[test]
     fn bottom_is_centered_horizontally_above_the_edge() {
-        let (x, y, w, h) = place(DockEdge::Bottom).rect(3);
+        let (x, y, w, h) = place(DockPosition::Bottom, PanelPosition::Top).rect(3);
         assert_eq!(x, 100 + (1920 - w) / 2);
         assert_eq!(y, 50 + 1080 - h - EDGE_MARGIN);
     }
 
     #[test]
     fn top_hugs_the_top_edge() {
-        let (_, y, _, _) = place(DockEdge::Top).rect(3);
+        let (_, y, _, _) = place(DockPosition::Top, PanelPosition::Bottom).rect(3);
         assert_eq!(y, 50 + EDGE_MARGIN);
     }
 
     #[test]
-    fn left_and_right_are_centered_vertically() {
-        let (x, y, w, h) = place(DockEdge::Left).rect(3);
-        assert_eq!((x, y), (100 + EDGE_MARGIN, 50 + (1080 - h) / 2));
-        let (x, _, _, _) = place(DockEdge::Right).rect(3);
+    fn dock_on_the_panel_edge_jumps_to_the_opposite_one() {
+        let p = place(DockPosition::Bottom, PanelPosition::Bottom);
+        assert_eq!(p.position(), DockPosition::Top);
+        assert_eq!(p.rect(3).1, 50 + EDGE_MARGIN);
+    }
+
+    #[test]
+    fn side_docks_are_centered_in_the_strip_the_panel_leaves() {
+        let (x, y, w, h) = place(DockPosition::Left, PanelPosition::Top).rect(3);
+        assert_eq!(x, 100 + EDGE_MARGIN);
+        assert_eq!(y, 50 + 40 + (1080 - 40 - h) / 2);
+        let (x, y, ..) = place(DockPosition::Right, PanelPosition::Bottom).rect(3);
         assert_eq!(x, 100 + 1920 - w - EDGE_MARGIN);
+        assert_eq!(y, 50 + (1080 - 40 - h) / 2);
+    }
+
+    #[test]
+    fn insert_index_snaps_to_the_nearest_boundary() {
+        let p = place(DockPosition::Bottom, PanelPosition::Top);
+        assert_eq!(p.insert_index(3, 0.0, 0.0), 0);
+        assert_eq!(p.insert_index(3, (DOCK_PAD + 20) as f64, 0.0), 0);
+        assert_eq!(p.insert_index(3, (DOCK_PAD + 40) as f64, 0.0), 1);
+        assert_eq!(p.insert_index(3, 5000.0, 0.0), 3);
+        let v = place(DockPosition::Left, PanelPosition::Top);
+        assert_eq!(v.insert_index(3, 5000.0, (DOCK_PAD + 70) as f64), 1);
     }
 }

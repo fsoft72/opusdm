@@ -161,6 +161,7 @@ fn build_window(app: &gtk::Application) {
                 grid_gap: grid.grid_gap(),
                 desktop_dir: folder.override_dir(),
                 panel_position: panel.position(),
+                ..desktop_data.clone()
             }
             .sanitized();
             let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);

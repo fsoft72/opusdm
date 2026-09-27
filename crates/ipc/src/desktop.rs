@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 /// [`DesktopSettings::sanitized`] so a hand-edited desktop.json cannot make an
 /// icon vanish or fill the screen.
 pub const ICON_SIZE_RANGE: (i32, i32) = (24, 256);
+/// Accepted range for [`DesktopSettings::dock_icon_size`], in pixels.
+pub const DOCK_ICON_SIZE_RANGE: (i32, i32) = (16, 128);
 
 /// Lower/upper bound for [`DesktopSettings::grid_spacing`], in pixels. The low
 /// end is below the smallest icon so a tight grid can pack icons closer than
@@ -31,6 +33,34 @@ pub enum PanelPosition {
     Top,
     /// Docked along the bottom edge of every monitor.
     Bottom,
+}
+
+/// Which screen edge the dock (`opusdm-dock`) is docked to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockPosition {
+    /// Docked along the bottom edge of the primary monitor.
+    #[default]
+    Bottom,
+    /// Docked along the top edge of the primary monitor.
+    Top,
+    /// Docked along the left edge of the primary monitor.
+    Left,
+    /// Docked along the right edge of the primary monitor.
+    Right,
+}
+
+impl DockPosition {
+    /// The edge the dock really uses: the dock and the panel never share an
+    /// edge, so when `self` is the panel's edge the dock jumps to the
+    /// opposite one.
+    pub fn avoiding(self, panel: PanelPosition) -> DockPosition {
+        match (self, panel) {
+            (DockPosition::Top, PanelPosition::Top) => DockPosition::Bottom,
+            (DockPosition::Bottom, PanelPosition::Bottom) => DockPosition::Top,
+            (other, _) => other,
+        }
+    }
 }
 
 /// Which kind of background the desktop window paints.
@@ -117,6 +147,10 @@ pub struct DesktopSettings {
     pub desktop_dir: Option<PathBuf>,
     /// Screen edge the panel is docked to.
     pub panel_position: PanelPosition,
+    /// Screen edge the dock is docked to (see [`DockPosition::avoiding`]).
+    pub dock_position: DockPosition,
+    /// Dock launcher icon size in pixels.
+    pub dock_icon_size: i32,
 }
 
 impl Default for DesktopSettings {
@@ -127,6 +161,8 @@ impl Default for DesktopSettings {
             grid_gap: 4,
             desktop_dir: None,
             panel_position: PanelPosition::Top,
+            dock_position: DockPosition::Bottom,
+            dock_icon_size: 48,
         }
     }
 }
@@ -141,6 +177,8 @@ impl DesktopSettings {
         self.grid_spacing = self.grid_spacing.clamp(lo, hi);
         let (lo, hi) = GRID_GAP_RANGE;
         self.grid_gap = self.grid_gap.clamp(lo, hi);
+        let (lo, hi) = DOCK_ICON_SIZE_RANGE;
+        self.dock_icon_size = self.dock_icon_size.clamp(lo, hi);
         self
     }
 }
@@ -307,6 +345,38 @@ mod tests {
         // An older desktop.json without the field keeps the panel on top.
         let old: DesktopSettings = serde_json::from_str("{\"icon_size\":64}").unwrap();
         assert_eq!(old.panel_position, PanelPosition::Top);
+    }
+
+    #[test]
+    fn dock_defaults_and_roundtrips() {
+        let d = DesktopSettings::default();
+        assert_eq!((d.dock_position, d.dock_icon_size), (DockPosition::Bottom, 48));
+        let d = DesktopSettings { dock_position: DockPosition::Left, ..Default::default() };
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("\"left\""));
+        assert_eq!(serde_json::from_str::<DesktopSettings>(&json).unwrap(), d);
+        // An older desktop.json without the fields keeps the defaults.
+        let old: DesktopSettings = serde_json::from_str("{\"icon_size\":64}").unwrap();
+        assert_eq!(old.dock_position, DockPosition::Bottom);
+    }
+
+    #[test]
+    fn dock_icon_size_is_clamped() {
+        let d = DesktopSettings { dock_icon_size: 999, ..Default::default() }.sanitized();
+        assert_eq!(d.dock_icon_size, DOCK_ICON_SIZE_RANGE.1);
+        let d = DesktopSettings { dock_icon_size: 1, ..Default::default() }.sanitized();
+        assert_eq!(d.dock_icon_size, DOCK_ICON_SIZE_RANGE.0);
+    }
+
+    #[test]
+    fn dock_never_shares_the_panel_edge() {
+        use DockPosition::*;
+        assert_eq!(Top.avoiding(PanelPosition::Top), Bottom);
+        assert_eq!(Bottom.avoiding(PanelPosition::Bottom), Top);
+        assert_eq!(Bottom.avoiding(PanelPosition::Top), Bottom);
+        assert_eq!(Top.avoiding(PanelPosition::Bottom), Top);
+        assert_eq!(Left.avoiding(PanelPosition::Top), Left);
+        assert_eq!(Right.avoiding(PanelPosition::Bottom), Right);
     }
 
     #[test]

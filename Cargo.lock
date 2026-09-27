@@ -1169,7 +1169,9 @@ version = "0.1.0"
 dependencies = [
  "gdk4-x11",
  "gtk4",
+ "opusdm-ipc",
  "opusdm-ui",
+ "tempfile",
  "x11rb",
 ]
 
@@ -1194,6 +1196,7 @@ dependencies = [
  "gdk4-x11",
  "gtk4",
  "libc",
+ "opusdm-dock",
  "opusdm-fsops",
  "opusdm-iconview",
  "opusdm-ipc",
