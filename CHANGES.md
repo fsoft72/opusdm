@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-09-27 (3)
+
+- Menu tab polish: "Add Folder"/"Add App"/new "Reset Default" now sit above the tree in a fixed row (the tree scrolls in its own `gtk::ScrolledWindow`, so the buttons stay visible while scrolling). "Reset Default" asks for confirmation through the same `opusdm_ui::requester` shape as the Lister's delete confirmation, then discards the tree and reseeds it. Each app row now shows its resolved icon, not just its name.
+- Moved the default-menu generation (freedesktop category buckets, `.desktop` scanning) out of `opusdm-panel` into a new `opusdm_dock::menu_defaults` (`default_menu_items`), reused by both the panel's first-run seeding and the new "Reset Default" button - both crates already depended on `opusdm-dock` for app resolution, so this adds no new dependency.
+
 ## 2026-09-27 (2)
 
 - Renamed the `opusdm-theme` app to `opusdm-settings` (binary name, `application_id`, window title, and every source comment naming it). The `opusdm-theme-config` crate/package name is unchanged.

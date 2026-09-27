@@ -15,6 +15,7 @@ use std::time::Duration;
 
 pub mod apps;
 pub mod list;
+pub mod menu_defaults;
 mod placement;
 mod window;
 

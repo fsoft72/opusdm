@@ -1,8 +1,9 @@
 //! The application menu: a `gtk::MenuButton` whose popover renders
 //! `menu.json`'s tree of folders and apps, plus Settings / About / Logout /
-//! Shutdown. `menu.json` is seeded with the installed `.desktop` entries
-//! grouped by freedesktop category on first run (or whenever it is
-//! emptied), then edited through the "Menu" tab in `opusdm-settings`.
+//! Shutdown. `menu.json` is seeded (see `opusdm_dock::menu_defaults`) with
+//! the installed apps grouped by freedesktop category on first run (or
+//! whenever it is emptied), then edited through the "Menu" tab in
+//! `opusdm-settings`.
 
 use gtk4 as gtk;
 use gtk::gdk;
@@ -12,128 +13,8 @@ use opusdm_dock::apps;
 use opusdm_ipc::{MenuItem, PanelPosition};
 use std::process::Command;
 
-use freedesktop_desktop_entry::{self as fde, DesktopEntry};
-
 // Embedded at compile-time so the binary has zero runtime file dependencies.
 const BALL_PNG: &[u8] = include_bytes!("../../../assets/ball.png");
-
-
-/// The fixed set of top-level menu buckets, in display order.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Bucket {
-    Development,
-    Graphics,
-    Internet,
-    Multimedia,
-    Office,
-    Games,
-    System,
-    Settings,
-    Utility,
-    Other,
-}
-
-impl Bucket {
-    /// Every bucket, in the order they appear in the menu.
-    pub const ORDER: [Bucket; 10] = [
-        Bucket::Development,
-        Bucket::Graphics,
-        Bucket::Internet,
-        Bucket::Multimedia,
-        Bucket::Office,
-        Bucket::Games,
-        Bucket::System,
-        Bucket::Settings,
-        Bucket::Utility,
-        Bucket::Other,
-    ];
-
-    /// Human label shown on the expander.
-    pub fn label(self) -> &'static str {
-        match self {
-            Bucket::Development => "Development",
-            Bucket::Graphics => "Graphics",
-            Bucket::Internet => "Internet",
-            Bucket::Multimedia => "Multimedia",
-            Bucket::Office => "Office",
-            Bucket::Games => "Games",
-            Bucket::System => "System",
-            Bucket::Settings => "Settings",
-            Bucket::Utility => "Utility",
-            Bucket::Other => "Other",
-        }
-    }
-}
-
-/// Map a `.desktop` `Categories` list to a single bucket. The first category
-/// that maps wins; anything unrecognised falls through to `Other`.
-pub fn category_bucket(categories: &[&str]) -> Bucket {
-    for c in categories {
-        match *c {
-            "Development" => return Bucket::Development,
-            "Graphics" => return Bucket::Graphics,
-            "Network" | "WebBrowser" | "Email" | "InstantMessaging" => return Bucket::Internet,
-            "AudioVideo" | "Audio" | "Video" | "Player" | "Music" => return Bucket::Multimedia,
-            "Office" | "Spreadsheet" | "WordProcessor" | "Presentation" => return Bucket::Office,
-            "Game" => return Bucket::Games,
-            "Settings" => return Bucket::Settings,
-            "System" => return Bucket::System,
-            "Utility" | "Accessories" => return Bucket::Utility,
-            _ => {}
-        }
-    }
-    Bucket::Other
-}
-
-/// Whether an entry belongs in the menu: an application, not hidden, not
-/// `NoDisplay`, with something to launch.
-pub fn entry_visible(entry: &DesktopEntry) -> bool {
-    if entry.type_().unwrap_or("Application") != "Application" {
-        return false;
-    }
-    if entry.no_display() {
-        return false;
-    }
-    if entry.desktop_entry("Hidden") == Some("true") {
-        return false;
-    }
-    entry.exec().is_some()
-}
-
-/// One launchable application.
-struct App {
-    name: String,
-    path: std::path::PathBuf,
-}
-
-/// Read and filter the installed applications, grouped into buckets in
-/// [`Bucket::ORDER`], each sorted by name (case-insensitive).
-fn load_apps() -> Vec<(Bucket, Vec<App>)> {
-    let locales = fde::get_languages_from_env();
-    let mut by_bucket: std::collections::HashMap<Bucket, Vec<App>> = std::collections::HashMap::new();
-
-    for entry in fde::desktop_entries(&locales) {
-        if !entry_visible(&entry) {
-            continue;
-        }
-        let cats = entry.categories().unwrap_or_default();
-        let bucket = category_bucket(&cats);
-        let name = entry
-            .name(&locales)
-            .map(|c| c.into_owned())
-            .unwrap_or_else(|| entry.id().to_string());
-        by_bucket.entry(bucket).or_default().push(App { name, path: entry.path.clone() });
-    }
-
-    let mut out = Vec::new();
-    for bucket in Bucket::ORDER {
-        if let Some(mut apps) = by_bucket.remove(&bucket) {
-            apps.sort_by_key(|a| a.name.to_lowercase());
-            out.push((bucket, apps));
-        }
-    }
-    out
-}
 
 /// A flat, left-aligned menu row with an icon.
 fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
@@ -184,24 +65,6 @@ fn custom_app_row(id: &str, popover: &gtk::Popover) -> Option<gtk::Button> {
         apps::launch(&info);
     });
     Some(btn)
-}
-
-/// The default custom menu: one folder per non-empty category, holding the
-/// ids of its installed apps - what `menu.json` is seeded with on first run
-/// (or whenever it is emptied), so `opusdm-settings`'s Menu tab always has
-/// something to edit rather than a blank slate.
-fn default_menu_items() -> Vec<MenuItem> {
-    load_apps()
-        .into_iter()
-        .map(|(bucket, entries)| {
-            let items = entries
-                .iter()
-                .filter_map(|app| apps::id_for_desktop_file(&app.path))
-                .map(|id| MenuItem::App { id })
-                .collect();
-            MenuItem::Folder { name: bucket.label().to_string(), items }
-        })
-        .collect()
 }
 
 /// Render one level of the custom menu tree into `into`: apps as rows,
@@ -259,7 +122,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
     let cfg = match opusdm_ipc::menu::load_menu_config() {
         Some(cfg) if !cfg.items.is_empty() => cfg,
         _ => {
-            let cfg = opusdm_ipc::MenuConfig { items: default_menu_items() };
+            let cfg = opusdm_ipc::MenuConfig { items: opusdm_dock::menu_defaults::default_menu_items() };
             if let Err(e) = opusdm_ipc::menu::save_menu_config(&cfg) {
                 opusdm_ipc::err_log!("panel", "cannot write menu.json: {e}");
             }
@@ -369,57 +232,4 @@ fn show_about(parent: &gtk::ApplicationWindow) {
         &[("OK", ())],
         |_| {},
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use freedesktop_desktop_entry::DesktopEntry;
-
-    fn entry(pairs: &[(&str, &str)]) -> DesktopEntry {
-        let mut e = DesktopEntry::from_appid("test.app".to_string());
-        for (k, v) in pairs {
-            e.add_desktop_entry(k.to_string(), v.to_string());
-        }
-        e
-    }
-
-    #[test]
-    fn category_bucket_takes_the_first_recognised() {
-        assert_eq!(category_bucket(&["X-Foo", "Network", "GTK"]), Bucket::Internet);
-        assert_eq!(category_bucket(&["Development", "IDE"]), Bucket::Development);
-        assert_eq!(category_bucket(&["AudioVideo"]), Bucket::Multimedia);
-    }
-
-    #[test]
-    fn category_bucket_unknown_is_other() {
-        assert_eq!(category_bucket(&["X-Nonsense"]), Bucket::Other);
-        assert_eq!(category_bucket(&[]), Bucket::Other);
-    }
-
-    #[test]
-    fn entry_visible_filters_nodisplay_and_hidden() {
-        assert!(entry_visible(&entry(&[("Type", "Application"), ("Exec", "foo")])));
-        assert!(!entry_visible(&entry(&[
-            ("Type", "Application"),
-            ("Exec", "foo"),
-            ("NoDisplay", "true"),
-        ])));
-        assert!(!entry_visible(&entry(&[
-            ("Type", "Application"),
-            ("Exec", "foo"),
-            ("Hidden", "true"),
-        ])));
-    }
-
-    #[test]
-    fn entry_visible_needs_an_application_with_exec() {
-        assert!(!entry_visible(&entry(&[("Type", "Link"), ("Exec", "foo")])));
-        assert!(!entry_visible(&entry(&[("Type", "Application")])));
-    }
-
-    #[test]
-    fn bucket_order_covers_every_variant_once() {
-        assert_eq!(Bucket::ORDER.len(), 10);
-    }
 }

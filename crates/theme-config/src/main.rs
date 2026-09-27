@@ -116,7 +116,8 @@ fn build_window(app: &gtk::Application) {
     }
 
     // --- Menu tab: custom folders and apps for the application menu ---
-    let menu_page_outer = gtk::ScrolledWindow::new();
+    // No outer ScrolledWindow here: MenuSection scrolls only its tree, so
+    // "Add Folder"/"Add App"/"Reset Default" stay fixed above it.
     let menu_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
     menu_page.set_margin_top(12);
     menu_page.set_margin_bottom(12);
@@ -127,8 +128,7 @@ fn build_window(app: &gtk::Application) {
     let menu_section = Rc::new(MenuSection::new(&window, menu_items));
     menu_page.append(&menu_section.root);
 
-    menu_page_outer.set_child(Some(&menu_page));
-    notebook.append_page(&menu_page_outer, Some(&gtk::Label::new(Some("Menu"))));
+    notebook.append_page(&menu_page, Some(&gtk::Label::new(Some("Menu"))));
 
     // --- Lister tab: preset picker + colours ---
     let lister_page_outer = gtk::ScrolledWindow::new();

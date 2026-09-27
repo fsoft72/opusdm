@@ -18,6 +18,7 @@ opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
 gdk4-x11.workspace = true
 x11rb.workspace = true
+freedesktop-desktop-entry.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,7 +1,6 @@
 //! The Menu tab: editing the custom application menu (`menu.json`) - a tree
-//! of folders and apps, edited with per-row buttons. Empty (the default)
-//! means "no custom menu yet"; the panel then keeps showing its
-//! auto-generated, category-based menu.
+//! of folders and apps, edited with per-row buttons. "Add Folder"/"Add App"
+//! and "Reset Default" stay fixed above the tree, which scrolls on its own.
 
 use gtk4 as gtk;
 use gtk::gio;
@@ -34,29 +33,28 @@ struct MenuInner {
 
 impl MenuSection {
     /// Build the section seeded with the current menu tree; `window` parents
-    /// the "Add App..." file dialog and the folder-name requester.
+    /// the "Add App..." file dialog and the folder-name/reset requesters.
     pub fn new(window: &impl IsA<gtk::Window>, items: Vec<MenuItem>) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        root.set_vexpand(true);
         root.append(&heading("MENU"));
 
-        let hint = gtk::Label::new(Some(
-            "Empty: the menu shows every installed app, grouped by category. \
-             Add a folder or an app below to build a custom menu instead.",
-        ));
-        hint.set_xalign(0.0);
-        hint.set_wrap(true);
-        hint.add_css_class("dim-label");
-        root.append(&hint);
-
-        let tree = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        root.append(&tree);
-
+        // Fixed above the tree: always visible, even while it scrolls.
         let add_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let add_folder = gtk::Button::with_label("Add Folder...");
         let add_app = gtk::Button::with_label("Add App...");
+        let reset = gtk::Button::with_label("Reset Default");
         add_row.append(&add_folder);
         add_row.append(&add_app);
+        add_row.append(&reset);
         root.append(&add_row);
+
+        let tree = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_vexpand(true);
+        scroller.set_child(Some(&tree));
+        root.append(&scroller);
 
         let inner = Rc::new(MenuInner {
             items: RefCell::new(items),
@@ -72,6 +70,10 @@ impl MenuSection {
         {
             let inner = inner.clone();
             add_app.connect_clicked(move |_| inner.choose_app(&[]));
+        }
+        {
+            let inner = inner.clone();
+            reset.connect_clicked(move |_| inner.prompt_reset_default());
         }
 
         Self { root, inner }
@@ -111,10 +113,19 @@ impl MenuInner {
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         match item {
             MenuItem::App { id } => {
-                let name = apps::resolve(&[id.clone()])
-                    .first()
+                let resolved = apps::resolve(&[id.clone()]);
+                let entry = resolved.first();
+                let name = entry
                     .map(|e| e.info.name().to_string())
                     .unwrap_or_else(|| format!("{id} (not installed)"));
+
+                let icon_image = match entry.and_then(|e| e.info.icon()) {
+                    Some(icon) => gtk::Image::from_gicon(&icon),
+                    None => gtk::Image::from_icon_name("application-x-executable"),
+                };
+                icon_image.set_pixel_size(18);
+                header.append(&icon_image);
+
                 let label = gtk::Label::new(Some(&name));
                 label.set_xalign(0.0);
                 label.set_hexpand(true);
@@ -226,6 +237,26 @@ impl MenuInner {
                     return;
                 }
                 menu::rename_folder(&mut this.items.borrow_mut(), &path, text.trim());
+                this.rebuild();
+            },
+        );
+    }
+
+    /// Ask for confirmation, then discard the tree and reseed it from the
+    /// installed apps grouped by category.
+    fn prompt_reset_default(self: &Rc<Self>) {
+        let this = self.clone();
+        opusdm_ui::requester(
+            &self.window,
+            "Request",
+            "Reset the menu to defaults?",
+            Some("This discards every custom folder and app you added."),
+            &[("Reset", true), ("Cancel", false)],
+            move |confirmed| {
+                if !confirmed {
+                    return;
+                }
+                *this.items.borrow_mut() = opusdm_dock::menu_defaults::default_menu_items();
                 this.rebuild();
             },
         );
