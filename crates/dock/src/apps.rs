@@ -34,13 +34,33 @@ pub struct AppEntry {
     pub info: gio::DesktopAppInfo,
 }
 
+/// Look up one pinned id: a desktop file id (`firefox.desktop`) or, for a
+/// `.desktop` file outside the applications directories, its absolute path.
+fn lookup(id: &str) -> Option<gio::DesktopAppInfo> {
+    if id.starts_with('/') {
+        gio::DesktopAppInfo::from_filename(id)
+    } else {
+        gio::DesktopAppInfo::new(id)
+    }
+}
+
 /// Look up each of `ids`, dropping the ones that are not installed.
 pub fn resolve(ids: &[String]) -> Vec<AppEntry> {
     ids.iter()
-        .filter_map(|id| {
-            gio::DesktopAppInfo::new(id).map(|info| AppEntry { id: id.clone(), info })
-        })
+        .filter_map(|id| lookup(id).map(|info| AppEntry { id: id.clone(), info }))
         .collect()
+}
+
+/// The id to pin for the `.desktop` file at `path`: its desktop file id when
+/// the system knows it, else the absolute path. `None` when `path` is not a
+/// launchable desktop entry.
+pub fn id_for_desktop_file(path: &std::path::Path) -> Option<String> {
+    if path.extension()? != "desktop" {
+        return None;
+    }
+    let info = gio::DesktopAppInfo::from_filename(path)?;
+    let by_id = info.id().map(|id| id.to_string()).filter(|id| gio::DesktopAppInfo::new(id).is_some());
+    by_id.or_else(|| path.to_str().map(str::to_string))
 }
 
 /// Ids of the entries in `entries`, in order.
@@ -81,4 +101,11 @@ pub fn launch(info: &gio::DesktopAppInfo) {
     if let Err(e) = info.launch(&[], ctx) {
         opusdm_ipc::err_log!("dock", "cannot launch {}: {e}", info.name());
     }
+}
+
+/// Launch the desktop action `action` (`Actions=` entry) of `info`.
+pub fn launch_action(info: &gio::DesktopAppInfo, action: &str) {
+    let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
+    let ctx = ctx.as_ref().map(|c| c.upcast_ref::<gio::AppLaunchContext>());
+    info.launch_action(action, ctx);
 }

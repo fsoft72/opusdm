@@ -5,6 +5,7 @@
 //! `docs/dock.md`.
 
 use gtk4 as gtk;
+use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
 use opusdm_ipc::{DockConfig, DockPosition, PanelPosition};
@@ -13,6 +14,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 mod apps;
+mod list;
 mod placement;
 mod window;
 
@@ -102,6 +104,7 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
         });
     }
 
+    dock.install_window_controllers();
     dock.rebuild_items();
     dock.watch_config();
     dock.watch_monitors();
@@ -204,7 +207,51 @@ impl Dock {
         let info = entry.info.clone();
         click.connect_released(move |_, _, _, _| dock.launch(&info));
         image.add_controller(click);
+
+        let menu_click = gtk::GestureClick::new();
+        menu_click.set_button(gdk::BUTTON_SECONDARY);
+        let dock = self.clone();
+        let menu_entry = entry.clone();
+        let target = image.clone();
+        menu_click.connect_pressed(move |gesture, _, _, _| {
+            // Claim the click so the dock background menu does not open too.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            dock.show_item_menu(&target, &menu_entry);
+        });
+        image.add_controller(menu_click);
+
+        self.install_drag_source(&image, &entry.id);
         image
+    }
+
+    /// Make `image` draggable: within the dock it reorders, and dropping it
+    /// on nothing removes the app.
+    fn install_drag_source(self: &Rc<Self>, image: &gtk::Image, id: &str) {
+        let source = gtk::DragSource::new();
+        source.set_actions(gdk::DragAction::MOVE);
+        let payload = id.to_string();
+        source.connect_prepare(move |_, _, _| {
+            Some(gdk::ContentProvider::for_value(&payload.to_value()))
+        });
+        let dragged = image.clone();
+        source.connect_drag_begin(move |src, _| {
+            let paintable = gtk::WidgetPaintable::new(Some(&dragged));
+            src.set_icon(Some(&paintable), 0, 0);
+        });
+        let dock = self.clone();
+        let removed = id.to_string();
+        source.connect_drag_cancel(move |_, _, reason| {
+            if reason != gdk::DragCancelReason::NoTarget {
+                return false;
+            }
+            // Rebuilding the row destroys the drag source; do it once the
+            // drag machinery has finished with it.
+            let dock = dock.clone();
+            let removed = removed.clone();
+            gtk::glib::idle_add_local_once(move || dock.remove_app(&removed));
+            true
+        });
+        image.add_controller(source);
     }
 
     /// Launch `info` and show the busy cursor for a moment.
@@ -214,6 +261,167 @@ impl Dock {
         let window = self.window.clone();
         gtk::glib::timeout_add_local_once(Duration::from_millis(BUSY_CURSOR_MS), move || {
             window.set_cursor(None);
+        });
+    }
+
+    /// Drop targets (reorder, add a `.desktop` file) and the background menu.
+    fn install_window_controllers(self: &Rc<Self>) {
+        // Reorder: an app id dragged from one of the dock's own icons. Only
+        // MOVE is offered, so nothing outside the dock can be affected.
+        let reorder = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+        let dock = self.clone();
+        reorder.connect_drop(move |_, value, x, y| {
+            let Ok(id) = value.get::<String>() else { return false };
+            let index = dock.placement().insert_index(dock.state.borrow().entries.len(), x, y);
+            let mut ids = apps::ids(&dock.state.borrow().entries);
+            list::insert_at(&mut ids, &id, index);
+            dock.commit(ids);
+            true
+        });
+        self.window.add_controller(reorder);
+
+        // Add: `.desktop` files dragged in from a file manager or the
+        // desktop. Only COPY is offered, so the source never deletes them.
+        let add = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        let dock = self.clone();
+        add.connect_drop(move |_, value, x, y| {
+            let Ok(files) = value.get::<gdk::FileList>() else { return false };
+            let new_ids: Vec<String> = files
+                .files()
+                .iter()
+                .filter_map(|f| f.path())
+                .filter_map(|p| apps::id_for_desktop_file(&p))
+                .collect();
+            if new_ids.is_empty() {
+                return false;
+            }
+            let mut index = dock.placement().insert_index(dock.state.borrow().entries.len(), x, y);
+            let mut ids = apps::ids(&dock.state.borrow().entries);
+            for id in &new_ids {
+                list::insert_at(&mut ids, id, index);
+                index += 1;
+            }
+            dock.commit(ids);
+            true
+        });
+        self.window.add_controller(add);
+
+        let menu_click = gtk::GestureClick::new();
+        menu_click.set_button(gdk::BUTTON_SECONDARY);
+        let dock = self.clone();
+        menu_click.connect_pressed(move |_, _, x, y| dock.show_background_menu(x, y));
+        self.window.add_controller(menu_click);
+    }
+
+    /// Make `ids` the pinned list and persist it. The file monitor's echo of
+    /// this write is a no-op (see [`Dock::set_app_ids`]).
+    fn commit(self: &Rc<Self>, ids: Vec<String>) {
+        self.set_app_ids(&ids);
+        let apps = apps::ids(&self.state.borrow().entries);
+        if let Err(e) = opusdm_ipc::dock::save_dock_config(&DockConfig { apps }) {
+            opusdm_ipc::err_log!("dock", "cannot write dock.json: {e}");
+        }
+    }
+
+    /// Unpin `id`.
+    fn remove_app(self: &Rc<Self>, id: &str) {
+        let mut ids = apps::ids(&self.state.borrow().entries);
+        list::remove(&mut ids, id);
+        self.commit(ids);
+    }
+
+    /// Popover direction that opens away from the dock's edge.
+    fn menu_direction(&self) -> gtk::PositionType {
+        match self.placement().position() {
+            DockPosition::Bottom => gtk::PositionType::Top,
+            DockPosition::Top => gtk::PositionType::Bottom,
+            DockPosition::Left => gtk::PositionType::Right,
+            DockPosition::Right => gtk::PositionType::Left,
+        }
+    }
+
+    /// Show a popover of flat buttons on `parent`, one per `(label, action)`.
+    /// Each button closes the popover, then runs its action.
+    fn show_menu(&self, parent: &impl IsA<gtk::Widget>, at: Option<(f64, f64)>, items: Vec<(String, Box<dyn Fn()>)>) {
+        let popover = gtk::Popover::new();
+        popover.set_parent(parent);
+        popover.set_position(self.menu_direction());
+        popover.set_has_arrow(false);
+        if let Some((x, y)) = at {
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        }
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for (label, action) in items {
+            let button = gtk::Button::with_label(&label);
+            button.add_css_class("flat");
+            let popover = popover.clone();
+            button.connect_clicked(move |_| {
+                popover.popdown();
+                action();
+            });
+            menu.append(&button);
+        }
+        popover.set_child(Some(&menu));
+        // Unparent once closed, after GTK is done with the popover.
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            gtk::glib::idle_add_local_once(move || p.unparent());
+        });
+        popover.popup();
+    }
+
+    /// Context menu of one icon: its desktop actions, then "Remove from Dock".
+    fn show_item_menu(self: &Rc<Self>, image: &gtk::Image, entry: &AppEntry) {
+        let mut items: Vec<(String, Box<dyn Fn()>)> = Vec::new();
+        for action in entry.info.list_actions() {
+            let info = entry.info.clone();
+            let name = entry.info.action_name(&action).to_string();
+            let action = action.to_string();
+            items.push((name, Box::new(move || apps::launch_action(&info, &action))));
+        }
+        let dock = self.clone();
+        let id = entry.id.clone();
+        items.push((
+            "Remove from Dock".to_string(),
+            Box::new(move || {
+                // After the popover has closed: removing rebuilds the row.
+                let dock = dock.clone();
+                let id = id.clone();
+                gtk::glib::idle_add_local_once(move || dock.remove_app(&id));
+            }),
+        ));
+        self.show_menu(image, None, items);
+    }
+
+    /// Context menu of the dock background: "Add Application...".
+    fn show_background_menu(self: &Rc<Self>, x: f64, y: f64) {
+        let dock = self.clone();
+        let items: Vec<(String, Box<dyn Fn()>)> =
+            vec![("Add Application...".to_string(), Box::new(move || dock.choose_app_to_add()))];
+        self.show_menu(&self.window, Some((x, y)), items);
+    }
+
+    /// Let the user pick a `.desktop` file and pin it at the end.
+    fn choose_app_to_add(self: &Rc<Self>) {
+        let filter = gtk::FileFilter::new();
+        filter.add_pattern("*.desktop");
+        filter.set_name(Some("Applications"));
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder()
+            .title("Add Application")
+            .filters(&filters)
+            .initial_folder(&gio::File::for_path("/usr/share/applications"))
+            .build();
+        let dock = self.clone();
+        dialog.open(Some(&self.window), gio::Cancellable::NONE, move |result| {
+            let Some(id) = result.ok().and_then(|f| f.path()).and_then(|p| apps::id_for_desktop_file(&p)) else {
+                return;
+            };
+            let mut ids = apps::ids(&dock.state.borrow().entries);
+            let end = ids.len();
+            list::insert_at(&mut ids, &id, end);
+            dock.commit(ids);
         });
     }
 
