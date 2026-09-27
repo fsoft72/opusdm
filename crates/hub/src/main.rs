@@ -1,6 +1,7 @@
 //! opusdm-hub: the always-on controller.
 
 mod desktop;
+mod desktop_ops;
 mod progress_window;
 mod toolbar;
 
