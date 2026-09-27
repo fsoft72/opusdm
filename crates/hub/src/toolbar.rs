@@ -524,16 +524,16 @@ fn spawn_desktop_watch(
 /// Resolve the `opus-desktop-config` binary: preferably a sibling of the
 /// running hub executable (so a `cargo run` / installed pair stay together),
 /// otherwise the bare name for a `PATH` lookup.
-/// Resolve the `opusdm-theme` binary: preferably a sibling of the running
+/// Resolve the `opusdm-settings` binary: preferably a sibling of the running
 /// hub executable (so a `cargo run` / installed pair stay together),
 /// otherwise the bare name for a `PATH` lookup.
 fn theme_config_bin() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            return dir.join("opusdm-theme");
+            return dir.join("opusdm-settings");
         }
     }
-    PathBuf::from("opusdm-theme")
+    PathBuf::from("opusdm-settings")
 }
 
 /// Spawn the theme configuration app, detached.
@@ -743,8 +743,8 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             sub.append(&btn);
         }
 
-        // Settings: launch the standalone opusdm-theme app. Icon grid metrics
-        // and the desktop folder override live there too now.
+        // Settings: launch the standalone opusdm-settings app. Icon grid
+        // metrics and the desktop folder override live there too now.
         {
             let menu_ref = menu.clone();
             let btn = menu_button("Settings");

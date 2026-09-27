@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-09-27 (2)
+
+- Renamed the `opusdm-theme` app to `opusdm-settings` (binary name, `application_id`, window title, and every source comment naming it). The `opusdm-theme-config` crate/package name is unchanged.
+- Editable application menu: new `opusdm_ipc::menu` (`MenuConfig`/`MenuItem`, a tree of folders and apps persisted to `~/.config/opusdm/menu.json`; pure `add_app`/`add_folder`/`rename_folder`/`remove_at`/`move_up`/`move_down` operate on a `path: &[usize]`). `opusdm-panel`'s application menu now renders this tree (folders as nested expanders); on first run, or whenever the file is emptied, it is seeded from the installed apps grouped by freedesktop category (one folder per category) and the seed is written back to `menu.json`, mirroring how `opusdm-dock` seeds `dock.json`. New "Menu" tab in `opusdm-settings` (`crates/desktop-config/src/menu_ui.rs`, `MenuSection`): a tree editor with per-row move up/down/remove, per-folder add-app/add-folder/rename, "Add App..." (file chooser starting at the user's home) and "Add Folder..." for the root.
+
 ## 2026-09-27
 
 - Fix: the dock stayed on top of maximised windows despite `_NET_WM_STATE_BELOW`. Cause: it used `_NET_WM_WINDOW_TYPE_DOCK`, which by EWMH spec tells the window manager to always keep the window raised - the same type the panel uses, for the opposite reason. Switched to `_NET_WM_WINDOW_TYPE_NORMAL` (still undecorated, still no strut) plus `SKIP_TASKBAR`/`SKIP_PAGER` so it stays out of the taskbar and pager; `BELOW` now actually keeps it under normal windows.

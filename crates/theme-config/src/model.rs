@@ -6,13 +6,13 @@ use opusdm_ipc::{DesktopSettings, IconSetId, Settings};
 
 /// Load the full current `Settings` (defaults if missing/unparseable).
 pub fn load_settings() -> Settings {
-    opusdm_ipc::settings::load_settings("opusdm-theme")
+    opusdm_ipc::settings::load_settings("opusdm-settings")
 }
 
 /// Testable core of [`load_settings`].
 #[cfg(test)]
 pub fn load_settings_from(path: &std::path::Path) -> Settings {
-    opusdm_ipc::settings::load_settings_from(path, "opusdm-theme")
+    opusdm_ipc::settings::load_settings_from(path, "opusdm-settings")
 }
 
 /// What applying a selected icon set produces: the full `Settings` and
@@ -59,7 +59,7 @@ pub fn apply_full(settings: &Settings, desktop: &DesktopSettings) -> ApplyOutcom
     if opusdm_ipc::sockpath::probe_live_hub(&sock) {
         match send_to_hub(&sock, settings, desktop) {
             Ok(()) => return ApplyOutcome::SentToHub,
-            Err(e) => eprintln!("opusdm-theme: hub send failed, writing files: {e}"),
+            Err(e) => eprintln!("opusdm-settings: hub send failed, writing files: {e}"),
         }
     }
     match write_files(settings, desktop) {

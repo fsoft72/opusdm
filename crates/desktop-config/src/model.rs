@@ -1,5 +1,5 @@
 //! Load desktop settings, and colour hex/RGBA conversions shared by
-//! `ColorRow`. Applying settings lives in `opusdm-theme`, the only window
+//! `ColorRow`. Applying settings lives in `opusdm-settings`, the only window
 //! that edits them now.
 
 use gtk4 as gtk;

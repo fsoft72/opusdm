@@ -1,13 +1,15 @@
-//! The application menu: installed `.desktop` entries grouped by freedesktop
-//! category, plus Settings / About / Logout / Shutdown. A `gtk::MenuButton`
-//! whose popover lists one expander per non-empty category.
+//! The application menu: a `gtk::MenuButton` whose popover renders
+//! `menu.json`'s tree of folders and apps, plus Settings / About / Logout /
+//! Shutdown. `menu.json` is seeded with the installed `.desktop` entries
+//! grouped by freedesktop category on first run (or whenever it is
+//! emptied), then edited through the "Menu" tab in `opusdm-settings`.
 
 use gtk4 as gtk;
 use gtk::gdk;
-use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_ipc::PanelPosition;
+use opusdm_dock::apps;
+use opusdm_ipc::{MenuItem, PanelPosition};
 use std::process::Command;
 
 use freedesktop_desktop_entry::{self as fde, DesktopEntry};
@@ -101,7 +103,6 @@ pub fn entry_visible(entry: &DesktopEntry) -> bool {
 /// One launchable application.
 struct App {
     name: String,
-    icon: Option<String>,
     path: std::path::PathBuf,
 }
 
@@ -121,11 +122,7 @@ fn load_apps() -> Vec<(Bucket, Vec<App>)> {
             .name(&locales)
             .map(|c| c.into_owned())
             .unwrap_or_else(|| entry.id().to_string());
-        by_bucket.entry(bucket).or_default().push(App {
-            name,
-            icon: entry.icon().map(str::to_string),
-            path: entry.path.clone(),
-        });
+        by_bucket.entry(bucket).or_default().push(App { name, path: entry.path.clone() });
     }
 
     let mut out = Vec::new();
@@ -159,6 +156,76 @@ fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
     btn
 }
 
+/// A menu row for a custom-menu app entry, resolved by desktop file id (or
+/// absolute path). `None` when `id` is not installed, so the caller can skip
+/// it rather than show a dead entry.
+fn custom_app_row(id: &str, popover: &gtk::Popover) -> Option<gtk::Button> {
+    let entry = apps::resolve(&[id.to_string()]).into_iter().next()?;
+    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let image = match entry.info.icon() {
+        Some(icon) => gtk::Image::from_gicon(&icon),
+        None => gtk::Image::from_icon_name("application-x-executable"),
+    };
+    image.set_pixel_size(18);
+    inner.append(&image);
+    let text = gtk::Label::new(Some(entry.info.name().as_str()));
+    text.set_xalign(0.0);
+    inner.append(&text);
+
+    let btn = gtk::Button::new();
+    btn.set_child(Some(&inner));
+    btn.add_css_class("flat");
+    btn.set_halign(gtk::Align::Fill);
+
+    let popover = popover.clone();
+    let info = entry.info.clone();
+    btn.connect_clicked(move |_| {
+        popover.popdown();
+        apps::launch(&info);
+    });
+    Some(btn)
+}
+
+/// The default custom menu: one folder per non-empty category, holding the
+/// ids of its installed apps - what `menu.json` is seeded with on first run
+/// (or whenever it is emptied), so `opusdm-settings`'s Menu tab always has
+/// something to edit rather than a blank slate.
+fn default_menu_items() -> Vec<MenuItem> {
+    load_apps()
+        .into_iter()
+        .map(|(bucket, entries)| {
+            let items = entries
+                .iter()
+                .filter_map(|app| apps::id_for_desktop_file(&app.path))
+                .map(|id| MenuItem::App { id })
+                .collect();
+            MenuItem::Folder { name: bucket.label().to_string(), items }
+        })
+        .collect()
+}
+
+/// Render one level of the custom menu tree into `into`: apps as rows,
+/// folders as expanders nesting their own items.
+fn build_custom_items(items: &[MenuItem], into: &gtk::Box, popover: &gtk::Popover) {
+    for item in items {
+        match item {
+            MenuItem::App { id } => {
+                if let Some(row) = custom_app_row(id, popover) {
+                    into.append(&row);
+                }
+            }
+            MenuItem::Folder { name, items } => {
+                let inner = gtk::Box::new(gtk::Orientation::Vertical, 1);
+                inner.set_margin_start(12);
+                build_custom_items(items, &inner, popover);
+                let expander = gtk::Expander::new(Some(name));
+                expander.set_child(Some(&inner));
+                into.append(&expander);
+            }
+        }
+    }
+}
+
 /// Build the menu button and its popover. The popover opens downwards from a
 /// top panel and upwards from a bottom one (`position`).
 pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::MenuButton {
@@ -186,23 +253,20 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
     list.set_margin_start(4);
     list.set_margin_end(4);
 
-    for (bucket, apps) in load_apps() {
-        let inner = gtk::Box::new(gtk::Orientation::Vertical, 1);
-        inner.set_margin_start(12);
-        for app in apps {
-            let row = menu_row(app.icon.as_deref(), &app.name);
-            let path = app.path.clone();
-            let popover = popover.clone();
-            row.connect_clicked(move |_| {
-                popover.popdown();
-                launch(&path);
-            });
-            inner.append(&row);
+    // menu.json, seeded from the installed apps grouped by category when
+    // it is missing or was emptied, so the panel and the "Menu" tab in
+    // `opusdm-settings` always share one real file to edit.
+    let cfg = match opusdm_ipc::menu::load_menu_config() {
+        Some(cfg) if !cfg.items.is_empty() => cfg,
+        _ => {
+            let cfg = opusdm_ipc::MenuConfig { items: default_menu_items() };
+            if let Err(e) = opusdm_ipc::menu::save_menu_config(&cfg) {
+                opusdm_ipc::err_log!("panel", "cannot write menu.json: {e}");
+            }
+            cfg
         }
-        let expander = gtk::Expander::new(Some(bucket.label()));
-        expander.set_child(Some(&inner));
-        list.append(&expander);
-    }
+    };
+    build_custom_items(&cfg.items, &list, &popover);
 
     list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -259,18 +323,6 @@ pub fn set_direction(button: &gtk::MenuButton, position: PanelPosition) {
         PanelPosition::Top => gtk::ArrowType::Down,
         PanelPosition::Bottom => gtk::ArrowType::Up,
     });
-}
-
-/// Launch a `.desktop` file through GIO so field codes and terminal handling
-/// are honoured. Errors are logged, not fatal.
-fn launch(path: &std::path::Path) {
-    let Some(info) = gio::DesktopAppInfo::from_filename(path) else {
-        eprintln!("opusdm-panel: cannot read {}", path.display());
-        return;
-    };
-    if let Err(e) = info.launch(&[], gio::AppLaunchContext::NONE) {
-        eprintln!("opusdm-panel: launch failed for {}: {e}", path.display());
-    }
 }
 
 /// Spawn a detached command; a missing binary is logged, not fatal.

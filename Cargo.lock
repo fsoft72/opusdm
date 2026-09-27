@@ -1160,6 +1160,7 @@ dependencies = [
  "gtk4",
  "opusdm-dock",
  "opusdm-ipc",
+ "opusdm-ui",
  "serde_json",
  "tempfile",
 ]
@@ -1259,6 +1260,7 @@ dependencies = [
  "freedesktop-desktop-entry",
  "gdk4-x11",
  "gtk4",
+ "opusdm-dock",
  "opusdm-ipc",
  "opusdm-ui",
  "tempfile",

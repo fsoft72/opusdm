@@ -48,7 +48,7 @@ Out of scope: zoom, transparency, window list, running-app indicators, previews,
 - `~/.config/opusdm/dock.json`: pinned app ids (desktop file ids), in order.
 - Position and icon size live in `desktop.json` (`DockSettings`, next to `PanelPosition`).
 - Missing `dock.json`: start with defaults (file manager, terminal, web browser), keeping only those installed.
-- New "Dock" tab in `opusdm-theme` (position, icon size, pinned apps list), applied live.
+- New "Dock" tab in `opusdm-settings` (position, icon size, pinned apps list), applied live.
 
 ## Implementation status
 
@@ -58,4 +58,4 @@ All five steps below are implemented.
 2. `dock.json` loading (`opusdm_ipc::DockConfig`), `gio::DesktopAppInfo` launch, tooltips, busy cursor. A missing `dock.json` is seeded with the installed defaults (file manager, terminal, browser) and written out.
 3. `opusdm_ipc::DockPosition`/`DesktopSettings::{dock_position, dock_icon_size}`, `opusdm_dock::attach` returns a setter the hub calls on `DesktopSettingsChanged`; the dock never shares the panel's edge (`DockPosition::avoiding`).
 4. Drag and drop: reorder within the dock, drop a `.desktop` file to pin it, drag an icon out to unpin it. Context menu: an icon's desktop actions plus "Remove from Dock"; the background's "Add Application...".
-5. "Dock" tab in `opusdm-theme` (`opusdm_desktop_config::dock_ui`): edge (only the ones free of the panel), icon size, and the pinned-apps list with up/down/remove/add. The Panel tab's edge change updates the Dock tab's offered edges live.
+5. "Dock" tab in `opusdm-settings` (`opusdm_desktop_config::dock_ui`): edge (only the ones free of the panel), icon size, and the pinned-apps list with up/down/remove/add. The Panel tab's edge change updates the Dock tab's offered edges live.

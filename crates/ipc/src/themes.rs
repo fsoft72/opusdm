@@ -88,7 +88,7 @@ impl ThemeManifest {
     }
 }
 
-/// One theme as `opusdm-theme`'s picker shows it.
+/// One theme as `opusdm-settings`'s picker shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomThemeSummary {
     pub slug: String,
