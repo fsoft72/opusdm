@@ -22,7 +22,7 @@ Out of scope: zoom, transparency, window list, running-app indicators, previews,
 
 ## Window behaviour
 
-- Window type `_NET_WM_WINDOW_TYPE_DOCK` with `_NET_WM_STATE_BELOW`.
+- Window type `_NET_WM_WINDOW_TYPE_NORMAL` (deliberately not `DOCK`: that type tells the window manager to always keep the window on top, which no `_NET_WM_STATE_BELOW` can override) with `_NET_WM_STATE_BELOW`, `SKIP_TASKBAR` and `SKIP_PAGER`.
 - **No strut**: the dock does NOT reserve screen space. Maximized windows cover it; it is visible only over the desktop.
 - Opaque background with a thin border and square corners: rounded corners would need transparency or an X shape mask, so they are left out. No compositor required.
 - Centered along its edge inside the monitor work area.
