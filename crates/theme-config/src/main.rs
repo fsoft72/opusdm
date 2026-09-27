@@ -4,6 +4,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
+use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_desktop_config::ui::{BackgroundSection, FolderSection, GridSection, PanelSection};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -84,6 +85,35 @@ fn build_window(app: &gtk::Application) {
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
 
+    // --- Dock tab: edge, icon size, pinned apps ---
+    let dock_page_outer = gtk::ScrolledWindow::new();
+    let dock_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    dock_page.set_margin_top(12);
+    dock_page.set_margin_bottom(12);
+    dock_page.set_margin_start(12);
+    dock_page.set_margin_end(12);
+
+    let dock_section = DockSection::new(
+        desktop_data.dock_position,
+        desktop_data.dock_icon_size,
+        desktop_data.panel_position,
+    );
+    dock_page.append(&dock_section.root);
+    dock_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let dock_apps = opusdm_ipc::dock::load_dock_config().map(|c| c.apps).unwrap_or_default();
+    let dock_apps_section = Rc::new(DockAppsSection::new(&window, dock_apps));
+    dock_page.append(&dock_apps_section.root);
+
+    dock_page_outer.set_child(Some(&dock_page));
+    notebook.append_page(&dock_page_outer, Some(&gtk::Label::new(Some("Dock"))));
+
+    // The panel edge and dock edge stay mutually exclusive live.
+    {
+        let dock_section = dock_section.clone();
+        panel.connect_position_changed(move |position| dock_section.set_panel(position));
+    }
+
     // --- Lister tab: preset picker + colours ---
     let lister_page_outer = gtk::ScrolledWindow::new();
     let lister_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -141,6 +171,8 @@ fn build_window(app: &gtk::Application) {
         let grid = grid.clone();
         let folder = folder.clone();
         let panel = panel.clone();
+        let dock_section = dock_section.clone();
+        let dock_apps_section = dock_apps_section.clone();
         let appearance_section = appearance_section.clone();
         let behavior_section = behavior_section.clone();
         let note = note.clone();
@@ -161,9 +193,15 @@ fn build_window(app: &gtk::Application) {
                 grid_gap: grid.grid_gap(),
                 desktop_dir: folder.override_dir(),
                 panel_position: panel.position(),
-                ..desktop_data.clone()
+                dock_position: dock_section.position(),
+                dock_icon_size: dock_section.icon_size(),
             }
             .sanitized();
+            if let Err(e) = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig {
+                apps: dock_apps_section.apps(),
+            }) {
+                opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
+            }
             let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);
             match model::apply_full(&result.settings, &result.desktop) {
                 model::ApplyOutcome::SentToHub => {

@@ -479,6 +479,23 @@ impl PanelSection {
         Self { root, position }
     }
 
+    /// Call `f` with the new panel position whenever the drop-down changes,
+    /// so a sibling section (the Dock tab) can react live.
+    pub fn connect_position_changed(&self, f: impl Fn(PanelPosition) + 'static) {
+        let position_dropdown = self.position.clone();
+        self.position.connect_selected_notify(move |_| {
+            f(Self::position_of(position_dropdown.selected()));
+        });
+    }
+
+    /// Decode the drop-down's selected index into a position.
+    fn position_of(selected: u32) -> PanelPosition {
+        match selected {
+            1 => PanelPosition::Bottom,
+            _ => PanelPosition::Top,
+        }
+    }
+
     /// The chosen panel position.
     pub fn position(&self) -> PanelPosition {
         match self.position.selected() {

@@ -13,8 +13,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-mod apps;
-mod list;
+pub mod apps;
+pub mod list;
 mod placement;
 mod window;
 

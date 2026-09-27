@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
+opusdm-dock = { path = "../dock" }
 gtk4.workspace = true
 serde_json.workspace = true
 dirs.workspace = true

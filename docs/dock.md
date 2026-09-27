@@ -50,10 +50,12 @@ Out of scope: zoom, transparency, window list, running-app indicators, previews,
 - Missing `dock.json`: start with defaults (file manager, terminal, web browser), keeping only those installed.
 - New "Dock" tab in `opusdm-theme` (position, icon size, pinned apps list), applied live.
 
-## Implementation plan
+## Implementation status
 
-1. Crate skeleton, dock window (type, layer, no strut), placement per edge, static icon row from a hard-coded list.
-2. `dock.json` loading, `gio::AppInfo` launch, tooltips, busy cursor.
-3. `DockSettings` in `opusdm-ipc`, hub spawn and live re-dock on settings change, panel-edge exclusion.
-4. Drag and drop (reorder, add, remove) and context menu.
-5. "Dock" tab in `opusdm-theme`.
+All five steps below are implemented.
+
+1. Crate skeleton, dock window (`_NET_WM_WINDOW_TYPE_DOCK` + `_NET_WM_STATE_BELOW`, no strut), placement per edge, static icon row.
+2. `dock.json` loading (`opusdm_ipc::DockConfig`), `gio::DesktopAppInfo` launch, tooltips, busy cursor. A missing `dock.json` is seeded with the installed defaults (file manager, terminal, browser) and written out.
+3. `opusdm_ipc::DockPosition`/`DesktopSettings::{dock_position, dock_icon_size}`, `opusdm_dock::attach` returns a setter the hub calls on `DesktopSettingsChanged`; the dock never shares the panel's edge (`DockPosition::avoiding`).
+4. Drag and drop: reorder within the dock, drop a `.desktop` file to pin it, drag an icon out to unpin it. Context menu: an icon's desktop actions plus "Remove from Dock"; the background's "Add Application...".
+5. "Dock" tab in `opusdm-theme` (`opusdm_desktop_config::dock_ui`): edge (only the ones free of the panel), icon size, and the pinned-apps list with up/down/remove/add. The Panel tab's edge change updates the Dock tab's offered edges live.
