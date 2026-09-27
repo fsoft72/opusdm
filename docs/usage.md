@@ -165,9 +165,8 @@ Open **Settings** on the hub toolbar; the **THEME** section at the top drives th
   - `Monochrome Phosphor (green)` and `(amber)` - vintage CRT terminal looks.
 - Editing any colour by hand afterwards is fine; the stored preset then reads `custom`.
 - **SELECTION** colours are now configurable too, instead of following the GTK theme.
-- **File type icons**: Nerd Font glyphs before each name (Rust, Python, images, audio, video,
-  archives, ...). Off by default because it needs a patched Nerd Font installed, otherwise the
-  glyphs render as empty boxes.
+- **File type icons**: images from the active theme (Breeze Dark is always installed and is the
+  default). No Nerd Font is needed.
 - **Type indicators**: appends an `ls -F` style character to each name - `/` directory,
   `*` executable, `@` symlink, `=` socket, `|` fifo.
 - **Monospace file list**: renders every column in the system monospace font.

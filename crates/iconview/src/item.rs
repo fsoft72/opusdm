@@ -1,6 +1,5 @@
-//! One icon-view item: a glyph (phase 2: a thumbnail) above an editable label.
+//! One icon-view item: an icon image (or thumbnail) above an editable label.
 
-use crate::glyphs::glyph_for;
 use crate::types::IconEntry;
 use gtk4 as gtk;
 use gtk::glib;
@@ -30,26 +29,18 @@ pub struct IconItem {
 
 impl IconItem {
     /// Build an item for `entry`, icon box `icon_size` px square, under icon
-    /// set `icon_set` (a real icon image when available, the Nerd Font glyph
-    /// otherwise).
+    /// set `icon_set` (the themed icon image; a blank slot when the theme has
+    /// no icon for this entry).
     pub fn new(entry: &IconEntry, icon_size: i32, icon_set: &opusdm_ipc::IconSetId) -> IconItem {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
         root.add_css_class("icon-item");
         root.set_halign(gtk::Align::Center);
 
-        // No patched Nerd Font installed: its codepoints would render as
-        // literal hex tofu (see font_probe), so show blank text instead -
-        // a missing icon reads better than "F0 7B". The label stays
-        // visible (not hidden) so it keeps reserving its `icon_size`
-        // square, same as every other item and as the thumbnail slot -
-        // hiding it would shrink this item alone and, through
-        // `FreeArrange`'s max-of-all-items pitch, respace the whole grid.
-        let glyph_text = if crate::font_probe::nerd_font_available() {
-            glyph_for(entry.kind, entry.mode, &entry.name).to_string()
-        } else {
-            String::new()
-        };
-        let icon = gtk::Label::new(Some(&glyph_text));
+        // Blank placeholder that keeps reserving its `icon_size` square
+        // while no image is shown, same as every other item and as the
+        // thumbnail slot - collapsing it would shrink this item alone and,
+        // through `FreeArrange`'s max-of-all-items pitch, respace the grid.
+        let icon = gtk::Label::new(None);
         icon.add_css_class("icon-item-glyph");
         icon.set_width_request(icon_size);
         icon.set_height_request(icon_size);
@@ -67,7 +58,7 @@ impl IconItem {
         // A themed icon set fills the same `thumb` slot a file-content
         // thumbnail later replaces via `set_thumbnail` - a real preview should
         // win over a generic per-type icon. `clear_thumbnail` (only called on
-        // a thumbnail-size-bucket change) reverts to the plain glyph rather
+        // a thumbnail-size-bucket change) reverts to the blank slot rather
         // than the themed icon; that rare resize path is an accepted
         // limitation, not a regression.
         if let Some(bytes) =
@@ -191,7 +182,7 @@ impl IconItem {
         toggle_class(&self.inner.root, "cursor", on);
     }
 
-    /// Resize the icon box (glyph and thumbnail).
+    /// Resize the icon box (placeholder and thumbnail).
     pub fn set_icon_size(&self, px: i32) {
         self.inner.icon.set_width_request(px);
         self.inner.icon.set_height_request(px);
@@ -199,19 +190,19 @@ impl IconItem {
     }
 
     /// Whether the icon box is currently showing an image (real icon-set icon
-    /// or content thumbnail) rather than the glyph label.
+    /// or content thumbnail) rather than the blank placeholder.
     pub fn shows_image(&self) -> bool {
         self.inner.thumb.is_visible()
     }
 
-    /// Show `texture` in place of the glyph.
+    /// Show `texture` in place of the placeholder.
     pub fn set_thumbnail(&self, texture: &gtk::gdk::Texture) {
         self.inner.thumb.set_paintable(Some(texture));
         self.inner.thumb.set_visible(true);
         self.inner.icon.set_visible(false);
     }
 
-    /// Drop any thumbnail and show the glyph again.
+    /// Drop any thumbnail and show the placeholder again.
     pub fn clear_thumbnail(&self) {
         self.inner.thumb.set_paintable(gtk::gdk::Paintable::NONE);
         self.inner.thumb.set_visible(false);

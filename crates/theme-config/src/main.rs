@@ -148,7 +148,7 @@ fn build_window(app: &gtk::Application) {
             let selected = icon_set.borrow().value();
             let ui_settings = opusdm_ipc::Settings {
                 theme: opusdm_ipc::Theme {
-                    icon_set: opusdm_ipc::IconSetId::None,
+                    icon_set: opusdm_ipc::IconSetId::default(),
                     colors: colors.read(),
                     background: bg.read(),
                 },

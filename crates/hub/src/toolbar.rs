@@ -148,9 +148,6 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     let initial_settings = settings::load_settings();
     install_desktop_css(&initial_settings.theme.background);
 
-    let missing_nerd_font = initial_settings.theme.icon_set == opusdm_ipc::IconSetId::None
-        && !opusdm_iconview::font_probe::nerd_font_available();
-
     let desired_desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
         desktop_settings.desktop_dir.as_deref(),
     );
@@ -202,10 +199,6 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
                 apply_event(&widgets, ev);
             }
         });
-    }
-
-    if missing_nerd_font {
-        show_missing_nerd_font_dialog(&widgets.primary_window());
     }
 
     // The panel dock lives in its own windows on the same application.
@@ -763,25 +756,6 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
     }
 
     menu
-}
-
-/// Shown once at startup when text glyphs are the active icon set but no
-/// patched Nerd Font is installed - without one, `opusdm_iconview::
-/// font_probe` already blanks the glyphs rather than showing hex tofu, but
-/// an empty icon slot is still worse than telling the user how to fix it.
-fn show_missing_nerd_font_dialog(parent: &gtk::ApplicationWindow) {
-    opusdm_ui::requester_rich(
-        parent,
-        "Nerd Font Not Found",
-        "<b>No Nerd Font is installed.</b>\n\n\
-         OpusDM's text-glyph icon set needs a patched \"Nerd Font\" to \
-         show file-type icons; without one, names appear with no icon \
-         instead. You can also pick an image-based theme instead - see \
-         \"Desktop \u{2192} Settings\".\n\n\
-         <a href='https://www.nerdfonts.com/font-downloads'>https://www.nerdfonts.com/font-downloads</a>",
-        &[("OK", ())],
-        |_| {},
-    );
 }
 
 fn show_about_dialog(parent: &gtk::ApplicationWindow) {

@@ -24,8 +24,8 @@ impl IconSetSection {
         heading.add_css_class("heading");
         root.append(&heading);
 
-        let mut options: Vec<IconSetId> = IconSetId::ALL.to_vec();
-        let mut labels: Vec<String> = options.iter().map(|s| s.label()).collect();
+        let mut options: Vec<IconSetId> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
         for theme in opusdm_ipc::themes::scan_themes() {
             options.push(IconSetId::Custom(theme.slug));
             labels.push(theme.label);

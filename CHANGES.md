@@ -2,6 +2,7 @@
 
 ## 2026-09-27
 
+- Removed every Nerd Font dependency: deleted `iconview::glyphs` and `iconview::font_probe`, the "Nerd Font Not Found" startup dialog, the Nerd Font CSS and `scripts/install-font.sh`. Icons now always come from an installed theme; a theme lacking an icon leaves a blank slot. `IconSetId::None` is gone (`IconSetId` is now `Custom(slug)` only, default `breeze-dark`); legacy `"None"`/`"BreezeDark"` values in `settings.json` map to the default. The `breeze-dark` theme is embedded in `opusdm-ipc` and written to `~/.config/opusdm/themes/` by `themes::ensure_default_theme()` whenever it is missing (called by `scan_themes` and the icon loader). `decorate_name` in the Lister lost its glyph parameter.
 - Desktop context menu: the "Theme" entry is now called "Settings" (it still launches `opusdm-theme`); the missing-font dialog hint follows.
 - New "Panel" setting in the Desktop tab of `opusdm-theme`: choose whether the panel is docked to the top (default) or the bottom of the screen. New `opusdm_ipc::PanelPosition` and `DesktopSettings::panel_position` (`"top"`/`"bottom"` in `desktop.json`; missing field means top), edited through the new `PanelSection` in `crates/desktop-config/src/ui.rs`.
 - Panel (`crates/panel`): new `window::Placement` (edge + monitor rect). A bottom bar sits at `mon_y + mon_h - PANEL_HEIGHT` and reserves its space with the bottom slots of `_NET_WM_STRUT_PARTIAL` (including the gap between the monitor and the screen bottom on multi-head setups). `strut_partial` now takes the position.

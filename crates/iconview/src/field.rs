@@ -124,7 +124,7 @@ impl IconField {
                 entries: RefCell::new(Vec::new()),
                 mode: Cell::new(LayoutMode::Grid),
                 icon_size: Cell::new(crate::types::DEFAULT_ICON_SIZE),
-                icon_set: RefCell::new(opusdm_ipc::IconSetId::None),
+                icon_set: RefCell::new(opusdm_ipc::IconSetId::default()),
                 grid_spacing: Cell::new(96),
                 grid_gap: Cell::new(4),
                 arrange: RefCell::new(Box::new(GridArrange::new())),
@@ -725,6 +725,11 @@ mod tests {
             .collect()
     }
 
+    /// An icon set naming a theme that is not installed: no icons resolve.
+    fn no_icons() -> opusdm_ipc::IconSetId {
+        opusdm_ipc::IconSetId::Custom("no-such-theme".to_string())
+    }
+
     /// All widget behaviour in one test: GTK panics if `gtk::init` runs on two
     /// threads, and libtest gives every `#[test]` its own thread, so the crate
     /// keeps exactly one GTK test.
@@ -734,14 +739,8 @@ mod tests {
             return;
         }
 
-        // --- font_probe: this machine has no Nerd Font installed (verified
-        // via `fc-list` while investigating the hex-tofu glyph bug), so
-        // detection must report false. A flip to true would mean detection
-        // silently broke and icon-less views would show tofu again.
-        assert!(!crate::font_probe::nerd_font_available());
-
         // --- IconItem: selected class toggles ---
-        let it = IconItem::new(&entries(1)[0], 64, &opusdm_ipc::IconSetId::None);
+        let it = IconItem::new(&entries(1)[0], 64, &no_icons());
         assert!(!it.widget().has_css_class("selected"));
         it.set_selected(true);
         assert!(it.widget().has_css_class("selected"));
@@ -774,7 +773,7 @@ mod tests {
             mode: 0o100_644,
             ext: Some("jpg".into()),
         };
-        let long = IconItem::new(&long_name, 64, &opusdm_ipc::IconSetId::None);
+        let long = IconItem::new(&long_name, 64, &no_icons());
         // Width of the same text on one unwrapped line, for reference.
         let single_line = gtk::Label::new(Some(long_text));
         let (_, single_w, _, _) = single_line.measure(gtk::Orientation::Horizontal, -1);
@@ -798,7 +797,7 @@ mod tests {
         // texture measures the same as the glyph. Otherwise a thumbnail
         // loading in asynchronously would grow the item and, via
         // `FreeArrange`'s max-of-all pitch, re-space the whole desktop grid.
-        let plain = IconItem::new(&entries(1)[0], 64, &opusdm_ipc::IconSetId::None);
+        let plain = IconItem::new(&entries(1)[0], 64, &no_icons());
         let before = plain.measure();
         let tall = gtk::gdk::MemoryTexture::new(
             2,
@@ -846,17 +845,17 @@ mod tests {
         // positions are about content, not about how icons render.
         f.select_exclusive(1);
         f.inner.layout.free_positions.borrow_mut().insert(1, (12.0, 34.0));
-        f.set_icon_set(opusdm_ipc::IconSetId::None);
+        f.set_icon_set(no_icons());
         assert_eq!(f.entry_count(), 3);
         assert_eq!(f.selected_indices(), vec![1]);
         assert_eq!(f.cursor(), Some(1));
         assert_eq!(f.free_positions().get(&1), Some(&(12.0, 34.0)));
 
-        // --- IconItem: a real icon set shows the image, not the glyph ---
+        // --- IconItem: a theme with the icon shows the image, one without stays blank ---
         let themed = IconItem::new(&entries(1)[0], 64, &custom);
         assert!(themed.shows_image());
-        let plain_glyph = IconItem::new(&entries(1)[0], 64, &opusdm_ipc::IconSetId::None);
-        assert!(!plain_glyph.shows_image());
+        let blank = IconItem::new(&entries(1)[0], 64, &no_icons());
+        assert!(!blank.shows_image());
 
         // --- IconField: selection helpers and the changed signal ---
         f.set_entries(&entries(5));

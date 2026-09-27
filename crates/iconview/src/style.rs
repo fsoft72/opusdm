@@ -10,7 +10,6 @@ pub const CSS: &str = "\
 .icon-item { padding: 6px; border-radius: 6px; }
 .icon-item.selected { background-color: alpha(@accent_bg_color, 0.35); }
 .icon-item.cursor { outline: 1px dashed alpha(@accent_bg_color, 0.8); outline-offset: -2px; }
-.icon-item-glyph { font-family: \"Symbols Nerd Font\", \"Nerd Font\", monospace; font-size: 32px; }
 ";
 
 /// Name of the environment variable that turns on the grid debug overlay.

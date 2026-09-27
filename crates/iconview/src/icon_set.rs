@@ -1,8 +1,6 @@
-//! Real icon image lookup, sibling of `glyphs::glyph_for`. Reuses the same
-//! `IconKind` + extension classification; returns PNG bytes instead of a
-//! Nerd Font `char`. No icon set is compiled into this crate - `None`
-//! yields no bytes (caller falls back to the glyph) and every other set is
-//! a user-imported theme loaded from disk on first use per process.
+//! Icon image lookup by `IconKind` + extension classification, returning PNG
+//! bytes. Every icon set is an installed theme loaded from disk on first use
+//! per process; the default theme is installed on demand.
 
 use crate::types::IconKind;
 use opusdm_ipc::IconSetId;
@@ -68,6 +66,9 @@ fn load_custom(slug: &str) -> std::sync::Arc<CustomIcons> {
     if let Some(existing) = guard.get(slug) {
         return existing.clone();
     }
+    if slug == opusdm_ipc::theme::DEFAULT_THEME_SLUG {
+        opusdm_ipc::themes::ensure_default_theme();
+    }
     let icons_dir = opusdm_ipc::themes::theme_dir(slug).join("icons");
     let mut loaded = CustomIcons::new();
     for name in ALL_ICON_FILENAMES {
@@ -81,13 +82,9 @@ fn load_custom(slug: &str) -> std::sync::Arc<CustomIcons> {
 }
 
 /// PNG bytes for `kind`/`mode`/`ext` under icon set `set`, or `None` when
-/// `set` is [`IconSetId::None`] or the theme has no file for that icon
-/// (caller falls back to `glyphs::glyph_for` in both cases).
+/// the theme has no file for that icon (the icon slot stays blank).
 pub fn icon_bytes_for(kind: IconKind, mode: u32, ext: Option<&str>, set: &IconSetId) -> Option<Cow<'static, [u8]>> {
-    let slug = match set {
-        IconSetId::None => return None,
-        IconSetId::Custom(slug) => slug,
-    };
+    let IconSetId::Custom(slug) = set;
     let filename = icon_filename(kind, mode, ext);
     let icons = load_custom(slug);
     icons.get(filename).map(|bytes| Cow::Owned(bytes.clone()))
@@ -101,8 +98,11 @@ mod tests {
     static ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
     #[test]
-    fn none_set_returns_nothing() {
-        assert!(icon_bytes_for(IconKind::Dir, 0, None, &IconSetId::None).is_none());
+    fn default_set_is_installed_on_demand_and_has_a_dir_icon() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        assert!(icon_bytes_for(IconKind::Dir, 0, None, &IconSetId::default()).is_some());
     }
 
     #[test]

@@ -215,7 +215,7 @@ pub fn add_column(
                         let s = ui.hub.settings.borrow();
                         (s.theme.icon_set.clone(), s.appearance.type_indicators)
                     })
-                    .unwrap_or((opusdm_ipc::IconSetId::None, false));
+                    .unwrap_or((opusdm_ipc::IconSetId::default(), false));
                 label.set_xalign(0.0);
                 let icon_widget = item
                     .child()
@@ -230,16 +230,10 @@ pub fn add_column(
                         icon_widget.set_paintable(Some(&texture));
                         icon_widget.set_visible(true);
                     }
-                    label.set_text(&crate::glyphs::decorate_name(&row, false, indicators));
                 } else {
-                    // No real icon set active: prefix the Nerd Font glyph
-                    // only when such a font is actually installed - without
-                    // one, Pango renders its codepoint as literal hex tofu,
-                    // which is worse than the plain name alone.
                     icon_widget.set_visible(false);
-                    let show_glyph = opusdm_iconview::font_probe::nerd_font_available();
-                    label.set_text(&crate::glyphs::decorate_name(&row, show_glyph, indicators));
                 }
+                label.set_text(&crate::glyphs::decorate_name(&row, indicators));
             }
             ColKind::Size => {
                 label.set_xalign(1.0);

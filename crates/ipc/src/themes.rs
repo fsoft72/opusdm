@@ -19,6 +19,47 @@ pub fn theme_dir(slug: &str) -> PathBuf {
     themes_dir().join(slug)
 }
 
+/// Files of the always-installed default theme (`themes/breeze-dark/` in the
+/// repo), embedded so the theme can be written out when it is missing.
+const DEFAULT_THEME_FILES: &[(&str, &[u8])] = &[
+    ("manifest.json", include_bytes!("../../../themes/breeze-dark/manifest.json")),
+    ("icons/archive.png", include_bytes!("../../../themes/breeze-dark/icons/archive.png")),
+    ("icons/audio.png", include_bytes!("../../../themes/breeze-dark/icons/audio.png")),
+    ("icons/broken.png", include_bytes!("../../../themes/breeze-dark/icons/broken.png")),
+    ("icons/code.png", include_bytes!("../../../themes/breeze-dark/icons/code.png")),
+    ("icons/dir.png", include_bytes!("../../../themes/breeze-dark/icons/dir.png")),
+    ("icons/exec.png", include_bytes!("../../../themes/breeze-dark/icons/exec.png")),
+    ("icons/file.png", include_bytes!("../../../themes/breeze-dark/icons/file.png")),
+    ("icons/image.png", include_bytes!("../../../themes/breeze-dark/icons/image.png")),
+    ("icons/pdf.png", include_bytes!("../../../themes/breeze-dark/icons/pdf.png")),
+    ("icons/symlink.png", include_bytes!("../../../themes/breeze-dark/icons/symlink.png")),
+    ("icons/text.png", include_bytes!("../../../themes/breeze-dark/icons/text.png")),
+    ("icons/video.png", include_bytes!("../../../themes/breeze-dark/icons/video.png")),
+];
+
+/// Make sure the default theme is installed: writes the embedded files
+/// under `themes_dir()/<DEFAULT_THEME_SLUG>` when its `manifest.json` is
+/// missing. Cheap when already installed, so callers may invoke it freely.
+/// Failures are logged, not fatal (a read-only config dir just means icons
+/// stay blank).
+pub fn ensure_default_theme() {
+    let dir = theme_dir(crate::theme::DEFAULT_THEME_SLUG);
+    if dir.join("manifest.json").is_file() {
+        return;
+    }
+    for (rel, bytes) in DEFAULT_THEME_FILES {
+        let path = dir.join(rel);
+        let result = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, bytes));
+        if let Err(e) = result {
+            eprintln!("opusdm: cannot install default theme file {}: {e}", path.display());
+            return;
+        }
+    }
+}
+
 /// A background image's path inside a theme's `backgrounds/` folder.
 pub fn background_image_path(slug: &str, filename: &str) -> PathBuf {
     theme_dir(slug).join("backgrounds").join(filename)
@@ -57,9 +98,10 @@ pub struct CustomThemeSummary {
 
 /// List every valid installed theme, sorted by display label. Skips (and
 /// logs) any subdirectory with a missing, unparseable, or invalid
-/// `manifest.json`. An unreadable or absent `themes_dir()` yields an empty
-/// list, not an error.
+/// `manifest.json`. The default theme is installed first if
+/// missing. An unreadable `themes_dir()` yields an empty list, not an error.
 pub fn scan_themes() -> Vec<CustomThemeSummary> {
+    ensure_default_theme();
     let dir = themes_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
@@ -183,7 +225,7 @@ mod tests {
         write_theme(td.path(), "alpha", r#"{"name":"alpha","label":"Alpha Theme"}"#, None);
         let found = scan_themes();
         let labels: Vec<&str> = found.iter().map(|t| t.label.as_str()).collect();
-        assert_eq!(labels, vec!["Alpha Theme", "Zeta Theme"]);
+        assert_eq!(labels, vec!["Alpha Theme", "Breeze Dark", "Zeta Theme"]);
     }
 
     #[test]
@@ -194,16 +236,18 @@ mod tests {
         write_theme(td.path(), "no-label", r#"{"name":"no-label","label":""}"#, None);
         write_theme(td.path(), "bad-name", r#"{"name":"Bad Name","label":"x"}"#, None);
         std::fs::create_dir_all(td.path().join("opusdm").join("themes").join("no-manifest")).unwrap();
-        let found = scan_themes();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].slug, "good");
+        let slugs: Vec<String> = scan_themes().into_iter().map(|t| t.slug).collect();
+        assert_eq!(slugs, vec!["breeze-dark", "good"]);
     }
 
     #[test]
-    fn scan_themes_on_missing_dir_is_empty() {
+    fn scan_themes_on_missing_dir_installs_and_lists_the_default_theme() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let _td = with_config_home();
-        assert!(scan_themes().is_empty());
+        let td = with_config_home();
+        let found = scan_themes();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].slug, crate::theme::DEFAULT_THEME_SLUG);
+        assert!(td.path().join("opusdm/themes/breeze-dark/icons/dir.png").is_file());
     }
 
     #[test]

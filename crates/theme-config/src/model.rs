@@ -16,10 +16,9 @@ pub fn load_settings_from(path: &std::path::Path) -> Settings {
 }
 
 /// What applying a selected icon set produces: the full `Settings` and
-/// `DesktopSettings` to apply. For `IconSetId::None` these are just `ui`/
-/// `ui_desktop` with the icon set forced to `None`; for `IconSetId::Custom`,
-/// the theme's `theme.json` fields are merged over `ui`/`ui_desktop` (only
-/// the fields the theme actually sets are overwritten).
+/// `DesktopSettings` to apply: the theme's `theme.json` fields are merged
+/// over `ui`/`ui_desktop` (only the fields the theme actually sets are
+/// overwritten).
 pub struct IconSetApplication {
     pub settings: Settings,
     pub desktop: DesktopSettings,
@@ -32,11 +31,6 @@ pub struct IconSetApplication {
 /// is never silently discarded by picking a theme.
 pub fn apply_icon_set(icon_set: &IconSetId, ui: &Settings, ui_desktop: &DesktopSettings) -> IconSetApplication {
     match icon_set {
-        IconSetId::None => {
-            let mut settings = ui.clone();
-            settings.theme.icon_set = IconSetId::None;
-            IconSetApplication { settings, desktop: ui_desktop.clone() }
-        }
         IconSetId::Custom(slug) => {
             let data = opusdm_ipc::themes::load_theme_data(slug);
             let merged = crate::apply::merge_custom_theme(slug, &data, ui, ui_desktop);
@@ -123,20 +117,6 @@ mod tests {
             std::fs::read_to_string(td.path().join("opusdm").join("desktop.json")).unwrap();
         let back_desktop: DesktopSettings = serde_json::from_str(&written_desktop).unwrap();
         assert_eq!(back_desktop.icon_size, 96);
-    }
-
-    #[test]
-    fn apply_icon_set_none_keeps_the_ui_state_as_is() {
-        let mut ui = Settings::default();
-        ui.theme.colors.file_fg = "#123456".to_string();
-        ui.appearance.monospace_list = true;
-        let ui_desktop = DesktopSettings::default();
-
-        let result = apply_icon_set(&opusdm_ipc::IconSetId::None, &ui, &ui_desktop);
-        assert_eq!(result.settings.theme.icon_set, opusdm_ipc::IconSetId::None);
-        assert_eq!(result.settings.theme.colors.file_fg, "#123456");
-        assert!(result.settings.appearance.monospace_list);
-        assert_eq!(result.desktop, ui_desktop);
     }
 
     #[test]
