@@ -178,6 +178,89 @@ pub fn validate(function: &Function) -> Vec<ValidationError> {
     errors
 }
 
+/// A Lister's current selection and working directory, as reported to the
+/// hub for placeholder expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionCtx {
+    pub paths: Vec<PathBuf>,
+    pub cwd: PathBuf,
+}
+
+/// Why [`expand_text`] could not fully expand its input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpandError {
+    /// A non-optional `{df}`/`{dF}`/`{do}`/`{dO}` placeholder had no DEST
+    /// selection to draw from. Carries the exact token (e.g. `"{df}"`).
+    MissingDest(String),
+}
+
+/// Shell-quote `s` if it contains anything that would otherwise need
+/// escaping; a plain path segment is left untouched for readability.
+fn shell_quote(s: &str) -> String {
+    let plain = s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'));
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+/// Space-joined, shell-quoted absolute paths - the `{f}`/`{F}`/`{df}`/`{dF}`
+/// expansion.
+fn joined_paths(paths: &[PathBuf]) -> String {
+    paths.iter().map(|p| shell_quote(&p.display().to_string())).collect::<Vec<_>>().join(" ")
+}
+
+/// Space-joined, shell-quoted file names - the `{o}`/`{O}`/`{do}`/`{dO}`
+/// expansion.
+fn joined_names(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            shell_quote(&name)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Substitute every `{f}` `{F}` `{o}` `{O}` `{df}` `{dF}` `{do}` `{dO}`
+/// (each also accepted with a trailing `!`, e.g. `{df!}`) in `text`.
+/// `f`/`F` expand to full paths, `o`/`O` to names only (v1 does not
+/// distinguish the lower/upper-case pair further - see the design doc's
+/// open question); the `d`-prefixed codes draw from `dest` instead of
+/// `source`. A `!` suffix makes a missing `dest` expand to an empty string
+/// instead of failing.
+pub fn expand_text(text: &str, source: &SelectionCtx, dest: Option<&SelectionCtx>) -> Result<String, ExpandError> {
+    let mut out = text.to_string();
+    for code in ["df", "dF", "do", "dO", "f", "F", "o", "O"] {
+        for optional in [true, false] {
+            let token = if optional { format!("{{{code}!}}") } else { format!("{{{code}}}") };
+            if !out.contains(&token) {
+                continue;
+            }
+            let is_dest = code.starts_with('d');
+            let is_path = code.ends_with('f') || code.ends_with('F');
+            let ctx = if is_dest {
+                match dest {
+                    Some(d) => Some(d),
+                    None if optional => None,
+                    None => return Err(ExpandError::MissingDest(token)),
+                }
+            } else {
+                Some(source)
+            };
+            let replacement = match ctx {
+                Some(c) if is_path => joined_paths(&c.paths),
+                Some(c) => joined_names(&c.paths),
+                None => String::new(),
+            };
+            out = out.replace(&token, &replacement);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +345,63 @@ mod tests {
     fn validate_accepts_a_step_free_function() {
         let f = Function { id: "fn-1".into(), name: "n".into(), steps: vec![] };
         assert!(validate(&f).is_empty());
+    }
+
+    fn ctx(paths: &[&str], cwd: &str) -> SelectionCtx {
+        SelectionCtx { paths: paths.iter().map(PathBuf::from).collect(), cwd: PathBuf::from(cwd) }
+    }
+
+    #[test]
+    fn f_expands_to_shell_quoted_absolute_paths() {
+        let src = ctx(&["/home/x/a.txt", "/home/x/b c.txt"], "/home/x");
+        let out = expand_text("cp {f} /dst", &src, None).unwrap();
+        assert_eq!(out, "cp /home/x/a.txt '/home/x/b c.txt' /dst");
+    }
+
+    #[test]
+    fn o_expands_to_shell_quoted_basenames() {
+        let src = ctx(&["/home/x/a.txt", "/home/x/b c.txt"], "/home/x");
+        let out = expand_text("notify-send done {o}", &src, None).unwrap();
+        assert_eq!(out, "notify-send done a.txt 'b c.txt'");
+    }
+
+    #[test]
+    fn uppercase_variants_behave_like_their_lowercase_pair() {
+        let src = ctx(&["/home/x/a.txt"], "/home/x");
+        assert_eq!(expand_text("{F}", &src, None).unwrap(), expand_text("{f}", &src, None).unwrap());
+        assert_eq!(expand_text("{O}", &src, None).unwrap(), expand_text("{o}", &src, None).unwrap());
+    }
+
+    #[test]
+    fn df_and_do_pull_from_dest() {
+        let src = ctx(&["/home/x/a.txt"], "/home/x");
+        let dst = ctx(&["/home/y/z.txt"], "/home/y");
+        assert_eq!(expand_text("{df}", &src, Some(&dst)).unwrap(), "/home/y/z.txt");
+        assert_eq!(expand_text("{do}", &src, Some(&dst)).unwrap(), "z.txt");
+    }
+
+    #[test]
+    fn missing_dest_fails_a_required_dest_placeholder() {
+        let src = ctx(&["/home/x/a.txt"], "/home/x");
+        let err = expand_text("{df}", &src, None).unwrap_err();
+        assert!(matches!(err, ExpandError::MissingDest(t) if t == "{df}"));
+    }
+
+    #[test]
+    fn optional_dest_placeholder_expands_empty_without_a_dest() {
+        let src = ctx(&["/home/x/a.txt"], "/home/x");
+        assert_eq!(expand_text("[{df!}]", &src, None).unwrap(), "[]");
+    }
+
+    #[test]
+    fn empty_selection_expands_to_empty_string_even_without_bang() {
+        let src = ctx(&[], "/home/x");
+        assert_eq!(expand_text("[{f}]", &src, None).unwrap(), "[]");
+    }
+
+    #[test]
+    fn text_with_no_placeholders_is_unchanged() {
+        let src = ctx(&["/home/x/a.txt"], "/home/x");
+        assert_eq!(expand_text("notify-send hello", &src, None).unwrap(), "notify-send hello");
     }
 }
