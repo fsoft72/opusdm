@@ -21,3 +21,4 @@ opusdm-*.log
 /.env
 /*.local.toml
 .codegraph
+.superpowers/
