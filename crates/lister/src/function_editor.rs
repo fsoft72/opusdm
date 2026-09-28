@@ -46,20 +46,38 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
     shell.button_spacer();
     shell.close_button("Close");
 
+    // Called after anything mutates `functions` (New/Edit/Delete), instead
+    // of a timed poll: an earlier version rebuilt the list every 300ms
+    // whether or not anything changed, which also destroyed and recreated
+    // every row on that tick - dropping whatever the user had selected out
+    // from under them well before a click on Edit/Delete could reach it,
+    // and the timer itself was never cancelled when this window closed, so
+    // each time the manager was reopened another one kept running. This
+    // closure rebuilds only on an actual change and the window owns it, so
+    // it simply stops existing (and is only ever called) while the window
+    // is open.
+    let refresh: Rc<dyn Fn()> = {
+        let list_box = list_box.clone();
+        let functions = functions.clone();
+        Rc::new(move || rebuild(&list_box, &functions.borrow()))
+    };
+
     {
         let ui = ui.clone();
         let functions = functions.clone();
         let window = shell.window().clone();
+        let refresh = refresh.clone();
         new_btn.connect_clicked(move |_| {
             let ui = ui.clone();
             let functions = functions.clone();
             let window = window.clone();
+            let refresh = refresh.clone();
             opusdm_ui::requester_entry(&window, "New Function", "", &[("Create", true), ("Cancel", false)], move |ok, name| {
                 if !ok || name.trim().is_empty() {
                     return;
                 }
                 let f = Function::new(name.trim());
-                open_function_editor(&ui, f, functions.clone());
+                open_function_editor(&ui, f, functions.clone(), refresh.clone());
             });
         });
     }
@@ -67,6 +85,7 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
         let ui = ui.clone();
         let functions = functions.clone();
         let list_box = list_box.clone();
+        let refresh = refresh.clone();
         edit_btn.connect_clicked(move |_| {
             let Some(row) = list_box.selected_row() else { return };
             let idx = row.index();
@@ -74,13 +93,14 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
                 return;
             }
             let Some(f) = functions.borrow().get(idx as usize).cloned() else { return };
-            open_function_editor(&ui, f, functions.clone());
+            open_function_editor(&ui, f, functions.clone(), refresh.clone());
         });
     }
     {
         let list_box = list_box.clone();
         let functions = functions.clone();
         let window = shell.window().clone();
+        let refresh = refresh.clone();
         delete_btn.connect_clicked(move |_| {
             let Some(row) = list_box.selected_row() else { return };
             let idx = row.index();
@@ -88,26 +108,17 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
                 return;
             }
             let functions = functions.clone();
-            let list_box = list_box.clone();
+            let refresh = refresh.clone();
             opusdm_ui::requester(&window, "Delete Function", "Delete this function?", None, &[("Delete", true), ("Cancel", false)], move |ok| {
                 if !ok {
                     return;
                 }
                 functions.borrow_mut().remove(idx as usize);
-                let _ = function::save_functions(&functions.borrow());
-                rebuild(&list_box, &functions.borrow());
+                if let Err(e) = function::save_functions(&functions.borrow()) {
+                    opusdm_ipc::err_log!("opusdm-lister", "could not save functions.json: {e}");
+                }
+                refresh();
             });
-        });
-    }
-
-    // Re-render whenever `functions` changes underneath this window (a save
-    // in the per-function editor mutates the shared `Rc<RefCell<_>>`).
-    {
-        let functions = functions.clone();
-        let list_box = list_box.clone();
-        gtk::glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-            rebuild(&list_box, &functions.borrow());
-            gtk::glib::ControlFlow::Continue
         });
     }
 
@@ -124,9 +135,9 @@ struct EditorState {
 }
 
 /// Open the editor for one function. `all_functions` is the manager's shared
-/// list; Save replaces this function's entry (by id) in place and persists
-/// the whole list.
-fn open_function_editor(ui: &Rc<Ui>, function: Function, all_functions: Rc<RefCell<Vec<Function>>>) {
+/// list; Save replaces this function's entry (by id) in place, persists the
+/// whole list, and calls `on_saved` so the manager window's list repaints.
+fn open_function_editor(ui: &Rc<Ui>, function: Function, all_functions: Rc<RefCell<Vec<Function>>>, on_saved: Rc<dyn Fn()>) {
     let shell = opusdm_ui::DialogShell::new(&ui.window, "Edit Function").size(520, 480).scrolled();
     let root = shell.content();
 
@@ -180,16 +191,23 @@ fn open_function_editor(ui: &Rc<Ui>, function: Function, all_functions: Rc<RefCe
         add_external.connect_clicked(move |_| prompt_add_external(&state));
     }
     {
+        let ui = ui.clone();
         let state = state.clone();
         let all_functions = all_functions.clone();
         save_btn.connect_clicked(move |_| {
             let f = state.function.borrow().clone();
-            let mut all = all_functions.borrow_mut();
-            match all.iter_mut().find(|existing| existing.id == f.id) {
-                Some(slot) => *slot = f,
-                None => all.push(f),
+            let saved = {
+                let mut all = all_functions.borrow_mut();
+                match all.iter_mut().find(|existing| existing.id == f.id) {
+                    Some(slot) => *slot = f,
+                    None => all.push(f),
+                }
+                function::save_functions(&all)
+            };
+            match saved {
+                Ok(()) => on_saved(),
+                Err(e) => crate::actions::flash(&ui, &format!("could not save function: {e}")),
             }
-            let _ = function::save_functions(&all);
         });
     }
     {

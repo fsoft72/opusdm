@@ -5,7 +5,7 @@
 //! `docs/superpowers/specs/2026-09-28-function-editor-design.md`.
 
 use opusdm_fsops::{run_job, CancelToken, JobSpec, Progress};
-use opusdm_ipc::function::{expand_text, ExpandError, FnStep, InternalArgs, InternalCmd, SelectionCtx};
+use opusdm_ipc::function::{expand_argv_element, expand_text, ExpandError, ExpandedArg, FnStep, InternalArgs, InternalCmd, SelectionCtx};
 use opusdm_ipc::{Op, Resolution};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -100,16 +100,24 @@ fn run_internal(
         }
         InternalCmd::MakeDir | InternalCmd::NewFile => {
             // Both commands use the same schema key ("name", see Task 1).
+            // Always create in the SOURCE Lister's own directory, matching
+            // `palette.rs`'s existing Mkdir/NewFile commands (which create
+            // in the invoking Lister's cwd, never the DEST pane) - a DEST
+            // being open must not redirect where the new entry lands.
             let template = args.get("name").unwrap_or("");
             let name = expand_text(template, source, dest).map_err(expand_err_msg)?;
-            let dest_dir = dest.map(|d| d.cwd.clone()).unwrap_or_else(|| source.cwd.clone());
-            let target = dest_dir.join(name.trim());
-            let result = if cmd == InternalCmd::MakeDir {
-                std::fs::create_dir(&target)
-            } else {
-                std::fs::File::create(&target).map(|_| ())
-            };
-            result.map_err(|e| format!("{}: {e}", cmd.label()))?;
+            // Reuses `opusdm_fsops::delete::make_entry` (the same call the
+            // hub's own MakeDir/NewFile jobs use) rather than a bare
+            // `std::fs::File::create`, which truncates a same-named file
+            // that already exists instead of failing.
+            let outcome = opusdm_fsops::delete::make_entry(&source.cwd, name.trim(), cmd == InternalCmd::NewFile);
+            let target = source.cwd.join(name.trim());
+            match outcome {
+                Progress::Done { errors, .. } if !errors.is_empty() => {
+                    return Err(format!("{}: {}", cmd.label(), errors[0].1));
+                }
+                _ => {}
+            }
             let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("created {}", target.display()) }));
             let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
             Ok(())
@@ -190,13 +198,27 @@ fn run_external(
     if argv.is_empty() {
         return Err("External step: command is required".to_string());
     }
-    let expanded: Vec<String> =
-        argv.iter().map(|a| expand_text(a, source, dest)).collect::<Result<_, _>>().map_err(expand_err_msg)?;
+    // Each argv element expands independently; a whole element that is
+    // exactly one `{f}`/`{o}`/... placeholder flattens into one argv
+    // element per selected path/name (see `expand_argv_element`) instead of
+    // being joined into a single string - there is no shell splitting them
+    // back apart, since this runs the command directly.
+    let mut expanded: Vec<String> = Vec::with_capacity(argv.len());
+    for a in argv {
+        match expand_argv_element(a, source, dest).map_err(expand_err_msg)? {
+            ExpandedArg::Many(values) => expanded.extend(values),
+            ExpandedArg::One(value) => expanded.push(value),
+        }
+    }
+    if expanded.is_empty() {
+        return Err("External step: command expanded to nothing (empty selection?)".to_string());
+    }
     let cwd = if cwd_source { &source.cwd } else { dest.map(|d| &d.cwd).unwrap_or(&source.cwd) };
 
     let mut child = Command::new(&expanded[0])
         .args(&expanded[1..])
         .current_dir(cwd)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -250,6 +272,31 @@ mod tests {
     }
 
     #[test]
+    fn whole_token_placeholder_gives_one_argv_element_per_file_not_a_single_joined_string() {
+        // printf repeats its format once per remaining argument, so two
+        // real argv elements print two bracketed groups; a single string
+        // joining both names (the old, buggy behavior) would print one.
+        let (tx, rx) = channel();
+        let steps = vec![FnStep::External {
+            argv: vec!["printf".into(), "[%s]".into(), "{o}".into()],
+            cwd_source: true,
+        }];
+        let src = ctx(&["/tmp/a.txt", "/tmp/b c.txt"], "/tmp");
+        run_steps(1, &steps, &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        let output: String = events
+            .iter()
+            .filter_map(|e| match e {
+                FnEvent::Output { line, .. } => Some(line.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        assert_eq!(output, "[a.txt][b c.txt]");
+    }
+
+    #[test]
     fn external_step_nonzero_exit_fails_the_run() {
         let (tx, rx) = channel();
         let steps = vec![FnStep::External { argv: vec!["false".into()], cwd_source: true }];
@@ -283,8 +330,12 @@ mod tests {
     }
 
     #[test]
-    fn makedir_step_creates_a_directory_in_dest() {
-        let td = tempfile::tempdir().unwrap();
+    fn makedir_step_creates_in_source_even_with_a_dest_open() {
+        // Matches palette.rs's own Mkdir/NewFile commands, which always
+        // create in the invoking Lister's own directory - a DEST existing
+        // must not redirect a Function's MakeDir/NewFile step there.
+        let src_td = tempfile::tempdir().unwrap();
+        let dst_td = tempfile::tempdir().unwrap();
         let (tx, rx) = channel();
         let mut args = BTreeMap::new();
         args.insert("name".to_string(), "new_dir".to_string());
@@ -292,13 +343,33 @@ mod tests {
             cmd: InternalCmd::MakeDir,
             args: InternalArgs(args),
         }];
-        let src = ctx(&[], "/tmp");
-        let dst = ctx(&[], td.path().to_str().unwrap());
+        let src = ctx(&[], src_td.path().to_str().unwrap());
+        let dst = ctx(&[], dst_td.path().to_str().unwrap());
         run_steps(1, &steps, &src, Some(&dst), &tx);
         drop(tx);
-        assert!(td.path().join("new_dir").is_dir());
+        assert!(src_td.path().join("new_dir").is_dir());
+        assert!(!dst_td.path().join("new_dir").exists());
         let events = drain(rx);
         assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn newfile_step_does_not_truncate_an_existing_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("notes.txt"), b"important content").unwrap();
+        let (tx, rx) = channel();
+        let mut args = BTreeMap::new();
+        args.insert("name".to_string(), "notes.txt".to_string());
+        let steps = vec![FnStep::Internal {
+            cmd: InternalCmd::NewFile,
+            args: InternalArgs(args),
+        }];
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &steps, &src, None, &tx);
+        drop(tx);
+        assert_eq!(std::fs::read(td.path().join("notes.txt")).unwrap(), b"important content");
+        let events = drain(rx);
+        assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, .. })));
     }
 
     #[test]

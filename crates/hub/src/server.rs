@@ -401,6 +401,7 @@ impl Hub {
             }
 
             ToHub::Goodbye => {
+                self.drop_function_state(cid);
                 drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
             }
         }
@@ -412,7 +413,14 @@ impl Hub {
     fn start_function_run(&mut self, cid: u64, steps: Vec<FnStep>) {
         let run_id = self.next_run_id;
         self.next_run_id += 1;
-        let dest_cid = self.roles.dests().first().map(|d| d.0);
+        // Exclude `cid` itself: a Lister that currently holds a DEST role
+        // (e.g. a locked DEST, or any DEST while SOURCE is locked
+        // elsewhere - see `roles.rs::apply_role_event`'s `FocusGained`
+        // arm) can still be the one *requesting* the run. Picking it as
+        // its own `dest_cid` would make `selection_reply` only ever fill
+        // `source_sel` (the two branches are `if`/`else if` on the same
+        // `cid`), so `dest_sel` - and the run - could never complete.
+        let dest_cid = self.roles.dests().iter().map(|d| d.0).find(|&d| d != cid);
         self.pending_functions.insert(
             run_id,
             PendingFunctionRun {
@@ -484,6 +492,24 @@ impl Hub {
         if let Some(c) = self.conns.get_mut(&requester) {
             let _ = c.tx.send(msg.into());
         }
+    }
+
+    /// Clean up any Function-run bookkeeping referencing `cid`, called when
+    /// its connection drops. A pending run waiting on `cid` for one of its
+    /// two selections can now never complete (its other side, if any,
+    /// would otherwise wait forever with no way to know); a running
+    /// Function's events for a since-dropped requester are also dropped
+    /// instead of accumulating in `function_requesters`.
+    fn drop_function_state(&mut self, cid: u64) {
+        if let Some(run_id) = self.selection_waiters.remove(&cid) {
+            if let Some(run) = self.pending_functions.remove(&run_id) {
+                let other = if run.source_cid == cid { run.dest_cid } else { Some(run.source_cid) };
+                if let Some(other_cid) = other {
+                    self.selection_waiters.remove(&other_cid);
+                }
+            }
+        }
+        self.function_requesters.retain(|_, requester| *requester != cid);
     }
 
     /// `ToHub::RunJob` from a Lister: resolve the destinations (a `None`
@@ -611,6 +637,7 @@ impl Hub {
             HubCmd::ChildExited(pid) => {
                 let hit = self.conns.iter().find(|(_, c)| c.pid == pid).map(|(k, _)| *k);
                 if let Some(cid) = hit {
+                    self.drop_function_state(cid);
                     drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
                 }
             }
@@ -795,6 +822,7 @@ fn owner_loop(
                 true
             }
             OwnerMsg::ListerEof(cid) => {
+                hub.drop_function_state(cid);
                 drop_conn(cid, &mut hub.conns, &mut hub.free_conns, &mut hub.roles, &hub.evt_tx);
                 true
             }
@@ -1145,6 +1173,49 @@ mod tests {
             }
         }
         assert!(done, "expected FunctionDone on the requesting (SOURCE) connection");
+        let _ = handle;
+    }
+
+    #[test]
+    fn run_function_from_the_dest_lister_itself_does_not_wait_on_itself_twice() {
+        // A Lister holding the DEST role can still be the one requesting a
+        // run (e.g. it just pressed Test in its own Function Editor).
+        // `start_function_run` must not pick it as its own `dest_cid` -
+        // that would make `selection_reply`'s `if cid == source_cid` /
+        // `else if Some(cid) == dest_cid` only ever take the first branch,
+        // so `dest_sel` (and the whole run) could never complete.
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+        let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
+
+        let steps = vec![opusdm_ipc::function::FnStep::External { argv: vec!["true".into()], cwd_source: true }];
+        send(&mut a, &ToHub::RunFunction { steps }).unwrap();
+
+        // Exactly one QuerySelection - not one that will never be answered
+        // because it was sent to `a` for a `dest_cid` that is also `a`.
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection));
+
+        let real_cwd = std::env::temp_dir();
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: real_cwd }).unwrap();
+
+        let mut done = false;
+        for _ in 0..50 {
+            match recv::<_, ToLister>(&mut a) {
+                Ok(Some(ToLister::FunctionDone)) => {
+                    done = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                _ => break,
+            }
+        }
+        assert!(done, "expected FunctionDone - the run must not wait forever on its own DEST selection");
         let _ = handle;
     }
 }

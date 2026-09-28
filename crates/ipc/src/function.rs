@@ -22,7 +22,8 @@ fn new_function_id() -> FunctionId {
 }
 
 /// A named, ordered list of steps a user can run from the Command Palette.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Function {
     pub id: FunctionId,
     pub name: String,
@@ -194,71 +195,136 @@ pub enum ExpandError {
     MissingDest(String),
 }
 
-/// Shell-quote `s` if it contains anything that would otherwise need
-/// escaping; a plain path segment is left untouched for readability.
-fn shell_quote(s: &str) -> String {
-    let plain = s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'));
-    if plain {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
+/// A recognized placeholder code, parsed out of the text between `{` and
+/// `}` (e.g. `"f"`, `"do"`, `"df!"`).
+struct Token {
+    /// Whether the code draws from `dest` (`d`-prefixed) or `source`.
+    is_dest: bool,
+    /// Whether it names full paths (`f`/`F`) or names only (`o`/`O`).
+    is_path: bool,
+    /// Whether a missing `dest` expands to nothing instead of failing.
+    optional: bool,
+}
+
+/// Parse the text between `{` and `}` as one of the eight recognized
+/// placeholder codes, each optionally suffixed with `!`. Returns `None` for
+/// anything else, so the caller can leave an unrecognized `{...}` in the
+/// output untouched rather than mistake it for a placeholder.
+fn parse_token(inner: &str) -> Option<Token> {
+    let (code, optional) = match inner.strip_suffix('!') {
+        Some(rest) => (rest, true),
+        None => (inner, false),
+    };
+    if !matches!(code, "df" | "dF" | "do" | "dO" | "f" | "F" | "o" | "O") {
+        return None;
     }
+    Some(Token { is_dest: code.starts_with('d'), is_path: code.ends_with('f') || code.ends_with('F'), optional })
 }
 
-/// Space-joined, shell-quoted absolute paths - the `{f}`/`{F}`/`{df}`/`{dF}`
-/// expansion.
-fn joined_paths(paths: &[PathBuf]) -> String {
-    paths.iter().map(|p| shell_quote(&p.display().to_string())).collect::<Vec<_>>().join(" ")
+/// The raw (unquoted) values a `Token` names: full paths for `f`/`F`, file
+/// names for `o`/`O`. `Ok(None)` means an optional `d`-prefixed code with no
+/// `dest` to draw from - the caller treats that as "expands to nothing".
+fn resolve_token<'a>(
+    token: &Token,
+    source: &'a SelectionCtx,
+    dest: Option<&'a SelectionCtx>,
+    raw_for_error: &str,
+) -> Result<Option<&'a [PathBuf]>, ExpandError> {
+    let ctx = if token.is_dest {
+        match dest {
+            Some(d) => Some(d),
+            None if token.optional => None,
+            None => return Err(ExpandError::MissingDest(format!("{{{raw_for_error}}}"))),
+        }
+    } else {
+        Some(source)
+    };
+    Ok(ctx.map(|c| c.paths.as_slice()))
 }
 
-/// Space-joined, shell-quoted file names - the `{o}`/`{O}`/`{do}`/`{dO}`
-/// expansion.
-fn joined_names(paths: &[PathBuf]) -> String {
-    paths
-        .iter()
-        .map(|p| {
-            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            shell_quote(&name)
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+fn path_strings(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|p| p.display().to_string()).collect()
+}
+
+fn name_strings(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect()
 }
 
 /// Substitute every `{f}` `{F}` `{o}` `{O}` `{df}` `{dF}` `{do}` `{dO}`
-/// (each also accepted with a trailing `!`, e.g. `{df!}`) in `text`.
-/// `f`/`F` expand to full paths, `o`/`O` to names only (v1 does not
-/// distinguish the lower/upper-case pair further - see the design doc's
-/// open question); the `d`-prefixed codes draw from `dest` instead of
-/// `source`. A `!` suffix makes a missing `dest` expand to an empty string
-/// instead of failing.
+/// (each also accepted with a trailing `!`, e.g. `{df!}`) in `text` with a
+/// single left-to-right pass: multiple matching paths/names are joined with
+/// a plain space, and an unrecognized `{...}` (including one that came from
+/// a *substituted* value, such as a filename that itself contains literal
+/// `{f}` text) is copied through untouched rather than re-scanned. There is
+/// no shell-quoting - `External` steps run their argv directly, never
+/// through a shell, so quote characters here would just become literal
+/// output; see [`expand_argv_element`] for the per-path expansion a whole
+/// argv element made of one placeholder gets instead.
 pub fn expand_text(text: &str, source: &SelectionCtx, dest: Option<&SelectionCtx>) -> Result<String, ExpandError> {
-    let mut out = text.to_string();
-    for code in ["df", "dF", "do", "dO", "f", "F", "o", "O"] {
-        for optional in [true, false] {
-            let token = if optional { format!("{{{code}!}}") } else { format!("{{{code}}}") };
-            if !out.contains(&token) {
-                continue;
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let inner = &after_open[..close];
+        match parse_token(inner) {
+            Some(token) => {
+                let values = match resolve_token(&token, source, dest, inner)? {
+                    Some(paths) if token.is_path => path_strings(paths),
+                    Some(paths) => name_strings(paths),
+                    None => Vec::new(),
+                };
+                out.push_str(&values.join(" "));
             }
-            let is_dest = code.starts_with('d');
-            let is_path = code.ends_with('f') || code.ends_with('F');
-            let ctx = if is_dest {
-                match dest {
-                    Some(d) => Some(d),
-                    None if optional => None,
-                    None => return Err(ExpandError::MissingDest(token)),
-                }
-            } else {
-                Some(source)
+            None => {
+                out.push('{');
+                out.push_str(inner);
+                out.push('}');
+            }
+        }
+        rest = &after_open[close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// The result of expanding one argv element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpandedArg {
+    /// The element was exactly one placeholder naming a list (optionally
+    /// `!`-suffixed): expands to zero or more raw, unquoted argv elements -
+    /// one per selected path/name - rather than one joined string, since
+    /// nothing downstream runs through a shell to split them back apart.
+    Many(Vec<String>),
+    /// Anything else (plain text, or a placeholder embedded in a larger
+    /// string): plain [`expand_text`] expansion.
+    One(String),
+}
+
+/// Expand one `External` step argv element. `text` trimmed is checked
+/// against the eight placeholder forms first; only an exact whole-element
+/// match gets the per-path [`ExpandedArg::Many`] treatment described there.
+pub fn expand_argv_element(
+    text: &str,
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+) -> Result<ExpandedArg, ExpandError> {
+    if let Some(inner) = text.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        if let Some(token) = parse_token(inner) {
+            let values = match resolve_token(&token, source, dest, inner)? {
+                Some(paths) if token.is_path => path_strings(paths),
+                Some(paths) => name_strings(paths),
+                None => Vec::new(),
             };
-            let replacement = match ctx {
-                Some(c) if is_path => joined_paths(&c.paths),
-                Some(c) => joined_names(&c.paths),
-                None => String::new(),
-            };
-            out = out.replace(&token, &replacement);
+            return Ok(ExpandedArg::Many(values));
         }
     }
-    Ok(out)
+    Ok(ExpandedArg::One(expand_text(text, source, dest)?))
 }
 
 /// Path to `functions.json` under [`crate::settings::config_dir`].
@@ -372,17 +438,34 @@ mod tests {
     }
 
     #[test]
-    fn f_expands_to_shell_quoted_absolute_paths() {
+    fn f_embedded_in_text_expands_to_space_joined_raw_absolute_paths() {
+        // No shell quoting: External steps run their argv directly, never
+        // through a shell, so quote characters here would just become part
+        // of the literal string. This embedded form only produces one
+        // output string; `{f}` as a *whole* argv element is expanded
+        // per-path instead (see `expand_argv_element` tests below).
         let src = ctx(&["/home/x/a.txt", "/home/x/b c.txt"], "/home/x");
-        let out = expand_text("cp {f} /dst", &src, None).unwrap();
-        assert_eq!(out, "cp /home/x/a.txt '/home/x/b c.txt' /dst");
+        let out = expand_text("paths: {f}", &src, None).unwrap();
+        assert_eq!(out, "paths: /home/x/a.txt /home/x/b c.txt");
     }
 
     #[test]
-    fn o_expands_to_shell_quoted_basenames() {
+    fn o_embedded_in_text_expands_to_space_joined_raw_basenames() {
         let src = ctx(&["/home/x/a.txt", "/home/x/b c.txt"], "/home/x");
         let out = expand_text("notify-send done {o}", &src, None).unwrap();
-        assert_eq!(out, "notify-send done a.txt 'b c.txt'");
+        assert_eq!(out, "notify-send done a.txt b c.txt");
+    }
+
+    #[test]
+    fn a_filename_containing_literal_placeholder_text_is_not_re_expanded() {
+        // Regression for a real shell-injection-shaped bug: expansion must
+        // be a single left-to-right pass over the *original* text. A
+        // multi-pass implementation that re-scans its own output after
+        // substituting one placeholder would expand a filename like
+        // `;touch PWNED;{f}` a second time once it lands in `out`.
+        let src = ctx(&["/home/x/;touch PWNED;{f}"], "/home/x");
+        let out = expand_text("ls {f}", &src, None).unwrap();
+        assert_eq!(out, "ls /home/x/;touch PWNED;{f}");
     }
 
     #[test]
@@ -423,6 +506,43 @@ mod tests {
     fn text_with_no_placeholders_is_unchanged() {
         let src = ctx(&["/home/x/a.txt"], "/home/x");
         assert_eq!(expand_text("notify-send hello", &src, None).unwrap(), "notify-send hello");
+    }
+
+    #[test]
+    fn whole_token_f_expands_to_one_argv_element_per_selected_path() {
+        let src = ctx(&["/home/x/a.txt", "/home/x/b c.txt"], "/home/x");
+        let out = expand_argv_element("{f}", &src, None).unwrap();
+        assert_eq!(
+            out,
+            ExpandedArg::Many(vec!["/home/x/a.txt".to_string(), "/home/x/b c.txt".to_string()])
+        );
+    }
+
+    #[test]
+    fn whole_token_o_expands_to_one_argv_element_per_selected_name() {
+        let src = ctx(&["/home/x/a.txt", "/home/x/b c.txt"], "/home/x");
+        let out = expand_argv_element("{o}", &src, None).unwrap();
+        assert_eq!(out, ExpandedArg::Many(vec!["a.txt".to_string(), "b c.txt".to_string()]));
+    }
+
+    #[test]
+    fn whole_token_on_empty_selection_expands_to_zero_argv_elements() {
+        let src = ctx(&[], "/home/x");
+        assert_eq!(expand_argv_element("{f}", &src, None).unwrap(), ExpandedArg::Many(vec![]));
+    }
+
+    #[test]
+    fn non_whole_token_text_still_expands_as_one_joined_element() {
+        let src = ctx(&["/home/x/a.txt", "/home/x/b.txt"], "/home/x");
+        let out = expand_argv_element("hi {o}", &src, None).unwrap();
+        assert_eq!(out, ExpandedArg::One("hi a.txt b.txt".to_string()));
+    }
+
+    #[test]
+    fn plain_argv_element_with_no_placeholder_passes_through() {
+        let src = ctx(&[], "/home/x");
+        let out = expand_argv_element("notify-send", &src, None).unwrap();
+        assert_eq!(out, ExpandedArg::One("notify-send".to_string()));
     }
 
     #[test]
