@@ -5,6 +5,13 @@ use opusdm_ipc::Settings;
 /// Generate the CSS string for the settings-driven stylesheet.
 pub fn generate_css(settings: &Settings) -> String {
     let c = &settings.theme.colors;
+    // The generic-widget palette (window/entry/dropdown/button/list-box/
+    // popover) - fixed colours, independent of whatever GTK theme is or
+    // isn't installed. Placed after the opt-in `theme_window` block below
+    // (see the ordering note at the final `format!`) so `.row-dir`,
+    // `.stat-source`, and a `theme_window`-derived window colour all still
+    // win over it wherever OpusDM already hand-paints something.
+    let shared_chrome_css = opusdm_ui::chrome_css(settings.appearance.theme_mode);
     // Opt-in: carry the file colours into the window chrome as well, so a dark
     // preset does not leave a light toolbar around a dark list. Redefining the
     // two named colours also reaches the button gradients, which are written in
@@ -75,7 +82,6 @@ pub fn generate_css(settings: &Settings) -> String {
          .cell-selected {{ background-color: {}; color: {}; }} \
          .filter-bar {{ background: alpha(@theme_bg_color, 0.8); border-bottom: 1px solid rgba(0, 0, 0, 0.2); padding: 2px 4px; }} \
          .dim-label {{ opacity: 0.7; font-size: 0.85em; }} \
-         .command-palette {{ background: @theme_bg_color; }} \
          .palette-search {{ font-size: 1.1em; padding: 4px; }} \
          .palette-cat {{ font-size: 0.8em; font-weight: bold; opacity: 0.6; }} \
          .palette-title {{ font-weight: 500; }} \
@@ -97,7 +103,12 @@ pub fn generate_css(settings: &Settings) -> String {
         c.file_bg, c.file_fg,
         c.selected_bg, c.selected_fg,
     );
-    format!("{chrome_css}{list_css}{mono_css}{base}")
+    // `chrome_css` (the opt-in `theme_window` block) must stay first when
+    // present: its `@define-color` statements have to precede any use of
+    // `@theme_bg_color`/`@theme_fg_color` later in this same stylesheet
+    // (the `button.opus-btn` gradients), and GTK's CSS parser enforces that
+    // ordering strictly.
+    format!("{chrome_css}{shared_chrome_css}{list_css}{mono_css}{base}")
 }
 
 #[cfg(test)]
@@ -112,6 +123,14 @@ mod tests {
         assert!(css.contains(".stat-dest"));
         assert!(css.contains(".row-dir"));
         assert!(css.contains(".row-file"));
+    }
+
+    #[test]
+    fn includes_the_shared_chrome_css_for_the_selected_theme_mode() {
+        let mut settings = Settings::default();
+        settings.appearance.theme_mode = opusdm_ipc::ThemeMode::Light;
+        let css = generate_css(&settings);
+        assert!(css.contains(&opusdm_ui::chrome_css(opusdm_ipc::ThemeMode::Light)));
     }
 
     #[test]

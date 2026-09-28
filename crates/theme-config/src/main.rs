@@ -43,6 +43,17 @@ fn build_window(app: &gtk::Application) {
         .default_height(680)
         .build();
 
+    // Same fixed dark/light chrome palette as opusdm-lister
+    // (`opusdm_ui::chrome_css`), so this window matches the rest of
+    // OpusDM regardless of what GTK theme is or isn't installed.
+    let chrome_provider = gtk::CssProvider::new();
+    chrome_provider.load_from_data(&opusdm_ui::chrome_css(settings_data.appearance.theme_mode));
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().expect("no default GDK display: cannot run without one"),
+        &chrome_provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
     outer.set_margin_top(12);
     outer.set_margin_bottom(12);
@@ -61,7 +72,13 @@ fn build_window(app: &gtk::Application) {
 
     let theme_mode_section = Rc::new(ui::ThemeModeSection::new(settings_data.appearance.theme_mode));
     desktop_page.append(&theme_mode_section.root);
-    theme_mode_section.connect_mode_changed(opusdm_ui::apply_theme_mode);
+    {
+        let chrome_provider = chrome_provider.clone();
+        theme_mode_section.connect_mode_changed(move |mode| {
+            opusdm_ui::apply_theme_mode(mode);
+            chrome_provider.load_from_data(&opusdm_ui::chrome_css(mode));
+        });
+    }
 
     let icon_set = Rc::new(RefCell::new(Rc::new(ui::IconSetSection::new(&theme.icon_set))));
     desktop_page.append(&icon_set.borrow().root);

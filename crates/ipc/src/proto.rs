@@ -148,10 +148,14 @@ impl Default for ColorSettings {
             source_fg: "#000000".to_string(),
             dest_bg: "#FFB6C1".to_string(),
             dest_fg: "#000000".to_string(),
-            dir_bg: "#FFFFFF".to_string(),
-            dir_fg: "#000000".to_string(),
-            file_bg: "#FFFFFF".to_string(),
-            file_fg: "#000000".to_string(),
+            // Dark since ThemeMode::Dark is now this app's own default (see
+            // `ThemeMode`) - matches `opusdm_ui::chrome_css`'s dark surface
+            // colour, so a fresh install's file list agrees with the rest
+            // of the window instead of staying white against it.
+            dir_bg: "#2b2d31".to_string(),
+            dir_fg: "#e3e3e3".to_string(),
+            file_bg: "#2b2d31".to_string(),
+            file_fg: "#e3e3e3".to_string(),
             selected_bg: "#3584E4".to_string(),
             selected_fg: "#FFFFFF".to_string(),
         }
@@ -460,6 +464,15 @@ mod tests {
     #[test]
     fn auto_refresh_is_on_by_default() {
         assert!(Behavior::default().auto_refresh);
+    }
+
+    #[test]
+    fn file_and_dir_row_colours_default_to_dark_since_dark_is_the_app_default() {
+        let c = ColorSettings::default();
+        assert_eq!(c.dir_bg, "#2b2d31");
+        assert_eq!(c.file_bg, "#2b2d31");
+        assert_eq!(c.dir_fg, "#e3e3e3");
+        assert_eq!(c.file_fg, "#e3e3e3");
     }
 
     #[test]
