@@ -483,6 +483,16 @@ impl Ui {
                 }
             }
             ToLister::Pong => {}
+            ToLister::QuerySelection => {
+                let _ = self.hub.client.send(&opusdm_ipc::ToHub::SelectionReply {
+                    paths: self.selected_paths(),
+                    cwd: self.cwd_path(),
+                });
+            }
+            ToLister::FunctionOutput { .. } => {}
+            ToLister::FunctionStepDone { .. } => {}
+            ToLister::FunctionFailed { .. } => {}
+            ToLister::FunctionDone => {}
         }
     }
 
