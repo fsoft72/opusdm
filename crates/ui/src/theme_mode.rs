@@ -3,14 +3,19 @@
 use gtk4 as gtk;
 use opusdm_ipc::ThemeMode;
 
-/// Ask GTK for the dark or light variant of the active theme
-/// (`gtk-application-prefer-dark-theme`), so every widget - buttons,
-/// entries, dialog chrome included - is themed consistently by the real
-/// theme engine, rather than only the specific classes OpusDM hand-paints
-/// in its own CSS (file list rows, status bar, and - when enabled - the
-/// window background).
+/// Force GTK's own built-in "Adwaita" theme (compiled into libgtk4 itself,
+/// always available, no external theme files needed) instead of whatever
+/// theme the desktop session happens to push via XSettings (Breeze, on a
+/// KDE session - its GTK4 port draws buttons with a background-image
+/// gradient `chrome_css` then has to fight with `background-image: none`,
+/// and looked meaningfully different again inside a nested Xephyr sandbox
+/// with no XSettings service at all). A known, simple, always-present base
+/// theme is what `chrome_css` is designed to sit on top of - every OpusDM
+/// window ends up looking identical regardless of the desktop it runs
+/// under, rather than depending on that desktop's own theme's assumptions.
 pub fn apply_theme_mode(mode: ThemeMode) {
     if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_theme_name(Some("Adwaita"));
         settings.set_gtk_application_prefer_dark_theme(mode == ThemeMode::Dark);
     }
 }
