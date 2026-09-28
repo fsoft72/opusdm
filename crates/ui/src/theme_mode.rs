@@ -68,6 +68,9 @@ pub fn chrome_css(mode: ThemeMode) -> String {
          scrolledwindow, viewport {{ background-color: {wbg}; }} \
          box, grid, stack, frame {{ background-color: {wbg}; color: {fg}; }} \
          button > *, dropdown > *, headerbar > * {{ background-color: transparent; }} \
+         columnview box, columnview grid, columnview stack, columnview frame, \
+         list-box box, list-box grid, list-box stack, list-box frame, \
+         popover box, popover grid, popover stack, popover frame {{ background-color: transparent; }} \
          label {{ color: {fg}; }} \
          checkbutton, radiobutton {{ color: {fg}; }} \
          headerbar {{ background-color: {wbg}; color: {fg}; }} \
@@ -115,6 +118,19 @@ mod tests {
         let css = chrome_css(ThemeMode::Dark);
         assert!(css.contains("button > *") || css.contains("button>*"));
         assert!(css.contains("transparent"));
+    }
+
+    #[test]
+    fn columnview_rows_are_not_covered_by_the_generic_container_paint() {
+        // Same failure shape as the button/dropdown case above, one level
+        // deeper: a ColumnView cell's icon+label layout is itself a box, so
+        // the generic box/grid/stack/frame rule painted every Lister row
+        // window-coloured, hiding `.row-dir`/`.row-file`/`.cell-selected`
+        // (OpusDM's own, more specific per-row colouring) underneath it.
+        let css = chrome_css(ThemeMode::Dark);
+        for selector in ["columnview box", "list-box box", "popover box"] {
+            assert!(css.contains(selector), "missing reset for {selector}");
+        }
     }
 
     #[test]
