@@ -381,6 +381,7 @@ fn build_window(
         terminal: terminal.clone(),
         css_provider,
         nav_generation: Cell::new(0),
+        function_log: RefCell::new(None),
     });
 
     // Drain coalesced watch notices on the GTK thread.

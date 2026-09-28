@@ -121,6 +121,12 @@ pub struct Ui {
     /// generation no longer matches was superseded by a later navigation and
     /// its result is dropped instead of applied.
     pub nav_generation: Cell<u64>,
+    /// The log buffer of the currently-open Function Editor's per-function
+    /// window, if one is open - Function run events are appended here while
+    /// set, so the Test button shows real-time output. `None` when no
+    /// editor window is open (a palette-triggered run then only flashes a
+    /// summary).
+    pub function_log: RefCell<Option<gtk::TextBuffer>>,
 }
 
 impl Ui {

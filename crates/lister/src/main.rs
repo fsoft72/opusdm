@@ -10,6 +10,7 @@ mod columns;
 mod context_menu;
 mod dnd;
 mod filter;
+mod function_editor;
 mod glyphs;
 mod icons;
 mod keys;
