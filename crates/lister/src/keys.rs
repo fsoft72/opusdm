@@ -12,7 +12,7 @@ use gtk4::gdk;
 /// A single enum shared by `keys::resolve`, `palette::get_commands` and
 /// `palette::execute_command` so a typo in any one of them is a compile
 /// error instead of a silently dead-ending shortcut.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CommandId {
     Filter,
     Preview,
@@ -43,6 +43,10 @@ pub enum CommandId {
     SetDest,
     SetNone,
     TogglePin,
+    /// Open the Function Editor's manager window (list/new/edit/delete).
+    ManageFunctions,
+    /// Run a saved Function by id.
+    RunFunction(opusdm_ipc::function::FunctionId),
 }
 
 /// Where the keyboard focus is when the key arrives.
@@ -68,7 +72,7 @@ pub enum Motion {
 }
 
 /// The resolved meaning of a key press.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Action {
     /// Run the command palette entry with this id.
     Command(CommandId),
@@ -272,7 +276,7 @@ mod tests {
 
     #[test]
     fn every_command_id_the_map_emits_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         // Sweep the whole keyval space we bind from, in both focus modes.
         let keys = [
             gdk::Key::j, gdk::Key::k, gdk::Key::g, gdk::Key::G, gdk::Key::l,
@@ -291,5 +295,11 @@ mod tests {
                 assert!(known.contains(&id), "{key:?} maps to unknown command {id:?}");
             }
         }
+    }
+
+    #[test]
+    fn manage_functions_command_exists_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::ManageFunctions));
     }
 }

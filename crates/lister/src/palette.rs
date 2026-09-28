@@ -8,13 +8,14 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::{Op, Role, ToHub};
+use std::borrow::Cow;
 use std::rc::Rc;
 
 #[derive(Clone)]
 pub struct CommandItem {
     pub id: CommandId,
-    pub title: &'static str,
-    pub category: &'static str,
+    pub title: Cow<'static, str>,
+    pub category: Cow<'static, str>,
     pub shortcut: Option<&'static str>,
 }
 
@@ -22,40 +23,54 @@ pub struct CommandItem {
 /// array instead of a `Vec` rebuilt (and heap-allocated) on every palette
 /// open; `get_commands` just borrows it.
 const COMMANDS: &[CommandItem] = &[
-        CommandItem { id: CommandId::Filter, title: "Filter Files in Current View", category: "View", shortcut: Some("/") },
-        CommandItem { id: CommandId::Preview, title: "Quick Look File Preview", category: "View", shortcut: Some("F3 / Space") },
-        CommandItem { id: CommandId::SelectAll, title: "Select All", category: "Selection", shortcut: Some("Ctrl+A") },
-        CommandItem { id: CommandId::DeselectAll, title: "Deselect All", category: "Selection", shortcut: Some("Esc") },
-        CommandItem { id: CommandId::InvertSelection, title: "Invert Selection", category: "Selection", shortcut: Some("*") },
-        CommandItem { id: CommandId::SelectPattern, title: "Select by Pattern (*.rs, etc.)", category: "Selection", shortcut: Some("+") },
-        CommandItem { id: CommandId::DeselectPattern, title: "Deselect by Pattern", category: "Selection", shortcut: Some("-") },
-        CommandItem { id: CommandId::ToggleHidden, title: "Toggle Hidden Files", category: "View", shortcut: Some("Ctrl+H") },
-        CommandItem { id: CommandId::Copy, title: "Copy (Source -> Dest)", category: "File Ops", shortcut: Some("c") },
-        CommandItem { id: CommandId::Move, title: "Move (Source -> Dest)", category: "File Ops", shortcut: Some("m") },
-        CommandItem { id: CommandId::Delete, title: "Delete Selected Items", category: "File Ops", shortcut: Some("d / Del") },
-        CommandItem { id: CommandId::ClipCopy, title: "Copy to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+C") },
-        CommandItem { id: CommandId::ClipCut, title: "Cut to Clipboard", category: "Clipboard", shortcut: Some("Ctrl+X") },
-        CommandItem { id: CommandId::ClipPaste, title: "Paste from Clipboard", category: "Clipboard", shortcut: Some("Ctrl+V") },
-        CommandItem { id: CommandId::Mkdir, title: "Make Directory...", category: "File Ops", shortcut: Some("F7") },
-        CommandItem { id: CommandId::NewFile, title: "New File...", category: "File Ops", shortcut: Some("Shift+F7") },
-        CommandItem { id: CommandId::Rename, title: "Rename...", category: "File Ops", shortcut: Some("F2") },
-        CommandItem { id: CommandId::BatchRename, title: "Batch Rename Selected Files (Regex/Numbering)...", category: "File Ops", shortcut: Some("F2 (multi)") },
-        CommandItem { id: CommandId::Reload, title: "Reload / Refresh Current Directory", category: "View", shortcut: Some("Ctrl+R") },
-        CommandItem { id: CommandId::ParentDir, title: "Go to Parent Directory", category: "Navigation", shortcut: Some("h / Backspace") },
-        CommandItem { id: CommandId::HomeDir, title: "Go to Home Directory (~)", category: "Navigation", shortcut: Some("~") },
-        CommandItem { id: CommandId::Terminal, title: "Toggle Terminal Drawer", category: "Tools", shortcut: Some("F4 / `") },
-        CommandItem { id: CommandId::CalcSizes, title: "Calculate Directory Sizes", category: "Tools", shortcut: Some("Space (on dir)") },
-        CommandItem { id: CommandId::CalcChecksums, title: "Calculate Checksums (SHA-256 / MD5)...", category: "Tools", shortcut: None },
-        CommandItem { id: CommandId::CompareDirs, title: "Compare / Sync Directories (Visual Diff)...", category: "Tools", shortcut: None },
-        CommandItem { id: CommandId::SetSource, title: "Set Role: SOURCE", category: "Roles", shortcut: None },
-        CommandItem { id: CommandId::SetDest, title: "Set Role: DEST", category: "Roles", shortcut: None },
-        CommandItem { id: CommandId::SetNone, title: "Set Role: NONE", category: "Roles", shortcut: None },
-        CommandItem { id: CommandId::TogglePin, title: "Toggle Role Pin / Lock", category: "Roles", shortcut: None },
+        CommandItem { id: CommandId::Filter, title: Cow::Borrowed("Filter Files in Current View"), category: Cow::Borrowed("View"), shortcut: Some("/") },
+        CommandItem { id: CommandId::Preview, title: Cow::Borrowed("Quick Look File Preview"), category: Cow::Borrowed("View"), shortcut: Some("F3 / Space") },
+        CommandItem { id: CommandId::SelectAll, title: Cow::Borrowed("Select All"), category: Cow::Borrowed("Selection"), shortcut: Some("Ctrl+A") },
+        CommandItem { id: CommandId::DeselectAll, title: Cow::Borrowed("Deselect All"), category: Cow::Borrowed("Selection"), shortcut: Some("Esc") },
+        CommandItem { id: CommandId::InvertSelection, title: Cow::Borrowed("Invert Selection"), category: Cow::Borrowed("Selection"), shortcut: Some("*") },
+        CommandItem { id: CommandId::SelectPattern, title: Cow::Borrowed("Select by Pattern (*.rs, etc.)"), category: Cow::Borrowed("Selection"), shortcut: Some("+") },
+        CommandItem { id: CommandId::DeselectPattern, title: Cow::Borrowed("Deselect by Pattern"), category: Cow::Borrowed("Selection"), shortcut: Some("-") },
+        CommandItem { id: CommandId::ToggleHidden, title: Cow::Borrowed("Toggle Hidden Files"), category: Cow::Borrowed("View"), shortcut: Some("Ctrl+H") },
+        CommandItem { id: CommandId::Copy, title: Cow::Borrowed("Copy (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("c") },
+        CommandItem { id: CommandId::Move, title: Cow::Borrowed("Move (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("m") },
+        CommandItem { id: CommandId::Delete, title: Cow::Borrowed("Delete Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: Some("d / Del") },
+        CommandItem { id: CommandId::ClipCopy, title: Cow::Borrowed("Copy to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+C") },
+        CommandItem { id: CommandId::ClipCut, title: Cow::Borrowed("Cut to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+X") },
+        CommandItem { id: CommandId::ClipPaste, title: Cow::Borrowed("Paste from Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+V") },
+        CommandItem { id: CommandId::Mkdir, title: Cow::Borrowed("Make Directory..."), category: Cow::Borrowed("File Ops"), shortcut: Some("F7") },
+        CommandItem { id: CommandId::NewFile, title: Cow::Borrowed("New File..."), category: Cow::Borrowed("File Ops"), shortcut: Some("Shift+F7") },
+        CommandItem { id: CommandId::Rename, title: Cow::Borrowed("Rename..."), category: Cow::Borrowed("File Ops"), shortcut: Some("F2") },
+        CommandItem { id: CommandId::BatchRename, title: Cow::Borrowed("Batch Rename Selected Files (Regex/Numbering)..."), category: Cow::Borrowed("File Ops"), shortcut: Some("F2 (multi)") },
+        CommandItem { id: CommandId::Reload, title: Cow::Borrowed("Reload / Refresh Current Directory"), category: Cow::Borrowed("View"), shortcut: Some("Ctrl+R") },
+        CommandItem { id: CommandId::ParentDir, title: Cow::Borrowed("Go to Parent Directory"), category: Cow::Borrowed("Navigation"), shortcut: Some("h / Backspace") },
+        CommandItem { id: CommandId::HomeDir, title: Cow::Borrowed("Go to Home Directory (~)"), category: Cow::Borrowed("Navigation"), shortcut: Some("~") },
+        CommandItem { id: CommandId::Terminal, title: Cow::Borrowed("Toggle Terminal Drawer"), category: Cow::Borrowed("Tools"), shortcut: Some("F4 / `") },
+        CommandItem { id: CommandId::CalcSizes, title: Cow::Borrowed("Calculate Directory Sizes"), category: Cow::Borrowed("Tools"), shortcut: Some("Space (on dir)") },
+        CommandItem { id: CommandId::CalcChecksums, title: Cow::Borrowed("Calculate Checksums (SHA-256 / MD5)..."), category: Cow::Borrowed("Tools"), shortcut: None },
+        CommandItem { id: CommandId::CompareDirs, title: Cow::Borrowed("Compare / Sync Directories (Visual Diff)..."), category: Cow::Borrowed("Tools"), shortcut: None },
+        CommandItem { id: CommandId::SetSource, title: Cow::Borrowed("Set Role: SOURCE"), category: Cow::Borrowed("Roles"), shortcut: None },
+        CommandItem { id: CommandId::SetDest, title: Cow::Borrowed("Set Role: DEST"), category: Cow::Borrowed("Roles"), shortcut: None },
+        CommandItem { id: CommandId::SetNone, title: Cow::Borrowed("Set Role: NONE"), category: Cow::Borrowed("Roles"), shortcut: None },
+        CommandItem { id: CommandId::TogglePin, title: Cow::Borrowed("Toggle Role Pin / Lock"), category: Cow::Borrowed("Roles"), shortcut: None },
+        CommandItem { id: CommandId::ManageFunctions, title: Cow::Borrowed("Manage Functions..."), category: Cow::Borrowed("Functions"), shortcut: None },
 ];
 
 /// Borrow the command palette's entries.
-pub fn get_commands() -> &'static [CommandItem] {
-    COMMANDS
+/// Every palette entry: the static commands, plus one dynamic "Function"
+/// entry per saved function (re-read from `functions.json` on every call,
+/// so a function created/renamed/deleted since the palette last opened is
+/// always current).
+pub fn get_commands() -> Vec<CommandItem> {
+    let mut items: Vec<CommandItem> = COMMANDS.to_vec();
+    for f in opusdm_ipc::function::load_functions() {
+        items.push(CommandItem {
+            id: CommandId::RunFunction(f.id),
+            title: Cow::Owned(f.name),
+            category: Cow::Borrowed("Function"),
+            shortcut: None,
+        });
+    }
+    items
 }
 
 /// Execute a command by ID. The match is exhaustive (no wildcard arm): a
@@ -262,6 +277,16 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             let msg = if active { ToHub::LockRole } else { ToHub::UnlockRole };
             let _ = ui.hub.client.send(&msg);
         }
+        CommandId::ManageFunctions => {
+            crate::function_editor::open_functions_manager(ui);
+        }
+        CommandId::RunFunction(id) => {
+            let Some(function) = opusdm_ipc::function::load_functions().into_iter().find(|f| f.id == id) else {
+                crate::actions::flash(ui, "function not found (it may have been deleted)");
+                return;
+            };
+            let _ = ui.hub.client.send(&ToHub::RunFunction { steps: function.steps });
+        }
     }
 }
 
@@ -285,7 +310,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     let commands = get_commands();
     let mut rows: Vec<(gtk::ListBoxRow, CommandItem)> = Vec::new();
 
-    for cmd in commands {
+    for cmd in &commands {
         let row = gtk::ListBoxRow::new();
         let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         hbox.set_margin_start(8);
@@ -293,12 +318,12 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
         hbox.set_margin_top(6);
         hbox.set_margin_bottom(6);
 
-        let cat_label = gtk::Label::new(Some(cmd.category));
+        let cat_label = gtk::Label::new(Some(cmd.category.as_ref()));
         cat_label.add_css_class("palette-cat");
         cat_label.set_size_request(80, -1);
         cat_label.set_xalign(0.0);
 
-        let title_label = gtk::Label::new(Some(cmd.title));
+        let title_label = gtk::Label::new(Some(cmd.title.as_ref()));
         title_label.set_xalign(0.0);
         title_label.set_hexpand(true);
         title_label.add_css_class("palette-title");
@@ -361,7 +386,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
                 for (r, cmd) in &rows_for_exec {
                     if *r == selected_row {
                         dlg.close();
-                        execute_command(&ui_for_exec, cmd.id);
+                        execute_command(&ui_for_exec, cmd.id.clone());
                         break;
                     }
                 }
