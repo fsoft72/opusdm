@@ -227,6 +227,14 @@ mod tests {
             behavior: Default::default(),
         };
         provider.load_from_data(&generate_css(&settings));
-        assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+        assert!(errors.borrow().is_empty(), "dark: {:?}", errors.borrow());
+
+        errors.borrow_mut().clear();
+        let light_settings = Settings {
+            appearance: opusdm_ipc::Appearance { theme_mode: opusdm_ipc::ThemeMode::Light, ..settings.appearance },
+            ..settings
+        };
+        provider.load_from_data(&generate_css(&light_settings));
+        assert!(errors.borrow().is_empty(), "light: {:?}", errors.borrow());
     }
 }

@@ -65,7 +65,13 @@ pub fn chrome_css(mode: ThemeMode) -> String {
          button:hover, dropdown:hover, dropdown > button:hover {{ background-color: {hover}; }} \
          list-box, list-box row {{ background-color: {sbg}; color: {fg}; }} \
          popover, popover.background, popover contents {{ background-color: {sbg}; color: {fg}; }} \
-         scrolledwindow, viewport {{ background-color: {wbg}; }} ",
+         scrolledwindow, viewport {{ background-color: {wbg}; }} \
+         label {{ color: {fg}; }} \
+         checkbutton, radiobutton {{ color: {fg}; }} \
+         headerbar {{ background-color: {wbg}; color: {fg}; }} \
+         notebook > header {{ background-color: {wbg}; }} \
+         notebook > header tab {{ background-color: {sbg}; color: {fg}; border: 1px solid {border}; }} \
+         notebook > header tab:checked {{ background-color: {wbg}; }} ",
         wbg = p.window_bg,
         sbg = p.surface_bg,
         hover = p.surface_hover,
@@ -91,8 +97,27 @@ mod tests {
     #[test]
     fn chrome_css_covers_the_generic_widgets_opusdm_does_not_hand_paint() {
         let css = chrome_css(ThemeMode::Dark);
-        for selector in ["window {", "entry,", "button", "list-box", "popover", "dropdown"] {
+        for selector in [
+            "window {", "entry,", "button", "list-box", "popover", "dropdown", "label", "notebook",
+        ] {
             assert!(css.contains(selector), "missing rule for {selector}");
+        }
+    }
+
+    #[test]
+    fn label_and_notebook_text_colour_is_set_explicitly_not_left_to_inheritance() {
+        // Regression: `window { color }` alone is *inherited* by descendant
+        // labels, but GTK's own theme rules directly match `label`/
+        // `notebook` nodes - an explicit match always wins over an
+        // inherited value regardless of provider priority, so relying on
+        // inheritance left label text unreadable (light-on-light or
+        // dark-on-dark) whenever the active GTK theme's own text colour
+        // disagreed with ours (e.g. a system that forces prefer-dark via
+        // XSettings regardless of what `apply_theme_mode` asks for).
+        for (mode, text) in [(ThemeMode::Dark, DARK.text), (ThemeMode::Light, LIGHT.text)] {
+            let css = chrome_css(mode);
+            assert!(css.contains(&format!("label {{ color: {text}")), "{mode:?} label color");
+            assert!(css.contains(&format!("notebook")), "{mode:?} notebook rule");
         }
     }
 
