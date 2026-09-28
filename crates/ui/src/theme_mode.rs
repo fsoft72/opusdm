@@ -66,6 +66,8 @@ pub fn chrome_css(mode: ThemeMode) -> String {
          list-box, list-box row {{ background-color: {sbg}; color: {fg}; }} \
          popover, popover.background, popover contents {{ background-color: {sbg}; color: {fg}; }} \
          scrolledwindow, viewport {{ background-color: {wbg}; }} \
+         box, grid, stack, frame {{ background-color: {wbg}; color: {fg}; }} \
+         button > *, dropdown > *, headerbar > * {{ background-color: transparent; }} \
          label {{ color: {fg}; }} \
          checkbutton, radiobutton {{ color: {fg}; }} \
          headerbar {{ background-color: {wbg}; color: {fg}; }} \
@@ -101,6 +103,35 @@ mod tests {
             "window {", "entry,", "button", "list-box", "popover", "dropdown", "label", "notebook",
         ] {
             assert!(css.contains(selector), "missing rule for {selector}");
+        }
+    }
+
+    #[test]
+    fn interactive_controls_reset_their_own_direct_children_back_to_transparent() {
+        // The broad box/grid/stack/frame rule above would otherwise paint
+        // the inner box a gtk::Button/DropDown builds for its icon+label
+        // layout with the *window* colour, covering the control's own
+        // *surface* colour underneath with a visible mismatched patch.
+        let css = chrome_css(ThemeMode::Dark);
+        assert!(css.contains("button > *") || css.contains("button>*"));
+        assert!(css.contains("transparent"));
+    }
+
+    #[test]
+    fn chrome_css_paints_generic_containers_directly_since_background_color_does_not_inherit() {
+        // Regression: `background-color` is not an inherited CSS property
+        // (unlike `color`), so `window { background-color }` alone only
+        // paints the window's own node - every plain gtk::Box/Grid/Stack
+        // a notebook page is built from keeps whatever opaque background
+        // the active GTK theme gives it, showing through on top of the
+        // window colour underneath. Structural containers must be painted
+        // with the window colour explicitly, the same way interactive
+        // controls are painted with the surface colour.
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let css = chrome_css(mode);
+            for selector in ["box", "grid", "stack", "frame"] {
+                assert!(css.contains(selector), "{mode:?}: missing container rule for {selector}");
+            }
         }
     }
 
