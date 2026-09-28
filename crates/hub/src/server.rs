@@ -52,6 +52,10 @@ pub enum HubEvent {
     /// Theme changed (from `opusdm-settings`). Carries the new theme; the GTK
     /// side repaints the desktop background and re-renders desktop icons.
     ThemeChanged(opusdm_ipc::Theme),
+    /// Appearance changed (from `opusdm-settings`). Carries the new value;
+    /// the GTK side applies `appearance.theme_mode` live via
+    /// `opusdm_ui::apply_theme_mode`.
+    AppearanceChanged(opusdm_ipc::Appearance),
 }
 
 /// Commands the GTK toolbar (or the SIGCHLD handler) sends to the server.
@@ -322,6 +326,7 @@ impl Hub {
                     let _ = c.tx.send(ToLister::SettingsUpdate(self.current_settings.clone()).into());
                 }
                 let _ = self.evt_tx.send(HubEvent::ThemeChanged(self.current_settings.theme.clone()));
+                let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
             }
 
             ToHub::Register { pid, initial_path } => {

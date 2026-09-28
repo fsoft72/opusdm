@@ -203,6 +203,7 @@ mod tests {
                 type_indicators: true,
                 monospace_list: true,
                 theme_window: true,
+                theme_mode: opusdm_ipc::ThemeMode::default(),
             },
             behavior: Default::default(),
         };

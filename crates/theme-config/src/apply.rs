@@ -158,7 +158,12 @@ mod tests {
     #[test]
     fn theme_supplied_appearance_and_behavior_fields_overwrite_only_what_is_set() {
         let mut data = CustomThemeData::default();
-        data.appearance = Some(Appearance { type_indicators: true, monospace_list: false, theme_window: false });
+        data.appearance = Some(Appearance {
+            type_indicators: true,
+            monospace_list: false,
+            theme_window: false,
+            theme_mode: opusdm_ipc::ThemeMode::default(),
+        });
         let settings = base_settings();
         let merged = merge_custom_theme("t", &data, &settings, &base_desktop());
 

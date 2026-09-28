@@ -8,3 +8,4 @@ rust-version.workspace = true
 gtk4.workspace = true
 x11rb = { workspace = true, features = ["randr"] }
 async-channel.workspace = true
+opusdm-ipc = { path = "../ipc" }

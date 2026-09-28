@@ -485,6 +485,7 @@ impl Ui {
                         || old.appearance.type_indicators != new_settings.appearance.type_indicators
                 };
                 *self.hub.settings.borrow_mut() = new_settings;
+                opusdm_ui::apply_theme_mode(self.hub.settings.borrow().appearance.theme_mode);
                 self.update_css_for_colors();
                 self.view.icon_field.set_icon_set(self.hub.settings.borrow().theme.icon_set.clone());
                 // Auto-refresh may have just been switched on or off.

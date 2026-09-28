@@ -307,12 +307,78 @@ impl AppearanceSection {
         Self { root, type_indicators, monospace_list, theme_window }
     }
 
-    pub fn read(&self) -> Appearance {
+    /// `theme_mode` comes from the separate `ThemeModeSection` (Desktop
+    /// tab), not from a checkbox here.
+    pub fn read(&self, theme_mode: opusdm_ipc::ThemeMode) -> Appearance {
         Appearance {
             type_indicators: self.type_indicators.is_active(),
             monospace_list: self.monospace_list.is_active(),
             theme_window: self.theme_window.is_active(),
+            theme_mode,
         }
+    }
+}
+
+/// The dark/light GTK theme preference drop-down, shown in the Desktop tab
+/// above the ICON SET section.
+pub struct ThemeModeSection {
+    pub root: gtk::Box,
+    dropdown: gtk::DropDown,
+}
+
+impl ThemeModeSection {
+    pub fn new(initial: opusdm_ipc::ThemeMode) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let heading = gtk::Label::new(Some("THEME"));
+        heading.set_xalign(0.0);
+        heading.add_css_class("heading");
+        root.append(&heading);
+
+        let dropdown = gtk::DropDown::from_strings(&["Light", "Dark"]);
+        dropdown.set_selected(Self::index_of(initial));
+
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let name = gtk::Label::new(Some("Mode"));
+        name.set_xalign(0.0);
+        name.set_size_request(90, -1);
+        row.append(&name);
+        row.append(&dropdown);
+        root.append(&row);
+
+        Self { root, dropdown }
+    }
+
+    /// Call `f` with the new mode whenever the drop-down changes, so the
+    /// settings window itself can preview it live.
+    pub fn connect_mode_changed(&self, f: impl Fn(opusdm_ipc::ThemeMode) + 'static) {
+        let dropdown = self.dropdown.clone();
+        self.dropdown.connect_selected_notify(move |_| {
+            let mode = match dropdown.selected() {
+                0 => opusdm_ipc::ThemeMode::Light,
+                _ => opusdm_ipc::ThemeMode::Dark,
+            };
+            f(mode);
+        });
+    }
+
+    fn index_of(mode: opusdm_ipc::ThemeMode) -> u32 {
+        match mode {
+            opusdm_ipc::ThemeMode::Light => 0,
+            opusdm_ipc::ThemeMode::Dark => 1,
+        }
+    }
+
+    /// The currently selected mode.
+    pub fn value(&self) -> opusdm_ipc::ThemeMode {
+        match self.dropdown.selected() {
+            0 => opusdm_ipc::ThemeMode::Light,
+            _ => opusdm_ipc::ThemeMode::Dark,
+        }
+    }
+
+    #[cfg(test)]
+    fn set_mode_for_test(&self, mode: opusdm_ipc::ThemeMode) {
+        self.dropdown.set_selected(Self::index_of(mode));
     }
 }
 
@@ -343,5 +409,22 @@ impl BehaviorSection {
 
     pub fn read(&self) -> Behavior {
         Behavior { auto_refresh: self.auto_refresh.is_active(), auto_refresh_debounce_ms: self.debounce_ms }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opusdm_ipc::ThemeMode;
+
+    #[test]
+    fn theme_mode_section_reports_seeded_then_edited_value() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let s = ThemeModeSection::new(ThemeMode::Light);
+        assert_eq!(s.value(), ThemeMode::Light);
+        s.set_mode_for_test(ThemeMode::Dark);
+        assert_eq!(s.value(), ThemeMode::Dark);
     }
 }

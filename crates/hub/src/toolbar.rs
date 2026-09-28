@@ -150,6 +150,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     let desktop_settings = opusdm_hub::desktop_settings::load();
     let initial_settings = settings::load_settings();
     install_desktop_css(&initial_settings.theme.background);
+    opusdm_ui::apply_theme_mode(initial_settings.appearance.theme_mode);
 
     let desired_desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
         desktop_settings.desktop_dir.as_deref(),
@@ -1063,6 +1064,9 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             if let Some(field) = widgets.desktop.field.borrow().as_ref() {
                 field.set_icon_set(theme.icon_set);
             }
+        }
+        HubEvent::AppearanceChanged(appearance) => {
+            opusdm_ui::apply_theme_mode(appearance.theme_mode);
         }
         HubEvent::DesktopSettingsChanged(ds) => {
             *widgets.desktop.settings.borrow_mut() = ds.clone();

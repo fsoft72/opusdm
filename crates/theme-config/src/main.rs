@@ -32,6 +32,7 @@ fn main() -> gtk::glib::ExitCode {
 
 fn build_window(app: &gtk::Application) {
     let settings_data = model::load_settings();
+    opusdm_ui::apply_theme_mode(settings_data.appearance.theme_mode);
     let theme = settings_data.theme.clone();
     let desktop_data = opusdm_desktop_config::model::load();
 
@@ -57,6 +58,10 @@ fn build_window(app: &gtk::Application) {
     desktop_page.set_margin_bottom(12);
     desktop_page.set_margin_start(12);
     desktop_page.set_margin_end(12);
+
+    let theme_mode_section = Rc::new(ui::ThemeModeSection::new(settings_data.appearance.theme_mode));
+    desktop_page.append(&theme_mode_section.root);
+    theme_mode_section.connect_mode_changed(opusdm_ui::apply_theme_mode);
 
     let icon_set = Rc::new(RefCell::new(Rc::new(ui::IconSetSection::new(&theme.icon_set))));
     desktop_page.append(&icon_set.borrow().root);
@@ -192,6 +197,7 @@ fn build_window(app: &gtk::Application) {
         let menu_section = menu_section.clone();
         let appearance_section = appearance_section.clone();
         let behavior_section = behavior_section.clone();
+        let theme_mode_section = theme_mode_section.clone();
         let note = note.clone();
         apply.connect_clicked(move |_| {
             let selected = icon_set.borrow().value();
@@ -201,7 +207,7 @@ fn build_window(app: &gtk::Application) {
                     colors: colors.read(),
                     background: bg.read(),
                 },
-                appearance: appearance_section.read(),
+                appearance: appearance_section.read(theme_mode_section.value()),
                 behavior: behavior_section.read(),
             };
             let ui_desktop = opusdm_ipc::DesktopSettings {

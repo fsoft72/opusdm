@@ -4,9 +4,11 @@
 mod requester;
 mod screen;
 mod shell;
+mod theme_mode;
 mod version;
 
 pub use requester::{requester, requester_entry, requester_rich};
 pub use screen::{list_monitors, watch_monitors, watch_screen_size};
 pub use shell::DialogShell;
+pub use theme_mode::apply_theme_mode;
 pub use version::VERSION;

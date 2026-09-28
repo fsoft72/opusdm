@@ -158,6 +158,20 @@ impl Default for ColorSettings {
     }
 }
 
+/// Whether GTK should render every window - buttons, entries, dialog chrome
+/// included - in the dark or light variant of the active theme. Unlike
+/// [`Appearance::theme_window`] (which only paints OpusDM's own accent
+/// colours onto the window background), this is a real GTK theme
+/// preference (`gtk-application-prefer-dark-theme`), so it themes generic
+/// widgets OpusDM never hand-paints in CSS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    Light,
+    #[default]
+    Dark,
+}
+
 /// Look-and-feel switches that are not part of the theme (icon set, colours,
 /// background) - those live in [`crate::theme::Theme`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,11 +184,13 @@ pub struct Appearance {
     /// Carry the file colours into the window chrome too. Off by default so a
     /// user who only picked accent colours keeps their system theme.
     pub theme_window: bool,
+    /// Dark or light GTK theme variant, applied application-wide.
+    pub theme_mode: ThemeMode,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { type_indicators: false, monospace_list: false, theme_window: false }
+        Self { type_indicators: false, monospace_list: false, theme_window: false, theme_mode: ThemeMode::default() }
     }
 }
 
@@ -447,6 +463,25 @@ mod tests {
     }
 
     #[test]
+    fn appearance_defaults_to_dark_theme_mode() {
+        assert_eq!(Appearance::default().theme_mode, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn theme_mode_survives_a_json_round_trip() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(serde_json::from_str::<ThemeMode>(&json).unwrap(), mode);
+        }
+    }
+
+    #[test]
+    fn an_appearance_json_missing_theme_mode_defaults_to_dark() {
+        let a: Appearance = serde_json::from_str("{}").unwrap();
+        assert_eq!(a.theme_mode, ThemeMode::Dark);
+    }
+
+    #[test]
     fn a_hand_edited_debounce_is_clamped_to_something_usable() {
         let (lo, hi) = AUTO_REFRESH_DEBOUNCE_RANGE_MS;
         let at = |ms| Behavior { auto_refresh: true, auto_refresh_debounce_ms: ms }.debounce_ms();
@@ -480,6 +515,7 @@ mod tests {
                 type_indicators: true,
                 monospace_list: true,
                 theme_window: true,
+                theme_mode: ThemeMode::Light,
             },
             behavior: Behavior { auto_refresh: false, auto_refresh_debounce_ms: 900 },
         };
