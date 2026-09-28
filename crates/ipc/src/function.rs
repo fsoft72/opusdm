@@ -261,10 +261,30 @@ pub fn expand_text(text: &str, source: &SelectionCtx, dest: Option<&SelectionCtx
     Ok(out)
 }
 
+/// Path to `functions.json` under [`crate::settings::config_dir`].
+pub fn functions_path() -> PathBuf {
+    crate::settings::config_dir().join("functions.json")
+}
+
+/// Load every saved [`Function`], in on-disk order. A missing or malformed
+/// file yields an empty list (same clean-first-run behavior as
+/// [`crate::settings::load_json`]).
+pub fn load_functions() -> Vec<Function> {
+    crate::settings::load_json(&functions_path(), "opusdm", "functions")
+}
+
+/// Save the full list of functions, replacing whatever was there.
+pub fn save_functions(functions: &[Function]) -> std::io::Result<()> {
+    crate::settings::save_json(&functions_path(), &functions.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn new_function_gets_a_non_empty_unique_id() {
@@ -403,5 +423,29 @@ mod tests {
     fn text_with_no_placeholders_is_unchanged() {
         let src = ctx(&["/home/x/a.txt"], "/home/x");
         assert_eq!(expand_text("notify-send hello", &src, None).unwrap(), "notify-send hello");
+    }
+
+    #[test]
+    fn functions_path_is_under_config_dir() {
+        assert_eq!(functions_path(), crate::settings::config_dir().join("functions.json"));
+    }
+
+    #[test]
+    fn load_functions_missing_file_is_empty() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        assert!(load_functions().is_empty());
+    }
+
+    #[test]
+    fn save_and_load_functions_roundtrips() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        let f = Function::new("Copy and notify");
+        save_functions(&[f.clone()]).unwrap();
+        let loaded = load_functions();
+        assert_eq!(loaded, vec![f]);
     }
 }
