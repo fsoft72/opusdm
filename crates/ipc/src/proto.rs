@@ -111,6 +111,11 @@ pub enum ToHub {
     /// live to its own desktop, and broadcasts the new `Settings` to every
     /// connected Lister. No reply.
     SetSettings(Settings),
+    /// Run a Function's steps, expanding placeholders against this Lister's
+    /// (SOURCE) and the current DEST Lister's selection.
+    RunFunction { steps: Vec<crate::function::FnStep> },
+    /// Reply to `ToLister::QuerySelection`.
+    SelectionReply { paths: Vec<PathBuf>, cwd: PathBuf },
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -284,6 +289,18 @@ pub enum ToLister {
     SettingsUpdate(Settings),
     /// Graceful-exit request.
     Shutdown,
+    /// Ask this Lister for its current selection and cwd, for Function
+    /// argument expansion. Reply with `ToHub::SelectionReply`.
+    QuerySelection,
+    /// One line of output from a running Function step (internal-command
+    /// progress, or external-command stdout/stderr).
+    FunctionOutput { step_idx: usize, line: String },
+    /// A Function step finished successfully.
+    FunctionStepDone { step_idx: usize, exit_code: Option<i32> },
+    /// A Function step failed; execution stopped here.
+    FunctionFailed { step_idx: usize, error: String },
+    /// Every step of a running Function finished successfully.
+    FunctionDone,
 }
 
 #[cfg(test)]
@@ -328,6 +345,13 @@ mod tests {
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
         roundtrip_tohub(ToHub::SetDesktopSettings(crate::desktop::DesktopSettings::default()));
         roundtrip_tohub(ToHub::SetSettings(Settings::default()));
+        roundtrip_tohub(ToHub::RunFunction {
+            steps: vec![crate::function::FnStep::External {
+                argv: vec!["notify-send".into(), "done".into()],
+                cwd_source: true,
+            }],
+        });
+        roundtrip_tohub(ToHub::SelectionReply { paths: vec!["/a".into()], cwd: "/home/x".into() });
     }
 
     #[test]
@@ -390,6 +414,11 @@ mod tests {
         roundtrip_tolister(ToLister::InvalidatePath("/dst".into()));
         roundtrip_tolister(ToLister::SettingsUpdate(Settings::default()));
         roundtrip_tolister(ToLister::Shutdown);
+        roundtrip_tolister(ToLister::QuerySelection);
+        roundtrip_tolister(ToLister::FunctionOutput { step_idx: 0, line: "hello".into() });
+        roundtrip_tolister(ToLister::FunctionStepDone { step_idx: 0, exit_code: Some(0) });
+        roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
+        roundtrip_tolister(ToLister::FunctionDone);
     }
 
     #[test]
