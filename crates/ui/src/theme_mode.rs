@@ -57,26 +57,27 @@ pub fn chrome_css(mode: ThemeMode) -> String {
         ThemeMode::Light => &LIGHT,
     };
     format!(
-        "window {{ background-color: {wbg}; color: {fg}; }} \
+        "window {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
          entry, dropdown, dropdown > button, spinbutton, button {{ \
-             background-color: {sbg}; color: {fg}; \
+             background-color: {sbg}; background-image: none; color: {fg}; \
              border: 1px solid {border}; border-radius: 4px; \
+             box-shadow: none; \
          }} \
          button:hover, dropdown:hover, dropdown > button:hover {{ background-color: {hover}; }} \
-         list-box, list-box row {{ background-color: {sbg}; color: {fg}; }} \
-         popover, popover.background, popover contents {{ background-color: {sbg}; color: {fg}; }} \
-         scrolledwindow, viewport {{ background-color: {wbg}; }} \
-         box, grid, stack, frame {{ background-color: {wbg}; color: {fg}; }} \
+         list-box, list-box row {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
+         popover, popover.background, popover contents {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
+         scrolledwindow, viewport {{ background-color: {wbg}; background-image: none; }} \
+         box, grid, stack, frame {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
          button > *, dropdown > *, headerbar > * {{ background-color: transparent; }} \
          columnview box, columnview grid, columnview stack, columnview frame, \
          list-box box, list-box grid, list-box stack, list-box frame, \
          popover box, popover grid, popover stack, popover frame {{ background-color: transparent; }} \
          label {{ color: {fg}; }} \
          checkbutton, radiobutton {{ color: {fg}; }} \
-         headerbar {{ background-color: {wbg}; color: {fg}; }} \
-         notebook > header {{ background-color: {wbg}; }} \
-         notebook > header tab {{ background-color: {sbg}; color: {fg}; border: 1px solid {border}; }} \
-         notebook > header tab:checked {{ background-color: {wbg}; }} ",
+         headerbar {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
+         notebook > header {{ background-color: {wbg}; background-image: none; }} \
+         notebook > header tab {{ background-color: {sbg}; background-image: none; color: {fg}; border: 1px solid {border}; }} \
+         notebook > header tab:checked {{ background-color: {wbg}; background-image: none; }} ",
         wbg = p.window_bg,
         sbg = p.surface_bg,
         hover = p.surface_hover,
@@ -107,6 +108,17 @@ mod tests {
         ] {
             assert!(css.contains(selector), "missing rule for {selector}");
         }
+    }
+
+    #[test]
+    fn interactive_controls_clear_the_theme_s_own_background_image() {
+        // A `background-color` we set can still be entirely hidden by a
+        // `background-image` the active theme sets on the same node (e.g.
+        // a gradient or texture Breeze's GTK4 button style paints) -
+        // background-image is a separate property drawn on top, so
+        // winning the background-color property alone is not enough.
+        let css = chrome_css(ThemeMode::Dark);
+        assert!(css.contains("background-image: none"));
     }
 
     #[test]
