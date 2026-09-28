@@ -140,6 +140,14 @@ impl Ui {
         self.view.filter_bar.dismiss();
     }
 
+    /// Append `text` to the open Function Editor's log, if one is open.
+    fn append_function_log(self: &Rc<Self>, text: &str) {
+        if let Some(buf) = self.function_log.borrow().as_ref() {
+            let mut end = buf.end_iter();
+            buf.insert(&mut end, text);
+        }
+    }
+
     /// Toggle or open Quick Look preview for the currently selected item.
     pub fn toggle_preview(self: &Rc<Self>) {
         let mut p_guard = self.preview_win.borrow_mut();
@@ -495,10 +503,20 @@ impl Ui {
                     cwd: self.cwd_path(),
                 });
             }
-            ToLister::FunctionOutput { .. } => {}
-            ToLister::FunctionStepDone { .. } => {}
-            ToLister::FunctionFailed { .. } => {}
-            ToLister::FunctionDone => {}
+            ToLister::FunctionOutput { step_idx, line } => {
+                self.append_function_log(&format!("[step {step_idx}] {line}\n"));
+            }
+            ToLister::FunctionStepDone { step_idx, exit_code } => {
+                self.append_function_log(&format!("[step {step_idx}] done (exit {exit_code:?})\n"));
+            }
+            ToLister::FunctionFailed { step_idx, error } => {
+                self.append_function_log(&format!("[step {step_idx}] FAILED: {error}\n"));
+                crate::actions::flash(self, &format!("function failed at step {step_idx}: {error}"));
+            }
+            ToLister::FunctionDone => {
+                self.append_function_log("function finished\n");
+                crate::actions::flash(self, "function finished");
+            }
         }
     }
 
