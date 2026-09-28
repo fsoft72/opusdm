@@ -25,7 +25,6 @@ pub fn run(
     settings: Settings,
     start: PathBuf,
 ) -> glib::ExitCode {
-    opusdm_ui::apply_theme_mode(settings.appearance.theme_mode);
     let inbox = client.take_inbox();
     let client = Rc::new(client);
     let shared: Rc<RefCell<Option<StartState>>> = Rc::new(RefCell::new(Some(StartState {
@@ -52,6 +51,11 @@ pub fn run(
             crate::dlog!("activate: ignoring re-activation, window already built");
             return;
         };
+        // GTK is only initialized once `connect_activate` actually fires,
+        // so `gtk::Settings::default()` (used by `apply_theme_mode`) must
+        // not be called any earlier - it panics with "GTK has not been
+        // initialized" before this point.
+        opusdm_ui::apply_theme_mode(st.settings.appearance.theme_mode);
         let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone());
         ui.navigate_to(&st.start);
 
