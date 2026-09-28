@@ -444,7 +444,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         let f = Function::new("Copy and notify");
-        save_functions(&[f.clone()]).unwrap();
+        save_functions(std::slice::from_ref(&f)).unwrap();
         let loaded = load_functions();
         assert_eq!(loaded, vec![f]);
     }
