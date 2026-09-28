@@ -4,6 +4,7 @@
 pub mod children;
 pub mod desktop_files;
 pub mod desktop_settings;
+pub mod functions;
 pub mod jobs;
 pub mod roles;
 pub mod server;

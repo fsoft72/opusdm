@@ -8,6 +8,7 @@ use crate::settings;
 use crate::desktop_settings;
 use opusdm_fsops::Progress;
 use opusdm_ipc::frame::{recv, send};
+use opusdm_ipc::function::{FnStep, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
 use std::collections::{BTreeSet, HashMap};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -135,6 +136,7 @@ enum OwnerMsg {
     ListerEof(u64),
     JobProgress(u64, Progress),
     FromGtk(HubCmd),
+    FunctionEvent(u64, crate::functions::FnEvent),
 }
 
 /// One connected peer. `registered` flips true after `Register`.
@@ -193,6 +195,18 @@ fn writer_loop(mut stream: UnixStream, rx: Receiver<OutMsg>) {
     }
 }
 
+/// A Function run waiting on `SelectionReply` from SOURCE and/or DEST,
+/// tracked between `ToHub::RunFunction` and the point every slot it needs
+/// has been filled.
+struct PendingFunctionRun {
+    requester_cid: u64,
+    steps: Vec<FnStep>,
+    source_cid: u64,
+    dest_cid: Option<u64>,
+    source_sel: Option<SelectionCtx>,
+    dest_sel: Option<SelectionCtx>,
+}
+
 /// Per-job bookkeeping the owner keeps until `Done`.
 struct JobMeta {
     requester: u64,
@@ -225,6 +239,15 @@ struct Hub {
     next_req: u64,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
+    /// Function runs waiting on `SelectionReply` from SOURCE and/or DEST.
+    pending_functions: HashMap<u64, PendingFunctionRun>,
+    /// Which pending run a Lister connection's next `SelectionReply` is for.
+    selection_waiters: HashMap<u64, u64>,
+    /// Which connection to route a running Function's events back to, kept
+    /// alive from the moment execution starts until `FunctionDone`/`Failed`.
+    function_requesters: HashMap<u64, u64>,
+    next_run_id: u64,
+    function_events_tx: Sender<(u64, crate::functions::FnEvent)>,
 }
 
 impl Hub {
@@ -356,6 +379,14 @@ impl Hub {
                 self.lister_run_job(cid, op, srcs, dest_dir);
             }
 
+            ToHub::RunFunction { steps } => {
+                self.start_function_run(cid, steps);
+            }
+
+            ToHub::SelectionReply { paths, cwd } => {
+                self.selection_reply(cid, paths, cwd);
+            }
+
             // Tab in a Lister: raise the pane holding the opposite role.
             ToHub::PresentLister(target) => {
                 if let Some(c) = self.conns.get_mut(&target.0).filter(|c| c.registered) {
@@ -372,6 +403,86 @@ impl Hub {
             ToHub::Goodbye => {
                 drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
             }
+        }
+    }
+
+    /// `ToHub::RunFunction` from `cid`: record a pending run and ask `cid`
+    /// (SOURCE) and, if one exists, the current DEST Lister for their
+    /// selection.
+    fn start_function_run(&mut self, cid: u64, steps: Vec<FnStep>) {
+        let run_id = self.next_run_id;
+        self.next_run_id += 1;
+        let dest_cid = self.roles.dests().first().map(|d| d.0);
+        self.pending_functions.insert(
+            run_id,
+            PendingFunctionRun {
+                requester_cid: cid,
+                steps,
+                source_cid: cid,
+                dest_cid,
+                source_sel: None,
+                dest_sel: None,
+            },
+        );
+        self.selection_waiters.insert(cid, run_id);
+        if let Some(c) = self.conns.get_mut(&cid) {
+            let _ = c.tx.send(ToLister::QuerySelection.into());
+        }
+        if let Some(d) = dest_cid {
+            self.selection_waiters.insert(d, run_id);
+            if let Some(c) = self.conns.get_mut(&d) {
+                let _ = c.tx.send(ToLister::QuerySelection.into());
+            }
+        }
+    }
+
+    /// `ToHub::SelectionReply` from `cid`: fill in whichever slot (source or
+    /// dest) of its pending run this answers, and start execution once every
+    /// slot the run needs is filled.
+    fn selection_reply(&mut self, cid: u64, paths: Vec<PathBuf>, cwd: PathBuf) {
+        let Some(&run_id) = self.selection_waiters.get(&cid) else { return };
+        self.selection_waiters.remove(&cid);
+        let Some(run) = self.pending_functions.get_mut(&run_id) else { return };
+        let sel = SelectionCtx { paths, cwd };
+        if cid == run.source_cid {
+            run.source_sel = Some(sel);
+        } else if Some(cid) == run.dest_cid {
+            run.dest_sel = Some(sel);
+        }
+        let ready = run.source_sel.is_some() && (run.dest_cid.is_none() || run.dest_sel.is_some());
+        if !ready {
+            return;
+        }
+        let run = self.pending_functions.remove(&run_id).unwrap();
+        self.function_requesters.insert(run_id, run.requester_cid);
+        crate::functions::spawn_executor(
+            run_id,
+            run.steps,
+            run.source_sel.unwrap(),
+            run.dest_sel,
+            self.function_events_tx.clone(),
+        );
+    }
+
+    /// A `FnEvent` arrived from a running Function's executor thread; turn
+    /// it into the matching `ToLister` and send it to whichever connection
+    /// asked for this run.
+    fn function_event(&mut self, run_id: u64, ev: crate::functions::FnEvent) {
+        let Some(&requester) = self.function_requesters.get(&run_id) else { return };
+        let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
+        let msg = match ev {
+            crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
+            crate::functions::FnEvent::StepDone { step_idx, exit_code } => {
+                ToLister::FunctionStepDone { step_idx, exit_code }
+            }
+            crate::functions::FnEvent::Failed { step_idx, error } => ToLister::FunctionFailed { step_idx, error },
+            crate::functions::FnEvent::AllDone => ToLister::FunctionDone,
+        };
+        if terminal {
+            self.function_requesters.remove(&run_id);
+        }
+        if let Some(c) = self.conns.get_mut(&requester) {
+            let _ = c.tx.send(msg.into());
         }
     }
 
@@ -630,6 +741,22 @@ fn owner_loop(
             .expect("spawn job progress forwarder thread");
     }
 
+    let (fe_tx, fe_rx) = channel::<(u64, crate::functions::FnEvent)>();
+    {
+        let owner_tx = owner_tx.clone();
+        std::thread::Builder::new()
+            .name("opusdm-function-events".into())
+            .spawn(move || {
+                for (id, ev) in fe_rx {
+                    if owner_tx.send(OwnerMsg::FunctionEvent(id, ev)).is_err() {
+                        break;
+                    }
+                }
+                opusdm_ipc::debug_log!("hub", "function event forwarder exiting");
+            })
+            .expect("spawn function event forwarder thread");
+    }
+
     let current_desktop = desktop_settings::load();
     opusdm_ipc::debug_log!(
         "hub",
@@ -650,6 +777,11 @@ fn owner_loop(
         next_req: 1,
         evt_tx,
         on_spawn,
+        pending_functions: HashMap::new(),
+        selection_waiters: HashMap::new(),
+        function_requesters: HashMap::new(),
+        next_run_id: 1,
+        function_events_tx: fe_tx,
     };
 
     for msg in rx {
@@ -671,6 +803,10 @@ fn owner_loop(
                 true
             }
             OwnerMsg::FromGtk(cmd) => hub.gtk_cmd(cmd),
+            OwnerMsg::FunctionEvent(run_id, ev) => {
+                hub.function_event(run_id, ev);
+                true
+            }
         };
         if !keep_running {
             return;
@@ -945,5 +1081,70 @@ mod tests {
             }
         }
         assert!(saw_gone && saw_all_gone);
+    }
+
+    #[test]
+    fn run_function_queries_source_and_dest_then_executes() {
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+
+        // SOURCE lister.
+        let mut src = connect(&path);
+        send(&mut src, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut src).unwrap().unwrap();
+
+        // DEST lister.
+        let mut dst = connect(&path);
+        send(&mut dst, &ToHub::Register { pid: 2, initial_path: "/dst".into() }).unwrap();
+        let _w: Welcome = recv(&mut dst).unwrap().unwrap();
+
+        // `start_function_run` treats the RunFunction sender as SOURCE
+        // directly (it never consults `roles.source()`), so `src` needs no
+        // role at all here; it only reads `roles.dests()` for the DEST
+        // connection, so `dst` needs an explicit DEST role. `SetRole`
+        // (unlike `FocusGained`, which always makes the focused Lister
+        // SOURCE and demotes the previous SOURCE to DEST - see
+        // `two_listers_focus_toggles_source_dest` above) sets exactly the
+        // role named, with no source required first.
+        send(&mut dst, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+        // Drain the RoleChanged broadcast this triggers on both connections.
+        let _r: ToLister = recv(&mut src).unwrap().unwrap();
+        let _r: ToLister = recv(&mut dst).unwrap().unwrap();
+
+        let steps = vec![opusdm_ipc::function::FnStep::External {
+            argv: vec!["true".into()],
+            cwd_source: true,
+        }];
+        send(&mut src, &ToHub::RunFunction { steps }).unwrap();
+
+        // Hub must ask both listers for their selection.
+        let q1: ToLister = recv(&mut src).unwrap().unwrap();
+        assert!(matches!(q1, ToLister::QuerySelection));
+        let q2: ToLister = recv(&mut dst).unwrap().unwrap();
+        assert!(matches!(q2, ToLister::QuerySelection));
+
+        // `cwd_source: true` on the step makes the executor's subprocess
+        // really `current_dir()` into this path, so it must exist on disk
+        // (unlike `initial_path` above, which the hub never uses as a
+        // process cwd) - a real temp dir stands in for the Lister's
+        // actual open directory.
+        let real_cwd = std::env::temp_dir();
+        send(&mut src, &ToHub::SelectionReply { paths: vec!["/src/a".into()], cwd: real_cwd.clone() }).unwrap();
+        send(&mut dst, &ToHub::SelectionReply { paths: vec![], cwd: real_cwd }).unwrap();
+
+        // Execution happens on a worker thread; poll src for the result.
+        let mut done = false;
+        for _ in 0..50 {
+            match recv::<_, ToLister>(&mut src) {
+                Ok(Some(ToLister::FunctionDone)) => {
+                    done = true;
+                    break;
+                }
+                Ok(Some(_)) => continue, // FunctionOutput / FunctionStepDone lines
+                _ => break,
+            }
+        }
+        assert!(done, "expected FunctionDone on the requesting (SOURCE) connection");
+        let _ = handle;
     }
 }
