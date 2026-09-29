@@ -122,6 +122,11 @@ fn build_window(
     stat_info.set_xalign(0.0);
     stat_info.set_hexpand(true);
     stat_bar.append(&stat_info);
+    let gauge = gtk::LevelBar::for_interval(0.0, 1.0);
+    gauge.set_size_request(90, -1);
+    gauge.set_valign(gtk::Align::Center);
+    gauge.set_visible(false);
+    stat_bar.append(&gauge);
     let star_btn = crate::icons::icon_button(crate::icons::SVG_STAR, "Open New Lister Here", 14);
     stat_bar.append(&star_btn);
     let pin_btn = crate::icons::icon_toggle_button(crate::icons::SVG_PIN, "Pin / Lock Role", 14);
@@ -400,6 +405,7 @@ fn build_window(
             role_guard: Cell::new(false),
             job_line,
             totals: Cell::new((0, 0, 0)),
+            gauge: gauge.clone(),
         },
         path_entry: path_entry.clone(),
         button_row: button_row.clone(),

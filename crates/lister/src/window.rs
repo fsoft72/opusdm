@@ -72,6 +72,8 @@ pub struct StatusBar {
     pub job_line: gtk::Label,
     /// Cached directory totals: (total_dirs, total_files, total_bytes)
     pub totals: Cell<(u32, u32, u64)>,
+    /// Used-space gauge; visible only when the format asks for it.
+    pub gauge: gtk::LevelBar,
 }
 
 /// The file area: which representation is shown and the model/selection
@@ -327,6 +329,7 @@ impl Ui {
         crate::dlog!("navigate_to {} done: {} items", dir.display(), new_items.len());
         self.refresh_path_entry();
         self.update_status();
+        self.update_gauge(dir);
         self.refresh_icon_view();
         let _ = self.hub.client.send(&ToHub::PathChanged(dir.to_path_buf()));
     }
