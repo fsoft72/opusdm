@@ -5,7 +5,7 @@ use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::prelude::*;
-use opusdm_ipc::{Op, ToHub};
+use opusdm_ipc::Op;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -55,12 +55,7 @@ pub fn show_context_menu(
                 crate::actions::flash(&ui, &msg);
                 return;
             }
-            let _ = ui.hub.client.send(&ToHub::RunJob {
-                op: Op::Copy,
-                srcs: vec![target_path.clone()],
-                dest_dir: None,
-                options: opusdm_ipc::JobOptions::default(),
-            });
+            crate::job_submit::submit_job(&ui, Op::Copy, vec![target_path.clone()], None, opusdm_ipc::JobOptions::default());
         });
         menu_box.append(&btn);
     }
@@ -100,12 +95,7 @@ pub fn show_context_menu(
                 crate::actions::flash(&ui, &msg);
                 return;
             }
-            let _ = ui.hub.client.send(&ToHub::RunJob {
-                op: Op::Move,
-                srcs: vec![target_path.clone()],
-                dest_dir: None,
-                options: opusdm_ipc::JobOptions::default(),
-            });
+            crate::job_submit::submit_job(&ui, Op::Move, vec![target_path.clone()], None, opusdm_ipc::JobOptions::default());
         });
         menu_box.append(&btn);
     }

@@ -25,6 +25,14 @@ pub enum CommandId {
     Copy,
     Move,
     Delete,
+    /// Copy to DEST under names built from a pattern.
+    CopyAs,
+    /// Move to DEST under names built from a pattern.
+    MoveAs,
+    /// Copy each selected entry next to itself as `name.copy`.
+    Duplicate,
+    /// Copy to DEST only what is missing there or newer than the DEST copy.
+    CopyNewer,
     ClipCopy,
     ClipCut,
     ClipPaste,

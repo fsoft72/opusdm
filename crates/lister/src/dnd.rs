@@ -6,7 +6,7 @@ use gtk4 as gtk;
 use gtk::gdk;
 use gtk::prelude::*;
 use opusdm_iconview::IconField;
-use opusdm_ipc::{Op, ToHub};
+use opusdm_ipc::Op;
 use std::rc::Rc;
 
 /// Attach a drop target to the column view. The drag source lives per-cell
@@ -68,7 +68,7 @@ pub fn attach(ui: &Rc<Ui>, view: &gtk::ColumnView) {
             let op = if shift { Op::Move } else { Op::Copy };
             let dest_dir = Some(ui.cwd_path());
             crate::dlog!("column view drop: op={op:?} srcs={srcs:?} dest={dest_dir:?}");
-            let _ = ui.hub.client.send(&ToHub::RunJob { op, srcs, dest_dir, options: opusdm_ipc::JobOptions::default() });
+            crate::job_submit::submit_job(&ui, op, srcs, dest_dir, opusdm_ipc::JobOptions::default());
             true
         });
     }
@@ -88,6 +88,6 @@ pub fn attach_field(ui: &Rc<Ui>, field: &IconField) {
         let op = if shift { Op::Move } else { Op::Copy };
         let dest_dir = Some(ui.cwd_path());
         crate::dlog!("icon field drop: op={op:?} srcs={srcs:?} dest={dest_dir:?}");
-        let _ = ui.hub.client.send(&ToHub::RunJob { op, srcs, dest_dir, options: opusdm_ipc::JobOptions::default() });
+        crate::job_submit::submit_job(&ui, op, srcs, dest_dir, opusdm_ipc::JobOptions::default());
     });
 }

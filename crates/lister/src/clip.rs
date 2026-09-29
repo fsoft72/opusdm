@@ -11,7 +11,7 @@ use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_ipc::{Op, ToHub};
+use opusdm_ipc::Op;
 use std::rc::Rc;
 
 const CUT_MARKER: &str = "#opusdm-clip:cut";
@@ -54,6 +54,6 @@ pub fn paste(ui: &Rc<Ui>) {
         let op = if text.starts_with(CUT_MARKER) { Op::Move } else { Op::Copy };
         let dest_dir = Some(ui.cwd_path());
         crate::dlog!("clipboard paste: op={op:?} srcs={srcs:?} dest={dest_dir:?}");
-        let _ = ui.hub.client.send(&ToHub::RunJob { op, srcs, dest_dir, options: opusdm_ipc::JobOptions::default() });
+        crate::job_submit::submit_job(&ui, op, srcs, dest_dir, opusdm_ipc::JobOptions::default());
     });
 }

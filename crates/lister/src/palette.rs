@@ -34,6 +34,10 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::Copy, title: Cow::Borrowed("Copy (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("c") },
         CommandItem { id: CommandId::Move, title: Cow::Borrowed("Move (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("m") },
         CommandItem { id: CommandId::Delete, title: Cow::Borrowed("Delete Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: Some("d / Del") },
+        CommandItem { id: CommandId::CopyAs, title: Cow::Borrowed("Copy As... (Source -> Dest, new names)"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::MoveAs, title: Cow::Borrowed("Move As... (Source -> Dest, new names)"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::Duplicate, title: Cow::Borrowed("Duplicate Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::CopyNewer, title: Cow::Borrowed("Copy (newer only, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::ClipCopy, title: Cow::Borrowed("Copy to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+C") },
         CommandItem { id: CommandId::ClipCut, title: Cow::Borrowed("Cut to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+X") },
         CommandItem { id: CommandId::ClipPaste, title: Cow::Borrowed("Paste from Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+V") },
@@ -156,12 +160,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 crate::actions::flash(ui, "nothing selected");
                 return;
             }
-            let _ = ui.hub.client.send(&ToHub::RunJob {
-                op: Op::Copy,
-                srcs,
-                dest_dir: None,
-                options: opusdm_ipc::JobOptions::default(),
-            });
+            crate::job_submit::submit_job(&ui, Op::Copy, srcs, None, opusdm_ipc::JobOptions::default());
         }
         CommandId::Move => {
             if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
@@ -173,12 +172,31 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 crate::actions::flash(ui, "nothing selected");
                 return;
             }
-            let _ = ui.hub.client.send(&ToHub::RunJob {
-                op: Op::Move,
-                srcs,
-                dest_dir: None,
-                options: opusdm_ipc::JobOptions::default(),
-            });
+            crate::job_submit::submit_job(&ui, Op::Move, srcs, None, opusdm_ipc::JobOptions::default());
+        }
+        CommandId::CopyAs => crate::copy_as::open(ui, false),
+        CommandId::MoveAs => crate::copy_as::open(ui, true),
+        CommandId::Duplicate => {
+            let srcs = ui.selected_paths();
+            if srcs.is_empty() {
+                crate::actions::flash(ui, "nothing selected");
+                return;
+            }
+            let dest_dir = Some(ui.cwd_path());
+            crate::job_submit::submit_job(ui, Op::Duplicate, srcs, dest_dir, opusdm_ipc::JobOptions::default());
+        }
+        CommandId::CopyNewer => {
+            if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
+                crate::actions::flash(ui, &msg);
+                return;
+            }
+            let srcs = ui.selected_paths();
+            if srcs.is_empty() {
+                crate::actions::flash(ui, "nothing selected");
+                return;
+            }
+            let options = opusdm_ipc::JobOptions { newer: true, ..Default::default() };
+            crate::job_submit::submit_job(ui, Op::Copy, srcs, None, options);
         }
         CommandId::ClipCopy => {
             crate::clip::copy_or_cut(ui, false);

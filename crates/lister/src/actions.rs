@@ -217,12 +217,7 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
                 .collect();
             match crate::archive::extract_items_to_dir(&arch, &full_items, &temp_extract) {
                 Ok(extracted) => {
-                    let _ = ui.hub.client.send(&ToHub::RunJob {
-                        op: op.clone(),
-                        srcs: extracted,
-                        dest_dir: None,
-                        options: opusdm_ipc::JobOptions::default(),
-                    });
+                    crate::job_submit::submit_job(&ui, op.clone(), extracted, None, opusdm_ipc::JobOptions::default());
                 }
                 Err(e) => flash(&ui, &format!("extraction failed: {e}")),
             }
@@ -234,12 +229,7 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
             flash(&ui, "nothing selected");
             return;
         }
-        let _ = ui.hub.client.send(&ToHub::RunJob {
-            op: op.clone(),
-            srcs,
-            dest_dir: None, // hub fills this from the DEST Lister's path,
-            options: opusdm_ipc::JobOptions::default(),
-        });
+        crate::job_submit::submit_job(&ui, op.clone(), srcs, None, opusdm_ipc::JobOptions::default());
     });
 }
 
@@ -359,12 +349,7 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>) {
             if !confirmed {
                 return;
             }
-            let _ = ui.hub.client.send(&ToHub::RunJob {
-                op: Op::Delete,
-                srcs: srcs.clone(),
-                dest_dir: Some(ui.cwd_path()),
-                options: opusdm_ipc::JobOptions::default(),
-            });
+            crate::job_submit::submit_job(&ui, Op::Delete, srcs.clone(), Some(ui.cwd_path()), opusdm_ipc::JobOptions::default());
         },
     );
 }

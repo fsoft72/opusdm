@@ -24,7 +24,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 ## 2. File operations
 
-- [ ] F-07 CopyAs, MoveAs, Duplicate, UPDATE/NEWER/MOVEWHENSAME
+- [x] F-07 CopyAs, MoveAs, Duplicate, UPDATE/NEWER/MOVEWHENSAME (`quiet` flag is carried but has no requester to suppress yet)
 - [ ] F-08 CheckFit (space pre-check)
 - [ ] F-09 Protect (chmod/chown requester)
 - [ ] F-10 DateStamp (touch)
@@ -32,7 +32,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [ ] F-12 MakeLink / MakeLinkAs (hard and symbolic)
 - [ ] F-13 Join / Split
 - [ ] F-14 Encrypt / Decrypt
-- [ ] F-15 Recursive filter for operations
+- [x] F-15 Recursive filter for operations (Copy/Move/Delete now; Protect/DateStamp/Comment hook in when they exist)
 
 ## 3. Viewers and search
 

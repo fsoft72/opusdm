@@ -87,6 +87,20 @@ pub fn validate_new_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Expand `pattern` for every original name and check the result: every
+/// name valid, and no two sources landing on the same name.
+pub fn expand_all(pattern: &str, originals: &[String]) -> Result<Vec<String>, String> {
+    let names: Vec<String> = originals.iter().map(|o| expand_new_name(pattern, o)).collect();
+    for name in &names {
+        validate_new_name(name)?;
+    }
+    let mut seen = std::collections::HashSet::new();
+    match names.iter().find(|n| !seen.insert(n.as_str())) {
+        Some(dup) => Err(format!("several sources would be named {dup:?}; use * in the pattern")),
+        None => Ok(names),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +139,15 @@ mod tests {
         assert!(validate_new_name("").is_err());
         assert!(validate_new_name("a/b").is_err());
         assert!(validate_new_name("..").is_err());
+    }
+
+    #[test]
+    fn expand_all_checks_every_name_and_uniqueness() {
+        let orig = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(expand_all("*.bak", &orig).unwrap(), vec!["a.bak", "b.bak"]);
+        assert!(expand_all("same", &orig).is_err());
+        assert!(expand_all("x/*", &orig).is_err());
+        assert!(expand_all("", &orig).is_err());
+        assert_eq!(expand_all("only", &orig[..1]).unwrap(), vec!["only"]);
     }
 }

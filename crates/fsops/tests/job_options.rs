@@ -202,7 +202,11 @@ fn bad_name_lists_fail_before_touching_files() {
     fs::write(src.join("b.txt"), "B").unwrap();
     let srcs = vec![src.join("a.txt"), src.join("b.txt")];
 
-    for names in [vec!["only-one".to_string()], vec!["ok".to_string(), "x/y".to_string()]] {
+    for names in [
+        vec!["only-one".to_string()],
+        vec!["ok".to_string(), "x/y".to_string()],
+        vec!["dup".to_string(), "dup".to_string()],
+    ] {
         let op = Op::CopyAs { new_names: names };
         let (copied, _, errors) = run(spec(op, srcs.clone(), &dst, JobOptions::default()));
         assert_eq!(copied, 0);

@@ -79,7 +79,12 @@ fn check_names(names: &[String], sources: usize) -> Result<(), String> {
     if names.len() != sources {
         return Err(format!("{} new names given for {sources} sources", names.len()));
     }
-    names.iter().try_for_each(|n| opusdm_ipc::glob::validate_new_name(n))
+    names.iter().try_for_each(|n| opusdm_ipc::glob::validate_new_name(n))?;
+    let mut seen = std::collections::HashSet::new();
+    match names.iter().find(|n| !seen.insert(n.as_str())) {
+        Some(dup) => Err(format!("several sources would be named {dup:?}")),
+        None => Ok(()),
+    }
 }
 
 /// Whether every source lives on the same device as `dest_dir`.

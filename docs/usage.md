@@ -241,6 +241,33 @@ To stop a hook that opens a lister from looping, an event is ignored while its
 previous run is still going and never fires twice within 2 seconds. Stored in
 `~/.config/opusdm/scripts.json`.
 
+### 3.16 Copy and Move Variants, Recursive Filter
+
+Command Palette entries next to Copy and Move:
+
+- **Copy As... / Move As...** send the selection to the DEST lister under new
+  names. In the dialog `*` stands for the original name (`*.bak` turns `a.txt`
+  into `a.txt.bak`), a pattern without `*` only works for one entry, and a live
+  preview shows every result before you confirm.
+- **Duplicate Selected Items** copies each entry next to itself as `name.copy`,
+  then `name.copy2`, and so on.
+- **Copy (newer only)** copies only files that are missing at the destination
+  or newer than the destination copy.
+
+In the Function Editor the internal `Copy` and `Move` commands also offer
+"only files that already exist at the destination" (UPDATE), "only files
+missing or older" (NEWER) and, for `Copy`, "move instead of copy on the same
+device"; `Copy As`, `Move As` and `Duplicate` are internal commands too. Every
+Copy, Move, Delete, As and Duplicate step takes an optional filter such as
+`*.rs;*.toml`.
+
+**Recursive filter** (Theme Config, Behaviour): when on, a Copy, Move or Delete
+that involves a directory first asks for a file pattern. Only matching files
+are affected, directories are always walked, and a directory with no matching
+file is not created at the destination. A filtered Move deletes only the files
+it copied. Leave the pattern empty to process everything, Cancel to drop the
+job.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
