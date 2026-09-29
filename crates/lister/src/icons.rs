@@ -16,6 +16,9 @@ pub const SVG_EYE: &[u8] = include_bytes!("../../../assets/icons/eye.svg");
 pub const SVG_EYE_OFF: &[u8] = include_bytes!("../../../assets/icons/eye-off.svg");
 pub const SVG_HOME: &[u8] = include_bytes!("../../../assets/icons/home.svg");
 pub const SVG_PARENT: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
+pub const SVG_BACK: &[u8] = include_bytes!("../../../assets/icons/arrow-left.svg");
+pub const SVG_FORWARD: &[u8] = include_bytes!("../../../assets/icons/arrow-right.svg");
+pub const SVG_HISTORY: &[u8] = include_bytes!("../../../assets/icons/chevron-down.svg");
 pub const SVG_PIN: &[u8] = include_bytes!("../../../assets/icons/pin.svg");
 pub const SVG_STAR: &[u8] = include_bytes!("../../../assets/icons/star.svg");
 

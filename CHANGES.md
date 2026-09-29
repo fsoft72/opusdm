@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-09-29
+
+- Lister nav bar: Back, Forward and History buttons now use SVG icons (`arrow-left.svg`, `arrow-right.svg`, `chevron-down.svg`) like Home and Parent, instead of the Unicode triangle glyphs.
+
 ## 2026-09-27 (4)
 
 - Fix: build warning in `crates/lister/src/terminal.rs` - unused `gtk::prelude::*` import (VTE's own `vte4::prelude::*` already brings in what's used). `cargo build --all` and `cargo test --all` are now warning-free.
