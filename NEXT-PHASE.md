@@ -19,3 +19,9 @@ ANSI / hex caps of the Viewer, with a sane clamped range like the other
 
 Paged reading on demand (a virtual line model, search over the whole file from
 disk) is a separate, larger project and is not planned yet.
+
+## Search: configurable limits (from F-19 / F-20)
+
+Find / Search in Files stops at 5000 results (`MAX_RESULTS`) and reads at most
+16 MiB of each file (`SEARCH_FILE_MAX`). Make both settings alongside the Viewer
+read caps above.
