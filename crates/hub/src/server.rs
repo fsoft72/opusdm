@@ -1369,8 +1369,12 @@ mod tests {
     fn wait_for_file(path: &std::path::Path) -> String {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
+            // `fs::write` truncates before it writes, so an empty file means
+            // the writer is between the two steps: keep waiting.
             if let Ok(content) = std::fs::read_to_string(path) {
-                return content;
+                if !content.is_empty() {
+                    return content;
+                }
             }
             if std::time::Instant::now() >= deadline {
                 panic!("{path:?} was not written in time");
