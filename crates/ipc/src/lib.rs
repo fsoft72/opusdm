@@ -27,6 +27,7 @@ macro_rules! err_log {
 pub mod bindings;
 pub mod desktop;
 pub mod dock;
+pub mod format;
 pub mod frame;
 pub mod function;
 pub mod glob;
@@ -46,6 +47,7 @@ pub use desktop::{
 };
 pub use bindings::Bindings;
 pub use dock::DockConfig;
+pub use format::{FormatColumn, FormatEntry, FormatSource, FormatStore, ListerFormat, Separate};
 pub use function::{Function, FnStep, FunctionId, InternalArgs, InternalCmd};
 pub use menu::{MenuConfig, MenuItem};
 pub use proto::{
