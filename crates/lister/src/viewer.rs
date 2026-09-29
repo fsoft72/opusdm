@@ -3,6 +3,7 @@
 //! builds widgets and wires keys.
 
 use crate::ansi::{AnsiDoc, PALETTE};
+use crate::slideshow::Marks;
 use crate::viewer_load::{load, ViewData};
 use crate::viewer_mode::{image_files, viewer_files, Mode};
 use crate::viewer_search::{find_matches, step};
@@ -45,6 +46,10 @@ struct Viewer {
     search_count: gtk::Label,
     matches: RefCell<Vec<(usize, usize)>>,
     current: Cell<Option<usize>>,
+    marks: RefCell<Marks>,
+    /// Set once the delete question was answered, so the close goes through.
+    closing: Cell<bool>,
+    marked: gtk::Label,
 }
 
 /// Open the Viewer on the files selected in `ui` (or the cursor file). For
@@ -73,6 +78,7 @@ pub fn open(ui: &Rc<Ui>, files: Vec<PathBuf>, mode: Mode, show: bool, opts: View
     }
     let viewer = Viewer::new(ui, files, mode, show);
     viewer.install_keys();
+    viewer.install_close_guard();
     if let Some(query) = opts.initial_search {
         viewer.search_entry.set_text(&query);
         viewer.search_bar.set_visible(true);
@@ -104,6 +110,8 @@ impl Viewer {
         let meta = gtk::Label::new(None);
         meta.set_xalign(1.0);
         meta.add_css_class("dim-label");
+        let marked = gtk::Label::new(None);
+        marked.add_css_class("dim-label");
         let close = gtk::Button::with_label("\u{2715}");
         close.add_css_class("flat");
         {
@@ -112,6 +120,7 @@ impl Viewer {
         }
         header.append(&title);
         header.append(&meta);
+        header.append(&marked);
         header.append(&close);
         root.append(&header);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -158,6 +167,9 @@ impl Viewer {
             search_count,
             matches: RefCell::new(Vec::new()),
             current: Cell::new(None),
+            marks: RefCell::new(Marks::new()),
+            closing: Cell::new(false),
+            marked,
         });
 
         {
@@ -230,11 +242,60 @@ impl Viewer {
                 gdk::Key::a if !v.show => v.set_mode(Mode::Ansi),
                 gdk::Key::x if !v.show => v.set_mode(Mode::Hex),
                 gdk::Key::s if !v.show => v.set_mode(Mode::Smart),
+                gdk::Key::Delete | gdk::Key::KP_Delete | gdk::Key::m | gdk::Key::M => v.toggle_mark(),
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
         });
         self.window.add_controller(ctrl);
+    }
+
+    /// Refresh the `MARKED` label and the count in the header (Show only).
+    fn update_marks(&self) {
+        if !self.show {
+            return;
+        }
+        let marks = self.marks.borrow();
+        let path = &self.files[self.index.get()];
+        let prefix = if marks.is_marked(path) { "MARKED  \u{2022}  " } else { "" };
+        self.marked.set_text(&format!("{prefix}{} marked", marks.len()));
+    }
+
+    /// Mark or unmark the current picture.
+    fn toggle_mark(&self) {
+        if !self.show {
+            return;
+        }
+        self.marks.borrow_mut().toggle(self.files[self.index.get()].clone());
+        self.update_marks();
+    }
+
+    /// Ask before closing a slideshow that has marked pictures. Nothing is
+    /// deleted unless the user picks Delete.
+    fn install_close_guard(self: &Rc<Self>) {
+        let v = self.clone();
+        self.window.connect_close_request(move |_| {
+            if v.closing.get() || v.marks.borrow().is_empty() {
+                return glib::Propagation::Proceed;
+            }
+            let files = v.marks.borrow().list();
+            let message = format!("Delete {} marked file(s)?", files.len());
+            let (viewer, ui) = (v.clone(), v.ui.clone());
+            opusdm_ui::requester(&v.window, "Show", &message, None, &[("Delete", true), ("Keep", false)], move |delete| {
+                if delete {
+                    crate::job_submit::submit_job(
+                        &ui,
+                        opusdm_ipc::Op::Delete,
+                        files.clone(),
+                        Some(ui.cwd_path()),
+                        opusdm_ipc::JobOptions::default(),
+                    );
+                }
+                viewer.closing.set(true);
+                viewer.window.close();
+            });
+            glib::Propagation::Stop
+        });
     }
 
     /// True when the current file is shown as a picture (no text view).
@@ -263,6 +324,7 @@ impl Viewer {
         self.title.set_text(&format!("{}/{}  {}", self.index.get() + 1, self.files.len(), name));
         self.window.set_title(Some(&format!("{}: {name}", if self.show { "Show" } else { "Viewer" })));
         self.meta.set_text("Loading\u{2026}");
+        self.update_marks();
         self.clear_content();
 
         let gen = self.generation.get() + 1;

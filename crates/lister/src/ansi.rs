@@ -23,15 +23,6 @@ pub fn cp437_char(b: u8) -> char {
     }
 }
 
-/// Decode CP437 bytes: newlines are kept, carriage returns dropped.
-pub fn decode_cp437(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .filter(|&&b| b != b'\r')
-        .map(|&b| if b == b'\n' { '\n' } else { cp437_char(b) })
-        .collect()
-}
-
 /// A run of text with one style. Offsets are characters of [`AnsiDoc::text`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Span {
@@ -233,16 +224,12 @@ mod tests {
 
     #[test]
     fn cp437_maps_the_block_and_box_characters() {
-        assert_eq!(decode_cp437(&[0xB0, 0xB1, 0xB2, 0xC9, 0xE1, 0xDB]), "\u{2591}\u{2592}\u{2593}\u{2554}\u{DF}\u{2588}");
+        let shown: String = [0xB0u8, 0xB1, 0xB2, 0xC9, 0xE1, 0xDB].iter().map(|&b| cp437_char(b)).collect();
+        assert_eq!(shown, "\u{2591}\u{2592}\u{2593}\u{2554}\u{DF}\u{2588}");
         assert_eq!(cp437_char(0x01), '\u{263A}');
         assert_eq!(cp437_char(0x7F), '\u{2302}');
         assert_eq!(cp437_char(b'A'), 'A');
         assert_eq!(cp437_char(0xFF), '\u{A0}');
-    }
-
-    #[test]
-    fn decode_keeps_newlines_and_drops_carriage_returns() {
-        assert_eq!(decode_cp437(b"a\r\nb"), "a\nb");
     }
 
     #[test]
