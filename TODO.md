@@ -45,8 +45,8 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 ## 4. Lister capabilities
 
-- [ ] F-22 Lister Format Editor (per-directory formats)
-- [ ] F-23 Show/Hide name patterns (persistent filter)
+- [x] F-22 Lister Format Editor (per-directory formats; up/down buttons instead of drag and drop, no Comment column until F-11)
+- [x] F-23 Show/Hide name patterns (persistent filter)
 - [ ] F-24 Directory buffer cache + CacheList + PathHistory
 - [ ] F-25 Lister tiling / cascade
 - [ ] F-26 Lister Snapshot / window geometry persistence

@@ -162,6 +162,15 @@ total directories, files and bytes; `%D` `%F` `%B` the same for the selection; `
 selected entries; `%p` the current path; `%%` a percent sign. The default is
 `D: [%D/%d]  F: [%F/%f]  B: [%B/%b]`; an empty field means the default.
 
+### 3.10c Lister formats and Show/Hide patterns
+Open **Lister Format...** from the command palette (`Ctrl+P`).
+- **Columns**: tick the ones to show, move them with **Up** / **Down** (Name can move but not be removed). **Sort by** and **Reverse** choose the order, **Separation** puts directories first, last or mixed with the files.
+- **Show only** / **Hide** are pattern lists for *files* (directories are always listed): `*` and `?`, separated by `,` or `;`, and `!pattern` excludes (`*.rs,!test*`). **Hide** wins over **Show**.
+- **Free space gauge** adds a used-space bar to the top status bar.
+- **Use** applies the format to the current directory until you leave it. **Save (this directory)**, **Save (with subdirectories)** and **Save as default** store it in `~/.config/opusdm/formats.json`; every Lister picks the change up at once. Entering a directory applies its own format, else the nearest parent saved with subdirectories, else the default, else the built-in one. **Remove saved format** deletes this directory's entry, **Reset** refills the dialog with the built-in format.
+- **Set Show Pattern...** and **Set Hide Pattern...** (palette) edit just the pattern and save it where the current format came from (a new entry for this directory when nothing was saved). An empty answer clears it.
+- Clicking a column header still sorts on the spot, but only **Save** keeps it.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
