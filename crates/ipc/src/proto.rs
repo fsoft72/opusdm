@@ -180,6 +180,9 @@ pub enum ToHub {
     /// persists to `hotkeys.json`/`usermenu.json`/`scripts.json` and
     /// broadcasts `ToLister::BindingsUpdate` to every Lister. No reply.
     SetBindings(crate::bindings::Bindings),
+    /// Replace the saved Lister formats. The hub sanitizes them, persists
+    /// `formats.json` and broadcasts `ToLister::FormatsUpdate`. No reply.
+    SetFormats(crate::format::FormatStore),
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -337,6 +340,9 @@ pub struct Welcome {
     /// The current hotkeys, user menu and script events.
     #[serde(default)]
     pub bindings: crate::bindings::Bindings,
+    /// The saved Lister formats.
+    #[serde(default)]
+    pub formats: crate::format::FormatStore,
 }
 
 /// Messages the hub sends to a Lister once it is registered.
@@ -410,6 +416,8 @@ pub enum ToLister {
     /// The bindings changed: the full new `Bindings`, replacing the ones
     /// from `Welcome`.
     BindingsUpdate(crate::bindings::Bindings),
+    /// The saved Lister formats changed: the full new store.
+    FormatsUpdate(crate::format::FormatStore),
 }
 
 #[cfg(test)]
@@ -489,6 +497,7 @@ mod tests {
             hotkeys: vec![crate::bindings::Hotkey { key: "Ctrl+u".into(), function: "f".into(), global: true }],
             ..crate::bindings::Bindings::default()
         }));
+        roundtrip_tohub(ToHub::SetFormats(crate::format::FormatStore::default()));
     }
 
     #[test]
@@ -510,6 +519,7 @@ mod tests {
             source_locked: false,
             settings: Settings::default(),
             bindings: crate::bindings::Bindings::default(),
+            formats: crate::format::FormatStore::default(),
         };
         let mut buf = Vec::new();
         send(&mut buf, &msg).unwrap();
@@ -566,6 +576,7 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
         roundtrip_tolister(ToLister::FunctionDone);
         roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
+        roundtrip_tolister(ToLister::FormatsUpdate(crate::format::FormatStore::default()));
     }
 
     #[test]

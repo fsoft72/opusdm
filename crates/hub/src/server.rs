@@ -9,6 +9,7 @@ use crate::settings;
 use crate::desktop_settings;
 use opusdm_fsops::Progress;
 use opusdm_ipc::bindings::{self, Bindings};
+use opusdm_ipc::format::{self, FormatStore};
 use opusdm_ipc::frame::{recv, send};
 use opusdm_ipc::function::{FnStep, FunctionId, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
@@ -117,19 +118,27 @@ pub struct ServerOptions {
     /// default is empty bindings, so a test never reads, or acts on, a
     /// developer's real hotkeys, menu and script events.
     pub initial_bindings: Option<Bindings>,
+    /// Formats to start with. `None` loads `formats.json` from disk
+    /// (production). The default is an empty store so a test never reads a
+    /// developer's real formats.
+    pub initial_formats: Option<FormatStore>,
 }
 
 impl Default for ServerOptions {
     /// Options for tests: no disk read.
     fn default() -> Self {
-        Self { global_keys: false, initial_bindings: Some(Bindings::default()) }
+        Self {
+            global_keys: false,
+            initial_bindings: Some(Bindings::default()),
+            initial_formats: Some(FormatStore::default()),
+        }
     }
 }
 
 impl ServerOptions {
     /// Options for the real hub: load the bindings from disk.
     pub fn production() -> Self {
-        Self { global_keys: true, initial_bindings: None }
+        Self { global_keys: true, initial_bindings: None, initial_formats: None }
     }
 }
 
@@ -238,6 +247,7 @@ enum PersistMsg {
     Settings(opusdm_ipc::Settings),
     Desktop(DesktopSettings),
     Bindings(Bindings),
+    Formats(FormatStore),
 }
 
 /// Owns one Lister's write half; runs on its own thread so a blocking
@@ -294,6 +304,8 @@ struct Hub {
     current_desktop: DesktopSettings,
     /// Loaded once at startup; updated in place by `ToHub::SetBindings`.
     current_bindings: Bindings,
+    /// Loaded once at startup; updated in place by `ToHub::SetFormats`.
+    current_formats: FormatStore,
     /// Loop protection for script events.
     event_guard: EventGuard,
     /// Whether global hotkeys may be grabbed (off in tests).
@@ -408,6 +420,14 @@ impl Hub {
                 self.apply_global_keys();
             }
 
+            ToHub::SetFormats(new_formats) => {
+                self.current_formats = new_formats.sanitized();
+                let _ = self.persist_tx.send(PersistMsg::Formats(self.current_formats.clone()));
+                for c in self.conns.values_mut().filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::FormatsUpdate(self.current_formats.clone()).into());
+                }
+            }
+
             ToHub::Register { pid, initial_path } => {
                 if let Some(c) = self.conns.get_mut(&cid) {
                     c.registered = true;
@@ -421,6 +441,7 @@ impl Hub {
                             source_locked: self.roles.source_locked(),
                             settings: self.current_settings.clone(),
                             bindings: self.current_bindings.clone(),
+                            formats: self.current_formats.clone(),
                         }
                         .into(),
                     );
@@ -1087,6 +1108,11 @@ fn owner_loop(
                             opusdm_ipc::err_log!("hub", "cannot save bindings: {e}");
                         }
                     }
+                    PersistMsg::Formats(f) => {
+                        if let Err(e) = format::save_formats(&f) {
+                            opusdm_ipc::err_log!("hub", "cannot save formats.json: {e}");
+                        }
+                    }
                 }
             }
             opusdm_ipc::debug_log!("hub", "persist thread exiting");
@@ -1146,6 +1172,10 @@ fn owner_loop(
         current_bindings: match opts.initial_bindings {
             Some(b) => b,
             None => bindings::sanitize(bindings::load_bindings()),
+        },
+        current_formats: match opts.initial_formats {
+            Some(f) => f,
+            None => format::load_formats(),
         },
         persist_tx,
         engine: JobEngine::new(default_runner(), jp_tx),
@@ -1603,6 +1633,66 @@ mod tests {
         let written = wait_for_file(&cfg.path().join("opusdm").join("hotkeys.json"));
         let back: Vec<opusdm_ipc::bindings::Hotkey> = serde_json::from_str(&written).unwrap();
         assert_eq!(back.len(), 1);
+    }
+
+    #[test]
+    fn set_formats_sanitizes_persists_and_broadcasts() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+        assert_eq!(welcome.formats, opusdm_ipc::FormatStore::default());
+
+        let mut dirty = opusdm_ipc::FormatStore::default();
+        dirty.upsert(
+            "/tmp".into(),
+            false,
+            opusdm_ipc::ListerFormat {
+                columns: vec![opusdm_ipc::FormatColumn::Size, opusdm_ipc::FormatColumn::Size],
+                ..opusdm_ipc::ListerFormat::builtin()
+            },
+        );
+        send(&mut a, &ToHub::SetFormats(dirty)).unwrap();
+
+        let got: ToLister = recv(&mut a).unwrap().unwrap();
+        let ToLister::FormatsUpdate(store) = got else { panic!("expected FormatsUpdate, got {got:?}") };
+        assert_eq!(
+            store.entries[0].format.columns,
+            vec![opusdm_ipc::FormatColumn::Size, opusdm_ipc::FormatColumn::Name],
+            "duplicates dropped and Name restored"
+        );
+
+        let written = wait_for_file(&cfg.path().join("opusdm").join("formats.json"));
+        let back: opusdm_ipc::FormatStore = serde_json::from_str(&written).unwrap();
+        assert_eq!(back, store);
+    }
+
+    #[test]
+    fn welcome_carries_the_formats_loaded_from_disk() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let mut on_disk = opusdm_ipc::FormatStore::default();
+        on_disk.upsert(
+            "/tmp".into(),
+            true,
+            opusdm_ipc::ListerFormat { hide_glob: "*.o".into(), ..opusdm_ipc::ListerFormat::builtin() },
+        );
+        opusdm_ipc::format::save_formats(&on_disk).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server_with(listener, Box::new(|_p| {}), ServerOptions::production());
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+        assert_eq!(welcome.formats, on_disk);
     }
 
     #[test]

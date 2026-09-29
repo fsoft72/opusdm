@@ -2,7 +2,7 @@
 //! forwards every `ToLister` onto an async channel the GTK loop drains.
 
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::{Bindings, ListerId, Role, Settings, ToHub, ToLister, Welcome};
+use opusdm_ipc::{Bindings, FormatStore, ListerId, Role, Settings, ToHub, ToLister, Welcome};
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -69,12 +69,12 @@ impl Client {
         sock_path: &Path,
         pid: u32,
         initial_path: &Path,
-    ) -> io::Result<(Client, ListerId, Roles, Settings, Bindings)> {
+    ) -> io::Result<(Client, ListerId, Roles, Settings, Bindings, FormatStore)> {
         let mut stream = UnixStream::connect(sock_path)?;
         send(&mut stream, &ToHub::Register { pid, initial_path: initial_path.to_path_buf() })?;
         let welcome: Welcome = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
-        let Welcome { lister_id: id, source, dests, source_locked, settings, bindings } = welcome;
+        let Welcome { lister_id: id, source, dests, source_locked, settings, bindings, formats } = welcome;
         let roles = Roles { source, dests, source_locked };
         let reader_stream = stream.try_clone()?;
         let inbox = start_reader(reader_stream);
@@ -84,6 +84,7 @@ impl Client {
             roles,
             settings,
             bindings,
+            formats,
         ))
     }
 
@@ -166,11 +167,12 @@ mod tests {
                 source_locked: false,
                 settings: opusdm_ipc::Settings::default(),
                 bindings: opusdm_ipc::Bindings::default(),
+                formats: opusdm_ipc::FormatStore::default(),
             }).unwrap();
             send(&mut s, &ToLister::InvalidatePath("/tmp".into())).unwrap();
         });
 
-        let (mut client, id, roles, _settings, _bindings) =
+        let (mut client, id, roles, _settings, _bindings, _formats) =
             Client::connect(&path, 77, std::path::Path::new("/home/x")).unwrap();
         assert_eq!(id, ListerId(5));
         assert_eq!(roles.source, Some(ListerId(5)));
@@ -198,9 +200,10 @@ mod tests {
                 source_locked: false,
                 settings: opusdm_ipc::Settings::default(),
                 bindings: opusdm_ipc::Bindings::default(),
+                formats: opusdm_ipc::FormatStore::default(),
             }).unwrap();
         });
-        let (mut client, _id, _roles, _settings, _bindings) =
+        let (mut client, _id, _roles, _settings, _bindings, _formats) =
             Client::connect(&path, 1, std::path::Path::new("/")).unwrap();
         let inbox = client.take_inbox();
         loop {
@@ -231,11 +234,37 @@ mod tests {
                 source_locked: false,
                 settings: opusdm_ipc::Settings::default(),
                 bindings: to_send,
+                formats: opusdm_ipc::FormatStore::default(),
             }).unwrap();
         });
-        let (_client, _id, _roles, _settings, bindings) =
+        let (_client, _id, _roles, _settings, bindings, _formats) =
             Client::connect(&path, 1, std::path::Path::new("/")).unwrap();
         assert_eq!(bindings, sent);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn connect_returns_the_formats_from_welcome() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("hub.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let mut sent = opusdm_ipc::FormatStore::default();
+        sent.upsert("/tmp".into(), true, opusdm_ipc::ListerFormat::builtin());
+        let to_send = sent.clone();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _got: ToHub = recv(&mut s).unwrap().unwrap();
+            send(&mut s, &Welcome {
+                lister_id: ListerId(1), source: None, dests: vec![],
+                source_locked: false,
+                settings: opusdm_ipc::Settings::default(),
+                bindings: opusdm_ipc::Bindings::default(),
+                formats: to_send,
+            }).unwrap();
+        });
+        let (_client, _id, _roles, _settings, _bindings, formats) =
+            Client::connect(&path, 1, std::path::Path::new("/")).unwrap();
+        assert_eq!(formats, sent);
         server.join().unwrap();
     }
 }

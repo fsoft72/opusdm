@@ -24,6 +24,7 @@ pub fn run(
     roles: Roles,
     settings: Settings,
     bindings: opusdm_ipc::Bindings,
+    formats: opusdm_ipc::FormatStore,
     start: PathBuf,
 ) -> glib::ExitCode {
     let inbox = client.take_inbox();
@@ -34,6 +35,7 @@ pub fn run(
         roles,
         settings,
         bindings,
+        formats,
         start,
         inbox: Some(inbox),
     })));
@@ -58,7 +60,7 @@ pub fn run(
         // not be called any earlier - it panics with "GTK has not been
         // initialized" before this point.
         opusdm_ui::apply_theme_mode(st.settings.appearance.theme_mode);
-        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone(), st.bindings.clone());
+        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone(), st.bindings.clone(), st.formats.clone());
         ui.navigate_to(&st.start);
 
         let ui_for_pump = ui.clone();
@@ -87,6 +89,7 @@ struct StartState {
     roles: Roles,
     settings: Settings,
     bindings: opusdm_ipc::Bindings,
+    formats: opusdm_ipc::FormatStore,
     start: PathBuf,
     inbox: Option<async_channel::Receiver<Inbound>>,
 }
@@ -98,6 +101,7 @@ fn build_window(
     roles: Roles,
     settings: Settings,
     bindings: opusdm_ipc::Bindings,
+    formats: opusdm_ipc::FormatStore,
 ) -> Rc<Ui> {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -368,6 +372,7 @@ fn build_window(
             settings: RefCell::new(settings),
             hotkeys: RefCell::new(crate::hotkeys::HotkeyMap::from_hotkeys(&bindings.hotkeys)),
             bindings: RefCell::new(bindings),
+            formats: RefCell::new(formats),
         },
         cwd: RefCell::new(PathBuf::from("/")),
         view: ViewState {

@@ -47,6 +47,9 @@ pub struct HubConnection {
     /// Latest hotkeys, user menu and script events. Updated wholesale from
     /// `Welcome` and `BindingsUpdate`.
     pub bindings: RefCell<opusdm_ipc::Bindings>,
+    /// Latest saved formats. Updated wholesale from `Welcome` and
+    /// `FormatsUpdate`.
+    pub formats: RefCell<opusdm_ipc::FormatStore>,
     /// Lookup table of the local user hotkeys, rebuilt whenever `bindings`
     /// changes.
     pub hotkeys: RefCell<crate::hotkeys::HotkeyMap>,
@@ -521,6 +524,9 @@ impl Ui {
                 }
             }
             ToLister::Pong => {}
+            ToLister::FormatsUpdate(new_formats) => {
+                *self.hub.formats.borrow_mut() = new_formats;
+            }
             ToLister::BindingsUpdate(new_bindings) => {
                 *self.hub.hotkeys.borrow_mut() = crate::hotkeys::HotkeyMap::from_hotkeys(&new_bindings.hotkeys);
                 *self.hub.bindings.borrow_mut() = new_bindings;
