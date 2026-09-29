@@ -47,6 +47,7 @@ pub use desktop::{
 };
 pub use bindings::Bindings;
 pub use dock::DockConfig;
+pub use glob::NameFilter;
 pub use format::{FormatColumn, FormatEntry, FormatSource, FormatStore, ListerFormat, Separate};
 pub use function::{Function, FnStep, FunctionId, InternalArgs, InternalCmd};
 pub use menu::{MenuConfig, MenuItem};

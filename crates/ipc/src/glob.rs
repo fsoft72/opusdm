@@ -67,6 +67,78 @@ impl GlobSet {
     }
 }
 
+/// One comma/semicolon separated list of patterns, where a leading `!` marks
+/// an exclusion.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PatternList {
+    include: Vec<String>,
+    exclude: Vec<String>,
+}
+
+impl PatternList {
+    /// Split `text` into inclusions and `!` exclusions; blank items and a
+    /// lone `!` are dropped.
+    fn parse(text: &str) -> Self {
+        let mut list = Self::default();
+        for item in text.split(PATTERN_SEPARATORS).map(str::trim).filter(|p| !p.is_empty()) {
+            match item.strip_prefix('!') {
+                Some(rest) => {
+                    let rest = rest.trim();
+                    if !rest.is_empty() {
+                        list.exclude.push(rest.to_string());
+                    }
+                }
+                None => list.include.push(item.to_string()),
+            }
+        }
+        list
+    }
+
+    /// True when the list holds no pattern at all.
+    fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    /// True when `name` matches an inclusion.
+    fn included(&self, name: &str) -> bool {
+        self.include.iter().any(|p| glob_match(p, name))
+    }
+
+    /// True when `name` matches an exclusion.
+    fn excluded(&self, name: &str) -> bool {
+        self.exclude.iter().any(|p| glob_match(p, name))
+    }
+}
+
+/// The persistent Show / Hide filter of a Lister format. Callers apply it to
+/// files only; directories are always listed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NameFilter {
+    show: PatternList,
+    hide: PatternList,
+}
+
+impl NameFilter {
+    /// Build a filter from a show list and a hide list (see [`PatternList`]).
+    pub fn new(show: &str, hide: &str) -> Self {
+        Self { show: PatternList::parse(show), hide: PatternList::parse(hide) }
+    }
+
+    /// True when neither list has any pattern.
+    pub fn is_empty(&self) -> bool {
+        self.show.is_empty() && self.hide.is_empty()
+    }
+
+    /// Whether a file called `name` is listed: it passes the show list (no
+    /// inclusion means everything passes, minus exclusions) and the hide list
+    /// does not hide it.
+    pub fn allows(&self, name: &str) -> bool {
+        let shown = (self.show.include.is_empty() || self.show.included(name)) && !self.show.excluded(name);
+        let hidden = self.hide.included(name) && !self.hide.excluded(name);
+        shown && !hidden
+    }
+}
+
 /// Expand a "Copy As..." naming pattern: every `*` becomes `original`.
 /// A pattern without `*` is used verbatim.
 pub fn expand_new_name(pattern: &str, original: &str) -> String {
@@ -149,5 +221,66 @@ mod tests {
         assert!(expand_all("x/*", &orig).is_err());
         assert!(expand_all("", &orig).is_err());
         assert_eq!(expand_all("only", &orig[..1]).unwrap(), vec!["only"]);
+    }
+
+    #[test]
+    fn an_empty_filter_allows_everything() {
+        let f = NameFilter::new("", "");
+        assert!(f.is_empty());
+        assert!(f.allows("anything.txt"));
+    }
+
+    #[test]
+    fn hide_removes_matching_names() {
+        let f = NameFilter::new("", "*.o; *.tmp");
+        assert!(!f.allows("a.o"));
+        assert!(!f.allows("B.TMP"));
+        assert!(f.allows("a.rs"));
+    }
+
+    #[test]
+    fn show_keeps_only_matching_names() {
+        let f = NameFilter::new("*.rs,*.toml", "");
+        assert!(f.allows("lib.rs"));
+        assert!(f.allows("Cargo.toml"));
+        assert!(!f.allows("notes.txt"));
+    }
+
+    #[test]
+    fn hide_wins_over_show() {
+        let f = NameFilter::new("*.rs", "test_*");
+        assert!(f.allows("lib.rs"));
+        assert!(!f.allows("test_lib.rs"));
+    }
+
+    #[test]
+    fn a_bang_excludes_from_a_list() {
+        let f = NameFilter::new("*.rs,!test*", "");
+        assert!(f.allows("lib.rs"));
+        assert!(!f.allows("test_a.rs"));
+        let h = NameFilter::new("", "*.o,!keep.o");
+        assert!(!h.allows("a.o"));
+        assert!(h.allows("keep.o"));
+    }
+
+    #[test]
+    fn a_show_list_of_only_negations_shows_everything_else() {
+        let f = NameFilter::new("!*.o", "");
+        assert!(f.allows("a.rs"));
+        assert!(!f.allows("a.o"));
+    }
+
+    #[test]
+    fn a_hide_list_of_only_negations_hides_nothing() {
+        let f = NameFilter::new("", "!*.o");
+        assert!(f.allows("a.o"));
+        assert!(f.allows("a.rs"));
+    }
+
+    #[test]
+    fn a_lone_bang_is_ignored() {
+        let f = NameFilter::new("!", " ! ");
+        assert!(f.is_empty());
+        assert!(f.allows("x"));
     }
 }
