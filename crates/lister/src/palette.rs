@@ -38,6 +38,8 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::MoveAs, title: Cow::Borrowed("Move As... (Source -> Dest, new names)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::Duplicate, title: Cow::Borrowed("Duplicate Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::CopyNewer, title: Cow::Borrowed("Copy (newer only, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::ChangePermissions, title: Cow::Borrowed("Change Permissions..."), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::SetTimestamp, title: Cow::Borrowed("Set Timestamp..."), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::ClipCopy, title: Cow::Borrowed("Copy to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+C") },
         CommandItem { id: CommandId::ClipCut, title: Cow::Borrowed("Cut to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+X") },
         CommandItem { id: CommandId::ClipPaste, title: Cow::Borrowed("Paste from Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+V") },
@@ -174,6 +176,8 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             }
             crate::job_submit::submit_job(&ui, Op::Move, srcs, None, opusdm_ipc::JobOptions::default());
         }
+        CommandId::ChangePermissions => crate::attr_dialogs::open_permissions(ui),
+        CommandId::SetTimestamp => crate::attr_dialogs::open_timestamp(ui),
         CommandId::CopyAs => crate::copy_as::open(ui, false),
         CommandId::MoveAs => crate::copy_as::open(ui, true),
         CommandId::Duplicate => {

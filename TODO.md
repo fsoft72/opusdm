@@ -26,8 +26,8 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 - [x] F-07 CopyAs, MoveAs, Duplicate, UPDATE/NEWER/MOVEWHENSAME (`quiet` flag is carried but has no requester to suppress yet)
 - [ ] F-08 CheckFit (space pre-check)
-- [ ] F-09 Protect (chmod/chown requester)
-- [ ] F-10 DateStamp (touch)
+- [x] F-09 Protect (chmod requester; chown not implemented, needs privileges)
+- [x] F-10 DateStamp (touch)
 - [ ] F-11 File comments
 - [ ] F-12 MakeLink / MakeLinkAs (hard and symbolic)
 - [ ] F-13 Join / Split

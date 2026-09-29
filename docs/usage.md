@@ -268,6 +268,21 @@ file is not created at the destination. A filtered Move deletes only the files
 it copied. Leave the pattern empty to process everything, Cancel to drop the
 job.
 
+### 3.17 Permissions and Timestamps
+
+- **Change Permissions...** shows an rwx grid for owner, group and other with a
+  synchronised octal field, starting from the first selected entry's mode.
+  "Apply recursively" walks directories; files get the chosen mode and
+  directories also get `x` wherever `r` is set, so they stay traversable.
+  Symbolic links are skipped. Changing the owner is not supported.
+- **Set Timestamp...** sets the access and modification time of the selection
+  to a local `YYYY-MM-DD HH:MM:SS` value ("Now" fills in the current time);
+  "Apply to contents of directories" recurses. A symbolic link gets the time
+  itself, its target is left alone.
+
+With the recursive filter on (see 3.16), a recursive run asks for a pattern
+first and then changes only matching files, never directories.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

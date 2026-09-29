@@ -1,6 +1,7 @@
 //! Blocking filesystem operations (copy, move, delete, mkdir) with progress
 //! events and overwrite-conflict resolution. No GTK, no sockets.
 
+pub mod attrs;
 pub mod cancel;
 pub mod copy;
 pub mod delete;
@@ -69,6 +70,12 @@ fn run_job_inner(spec: &JobSpec, tx: &Sender<Progress>, cancel: &CancelToken) ->
             Some(glob) => delete::run_delete_filtered(srcs, glob, tx, cancel),
             None => delete::run_delete(srcs, tx, cancel),
         },
+        Op::Chmod { mode, recurse } => {
+            attrs::run_chmod(srcs, *mode, *recurse, opts.glob.as_ref(), tx, cancel)
+        }
+        Op::Touch { unix_secs, recurse } => {
+            attrs::run_touch(srcs, *unix_secs, *recurse, opts.glob.as_ref(), tx, cancel)
+        }
         Op::MakeDir { name } => delete::make_entry(dest, name, false),
         Op::NewFile { name } => delete::make_entry(dest, name, true),
     }

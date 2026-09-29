@@ -2,6 +2,7 @@
 
 mod actions;
 mod archive;
+mod attr_dialogs;
 mod batch_rename;
 mod binding_ui;
 mod build;

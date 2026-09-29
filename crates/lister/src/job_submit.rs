@@ -13,7 +13,14 @@ use std::rc::Rc;
 pub fn wants_filter(recursive_filter: bool, op: &Op, srcs: &[PathBuf]) -> bool {
     let walks_trees = matches!(
         op,
-        Op::Copy | Op::Move | Op::Delete | Op::CopyAs { .. } | Op::MoveAs { .. } | Op::Duplicate
+        Op::Copy
+            | Op::Move
+            | Op::Delete
+            | Op::CopyAs { .. }
+            | Op::MoveAs { .. }
+            | Op::Duplicate
+            | Op::Chmod { recurse: true, .. }
+            | Op::Touch { recurse: true, .. }
     );
     recursive_filter && walks_trees && srcs.iter().any(|s| s.is_dir())
 }
@@ -73,6 +80,8 @@ mod tests {
         assert!(wants_filter(true, &Op::Delete, &[file.clone(), dir.clone()]));
         assert!(!wants_filter(false, &Op::Copy, &[dir.clone()]));
         assert!(!wants_filter(true, &Op::Copy, &[file]));
+        assert!(wants_filter(true, &Op::Chmod { mode: 0o644, recurse: true }, &[dir.clone()]));
+        assert!(!wants_filter(true, &Op::Chmod { mode: 0o644, recurse: false }, &[dir.clone()]));
         assert!(!wants_filter(true, &Op::MakeDir { name: "x".into() }, &[dir]));
     }
 }

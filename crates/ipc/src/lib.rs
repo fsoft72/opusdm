@@ -37,6 +37,7 @@ pub mod settings;
 pub mod sockpath;
 pub mod theme;
 pub mod themes;
+pub mod timefmt;
 
 pub use desktop::{
     background_css, path_to_file_url, Background, BackgroundMode, DesktopSettings, ImageFit,

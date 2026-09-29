@@ -33,6 +33,10 @@ pub enum CommandId {
     Duplicate,
     /// Copy to DEST only what is missing there or newer than the DEST copy.
     CopyNewer,
+    /// Open the permissions dialog.
+    ChangePermissions,
+    /// Open the timestamp dialog.
+    SetTimestamp,
     ClipCopy,
     ClipCut,
     ClipPaste,

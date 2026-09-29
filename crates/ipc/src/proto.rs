@@ -47,6 +47,12 @@ pub enum Op {
     MoveAs { new_names: Vec<String> },
     /// Copy each source next to itself as `name.copy`, `name.copy2`, ...
     Duplicate,
+    /// Set the permission bits (`mode & 0o777`) of `srcs`; `recurse` also
+    /// changes everything below directories.
+    Chmod { mode: u32, recurse: bool },
+    /// Set the access and modification time of `srcs` to `unix_secs`;
+    /// `recurse` also changes everything below directories.
+    Touch { unix_secs: i64, recurse: bool },
 }
 
 /// Modifiers for a job, carried next to its [`Op`]. Everything off (the
