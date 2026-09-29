@@ -52,7 +52,7 @@ pub use format::{FormatColumn, FormatEntry, FormatSource, FormatStore, ListerFor
 pub use function::{Function, FnStep, FunctionId, InternalArgs, InternalCmd};
 pub use menu::{MenuConfig, MenuItem};
 pub use proto::{
-    Appearance, Behavior, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
+    Appearance, Behavior, CacheEntry, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
     Settings, ThemeMode, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
     CACHE_SIZE_RANGE, DEFAULT_CACHE_SIZE, DEFAULT_STATUS_FORMAT,
 };

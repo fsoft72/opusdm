@@ -220,6 +220,8 @@ struct Conn {
     registered: bool,
     pid: u32,
     path: PathBuf,
+    /// The directories this Lister reported as cached.
+    cache_paths: Vec<PathBuf>,
 }
 
 /// Either of the two message types the hub writes to a Lister socket.
@@ -363,7 +365,7 @@ impl Hub {
         }
         self.conns.insert(
             cid,
-            Conn { tx, shutdown, registered: false, pid: 0, path: PathBuf::new() },
+            Conn { tx, shutdown, registered: false, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() },
         );
         let owner_tx = owner_tx.clone();
         let spawned = std::thread::Builder::new()
@@ -425,6 +427,41 @@ impl Hub {
                 let _ = self.persist_tx.send(PersistMsg::Formats(self.current_formats.clone()));
                 for c in self.conns.values_mut().filter(|c| c.registered) {
                     let _ = c.tx.send(ToLister::FormatsUpdate(self.current_formats.clone()).into());
+                }
+            }
+
+            ToHub::CacheReport(paths) => {
+                if let Some(c) = self.conns.get_mut(&cid) {
+                    c.cache_paths = paths;
+                }
+            }
+
+            ToHub::QueryCaches => {
+                let mut ids: Vec<u64> = self.conns.iter().filter(|(_, c)| c.registered).map(|(id, _)| *id).collect();
+                ids.sort_unstable();
+                let entries: Vec<opusdm_ipc::CacheEntry> = ids
+                    .iter()
+                    .flat_map(|id| {
+                        self.conns[id]
+                            .cache_paths
+                            .iter()
+                            .map(move |p| opusdm_ipc::CacheEntry { lister: ListerId(*id), path: p.clone() })
+                    })
+                    .collect();
+                if let Some(c) = self.conns.get(&cid) {
+                    let _ = c.tx.send(ToLister::CacheList(entries).into());
+                }
+            }
+
+            ToHub::FreeAllCaches => {
+                for c in self.conns.values_mut().filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::FreeCaches.into());
+                }
+            }
+
+            ToHub::JumpTo { lister, path } => {
+                if let Some(c) = self.conns.get(&lister.0).filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::GoTo { path }.into());
                 }
             }
 
@@ -1693,6 +1730,121 @@ mod tests {
         send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
         let welcome: Welcome = recv(&mut a).unwrap().unwrap();
         assert_eq!(welcome.formats, on_disk);
+    }
+
+    /// Read messages from `s` until `pick` returns a value, panicking after 30
+    /// messages (role broadcasts may interleave with the reply we want).
+    fn recv_until<T>(s: &mut UnixStream, pick: impl Fn(ToLister) -> Option<T>) -> T {
+        for _ in 0..30 {
+            let msg: ToLister = recv(s).unwrap().unwrap();
+            if let Some(v) = pick(msg) {
+                return v;
+            }
+        }
+        panic!("the expected message never arrived");
+    }
+
+    /// Register a Lister and return its stream and id.
+    fn register(path: &std::path::Path, pid: u32, start: &str) -> (UnixStream, ListerId) {
+        let mut s = connect(path);
+        send(&mut s, &ToHub::Register { pid, initial_path: start.into() }).unwrap();
+        let welcome: Welcome = recv(&mut s).unwrap().unwrap();
+        (s, welcome.lister_id)
+    }
+
+    #[test]
+    fn query_caches_lists_every_listers_reported_paths() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let (mut a, id_a) = register(&path, 1, "/a");
+        let (mut b, id_b) = register(&path, 2, "/b");
+
+        send(&mut a, &ToHub::CacheReport(vec!["/x".into()])).unwrap();
+        send(&mut b, &ToHub::CacheReport(vec!["/y".into(), "/z".into()])).unwrap();
+        // Connections are read by separate threads: b's own query is only
+        // answered after its report was handled, so wait for that reply
+        // before a asks.
+        send(&mut b, &ToHub::QueryCaches).unwrap();
+        recv_until(&mut b, |m| matches!(m, ToLister::CacheList(_)).then_some(()));
+        send(&mut a, &ToHub::QueryCaches).unwrap();
+
+        let entries = recv_until(&mut a, |m| match m {
+            ToLister::CacheList(e) => Some(e),
+            _ => None,
+        });
+        let got: Vec<(ListerId, String)> =
+            entries.iter().map(|e| (e.lister, e.path.to_string_lossy().into_owned())).collect();
+        assert_eq!(got, vec![(id_a, "/x".into()), (id_b, "/y".into()), (id_b, "/z".into())]);
+    }
+
+    #[test]
+    fn a_disconnected_listers_cached_paths_disappear() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let (mut a, _id_a) = register(&path, 1, "/a");
+        let (mut b, _id_b) = register(&path, 2, "/b");
+        send(&mut b, &ToHub::CacheReport(vec!["/y".into()])).unwrap();
+        // Make sure the hub processed b's report before b goes away: b's own
+        // query is answered only after its report was handled.
+        send(&mut b, &ToHub::QueryCaches).unwrap();
+        recv_until(&mut b, |m| matches!(m, ToLister::CacheList(_)).then_some(()));
+        send(&mut a, &ToHub::QueryCaches).unwrap();
+        let first = recv_until(&mut a, |m| match m {
+            ToLister::CacheList(e) => Some(e),
+            _ => None,
+        });
+        assert_eq!(first.len(), 1);
+        drop(b);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            send(&mut a, &ToHub::QueryCaches).unwrap();
+            let now = recv_until(&mut a, |m| match m {
+                ToLister::CacheList(e) => Some(e),
+                _ => None,
+            });
+            if now.is_empty() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "b's paths never disappeared");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn free_all_caches_reaches_every_lister() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let (mut a, _) = register(&path, 1, "/a");
+        let (mut b, _) = register(&path, 2, "/b");
+        send(&mut a, &ToHub::FreeAllCaches).unwrap();
+        recv_until(&mut a, |m| matches!(m, ToLister::FreeCaches).then_some(()));
+        recv_until(&mut b, |m| matches!(m, ToLister::FreeCaches).then_some(()));
+    }
+
+    #[test]
+    fn jump_to_reaches_only_the_target_and_ignores_unknown_ids() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let (mut a, _id_a) = register(&path, 1, "/a");
+        let (mut b, id_b) = register(&path, 2, "/b");
+
+        send(&mut a, &ToHub::JumpTo { lister: ListerId(9999), path: "/nowhere".into() }).unwrap();
+        send(&mut a, &ToHub::JumpTo { lister: id_b, path: "/target".into() }).unwrap();
+        let goto = recv_until(&mut b, |m| match m {
+            ToLister::GoTo { path } => Some(path),
+            _ => None,
+        });
+        assert_eq!(goto, std::path::PathBuf::from("/target"));
+
+        // a must not have been sent a GoTo: the next reply it reads is the
+        // CacheList, with no GoTo before it.
+        send(&mut a, &ToHub::QueryCaches).unwrap();
+        recv_until(&mut a, |m| match m {
+            ToLister::GoTo { .. } => panic!("a GoTo reached the wrong Lister"),
+            ToLister::CacheList(_) => Some(()),
+            _ => None,
+        });
     }
 
     #[test]

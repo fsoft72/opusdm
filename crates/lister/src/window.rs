@@ -553,6 +553,7 @@ impl Ui {
                 }
             }
             ToLister::Pong => {}
+            ToLister::CacheList(_) | ToLister::FreeCaches | ToLister::GoTo { .. } => {}
             ToLister::FormatsUpdate(new_formats) => {
                 *self.hub.formats.borrow_mut() = new_formats;
                 self.on_formats_changed();

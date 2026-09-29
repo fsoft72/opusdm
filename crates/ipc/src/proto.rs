@@ -8,6 +8,15 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ListerId(pub u64);
 
+/// One directory a Lister keeps in its cache, as listed by the Cache List.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheEntry {
+    /// The Lister that holds it.
+    pub lister: ListerId,
+    /// The cached directory.
+    pub path: PathBuf,
+}
+
 /// Which global role a Lister currently holds, or none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
@@ -183,6 +192,16 @@ pub enum ToHub {
     /// Replace the saved Lister formats. The hub sanitizes them, persists
     /// `formats.json` and broadcasts `ToLister::FormatsUpdate`. No reply.
     SetFormats(crate::format::FormatStore),
+    /// The directories this Lister has cached, most recent first. Replaces the
+    /// previous report. No reply.
+    CacheReport(Vec<PathBuf>),
+    /// Ask for every Lister's cached paths; answered with `ToLister::CacheList`.
+    QueryCaches,
+    /// Ask every Lister to drop its directory cache (`ToLister::FreeCaches`).
+    FreeAllCaches,
+    /// Ask `lister` to raise its window and go to `path` (`ToLister::GoTo`).
+    /// Ignored when there is no such Lister.
+    JumpTo { lister: ListerId, path: PathBuf },
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -435,6 +454,12 @@ pub enum ToLister {
     BindingsUpdate(crate::bindings::Bindings),
     /// The saved Lister formats changed: the full new store.
     FormatsUpdate(crate::format::FormatStore),
+    /// Snapshot of every Lister's cached directories, in Lister id order.
+    CacheList(Vec<CacheEntry>),
+    /// Drop the directory cache.
+    FreeCaches,
+    /// Raise the window and navigate to `path`.
+    GoTo { path: PathBuf },
 }
 
 #[cfg(test)]
@@ -515,6 +540,10 @@ mod tests {
             ..crate::bindings::Bindings::default()
         }));
         roundtrip_tohub(ToHub::SetFormats(crate::format::FormatStore::default()));
+        roundtrip_tohub(ToHub::CacheReport(vec!["/a".into()]));
+        roundtrip_tohub(ToHub::QueryCaches);
+        roundtrip_tohub(ToHub::FreeAllCaches);
+        roundtrip_tohub(ToHub::JumpTo { lister: ListerId(2), path: "/p".into() });
     }
 
     #[test]
@@ -594,6 +623,9 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionDone);
         roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
         roundtrip_tolister(ToLister::FormatsUpdate(crate::format::FormatStore::default()));
+        roundtrip_tolister(ToLister::CacheList(vec![CacheEntry { lister: ListerId(1), path: "/p".into() }]));
+        roundtrip_tolister(ToLister::FreeCaches);
+        roundtrip_tolister(ToLister::GoTo { path: "/p".into() });
     }
 
     #[test]
