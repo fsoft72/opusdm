@@ -7,6 +7,7 @@ use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
 use crate::settings;
 use crate::desktop_settings;
 use opusdm_fsops::Progress;
+use opusdm_ipc::bindings::{self, Bindings};
 use opusdm_ipc::frame::{recv, send};
 use opusdm_ipc::function::{FnStep, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
@@ -84,8 +85,36 @@ pub struct ServerHandle {
     pub evt_rx: Receiver<HubEvent>,
 }
 
-/// Start the socket server on `listener`. Returns channels to/from the GTK side.
+/// Knobs the tests leave off and `main` turns on.
+pub struct ServerOptions {
+    /// Bindings to start with. `None` loads them from disk (production). The
+    /// default is empty bindings, so a test never reads, or acts on, a
+    /// developer's real hotkeys, menu and script events.
+    pub initial_bindings: Option<Bindings>,
+}
+
+impl Default for ServerOptions {
+    /// Options for tests: no disk read.
+    fn default() -> Self {
+        Self { initial_bindings: Some(Bindings::default()) }
+    }
+}
+
+impl ServerOptions {
+    /// Options for the real hub: load the bindings from disk.
+    pub fn production() -> Self {
+        Self { initial_bindings: None }
+    }
+}
+
+/// Start the socket server on `listener` with test-friendly options. Returns
+/// channels to/from the GTK side.
 pub fn spawn_server(listener: UnixListener, on_spawn: SpawnFn) -> ServerHandle {
+    spawn_server_with(listener, on_spawn, ServerOptions::default())
+}
+
+/// Start the socket server on `listener`. Returns channels to/from the GTK side.
+pub fn spawn_server_with(listener: UnixListener, on_spawn: SpawnFn, opts: ServerOptions) -> ServerHandle {
     let (owner_tx, owner_rx) = channel::<OwnerMsg>();
     let (evt_tx, evt_rx) = channel::<HubEvent>();
     let (cmd_tx, cmd_rx) = channel::<HubCmd>();
@@ -127,7 +156,7 @@ pub fn spawn_server(listener: UnixListener, on_spawn: SpawnFn) -> ServerHandle {
     // Owner loop.
     std::thread::Builder::new()
         .name("opusdm-owner".into())
-        .spawn(move || owner_loop(owner_rx, owner_tx, evt_tx, on_spawn))
+        .spawn(move || owner_loop(owner_rx, owner_tx, evt_tx, on_spawn, opts))
         .expect("spawn owner thread");
 
     ServerHandle { cmd_tx, evt_rx }
@@ -182,6 +211,7 @@ impl From<Welcome> for OutMsg {
 enum PersistMsg {
     Settings(opusdm_ipc::Settings),
     Desktop(DesktopSettings),
+    Bindings(Bindings),
 }
 
 /// Owns one Lister's write half; runs on its own thread so a blocking
@@ -236,6 +266,8 @@ struct Hub {
     /// Same lifecycle for desktop settings; updated in place by
     /// `ToHub::SetDesktopSettings` and pushed to the GTK side.
     current_desktop: DesktopSettings,
+    /// Loaded once at startup; updated in place by `ToHub::SetBindings`.
+    current_bindings: Bindings,
     persist_tx: Sender<PersistMsg>,
     engine: JobEngine,
     jobs: HashMap<u64, JobMeta>,
@@ -329,6 +361,14 @@ impl Hub {
                 let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
             }
 
+            ToHub::SetBindings(new_bindings) => {
+                self.current_bindings = bindings::sanitize(new_bindings);
+                let _ = self.persist_tx.send(PersistMsg::Bindings(self.current_bindings.clone()));
+                for c in self.conns.values_mut().filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::BindingsUpdate(self.current_bindings.clone()).into());
+                }
+            }
+
             ToHub::Register { pid, initial_path } => {
                 if let Some(c) = self.conns.get_mut(&cid) {
                     c.registered = true;
@@ -341,6 +381,7 @@ impl Hub {
                             dests: self.roles.dests(),
                             source_locked: self.roles.source_locked(),
                             settings: self.current_settings.clone(),
+                            bindings: self.current_bindings.clone(),
                         }
                         .into(),
                     );
@@ -731,6 +772,7 @@ fn owner_loop(
     owner_tx: Sender<OwnerMsg>,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
+    opts: ServerOptions,
 ) {
     // Settings/desktop-settings writes go to disk on their own thread so a
     // slow filesystem cannot stall the owner loop; the owner keeps the
@@ -749,6 +791,11 @@ fn owner_loop(
                     PersistMsg::Desktop(d) => {
                         if let Err(e) = desktop_settings::save(&d) {
                             opusdm_ipc::err_log!("hub", "cannot save desktop.json: {e}");
+                        }
+                    }
+                    PersistMsg::Bindings(b) => {
+                        if let Err(e) = bindings::save_bindings(&b) {
+                            opusdm_ipc::err_log!("hub", "cannot save bindings: {e}");
                         }
                     }
                 }
@@ -802,6 +849,10 @@ fn owner_loop(
         roles: RoleState::default(),
         current_settings: settings::load_settings(),
         current_desktop,
+        current_bindings: match opts.initial_bindings {
+            Some(b) => b,
+            None => bindings::sanitize(bindings::load_bindings()),
+        },
         persist_tx,
         engine: JobEngine::new(default_runner(), jp_tx),
         jobs: HashMap::new(),
@@ -1222,5 +1273,59 @@ mod tests {
         }
         assert!(done, "expected FunctionDone - the run must not wait forever on its own DEST selection");
         let _ = handle;
+    }
+
+    #[test]
+    fn set_bindings_sanitizes_persists_and_broadcasts() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+        assert_eq!(welcome.bindings, opusdm_ipc::Bindings::default());
+
+        let dirty = opusdm_ipc::Bindings {
+            hotkeys: vec![
+                opusdm_ipc::bindings::Hotkey { key: "ctrl+U".into(), function: "f1".into(), global: false },
+                opusdm_ipc::bindings::Hotkey { key: "Ctrl+u".into(), function: "f2".into(), global: false },
+            ],
+            ..opusdm_ipc::Bindings::default()
+        };
+        send(&mut a, &ToHub::SetBindings(dirty)).unwrap();
+
+        let got: ToLister = recv(&mut a).unwrap().unwrap();
+        let ToLister::BindingsUpdate(b) = got else { panic!("expected BindingsUpdate, got {got:?}") };
+        assert_eq!(b.hotkeys.len(), 1, "the duplicate must be dropped, first wins");
+        assert_eq!(b.hotkeys[0].key, "Ctrl+u");
+        assert_eq!(b.hotkeys[0].function, "f1");
+
+        let written = wait_for_file(&cfg.path().join("opusdm").join("hotkeys.json"));
+        let back: Vec<opusdm_ipc::bindings::Hotkey> = serde_json::from_str(&written).unwrap();
+        assert_eq!(back.len(), 1);
+    }
+
+    #[test]
+    fn welcome_carries_the_bindings_loaded_from_disk() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let on_disk = opusdm_ipc::Bindings {
+            hotkeys: vec![opusdm_ipc::bindings::Hotkey { key: "Ctrl+j".into(), function: "f".into(), global: false }],
+            ..opusdm_ipc::Bindings::default()
+        };
+        opusdm_ipc::bindings::save_bindings(&on_disk).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server_with(listener, Box::new(|_p| {}), ServerOptions::production());
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+        assert_eq!(welcome.bindings, on_disk);
     }
 }

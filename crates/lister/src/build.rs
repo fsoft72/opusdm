@@ -23,6 +23,7 @@ pub fn run(
     id: ListerId,
     roles: Roles,
     settings: Settings,
+    bindings: opusdm_ipc::Bindings,
     start: PathBuf,
 ) -> glib::ExitCode {
     let inbox = client.take_inbox();
@@ -32,6 +33,7 @@ pub fn run(
         id,
         roles,
         settings,
+        bindings,
         start,
         inbox: Some(inbox),
     })));
@@ -56,7 +58,7 @@ pub fn run(
         // not be called any earlier - it panics with "GTK has not been
         // initialized" before this point.
         opusdm_ui::apply_theme_mode(st.settings.appearance.theme_mode);
-        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone());
+        let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone(), st.bindings.clone());
         ui.navigate_to(&st.start);
 
         let ui_for_pump = ui.clone();
@@ -84,6 +86,7 @@ struct StartState {
     id: ListerId,
     roles: Roles,
     settings: Settings,
+    bindings: opusdm_ipc::Bindings,
     start: PathBuf,
     inbox: Option<async_channel::Receiver<Inbound>>,
 }
@@ -94,6 +97,7 @@ fn build_window(
     id: ListerId,
     roles: Roles,
     settings: Settings,
+    bindings: opusdm_ipc::Bindings,
 ) -> Rc<Ui> {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -357,6 +361,7 @@ fn build_window(
             roles: RefCell::new(roles),
             watcher,
             settings: RefCell::new(settings),
+            bindings: RefCell::new(bindings),
         },
         cwd: RefCell::new(PathBuf::from("/")),
         view: ViewState {

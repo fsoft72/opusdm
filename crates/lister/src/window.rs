@@ -44,6 +44,9 @@ pub struct HubConnection {
     /// Current settings (colors, and whatever else joins later). Updated
     /// wholesale from `Welcome` and `SettingsUpdate`.
     pub settings: RefCell<Settings>,
+    /// Latest hotkeys, user menu and script events. Updated wholesale from
+    /// `Welcome` and `BindingsUpdate`.
+    pub bindings: RefCell<opusdm_ipc::Bindings>,
 }
 
 /// The top status bar: D/F/B counts, the role badge and pin, and the
@@ -498,6 +501,9 @@ impl Ui {
                 }
             }
             ToLister::Pong => {}
+            ToLister::BindingsUpdate(new_bindings) => {
+                *self.hub.bindings.borrow_mut() = new_bindings;
+            }
             ToLister::QuerySelection => {
                 let _ = self.hub.client.send(&opusdm_ipc::ToHub::SelectionReply {
                     paths: self.selected_paths(),

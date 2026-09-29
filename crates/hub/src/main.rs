@@ -25,13 +25,14 @@ fn main() {
     };
 
     let sock_for_spawn = sock_path.clone();
-    let handle = server::spawn_server(
+    let handle = server::spawn_server_with(
         listener,
         Box::new(move |start: Option<std::path::PathBuf>| {
             if let Err(e) = children::spawn_lister(&sock_for_spawn, start.as_deref()) {
                 eprintln!("opusdm-hub: cannot spawn lister: {e}");
             }
         }),
+        server::ServerOptions::production(),
     );
 
     children::install_sigchld(handle.cmd_tx.clone());

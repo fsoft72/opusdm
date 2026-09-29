@@ -223,3 +223,4 @@
 - Docs: added the design spec for F-03 Hotkeys, F-04 User menu and F-05 Script events (`docs/superpowers/specs/2026-09-29-hotkeys-usermenu-scripts-design.md`).
 - Docs: added the implementation plan for F-03/F-04/F-05 (`docs/superpowers/plans/2026-09-29-hotkeys-usermenu-scripts.md`).
 - Feature (F-03/F-04/F-05, step 1): new `opusdm_ipc::bindings` module - hotkey/menu/script-event data model, `Ctrl+Alt+u` key parser, per-section validators, tolerant `sanitize`, `prune`, and persistence to `hotkeys.json`, `usermenu.json`, `scripts.json`.
+- Feature (F-03/F-04/F-05, step 2): `ToHub::SetBindings` / `ToLister::BindingsUpdate` / `Welcome.bindings`. The hub loads, sanitizes, persists and broadcasts `Bindings` (`ServerOptions` keeps tests off the real config); listers cache them in `HubConnection.bindings`.

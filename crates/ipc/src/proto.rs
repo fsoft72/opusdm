@@ -116,6 +116,10 @@ pub enum ToHub {
     RunFunction { steps: Vec<crate::function::FnStep> },
     /// Reply to `ToLister::QuerySelection`.
     SelectionReply { paths: Vec<PathBuf>, cwd: PathBuf },
+    /// Replace the hotkeys, user menu and script events. The hub sanitizes,
+    /// persists to `hotkeys.json`/`usermenu.json`/`scripts.json` and
+    /// broadcasts `ToLister::BindingsUpdate` to every Lister. No reply.
+    SetBindings(crate::bindings::Bindings),
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -255,6 +259,9 @@ pub struct Welcome {
     pub dests: Vec<ListerId>,
     pub source_locked: bool,
     pub settings: Settings,
+    /// The current hotkeys, user menu and script events.
+    #[serde(default)]
+    pub bindings: crate::bindings::Bindings,
 }
 
 /// Messages the hub sends to a Lister once it is registered.
@@ -321,6 +328,9 @@ pub enum ToLister {
     FunctionFailed { step_idx: usize, error: String },
     /// Every step of a running Function finished successfully.
     FunctionDone,
+    /// The bindings changed: the full new `Bindings`, replacing the ones
+    /// from `Welcome`.
+    BindingsUpdate(crate::bindings::Bindings),
 }
 
 #[cfg(test)]
@@ -372,6 +382,10 @@ mod tests {
             }],
         });
         roundtrip_tohub(ToHub::SelectionReply { paths: vec!["/a".into()], cwd: "/home/x".into() });
+        roundtrip_tohub(ToHub::SetBindings(crate::bindings::Bindings {
+            hotkeys: vec![crate::bindings::Hotkey { key: "Ctrl+u".into(), function: "f".into(), global: true }],
+            ..crate::bindings::Bindings::default()
+        }));
     }
 
     #[test]
@@ -392,6 +406,7 @@ mod tests {
             dests: vec![],
             source_locked: false,
             settings: Settings::default(),
+            bindings: crate::bindings::Bindings::default(),
         };
         let mut buf = Vec::new();
         send(&mut buf, &msg).unwrap();
@@ -439,6 +454,7 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionStepDone { step_idx: 0, exit_code: Some(0) });
         roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
         roundtrip_tolister(ToLister::FunctionDone);
+        roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
     }
 
     #[test]

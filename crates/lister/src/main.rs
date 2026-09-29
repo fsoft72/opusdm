@@ -50,7 +50,7 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("/"));
 
     let pid = std::process::id();
-    let (client, lister_id, roles, settings) =
+    let (client, lister_id, roles, settings, bindings) =
         match client::Client::connect(&sock_path, pid, &start_path) {
             Ok(t) => t,
             Err(e) => {
@@ -60,7 +60,7 @@ fn main() {
         };
 
     crate::dlog!("connected to hub, lister_id={lister_id:?}, start={}", start_path.display());
-    let code = build::run(client, lister_id, roles, settings, start_path);
+    let code = build::run(client, lister_id, roles, settings, bindings, start_path);
     crate::dlog!("event loop exited, code={code:?}");
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }
