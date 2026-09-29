@@ -47,6 +47,9 @@ pub struct HubConnection {
     /// Latest hotkeys, user menu and script events. Updated wholesale from
     /// `Welcome` and `BindingsUpdate`.
     pub bindings: RefCell<opusdm_ipc::Bindings>,
+    /// Lookup table of the local user hotkeys, rebuilt whenever `bindings`
+    /// changes.
+    pub hotkeys: RefCell<crate::hotkeys::HotkeyMap>,
 }
 
 /// The top status bar: D/F/B counts, the role badge and pin, and the
@@ -502,6 +505,7 @@ impl Ui {
             }
             ToLister::Pong => {}
             ToLister::BindingsUpdate(new_bindings) => {
+                *self.hub.hotkeys.borrow_mut() = crate::hotkeys::HotkeyMap::from_hotkeys(&new_bindings.hotkeys);
                 *self.hub.bindings.borrow_mut() = new_bindings;
             }
             ToLister::QuerySelection => {

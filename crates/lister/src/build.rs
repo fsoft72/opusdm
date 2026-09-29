@@ -361,6 +361,7 @@ fn build_window(
             roles: RefCell::new(roles),
             watcher,
             settings: RefCell::new(settings),
+            hotkeys: RefCell::new(crate::hotkeys::HotkeyMap::from_hotkeys(&bindings.hotkeys)),
             bindings: RefCell::new(bindings),
         },
         cwd: RefCell::new(PathBuf::from("/")),
@@ -530,6 +531,13 @@ fn build_window(
             } else {
                 crate::keys::Focus::List
             };
+            // A user hotkey (F-03) is looked up first, so it wins over a
+            // built-in binding.
+            let user_function = ui_for_keys.hub.hotkeys.borrow().lookup(keyval, state, focus).cloned();
+            if let Some(id) = user_function {
+                let _ = ui_for_keys.hub.client.send(&opusdm_ipc::ToHub::RunFunctionById { id });
+                return glib::Propagation::Stop;
+            }
             let Some(action) = crate::keys::resolve(keyval, ctrl, shift, focus) else {
                 return glib::Propagation::Proceed;
             };

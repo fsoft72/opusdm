@@ -12,6 +12,7 @@ mod dnd;
 mod filter;
 mod function_editor;
 mod glyphs;
+mod hotkeys;
 mod icons;
 mod keys;
 mod model;
