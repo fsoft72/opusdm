@@ -29,6 +29,7 @@ mod keys;
 mod link_dialogs;
 mod menu_editor;
 mod model;
+mod nav_cache;
 mod palette;
 mod passwd;
 mod preview;

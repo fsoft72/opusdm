@@ -369,6 +369,7 @@ fn build_window(
     user_menu_btn.set_tooltip_text(Some("User menu"));
     user_menu_btn.add_css_class("opus-btn");
 
+    let cache_capacity = settings.behavior.cache_capacity();
     let ui = Rc::new(Ui {
         window: window.clone(),
         hub: HubConnection {
@@ -419,6 +420,8 @@ fn build_window(
         typeahead_timer: RefCell::new(None),
         format: RefCell::new(opusdm_ipc::ListerFormat::builtin()),
         temp_format: RefCell::new(None),
+        dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
+        history: RefCell::new(crate::history::History::new()),
         last_selection: RefCell::new(Vec::new()),
         user_menu_btn: user_menu_btn.clone(),
     });

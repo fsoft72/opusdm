@@ -2,7 +2,7 @@
 //! Construction and signal wiring live in `build.rs`.
 
 use crate::client::{Client, Roles};
-use crate::model::{read_dir_rows, Row};
+use crate::model::Row;
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
@@ -162,6 +162,10 @@ pub struct Ui {
     /// A format applied with "Use": valid only for the directory it was
     /// applied in.
     pub temp_format: RefCell<Option<(PathBuf, opusdm_ipc::ListerFormat)>>,
+    /// Recently read directory listings (raw rows, before the Show / Hide filter).
+    pub dir_cache: RefCell<crate::dircache::DirCache>,
+    /// Back / forward history.
+    pub history: RefCell<crate::history::History>,
 }
 
 impl Ui {
@@ -227,48 +231,14 @@ impl Ui {
         self.terminal.toggle();
     }
 
-    /// Read `dir`, repopulate the store, update title/entry/status, notify the hub.
-    /// The listing itself (`read_dir` plus per-entry metadata, or the archive
-    /// subprocess) runs on a background thread so a large, slow, or
-    /// network-mounted directory doesn't freeze the window; only the plain
-    /// `Row` data crosses back to the GTK thread, where the store is updated.
+    /// Go to `dir` (see [`Ui::navigate`]): a cached listing shows at once and
+    /// the disk is re-read on a background thread.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
-        self.navigate_to_then(dir, || {});
-    }
-
-    /// `navigate_to`, running `on_done` right after the listing is applied
-    /// (skipped if a later navigation supersedes this one first).
-    pub fn navigate_to_then(self: &Rc<Self>, dir: &Path, on_done: impl Fn() + 'static) {
-        crate::dlog!("navigate_to {}", dir.display());
-        let gen = self.nav_generation.get() + 1;
-        self.nav_generation.set(gen);
-
-        let dir_owned = dir.to_path_buf();
-        let (tx, rx) = async_channel::bounded::<io::Result<Vec<Row>>>(1);
-        std::thread::spawn(move || {
-            let result = if let Some((arch, inner)) = crate::archive::parse_archive_path(&dir_owned) {
-                crate::archive::read_archive_rows(&arch, &inner)
-            } else {
-                read_dir_rows(&dir_owned)
-            };
-            let _ = tx.send_blocking(result);
-        });
-
-        let this = self.clone();
-        let dir_owned = dir.to_path_buf();
-        glib::spawn_future_local(async move {
-            let Ok(result) = rx.recv().await else { return };
-            // Superseded by a later navigation while this was loading.
-            if this.nav_generation.get() != gen {
-                return;
-            }
-            this.apply_navigation(&dir_owned, result);
-            on_done();
-        });
+        self.navigate(dir, true, || {});
     }
 
     /// Apply a listing produced by `navigate_to`'s background read.
-    fn apply_navigation(self: &Rc<Self>, dir: &Path, rows: io::Result<Vec<Row>>) {
+    pub(crate) fn apply_navigation(self: &Rc<Self>, dir: &Path, rows: io::Result<Vec<Row>>) {
         let rows = match rows {
             Ok(r) => r,
             Err(e) => {
@@ -289,6 +259,7 @@ impl Ui {
             self.terminal.sync_cwd(dir);
         }
         *self.cwd.borrow_mut() = dir.to_path_buf();
+        self.history.borrow_mut().push(dir.to_path_buf());
         // A "Use" format only lives in the directory it was applied in.
         if self.temp_format.borrow().as_ref().is_some_and(|(p, _)| p != dir) {
             *self.temp_format.borrow_mut() = None;
@@ -392,26 +363,13 @@ impl Ui {
         self.refresh_icon_view();
     }
 
-    /// Re-read the current directory, keeping the selection by name. Since
-    /// `navigate_to` reads off-thread, the selection is restored once the new
-    /// listing actually lands rather than right after the call returns.
+    /// Re-read the current directory from disk (never from the cache),
+    /// keeping the selection by name once the new listing lands.
     pub fn reload(self: &Rc<Self>) {
         let selected = self.selected_names();
-        if selected.is_empty() {
-            self.navigate_to(&self.cwd.borrow().clone());
-            return;
-        }
-        let this = self.clone();
         let cwd = self.cwd.borrow().clone();
-        self.navigate_to_then(&cwd, move || {
-            for i in 0..this.view.selection.n_items() {
-                if let Some(row) = this.row_at(i) {
-                    if selected.contains(&row.name) {
-                        this.view.selection.select_item(i, false);
-                    }
-                }
-            }
-        });
+        let this = self.clone();
+        self.navigate(&cwd, false, move || this.select_names(&selected));
     }
 
     /// Absolute paths of the selected rows.
@@ -518,6 +476,9 @@ impl Ui {
                 crate::actions::sync_role_buttons(self);
             }
             ToLister::InvalidatePath(p) => {
+                if self.dir_cache.borrow_mut().remove(&p) {
+                    self.report_cache();
+                }
                 if p == *self.cwd.borrow() {
                     self.reload();
                 }
@@ -539,6 +500,9 @@ impl Ui {
                         || old.appearance.type_indicators != new_settings.appearance.type_indicators
                 };
                 *self.hub.settings.borrow_mut() = new_settings;
+                let capacity = self.hub.settings.borrow().behavior.cache_capacity();
+                self.dir_cache.borrow_mut().set_capacity(capacity);
+                self.report_cache();
                 self.update_status();
                 opusdm_ui::apply_theme_mode(self.hub.settings.borrow().appearance.theme_mode);
                 self.update_css_for_colors();
@@ -553,7 +517,12 @@ impl Ui {
                 }
             }
             ToLister::Pong => {}
-            ToLister::CacheList(_) | ToLister::FreeCaches | ToLister::GoTo { .. } => {}
+            ToLister::FreeCaches => self.free_caches(),
+            ToLister::GoTo { path } => {
+                self.window.present();
+                self.navigate_to(&path);
+            }
+            ToLister::CacheList(_) => {}
             ToLister::FormatsUpdate(new_formats) => {
                 *self.hub.formats.borrow_mut() = new_formats;
                 self.on_formats_changed();
