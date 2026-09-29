@@ -90,6 +90,10 @@ pub enum HubCmd {
     /// Emit a script event: run every function bound to it (from `main` for
     /// `Startup`, from the desktop for the double clicks).
     EmitScriptEvent(ScriptEvent),
+    /// Tear everything down, then send `()` on the channel once the
+    /// `Shutdown` hooks have finished. The GTK quit path waits on it so the
+    /// process does not exit (and kill a running hook) before they are done.
+    ShutdownAndWait(Sender<()>),
     /// Tear everything down.
     Shutdown,
     /// A child process exited (from the SIGCHLD reaper).
@@ -913,6 +917,12 @@ impl Hub {
             }
 
             HubCmd::EmitScriptEvent(event) => self.emit_script_event(event),
+
+            HubCmd::ShutdownAndWait(done) => {
+                let keep_running = self.gtk_cmd(HubCmd::Shutdown);
+                let _ = done.send(());
+                return keep_running;
+            }
 
             HubCmd::Shutdown => {
                 self.run_shutdown_hooks();
@@ -1853,5 +1863,34 @@ mod tests {
         assert!(matches!(got, ToLister::Shutdown), "got {got:?}");
         let lines = std::fs::read_to_string(&marker).map(|s| s.lines().count()).unwrap_or(0);
         assert_eq!(lines, 1, "the Shutdown hook must have finished before the Shutdown message");
+    }
+
+    #[test]
+    fn shutdown_and_wait_acknowledges_only_after_the_hooks_finished() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        // A hook that takes a moment: the ack must not arrive before it ends.
+        let mut f = opusdm_ipc::Function::new("slow hook");
+        f.steps = vec![FnStep::External {
+            argv: vec!["sh".into(), "-c".into(), format!("sleep 0.3; echo x >> {}", marker.display())],
+            cwd_source: true,
+        }];
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, _path) = bind_temp();
+        let bindings = opusdm_ipc::Bindings {
+            scripts: vec![script(opusdm_ipc::bindings::ScriptEvent::Shutdown, &f.id)],
+            ..opusdm_ipc::Bindings::default()
+        };
+        let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
+
+        let (ack_tx, ack_rx) = channel();
+        handle.cmd_tx.send(HubCmd::ShutdownAndWait(ack_tx)).unwrap();
+        ack_rx.recv_timeout(Duration::from_secs(5)).expect("no acknowledgement");
+        let lines = std::fs::read_to_string(&marker).map(|s| s.lines().count()).unwrap_or(0);
+        assert_eq!(lines, 1, "the ack came before the Shutdown hook finished");
     }
 }

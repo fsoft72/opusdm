@@ -1056,7 +1056,13 @@ fn request_quit(widgets: &Rc<Widgets>) {
                 return;
             }
             widgets.quitting.set(true);
-            let _ = widgets.cmd_tx.send(HubCmd::Shutdown);
+            // Wait for the Shutdown hooks (capped): the process exits right
+            // after this returns and would kill a hook still running.
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            if widgets.cmd_tx.send(HubCmd::ShutdownAndWait(done_tx)).is_ok() {
+                let cap = opusdm_hub::script_events::SHUTDOWN_HOOK_TIMEOUT + std::time::Duration::from_secs(1);
+                let _ = done_rx.recv_timeout(cap);
+            }
             let app = widgets.primary_window().application();
             for dw in widgets.windows.borrow().iter() {
                 dw.window.close();
