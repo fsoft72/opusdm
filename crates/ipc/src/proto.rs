@@ -114,6 +114,10 @@ pub enum ToHub {
     /// Run a Function's steps, expanding placeholders against this Lister's
     /// (SOURCE) and the current DEST Lister's selection.
     RunFunction { steps: Vec<crate::function::FnStep> },
+    /// Run a saved Function by id: the hub loads it from `functions.json`,
+    /// validates it and runs it with this Lister as SOURCE. Used by hotkeys
+    /// and the user menu; `RunFunction { steps }` stays for unsaved edits.
+    RunFunctionById { id: crate::function::FunctionId },
     /// Reply to `ToLister::QuerySelection`.
     SelectionReply { paths: Vec<PathBuf>, cwd: PathBuf },
     /// Replace the hotkeys, user menu and script events. The hub sanitizes,
@@ -382,6 +386,7 @@ mod tests {
             }],
         });
         roundtrip_tohub(ToHub::SelectionReply { paths: vec!["/a".into()], cwd: "/home/x".into() });
+        roundtrip_tohub(ToHub::RunFunctionById { id: "fn-1".into() });
         roundtrip_tohub(ToHub::SetBindings(crate::bindings::Bindings {
             hotkeys: vec![crate::bindings::Hotkey { key: "Ctrl+u".into(), function: "f".into(), global: true }],
             ..crate::bindings::Bindings::default()

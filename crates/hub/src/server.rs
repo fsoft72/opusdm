@@ -11,13 +11,23 @@ use opusdm_ipc::bindings::{self, Bindings};
 use opusdm_ipc::frame::{recv, send};
 use opusdm_ipc::function::{FnStep, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 /// Called when a Lister or the toolbar asks for a new Lister window.
 pub type SpawnFn = Box<dyn Fn(Option<PathBuf>) + Send>;
+
+/// Requester id of a Function run the hub started itself (no Lister asked
+/// for it). Same sentinel value as the desktop-originated job requester.
+const HUB_REQUESTER: u64 = u64::MAX;
+
+/// The home directory, or `/` when `HOME` is unset: the working directory of
+/// a run that has no SOURCE Lister.
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+}
 
 /// Events the server pushes to the GTK toolbar.
 #[derive(Debug)]
@@ -71,6 +81,10 @@ pub enum HubCmd {
     CancelJob(u64),
     /// Ask a Lister to raise its window.
     PresentLister(ListerId),
+    /// Run a saved Function on the hub's own initiative (global hotkey,
+    /// script event): SOURCE is the current SOURCE Lister, or an empty
+    /// selection when there is none.
+    RunFunctionHeadless(opusdm_ipc::function::FunctionId),
     /// Tear everything down.
     Shutdown,
     /// A child process exited (from the SIGCHLD reaper).
@@ -277,8 +291,10 @@ struct Hub {
     on_spawn: SpawnFn,
     /// Function runs waiting on `SelectionReply` from SOURCE and/or DEST.
     pending_functions: HashMap<u64, PendingFunctionRun>,
-    /// Which pending run a Lister connection's next `SelectionReply` is for.
-    selection_waiters: HashMap<u64, u64>,
+    /// Which pending runs a Lister connection's next `SelectionReply`s are
+    /// for, oldest first: a Lister answers `QuerySelection`s in order, so two
+    /// runs waiting on it at once are matched by a FIFO, not a single slot.
+    selection_waiters: HashMap<u64, VecDeque<u64>>,
     /// Which connection to route a running Function's events back to, kept
     /// alive from the moment execution starts until `FunctionDone`/`Failed`.
     function_requesters: HashMap<u64, u64>,
@@ -426,7 +442,11 @@ impl Hub {
             }
 
             ToHub::RunFunction { steps } => {
-                self.start_function_run(cid, steps);
+                self.start_function_run(cid, Some(cid), steps);
+            }
+
+            ToHub::RunFunctionById { id } => {
+                self.run_function_by_id(cid, Some(cid), &id);
             }
 
             ToHub::SelectionReply { paths, cwd } => {
@@ -453,40 +473,89 @@ impl Hub {
         }
     }
 
-    /// `ToHub::RunFunction` from `cid`: record a pending run and ask `cid`
-    /// (SOURCE) and, if one exists, the current DEST Lister for their
-    /// selection.
-    fn start_function_run(&mut self, cid: u64, steps: Vec<FnStep>) {
+    /// Start a Function run for `requester`. With `source == Some(cid)` the
+    /// hub asks `cid` (SOURCE) and, if one exists, the first DEST Lister other
+    /// than `cid` for their selection first. With `None` there is no Lister to
+    /// ask: the run starts at once with an empty selection in `$HOME`.
+    /// Returns the run id.
+    fn start_function_run(&mut self, requester: u64, source: Option<u64>, steps: Vec<FnStep>) -> u64 {
         let run_id = self.next_run_id;
         self.next_run_id += 1;
-        // Exclude `cid` itself: a Lister that currently holds a DEST role
-        // (e.g. a locked DEST, or any DEST while SOURCE is locked
-        // elsewhere - see `roles.rs::apply_role_event`'s `FocusGained`
-        // arm) can still be the one *requesting* the run. Picking it as
-        // its own `dest_cid` would make `selection_reply` only ever fill
-        // `source_sel` (the two branches are `if`/`else if` on the same
-        // `cid`), so `dest_sel` - and the run - could never complete.
-        let dest_cid = self.roles.dests().iter().map(|d| d.0).find(|&d| d != cid);
+        let Some(source_cid) = source else {
+            self.function_requesters.insert(run_id, requester);
+            let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
+            crate::functions::spawn_executor(run_id, steps, empty, None, self.function_events_tx.clone());
+            return run_id;
+        };
+        // Exclude the source itself: a Lister that currently holds a DEST role
+        // can still be the one requesting the run. Picking it as its own
+        // `dest_cid` would make `selection_reply` only ever fill `source_sel`
+        // (the two branches are `if`/`else if` on the same `cid`), so
+        // `dest_sel` - and the run - could never complete.
+        let dest_cid = self.roles.dests().iter().map(|d| d.0).find(|&d| d != source_cid);
         self.pending_functions.insert(
             run_id,
             PendingFunctionRun {
-                requester_cid: cid,
+                requester_cid: requester,
                 steps,
-                source_cid: cid,
+                source_cid,
                 dest_cid,
                 source_sel: None,
                 dest_sel: None,
             },
         );
-        self.selection_waiters.insert(cid, run_id);
+        self.query_selection(source_cid, run_id);
+        if let Some(d) = dest_cid {
+            self.query_selection(d, run_id);
+        }
+        run_id
+    }
+
+    /// Queue `run_id` on `cid`'s FIFO of pending selection requests and ask
+    /// the Lister for its selection.
+    fn query_selection(&mut self, cid: u64, run_id: u64) {
+        self.selection_waiters.entry(cid).or_default().push_back(run_id);
         if let Some(c) = self.conns.get_mut(&cid) {
             let _ = c.tx.send(ToLister::QuerySelection.into());
         }
-        if let Some(d) = dest_cid {
-            self.selection_waiters.insert(d, run_id);
-            if let Some(c) = self.conns.get_mut(&d) {
-                let _ = c.tx.send(ToLister::QuerySelection.into());
-            }
+    }
+
+    /// Load the saved function `id`, validate it and start it for `requester`
+    /// (see [`Self::start_function_run`]). A missing or invalid function is
+    /// reported through [`Self::function_failed`]. Returns the run id.
+    fn run_function_by_id(&mut self, requester: u64, source: Option<u64>, id: &str) -> Option<u64> {
+        let Some(function) = opusdm_ipc::function::load_functions().into_iter().find(|f| f.id == id) else {
+            self.function_failed(requester, format!("function '{id}' not found (it may have been deleted)"));
+            return None;
+        };
+        let problems = opusdm_ipc::function::validate(&function);
+        if let Some(first) = problems.first() {
+            self.function_failed(requester, format!("function '{}' is invalid: {}", function.name, first.message));
+            return None;
+        }
+        Some(self.start_function_run(requester, source, function.steps))
+    }
+
+    /// Run the saved function `id` on the hub's own initiative: SOURCE is the
+    /// Lister holding the SOURCE role (if it is registered), else nothing.
+    fn run_headless(&mut self, id: &str) -> Option<u64> {
+        let source = self
+            .roles
+            .source()
+            .map(|l| l.0)
+            .filter(|cid| self.conns.get(cid).is_some_and(|c| c.registered));
+        self.run_function_by_id(HUB_REQUESTER, source, id)
+    }
+
+    /// Tell `requester` a run could not start. A hub-originated run has no
+    /// Lister to tell, so the failure goes to the log.
+    fn function_failed(&mut self, requester: u64, error: String) {
+        if requester == HUB_REQUESTER {
+            opusdm_ipc::err_log!("hub", "function run failed: {error}");
+            return;
+        }
+        if let Some(c) = self.conns.get_mut(&requester) {
+            let _ = c.tx.send(ToLister::FunctionFailed { step_idx: 0, error }.into());
         }
     }
 
@@ -494,8 +563,11 @@ impl Hub {
     /// dest) of its pending run this answers, and start execution once every
     /// slot the run needs is filled.
     fn selection_reply(&mut self, cid: u64, paths: Vec<PathBuf>, cwd: PathBuf) {
-        let Some(&run_id) = self.selection_waiters.get(&cid) else { return };
-        self.selection_waiters.remove(&cid);
+        let Some(queue) = self.selection_waiters.get_mut(&cid) else { return };
+        let Some(run_id) = queue.pop_front() else { return };
+        if queue.is_empty() {
+            self.selection_waiters.remove(&cid);
+        }
         let Some(run) = self.pending_functions.get_mut(&run_id) else { return };
         let sel = SelectionCtx { paths, cwd };
         if cid == run.source_cid {
@@ -520,10 +592,26 @@ impl Hub {
 
     /// A `FnEvent` arrived from a running Function's executor thread; turn
     /// it into the matching `ToLister` and send it to whichever connection
-    /// asked for this run.
+    /// asked for this run. A hub-originated run has no such connection: its
+    /// failures are logged instead.
     fn function_event(&mut self, run_id: u64, ev: crate::functions::FnEvent) {
         let Some(&requester) = self.function_requesters.get(&run_id) else { return };
         let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
+        if terminal {
+            self.function_requesters.remove(&run_id);
+        }
+        if requester == HUB_REQUESTER {
+            match ev {
+                crate::functions::FnEvent::Failed { step_idx, error } => {
+                    opusdm_ipc::err_log!("hub", "function run {run_id} failed at step {step_idx}: {error}");
+                }
+                crate::functions::FnEvent::Output { step_idx, line } => {
+                    opusdm_ipc::debug_log!("hub", "function run {run_id} step {step_idx}: {line}");
+                }
+                _ => {}
+            }
+            return;
+        }
         let msg = match ev {
             crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
             crate::functions::FnEvent::StepDone { step_idx, exit_code } => {
@@ -532,9 +620,6 @@ impl Hub {
             crate::functions::FnEvent::Failed { step_idx, error } => ToLister::FunctionFailed { step_idx, error },
             crate::functions::FnEvent::AllDone => ToLister::FunctionDone,
         };
-        if terminal {
-            self.function_requesters.remove(&run_id);
-        }
         if let Some(c) = self.conns.get_mut(&requester) {
             let _ = c.tx.send(msg.into());
         }
@@ -542,19 +627,24 @@ impl Hub {
 
     /// Clean up any Function-run bookkeeping referencing `cid`, called when
     /// its connection drops. A pending run waiting on `cid` for one of its
-    /// two selections can now never complete (its other side, if any,
-    /// would otherwise wait forever with no way to know); a running
-    /// Function's events for a since-dropped requester are also dropped
-    /// instead of accumulating in `function_requesters`.
+    /// two selections can now never complete (its other side, if any, would
+    /// otherwise wait forever); a running Function's events for a
+    /// since-dropped requester are also dropped instead of accumulating.
     fn drop_function_state(&mut self, cid: u64) {
-        if let Some(run_id) = self.selection_waiters.remove(&cid) {
-            if let Some(run) = self.pending_functions.remove(&run_id) {
-                let other = if run.source_cid == cid { run.dest_cid } else { Some(run.source_cid) };
-                if let Some(other_cid) = other {
-                    self.selection_waiters.remove(&other_cid);
-                }
+        let doomed: Vec<u64> = self
+            .pending_functions
+            .iter()
+            .filter(|(_, run)| run.source_cid == cid || run.dest_cid == Some(cid))
+            .map(|(run_id, _)| *run_id)
+            .collect();
+        for run_id in doomed {
+            self.pending_functions.remove(&run_id);
+            for queue in self.selection_waiters.values_mut() {
+                queue.retain(|&r| r != run_id);
             }
         }
+        self.selection_waiters.remove(&cid);
+        self.selection_waiters.retain(|_, queue| !queue.is_empty());
         self.function_requesters.retain(|_, requester| *requester != cid);
     }
 
@@ -638,8 +728,7 @@ impl Hub {
                 // A hub-originated job has no requesting Lister, so progress and
                 // completion just do not route back to one; the hub's own job
                 // box still tracks it. `u64::MAX` is the sentinel requester.
-                const GTK_REQUESTER: u64 = u64::MAX;
-                if matches!(op, Op::Copy | Op::Move) {
+                                if matches!(op, Op::Copy | Op::Move) {
                     if let Err(msg) = validate_job(&srcs, &dest_dir) {
                         opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
                         return true;
@@ -652,11 +741,11 @@ impl Hub {
                     srcs: srcs.clone(),
                     dest_dir: dest_dir.clone(),
                 };
-                let out = self.engine.submit(ListerId(GTK_REQUESTER), spec);
+                let out = self.engine.submit(ListerId(HUB_REQUESTER), spec);
                 self.jobs.insert(
                     out.job_id,
                     JobMeta {
-                        requester: GTK_REQUESTER,
+                        requester: HUB_REQUESTER,
                         op,
                         totals: ProgressTotals::default(),
                         dest_dir,
@@ -666,6 +755,10 @@ impl Hub {
             }
 
             HubCmd::CancelJob(id) => self.engine.cancel(id),
+
+            HubCmd::RunFunctionHeadless(id) => {
+                self.run_headless(&id);
+            }
 
             HubCmd::PresentLister(id) => {
                 if let Some(c) = self.conns.get_mut(&id.0) {
@@ -1327,5 +1420,147 @@ mod tests {
         send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
         let welcome: Welcome = recv(&mut a).unwrap().unwrap();
         assert_eq!(welcome.bindings, on_disk);
+    }
+
+    /// A saved function whose only step appends a line to `marker`.
+    fn marker_function(name: &str, marker: &std::path::Path) -> opusdm_ipc::Function {
+        let mut f = opusdm_ipc::Function::new(name);
+        f.steps = vec![FnStep::External {
+            argv: vec!["sh".into(), "-c".into(), format!("echo x >> {}", marker.display())],
+            cwd_source: true,
+        }];
+        f
+    }
+
+    /// Poll until `marker` has at least `lines` lines, or panic.
+    fn wait_for_lines(marker: &std::path::Path, lines: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let count = std::fs::read_to_string(marker).map(|s| s.lines().count()).unwrap_or(0);
+            if count >= lines {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("{marker:?} has {count} lines, wanted {lines}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn run_function_by_id_with_an_unknown_id_reports_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        send(&mut a, &ToHub::RunFunctionById { id: "nope".into() }).unwrap();
+
+        let got: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(got, ToLister::FunctionFailed { step_idx: 0, .. }), "got {got:?}");
+    }
+
+    #[test]
+    fn run_function_by_id_runs_a_saved_function() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("touch", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        send(&mut a, &ToHub::RunFunctionById { id: f.id.clone() }).unwrap();
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection));
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+
+        wait_for_lines(&marker, 1);
+    }
+
+    #[test]
+    fn headless_run_without_listers_executes_immediately() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("touch", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, _path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        handle.cmd_tx.send(HubCmd::RunFunctionHeadless(f.id)).unwrap();
+
+        wait_for_lines(&marker, 1);
+    }
+
+    #[test]
+    fn headless_run_queries_the_source_lister() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("touch", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
+        let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
+
+        handle.cmd_tx.send(HubCmd::RunFunctionHeadless(f.id)).unwrap();
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection), "got {q:?}");
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+
+        wait_for_lines(&marker, 1);
+    }
+
+    #[test]
+    fn two_runs_waiting_on_one_lister_both_complete_in_order() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker_a = out.path().join("a");
+        let marker_b = out.path().join("b");
+        let fa = marker_function("a", &marker_a);
+        let fb = marker_function("b", &marker_b);
+        opusdm_ipc::function::save_functions(&[fa.clone(), fb.clone()]).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        // Both requests reach the hub before the lister answers either.
+        send(&mut a, &ToHub::RunFunctionById { id: fa.id.clone() }).unwrap();
+        send(&mut a, &ToHub::RunFunctionById { id: fb.id.clone() }).unwrap();
+        for _ in 0..2 {
+            let q: ToLister = recv(&mut a).unwrap().unwrap();
+            assert!(matches!(q, ToLister::QuerySelection), "got {q:?}");
+        }
+        for _ in 0..2 {
+            send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+        }
+
+        wait_for_lines(&marker_a, 1);
+        wait_for_lines(&marker_b, 1);
     }
 }

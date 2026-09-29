@@ -224,3 +224,4 @@
 - Docs: added the implementation plan for F-03/F-04/F-05 (`docs/superpowers/plans/2026-09-29-hotkeys-usermenu-scripts.md`).
 - Feature (F-03/F-04/F-05, step 1): new `opusdm_ipc::bindings` module - hotkey/menu/script-event data model, `Ctrl+Alt+u` key parser, per-section validators, tolerant `sanitize`, `prune`, and persistence to `hotkeys.json`, `usermenu.json`, `scripts.json`.
 - Feature (F-03/F-04/F-05, step 2): `ToHub::SetBindings` / `ToLister::BindingsUpdate` / `Welcome.bindings`. The hub loads, sanitizes, persists and broadcasts `Bindings` (`ServerOptions` keeps tests off the real config); listers cache them in `HubConnection.bindings`.
+- Feature (F-03/F-04/F-05, step 3): `ToHub::RunFunctionById` and hub-originated ("headless") Function runs (`HubCmd::RunFunctionHeadless`, requester sentinel `u64::MAX`, SOURCE = current SOURCE Lister or an empty selection in $HOME). `selection_waiters` is now a per-Lister FIFO so two runs waiting on one Lister both complete.
