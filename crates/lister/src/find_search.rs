@@ -138,6 +138,119 @@ pub fn status_text(state: RunState, scanned: usize, found: usize, skipped: usize
     }
 }
 
+use opusdm_ipc::NameFilter;
+use std::fs::File;
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Most results a search reports before it stops.
+pub const MAX_RESULTS: usize = 5000;
+
+/// Most bytes read from one file in a content search.
+pub const SEARCH_FILE_MAX: u64 = 16 * 1024 * 1024;
+
+/// A `Scanned` event is sent every this many entries.
+const PROGRESS_EVERY: usize = 200;
+
+/// What to look for.
+pub struct FindQuery {
+    /// Name patterns (`NameFilter` show-list syntax); empty matches everything.
+    pub name: NameFilter,
+    /// Text to look for inside files; `None` for a name search.
+    pub contains: Option<String>,
+    /// Match the text with its case.
+    pub case_sensitive: bool,
+    /// Also look at names starting with `.`.
+    pub include_hidden: bool,
+    /// The folder to search below.
+    pub root: PathBuf,
+}
+
+/// What a running search tells the dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchEvent {
+    /// One result.
+    Found(Found),
+    /// Entries looked at so far.
+    Scanned(usize),
+    /// The search ended (finished, cancelled or capped).
+    Done { scanned: usize, skipped: usize, truncated: bool },
+}
+
+/// The first `cap` bytes of `path`.
+fn read_prefix(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    File::open(path)?.take(cap).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Search `query.root`, sending results to `emit` as they are found, and end
+/// with a `Done` event. Blocking: run it on a thread. `cancel` is checked
+/// before every entry.
+pub fn run_search(query: &FindQuery, cancel: &AtomicBool, emit: impl FnMut(SearchEvent)) {
+    run_search_capped(query, cancel, MAX_RESULTS, emit);
+}
+
+/// [`run_search`] with an explicit result cap (tests use a small one).
+fn run_search_capped(query: &FindQuery, cancel: &AtomicBool, max_results: usize, mut emit: impl FnMut(SearchEvent)) {
+    let (mut scanned, mut skipped, mut found, mut truncated) = (0usize, 0usize, 0usize, false);
+    let mut walker = walkdir::WalkDir::new(&query.root).follow_links(false).min_depth(1).into_iter();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let Some(entry) = walker.next() else { break };
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_dir = entry.file_type().is_dir();
+        if !query.include_hidden && name.starts_with('.') {
+            if is_dir {
+                walker.skip_current_dir();
+            }
+            continue;
+        }
+        scanned += 1;
+        if scanned % PROGRESS_EVERY == 0 {
+            emit(SearchEvent::Scanned(scanned));
+        }
+        if !query.name.allows(&name) {
+            continue;
+        }
+        let path = entry.path().to_path_buf();
+        match &query.contains {
+            None => {
+                emit(SearchEvent::Found(Found { path, is_dir, hit: None }));
+                found += 1;
+            }
+            Some(needle) => {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                match read_prefix(&path, SEARCH_FILE_MAX) {
+                    Ok(bytes) => {
+                        if let Some(hit) = scan_text(&bytes, needle, query.case_sensitive) {
+                            emit(SearchEvent::Found(Found { path, is_dir: false, hit: Some(hit) }));
+                            found += 1;
+                        }
+                    }
+                    Err(_) => skipped += 1,
+                }
+            }
+        }
+        if found >= max_results {
+            truncated = true;
+            break;
+        }
+    }
+    emit(SearchEvent::Done { scanned, skipped, truncated });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +363,201 @@ mod tests {
         assert_eq!(status_text(RunState::Done, 50, 3, 2, false), "Done: 3 found (50 scanned, 2 unreadable)");
         assert_eq!(status_text(RunState::Cancelled, 80, 1, 0, false), "Stopped: 1 found (80 scanned)");
         assert_eq!(status_text(RunState::Done, 9000, 5000, 0, true), "Stopped at 5,000 results");
+    }
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn write(root: &Path, rel: &str, bytes: &[u8]) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+
+    /// A small tree: two logs, a text file, a binary log, a hidden directory
+    /// with a log, and a directory called like a log.
+    fn tree() -> tempfile::TempDir {
+        let td = tempfile::tempdir().unwrap();
+        let r = td.path();
+        write(r, "a/one.log", b"alpha\nTODO fix\n");
+        write(r, "a/two.txt", b"nothing here\n");
+        write(r, "b/three.log", b"todo lower\r\nsecond\r\n");
+        write(r, "bin.log", b"\x00\x01 TODO");
+        write(r, ".hidden/secret.log", b"TODO hidden\n");
+        std::fs::create_dir_all(r.join("logs.d")).unwrap();
+        td
+    }
+
+    fn query(root: &Path, name: &str, contains: Option<&str>) -> FindQuery {
+        FindQuery {
+            name: NameFilter::new(name, ""),
+            contains: contains.map(String::from),
+            case_sensitive: false,
+            include_hidden: false,
+            root: root.to_path_buf(),
+        }
+    }
+
+    /// Run a search to the end and return the results as sorted relative paths
+    /// plus the final `Done` numbers.
+    fn run(q: &FindQuery) -> (Vec<String>, (usize, usize, bool)) {
+        run_with(q, &AtomicBool::new(false), MAX_RESULTS)
+    }
+
+    fn run_with(q: &FindQuery, cancel: &AtomicBool, cap: usize) -> (Vec<String>, (usize, usize, bool)) {
+        let mut names = Vec::new();
+        let mut done = None;
+        run_search_capped(q, cancel, cap, |ev| match ev {
+            SearchEvent::Found(f) => names.push(f.path.strip_prefix(&q.root).unwrap().display().to_string()),
+            SearchEvent::Scanned(_) => {}
+            SearchEvent::Done { scanned, skipped, truncated } => done = Some((scanned, skipped, truncated)),
+        });
+        names.sort();
+        (names, done.expect("every search ends with Done"))
+    }
+
+    #[test]
+    fn a_name_search_finds_files_and_directories_by_glob() {
+        let td = tree();
+        let (names, _) = run(&query(td.path(), "*.log", None));
+        assert_eq!(names, vec!["a/one.log", "b/three.log", "bin.log"], "logs.d does not match *.log");
+        let (names, _) = run(&query(td.path(), "logs*", None));
+        assert_eq!(names, vec!["logs.d"], "a matching directory is a result");
+    }
+
+    #[test]
+    fn a_name_search_reports_directories_as_directories() {
+        let td = tree();
+        let mut dirs = 0;
+        run_search(&query(td.path(), "logs*", None), &AtomicBool::new(false), |ev| {
+            if let SearchEvent::Found(f) = ev {
+                assert!(f.is_dir && f.hit.is_none());
+                dirs += 1;
+            }
+        });
+        assert_eq!(dirs, 1);
+    }
+
+    #[test]
+    fn name_exclusions_work() {
+        let td = tree();
+        let (names, _) = run(&query(td.path(), "*.log,!three*", None));
+        assert_eq!(names, vec!["a/one.log", "bin.log"]);
+    }
+
+    #[test]
+    fn hidden_entries_are_skipped_unless_asked_for() {
+        let td = tree();
+        let (names, _) = run(&query(td.path(), "*.log", None));
+        assert!(!names.iter().any(|n| n.contains(".hidden")), "{names:?}");
+        let mut q = query(td.path(), "*.log", None);
+        q.include_hidden = true;
+        let (names, _) = run(&q);
+        assert!(names.contains(&".hidden/secret.log".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn the_root_itself_is_never_a_result_even_when_hidden() {
+        let td = tempfile::tempdir().unwrap();
+        let hidden_root = td.path().join(".cfg");
+        write(&hidden_root, "x.txt", b"hello\n");
+        let (names, _) = run(&query(&hidden_root, "", None));
+        assert_eq!(names, vec!["x.txt"]);
+    }
+
+    #[test]
+    fn a_content_search_reports_only_files_with_the_text() {
+        let td = tree();
+        let (names, _) = run(&query(td.path(), "", Some("todo")));
+        assert_eq!(names, vec!["a/one.log", "b/three.log"], "binary and hidden files are not reported, nor directories");
+    }
+
+    #[test]
+    fn a_content_search_applies_the_name_filter() {
+        let td = tree();
+        let (names, _) = run(&query(td.path(), "*.txt", Some("todo")));
+        assert!(names.is_empty());
+        let (names, _) = run(&query(td.path(), "one*", Some("todo")));
+        assert_eq!(names, vec!["a/one.log"]);
+    }
+
+    #[test]
+    fn a_content_hit_carries_its_line_and_snippet() {
+        let td = tree();
+        let mut hits = Vec::new();
+        run_search(&query(td.path(), "one*", Some("todo")), &AtomicBool::new(false), |ev| {
+            if let SearchEvent::Found(f) = ev {
+                hits.push(f.hit.unwrap());
+            }
+        });
+        assert_eq!(hits, vec![TextHit { line: 2, snippet: "TODO fix".into(), count: 1 }]);
+    }
+
+    #[test]
+    fn a_flag_set_before_the_start_ends_the_search_with_no_results() {
+        let td = tree();
+        let cancel = AtomicBool::new(true);
+        let (names, (scanned, _, truncated)) = run_with(&query(td.path(), "", None), &cancel, MAX_RESULTS);
+        assert!(names.is_empty());
+        assert_eq!(scanned, 0);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn cancelling_from_inside_the_event_callback_stops_the_walk() {
+        let td = tree();
+        let cancel = AtomicBool::new(false);
+        let mut found = 0;
+        run_search_capped(&query(td.path(), "", None), &cancel, MAX_RESULTS, |ev| {
+            if matches!(ev, SearchEvent::Found(_)) {
+                found += 1;
+                cancel.store(true, Ordering::Relaxed);
+            }
+        });
+        assert_eq!(found, 1, "no result after the flag was raised");
+    }
+
+    #[test]
+    fn the_result_cap_stops_the_search_and_says_so() {
+        let td = tree();
+        let (names, (_, _, truncated)) = run_with(&query(td.path(), "*.log", None), &AtomicBool::new(false), 2);
+        assert_eq!(names.len(), 2);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn a_symlink_loop_does_not_hang_and_links_are_not_followed() {
+        let td = tree();
+        std::os::unix::fs::symlink(td.path(), td.path().join("a/loop")).unwrap();
+        std::os::unix::fs::symlink(td.path().join("a"), td.path().join("linked_a")).unwrap();
+        let (names, _) = run(&query(td.path(), "*.log", None));
+        assert_eq!(names, vec!["a/one.log", "b/three.log", "bin.log"], "no copy through linked_a or loop");
+        let (names, _) = run(&query(td.path(), "", Some("alpha")));
+        assert_eq!(names, vec!["a/one.log"]);
+    }
+
+    #[test]
+    fn an_unreadable_directory_is_counted_and_does_not_abort_the_search() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root reads everything, the test would prove nothing
+        }
+        let td = tree();
+        let locked = td.path().join("locked");
+        write(td.path(), "locked/inside.log", b"TODO\n");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (names, (_, skipped, _)) = run(&query(td.path(), "*.log", None));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(names.contains(&"a/one.log".to_string()), "the rest is still searched");
+        assert!(skipped >= 1, "the locked directory is counted");
+    }
+
+    #[test]
+    fn done_reports_how_many_entries_were_looked_at() {
+        let td = tree();
+        let (_, (scanned, skipped, truncated)) = run(&query(td.path(), "", None));
+        // a, a/one.log, a/two.txt, b, b/three.log, bin.log, logs.d (hidden skipped)
+        assert_eq!(scanned, 7);
+        assert_eq!(skipped, 0);
+        assert!(!truncated);
     }
 }
