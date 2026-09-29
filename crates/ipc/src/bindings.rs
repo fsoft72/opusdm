@@ -509,12 +509,33 @@ pub fn load_bindings() -> Bindings {
     load_bindings_from(&config_dir())
 }
 
+/// Load one binding file. When the file exists but does not parse (a typo in
+/// an event name, say), its content is copied to `<name>.bak` first: the
+/// section loads as empty, and the next save rewrites the file from memory,
+/// which would otherwise destroy what the user wrote.
+fn load_section<T: serde::de::DeserializeOwned + Default>(dir: &Path, file: &str, entity: &str) -> T {
+    let path = dir.join(file);
+    let unparsable = std::fs::read_to_string(&path).is_ok_and(|text| serde_json::from_str::<T>(&text).is_err());
+    if unparsable {
+        let backup = dir.join(format!("{file}.bak"));
+        match std::fs::copy(&path, &backup) {
+            Ok(_) => {
+                crate::err_log!("opusdm", "{file} does not parse; a copy was kept in {}", backup.display());
+            }
+            Err(e) => {
+                crate::err_log!("opusdm", "{file} does not parse and could not be backed up: {e}");
+            }
+        }
+    }
+    load_json(&path, "opusdm", entity)
+}
+
 /// Testable core of [`load_bindings`].
 pub fn load_bindings_from(dir: &Path) -> Bindings {
     Bindings {
-        hotkeys: load_json(&dir.join("hotkeys.json"), "opusdm", "hotkeys"),
-        menu: load_json(&dir.join("usermenu.json"), "opusdm", "user menu"),
-        scripts: load_json(&dir.join("scripts.json"), "opusdm", "script events"),
+        hotkeys: load_section(dir, "hotkeys.json", "hotkeys"),
+        menu: load_section(dir, "usermenu.json", "user menu"),
+        scripts: load_section(dir, "scripts.json", "script events"),
     }
 }
 
@@ -806,5 +827,27 @@ mod tests {
         assert!(!rename_node(&mut tree, &[2], "x"));
         assert!(matches!(&tree[0], MenuNode::Entry { label, .. } if label == "A"));
         assert!(matches!(&tree[1], MenuNode::Submenu { label, .. } if label == "S"));
+    }
+
+    #[test]
+    fn an_unparsable_file_is_backed_up_before_it_can_be_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        // Valid JSON, but an event name the enum does not know: the whole
+        // list fails to parse and loads as empty.
+        let broken = "[{\"event\":\"startup2\",\"function\":\"a\"}]";
+        std::fs::write(dir.path().join("scripts.json"), broken).unwrap();
+        let loaded = load_bindings_from(dir.path());
+        assert!(loaded.scripts.is_empty());
+        let backup = std::fs::read_to_string(dir.path().join("scripts.json.bak")).unwrap();
+        assert_eq!(backup, broken, "the broken content must survive in a .bak file");
+    }
+
+    #[test]
+    fn a_good_or_missing_file_leaves_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hotkeys.json"), "[]").unwrap();
+        load_bindings_from(dir.path());
+        assert!(!dir.path().join("hotkeys.json.bak").exists());
+        assert!(!dir.path().join("usermenu.json.bak").exists());
     }
 }

@@ -231,3 +231,4 @@
 - Feature (F-04, step 7): user menu - a "Menu" drop-down in the lister button row (popup built lazily from the cached bindings, entries run functions, "Edit User Menu..." always present) and a tree editor with add/rename/move/remove; tree operations live in `opusdm_ipc::bindings`.
 - Feature (F-05, step 8): script events - the hub emits Startup, Shutdown (waits up to 10 s for the hooks), ListerOpened, ListerClosed and the three desktop double clicks, runs the bound functions headless, throttles loops with an in-flight guard plus a 2 s cooldown, and "Edit Script Events..." edits the bindings.
 - Docs: documented hotkeys, the user menu and script events in `docs/usage.md` (sections 3.13 to 3.15) and ticked F-03, F-04, F-05 and item 2 of the suggested order in `TODO.md`.
+- Fix: a binding file that fails to parse (e.g. an unknown event name) is copied to `<name>.bak` before the empty section can be saved over it.
