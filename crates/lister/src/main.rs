@@ -22,6 +22,7 @@ mod model;
 mod palette;
 mod passwd;
 mod preview;
+mod scripts_editor;
 mod terminal;
 mod theme;
 mod tools;

@@ -53,6 +53,8 @@ pub enum CommandId {
     FindKey,
     /// Open the user menu editor.
     ManageUserMenu,
+    /// Open the script events editor.
+    ManageScripts,
 }
 
 /// Where the keyboard focus is when the key arrives.
@@ -320,5 +322,11 @@ mod tests {
     fn user_menu_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageUserMenu));
+    }
+
+    #[test]
+    fn script_events_command_exists_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::ManageScripts));
     }
 }

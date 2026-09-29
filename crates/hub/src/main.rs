@@ -35,6 +35,8 @@ fn main() {
         server::ServerOptions::production(),
     );
 
+    let _ = handle.cmd_tx.send(server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup));
+
     children::install_sigchld(handle.cmd_tx.clone());
 
     // Open the first Lister at $HOME.

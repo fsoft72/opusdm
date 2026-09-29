@@ -4,6 +4,7 @@
 //! separate `opusdm-panel` dock window, attached here in `build_ui`.
 
 use crate::server::{HubCmd, HubEvent, ServerHandle};
+use opusdm_ipc::bindings::ScriptEvent;
 use super::settings;
 use gtk4 as gtk;
 use gtk::gio;
@@ -409,6 +410,7 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
         let cmd_tx = widgets.cmd_tx.clone();
         field.connect_background_activate(move || {
             let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
+            let _ = cmd_tx.send(HubCmd::EmitScriptEvent(ScriptEvent::DesktopDoubleClick));
         });
     }
     {
@@ -629,6 +631,29 @@ fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, w: i32, h: 
     menu.set_visible(true);
 }
 
+/// Emit `DesktopMiddleDoubleClick` and `DesktopRightDoubleClick` for double
+/// clicks on the desktop overlay. The gestures run in the capture phase and
+/// never claim the sequence, so the icon field and the context menu keep
+/// working. The right button already opens the context menu on its first
+/// press, so a right double click also shows the menu (accepted).
+fn attach_desktop_double_click_events(overlay: &gtk::Overlay, cmd_tx: &std::sync::mpsc::Sender<HubCmd>) {
+    for (button, event) in [
+        (gtk::gdk::BUTTON_MIDDLE, ScriptEvent::DesktopMiddleDoubleClick),
+        (gtk::gdk::BUTTON_SECONDARY, ScriptEvent::DesktopRightDoubleClick),
+    ] {
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(button);
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let cmd_tx = cmd_tx.clone();
+        gesture.connect_pressed(move |_, n_press, _, _| {
+            if n_press == 2 {
+                let _ = cmd_tx.send(HubCmd::EmitScriptEvent(event));
+            }
+        });
+        overlay.add_controller(gesture);
+    }
+}
+
 /// Wire the right-click context menus onto the desktop overlay: the
 /// background menu (System actions, New Folder/File, Paste, Terminal), and -
 /// when `field` is `Some` (the primary monitor only) - a per-icon menu with
@@ -637,6 +662,7 @@ fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, w: i32, h: 
 /// `Popover` parented to it can never grab; both menus are plain boxes laid
 /// on the overlay instead, positioned with margins at the click point.
 fn attach_desktop_menu(overlay: &gtk::Overlay, widgets: &Rc<Widgets>, field: Option<opusdm_iconview::IconField>) {
+    attach_desktop_double_click_events(overlay, &widgets.cmd_tx);
     let bg_menu = build_desktop_menu(widgets);
     bg_menu.set_halign(gtk::Align::Start);
     bg_menu.set_valign(gtk::Align::Start);

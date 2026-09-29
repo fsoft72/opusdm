@@ -56,6 +56,7 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::ManageHotkeys, title: Cow::Borrowed("Edit Hotkeys..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::FindKey, title: Cow::Borrowed("Find Key..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageUserMenu, title: Cow::Borrowed("Edit User Menu..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
 ];
 
 /// Borrow the command palette's entries.
@@ -297,6 +298,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::ManageUserMenu => {
             crate::menu_editor::open_menu_editor(ui);
+        }
+        CommandId::ManageScripts => {
+            crate::scripts_editor::open_scripts_editor(ui);
         }
         CommandId::RunFunction(id) => {
             let Some(function) = opusdm_ipc::function::load_functions().into_iter().find(|f| f.id == id) else {

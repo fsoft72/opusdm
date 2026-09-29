@@ -3,18 +3,20 @@
 //! thread boundaries.
 
 use crate::jobs::{default_runner, map_progress, validate_job, JobEngine, ProgressTotals};
+use crate::script_events::{EventGuard, ScriptEvent, SHUTDOWN_HOOK_TIMEOUT};
 use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
 use crate::settings;
 use crate::desktop_settings;
 use opusdm_fsops::Progress;
 use opusdm_ipc::bindings::{self, Bindings};
 use opusdm_ipc::frame::{recv, send};
-use opusdm_ipc::function::{FnStep, SelectionCtx};
+use opusdm_ipc::function::{FnStep, FunctionId, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::Instant;
 
 /// Called when a Lister or the toolbar asks for a new Lister window.
 pub type SpawnFn = Box<dyn Fn(Option<PathBuf>) + Send>;
@@ -85,6 +87,9 @@ pub enum HubCmd {
     /// script event): SOURCE is the current SOURCE Lister, or an empty
     /// selection when there is none.
     RunFunctionHeadless(opusdm_ipc::function::FunctionId),
+    /// Emit a script event: run every function bound to it (from `main` for
+    /// `Startup`, from the desktop for the double clicks).
+    EmitScriptEvent(ScriptEvent),
     /// Tear everything down.
     Shutdown,
     /// A child process exited (from the SIGCHLD reaper).
@@ -285,6 +290,8 @@ struct Hub {
     current_desktop: DesktopSettings,
     /// Loaded once at startup; updated in place by `ToHub::SetBindings`.
     current_bindings: Bindings,
+    /// Loop protection for script events.
+    event_guard: EventGuard,
     /// Whether global hotkeys may be grabbed (off in tests).
     global_keys_enabled: bool,
     /// Sender back into the owner loop, used by the global-key thread.
@@ -420,6 +427,9 @@ impl Hub {
                     });
                     emit_roles(&self.roles, &self.conns, &self.evt_tx);
                 }
+                if self.conns.get(&cid).is_some_and(|c| c.registered) {
+                    self.emit_script_event(ScriptEvent::ListerOpened);
+                }
             }
 
             ToHub::FocusGained => {
@@ -479,8 +489,7 @@ impl Hub {
             }
 
             ToHub::Goodbye => {
-                self.drop_function_state(cid);
-                drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
+                self.drop_lister(cid);
             }
         }
     }
@@ -521,6 +530,98 @@ impl Hub {
             self.query_selection(d, run_id);
         }
         run_id
+    }
+
+    /// Drop Lister connection `cid`: forget its Function-run state, tear the
+    /// connection down and, when a registered Lister went away, emit
+    /// `ListerClosed`.
+    fn drop_lister(&mut self, cid: u64) {
+        self.drop_function_state(cid);
+        let was_registered = drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
+        if was_registered {
+            self.emit_script_event(ScriptEvent::ListerClosed);
+        }
+    }
+
+    /// The functions bound to `event`, in binding order.
+    fn functions_for(&self, event: ScriptEvent) -> Vec<FunctionId> {
+        self.current_bindings
+            .scripts
+            .iter()
+            .filter(|s| s.event == event)
+            .map(|s| s.function.clone())
+            .collect()
+    }
+
+    /// Run every function bound to `event` headless. The functions start in
+    /// binding order and are not awaited one after another. The emission is
+    /// dropped (and logged) by [`EventGuard`] when the same event fired
+    /// under `EVENT_COOLDOWN` ago or its previous runs are still going.
+    fn emit_script_event(&mut self, event: ScriptEvent) {
+        let functions = self.functions_for(event);
+        if functions.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if !self.event_guard.try_begin(event, now) {
+            opusdm_ipc::err_log!("hub", "script event {event:?} dropped: it fired again too soon or its previous run is still going");
+            return;
+        }
+        for id in functions {
+            if let Some(run_id) = self.run_headless(&id) {
+                self.event_guard.add_run(event, run_id, now);
+            }
+        }
+    }
+
+    /// Run the `Shutdown` hooks and wait for them, up to
+    /// `SHUTDOWN_HOOK_TIMEOUT`. The Listers are closing, so there is no
+    /// `QuerySelection`: each hook runs with an empty selection in `$HOME`.
+    fn run_shutdown_hooks(&mut self) {
+        let ids = self.functions_for(ScriptEvent::Shutdown);
+        if ids.is_empty() {
+            return;
+        }
+        let saved = opusdm_ipc::function::load_functions();
+        let deadline = Instant::now() + SHUTDOWN_HOOK_TIMEOUT;
+        let mut receivers = Vec::new();
+        for id in ids {
+            let Some(function) = saved.iter().find(|f| f.id == id) else {
+                opusdm_ipc::err_log!("hub", "shutdown hook: function '{id}' not found");
+                continue;
+            };
+            if !opusdm_ipc::function::validate(function).is_empty() {
+                opusdm_ipc::err_log!("hub", "shutdown hook: function '{}' is invalid", function.name);
+                continue;
+            }
+            let run_id = self.next_run_id;
+            self.next_run_id += 1;
+            let (tx, rx) = channel();
+            let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
+            crate::functions::spawn_executor(run_id, function.steps.clone(), empty, None, tx);
+            receivers.push(rx);
+        }
+        for rx in receivers {
+            loop {
+                let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                    opusdm_ipc::err_log!("hub", "shutdown hooks did not finish within {SHUTDOWN_HOOK_TIMEOUT:?}");
+                    return;
+                };
+                match rx.recv_timeout(left) {
+                    Ok((_, crate::functions::FnEvent::AllDone)) => break,
+                    Ok((_, crate::functions::FnEvent::Failed { step_idx, error })) => {
+                        opusdm_ipc::err_log!("hub", "shutdown hook failed at step {step_idx}: {error}");
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        opusdm_ipc::err_log!("hub", "shutdown hooks did not finish within {SHUTDOWN_HOOK_TIMEOUT:?}");
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// Bring the X11 grabs in line with the global hotkeys of
@@ -642,6 +743,7 @@ impl Hub {
         let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
         if terminal {
             self.function_requesters.remove(&run_id);
+            self.event_guard.finish(run_id);
         }
         if requester == HUB_REQUESTER {
             match ev {
@@ -682,6 +784,7 @@ impl Hub {
             .collect();
         for run_id in doomed {
             self.pending_functions.remove(&run_id);
+            self.event_guard.finish(run_id);
             for queue in self.selection_waiters.values_mut() {
                 queue.retain(|&r| r != run_id);
             }
@@ -809,7 +912,10 @@ impl Hub {
                 }
             }
 
+            HubCmd::EmitScriptEvent(event) => self.emit_script_event(event),
+
             HubCmd::Shutdown => {
+                self.run_shutdown_hooks();
                 for c in self.conns.values_mut().filter(|c| c.registered) {
                     let _ = c.tx.send(ToLister::Shutdown.into());
                 }
@@ -819,8 +925,7 @@ impl Hub {
             HubCmd::ChildExited(pid) => {
                 let hit = self.conns.iter().find(|(_, c)| c.pid == pid).map(|(k, _)| *k);
                 if let Some(cid) = hit {
-                    self.drop_function_state(cid);
-                    drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
+                    self.drop_lister(cid);
                 }
             }
         }
@@ -985,6 +1090,7 @@ fn owner_loop(
         roles: RoleState::default(),
         current_settings: settings::load_settings(),
         current_desktop,
+        event_guard: EventGuard::new(),
         global_keys_enabled: opts.global_keys,
         owner_tx: owner_tx.clone(),
         global_keys: None,
@@ -1020,8 +1126,7 @@ fn owner_loop(
                 true
             }
             OwnerMsg::ListerEof(cid) => {
-                hub.drop_function_state(cid);
-                drop_conn(cid, &mut hub.conns, &mut hub.free_conns, &mut hub.roles, &hub.evt_tx);
+                hub.drop_lister(cid);
                 true
             }
             OwnerMsg::JobProgress(job_id, prog) => {
@@ -1062,18 +1167,19 @@ fn drop_conn(
     free_conns: &mut BTreeSet<u64>,
     roles: &mut RoleState,
     evt_tx: &Sender<HubEvent>,
-) {
-    let Some(c) = conns.remove(&cid) else { return };
+) -> bool {
+    let Some(c) = conns.remove(&cid) else { return false };
     free_conns.insert(cid);
     let _ = c.shutdown.shutdown(std::net::Shutdown::Both);
     if !c.registered {
-        return;
+        return false;
     }
     apply_role(roles, RoleEvent::Dropped(ListerId(cid)), conns, evt_tx);
     let _ = evt_tx.send(HubEvent::ListerGone(ListerId(cid)));
     if !conns.values().any(|c| c.registered) {
         let _ = evt_tx.send(HubEvent::AllListersGone);
     }
+    true
 }
 
 fn apply_role(
@@ -1611,5 +1717,141 @@ mod tests {
 
         wait_for_lines(&marker_a, 1);
         wait_for_lines(&marker_b, 1);
+    }
+
+    /// Server options for an event test: these bindings, no disk read.
+    fn with_bindings(bindings: opusdm_ipc::Bindings) -> ServerOptions {
+        ServerOptions { initial_bindings: Some(bindings), ..ServerOptions::default() }
+    }
+
+    fn script(event: opusdm_ipc::bindings::ScriptEvent, function: &str) -> opusdm_ipc::bindings::ScriptBinding {
+        opusdm_ipc::bindings::ScriptBinding { event, function: function.into() }
+    }
+
+    #[test]
+    fn startup_event_runs_the_bound_function() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("hook", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, _path) = bind_temp();
+        let bindings = opusdm_ipc::Bindings {
+            scripts: vec![script(opusdm_ipc::bindings::ScriptEvent::Startup, &f.id)],
+            ..opusdm_ipc::Bindings::default()
+        };
+        let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
+        handle.cmd_tx.send(HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup)).unwrap();
+
+        wait_for_lines(&marker, 1);
+    }
+
+    #[test]
+    fn an_event_runs_only_the_functions_bound_to_it() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("hook", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, _path) = bind_temp();
+        let bindings = opusdm_ipc::Bindings {
+            scripts: vec![script(opusdm_ipc::bindings::ScriptEvent::ListerClosed, &f.id)],
+            ..opusdm_ipc::Bindings::default()
+        };
+        let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
+        handle.cmd_tx.send(HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "a Startup event must not run a ListerClosed hook");
+    }
+
+    #[test]
+    fn lister_opened_runs_once_and_is_throttled_inside_the_cooldown() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("hook", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let bindings = opusdm_ipc::Bindings {
+            scripts: vec![script(opusdm_ipc::bindings::ScriptEvent::ListerOpened, &f.id)],
+            ..opusdm_ipc::Bindings::default()
+        };
+        let _handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        wait_for_lines(&marker, 1);
+
+        // A second lister right away is the loop a self-spawning hook would
+        // create: it must be throttled, not run again.
+        let mut b = connect(&path);
+        send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
+        let _w: Welcome = recv(&mut b).unwrap().unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        let lines = std::fs::read_to_string(&marker).unwrap().lines().count();
+        assert_eq!(lines, 1, "the second ListerOpened inside the cooldown must be dropped");
+    }
+
+    #[test]
+    fn lister_closed_runs_the_bound_function() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("hook", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let bindings = opusdm_ipc::Bindings {
+            scripts: vec![script(opusdm_ipc::bindings::ScriptEvent::ListerClosed, &f.id)],
+            ..opusdm_ipc::Bindings::default()
+        };
+        let _handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        send(&mut a, &ToHub::Goodbye).unwrap();
+
+        wait_for_lines(&marker, 1);
+    }
+
+    #[test]
+    fn shutdown_hooks_finish_before_the_listers_are_told_to_quit() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+        let f = marker_function("hook", &marker);
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let bindings = opusdm_ipc::Bindings {
+            scripts: vec![script(opusdm_ipc::bindings::ScriptEvent::Shutdown, &f.id)],
+            ..opusdm_ipc::Bindings::default()
+        };
+        let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        handle.cmd_tx.send(HubCmd::Shutdown).unwrap();
+        let got: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(got, ToLister::Shutdown), "got {got:?}");
+        let lines = std::fs::read_to_string(&marker).map(|s| s.lines().count()).unwrap_or(0);
+        assert_eq!(lines, 1, "the Shutdown hook must have finished before the Shutdown message");
     }
 }
