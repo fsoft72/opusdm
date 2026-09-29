@@ -114,8 +114,7 @@ pub fn run_search(query: &FindQuery, cancel: &AtomicBool, emit: impl FnMut(Searc
 - A file that grows or vanishes during the search is read as far as possible or
   counted as skipped.
 - A very long line: the snippet is cut, the Viewer shows the full text.
-- Results already shown stay when a second search is started until its first
-  result arrives... they are cleared at the moment the new search starts.
+- Starting a new search clears the results of the previous one at once.
 - Files beyond `SEARCH_FILE_MAX` are searched only in their first 16 MiB.
 
 ## Testing
