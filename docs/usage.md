@@ -193,6 +193,14 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 - Text and ANSI show up to the first 16 MiB of a file, hex the first 1 MiB; the header says "showing the first N" when a file is cut.
 - **Show (image slideshow)** takes the pictures among the selected files. `Left` / `Right` move, `Delete` (or `m`) marks or unmarks the current picture (`MARKED` and a counter show in the header). Closing the window asks "Delete N marked file(s)?"; nothing is removed unless you answer Delete.
 
+### 3.10g Find Files and Search in Files
+**Find Files...** and **Search in Files...** (command palette) open the same **Find** dialog; they only differ in where the cursor starts.
+- **Name**: file name patterns, the same as Show / Hide (`*.log, *.rs`, `!test*` excludes). Empty matches every name.
+- **Contains**: text to look for inside files. Empty means a search by name only (folders that match the name are listed too); filled, only files whose name matches and whose content holds the text are listed, as `path:LINE  text`, with the number of matches when there are several.
+- **Folder** starts as the Lister's folder. Hidden names (starting with `.`) are skipped with everything below them unless **Include hidden** is on, symbolic links are not followed, and binary files are never searched. Text is searched in the first 16 MiB of each file; a search stops at 5000 results.
+- Results appear while the search runs; **Stop** or closing the dialog cancels it. The status line ends with how many entries were scanned and how many could not be read.
+- **Show in folder** takes the Lister to the folder that holds the selected result and selects it. **View** opens the file in the Viewer, on the first match of the text. Double click does View for content results and Show in folder for name results.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

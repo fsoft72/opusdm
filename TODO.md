@@ -39,8 +39,8 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [x] F-16 Full Reader: Read / AnsiRead / HexRead / SmartRead
 - [x] F-17 Show (image slideshow)
 - [ ] F-18 Play (sound files) + beep/flash commands
-- [ ] F-19 FindFile (search by name across tree)
-- [ ] F-20 Search (content search)
+- [x] F-19 FindFile (search by name across tree)
+- [x] F-20 Search (content search)
 - [x] F-21 Advanced Select requester
 
 ## 4. Lister capabilities
@@ -96,7 +96,7 @@ Follows section 9 of [FEATURES.md](FEATURES.md):
 2. [x] Hotkeys + user menus + scripts (F-03, F-04, F-05)
 3. [x] File operation variants (F-07, F-08, F-09, F-10, F-12, F-13, F-15, F-31)
 4. [x] Lister formats and patterns (F-22, F-23, F-24, F-29, F-32)
-5. [ ] Search trio (F-19, F-20, F-21) + viewer upgrades (F-16, F-17)
+5. [x] Search trio (F-19, F-20, F-21) + viewer upgrades (F-16, F-17)
 6. [ ] Desktop features (F-33, F-34, F-37, F-38)
 7. [ ] Themes and sounds (F-35, F-36, F-50)
 8. [ ] Button banks (F-02)
