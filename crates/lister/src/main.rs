@@ -6,6 +6,7 @@ mod attr_dialogs;
 mod batch_rename;
 mod binding_ui;
 mod build;
+mod cache_list;
 mod checkfit_ui;
 mod client;
 mod copy_as;

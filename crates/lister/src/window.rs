@@ -535,7 +535,7 @@ impl Ui {
                 self.window.present();
                 self.navigate_to(&path);
             }
-            ToLister::CacheList(_) => {}
+            ToLister::CacheList(entries) => crate::cache_list::show(self, entries),
             ToLister::FormatsUpdate(new_formats) => {
                 *self.hub.formats.borrow_mut() = new_formats;
                 self.on_formats_changed();

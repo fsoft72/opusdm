@@ -72,6 +72,10 @@ pub enum CommandId {
     SetShowPattern,
     /// Ask for the persistent Hide pattern list.
     SetHidePattern,
+    /// Open the Cache List.
+    CacheList,
+    /// Drop every Lister's directory cache.
+    FreeCaches,
     /// Go back in the history.
     HistoryBack,
     /// Go forward in the history.
