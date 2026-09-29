@@ -155,6 +155,13 @@ The open directory is watched with Linux `inotify`, so the list follows what hap
 - Turn it off with **"Auto-refresh the list when the directory changes"** under **BEHAVIOUR** in
   Settings.
 
+### 3.10b Status bar format
+The line at the top of every Lister is built from the **Status bar format** field under
+**BEHAVIOUR** in Settings (`status_format` in `settings.json`). Codes: `%d` `%f` `%b` are the
+total directories, files and bytes; `%D` `%F` `%B` the same for the selection; `%s` the number of
+selected entries; `%p` the current path; `%%` a percent sign. The default is
+`D: [%D/%d]  F: [%F/%f]  B: [%B/%b]`; an empty field means the default.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
@@ -310,20 +317,28 @@ first and then changes only matching files, never directories.
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
-bar, the path bar or the terminal drawer, single letters are just text - only `Esc`, `F1`-`F12` and
+bar, the path bar or the terminal drawer, typing is just text - only `Esc`, `F1`-`F12` and
 the `Ctrl` chords stay active.
 
-### Modal navigation (vim mode)
+### Navigation
 
 | Shortcut | Action |
 | :--- | :--- |
-| **`j`** / **`k`** | Move the cursor down / up one row (arrows work too) |
-| **`g`** / **`G`** | Jump to the first / last row |
-| **`l`** or **`Enter`** | Enter the directory, step into the archive, or open the file |
-| **`h`** or **`Backspace`** | Go to the parent directory |
+| **`Enter`** | Enter the directory, step into the archive, or open the file |
+| **`Backspace`** | Go to the parent directory |
 | **`~`** | Go to user home directory (`$HOME`) |
 | **`Ins`** | Toggle the selection of the cursor row, then step down |
 | **`Tab`** | Jump to the Lister holding the opposite role (SOURCE <-> DEST) |
+| *type a name* | Type-to-find, see below |
+
+### Type-to-find
+
+Typing a letter, a digit, `.` or `_` over the file list opens a small search: the cursor jumps to
+the first entry whose name starts with what you typed (case is ignored), and the status line shows
+`Find: car`. Once it is open any printable character is accepted (`my-file`), `Backspace` deletes
+one, `Esc` closes it, and it closes by itself after 1.5 s of inactivity. A character that matches
+nothing is ignored. `Enter`, the arrows and the function keys close it and then do their usual job.
+There are no single-letter commands in OpusDM.
 
 ### Everything else
 
@@ -335,9 +350,9 @@ the `Ctrl` chords stay active.
 | **`F3`** | Toggle Quick Look file preview |
 | **`Space`** | Quick Look preview (on files) / Calculate recursive size (on directories) |
 | **`F4`** or **`` ` ``** | Toggle Quake-style dropdown terminal drawer |
-| **`c`** | Copy selected items from SOURCE to DEST |
-| **`m`** | Move selected items from SOURCE to DEST |
-| **`d`** or **`Del`** | Delete selected items permanently |
+| **`F5`** | Copy selected items from SOURCE to DEST |
+| **`F6`** | Move selected items from SOURCE to DEST |
+| **`F8`** or **`Del`** | Delete selected items permanently |
 | **`F2`** | Rename single item / Open Batch Renamer on multiple items |
 | **`F7`** | Create new directory |
 | **`Shift+F7`** | Create new blank file |

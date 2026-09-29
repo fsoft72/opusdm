@@ -401,8 +401,7 @@ opens a small incremental string gadget to jump to a filename prefix.
 
 **Spec**: typeahead overlay in the lister: printable keys open a mini entry,
 live-jump selection to the longest matching prefix, Esc/timeout dismisses.
-Must not conflict with vim keys - make it opt-in in Settings (BEHAVIOUR) or
-activate only when vim mode is disabled. Acceptance: typing `car` selects
+The vim single-letter keys were removed, so it is always on. Acceptance: typing `car` selects
 `Cargo.toml`.
 
 ### F-30 DiskInfo / DeviceList equivalent

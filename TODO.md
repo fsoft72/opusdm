@@ -52,10 +52,10 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [ ] F-26 Lister Snapshot / window geometry persistence
 - [ ] F-27 Dual Lister (split pane in one window)
 - [ ] F-28 Icon mode and Icon Action mode listers
-- [ ] F-29 Extended key selection (type-to-find)
+- [x] F-29 Extended key selection (type-to-find; always on, the vim single-letter keys were removed; Copy/Move/Delete are now F5/F6/F8)
 - [ ] F-30 DiskInfo / DeviceList equivalent
 - [x] F-31 Reselect
-- [ ] F-32 Lister status-bar customization
+- [x] F-32 Lister status-bar customization
 
 ## 5. Desktop, main window, themes
 

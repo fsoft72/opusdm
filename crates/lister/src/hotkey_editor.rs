@@ -2,7 +2,7 @@
 //! key capture, live validation, and the "Find Key" requester. See
 //! `docs/superpowers/specs/2026-09-29-hotkeys-usermenu-scripts-design.md`.
 
-use crate::keys::{Action, Focus, Motion};
+use crate::keys::{Action, Focus};
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::gdk;
@@ -49,7 +49,7 @@ pub fn find_key(hotkeys: &[Hotkey], functions: &[Function], combo: &KeyCombo) ->
 
 /// The built-in binding `combo` triggers in the file list, if any. Alt and
 /// Super never reach the built-in table. Shift turns a letter into its
-/// uppercase keyval (`g` moves to the first row, `G` to the last).
+/// uppercase keyval.
 fn builtin_title(combo: &KeyCombo) -> Option<String> {
     if combo.mods.alt || combo.mods.sup {
         return None;
@@ -69,10 +69,6 @@ fn action_title(action: &Action) -> String {
             .find(|c| &c.id == id)
             .map(|c| c.title.to_string())
             .unwrap_or_else(|| format!("{id:?}")),
-        Action::Move(Motion::Down) => "Move the cursor down".to_string(),
-        Action::Move(Motion::Up) => "Move the cursor up".to_string(),
-        Action::Move(Motion::First) => "Move the cursor to the first row".to_string(),
-        Action::Move(Motion::Last) => "Move the cursor to the last row".to_string(),
         Action::Enter => "Open the row under the cursor".to_string(),
         Action::ToggleSelectAndAdvance => "Toggle the selection and move down".to_string(),
         Action::SwapRoleFocus => "Switch to the SOURCE/DEST Lister".to_string(),
@@ -360,12 +356,12 @@ mod tests {
 
     #[test]
     fn shift_turns_a_letter_into_its_uppercase_binding() {
-        match find_key(&[], &[], &combo("g")) {
-            KeyMeaning::Builtin { title } => assert!(title.contains("first"), "{title}"),
+        match find_key(&[], &[], &combo("Ctrl+a")) {
+            KeyMeaning::Builtin { title } => assert!(title.contains("Select All"), "{title}"),
             other => panic!("{other:?}"),
         }
-        match find_key(&[], &[], &combo("Shift+g")) {
-            KeyMeaning::Builtin { title } => assert!(title.contains("last"), "{title}"),
+        match find_key(&[], &[], &combo("Ctrl+Shift+a")) {
+            KeyMeaning::Builtin { title } => assert!(title.contains("Reselect"), "{title}"),
             other => panic!("{other:?}"),
         }
     }

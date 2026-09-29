@@ -2,9 +2,10 @@
 //!
 //! [`resolve`] is a pure key -> action mapping so the whole binding table can
 //! be unit tested; `window.rs` only has to execute the action it gets back.
-//! The modal ("vim mode") bindings are plain single letters, which is why the
-//! caller must pass the right [`Focus`]: while a text field has the keyboard,
-//! `j` is a character, not a command.
+//! There are no single-letter commands: plain letters over the file list start
+//! type-to-find (see `typeahead.rs`). The caller still passes the right
+//! [`Focus`], because while a text field has the keyboard `+`, `-`, `/` and
+//! space are characters, not commands.
 
 use gtk4::gdk;
 
@@ -88,26 +89,11 @@ pub enum Focus {
     Editing,
 }
 
-/// Which way the list cursor moves.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Motion {
-    /// Next row.
-    Down,
-    /// Previous row.
-    Up,
-    /// First row.
-    First,
-    /// Last row.
-    Last,
-}
-
 /// The resolved meaning of a key press.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Action {
     /// Run the command palette entry with this id.
     Command(CommandId),
-    /// Move the list cursor.
-    Move(Motion),
     /// Open the row under the cursor (enter directory, open file).
     Enter,
     /// Toggle the selection of the row under the cursor, then move down.
@@ -160,13 +146,9 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
     }
 
     match key {
-        // Movement: vim keys and the arrows that already work, plus g/G.
-        gdk::Key::j => Some(Action::Move(Motion::Down)),
-        gdk::Key::k => Some(Action::Move(Motion::Up)),
-        gdk::Key::g => Some(Action::Move(Motion::First)),
-        gdk::Key::G => Some(Action::Move(Motion::Last)),
-        gdk::Key::l | gdk::Key::Return | gdk::Key::KP_Enter => Some(Action::Enter),
-        gdk::Key::h | gdk::Key::BackSpace => Some(Action::Command(CommandId::ParentDir)),
+        // Navigation. Arrows are left to the list widget.
+        gdk::Key::Return | gdk::Key::KP_Enter => Some(Action::Enter),
+        gdk::Key::BackSpace => Some(Action::Command(CommandId::ParentDir)),
         gdk::Key::asciitilde => Some(Action::Command(CommandId::HomeDir)),
 
         // Selection.
@@ -176,9 +158,9 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         gdk::Key::minus | gdk::Key::KP_Subtract => Some(Action::Command(CommandId::DeselectPattern)),
 
         // File operations.
-        gdk::Key::c => Some(Action::Command(CommandId::Copy)),
-        gdk::Key::m => Some(Action::Command(CommandId::Move)),
-        gdk::Key::d | gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command(CommandId::Delete)),
+        gdk::Key::F5 => Some(Action::Command(CommandId::Copy)),
+        gdk::Key::F6 => Some(Action::Command(CommandId::Move)),
+        gdk::Key::F8 | gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command(CommandId::Delete)),
         gdk::Key::F2 => Some(Action::Command(CommandId::Rename)),
         gdk::Key::F7 if shift => Some(Action::Command(CommandId::NewFile)),
         gdk::Key::F7 => Some(Action::Command(CommandId::Mkdir)),
@@ -207,27 +189,28 @@ mod tests {
     }
 
     #[test]
-    fn vim_motion_keys_move_the_cursor() {
-        assert_eq!(list(gdk::Key::j), Some(Action::Move(Motion::Down)));
-        assert_eq!(list(gdk::Key::k), Some(Action::Move(Motion::Up)));
-        assert_eq!(list(gdk::Key::g), Some(Action::Move(Motion::First)));
-        assert_eq!(list(gdk::Key::G), Some(Action::Move(Motion::Last)));
-    }
-
-    #[test]
-    fn h_and_l_leave_and_enter_directories() {
-        assert_eq!(list(gdk::Key::l), Some(Action::Enter));
+    fn return_enters_and_backspace_goes_to_the_parent() {
         assert_eq!(list(gdk::Key::Return), Some(Action::Enter));
-        assert_eq!(list(gdk::Key::h), Some(Action::Command(CommandId::ParentDir)));
         assert_eq!(list(gdk::Key::BackSpace), Some(Action::Command(CommandId::ParentDir)));
     }
 
     #[test]
-    fn file_operation_letters_are_bound() {
-        assert_eq!(list(gdk::Key::c), Some(Action::Command(CommandId::Copy)));
-        assert_eq!(list(gdk::Key::m), Some(Action::Command(CommandId::Move)));
-        assert_eq!(list(gdk::Key::d), Some(Action::Command(CommandId::Delete)));
+    fn file_operations_are_on_function_keys() {
+        assert_eq!(list(gdk::Key::F5), Some(Action::Command(CommandId::Copy)));
+        assert_eq!(list(gdk::Key::F6), Some(Action::Command(CommandId::Move)));
+        assert_eq!(list(gdk::Key::F8), Some(Action::Command(CommandId::Delete)));
         assert_eq!(list(gdk::Key::Delete), Some(Action::Command(CommandId::Delete)));
+    }
+
+    #[test]
+    fn plain_letters_are_not_commands() {
+        // They belong to type-to-find.
+        for key in [
+            gdk::Key::j, gdk::Key::k, gdk::Key::g, gdk::Key::G, gdk::Key::h,
+            gdk::Key::l, gdk::Key::c, gdk::Key::m, gdk::Key::d, gdk::Key::a,
+        ] {
+            assert_eq!(list(key), None, "{key:?} must stay free for type-to-find");
+        }
     }
 
     #[test]
@@ -260,8 +243,7 @@ mod tests {
     #[test]
     fn typing_in_a_text_field_swallows_every_single_letter_binding() {
         for key in [
-            gdk::Key::j, gdk::Key::k, gdk::Key::h, gdk::Key::l,
-            gdk::Key::c, gdk::Key::m, gdk::Key::d, gdk::Key::g,
+            gdk::Key::j, gdk::Key::c, gdk::Key::d,
             gdk::Key::space, gdk::Key::slash, gdk::Key::asterisk,
             gdk::Key::plus, gdk::Key::minus, gdk::Key::asciitilde,
             gdk::Key::Insert, gdk::Key::Tab, gdk::Key::grave,
@@ -298,7 +280,7 @@ mod tests {
 
     #[test]
     fn ctrl_does_not_leak_into_the_plain_letter_bindings() {
-        // Ctrl+C is the clipboard copy, not the source->dest vim binding for `c`.
+        // Ctrl+C is the clipboard copy, and unbound Ctrl+letters stay unbound.
         assert_eq!(resolve(gdk::Key::c, true, false, Focus::List), Some(Action::Command(CommandId::ClipCopy)));
         assert_eq!(resolve(gdk::Key::d, true, false, Focus::List), None);
         assert_eq!(resolve(gdk::Key::j, true, false, Focus::List), None);
@@ -316,9 +298,9 @@ mod tests {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         // Sweep the whole keyval space we bind from, in both focus modes.
         let keys = [
-            gdk::Key::j, gdk::Key::k, gdk::Key::g, gdk::Key::G, gdk::Key::l,
-            gdk::Key::h, gdk::Key::asciitilde, gdk::Key::Insert, gdk::Key::asterisk,
-            gdk::Key::plus, gdk::Key::minus, gdk::Key::c, gdk::Key::m, gdk::Key::d,
+            gdk::Key::asciitilde, gdk::Key::Insert, gdk::Key::asterisk,
+            gdk::Key::plus, gdk::Key::minus, gdk::Key::c, gdk::Key::h,
+            gdk::Key::F5, gdk::Key::F6, gdk::Key::F8,
             gdk::Key::Delete, gdk::Key::F2, gdk::Key::F7, gdk::Key::Tab,
             gdk::Key::grave, gdk::Key::F3, gdk::Key::space, gdk::Key::slash,
             gdk::Key::BackSpace, gdk::Key::Return, gdk::Key::F4, gdk::Key::Escape,

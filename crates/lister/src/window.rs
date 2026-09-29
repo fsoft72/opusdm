@@ -139,6 +139,10 @@ pub struct Ui {
     /// The "Menu" drop-down of the button row; its popup is built lazily by
     /// `user_menu::install`.
     pub user_menu_btn: gtk::MenuButton,
+    /// Text typed so far for type-to-find; empty when no search is open.
+    pub typeahead_buffer: RefCell<String>,
+    /// Idle timeout that closes type-to-find.
+    pub typeahead_timer: RefCell<Option<glib::SourceId>>,
 }
 
 impl Ui {
@@ -458,12 +462,18 @@ impl Ui {
         }
         drop(roles);
 
-        self.status_bar.label.set_text(&format!(
-            "D: [{}/{}]  F: [{}/{}]  B: [{}/{}]",
-            sel_dirs, total_dirs,
-            sel_files, total_files,
-            sel_bytes, total_bytes
-        ));
+        let format = self.hub.settings.borrow().behavior.status_format.clone();
+        let format = if format.is_empty() { opusdm_ipc::DEFAULT_STATUS_FORMAT.to_string() } else { format };
+        let info = crate::status_format::StatusInfo {
+            dirs: total_dirs,
+            files: total_files,
+            bytes: total_bytes,
+            sel_dirs,
+            sel_files,
+            sel_bytes,
+            path: self.cwd.borrow().to_string_lossy().into_owned(),
+        };
+        self.status_bar.label.set_text(&crate::status_format::format_status(&format, &info));
     }
 
     /// Handle a message from the hub.
@@ -497,6 +507,7 @@ impl Ui {
                         || old.appearance.type_indicators != new_settings.appearance.type_indicators
                 };
                 *self.hub.settings.borrow_mut() = new_settings;
+                self.update_status();
                 opusdm_ui::apply_theme_mode(self.hub.settings.borrow().appearance.theme_mode);
                 self.update_css_for_colors();
                 self.view.icon_field.set_icon_set(self.hub.settings.borrow().theme.icon_set.clone());
@@ -548,7 +559,6 @@ impl Ui {
         use crate::keys::Action;
         match action {
             Action::Command(id) => crate::palette::execute_command(self, id),
-            Action::Move(motion) => self.move_cursor(motion),
             Action::Enter => self.activate_row(self.view.cursor.get()),
             Action::ToggleSelectAndAdvance => self.toggle_select_and_advance(),
             Action::SwapRoleFocus => self.swap_role_focus(),
@@ -617,22 +627,13 @@ impl Ui {
         }
     }
 
-    /// Move the keyboard cursor and make the row it lands on the only
+    /// Put the keyboard cursor on `pos` and make that row the only
     /// selection, the way arrow keys already behave.
-    pub fn move_cursor(&self, motion: crate::keys::Motion) {
-        use crate::keys::Motion;
+    pub fn jump_to_row(&self, pos: u32) {
         let n = self.view.selection.n_items();
-        if n == 0 {
+        if pos >= n {
             return;
         }
-        let last = n - 1;
-        let here = self.view.cursor.get().min(last);
-        let pos = match motion {
-            Motion::Down => (here + 1).min(last),
-            Motion::Up => here.saturating_sub(1),
-            Motion::First => 0,
-            Motion::Last => last,
-        };
         self.view.cursor.set(pos);
         self.view.selection.select_item(pos, true);
         self.scroll_to_cursor();

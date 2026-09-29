@@ -398,6 +398,8 @@ fn build_window(
         css_provider,
         nav_generation: Cell::new(0),
         function_log: RefCell::new(None),
+        typeahead_buffer: RefCell::new(String::new()),
+        typeahead_timer: RefCell::new(None),
         last_selection: RefCell::new(Vec::new()),
         user_menu_btn: user_menu_btn.clone(),
     });
@@ -538,7 +540,12 @@ fn build_window(
             } else {
                 crate::keys::Focus::List
             };
-            // A user hotkey (F-03) is looked up first, so it wins over a
+            // An open type-to-find buffer takes every key first.
+            let modified = ctrl || state.contains(gdk::ModifierType::ALT_MASK);
+            if focus == crate::keys::Focus::List && ui_for_keys.typeahead_feed(keyval, modified) {
+                return glib::Propagation::Stop;
+            }
+            // A user hotkey (F-03) is looked up next, so it wins over a
             // built-in binding.
             let user_function = ui_for_keys.hub.hotkeys.borrow().lookup(keyval, state, focus).cloned();
             if let Some(id) = user_function {
@@ -546,7 +553,12 @@ fn build_window(
                 return glib::Propagation::Stop;
             }
             let Some(action) = crate::keys::resolve(keyval, ctrl, shift, focus) else {
-                return glib::Propagation::Proceed;
+                // Nothing is bound to this key: a name-like character starts
+                // type-to-find.
+                let starts = focus == crate::keys::Focus::List
+                    && !modified
+                    && ui_for_keys.typeahead_begin(keyval);
+                return if starts { glib::Propagation::Stop } else { glib::Propagation::Proceed };
             };
             ui_for_keys.run_key_action(action);
             glib::Propagation::Stop

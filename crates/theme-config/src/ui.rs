@@ -382,13 +382,15 @@ impl ThemeModeSection {
     }
 }
 
-/// The BEHAVIOUR section: the auto-refresh and recursive-filter toggles.
+/// The BEHAVIOUR section: the auto-refresh and recursive-filter toggles and
+/// the status bar format.
 /// `auto_refresh_debounce_ms` has no control here - same as the dialog this
 /// replaced - so it round-trips untouched through [`Self::read`].
 pub struct BehaviorSection {
     pub root: gtk::Box,
     auto_refresh: gtk::CheckButton,
     recursive_filter: gtk::CheckButton,
+    status_format: gtk::Entry,
     debounce_ms: u64,
 }
 
@@ -411,7 +413,18 @@ impl BehaviorSection {
         recursive_filter.set_active(initial.recursive_filter);
         root.append(&recursive_filter);
 
-        Self { root, auto_refresh, recursive_filter, debounce_ms: initial.auto_refresh_debounce_ms }
+        let format_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        format_row.append(&gtk::Label::new(Some("Status bar format")));
+        let status_format = gtk::Entry::new();
+        status_format.set_hexpand(true);
+        status_format.set_text(&initial.status_format);
+        status_format.set_tooltip_text(Some(
+            "%d %f %b: total dirs, files, bytes   %D %F %B: selected   %s: selected entries   %p: path   %%: a percent sign",
+        ));
+        format_row.append(&status_format);
+        root.append(&format_row);
+
+        Self { root, auto_refresh, recursive_filter, status_format, debounce_ms: initial.auto_refresh_debounce_ms }
     }
 
     pub fn read(&self) -> Behavior {
@@ -419,6 +432,7 @@ impl BehaviorSection {
             auto_refresh: self.auto_refresh.is_active(),
             auto_refresh_debounce_ms: self.debounce_ms,
             recursive_filter: self.recursive_filter.is_active(),
+            status_format: self.status_format.text().to_string(),
         }
     }
 }

@@ -276,7 +276,14 @@ pub struct Behavior {
     /// Ask for a file pattern before a recursive Copy/Move/Delete and only
     /// touch the matching files.
     pub recursive_filter: bool,
+    /// Format string of the Lister status bar. Codes: `%d`/`%f`/`%b` total
+    /// dirs/files/bytes, `%D`/`%F`/`%B` the same for the selection, `%s`
+    /// selected entries, `%p` current path, `%%` a literal percent sign.
+    pub status_format: String,
 }
+
+/// Status bar format used until the user sets one.
+pub const DEFAULT_STATUS_FORMAT: &str = "D: [%D/%d]  F: [%F/%f]  B: [%B/%b]";
 
 /// Accepted range for [`Behavior::auto_refresh_debounce_ms`]. Too low and a
 /// build storm reloads the list constantly; too high and it feels broken.
@@ -284,7 +291,12 @@ pub const AUTO_REFRESH_DEBOUNCE_RANGE_MS: (u64, u64) = (50, 5_000);
 
 impl Default for Behavior {
     fn default() -> Self {
-        Self { auto_refresh: true, auto_refresh_debounce_ms: 250, recursive_filter: false }
+        Self {
+            auto_refresh: true,
+            auto_refresh_debounce_ms: 250,
+            recursive_filter: false,
+            status_format: DEFAULT_STATUS_FORMAT.to_string(),
+        }
     }
 }
 
@@ -577,6 +589,13 @@ mod tests {
     }
 
     #[test]
+    fn a_behavior_block_without_status_format_gets_the_default_one() {
+        let b: Behavior = serde_json::from_str(r#"{"auto_refresh":false}"#).unwrap();
+        assert!(!b.auto_refresh);
+        assert_eq!(b.status_format, DEFAULT_STATUS_FORMAT);
+    }
+
+    #[test]
     fn auto_refresh_is_on_by_default() {
         assert!(Behavior::default().auto_refresh);
     }
@@ -649,6 +668,7 @@ mod tests {
                 auto_refresh: false,
                 auto_refresh_debounce_ms: 900,
                 recursive_filter: true,
+                status_format: "%f files, %b".to_string(),
             },
         };
         let json = serde_json::to_string(&s).unwrap();
