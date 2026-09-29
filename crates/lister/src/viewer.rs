@@ -21,6 +21,41 @@ const MATCH_TAG: &str = "match";
 /// Highlight of the match the search is on.
 const CURRENT_TAG: &str = "current";
 
+/// What a key press does in the Viewer once the search entry is not typing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewerKey {
+    /// Next file.
+    Next,
+    /// Previous file.
+    Prev,
+    /// Switch the mode.
+    SetMode(Mode),
+    /// Mark or unmark the picture (Show only).
+    ToggleMark,
+}
+
+/// Map a key to its Viewer action. Chords with Ctrl or Alt are never ours, so
+/// select-all and copy keep working. `image` is true while a picture is shown
+/// (arrows page then, and scroll text otherwise); mode keys are off in Show,
+/// marking is Show only. Letters work in either case.
+fn viewer_key(key: gdk::Key, modified: bool, show: bool, image: bool) -> Option<ViewerKey> {
+    if modified {
+        return None;
+    }
+    match key {
+        gdk::Key::n | gdk::Key::N => Some(ViewerKey::Next),
+        gdk::Key::p | gdk::Key::P => Some(ViewerKey::Prev),
+        gdk::Key::Right if image => Some(ViewerKey::Next),
+        gdk::Key::Left if image => Some(ViewerKey::Prev),
+        gdk::Key::Delete | gdk::Key::KP_Delete | gdk::Key::m | gdk::Key::M if show => Some(ViewerKey::ToggleMark),
+        gdk::Key::t | gdk::Key::T if !show => Some(ViewerKey::SetMode(Mode::Text)),
+        gdk::Key::a | gdk::Key::A if !show => Some(ViewerKey::SetMode(Mode::Ansi)),
+        gdk::Key::x | gdk::Key::X if !show => Some(ViewerKey::SetMode(Mode::Hex)),
+        gdk::Key::s | gdk::Key::S if !show => Some(ViewerKey::SetMode(Mode::Smart)),
+        _ => None,
+    }
+}
+
 /// Extra options when opening the Viewer from code.
 #[derive(Default)]
 pub struct ViewerOptions {
@@ -172,13 +207,24 @@ impl Viewer {
             marked,
         });
 
+        // The entry is owned by the Viewer, so its handlers hold only a weak
+        // reference: a strong one would keep the Viewer (and its text buffer)
+        // alive after the window is gone.
         {
-            let v = viewer.clone();
-            search_entry.connect_changed(move |_| v.run_search());
+            let v = Rc::downgrade(&viewer);
+            search_entry.connect_changed(move |_| {
+                if let Some(v) = v.upgrade() {
+                    v.run_search();
+                }
+            });
         }
         {
-            let v = viewer.clone();
-            search_entry.connect_activate(move |_| v.step_match(true));
+            let v = Rc::downgrade(&viewer);
+            search_entry.connect_activate(move |_| {
+                if let Some(v) = v.upgrade() {
+                    v.step_match(true);
+                }
+            });
         }
         {
             let v = viewer.clone();
@@ -233,17 +279,13 @@ impl Viewer {
                 }
                 return glib::Propagation::Proceed;
             }
-            match key {
-                gdk::Key::n | gdk::Key::N => v.go(1),
-                gdk::Key::p | gdk::Key::P => v.go(-1),
-                gdk::Key::Right if v.showing_image() => v.go(1),
-                gdk::Key::Left if v.showing_image() => v.go(-1),
-                gdk::Key::t if !v.show => v.set_mode(Mode::Text),
-                gdk::Key::a if !v.show => v.set_mode(Mode::Ansi),
-                gdk::Key::x if !v.show => v.set_mode(Mode::Hex),
-                gdk::Key::s if !v.show => v.set_mode(Mode::Smart),
-                gdk::Key::Delete | gdk::Key::KP_Delete | gdk::Key::m | gdk::Key::M => v.toggle_mark(),
-                _ => return glib::Propagation::Proceed,
+            let modified = with_ctrl || state.contains(gdk::ModifierType::ALT_MASK);
+            match viewer_key(key, modified, v.show, v.showing_image()) {
+                Some(ViewerKey::Next) => v.go(1),
+                Some(ViewerKey::Prev) => v.go(-1),
+                Some(ViewerKey::SetMode(mode)) => v.set_mode(mode),
+                Some(ViewerKey::ToggleMark) => v.toggle_mark(),
+                None => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
         });
@@ -474,7 +516,8 @@ impl Viewer {
         buffer.apply_tag_by_name(CURRENT_TAG, &buffer.iter_at_offset(s as i32), &buffer.iter_at_offset(e as i32));
         let mut iter = buffer.iter_at_offset(s as i32);
         view.scroll_to_iter(&mut iter, 0.1, false, 0.0, 0.0);
-        self.search_count.set_text(&format!("{}/{count}", i + 1));
+        let more = if count >= crate::viewer_search::MAX_MATCHES { "+" } else { "" };
+        self.search_count.set_text(&format!("{}/{count}{more}", i + 1));
     }
 }
 
@@ -504,5 +547,48 @@ fn apply_ansi_tags(buffer: &gtk::TextBuffer, doc: &AnsiDoc) {
             tag
         });
         buffer.apply_tag(tag, &buffer.iter_at_offset(span.start as i32), &buffer.iter_at_offset(span.end as i32));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(k: gdk::Key) -> Option<ViewerKey> {
+        viewer_key(k, false, false, false)
+    }
+
+    #[test]
+    fn plain_letters_page_and_switch_modes_in_either_case() {
+        assert_eq!(key(gdk::Key::n), Some(ViewerKey::Next));
+        assert_eq!(key(gdk::Key::N), Some(ViewerKey::Next));
+        assert_eq!(key(gdk::Key::P), Some(ViewerKey::Prev));
+        assert_eq!(key(gdk::Key::a), Some(ViewerKey::SetMode(Mode::Ansi)));
+        assert_eq!(key(gdk::Key::X), Some(ViewerKey::SetMode(Mode::Hex)));
+        assert_eq!(key(gdk::Key::T), Some(ViewerKey::SetMode(Mode::Text)));
+        assert_eq!(key(gdk::Key::S), Some(ViewerKey::SetMode(Mode::Smart)));
+    }
+
+    #[test]
+    fn ctrl_or_alt_chords_are_left_alone_so_select_all_and_copy_work() {
+        for k in [gdk::Key::a, gdk::Key::x, gdk::Key::s, gdk::Key::n, gdk::Key::p, gdk::Key::m] {
+            assert_eq!(viewer_key(k, true, false, false), None, "{k:?} with a modifier");
+        }
+    }
+
+    #[test]
+    fn arrows_page_only_while_a_picture_is_shown() {
+        assert_eq!(viewer_key(gdk::Key::Right, false, false, true), Some(ViewerKey::Next));
+        assert_eq!(viewer_key(gdk::Key::Left, false, false, true), Some(ViewerKey::Prev));
+        assert_eq!(viewer_key(gdk::Key::Right, false, false, false), None, "arrows scroll text");
+    }
+
+    #[test]
+    fn mode_keys_are_ignored_in_show_and_marking_only_works_there() {
+        assert_eq!(viewer_key(gdk::Key::a, false, true, true), None);
+        assert_eq!(viewer_key(gdk::Key::m, false, true, true), Some(ViewerKey::ToggleMark));
+        assert_eq!(viewer_key(gdk::Key::Delete, false, true, true), Some(ViewerKey::ToggleMark));
+        assert_eq!(viewer_key(gdk::Key::m, false, false, false), None);
+        assert_eq!(viewer_key(gdk::Key::Delete, false, false, false), None);
     }
 }

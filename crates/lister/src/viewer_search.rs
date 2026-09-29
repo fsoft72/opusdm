@@ -1,5 +1,8 @@
 //! Search helpers of the Viewer.
 
+/// Most matches a search reports; more would freeze the window painting them.
+pub const MAX_MATCHES: usize = 10_000;
+
 /// Fold a character for case-insensitive comparison, one character to one
 /// character so offsets stay aligned with the original text.
 fn fold(c: char) -> char {
@@ -7,7 +10,8 @@ fn fold(c: char) -> char {
 }
 
 /// Every non-overlapping occurrence of `query` in `text`, ignoring case, as
-/// half-open ranges of character offsets (the unit GTK text buffers use).
+/// half-open ranges of character offsets (the unit GTK text buffers use), up
+/// to [`MAX_MATCHES`].
 pub fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     let needle: Vec<char> = query.chars().map(fold).collect();
     if needle.is_empty() {
@@ -16,7 +20,7 @@ pub fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     let haystack: Vec<char> = text.chars().map(fold).collect();
     let mut found = Vec::new();
     let mut i = 0;
-    while i + needle.len() <= haystack.len() {
+    while i + needle.len() <= haystack.len() && found.len() < MAX_MATCHES {
         if haystack[i..i + needle.len()] == needle[..] {
             found.push((i, i + needle.len()));
             i += needle.len();
@@ -78,5 +82,11 @@ mod tests {
     fn step_with_no_matches_is_none() {
         assert_eq!(step(None, 0, true), None);
         assert_eq!(step(Some(5), 0, false), None);
+    }
+
+    #[test]
+    fn the_number_of_matches_is_capped() {
+        let text = "e".repeat(MAX_MATCHES * 2);
+        assert_eq!(find_matches(&text, "e").len(), MAX_MATCHES);
     }
 }

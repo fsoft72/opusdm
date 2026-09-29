@@ -34,9 +34,10 @@ fn has_csi(head: &[u8]) -> bool {
 }
 
 /// Decide how to show a file. Explicit modes are obeyed; `Smart` chooses
-/// picture, ANSI (art extension or an `ESC [` in the first `SNIFF_LEN` bytes,
-/// checked before the text probe because CP437 art is not valid UTF-8), text
-/// or hex.
+/// picture, ANSI (art extension, or an `ESC [` in the first `SNIFF_LEN` bytes
+/// of a file without NUL bytes; checked before the text probe because CP437
+/// art is not valid UTF-8, and after archives and binaries, which can contain
+/// `ESC [` by chance), text or hex.
 pub fn resolve(mode: Mode, ext: &str, head: &[u8]) -> Resolved {
     match mode {
         Mode::Text => Resolved::Text,
@@ -47,7 +48,9 @@ pub fn resolve(mode: Mode, ext: &str, head: &[u8]) -> Resolved {
             let head = &head[..head.len().min(SNIFF_LEN)];
             if IMAGE_EXTS.contains(&ext.as_str()) {
                 Resolved::Image
-            } else if ANSI_EXTS.contains(&ext.as_str()) || has_csi(head) {
+            } else if kind_of(&ext, &[]) == FileKind::Archive {
+                Resolved::Hex
+            } else if ANSI_EXTS.contains(&ext.as_str()) || (has_csi(head) && !head.contains(&0)) {
                 Resolved::Ansi
             } else if kind_of(&ext, head) == FileKind::Text {
                 Resolved::Text
@@ -155,5 +158,14 @@ mod tests {
     fn image_files_keeps_only_pictures_in_order() {
         let files: Vec<PathBuf> = ["/a/one.PNG", "/a/notes.txt", "/a/two.jpg"].iter().map(PathBuf::from).collect();
         assert_eq!(image_files(&files), vec![PathBuf::from("/a/one.PNG"), PathBuf::from("/a/two.jpg")]);
+    }
+
+    #[test]
+    fn binaries_that_happen_to_contain_an_escape_bracket_are_hex_not_ansi() {
+        let mut zip = b"PK\x03\x04\x00\x00".to_vec();
+        zip.extend_from_slice(b"\x1b[31m");
+        assert_eq!(resolve(Mode::Smart, "bin", &zip), Resolved::Hex, "a NUL byte means binary");
+        assert_eq!(resolve(Mode::Smart, "zip", ESC_HEAD), Resolved::Hex, "a known archive is never ANSI");
+        assert_eq!(resolve(Mode::Smart, "gz", ESC_HEAD), Resolved::Hex);
     }
 }

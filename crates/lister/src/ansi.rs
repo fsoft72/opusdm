@@ -23,6 +23,10 @@ pub fn cp437_char(b: u8) -> char {
     }
 }
 
+/// Largest cursor-forward count honoured; a bigger one in a hostile file
+/// would otherwise ask for gigabytes of spaces.
+const MAX_FORWARD: usize = 4096;
+
 /// A run of text with one style. Offsets are characters of [`AnsiDoc::text`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Span {
@@ -124,7 +128,7 @@ pub fn parse_ansi(bytes: &[u8]) -> AnsiDoc {
                     span_start = chars;
                 }
                 b'C' => {
-                    let n = params.parse::<usize>().unwrap_or(1).max(1);
+                    let n = params.parse::<usize>().unwrap_or(1).clamp(1, MAX_FORWARD);
                     text.extend(std::iter::repeat_n(' ', n));
                     chars += n;
                 }
@@ -236,5 +240,12 @@ mod tests {
     fn the_palette_has_sixteen_colours() {
         assert_eq!(PALETTE.len(), 16);
         assert!(PALETTE.iter().all(|c| c.starts_with('#') && c.len() == 7));
+    }
+
+    #[test]
+    fn a_huge_cursor_forward_count_is_clamped_instead_of_exhausting_memory() {
+        let doc = parse_ansi(b"a\x1b[99999999999Cb");
+        assert!(doc.text.len() <= MAX_FORWARD + 2, "got {} bytes", doc.text.len());
+        assert!(doc.text.starts_with('a') && doc.text.ends_with('b'));
     }
 }
