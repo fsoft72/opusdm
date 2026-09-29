@@ -9,3 +9,4 @@ pub mod jobs;
 pub mod roles;
 pub mod server;
 pub mod settings;
+pub mod global_keys;

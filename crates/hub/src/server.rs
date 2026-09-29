@@ -101,6 +101,9 @@ pub struct ServerHandle {
 
 /// Knobs the tests leave off and `main` turns on.
 pub struct ServerOptions {
+    /// Grab the global hotkeys over X11. Off in tests, which must never touch
+    /// a real X server.
+    pub global_keys: bool,
     /// Bindings to start with. `None` loads them from disk (production). The
     /// default is empty bindings, so a test never reads, or acts on, a
     /// developer's real hotkeys, menu and script events.
@@ -110,14 +113,14 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     /// Options for tests: no disk read.
     fn default() -> Self {
-        Self { initial_bindings: Some(Bindings::default()) }
+        Self { global_keys: false, initial_bindings: Some(Bindings::default()) }
     }
 }
 
 impl ServerOptions {
     /// Options for the real hub: load the bindings from disk.
     pub fn production() -> Self {
-        Self { initial_bindings: None }
+        Self { global_keys: true, initial_bindings: None }
     }
 }
 
@@ -282,6 +285,14 @@ struct Hub {
     current_desktop: DesktopSettings,
     /// Loaded once at startup; updated in place by `ToHub::SetBindings`.
     current_bindings: Bindings,
+    /// Whether global hotkeys may be grabbed (off in tests).
+    global_keys_enabled: bool,
+    /// Sender back into the owner loop, used by the global-key thread.
+    owner_tx: Sender<OwnerMsg>,
+    /// The X11 grabs, created lazily on the first non-empty global set.
+    global_keys: Option<crate::global_keys::GlobalKeys>,
+    /// The X11 connection failed once; do not retry or log again.
+    x11_failed: bool,
     persist_tx: Sender<PersistMsg>,
     engine: JobEngine,
     jobs: HashMap<u64, JobMeta>,
@@ -383,6 +394,7 @@ impl Hub {
                 for c in self.conns.values_mut().filter(|c| c.registered) {
                     let _ = c.tx.send(ToLister::BindingsUpdate(self.current_bindings.clone()).into());
                 }
+                self.apply_global_keys();
             }
 
             ToHub::Register { pid, initial_path } => {
@@ -509,6 +521,37 @@ impl Hub {
             self.query_selection(d, run_id);
         }
         run_id
+    }
+
+    /// Bring the X11 grabs in line with the global hotkeys of
+    /// `current_bindings`. The X connection is created on the first non-empty
+    /// set; if it cannot be opened the hub gives up on global hotkeys for the
+    /// rest of the session.
+    fn apply_global_keys(&mut self) {
+        if !self.global_keys_enabled {
+            return;
+        }
+        let globals: Vec<bindings::Hotkey> =
+            self.current_bindings.hotkeys.iter().filter(|h| h.global).cloned().collect();
+        if self.global_keys.is_none() {
+            if globals.is_empty() || self.x11_failed {
+                return;
+            }
+            let tx = self.owner_tx.clone();
+            let started = crate::global_keys::GlobalKeys::start(Box::new(move |id| {
+                let _ = tx.send(OwnerMsg::FromGtk(HubCmd::RunFunctionHeadless(id)));
+            }));
+            match started {
+                Some(keys) => self.global_keys = Some(keys),
+                None => {
+                    self.x11_failed = true;
+                    return;
+                }
+            }
+        }
+        if let Some(keys) = &self.global_keys {
+            keys.set(&globals);
+        }
     }
 
     /// Queue `run_id` on `cid`'s FIFO of pending selection requests and ask
@@ -942,6 +985,10 @@ fn owner_loop(
         roles: RoleState::default(),
         current_settings: settings::load_settings(),
         current_desktop,
+        global_keys_enabled: opts.global_keys,
+        owner_tx: owner_tx.clone(),
+        global_keys: None,
+        x11_failed: false,
         current_bindings: match opts.initial_bindings {
             Some(b) => b,
             None => bindings::sanitize(bindings::load_bindings()),
@@ -959,6 +1006,8 @@ fn owner_loop(
         next_run_id: 1,
         function_events_tx: fe_tx,
     };
+
+    hub.apply_global_keys();
 
     for msg in rx {
         let keep_running = match msg {
