@@ -61,8 +61,15 @@ impl Ui {
         self.update_gauge(&self.cwd_path());
     }
 
+    /// Forget what is on screen so the next listing reapplies the format,
+    /// even when it equals the previous one.
+    pub fn invalidate_format(&self) {
+        *self.format.borrow_mut() = ListerFormat::stale();
+    }
+
     /// Apply `format` to the current directory only ("Use").
     pub fn use_format(self: &Rc<Self>, format: ListerFormat) {
+        self.invalidate_format();
         *self.temp_format.borrow_mut() = Some((self.cwd_path(), format));
         self.reload();
     }
@@ -71,6 +78,7 @@ impl Ui {
     /// current directory.
     pub fn on_formats_changed(self: &Rc<Self>) {
         let cwd = self.cwd_path();
+        // Reloading reapplies the format, so an invalidated one always does.
         if self.effective_format(&cwd) != *self.format.borrow() {
             self.reload();
         }

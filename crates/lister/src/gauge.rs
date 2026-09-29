@@ -2,6 +2,7 @@
 
 use crate::window::Ui;
 use gtk4 as gtk;
+use gtk::glib;
 use gtk::prelude::*;
 use std::io;
 use std::path::Path;
@@ -50,18 +51,37 @@ fn human(bytes: u64) -> String {
 impl Ui {
     /// Show or hide the gauge and, when shown, fill it for `dir`. Hidden when
     /// the format does not ask for it, inside an archive, or when the
-    /// filesystem cannot be queried.
+    /// filesystem cannot be queried. `statvfs` can block on a stalled mount,
+    /// so it runs on a thread; a result that arrives after a newer request is
+    /// dropped.
     pub fn update_gauge(&self, dir: &Path) {
-        let bar = &self.status_bar.gauge;
+        let bar = self.status_bar.gauge.clone();
+        let generation = self.status_bar.gauge_generation.clone();
+        let this_request = generation.get() + 1;
+        generation.set(this_request);
         let wanted = self.format.borrow().gauge && crate::archive::parse_archive_path(dir).is_none();
-        let usage = if wanted { usage(dir).ok() } else { None };
-        let Some((total, free)) = usage else {
+        if !wanted {
             bar.set_visible(false);
             return;
-        };
-        bar.set_value(used_fraction(total, free));
-        bar.set_tooltip_text(Some(&format!("{} free of {}", human(free), human(total))));
-        bar.set_visible(true);
+        }
+        let dir = dir.to_path_buf();
+        let (tx, rx) = async_channel::bounded::<Option<(u64, u64)>>(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(usage(&dir).ok());
+        });
+        glib::spawn_future_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            if generation.get() != this_request {
+                return;
+            }
+            let Some((total, free)) = result else {
+                bar.set_visible(false);
+                return;
+            };
+            bar.set_value(used_fraction(total, free));
+            bar.set_tooltip_text(Some(&format!("{} free of {}", human(free), human(total))));
+            bar.set_visible(true);
+        });
     }
 }
 

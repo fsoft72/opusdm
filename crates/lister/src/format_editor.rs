@@ -103,6 +103,7 @@ fn rebuild(list: &gtk::Box, rows: &Rc<RefCell<Vec<(FormatColumn, bool)>>>) {
 /// Send the store to the hub. The `FormatsUpdate` that comes back applies it.
 fn send_store(ui: &Rc<Ui>, store: opusdm_ipc::FormatStore) {
     *ui.temp_format.borrow_mut() = None;
+    ui.invalidate_format();
     if let Err(e) = ui.hub.client.send(&ToHub::SetFormats(store)) {
         crate::actions::flash(ui, &format!("cannot save format: {e}"));
     }

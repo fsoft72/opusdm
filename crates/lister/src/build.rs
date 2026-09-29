@@ -406,6 +406,7 @@ fn build_window(
             job_line,
             totals: Cell::new((0, 0, 0)),
             gauge: gauge.clone(),
+            gauge_generation: Rc::new(Cell::new(0)),
         },
         path_entry: path_entry.clone(),
         button_row: button_row.clone(),

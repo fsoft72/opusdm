@@ -74,6 +74,8 @@ pub struct StatusBar {
     pub totals: Cell<(u32, u32, u64)>,
     /// Used-space gauge; visible only when the format asks for it.
     pub gauge: gtk::LevelBar,
+    /// Counts gauge requests so a slow `statvfs` cannot overwrite a newer one.
+    pub gauge_generation: Rc<Cell<u64>>,
 }
 
 /// The file area: which representation is shown and the model/selection

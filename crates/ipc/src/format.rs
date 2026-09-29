@@ -94,6 +94,14 @@ impl ListerFormat {
         }
     }
 
+    /// A marker for "whatever is on screen is unknown": no columns, so it never
+    /// equals a sanitized format. A Lister stores it after the user changes
+    /// the format so the next listing reapplies the format even when it equals
+    /// the previous one (a header click may have changed the live sort).
+    pub fn stale() -> Self {
+        Self { columns: Vec::new(), ..Self::builtin() }
+    }
+
     /// Repair a hand-edited format: no duplicate columns, `Name` always
     /// present (appended when missing), and a `sort` that is a shown column.
     pub fn sanitized(mut self) -> Self {
@@ -441,5 +449,12 @@ mod tests {
         assert_eq!(load_formats_from(td.path()), FormatStore::default());
         let kept = std::fs::read_to_string(td.path().join("formats.json.bak")).unwrap();
         assert_eq!(kept, bad);
+    }
+
+    #[test]
+    fn the_stale_marker_never_equals_a_real_format() {
+        let stale = ListerFormat::stale();
+        assert_ne!(stale, ListerFormat::builtin());
+        assert_ne!(stale.clone().sanitized(), stale, "sanitizing always puts Name back");
     }
 }
