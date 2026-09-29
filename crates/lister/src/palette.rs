@@ -32,6 +32,8 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::AdvancedSelect, title: Cow::Borrowed("Advanced Select... (name, size, date, type)"), category: Cow::Borrowed("Selection"), shortcut: None },
         CommandItem { id: CommandId::DeselectPattern, title: Cow::Borrowed("Deselect by Pattern"), category: Cow::Borrowed("Selection"), shortcut: Some("-") },
         CommandItem { id: CommandId::ToggleHidden, title: Cow::Borrowed("Toggle Hidden Files"), category: Cow::Borrowed("View"), shortcut: Some("Ctrl+H") },
+        CommandItem { id: CommandId::FindFiles, title: Cow::Borrowed("Find Files..."), category: Cow::Borrowed("View"), shortcut: None },
+        CommandItem { id: CommandId::SearchInFiles, title: Cow::Borrowed("Search in Files..."), category: Cow::Borrowed("View"), shortcut: None },
         CommandItem { id: CommandId::ReadSmart, title: Cow::Borrowed("Read (SmartRead)"), category: Cow::Borrowed("View"), shortcut: None },
         CommandItem { id: CommandId::ReadText, title: Cow::Borrowed("Read as Text"), category: Cow::Borrowed("View"), shortcut: None },
         CommandItem { id: CommandId::ReadAnsi, title: Cow::Borrowed("Read as ANSI"), category: Cow::Borrowed("View"), shortcut: None },
@@ -138,6 +140,8 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 }
             }
         }
+        CommandId::FindFiles => crate::find_dialog::open(ui, false),
+        CommandId::SearchInFiles => crate::find_dialog::open(ui, true),
         CommandId::ReadSmart => crate::viewer::open_from_selection(ui, crate::viewer_mode::Mode::Smart, false),
         CommandId::ReadText => crate::viewer::open_from_selection(ui, crate::viewer_mode::Mode::Text, false),
         CommandId::ReadAnsi => crate::viewer::open_from_selection(ui, crate::viewer_mode::Mode::Ansi, false),

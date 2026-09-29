@@ -20,6 +20,7 @@ mod dnd;
 mod filter;
 mod format_apply;
 mod format_editor;
+mod find_dialog;
 mod find_search;
 mod function_editor;
 mod gauge;

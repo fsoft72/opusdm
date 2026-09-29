@@ -21,7 +21,7 @@ fn now_secs() -> i64 {
 }
 
 /// Add a labelled entry row to `content` and return the entry.
-fn add_field(content: &gtk::Box, label: &str, placeholder: &str) -> gtk::Entry {
+pub(crate) fn add_field(content: &gtk::Box, label: &str, placeholder: &str) -> gtk::Entry {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let text = gtk::Label::new(Some(label));
     text.set_xalign(0.0);

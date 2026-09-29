@@ -74,6 +74,10 @@ pub enum CommandId {
     SetShowPattern,
     /// Ask for the persistent Hide pattern list.
     SetHidePattern,
+    /// Open the Find dialog on the Name field.
+    FindFiles,
+    /// Open the Find dialog on the Contains field.
+    SearchInFiles,
     /// Open the Viewer in SmartRead mode.
     ReadSmart,
     /// Open the Viewer as text.
