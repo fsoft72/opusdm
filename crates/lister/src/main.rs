@@ -2,6 +2,7 @@
 
 mod actions;
 mod advanced_select;
+mod ansi;
 mod archive;
 mod attr_dialogs;
 mod batch_rename;
