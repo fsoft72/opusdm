@@ -31,6 +31,9 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::SelectPattern, title: Cow::Borrowed("Select by Pattern (*.rs, etc.)"), category: Cow::Borrowed("Selection"), shortcut: Some("+") },
         CommandItem { id: CommandId::DeselectPattern, title: Cow::Borrowed("Deselect by Pattern"), category: Cow::Borrowed("Selection"), shortcut: Some("-") },
         CommandItem { id: CommandId::ToggleHidden, title: Cow::Borrowed("Toggle Hidden Files"), category: Cow::Borrowed("View"), shortcut: Some("Ctrl+H") },
+        CommandItem { id: CommandId::ListerFormat, title: Cow::Borrowed("Lister Format..."), category: Cow::Borrowed("View"), shortcut: None },
+        CommandItem { id: CommandId::SetShowPattern, title: Cow::Borrowed("Set Show Pattern..."), category: Cow::Borrowed("View"), shortcut: None },
+        CommandItem { id: CommandId::SetHidePattern, title: Cow::Borrowed("Set Hide Pattern..."), category: Cow::Borrowed("View"), shortcut: None },
         CommandItem { id: CommandId::Copy, title: Cow::Borrowed("Copy (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("F5") },
         CommandItem { id: CommandId::Move, title: Cow::Borrowed("Move (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("F6") },
         CommandItem { id: CommandId::Delete, title: Cow::Borrowed("Delete Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: Some("F8 / Del") },
@@ -125,6 +128,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 }
             }
         }
+        CommandId::ListerFormat => crate::format_editor::open(ui),
+        CommandId::SetShowPattern => crate::format_editor::set_pattern(ui, crate::format_editor::PatternKind::Show),
+        CommandId::SetHidePattern => crate::format_editor::set_pattern(ui, crate::format_editor::PatternKind::Hide),
         CommandId::SelectPattern => {
             let ui_clone = ui.clone();
             let win = ui.window.clone();

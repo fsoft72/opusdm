@@ -8,6 +8,9 @@ use std::path::Path;
 
 /// (total bytes, bytes free to unprivileged users) of the filesystem holding
 /// `dir`.
+// The statvfs fields are 32 bits wide on some targets, so the conversions
+// are useless only on 64-bit ones.
+#[allow(clippy::useless_conversion)]
 pub fn usage(dir: &Path) -> io::Result<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = std::ffi::CString::new(dir.as_os_str().as_bytes())

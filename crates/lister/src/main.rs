@@ -15,6 +15,7 @@ mod context_menu;
 mod dnd;
 mod filter;
 mod format_apply;
+mod format_editor;
 mod function_editor;
 mod gauge;
 mod glyphs;

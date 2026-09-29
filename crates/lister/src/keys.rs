@@ -66,6 +66,12 @@ pub enum CommandId {
     SetDest,
     SetNone,
     TogglePin,
+    /// Open the Lister Format editor.
+    ListerFormat,
+    /// Ask for the persistent Show pattern list.
+    SetShowPattern,
+    /// Ask for the persistent Hide pattern list.
+    SetHidePattern,
     /// Open the Function Editor's manager window (list/new/edit/delete).
     ManageFunctions,
     /// Run a saved Function by id.
