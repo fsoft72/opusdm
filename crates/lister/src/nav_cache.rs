@@ -17,7 +17,23 @@ impl Ui {
     /// view only when it differs from what is shown. `on_done` runs once the
     /// final listing is on screen.
     pub fn navigate(self: &Rc<Self>, dir: &Path, use_cache: bool, on_done: impl Fn() + 'static) {
+        let history_before = self.history.borrow().clone();
+        self.navigate_from(dir, use_cache, history_before, on_done);
+    }
+
+    /// [`Ui::navigate`] with the history as it was before the caller moved
+    /// its position (back / forward / menu move it before loading). If the
+    /// directory cannot be read that history is put back, so the buttons keep
+    /// matching what is on screen.
+    fn navigate_from(
+        self: &Rc<Self>,
+        dir: &Path,
+        use_cache: bool,
+        history_before: crate::history::History,
+        on_done: impl Fn() + 'static,
+    ) {
         crate::dlog!("navigate {} (cache: {use_cache})", dir.display());
+        let previous = self.cwd_path();
         let gen = self.nav_generation.get() + 1;
         self.nav_generation.set(gen);
 
@@ -46,23 +62,37 @@ impl Ui {
             if this.nav_generation.get() != gen {
                 return;
             }
-            this.finish_listing(&dir_owned, result, cached);
+            this.finish_listing(&dir_owned, result, cached, previous, history_before);
             on_done();
         });
     }
 
     /// Handle the disk read that follows a navigation. `cached` is the
     /// listing already shown for it, if any.
-    fn finish_listing(self: &Rc<Self>, dir: &Path, result: io::Result<Vec<Row>>, cached: Option<Rc<Vec<Row>>>) {
+    fn finish_listing(
+        self: &Rc<Self>,
+        dir: &Path,
+        result: io::Result<Vec<Row>>,
+        cached: Option<Rc<Vec<Row>>>,
+        previous: std::path::PathBuf,
+        history_before: crate::history::History,
+    ) {
         let is_archive = crate::archive::parse_archive_path(dir).is_some();
         let rows = match result {
             Ok(rows) => rows,
             Err(e) => {
-                // The directory is gone or unreadable: forget the stale copy.
-                if cached.is_some() && self.dir_cache.borrow_mut().remove(dir) {
+                // The directory is gone or unreadable: forget any copy of it.
+                if !is_archive && self.dir_cache.borrow_mut().remove(dir) {
                     self.report_cache();
                 }
                 self.apply_navigation(dir, Err(e));
+                // The move never happened: undo its history step, and if the
+                // cached rows were already shown, go back where we were.
+                *self.history.borrow_mut() = history_before;
+                self.refresh_history_ui();
+                if cached.is_some() && previous != dir {
+                    self.navigate_to(&previous);
+                }
                 return;
             }
         };
@@ -105,25 +135,28 @@ impl Ui {
 
     /// Go to the previous history entry.
     pub fn history_back(self: &Rc<Self>) {
+        let before = self.history.borrow().clone();
         let target = self.history.borrow_mut().back();
         if let Some(dir) = target {
-            self.navigate_to(&dir);
+            self.navigate_from(&dir, true, before, || {});
         }
     }
 
     /// Go to the next history entry.
     pub fn history_forward(self: &Rc<Self>) {
+        let before = self.history.borrow().clone();
         let target = self.history.borrow_mut().forward();
         if let Some(dir) = target {
-            self.navigate_to(&dir);
+            self.navigate_from(&dir, true, before, || {});
         }
     }
 
     /// Go to history entry `index`.
     pub fn history_jump(self: &Rc<Self>, index: usize) {
+        let before = self.history.borrow().clone();
         let target = self.history.borrow_mut().jump(index);
         if let Some(dir) = target {
-            self.navigate_to(&dir);
+            self.navigate_from(&dir, true, before, || {});
         }
     }
 

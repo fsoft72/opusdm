@@ -6,7 +6,7 @@ use std::path::PathBuf;
 pub const HISTORY_LIMIT: usize = 50;
 
 /// The directories a Lister visited, with a position in them.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct History {
     entries: Vec<PathBuf>,
     index: usize,
@@ -161,5 +161,16 @@ mod tests {
         assert_eq!(h.entries().len(), HISTORY_LIMIT);
         assert_eq!(h.entries()[0], p("/d5"));
         assert_eq!(h.index(), Some(HISTORY_LIMIT - 1));
+    }
+
+    #[test]
+    fn a_cloned_history_restores_the_position_after_a_failed_move() {
+        let mut h = visited(&["/a", "/b", "/c"]);
+        let before = h.clone();
+        h.back();
+        h.push(p("/gone"));
+        h = before;
+        assert_eq!(h.entries(), &[p("/a"), p("/b"), p("/c")]);
+        assert_eq!(h.index(), Some(2));
     }
 }
