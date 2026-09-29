@@ -43,6 +43,10 @@ pub enum CommandId {
     JoinFiles,
     /// Open the split dialog.
     SplitFile,
+    /// Check whether the selection fits in the free space at DEST.
+    CheckFit,
+    /// Select again what the last job or Deselect All cleared.
+    Reselect,
     ClipCopy,
     ClipCut,
     ClipPaste,
@@ -133,6 +137,7 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         return match key {
             gdk::Key::p | gdk::Key::P => Some(Action::OpenPalette),
             gdk::Key::f | gdk::Key::F => Some(Action::RevealFilter),
+            gdk::Key::a | gdk::Key::A if shift => Some(Action::Command(CommandId::Reselect)),
             gdk::Key::a | gdk::Key::A => Some(Action::Command(CommandId::SelectAll)),
             gdk::Key::r | gdk::Key::R => Some(Action::Command(CommandId::Reload)),
             gdk::Key::h | gdk::Key::H => Some(Action::Command(CommandId::ToggleHidden)),
@@ -269,6 +274,12 @@ mod tests {
     fn escape_and_function_keys_still_work_while_typing() {
         assert_eq!(editing(gdk::Key::Escape), Some(Action::Escape));
         assert_eq!(editing(gdk::Key::F4), Some(Action::ToggleTerminal));
+    }
+
+    #[test]
+    fn ctrl_shift_a_reselects_while_ctrl_a_selects_all() {
+        assert_eq!(resolve(gdk::Key::A, true, true, Focus::List), Some(Action::Command(CommandId::Reselect)));
+        assert_eq!(resolve(gdk::Key::a, true, false, Focus::List), Some(Action::Command(CommandId::SelectAll)));
     }
 
     #[test]

@@ -133,6 +133,9 @@ pub struct Ui {
     /// editor window is open (a palette-triggered run then only flashes a
     /// summary).
     pub function_log: RefCell<Option<gtk::TextBuffer>>,
+    /// Names selected when a job last started or the selection was last
+    /// cleared, for Reselect.
+    pub last_selection: RefCell<Vec<String>>,
     /// The "Menu" drop-down of the button row; its popup is built lazily by
     /// `user_menu::install`.
     pub user_menu_btn: gtk::MenuButton,
@@ -517,6 +520,12 @@ impl Ui {
                     cwd: self.cwd_path(),
                 });
             }
+            ToLister::CheckFitResult { dest_dir, needed, free, fits, percent } => {
+                crate::checkfit_ui::show_result(self, &dest_dir, needed, free, fits, percent);
+            }
+            ToLister::CheckFitFailed { message } => {
+                crate::actions::flash(self, &format!("check fit failed: {message}"));
+            }
             ToLister::FunctionOutput { step_idx, line } => {
                 self.append_function_log(&format!("[step {step_idx}] {line}\n"));
             }
@@ -569,6 +578,7 @@ impl Ui {
         } else if is_editing(&self.window) {
             // Escape out of the path entry without touching the selection.
         } else {
+            self.remember_selection();
             self.view.selection.unselect_all();
             return;
         }

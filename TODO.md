@@ -25,7 +25,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 ## 2. File operations
 
 - [x] F-07 CopyAs, MoveAs, Duplicate, UPDATE/NEWER/MOVEWHENSAME (`quiet` flag is carried but has no requester to suppress yet)
-- [ ] F-08 CheckFit (space pre-check)
+- [x] F-08 CheckFit (space pre-check; requester only, no status-bar Y/N badge)
 - [x] F-09 Protect (chmod requester; chown not implemented, needs privileges)
 - [x] F-10 DateStamp (touch)
 - [ ] F-11 File comments
@@ -54,7 +54,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [ ] F-28 Icon mode and Icon Action mode listers
 - [ ] F-29 Extended key selection (type-to-find)
 - [ ] F-30 DiskInfo / DeviceList equivalent
-- [ ] F-31 Reselect
+- [x] F-31 Reselect
 - [ ] F-32 Lister status-bar customization
 
 ## 5. Desktop, main window, themes
@@ -94,7 +94,7 @@ Follows section 9 of [FEATURES.md](FEATURES.md):
 
 1. [x] Function system core (F-01, core only, see follow-ups above)
 2. [x] Hotkeys + user menus + scripts (F-03, F-04, F-05)
-3. [ ] File operation variants (F-07, F-08, F-09, F-10, F-12, F-13, F-15, F-31)
+3. [x] File operation variants (F-07, F-08, F-09, F-10, F-12, F-13, F-15, F-31)
 4. [ ] Lister formats and patterns (F-22, F-23, F-24, F-29, F-32)
 5. [ ] Search trio (F-19, F-20, F-21) + viewer upgrades (F-16, F-17)
 6. [ ] Desktop features (F-33, F-34, F-37, F-38)

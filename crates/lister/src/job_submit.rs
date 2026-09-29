@@ -35,6 +35,7 @@ pub fn submit_job(
     dest_dir: Option<PathBuf>,
     options: JobOptions,
 ) {
+    ui.remember_selection();
     let enabled = ui.hub.settings.borrow().behavior.recursive_filter;
     if !wants_filter(enabled, &op, &srcs) {
         send(ui, op, srcs, dest_dir, options);

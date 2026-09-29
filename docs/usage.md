@@ -297,6 +297,16 @@ first and then changes only matching files, never directories.
   parts already exist nothing is written. Join and Split write into the DEST
   lister, or the current directory when there is none.
 
+### 3.19 Check Fit and Reselect
+
+- **Check Fit (Source -> Dest free space)...** sizes the selection (regular
+  files, recursively, symbolic links not followed) and compares it with the
+  space available to you at the DEST lister's directory. The requester says
+  whether everything fits, or what percentage does, with both sizes.
+- **Reselect** (`Ctrl+Shift+A`) selects again the entries of the last
+  selection that a job (Copy, Move, Delete, ...) or Deselect All / Esc cleared,
+  as long as they are still listed. `Ctrl+A` still selects everything.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
@@ -332,6 +342,7 @@ the `Ctrl` chords stay active.
 | **`F7`** | Create new directory |
 | **`Shift+F7`** | Create new blank file |
 | **`Ctrl+A`** | Select all items |
+| **`Ctrl+Shift+A`** | Reselect the previous selection |
 | **`*`** | Invert current selection |
 | **`+`** | Select files matching glob pattern (e.g., `*.rs`) |
 | **`-`** | Deselect files matching glob pattern |

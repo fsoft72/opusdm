@@ -3,6 +3,7 @@
 
 pub mod attrs;
 pub mod cancel;
+pub mod checkfit;
 pub mod copy;
 pub mod delete;
 pub mod duplicate;

@@ -43,6 +43,8 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::MakeLink, title: Cow::Borrowed("Make Link... (hard or symbolic, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::JoinFiles, title: Cow::Borrowed("Join Files..."), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::SplitFile, title: Cow::Borrowed("Split File..."), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::CheckFit, title: Cow::Borrowed("Check Fit (Source -> Dest free space)..."), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::Reselect, title: Cow::Borrowed("Reselect Previous Selection"), category: Cow::Borrowed("Selection"), shortcut: Some("Ctrl+Shift+A") },
         CommandItem { id: CommandId::ClipCopy, title: Cow::Borrowed("Copy to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+C") },
         CommandItem { id: CommandId::ClipCut, title: Cow::Borrowed("Cut to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+X") },
         CommandItem { id: CommandId::ClipPaste, title: Cow::Borrowed("Paste from Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+V") },
@@ -110,6 +112,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             ui.view.selection.select_all();
         }
         CommandId::DeselectAll => {
+            ui.remember_selection();
             ui.view.selection.unselect_all();
         }
         CommandId::InvertSelection => {
@@ -184,6 +187,8 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         CommandId::MakeLink => crate::link_dialogs::open_link(ui),
         CommandId::JoinFiles => crate::link_dialogs::open_join(ui),
         CommandId::SplitFile => crate::link_dialogs::open_split(ui),
+        CommandId::CheckFit => crate::checkfit_ui::start(ui),
+        CommandId::Reselect => ui.reselect(),
         CommandId::CopyAs => crate::copy_as::open(ui, false),
         CommandId::MoveAs => crate::copy_as::open(ui, true),
         CommandId::Duplicate => {

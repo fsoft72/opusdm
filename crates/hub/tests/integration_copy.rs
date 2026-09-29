@@ -145,3 +145,72 @@ fn copy_fans_out_to_all_locked_dests() {
     assert_eq!(std::fs::read(d1.join("f.txt")).unwrap(), b"fan out");
     assert_eq!(std::fs::read(d2.join("f.txt")).unwrap(), b"fan out");
 }
+
+#[test]
+#[ignore]
+fn check_fit_answers_with_sizes_and_free_space() {
+    let td = tempfile::tempdir().unwrap();
+    let sock = td.path().join("hub.sock");
+    std::fs::write(td.path().join("f.bin"), vec![0u8; 300]).unwrap();
+
+    let listener = UnixListener::bind(&sock).unwrap();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut a = UnixStream::connect(&sock).unwrap();
+    a.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    reg(&mut a, 1, td.path().to_str().unwrap());
+
+    send(
+        &mut a,
+        &ToHub::CheckFit { srcs: vec![td.path().join("f.bin")], dest_dir: Some(td.path().to_path_buf()) },
+    )
+    .unwrap();
+    loop {
+        match recv::<_, ToLister>(&mut a).unwrap() {
+            Some(ToLister::CheckFitResult { needed, free, fits, percent, .. }) => {
+                assert_eq!(needed, 300);
+                assert!(free > 0 && fits && percent == 100);
+                break;
+            }
+            Some(ToLister::CheckFitFailed { message }) => panic!("{message}"),
+            Some(_) => continue,
+            None => panic!("hub closed before the answer"),
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn duplicate_job_with_options_creates_a_copy_next_to_the_source() {
+    let td = tempfile::tempdir().unwrap();
+    let sock = td.path().join("hub.sock");
+    std::fs::write(td.path().join("f.txt"), b"dup").unwrap();
+
+    let listener = UnixListener::bind(&sock).unwrap();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut a = UnixStream::connect(&sock).unwrap();
+    a.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    reg(&mut a, 1, td.path().to_str().unwrap());
+
+    send(
+        &mut a,
+        &ToHub::RunJob {
+            op: Op::Duplicate,
+            srcs: vec![td.path().join("f.txt")],
+            dest_dir: Some(td.path().to_path_buf()),
+            options: opusdm_ipc::JobOptions::default(),
+        },
+    )
+    .unwrap();
+    loop {
+        match recv::<_, ToLister>(&mut a).unwrap() {
+            Some(ToLister::JobDone { outcome, errors, .. }) => {
+                assert!(errors.is_empty(), "{errors:?}");
+                assert!(matches!(outcome, opusdm_ipc::Outcome::Ok { .. }), "{outcome:?}");
+                break;
+            }
+            Some(_) => continue,
+            None => panic!("hub closed before JobDone"),
+        }
+    }
+    assert_eq!(std::fs::read(td.path().join("f.txt.copy")).unwrap(), b"dup");
+}

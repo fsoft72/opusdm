@@ -398,6 +398,7 @@ fn build_window(
         css_provider,
         nav_generation: Cell::new(0),
         function_log: RefCell::new(None),
+        last_selection: RefCell::new(Vec::new()),
         user_menu_btn: user_menu_btn.clone(),
     });
 

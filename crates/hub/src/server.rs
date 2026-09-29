@@ -479,6 +479,10 @@ impl Hub {
                 self.selection_reply(cid, paths, cwd);
             }
 
+            ToHub::CheckFit { srcs, dest_dir } => {
+                self.check_fit(cid, srcs, dest_dir);
+            }
+
             // Tab in a Lister: raise the pane holding the opposite role.
             ToHub::PresentLister(target) => {
                 if let Some(c) = self.conns.get_mut(&target.0).filter(|c| c.registered) {
@@ -705,6 +709,35 @@ impl Hub {
         if let Some(c) = self.conns.get_mut(&requester) {
             let _ = c.tx.send(ToLister::FunctionFailed { step_idx: 0, error }.into());
         }
+    }
+
+    /// `ToHub::CheckFit` from `cid`: size the selection and read the free
+    /// space on its own thread (a big tree can take a while), then answer
+    /// the requester.
+    fn check_fit(&mut self, cid: u64, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf>) {
+        let Some(reply) = self.conns.get(&cid).map(|c| c.tx.clone()) else { return };
+        let dest_dir = dest_dir.or_else(|| {
+            self.roles
+                .dests()
+                .iter()
+                .find_map(|d| self.conns.get(&d.0).map(|c| c.path.clone()))
+        });
+        std::thread::spawn(move || {
+            let msg = match dest_dir {
+                None => ToLister::CheckFitFailed { message: "no DEST Lister set".into() },
+                Some(dir) => match opusdm_fsops::checkfit::check_fit(&srcs, &dir) {
+                    Ok(r) => ToLister::CheckFitResult {
+                        dest_dir: dir,
+                        needed: r.needed,
+                        free: r.free,
+                        fits: r.fits,
+                        percent: r.percent,
+                    },
+                    Err(e) => ToLister::CheckFitFailed { message: format!("{}: {e}", dir.display()) },
+                },
+            };
+            let _ = reply.send(msg.into());
+        });
     }
 
     /// `ToHub::SelectionReply` from `cid`: fill in whichever slot (source or

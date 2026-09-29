@@ -146,6 +146,10 @@ pub enum ToHub {
         #[serde(default)]
         options: JobOptions,
     },
+    /// Ask whether `srcs` fit in the free space at `dest_dir` (`None` = the
+    /// DEST Lister's directory). Answered by `ToLister::CheckFitResult` or
+    /// `ToLister::CheckFitFailed`.
+    CheckFit { srcs: Vec<PathBuf>, dest_dir: Option<PathBuf> },
     /// Ask the hub to open another Lister.
     SpawnLister { start_path: Option<PathBuf> },
     /// Ask the hub to raise another Lister's window. Used by the Tab binding to
@@ -328,6 +332,10 @@ pub struct Welcome {
 pub enum ToLister {
     /// Reply to `Ping`.
     Pong,
+    /// Answer to `ToHub::CheckFit`.
+    CheckFitResult { dest_dir: PathBuf, needed: u64, free: u64, fits: bool, percent: u64 },
+    /// `ToHub::CheckFit` could not be answered.
+    CheckFitFailed { message: String },
     /// Ask this Lister to raise and focus its window.
     Present,
     /// Global roles changed. There is at most one SOURCE and zero or more
@@ -451,6 +459,7 @@ mod tests {
             dest_dir: None,
             options: JobOptions::default(),
         });
+        roundtrip_tohub(ToHub::CheckFit { srcs: vec!["/a".into()], dest_dir: None });
         roundtrip_tohub(ToHub::SpawnLister { start_path: Some("/etc".into()) });
         roundtrip_tohub(ToHub::PresentLister(ListerId(5)));
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
@@ -532,6 +541,14 @@ mod tests {
         roundtrip_tolister(ToLister::SettingsUpdate(Settings::default()));
         roundtrip_tolister(ToLister::Shutdown);
         roundtrip_tolister(ToLister::QuerySelection);
+        roundtrip_tolister(ToLister::CheckFitResult {
+            dest_dir: "/d".into(),
+            needed: 2,
+            free: 1,
+            fits: false,
+            percent: 50,
+        });
+        roundtrip_tolister(ToLister::CheckFitFailed { message: "no DEST".into() });
         roundtrip_tolister(ToLister::FunctionOutput { step_idx: 0, line: "hello".into() });
         roundtrip_tolister(ToLister::FunctionStepDone { step_idx: 0, exit_code: Some(0) });
         roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
