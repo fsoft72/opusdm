@@ -20,38 +20,48 @@ pub enum FileKind {
     Binary,
 }
 
-/// Detect the kind of file based on extension and content.
-pub fn detect_file_kind(path: &Path) -> FileKind {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+/// File extensions treated as text.
+const TEXT_EXTS: &[&str] = &[
+    "rs", "c", "h", "cpp", "hpp", "cc", "py", "js", "ts", "jsx", "tsx", "html", "css", "scss", "json", "toml",
+    "yaml", "yml", "md", "txt", "sh", "bash", "xml", "ini", "conf", "log", "diff", "patch", "sql", "csv", "tsv",
+    "lock",
+];
 
-    if crate::archive::ARCHIVE_EXTS.contains(&ext.as_str()) {
+
+/// File extensions treated as pictures.
+pub const IMAGE_EXTS: [&str; 9] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "tiff"];
+
+/// Classify a file from its lower-case extension and its first bytes: the
+/// extension decides for archives, pictures and known text types; otherwise
+/// the first 512 bytes decide between text (no NUL, valid UTF-8) and binary.
+pub fn kind_of(ext: &str, head: &[u8]) -> FileKind {
+    if crate::archive::ARCHIVE_EXTS.contains(&ext) {
         return FileKind::Archive;
     }
-
-    match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "tiff" => FileKind::Image,
-        "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "py" | "js" | "ts" | "jsx" | "tsx" | "html"
-        | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "md" | "txt" | "sh" | "bash"
-        | "xml" | "ini" | "conf" | "log" | "diff" | "patch" | "sql" | "csv" | "tsv" | "lock" => {
-            FileKind::Text
-        }
-        _ => {
-            // Probe first 512 bytes for null byte / binary characters
-            if let Ok(mut f) = File::open(path) {
-                let mut buf = [0u8; 512];
-                if let Ok(n) = f.read(&mut buf) {
-                    if n > 0 && !buf[..n].contains(&0) && std::str::from_utf8(&buf[..n]).is_ok() {
-                        return FileKind::Text;
-                    }
-                }
-            }
-            FileKind::Binary
-        }
+    if IMAGE_EXTS.contains(&ext) {
+        return FileKind::Image;
     }
+    if TEXT_EXTS.contains(&ext) {
+        return FileKind::Text;
+    }
+    let probe = &head[..head.len().min(512)];
+    if !probe.is_empty() && !probe.contains(&0) && std::str::from_utf8(probe).is_ok() {
+        return FileKind::Text;
+    }
+    FileKind::Binary
+}
+
+/// Detect the kind of file based on extension and content.
+pub fn detect_file_kind(path: &Path) -> FileKind {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    // Only an unknown extension needs the content probe.
+    let mut head = [0u8; 512];
+    let n = if kind_of(&ext, &[]) == FileKind::Binary {
+        File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0)
+    } else {
+        0
+    };
+    kind_of(&ext, &head[..n])
 }
 
 /// Generate a formatted hex dump string for a buffer.
@@ -511,5 +521,16 @@ mod tests {
             }
             other => panic!("expected Directory, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn kind_of_classifies_by_extension_first_then_by_content() {
+        assert_eq!(kind_of("png", b"\x89PNG"), FileKind::Image);
+        assert_eq!(kind_of("rs", b"\x00\x01"), FileKind::Text, "a known text extension wins");
+        assert_eq!(kind_of("zip", b"PK"), FileKind::Archive);
+        assert_eq!(kind_of("weird", b"plain words\n"), FileKind::Text);
+        assert_eq!(kind_of("weird", b"a\x00b"), FileKind::Binary);
+        assert_eq!(kind_of("weird", b""), FileKind::Binary);
+        assert_eq!(kind_of("weird", &[0xC9, 0xCD, 0xBB]), FileKind::Binary, "CP437 bytes are not UTF-8");
     }
 }

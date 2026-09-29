@@ -47,6 +47,7 @@ mod typeahead;
 mod tools;
 mod user_menu;
 mod watcher;
+mod viewer_mode;
 mod viewer_search;
 mod window;
 
