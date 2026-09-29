@@ -265,7 +265,7 @@ pub fn add_column(
     let sorter = gtk::CustomSorter::new(move |a, b| {
         let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
         let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
-        dir_first_cmp(&ra, &rb, sort_col, false).into()
+        dir_first_cmp(&ra, &rb, sort_col, false, opusdm_ipc::Separate::DirsFirst).into()
     });
 
     let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));

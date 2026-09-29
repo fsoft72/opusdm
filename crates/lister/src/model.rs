@@ -1,6 +1,7 @@
 //! The directory listing model: reading entries and formatting them for the
 //! column view. Pure and deterministic; no GTK.
 
+use opusdm_ipc::{FormatColumn, Separate};
 use std::cmp::Ordering;
 use std::io;
 use std::path::Path;
@@ -213,10 +214,16 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y + i64::from(m <= 2), m, d)
 }
 
-/// Compare two rows: directories first (both directions), then by `col`.
-pub fn dir_first_cmp(a: &Row, b: &Row, col: SortCol, desc: bool) -> Ordering {
+/// Compare two rows: directories and files are kept in separate blocks as
+/// `separate` says (or sorted together for `Mixed`), then ordered by `col`.
+/// `desc` reverses the key within a block, never the block order.
+pub fn dir_first_cmp(a: &Row, b: &Row, col: SortCol, desc: bool, separate: Separate) -> Ordering {
     if a.is_dir != b.is_dir {
-        return if a.is_dir { Ordering::Less } else { Ordering::Greater };
+        match separate {
+            Separate::DirsFirst => return if a.is_dir { Ordering::Less } else { Ordering::Greater },
+            Separate::FilesFirst => return if a.is_dir { Ordering::Greater } else { Ordering::Less },
+            Separate::Mixed => {}
+        }
     }
     let base = match col {
         SortCol::Name => a.name_lower.cmp(&b.name_lower),
@@ -230,6 +237,20 @@ pub fn dir_first_cmp(a: &Row, b: &Row, col: SortCol, desc: bool) -> Ordering {
         base.reverse()
     } else {
         base
+    }
+}
+
+impl From<FormatColumn> for SortCol {
+    /// The ordering key of a format column.
+    fn from(column: FormatColumn) -> Self {
+        match column {
+            FormatColumn::Name => SortCol::Name,
+            FormatColumn::Size => SortCol::Size,
+            FormatColumn::Date => SortCol::Modified,
+            FormatColumn::User => SortCol::User,
+            FormatColumn::Group => SortCol::Group,
+            FormatColumn::Access => SortCol::Access,
+        }
     }
 }
 
@@ -352,6 +373,7 @@ pub fn local_tz_offset_secs() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opusdm_ipc::{FormatColumn, Separate};
     use std::cmp::Ordering;
     use std::fs;
 
@@ -393,25 +415,25 @@ mod tests {
     fn dirs_sort_before_files_even_descending() {
         let d = row("zeta", true, 0, 0);
         let f = row("alpha", false, 0, 0);
-        assert_eq!(dir_first_cmp(&d, &f, SortCol::Name, false), Ordering::Less);
-        assert_eq!(dir_first_cmp(&d, &f, SortCol::Name, true), Ordering::Less);
-        assert_eq!(dir_first_cmp(&f, &d, SortCol::Name, true), Ordering::Greater);
+        assert_eq!(dir_first_cmp(&d, &f, SortCol::Name, false, Separate::DirsFirst), Ordering::Less);
+        assert_eq!(dir_first_cmp(&d, &f, SortCol::Name, true, Separate::DirsFirst), Ordering::Less);
+        assert_eq!(dir_first_cmp(&f, &d, SortCol::Name, true, Separate::DirsFirst), Ordering::Greater);
     }
 
     #[test]
     fn name_sort_is_case_insensitive() {
         let a = row("Apple", false, 0, 0);
         let b = row("banana", false, 0, 0);
-        assert_eq!(dir_first_cmp(&a, &b, SortCol::Name, false), Ordering::Less);
+        assert_eq!(dir_first_cmp(&a, &b, SortCol::Name, false, Separate::DirsFirst), Ordering::Less);
     }
 
     #[test]
     fn size_and_mtime_sort_and_reverse() {
         let small = row("s", false, 10, 100);
         let big = row("b", false, 20, 50);
-        assert_eq!(dir_first_cmp(&small, &big, SortCol::Size, false), Ordering::Less);
-        assert_eq!(dir_first_cmp(&small, &big, SortCol::Size, true), Ordering::Greater);
-        assert_eq!(dir_first_cmp(&small, &big, SortCol::Modified, false), Ordering::Greater);
+        assert_eq!(dir_first_cmp(&small, &big, SortCol::Size, false, Separate::DirsFirst), Ordering::Less);
+        assert_eq!(dir_first_cmp(&small, &big, SortCol::Size, true, Separate::DirsFirst), Ordering::Greater);
+        assert_eq!(dir_first_cmp(&small, &big, SortCol::Modified, false, Separate::DirsFirst), Ordering::Greater);
     }
 
     #[test]
@@ -420,8 +442,8 @@ mod tests {
         ro.mode = 0o100_644;
         let mut rwx = row("rwx", false, 0, 0);
         rwx.mode = 0o100_755;
-        assert_eq!(dir_first_cmp(&ro, &rwx, SortCol::Access, false), Ordering::Less);
-        assert_eq!(dir_first_cmp(&ro, &rwx, SortCol::Access, true), Ordering::Greater);
+        assert_eq!(dir_first_cmp(&ro, &rwx, SortCol::Access, false, Separate::DirsFirst), Ordering::Less);
+        assert_eq!(dir_first_cmp(&ro, &rwx, SortCol::Access, true, Separate::DirsFirst), Ordering::Greater);
     }
 
     #[test]
@@ -494,5 +516,39 @@ mod tests {
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
                 .is_some_and(|s| s.trim() == "0")
+    }
+
+    fn sorted(names: &mut Vec<Row>, desc: bool, separate: Separate) -> Vec<String> {
+        names.sort_by(|a, b| dir_first_cmp(a, b, SortCol::Name, desc, separate));
+        names.iter().map(|r| r.name.clone()).collect()
+    }
+
+    fn sample() -> Vec<Row> {
+        vec![row("b_file", false, 1, 0), row("a_dir", true, 0, 0), row("a_file", false, 1, 0), row("c_dir", true, 0, 0)]
+    }
+
+    #[test]
+    fn dirs_first_keeps_a_leading_directory_block_in_both_directions() {
+        assert_eq!(sorted(&mut sample(), false, Separate::DirsFirst), ["a_dir", "c_dir", "a_file", "b_file"]);
+        assert_eq!(sorted(&mut sample(), true, Separate::DirsFirst), ["c_dir", "a_dir", "b_file", "a_file"]);
+    }
+
+    #[test]
+    fn files_first_puts_directories_last() {
+        assert_eq!(sorted(&mut sample(), false, Separate::FilesFirst), ["a_file", "b_file", "a_dir", "c_dir"]);
+        assert_eq!(sorted(&mut sample(), true, Separate::FilesFirst), ["b_file", "a_file", "c_dir", "a_dir"]);
+    }
+
+    #[test]
+    fn mixed_sorts_directories_and_files_together() {
+        assert_eq!(sorted(&mut sample(), false, Separate::Mixed), ["a_dir", "a_file", "b_file", "c_dir"]);
+        assert_eq!(sorted(&mut sample(), true, Separate::Mixed), ["c_dir", "b_file", "a_file", "a_dir"]);
+    }
+
+    #[test]
+    fn format_columns_map_to_sort_columns() {
+        assert!(SortCol::from(FormatColumn::Date) == SortCol::Modified);
+        assert!(SortCol::from(FormatColumn::Access) == SortCol::Access);
+        assert!(SortCol::from(FormatColumn::Name) == SortCol::Name);
     }
 }

@@ -215,7 +215,7 @@ fn build_window(
                     Some((col, s.primary_sort_order() == gtk::SortType::Descending))
                 })
                 .unwrap_or((SortCol::Name, false));
-            dir_first_cmp(&ra, &rb, col, desc).into()
+            dir_first_cmp(&ra, &rb, col, desc, opusdm_ipc::Separate::DirsFirst).into()
         }
     });
     sort_model.set_sorter(Some(&model_sorter));
