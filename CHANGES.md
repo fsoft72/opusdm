@@ -221,3 +221,4 @@
 - Design/plan: `docs/superpowers/specs/2026-09-28-function-editor-design.md`, `docs/superpowers/plans/2026-09-28-function-editor.md`.
 - Docs: added `TODO.md`, a checklist of the F-01..F-50 roadmap from `FEATURES.md` (F-01 core marked done, follow-ups listed).
 - Docs: added the design spec for F-03 Hotkeys, F-04 User menu and F-05 Script events (`docs/superpowers/specs/2026-09-29-hotkeys-usermenu-scripts-design.md`).
+- Docs: added the implementation plan for F-03/F-04/F-05 (`docs/superpowers/plans/2026-09-29-hotkeys-usermenu-scripts.md`).
