@@ -102,4 +102,78 @@ impl Ui {
         self.dir_cache.borrow_mut().clear();
         self.report_cache();
     }
+
+    /// Go to the previous history entry.
+    pub fn history_back(self: &Rc<Self>) {
+        let target = self.history.borrow_mut().back();
+        if let Some(dir) = target {
+            self.navigate_to(&dir);
+        }
+    }
+
+    /// Go to the next history entry.
+    pub fn history_forward(self: &Rc<Self>) {
+        let target = self.history.borrow_mut().forward();
+        if let Some(dir) = target {
+            self.navigate_to(&dir);
+        }
+    }
+
+    /// Go to history entry `index`.
+    pub fn history_jump(self: &Rc<Self>, index: usize) {
+        let target = self.history.borrow_mut().jump(index);
+        if let Some(dir) = target {
+            self.navigate_to(&dir);
+        }
+    }
+
+    /// Enable / disable the buttons and rebuild the menu rows (newest first,
+    /// the current entry in bold).
+    pub fn refresh_history_ui(&self) {
+        use gtk::prelude::*;
+        let history = self.history.borrow();
+        self.nav_history.back.set_sensitive(history.can_back());
+        self.nav_history.forward.set_sensitive(history.can_forward());
+        let list = &self.nav_history.list;
+        while let Some(child) = list.first_child() {
+            list.remove(&child);
+        }
+        let current = history.index();
+        for (i, path) in history.entries().iter().enumerate().rev() {
+            let label = gtk::Label::new(None);
+            label.set_xalign(0.0);
+            let text = glib::markup_escape_text(&path.to_string_lossy());
+            if Some(i) == current {
+                label.set_markup(&format!("<b>{text}</b>"));
+            } else {
+                label.set_markup(&text);
+            }
+            list.append(&label);
+        }
+    }
+}
+
+/// Wire the back / forward buttons and the history menu.
+pub fn install_history(ui: &Rc<Ui>, popover: &gtk::Popover) {
+    use gtk::prelude::*;
+    {
+        let ui = ui.clone();
+        ui.clone().nav_history.back.connect_clicked(move |_| ui.history_back());
+    }
+    {
+        let ui = ui.clone();
+        ui.clone().nav_history.forward.connect_clicked(move |_| ui.history_forward());
+    }
+    {
+        let ui_for_click = ui.clone();
+        let popover = popover.clone();
+        ui.nav_history.list.connect_row_activated(move |_, row| {
+            let len = ui_for_click.history.borrow().entries().len();
+            // Rows are listed newest first.
+            let Some(index) = len.checked_sub(1 + row.index() as usize) else { return };
+            popover.popdown();
+            ui_for_click.history_jump(index);
+        });
+    }
+    ui.refresh_history_ui();
 }

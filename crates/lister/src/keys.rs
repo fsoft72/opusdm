@@ -72,6 +72,10 @@ pub enum CommandId {
     SetShowPattern,
     /// Ask for the persistent Hide pattern list.
     SetHidePattern,
+    /// Go back in the history.
+    HistoryBack,
+    /// Go forward in the history.
+    HistoryForward,
     /// Open the Function Editor's manager window (list/new/edit/delete).
     ManageFunctions,
     /// Run a saved Function by id.

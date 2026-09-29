@@ -337,6 +337,25 @@ fn build_window(
     let parent_btn = crate::icons::icon_button(crate::icons::SVG_PARENT, "Parent Directory", 16);
     let path_entry = gtk::Entry::new();
     path_entry.set_hexpand(true);
+    let back_btn = gtk::Button::with_label("\u{25C0}");
+    back_btn.set_tooltip_text(Some("Back (Alt+Left)"));
+    back_btn.add_css_class("opus-btn");
+    let forward_btn = gtk::Button::with_label("\u{25B6}");
+    forward_btn.set_tooltip_text(Some("Forward (Alt+Right)"));
+    forward_btn.add_css_class("opus-btn");
+    let history_list = gtk::ListBox::new();
+    history_list.set_selection_mode(gtk::SelectionMode::None);
+    let history_scroll = gtk::ScrolledWindow::builder().child(&history_list).min_content_width(360).max_content_height(320).propagate_natural_height(true).build();
+    let history_popover = gtk::Popover::new();
+    history_popover.set_child(Some(&history_scroll));
+    let history_btn = gtk::MenuButton::new();
+    history_btn.set_label("\u{25BE}");
+    history_btn.set_tooltip_text(Some("History"));
+    history_btn.set_popover(Some(&history_popover));
+    history_btn.add_css_class("opus-btn");
+    nav_bar.append(&back_btn);
+    nav_bar.append(&forward_btn);
+    nav_bar.append(&history_btn);
     nav_bar.append(&home_btn);
     nav_bar.append(&parent_btn);
     nav_bar.append(&path_entry);
@@ -422,6 +441,11 @@ fn build_window(
         temp_format: RefCell::new(None),
         dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
         history: RefCell::new(crate::history::History::new()),
+        nav_history: crate::window::NavHistory {
+            back: back_btn.clone(),
+            forward: forward_btn.clone(),
+            list: history_list.clone(),
+        },
         last_selection: RefCell::new(Vec::new()),
         user_menu_btn: user_menu_btn.clone(),
     });
@@ -567,6 +591,20 @@ fn build_window(
             if focus == crate::keys::Focus::List && ui_for_keys.typeahead_feed(keyval, modified) {
                 return glib::Propagation::Stop;
             }
+            // Alt+Left / Alt+Right walk the history (resolve() has no Alt).
+            if focus == crate::keys::Focus::List && state.contains(gdk::ModifierType::ALT_MASK) {
+                match keyval {
+                    gdk::Key::Left => {
+                        ui_for_keys.history_back();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::Right => {
+                        ui_for_keys.history_forward();
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            }
             // A user hotkey (F-03) is looked up next, so it wins over a
             // built-in binding.
             let user_function = ui_for_keys.hub.hotkeys.borrow().lookup(keyval, state, focus).cloned();
@@ -590,6 +628,7 @@ fn build_window(
 
     crate::actions::attach(&ui);
     crate::user_menu::install(&ui);
+    crate::nav_cache::install_history(&ui, &history_popover);
     button_row.append(&view_toggle);
     crate::dnd::attach(&ui, &column_view);
 

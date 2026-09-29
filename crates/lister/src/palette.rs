@@ -56,6 +56,8 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::Rename, title: Cow::Borrowed("Rename..."), category: Cow::Borrowed("File Ops"), shortcut: Some("F2") },
         CommandItem { id: CommandId::BatchRename, title: Cow::Borrowed("Batch Rename Selected Files (Regex/Numbering)..."), category: Cow::Borrowed("File Ops"), shortcut: Some("F2 (multi)") },
         CommandItem { id: CommandId::Reload, title: Cow::Borrowed("Reload / Refresh Current Directory"), category: Cow::Borrowed("View"), shortcut: Some("Ctrl+R") },
+        CommandItem { id: CommandId::HistoryBack, title: Cow::Borrowed("History Back"), category: Cow::Borrowed("Navigation"), shortcut: Some("Alt+Left") },
+        CommandItem { id: CommandId::HistoryForward, title: Cow::Borrowed("History Forward"), category: Cow::Borrowed("Navigation"), shortcut: Some("Alt+Right") },
         CommandItem { id: CommandId::ParentDir, title: Cow::Borrowed("Go to Parent Directory"), category: Cow::Borrowed("Navigation"), shortcut: Some("Backspace") },
         CommandItem { id: CommandId::HomeDir, title: Cow::Borrowed("Go to Home Directory (~)"), category: Cow::Borrowed("Navigation"), shortcut: Some("~") },
         CommandItem { id: CommandId::Terminal, title: Cow::Borrowed("Toggle Terminal Drawer"), category: Cow::Borrowed("Tools"), shortcut: Some("F4 / `") },
@@ -128,6 +130,8 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 }
             }
         }
+        CommandId::HistoryBack => ui.history_back(),
+        CommandId::HistoryForward => ui.history_forward(),
         CommandId::ListerFormat => crate::format_editor::open(ui),
         CommandId::SetShowPattern => crate::format_editor::set_pattern(ui, crate::format_editor::PatternKind::Show),
         CommandId::SetHidePattern => crate::format_editor::set_pattern(ui, crate::format_editor::PatternKind::Hide),

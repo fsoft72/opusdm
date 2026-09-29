@@ -113,6 +113,16 @@ pub struct ViewState {
     pub model_sorter: gtk::CustomSorter,
 }
 
+/// The back / forward buttons and the history drop-down of the path bar.
+pub struct NavHistory {
+    /// Go back one entry.
+    pub back: gtk::Button,
+    /// Go forward one entry.
+    pub forward: gtk::Button,
+    /// The rows of the history pop-over, newest first.
+    pub list: gtk::ListBox,
+}
+
 /// Everything the window's callbacks need. Shared by `Rc` across Tasks 13-15.
 pub struct Ui {
     /// The top-level window.
@@ -166,6 +176,8 @@ pub struct Ui {
     pub dir_cache: RefCell<crate::dircache::DirCache>,
     /// Back / forward history.
     pub history: RefCell<crate::history::History>,
+    /// Back / forward buttons and the history drop-down.
+    pub nav_history: NavHistory,
 }
 
 impl Ui {
@@ -260,6 +272,7 @@ impl Ui {
         }
         *self.cwd.borrow_mut() = dir.to_path_buf();
         self.history.borrow_mut().push(dir.to_path_buf());
+        self.refresh_history_ui();
         // A "Use" format only lives in the directory it was applied in.
         if self.temp_format.borrow().as_ref().is_some_and(|(p, _)| p != dir) {
             *self.temp_format.borrow_mut() = None;
