@@ -3,6 +3,7 @@
 mod actions;
 mod archive;
 mod batch_rename;
+mod binding_ui;
 mod build;
 mod client;
 mod clip;
@@ -12,6 +13,7 @@ mod dnd;
 mod filter;
 mod function_editor;
 mod glyphs;
+mod hotkey_editor;
 mod hotkeys;
 mod icons;
 mod keys;

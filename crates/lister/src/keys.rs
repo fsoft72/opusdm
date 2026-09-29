@@ -47,6 +47,10 @@ pub enum CommandId {
     ManageFunctions,
     /// Run a saved Function by id.
     RunFunction(opusdm_ipc::function::FunctionId),
+    /// Open the hotkey editor.
+    ManageHotkeys,
+    /// Ask for a key combination and say what it does.
+    FindKey,
 }
 
 /// Where the keyboard focus is when the key arrives.
@@ -301,5 +305,12 @@ mod tests {
     fn manage_functions_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageFunctions));
+    }
+
+    #[test]
+    fn hotkey_commands_exist_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::ManageHotkeys));
+        assert!(known.contains(&CommandId::FindKey));
     }
 }

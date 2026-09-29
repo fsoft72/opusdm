@@ -22,7 +22,7 @@ pub struct CommandItem {
 /// The command palette's entries. Entirely static, so this is a `const`
 /// array instead of a `Vec` rebuilt (and heap-allocated) on every palette
 /// open; `get_commands` just borrows it.
-const COMMANDS: &[CommandItem] = &[
+static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::Filter, title: Cow::Borrowed("Filter Files in Current View"), category: Cow::Borrowed("View"), shortcut: Some("/") },
         CommandItem { id: CommandId::Preview, title: Cow::Borrowed("Quick Look File Preview"), category: Cow::Borrowed("View"), shortcut: Some("F3 / Space") },
         CommandItem { id: CommandId::SelectAll, title: Cow::Borrowed("Select All"), category: Cow::Borrowed("Selection"), shortcut: Some("Ctrl+A") },
@@ -53,6 +53,8 @@ const COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::SetNone, title: Cow::Borrowed("Set Role: NONE"), category: Cow::Borrowed("Roles"), shortcut: None },
         CommandItem { id: CommandId::TogglePin, title: Cow::Borrowed("Toggle Role Pin / Lock"), category: Cow::Borrowed("Roles"), shortcut: None },
         CommandItem { id: CommandId::ManageFunctions, title: Cow::Borrowed("Manage Functions..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::ManageHotkeys, title: Cow::Borrowed("Edit Hotkeys..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::FindKey, title: Cow::Borrowed("Find Key..."), category: Cow::Borrowed("Functions"), shortcut: None },
 ];
 
 /// Borrow the command palette's entries.
@@ -71,6 +73,12 @@ pub fn get_commands() -> Vec<CommandItem> {
         });
     }
     items
+}
+
+/// The static built-in commands, without the dynamic per-function entries
+/// (no disk read): what "Find Key" names a built-in key by.
+pub fn builtin_commands() -> &'static [CommandItem] {
+    COMMANDS
 }
 
 /// Execute a command by ID. The match is exhaustive (no wildcard arm): a
@@ -279,6 +287,12 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::ManageFunctions => {
             crate::function_editor::open_functions_manager(ui);
+        }
+        CommandId::ManageHotkeys => {
+            crate::hotkey_editor::open_hotkey_editor(ui);
+        }
+        CommandId::FindKey => {
+            crate::hotkey_editor::open_find_key(ui);
         }
         CommandId::RunFunction(id) => {
             let Some(function) = opusdm_ipc::function::load_functions().into_iter().find(|f| f.id == id) else {
