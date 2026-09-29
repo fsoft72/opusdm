@@ -24,6 +24,7 @@ macro_rules! err_log {
     };
 }
 
+pub mod bindings;
 pub mod desktop;
 pub mod dock;
 pub mod frame;
@@ -41,6 +42,7 @@ pub use desktop::{
     DockPosition, PanelPosition, DOCK_ICON_SIZE_RANGE,
     GRADIENT_ANGLE_MAX, GRID_GAP_RANGE, GRID_SPACING_RANGE, ICON_SIZE_RANGE,
 };
+pub use bindings::Bindings;
 pub use dock::DockConfig;
 pub use function::{Function, FnStep, FunctionId, InternalArgs, InternalCmd};
 pub use menu::{MenuConfig, MenuItem};
