@@ -74,6 +74,16 @@ pub enum CommandId {
     SetShowPattern,
     /// Ask for the persistent Hide pattern list.
     SetHidePattern,
+    /// Open the Viewer in SmartRead mode.
+    ReadSmart,
+    /// Open the Viewer as text.
+    ReadText,
+    /// Open the Viewer as ANSI art.
+    ReadAnsi,
+    /// Open the Viewer as a hex dump.
+    ReadHex,
+    /// Open the image slideshow.
+    ShowImages,
     /// Open the Cache List.
     CacheList,
     /// Drop every Lister's directory cache.
