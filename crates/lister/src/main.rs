@@ -20,6 +20,7 @@ mod format_editor;
 mod function_editor;
 mod gauge;
 mod glyphs;
+mod history;
 mod hotkey_editor;
 mod hotkeys;
 mod icons;
