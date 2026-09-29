@@ -177,11 +177,19 @@ pub enum SearchEvent {
     Done { scanned: usize, skipped: usize, truncated: bool },
 }
 
-/// The first `cap` bytes of `path`.
-fn read_prefix(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+/// Read up to `cap` bytes of a file for a content search. Only the first
+/// [`BINARY_SNIFF`] bytes are read to start with: a NUL among them marks the
+/// file binary and gives `None` without reading the rest, so a tree of videos
+/// or disk images costs 8 KiB per file instead of the whole cap.
+fn read_for_search<R: Read>(mut reader: R, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
     let mut buf = Vec::new();
-    File::open(path)?.take(cap).read_to_end(&mut buf)?;
-    Ok(buf)
+    reader.by_ref().take((BINARY_SNIFF as u64).min(cap)).read_to_end(&mut buf)?;
+    if buf.contains(&0) {
+        return Ok(None);
+    }
+    let rest = cap.saturating_sub(buf.len() as u64);
+    reader.take(rest).read_to_end(&mut buf)?;
+    Ok(Some(buf))
 }
 
 /// Search `query.root`, sending results to `emit` as they are found, and end
@@ -232,13 +240,14 @@ fn run_search_capped(query: &FindQuery, cancel: &AtomicBool, max_results: usize,
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                match read_prefix(&path, SEARCH_FILE_MAX) {
-                    Ok(bytes) => {
+                match File::open(&path).and_then(|f| read_for_search(f, SEARCH_FILE_MAX)) {
+                    Ok(Some(bytes)) => {
                         if let Some(hit) = scan_text(&bytes, needle, query.case_sensitive) {
                             emit(SearchEvent::Found(Found { path, is_dir: false, hit: Some(hit) }));
                             found += 1;
                         }
                     }
+                    Ok(None) => {}
                     Err(_) => skipped += 1,
                 }
             }
@@ -559,5 +568,47 @@ mod tests {
         assert_eq!(scanned, 7);
         assert_eq!(skipped, 0);
         assert!(!truncated);
+    }
+
+    /// A reader that counts the bytes handed out.
+    struct Counting<R> {
+        inner: R,
+        read: usize,
+    }
+
+    impl<R: std::io::Read> std::io::Read for Counting<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_binary_file_is_rejected_after_reading_only_its_head() {
+        let mut data = vec![0u8; 1_000_000];
+        data[0] = 0;
+        let mut counting = Counting { inner: std::io::Cursor::new(data), read: 0 };
+        let got = read_for_search(&mut counting, SEARCH_FILE_MAX).unwrap();
+        assert!(got.is_none());
+        assert!(counting.read <= 8192, "read {} bytes before giving up", counting.read);
+    }
+
+    #[test]
+    fn a_text_file_is_read_up_to_the_cap() {
+        let data = vec![b'a'; 20_000];
+        let got = read_for_search(std::io::Cursor::new(data.clone()), SEARCH_FILE_MAX).unwrap().unwrap();
+        assert_eq!(got, data);
+        let got = read_for_search(std::io::Cursor::new(data), 10_000).unwrap().unwrap();
+        assert_eq!(got.len(), 10_000);
+    }
+
+    #[test]
+    fn a_nul_after_the_head_still_reads_the_whole_file() {
+        let mut data = vec![b'a'; 9000];
+        data.push(0);
+        data.extend_from_slice(b" tail");
+        let got = read_for_search(std::io::Cursor::new(data.clone()), SEARCH_FILE_MAX).unwrap().unwrap();
+        assert_eq!(got, data);
     }
 }

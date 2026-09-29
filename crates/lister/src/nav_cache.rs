@@ -62,13 +62,17 @@ impl Ui {
             if this.nav_generation.get() != gen {
                 return;
             }
-            this.finish_listing(&dir_owned, result, cached, previous, history_before);
-            on_done();
+            // A failed read leaves the previous listing on screen; callers that
+            // act on the new listing (select an entry, restore a selection)
+            // must not run against the wrong folder.
+            if this.finish_listing(&dir_owned, result, cached, previous, history_before) {
+                on_done();
+            }
         });
     }
 
     /// Handle the disk read that follows a navigation. `cached` is the
-    /// listing already shown for it, if any.
+    /// listing already shown for it, if any. False when the read failed.
     fn finish_listing(
         self: &Rc<Self>,
         dir: &Path,
@@ -76,7 +80,7 @@ impl Ui {
         cached: Option<Rc<Vec<Row>>>,
         previous: std::path::PathBuf,
         history_before: crate::history::History,
-    ) {
+    ) -> bool {
         let is_archive = crate::archive::parse_archive_path(dir).is_some();
         let rows = match result {
             Ok(rows) => rows,
@@ -93,11 +97,11 @@ impl Ui {
                 if cached.is_some() && previous != dir {
                     self.navigate_to(&previous);
                 }
-                return;
+                return false;
             }
         };
         if cached.as_ref().is_some_and(|c| crate::dircache::same_listing(c, &rows)) {
-            return;
+            return true;
         }
         // Keep the user's selection when the fresh listing replaces a cached one.
         let selected = if cached.is_some() { self.selected_names() } else { Vec::new() };
@@ -107,6 +111,7 @@ impl Ui {
         }
         self.apply_navigation(dir, Ok(rows));
         self.select_names(&selected);
+        true
     }
 
     /// Select the rows called `names`, adding to the current selection.

@@ -51,6 +51,13 @@ impl DialogShell {
         Self { window, content, buttons, scrolled: false }
     }
 
+    /// Make the dialog modal (the default) or not. A non-modal dialog leaves
+    /// the other windows usable, for dialogs that act on them (Find).
+    pub fn modal(self, modal: bool) -> Self {
+        self.window.set_modal(modal);
+        self
+    }
+
     /// Set the default window size.
     pub fn size(self, width: i32, height: i32) -> Self {
         self.window.set_default_size(width, height);

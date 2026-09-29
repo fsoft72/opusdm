@@ -41,7 +41,7 @@ struct Dialog {
 /// Open the Find dialog. `focus_contains` puts the cursor on the Contains
 /// field ("Search in Files...") instead of Name ("Find Files...").
 pub fn open(ui: &Rc<Ui>, focus_contains: bool) {
-    let shell = opusdm_ui::DialogShell::new(&ui.window, "Find").size(720, 560);
+    let shell = opusdm_ui::DialogShell::new(&ui.window, "Find").modal(false).size(720, 560);
     let content = shell.content().clone();
     let name = crate::advanced_select::add_field(&content, "Name", "*.log, *.rs, !test*");
     let contains = crate::advanced_select::add_field(&content, "Contains", "text to look for inside files");
@@ -56,6 +56,8 @@ pub fn open(ui: &Rc<Ui>, focus_contains: bool) {
     content.append(&status);
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::Single);
+    // A click selects a result for the buttons; only a double click acts.
+    list.set_activate_on_single_click(false);
     let scroller = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
     content.append(&scroller);
 
@@ -162,12 +164,14 @@ impl Dialog {
 
     /// Start a search from the fields, replacing the one that is running.
     fn start(self: &Rc<Self>) {
-        self.stop();
+        // Check the fields before touching the running search, so a typo does
+        // not kill it and its message is not overwritten.
         let root = PathBuf::from(self.folder.text().trim());
         if !root.is_dir() {
             self.status.set_text(&format!("Folder not found: {}", root.display()));
             return;
         }
+        self.stop();
         let contains = self.contains.text().to_string();
         let contains = (!contains.is_empty()).then_some(contains);
         let query = FindQuery {
