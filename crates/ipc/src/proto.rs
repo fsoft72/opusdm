@@ -283,7 +283,16 @@ pub struct Behavior {
     /// dirs/files/bytes, `%D`/`%F`/`%B` the same for the selection, `%s`
     /// selected entries, `%p` current path, `%%` a literal percent sign.
     pub status_format: String,
+    /// How many directory listings each Lister keeps for instant revisits.
+    /// 0 turns the cache off. Clamped by [`CACHE_SIZE_RANGE`] when used.
+    pub cache_size: usize,
 }
+
+/// Directory listings kept per Lister until the user says otherwise.
+pub const DEFAULT_CACHE_SIZE: usize = 20;
+
+/// Accepted range for [`Behavior::cache_size`].
+pub const CACHE_SIZE_RANGE: (usize, usize) = (0, 200);
 
 /// Status bar format used until the user sets one.
 pub const DEFAULT_STATUS_FORMAT: &str = "D: [%D/%d]  F: [%F/%f]  B: [%B/%b]";
@@ -299,11 +308,19 @@ impl Default for Behavior {
             auto_refresh_debounce_ms: 250,
             recursive_filter: false,
             status_format: DEFAULT_STATUS_FORMAT.to_string(),
+            cache_size: DEFAULT_CACHE_SIZE,
         }
     }
 }
 
 impl Behavior {
+    /// The cache size to actually use, clamped into [`CACHE_SIZE_RANGE`] so a
+    /// hand-edited settings.json cannot ask for an absurd amount of memory.
+    pub fn cache_capacity(&self) -> usize {
+        let (lo, hi) = CACHE_SIZE_RANGE;
+        self.cache_size.clamp(lo, hi)
+    }
+
     /// The debounce to actually use, clamped into
     /// [`AUTO_REFRESH_DEBOUNCE_RANGE_MS`] so a hand-edited settings.json cannot
     /// make the Lister spin or appear frozen.
@@ -607,6 +624,26 @@ mod tests {
     }
 
     #[test]
+    fn the_directory_cache_holds_twenty_listings_by_default() {
+        assert_eq!(Behavior::default().cache_size, 20);
+        assert_eq!(Behavior::default().cache_capacity(), 20);
+    }
+
+    #[test]
+    fn a_hand_edited_cache_size_is_clamped() {
+        let at = |n| Behavior { cache_size: n, ..Behavior::default() }.cache_capacity();
+        assert_eq!(at(0), 0, "0 turns the cache off");
+        assert_eq!(at(50), 50);
+        assert_eq!(at(1_000_000), CACHE_SIZE_RANGE.1);
+    }
+
+    #[test]
+    fn a_behavior_block_without_cache_size_gets_the_default() {
+        let b: Behavior = serde_json::from_str(r#"{"auto_refresh":false}"#).unwrap();
+        assert_eq!(b.cache_size, 20);
+    }
+
+    #[test]
     fn auto_refresh_is_on_by_default() {
         assert!(Behavior::default().auto_refresh);
     }
@@ -680,6 +717,7 @@ mod tests {
                 auto_refresh_debounce_ms: 900,
                 recursive_filter: true,
                 status_format: "%f files, %b".to_string(),
+                cache_size: 7,
             },
         };
         let json = serde_json::to_string(&s).unwrap();

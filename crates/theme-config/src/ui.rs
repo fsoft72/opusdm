@@ -391,6 +391,7 @@ pub struct BehaviorSection {
     auto_refresh: gtk::CheckButton,
     recursive_filter: gtk::CheckButton,
     status_format: gtk::Entry,
+    cache_size: gtk::SpinButton,
     debounce_ms: u64,
 }
 
@@ -424,7 +425,15 @@ impl BehaviorSection {
         format_row.append(&status_format);
         root.append(&format_row);
 
-        Self { root, auto_refresh, recursive_filter, status_format, debounce_ms: initial.auto_refresh_debounce_ms }
+        let cache_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        cache_row.append(&gtk::Label::new(Some("Directory cache size (0 = off)")));
+        let (lo, hi) = opusdm_ipc::CACHE_SIZE_RANGE;
+        let cache_size = gtk::SpinButton::with_range(lo as f64, hi as f64, 1.0);
+        cache_size.set_value(initial.cache_size as f64);
+        cache_row.append(&cache_size);
+        root.append(&cache_row);
+
+        Self { root, auto_refresh, recursive_filter, status_format, cache_size, debounce_ms: initial.auto_refresh_debounce_ms }
     }
 
     pub fn read(&self) -> Behavior {
@@ -433,6 +442,7 @@ impl BehaviorSection {
             auto_refresh_debounce_ms: self.debounce_ms,
             recursive_filter: self.recursive_filter.is_active(),
             status_format: self.status_format.text().to_string(),
+            cache_size: self.cache_size.value_as_int().max(0) as usize,
         }
     }
 }
