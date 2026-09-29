@@ -39,6 +39,7 @@ mod preview;
 mod reselect;
 mod scripts_editor;
 mod select_criteria;
+mod slideshow;
 mod status_format;
 mod terminal;
 mod theme;
@@ -46,6 +47,7 @@ mod typeahead;
 mod tools;
 mod user_menu;
 mod watcher;
+mod viewer_search;
 mod window;
 
 use std::path::PathBuf;
