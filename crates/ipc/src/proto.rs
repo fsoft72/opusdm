@@ -53,6 +53,14 @@ pub enum Op {
     /// Set the access and modification time of `srcs` to `unix_secs`;
     /// `recurse` also changes everything below directories.
     Touch { unix_secs: i64, recurse: bool },
+    /// Create a link in `dest_dir` to every source: symbolic (`symbolic`) or
+    /// hard. `new_names[i]`, when given, names the link to source `i`.
+    Link { symbolic: bool, new_names: Option<Vec<String>> },
+    /// Concatenate `srcs`, in order, into the new file `target` in `dest_dir`.
+    Join { target: String },
+    /// Split the single source into `chunk_bytes` parts named `name.001`,
+    /// `name.002`, ... in `dest_dir`.
+    Split { chunk_bytes: u64 },
 }
 
 /// Modifiers for a job, carried next to its [`Op`]. Everything off (the

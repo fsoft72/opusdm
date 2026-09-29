@@ -29,8 +29,8 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [x] F-09 Protect (chmod requester; chown not implemented, needs privileges)
 - [x] F-10 DateStamp (touch)
 - [ ] F-11 File comments
-- [ ] F-12 MakeLink / MakeLinkAs (hard and symbolic)
-- [ ] F-13 Join / Split
+- [x] F-12 MakeLink / MakeLinkAs (hard and symbolic)
+- [x] F-13 Join / Split
 - [ ] F-14 Encrypt / Decrypt
 - [x] F-15 Recursive filter for operations (Copy/Move/Delete now; Protect/DateStamp/Comment hook in when they exist)
 

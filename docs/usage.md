@@ -283,6 +283,20 @@ job.
 With the recursive filter on (see 3.16), a recursive run asks for a pattern
 first and then changes only matching files, never directories.
 
+### 3.18 Links, Join and Split
+
+- **Make Link...** creates a symbolic or hard link to every selected entry in
+  the DEST lister. The name pattern works like Copy As (`*` = original name).
+  An existing target is reported and never overwritten; hard links to
+  directories and across devices are refused by the system and reported.
+- **Join Files...** concatenates the selection, in the order it is listed,
+  into one new file. The name starts as the first part without its `.001`
+  suffix. An existing file is never overwritten.
+- **Split File...** cuts the selected file into parts of a given size
+  (`512K`, `4M`, `1G`, powers of 1024) named `file.001`, `file.002`, ... If the
+  parts already exist nothing is written. Join and Split write into the DEST
+  lister, or the current directory when there is none.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

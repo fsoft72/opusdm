@@ -7,6 +7,8 @@ pub mod copy;
 pub mod delete;
 pub mod duplicate;
 pub mod errors;
+pub mod joinsplit;
+pub mod links;
 pub mod moveop;
 pub mod pool;
 pub mod scan;
@@ -48,6 +50,7 @@ fn run_job_inner(spec: &JobSpec, tx: &Sender<Progress>, cancel: &CancelToken) ->
     let (srcs, dest) = (&spec.srcs, &spec.dest_dir);
     let names = match &spec.op {
         Op::CopyAs { new_names } | Op::MoveAs { new_names } => Some(new_names.clone()),
+        Op::Link { new_names: Some(n), .. } => Some(n.clone()),
         _ => None,
     };
     if let Some(n) = &names {
@@ -76,6 +79,14 @@ fn run_job_inner(spec: &JobSpec, tx: &Sender<Progress>, cancel: &CancelToken) ->
         Op::Touch { unix_secs, recurse } => {
             attrs::run_touch(srcs, *unix_secs, *recurse, opts.glob.as_ref(), tx, cancel)
         }
+        Op::Link { symbolic, .. } => {
+            links::run_link(srcs, dest, *symbolic, opts.names.as_deref(), tx, cancel)
+        }
+        Op::Join { target } => match opusdm_ipc::glob::validate_new_name(target) {
+            Ok(()) => joinsplit::run_join(srcs, dest, target, tx, cancel),
+            Err(msg) => rejected(dest, msg),
+        },
+        Op::Split { chunk_bytes } => joinsplit::run_split(srcs, dest, *chunk_bytes, tx, cancel),
         Op::MakeDir { name } => delete::make_entry(dest, name, false),
         Op::NewFile { name } => delete::make_entry(dest, name, true),
     }

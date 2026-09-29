@@ -20,6 +20,7 @@ mod hotkeys;
 mod icons;
 mod job_submit;
 mod keys;
+mod link_dialogs;
 mod menu_editor;
 mod model;
 mod palette;

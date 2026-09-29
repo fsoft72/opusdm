@@ -37,6 +37,12 @@ pub enum CommandId {
     ChangePermissions,
     /// Open the timestamp dialog.
     SetTimestamp,
+    /// Open the link dialog.
+    MakeLink,
+    /// Open the join dialog.
+    JoinFiles,
+    /// Open the split dialog.
+    SplitFile,
     ClipCopy,
     ClipCut,
     ClipPaste,

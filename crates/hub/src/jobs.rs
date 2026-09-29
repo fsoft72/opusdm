@@ -52,7 +52,14 @@ pub fn validate_job(srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
 pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
     match op {
         Op::Copy | Op::Move => validate_job(srcs, dest_dir),
-        Op::CopyAs { .. } | Op::MoveAs { .. } | Op::Duplicate if srcs.is_empty() => {
+        Op::CopyAs { .. }
+        | Op::MoveAs { .. }
+        | Op::Duplicate
+        | Op::Link { .. }
+        | Op::Join { .. }
+        | Op::Split { .. }
+            if srcs.is_empty() =>
+        {
             Err("no source files selected".into())
         }
         _ => Ok(()),
