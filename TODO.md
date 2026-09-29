@@ -47,7 +47,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 - [x] F-22 Lister Format Editor (per-directory formats; up/down buttons instead of drag and drop, no Comment column until F-11)
 - [x] F-23 Show/Hide name patterns (persistent filter)
-- [ ] F-24 Directory buffer cache + CacheList + PathHistory
+- [x] F-24 Directory buffer cache + CacheList + PathHistory
 - [ ] F-25 Lister tiling / cascade
 - [ ] F-26 Lister Snapshot / window geometry persistence
 - [ ] F-27 Dual Lister (split pane in one window)
@@ -95,7 +95,7 @@ Follows section 9 of [FEATURES.md](FEATURES.md):
 1. [x] Function system core (F-01, core only, see follow-ups above)
 2. [x] Hotkeys + user menus + scripts (F-03, F-04, F-05)
 3. [x] File operation variants (F-07, F-08, F-09, F-10, F-12, F-13, F-15, F-31)
-4. [ ] Lister formats and patterns (F-22, F-23, F-24, F-29, F-32)
+4. [x] Lister formats and patterns (F-22, F-23, F-24, F-29, F-32)
 5. [ ] Search trio (F-19, F-20, F-21) + viewer upgrades (F-16, F-17)
 6. [ ] Desktop features (F-33, F-34, F-37, F-38)
 7. [ ] Themes and sounds (F-35, F-36, F-50)

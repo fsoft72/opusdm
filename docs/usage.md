@@ -171,6 +171,11 @@ Open **Lister Format...** from the command palette (`Ctrl+P`).
 - **Set Show Pattern...** and **Set Hide Pattern...** (palette) edit just the pattern and save it where the current format came from (a new entry for this directory when nothing was saved). An empty answer clears it.
 - Clicking a column header still sorts on the spot, but only **Save** keeps it.
 
+### 3.10d Directory cache, history and Cache List
+- Each Lister remembers the directories it read recently (20 by default; **Directory cache size** under **BEHAVIOUR** in Settings, 0 turns it off). Going back to one shows its list at once, and the disk is read again in the background: if something changed the list updates without losing your selection. `Ctrl+R` always reads the disk.
+- Next to the path bar, **back** and **forward** buttons and a **history** drop-down list the directories you visited in this Lister (newest first, the current one in bold). `Alt+Left` and `Alt+Right` do the same from the keyboard. Going somewhere new after stepping back drops the entries you stepped back over. The history keeps 50 entries and is not saved between sessions.
+- **Cache List...** (command palette) shows the cached directories of every Lister. Double click an entry to raise the Lister that holds it and show the directory there; **Open here** opens the selected directory in the Lister you are in; **Free all caches** empties every Lister's cache (also available on its own as **Free Caches**).
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
@@ -338,6 +343,7 @@ the `Ctrl` chords stay active.
 | **`~`** | Go to user home directory (`$HOME`) |
 | **`Ins`** | Toggle the selection of the cursor row, then step down |
 | **`Tab`** | Jump to the Lister holding the opposite role (SOURCE <-> DEST) |
+| **`Alt+Left`** / **`Alt+Right`** | Back / forward in this Lister's history |
 | *type a name* | Type-to-find, see below |
 
 ### Type-to-find
