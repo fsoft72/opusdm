@@ -233,3 +233,7 @@
 - Docs: documented hotkeys, the user menu and script events in `docs/usage.md` (sections 3.13 to 3.15) and ticked F-03, F-04, F-05 and item 2 of the suggested order in `TODO.md`.
 - Fix: a binding file that fails to parse (e.g. an unknown event name) is copied to `<name>.bak` before the empty section can be saved over it.
 - Fix: quitting the hub now waits (capped at the Shutdown hook timeout) for the Shutdown hooks through `HubCmd::ShutdownAndWait`, so exiting the process no longer kills a running hook.
+
+## 2026-09-29
+
+- Docs: added the design spec for the job engine base (F-15 recursive filter, F-07 Copy/Move variants and flags), sub-project A of item 3 of the suggested order (`docs/superpowers/specs/2026-09-29-job-engine-base-design.md`).
