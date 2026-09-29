@@ -6,6 +6,7 @@
 
 use opusdm_fsops::{run_job, CancelToken, JobSpec, Progress};
 use opusdm_ipc::function::{expand_argv_element, expand_text, ExpandError, ExpandedArg, FnStep, InternalArgs, InternalCmd, SelectionCtx};
+use opusdm_ipc::glob::expand_new_name;
 use opusdm_ipc::{Op, Resolution};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -122,19 +123,45 @@ fn run_internal(
             let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
             Ok(())
         }
-        InternalCmd::Copy | InternalCmd::Move | InternalCmd::Delete => {
+        InternalCmd::Copy
+        | InternalCmd::Move
+        | InternalCmd::Delete
+        | InternalCmd::CopyAs
+        | InternalCmd::MoveAs
+        | InternalCmd::Duplicate => {
             let op = match cmd {
                 InternalCmd::Copy => Op::Copy,
                 InternalCmd::Move => Op::Move,
                 InternalCmd::Delete => Op::Delete,
+                InternalCmd::Duplicate => Op::Duplicate,
+                InternalCmd::CopyAs | InternalCmd::MoveAs => {
+                    let pattern = expand_text(args.get("new_name").unwrap_or(""), source, dest)
+                        .map_err(expand_err_msg)?;
+                    let new_names = source
+                        .paths
+                        .iter()
+                        .map(|p| {
+                            let own = p.file_name().map(|n| n.to_string_lossy().into_owned());
+                            expand_new_name(pattern.trim(), &own.unwrap_or_default())
+                        })
+                        .collect();
+                    if cmd == InternalCmd::CopyAs {
+                        Op::CopyAs { new_names }
+                    } else {
+                        Op::MoveAs { new_names }
+                    }
+                }
                 _ => unreachable!("Rename/MakeDir/NewFile handled above"),
             };
+            // Delete, Duplicate and the "As" commands work in place, so a
+            // missing DEST falls back to the SOURCE directory.
+            let needs_dest = matches!(cmd, InternalCmd::Copy | InternalCmd::Move);
             let dest_dir = match dest {
                 Some(d) => d.cwd.clone(),
-                None if cmd == InternalCmd::Delete => source.cwd.clone(),
+                None if !needs_dest => source.cwd.clone(),
                 None => return Err(format!("{}: no DEST Lister open", cmd.label())),
             };
-            let spec = JobSpec { op, srcs: source.paths.clone(), dest_dir };
+            let spec = JobSpec { op, srcs: source.paths.clone(), dest_dir, options: args.job_options() };
             let (tx, rx) = channel::<Progress>();
             // `run_job` blocks the calling thread until the job finishes,
             // including waiting for a `Progress::Conflict` reply - so it

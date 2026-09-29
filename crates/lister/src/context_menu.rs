@@ -59,6 +59,7 @@ pub fn show_context_menu(
                 op: Op::Copy,
                 srcs: vec![target_path.clone()],
                 dest_dir: None,
+                options: opusdm_ipc::JobOptions::default(),
             });
         });
         menu_box.append(&btn);
@@ -103,6 +104,7 @@ pub fn show_context_menu(
                 op: Op::Move,
                 srcs: vec![target_path.clone()],
                 dest_dir: None,
+                options: opusdm_ipc::JobOptions::default(),
             });
         });
         menu_box.append(&btn);

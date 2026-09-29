@@ -1,9 +1,9 @@
 //! Move: per-source `rename` fast-path, `EXDEV` fallback to copy-then-delete.
 
 use crate::cancel::CancelToken;
-use crate::copy::copy_tree;
+use crate::copy::copy_tree_opts;
 use crate::file_meta;
-use crate::types::Progress;
+use crate::types::{Progress, TransferOpts};
 use opusdm_ipc::Resolution;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Sender};
@@ -25,21 +25,43 @@ pub fn run_move(
     tx: &Sender<Progress>,
     cancel: &CancelToken,
 ) -> Progress {
+    run_move_opts(srcs, dest_dir, tx, cancel, &TransferOpts::default())
+}
+
+/// [`run_move`] with a filter, `update`/`newer` flags and per-source names.
+///
+/// A partial move (filter or flags) cannot rename whole trees, so it goes
+/// through the copy engine, which deletes only what it copied.
+pub fn run_move_opts(
+    srcs: &[PathBuf],
+    dest_dir: &Path,
+    tx: &Sender<Progress>,
+    cancel: &CancelToken,
+    opts: &TransferOpts,
+) -> Progress {
+    if opts.is_partial() {
+        return copy_tree_opts(srcs, dest_dir, tx, cancel, true, opts);
+    }
     let mut cross_fs: Vec<PathBuf> = Vec::new();
+    let mut cross_names: Vec<String> = Vec::new();
     let mut moved = 0u64;
     let mut errors: Vec<(PathBuf, String)> = Vec::new();
     let mut overwrite_all = false;
     let mut skip_all = false;
 
-    for src in srcs {
+    for (idx, src) in srcs.iter().enumerate() {
         if cancel.is_cancelled() {
             return Progress::Done { copied: moved, skipped: 0, cancelled: true, errors };
         }
-        let Some(name) = src.file_name() else {
+        let Some(own_name) = src.file_name() else {
             errors.push((src.clone(), "source has no file name".into()));
             continue;
         };
-        let target = dest_dir.join(name);
+        let new_name = opts.names.as_ref().and_then(|n| n.get(idx)).cloned();
+        let target = match &new_name {
+            Some(n) => dest_dir.join(n),
+            None => dest_dir.join(own_name),
+        };
 
         // The rename(2) fast-path silently replaces an existing destination.
         // Ask before clobbering, same as the copy path does.
@@ -63,14 +85,21 @@ pub fn run_move(
 
         match std::fs::rename(src, &target) {
             Ok(()) => moved += 1,
-            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => cross_fs.push(src.clone()),
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                cross_fs.push(src.clone());
+                cross_names.push(new_name.unwrap_or_else(|| own_name.to_string_lossy().into_owned()));
+            }
             Err(e) => errors.push((src.clone(), e.to_string())),
         }
     }
 
     if !cross_fs.is_empty() {
         // copy_tree emits its own Scanning/File events and deletes sources.
-        match copy_tree(&cross_fs, dest_dir, tx, cancel, true) {
+        let cross_opts = TransferOpts {
+            names: opts.names.as_ref().map(|_| cross_names),
+            ..TransferOpts::default()
+        };
+        match copy_tree_opts(&cross_fs, dest_dir, tx, cancel, true, &cross_opts) {
             Progress::Done { copied, skipped, cancelled, errors: mut e2 } => {
                 errors.append(&mut e2);
                 return Progress::Done {

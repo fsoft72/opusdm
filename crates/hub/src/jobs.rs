@@ -46,6 +46,19 @@ pub fn validate_job(srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate the parameters of `op`. Copy and Move refuse in-place transfers;
+/// the "As" variants and Duplicate legitimately land in the source directory,
+/// so they only need a non-empty selection. Other ops need no check.
+pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
+    match op {
+        Op::Copy | Op::Move => validate_job(srcs, dest_dir),
+        Op::CopyAs { .. } | Op::MoveAs { .. } | Op::Duplicate if srcs.is_empty() => {
+            Err("no source files selected".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 struct RunningJob {
     requester: ListerId,
     cancel: CancelToken,
@@ -226,7 +239,12 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     fn spec() -> JobSpec {
-        JobSpec { op: Op::Copy, srcs: vec![PathBuf::from("/src/a")], dest_dir: PathBuf::from("/dst") }
+        JobSpec {
+            op: Op::Copy,
+            srcs: vec![PathBuf::from("/src/a")],
+            dest_dir: PathBuf::from("/dst"),
+            options: Default::default(),
+        }
     }
 
     #[test]

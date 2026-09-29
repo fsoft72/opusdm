@@ -54,6 +54,6 @@ pub fn paste(ui: &Rc<Ui>) {
         let op = if text.starts_with(CUT_MARKER) { Op::Move } else { Op::Copy };
         let dest_dir = Some(ui.cwd_path());
         crate::dlog!("clipboard paste: op={op:?} srcs={srcs:?} dest={dest_dir:?}");
-        let _ = ui.hub.client.send(&ToHub::RunJob { op, srcs, dest_dir });
+        let _ = ui.hub.client.send(&ToHub::RunJob { op, srcs, dest_dir, options: opusdm_ipc::JobOptions::default() });
     });
 }

@@ -313,9 +313,37 @@ fn step_move_and_remove(idx: usize) -> [(&'static str, Box<dyn Fn(&mut Vec<FnSte
     ]
 }
 
-/// One required-parameter entry, writing back into `InternalArgs` on every
-/// keystroke and re-validating so Save/Test flip live.
+/// One checkbox parameter: writes `"true"` into `InternalArgs` when checked
+/// and removes the key when unchecked.
+fn build_flag_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let check = gtk::CheckButton::with_label(spec.label);
+    if let Some(FnStep::Internal { args, .. }) = state.function.borrow().steps.get(step_idx) {
+        check.set_active(args.flag(spec.key));
+    }
+    let key = spec.key;
+    let state_clone = state.clone();
+    check.connect_toggled(move |c| {
+        if let Some(FnStep::Internal { args, .. }) = state_clone.function.borrow_mut().steps.get_mut(step_idx) {
+            if c.is_active() {
+                args.0.insert(key.to_string(), opusdm_ipc::function::BOOL_TRUE.to_string());
+            } else {
+                args.0.remove(key);
+            }
+        }
+        update_button_states(&state_clone);
+    });
+    row.append(&check);
+    row
+}
+
+/// One parameter entry, writing back into `InternalArgs` on every
+/// keystroke and re-validating so Save/Test flip live. Checkbox parameters
+/// go through [`build_flag_field`].
 fn build_param_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec) -> gtk::Box {
+    if spec.kind == schema::ParamKind::Bool {
+        return build_flag_field(state, step_idx, spec);
+    }
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let label = gtk::Label::new(Some(spec.label));
     label.set_xalign(0.0);
@@ -347,6 +375,9 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::MakeDir,
     InternalCmd::NewFile,
     InternalCmd::Rename,
+    InternalCmd::CopyAs,
+    InternalCmd::MoveAs,
+    InternalCmd::Duplicate,
 ];
 
 /// Ask which `InternalCmd` to add, append it with empty args, and rebuild.

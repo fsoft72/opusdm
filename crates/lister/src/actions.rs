@@ -118,6 +118,7 @@ pub fn attach(ui: &Rc<Ui>) {
                     op: Op::MakeDir { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui.cwd_path()),
+                    options: opusdm_ipc::JobOptions::default(),
                 });
             });
         });
@@ -133,6 +134,7 @@ pub fn attach(ui: &Rc<Ui>) {
                     op: Op::NewFile { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui.cwd_path()),
+                    options: opusdm_ipc::JobOptions::default(),
                 });
             });
         });
@@ -219,6 +221,7 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
                         op: op.clone(),
                         srcs: extracted,
                         dest_dir: None,
+                        options: opusdm_ipc::JobOptions::default(),
                     });
                 }
                 Err(e) => flash(&ui, &format!("extraction failed: {e}")),
@@ -234,7 +237,8 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
         let _ = ui.hub.client.send(&ToHub::RunJob {
             op: op.clone(),
             srcs,
-            dest_dir: None, // hub fills this from the DEST Lister's path
+            dest_dir: None, // hub fills this from the DEST Lister's path,
+            options: opusdm_ipc::JobOptions::default(),
         });
     });
 }
@@ -359,6 +363,7 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>) {
                 op: Op::Delete,
                 srcs: srcs.clone(),
                 dest_dir: Some(ui.cwd_path()),
+                options: opusdm_ipc::JobOptions::default(),
             });
         },
     );

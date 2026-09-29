@@ -2,7 +2,7 @@
 //! single owner loop that holds all mutable hub state. Only channels cross
 //! thread boundaries.
 
-use crate::jobs::{default_runner, map_progress, validate_job, JobEngine, ProgressTotals};
+use crate::jobs::{default_runner, map_progress, validate_op, JobEngine, ProgressTotals};
 use crate::script_events::{EventGuard, ScriptEvent, SHUTDOWN_HOOK_TIMEOUT};
 use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
 use crate::settings;
@@ -463,8 +463,8 @@ impl Hub {
                 (self.on_spawn)(start_path);
             }
 
-            ToHub::RunJob { op, srcs, dest_dir } => {
-                self.lister_run_job(cid, op, srcs, dest_dir);
+            ToHub::RunJob { op, srcs, dest_dir, options } => {
+                self.lister_run_job(cid, op, srcs, dest_dir, options);
             }
 
             ToHub::RunFunction { steps } => {
@@ -801,7 +801,14 @@ impl Hub {
     /// `ToHub::RunJob` from a Lister: resolve the destinations (a `None`
     /// destination fans out from the SOURCE to every DEST Lister's current
     /// directory), validate, and submit each job to the engine.
-    fn lister_run_job(&mut self, cid: u64, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf>) {
+    fn lister_run_job(
+        &mut self,
+        cid: u64,
+        op: Op,
+        srcs: Vec<PathBuf>,
+        dest_dir: Option<PathBuf>,
+        options: opusdm_ipc::JobOptions,
+    ) {
         let fail = |conns: &mut HashMap<u64, Conn>, msg: String| {
             if let Some(c) = conns.get_mut(&cid) {
                 let _ = c.tx.send(
@@ -843,16 +850,15 @@ impl Hub {
             .filter_map(|s| s.parent().map(PathBuf::from))
             .collect();
         for dest_dir in dest_dirs {
-            if matches!(op, Op::Copy | Op::Move) {
-                if let Err(msg) = validate_job(&srcs, &dest_dir) {
-                    fail(&mut self.conns, msg);
-                    continue;
-                }
+            if let Err(msg) = validate_op(&op, &srcs, &dest_dir) {
+                fail(&mut self.conns, msg);
+                continue;
             }
             let spec = opusdm_fsops::JobSpec {
                 op: op.clone(),
                 srcs: srcs.clone(),
                 dest_dir: dest_dir.clone(),
+                options: options.clone(),
             };
             let out = self.engine.submit(ListerId(cid), spec);
             self.jobs.insert(
@@ -878,11 +884,9 @@ impl Hub {
                 // A hub-originated job has no requesting Lister, so progress and
                 // completion just do not route back to one; the hub's own job
                 // box still tracks it. `u64::MAX` is the sentinel requester.
-                                if matches!(op, Op::Copy | Op::Move) {
-                    if let Err(msg) = validate_job(&srcs, &dest_dir) {
-                        opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
-                        return true;
-                    }
+                if let Err(msg) = validate_op(&op, &srcs, &dest_dir) {
+                    opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
+                    return true;
                 }
                 let src_parents: Vec<PathBuf> =
                     srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
@@ -890,6 +894,7 @@ impl Hub {
                     op: op.clone(),
                     srcs: srcs.clone(),
                     dest_dir: dest_dir.clone(),
+                    options: Default::default(),
                 };
                 let out = self.engine.submit(ListerId(HUB_REQUESTER), spec);
                 self.jobs.insert(
@@ -976,10 +981,10 @@ impl Hub {
                     cancelled,
                 });
                 // Refresh every Lister showing an affected directory.
+                // Sources are refreshed too: Move/Delete remove them, Duplicate
+                // adds to them, and Copy may have run as a Move.
                 let mut affected = vec![meta.dest_dir.clone()];
-                if matches!(meta.op, Op::Move | Op::Delete) {
-                    affected.extend(meta.src_parents.iter().cloned());
-                }
+                affected.extend(meta.src_parents.iter().cloned());
                 for dir in affected {
                     for c in self.conns.values_mut().filter(|c| c.registered) {
                         let _ = c.tx.send(ToLister::InvalidatePath(dir.clone()).into());

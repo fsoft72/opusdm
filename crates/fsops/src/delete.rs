@@ -2,10 +2,12 @@
 
 use crate::cancel::CancelToken;
 use crate::types::Progress;
+use opusdm_ipc::glob::GlobSet;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use walkdir::WalkDir;
 
 /// Recursively delete every path in `srcs`. Read-only files are retried once
 /// after adding write permission. Failures are collected, not fatal.
@@ -31,6 +33,51 @@ pub fn run_delete(srcs: &[PathBuf], tx: &Sender<Progress>, cancel: &CancelToken)
             removed += 1;
         } else {
             errors.extend(tree_errors);
+        }
+    }
+
+    Progress::Done { copied: removed, skipped: 0, cancelled: false, errors }
+}
+
+/// Delete only the files and symlinks under `srcs` whose name matches
+/// `glob`. Directories are walked but never removed. Failures are collected.
+pub fn run_delete_filtered(
+    srcs: &[PathBuf],
+    glob: &GlobSet,
+    tx: &Sender<Progress>,
+    cancel: &CancelToken,
+) -> Progress {
+    let mut removed = 0u64;
+    let mut errors: Vec<(PathBuf, String)> = Vec::new();
+
+    for src in srcs {
+        for entry in WalkDir::new(src).follow_links(false).contents_first(true) {
+            if cancel.is_cancelled() {
+                return Progress::Done { copied: removed, skipped: 0, cancelled: true, errors };
+            }
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    errors.push((src.clone(), e.to_string()));
+                    continue;
+                }
+            };
+            if entry.file_type().is_dir() || !glob.is_match(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            let _ = tx.send(Progress::File {
+                path: entry.path().to_path_buf(),
+                done_bytes: 0,
+                total_bytes: 0,
+                files_done: removed,
+                files_total: 0,
+                file_bytes_done: 0,
+                file_bytes_total: 0,
+            });
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(e) => errors.push((entry.path().to_path_buf(), e.to_string())),
+            }
         }
     }
 

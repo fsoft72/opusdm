@@ -4,6 +4,7 @@
 pub mod cancel;
 pub mod copy;
 pub mod delete;
+pub mod duplicate;
 pub mod errors;
 pub mod moveop;
 pub mod pool;
@@ -12,9 +13,10 @@ pub mod types;
 
 pub use cancel::CancelToken;
 pub use errors::FsError;
-pub use types::{JobSpec, Progress};
+pub use types::{JobSpec, Progress, TransferOpts};
 
 use opusdm_ipc::{FileMeta, Op};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::UNIX_EPOCH;
 
@@ -32,12 +34,60 @@ pub fn file_meta(m: &std::fs::Metadata) -> FileMeta {
 /// Run a job to completion, emitting `Progress` events. Always finishes by
 /// sending exactly one `Progress::Done`.
 pub fn run_job(spec: JobSpec, tx: Sender<Progress>, cancel: CancelToken) {
-    let done = match &spec.op {
-        Op::Copy => copy::copy_tree(&spec.srcs, &spec.dest_dir, &tx, &cancel, false),
-        Op::Move => moveop::run_move(&spec.srcs, &spec.dest_dir, &tx, &cancel),
-        Op::Delete => delete::run_delete(&spec.srcs, &tx, &cancel),
-        Op::MakeDir { name } => delete::make_entry(&spec.dest_dir, name, false),
-        Op::NewFile { name } => delete::make_entry(&spec.dest_dir, name, true),
+    let _ = tx.send(run_job_inner(&spec, &tx, &cancel));
+}
+
+/// A `Done` reporting one failure that happened before any file was touched.
+fn rejected(path: &Path, msg: String) -> Progress {
+    Progress::Done { copied: 0, skipped: 0, cancelled: false, errors: vec![(path.to_path_buf(), msg)] }
+}
+
+/// Dispatch `spec` to the right engine and return its terminal `Done`.
+fn run_job_inner(spec: &JobSpec, tx: &Sender<Progress>, cancel: &CancelToken) -> Progress {
+    let (srcs, dest) = (&spec.srcs, &spec.dest_dir);
+    let names = match &spec.op {
+        Op::CopyAs { new_names } | Op::MoveAs { new_names } => Some(new_names.clone()),
+        _ => None,
     };
-    let _ = tx.send(done);
+    if let Some(n) = &names {
+        if let Err(msg) = check_names(n, srcs.len()) {
+            return rejected(dest, msg);
+        }
+    }
+    let opts = match TransferOpts::from_options(&spec.options, names) {
+        Ok(o) => o,
+        Err(msg) => return rejected(dest, msg),
+    };
+    match &spec.op {
+        Op::Copy if spec.options.move_when_same && same_device(srcs, dest) => {
+            moveop::run_move_opts(srcs, dest, tx, cancel, &opts)
+        }
+        Op::Copy | Op::CopyAs { .. } => copy::copy_tree_opts(srcs, dest, tx, cancel, false, &opts),
+        Op::Move | Op::MoveAs { .. } => moveop::run_move_opts(srcs, dest, tx, cancel, &opts),
+        Op::Duplicate => duplicate::run_duplicate(srcs, &opts, tx, cancel),
+        Op::Delete => match &opts.glob {
+            Some(glob) => delete::run_delete_filtered(srcs, glob, tx, cancel),
+            None => delete::run_delete(srcs, tx, cancel),
+        },
+        Op::MakeDir { name } => delete::make_entry(dest, name, false),
+        Op::NewFile { name } => delete::make_entry(dest, name, true),
+    }
+}
+
+/// Reject a `CopyAs`/`MoveAs` name list that does not fit the sources.
+fn check_names(names: &[String], sources: usize) -> Result<(), String> {
+    if names.len() != sources {
+        return Err(format!("{} new names given for {sources} sources", names.len()));
+    }
+    names.iter().try_for_each(|n| opusdm_ipc::glob::validate_new_name(n))
+}
+
+/// Whether every source lives on the same device as `dest_dir`.
+pub fn same_device(srcs: &[PathBuf], dest_dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(dest) = std::fs::metadata(dest_dir) else { return false };
+    !srcs.is_empty()
+        && srcs.iter().all(|s| {
+            std::fs::symlink_metadata(s).map(|m| m.dev() == dest.dev()).unwrap_or(false)
+        })
 }

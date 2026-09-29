@@ -9,8 +9,8 @@
 use crate::cancel::CancelToken;
 use crate::file_meta;
 use crate::pool::{self, WorkerPool, SMALL_FILE_MAX};
-use crate::scan::{scan, Item, Plan};
-use crate::types::Progress;
+use crate::scan::{scan_with, Item, Plan};
+use crate::types::{Progress, TransferOpts};
 use opusdm_ipc::Resolution;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -216,10 +216,24 @@ struct CopyShared {
     cancelled: AtomicBool,
     /// Serialises interactive conflict prompts to one at a time.
     conflict_lock: Mutex<()>,
+    /// Copy only files whose name already exists at the destination.
+    update: bool,
+    /// Copy only files missing at the destination or newer than it.
+    newer: bool,
+    /// Source paths copied so far; `Some` only when a partial Move needs to
+    /// delete exactly those.
+    copied_srcs: Option<Mutex<Vec<PathBuf>>>,
 }
 
 impl CopyShared {
-    fn new(tx: Sender<Progress>, cancel: CancelToken, total_files: u64, total_bytes: u64) -> Self {
+    fn new(
+        tx: Sender<Progress>,
+        cancel: CancelToken,
+        total_files: u64,
+        total_bytes: u64,
+        opts: &TransferOpts,
+        track_copied: bool,
+    ) -> Self {
         Self {
             tx,
             cancel,
@@ -237,7 +251,41 @@ impl CopyShared {
             skip_all: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             conflict_lock: Mutex::new(()),
+            update: opts.update,
+            newer: opts.newer,
+            copied_srcs: track_copied.then(|| Mutex::new(Vec::new())),
         }
+    }
+
+    /// Remember that `src` was copied, when the job tracks that.
+    fn record_copied(&self, src: &Path) {
+        if let Some(list) = &self.copied_srcs {
+            lock(list).push(src.to_path_buf());
+        }
+    }
+
+    /// Take the recorded copied source paths.
+    fn take_copied(&self) -> Vec<PathBuf> {
+        self.copied_srcs.as_ref().map(|l| std::mem::take(&mut *lock(l))).unwrap_or_default()
+    }
+
+    /// Whether the `update`/`newer` flags allow copying `src` over `dst`.
+    fn passes_flags(&self, src: &Path, dst: &Path) -> bool {
+        if !self.update && !self.newer {
+            return true;
+        }
+        let dst_meta = std::fs::symlink_metadata(dst).ok();
+        if self.update && dst_meta.is_none() {
+            return false;
+        }
+        if self.newer {
+            let dst_time = dst_meta.and_then(|m| m.modified().ok());
+            let src_time = std::fs::metadata(src).and_then(|m| m.modified()).ok();
+            if let (Some(d), Some(s)) = (dst_time, src_time) {
+                return s > d;
+            }
+        }
+        true
     }
 
     /// Account for `n` freshly written bytes of `path` (`file_done`/`file_total`
@@ -342,6 +390,7 @@ fn copy_file_counted(shared: &CopyShared, task: &CopyTask, overwrite: bool) -> i
     };
     copy_file(&task.abs, &task.dst, overwrite, &shared.cancel, &mut on_bytes)?;
     shared.copied.fetch_add(1, Ordering::Relaxed);
+    shared.record_copied(&task.abs);
     shared.emit(&task.abs, false);
     Ok(())
 }
@@ -392,21 +441,30 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
             return;
         }
         match item {
-            Item::Dir { rel } => {
+            Item::Dir { rel, .. } => {
                 let dir = dest_dir.join(rel);
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     shared.push_error(dir, e.to_string());
                 }
             }
-            Item::Symlink { rel, target } => {
+            Item::Symlink { rel, abs, target } => {
                 let link = dest_dir.join(rel);
+                if !shared.passes_flags(abs, &link) {
+                    shared.skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 let _ = std::fs::remove_file(&link);
-                if let Err(e) = std::os::unix::fs::symlink(target, &link) {
-                    shared.push_error(link, e.to_string());
+                match std::os::unix::fs::symlink(target, &link) {
+                    Ok(()) => shared.record_copied(abs),
+                    Err(e) => shared.push_error(link, e.to_string()),
                 }
             }
             Item::File { rel, abs, size } => {
                 let dst = dest_dir.join(rel);
+                if !shared.passes_flags(abs, &dst) {
+                    shared.skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 let mut overwrite = shared.overwrite_all.load(Ordering::SeqCst);
                 if !overwrite && dst.exists() {
                     match shared.decide(&dst, abs) {
@@ -442,11 +500,28 @@ pub fn copy_tree(
     cancel: &CancelToken,
     delete_src_after: bool,
 ) -> Progress {
-    copy_tree_with_workers(srcs, dest_dir, tx, cancel, delete_src_after, pool::worker_count())
+    copy_tree_opts(srcs, dest_dir, tx, cancel, delete_src_after, &TransferOpts::default())
+}
+
+/// [`copy_tree`] with a filter, `update`/`newer` flags and per-source names.
+///
+/// When `delete_src_after` is set and `opts` is partial, only the source
+/// files that were actually copied are removed (then the directories that
+/// became empty), so a filtered Move never destroys what it skipped.
+pub fn copy_tree_opts(
+    srcs: &[PathBuf],
+    dest_dir: &Path,
+    tx: &Sender<Progress>,
+    cancel: &CancelToken,
+    delete_src_after: bool,
+    opts: &TransferOpts,
+) -> Progress {
+    copy_tree_workers(srcs, dest_dir, tx, cancel, delete_src_after, opts, pool::worker_count())
 }
 
 /// [`copy_tree`] with an explicit worker count. `workers <= 1` copies everything
 /// on the calling thread and spawns no pool.
+#[cfg(test)]
 fn copy_tree_with_workers(
     srcs: &[PathBuf],
     dest_dir: &Path,
@@ -455,7 +530,20 @@ fn copy_tree_with_workers(
     delete_src_after: bool,
     workers: usize,
 ) -> Progress {
-    let plan = match scan(srcs) {
+    copy_tree_workers(srcs, dest_dir, tx, cancel, delete_src_after, &TransferOpts::default(), workers)
+}
+
+/// The real copy driver behind every `copy_tree*` entry point.
+fn copy_tree_workers(
+    srcs: &[PathBuf],
+    dest_dir: &Path,
+    tx: &Sender<Progress>,
+    cancel: &CancelToken,
+    delete_src_after: bool,
+    opts: &TransferOpts,
+    workers: usize,
+) -> Progress {
+    let plan = match scan_with(srcs, opts.glob.as_ref(), opts.names.as_deref()) {
         Ok(p) => p,
         Err(e) => {
             return Progress::Done {
@@ -468,11 +556,14 @@ fn copy_tree_with_workers(
     };
     let _ = tx.send(Progress::Scanning { files: plan.total_files, bytes: plan.total_bytes });
 
+    let partial_move = delete_src_after && opts.is_partial();
     let shared = Arc::new(CopyShared::new(
         tx.clone(),
         cancel.clone(),
         plan.total_files,
         plan.total_bytes,
+        opts,
+        partial_move,
     ));
 
     // One pool for the whole job. On a single core there is nothing to overlap,
@@ -492,9 +583,13 @@ fn copy_tree_with_workers(
     let mut errors = shared.take_errors();
 
     if delete_src_after && errors.is_empty() && !cancelled {
-        for src in srcs {
-            if let Err(e) = remove_any(src) {
-                errors.push((src.clone(), e.to_string()));
+        if partial_move {
+            errors.extend(remove_copied(&plan, &shared.take_copied()));
+        } else {
+            for src in srcs {
+                if let Err(e) = remove_any(src) {
+                    errors.push((src.clone(), e.to_string()));
+                }
             }
         }
     }
@@ -505,6 +600,25 @@ fn copy_tree_with_workers(
         cancelled,
         errors,
     }
+}
+
+/// Delete the source files in `copied`, then the planned source directories
+/// that are now empty (deepest first). Directories that still hold skipped
+/// files stay.
+fn remove_copied(plan: &Plan, copied: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    let mut errors = Vec::new();
+    for path in copied {
+        if let Err(e) = std::fs::remove_file(path) {
+            errors.push((path.clone(), e.to_string()));
+        }
+    }
+    for item in plan.items.iter().rev() {
+        if let Item::Dir { abs, .. } = item {
+            // Fails when the directory is not empty, which is the point.
+            let _ = std::fs::remove_dir(abs);
+        }
+    }
+    errors
 }
 
 /// Emit a `Conflict` event and block for the reply. `None` if the channel closed.
@@ -679,7 +793,7 @@ mod tests {
         fs::write(src.join("a"), b"12345").unwrap();
 
         let (tx, rx) = channel::<Progress>();
-        let spec = JobSpec { op: opusdm_ipc::Op::Copy, srcs: vec![src], dest_dir: dst.clone() };
+        let spec = JobSpec { op: opusdm_ipc::Op::Copy, srcs: vec![src], dest_dir: dst.clone(), options: Default::default() };
         let h = thread::spawn(move || crate::run_job(spec, tx, CancelToken::new()));
         let mut saw_scanning = false;
         let mut saw_done = false;

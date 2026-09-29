@@ -37,6 +37,9 @@ impl Function {
     }
 }
 
+/// The stored value of a checked `ParamKind::Bool` parameter.
+pub const BOOL_TRUE: &str = "true";
+
 /// One step of a [`Function`]: either an OpusDM-internal command or an
 /// external program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +64,13 @@ pub enum InternalCmd {
     MakeDir,
     NewFile,
     Rename,
+    /// Copy every source under a name derived from `new_name` (`*` = the
+    /// original name).
+    CopyAs,
+    /// Like `CopyAs`, but moving.
+    MoveAs,
+    /// Copy every source next to itself as `name.copy`.
+    Duplicate,
 }
 
 impl InternalCmd {
@@ -73,6 +83,9 @@ impl InternalCmd {
             InternalCmd::MakeDir => "Make Directory",
             InternalCmd::NewFile => "New File",
             InternalCmd::Rename => "Rename",
+            InternalCmd::CopyAs => "Copy As",
+            InternalCmd::MoveAs => "Move As",
+            InternalCmd::Duplicate => "Duplicate",
         }
     }
 }
@@ -86,6 +99,24 @@ impl InternalArgs {
     /// The stored value for `key`, if any.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).map(String::as_str)
+    }
+
+    /// The [`JobOptions`](crate::JobOptions) these arguments describe. A
+    /// blank `include_glob` means no filter.
+    pub fn job_options(&self) -> crate::JobOptions {
+        let glob = self.get("include_glob").map(str::trim).filter(|g| !g.is_empty());
+        crate::JobOptions {
+            update: self.flag("update"),
+            newer: self.flag("newer"),
+            move_when_same: self.flag("move_when_same"),
+            quiet: false,
+            include_glob: glob.map(String::from),
+        }
+    }
+
+    /// Whether the checkbox parameter `key` is on (`"true"`).
+    pub fn flag(&self, key: &str) -> bool {
+        self.get(key) == Some(BOOL_TRUE)
     }
 }
 
@@ -115,10 +146,46 @@ pub mod schema {
         pub kind: ParamKind,
     }
 
+    /// Shared optional include filter of every job-backed command.
+    const GLOB: ParamSpec = ParamSpec {
+        key: "include_glob",
+        label: "Only files matching (e.g. *.rs;*.toml)",
+        required: false,
+        kind: ParamKind::Text,
+    };
+    const UPDATE: ParamSpec = ParamSpec {
+        key: "update",
+        label: "Only files that already exist at the destination",
+        required: false,
+        kind: ParamKind::Bool,
+    };
+    const NEWER: ParamSpec = ParamSpec {
+        key: "newer",
+        label: "Only files missing or older at the destination",
+        required: false,
+        kind: ParamKind::Bool,
+    };
+    const MOVE_WHEN_SAME: ParamSpec = ParamSpec {
+        key: "move_when_same",
+        label: "Move instead of copy on the same device",
+        required: false,
+        kind: ParamKind::Bool,
+    };
+    const NEW_NAME: ParamSpec = ParamSpec {
+        key: "new_name",
+        label: "New name (* = original name)",
+        required: true,
+        kind: ParamKind::PathTemplate,
+    };
+
     /// The parameters the editor must offer for `cmd`, required ones first.
     pub fn params_for(cmd: InternalCmd) -> &'static [ParamSpec] {
         match cmd {
-            InternalCmd::Copy | InternalCmd::Move | InternalCmd::Delete => &[],
+            InternalCmd::Copy => &[UPDATE, NEWER, MOVE_WHEN_SAME, GLOB],
+            InternalCmd::Move => &[UPDATE, NEWER, GLOB],
+            InternalCmd::Delete | InternalCmd::Duplicate => &[GLOB],
+            InternalCmd::CopyAs => &[NEW_NAME, UPDATE, NEWER, GLOB],
+            InternalCmd::MoveAs => &[NEW_NAME, UPDATE, NEWER, GLOB],
             InternalCmd::MakeDir => &[ParamSpec {
                 key: "name",
                 label: "Directory name",
@@ -387,10 +454,29 @@ mod tests {
     }
 
     #[test]
-    fn copy_move_delete_have_no_configurable_params() {
-        for cmd in [InternalCmd::Copy, InternalCmd::Move, InternalCmd::Delete] {
-            assert!(schema::params_for(cmd).is_empty());
+    fn copy_move_delete_params_are_all_optional() {
+        for cmd in [InternalCmd::Copy, InternalCmd::Move, InternalCmd::Delete, InternalCmd::Duplicate] {
+            assert!(schema::params_for(cmd).iter().all(|p| !p.required), "{cmd:?}");
         }
+    }
+
+    #[test]
+    fn as_commands_require_a_new_name() {
+        for cmd in [InternalCmd::CopyAs, InternalCmd::MoveAs] {
+            assert!(schema::params_for(cmd).iter().any(|p| p.key == "new_name" && p.required));
+        }
+    }
+
+    #[test]
+    fn args_map_onto_job_options() {
+        let mut map = BTreeMap::new();
+        map.insert("newer".to_string(), BOOL_TRUE.to_string());
+        map.insert("update".to_string(), String::new());
+        map.insert("include_glob".to_string(), " *.rs ".to_string());
+        let opts = InternalArgs(map).job_options();
+        assert!(opts.newer && !opts.update && !opts.move_when_same);
+        assert_eq!(opts.include_glob.as_deref(), Some("*.rs"));
+        assert_eq!(InternalArgs::default().job_options(), crate::JobOptions::default());
     }
 
     #[test]

@@ -160,6 +160,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 op: Op::Copy,
                 srcs,
                 dest_dir: None,
+                options: opusdm_ipc::JobOptions::default(),
             });
         }
         CommandId::Move => {
@@ -176,6 +177,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 op: Op::Move,
                 srcs,
                 dest_dir: None,
+                options: opusdm_ipc::JobOptions::default(),
             });
         }
         CommandId::ClipCopy => {
@@ -207,6 +209,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                     op: Op::MakeDir { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui_clone.cwd_path()),
+                    options: opusdm_ipc::JobOptions::default(),
                 });
             });
         }
@@ -218,6 +221,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                     op: Op::NewFile { name },
                     srcs: Vec::new(),
                     dest_dir: Some(ui_clone.cwd_path()),
+                    options: opusdm_ipc::JobOptions::default(),
                 });
             });
         }
