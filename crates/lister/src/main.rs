@@ -12,6 +12,7 @@ mod copy_as;
 mod clip;
 mod columns;
 mod context_menu;
+mod dircache;
 mod dnd;
 mod filter;
 mod format_apply;
