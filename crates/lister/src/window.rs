@@ -100,6 +100,13 @@ pub struct ViewState {
     pub filter_bar: Rc<crate::filter::FilterBar>,
     /// Whether dotfiles are shown in the file list. Off by default.
     pub show_hidden: Cell<bool>,
+    /// Every column with the format column it shows. The columns are built
+    /// once; a format only changes visibility and order.
+    pub col_map: Rc<Vec<(gtk::ColumnViewColumn, opusdm_ipc::FormatColumn)>>,
+    /// Directory / file separation read by the model sorter.
+    pub separate: Rc<Cell<opusdm_ipc::Separate>>,
+    /// The sorter feeding the list; told when the separation changes.
+    pub model_sorter: gtk::CustomSorter,
 }
 
 /// Everything the window's callbacks need. Shared by `Rc` across Tasks 13-15.
@@ -146,6 +153,11 @@ pub struct Ui {
     pub typeahead_buffer: RefCell<String>,
     /// Idle timeout that closes type-to-find.
     pub typeahead_timer: RefCell<Option<glib::SourceId>>,
+    /// The format applied to the current directory.
+    pub format: RefCell<opusdm_ipc::ListerFormat>,
+    /// A format applied with "Use": valid only for the directory it was
+    /// applied in.
+    pub temp_format: RefCell<Option<(PathBuf, opusdm_ipc::ListerFormat)>>,
 }
 
 impl Ui {
@@ -273,6 +285,15 @@ impl Ui {
             self.terminal.sync_cwd(dir);
         }
         *self.cwd.borrow_mut() = dir.to_path_buf();
+        // A "Use" format only lives in the directory it was applied in.
+        if self.temp_format.borrow().as_ref().is_some_and(|(p, _)| p != dir) {
+            *self.temp_format.borrow_mut() = None;
+        }
+        let format = self.effective_format(dir);
+        if format != *self.format.borrow() {
+            self.apply_format(&format);
+        }
+        let name_filter = opusdm_ipc::NameFilter::new(&format.show_glob, &format.hide_glob);
         let show_hidden = self.view.show_hidden.get();
         let mut total_dirs = 0u32;
         let mut total_files = 0u32;
@@ -283,6 +304,9 @@ impl Ui {
                 continue;
             }
             if !show_hidden && row.name.starts_with('.') {
+                continue;
+            }
+            if !row.is_dir && !name_filter.allows(&row.name) {
                 continue;
             }
             if row.is_dir {
@@ -526,6 +550,7 @@ impl Ui {
             ToLister::Pong => {}
             ToLister::FormatsUpdate(new_formats) => {
                 *self.hub.formats.borrow_mut() = new_formats;
+                self.on_formats_changed();
             }
             ToLister::BindingsUpdate(new_bindings) => {
                 *self.hub.hotkeys.borrow_mut() = crate::hotkeys::HotkeyMap::from_hotkeys(&new_bindings.hotkeys);

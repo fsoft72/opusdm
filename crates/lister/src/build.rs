@@ -169,30 +169,30 @@ fn build_window(
         move || slot.borrow().clone()
     };
 
-    let col_map: Rc<Vec<(gtk::ColumnViewColumn, SortCol)>> = Rc::new(vec![
+    let col_map: Rc<Vec<(gtk::ColumnViewColumn, opusdm_ipc::FormatColumn)>> = Rc::new(vec![
         (
             crate::columns::add_column(&column_view, "Name", crate::columns::ColKind::Name, ui_getter.clone()),
-            SortCol::Name,
+            opusdm_ipc::FormatColumn::Name,
         ),
         (
             crate::columns::add_column(&column_view, "Size", crate::columns::ColKind::Size, ui_getter.clone()),
-            SortCol::Size,
+            opusdm_ipc::FormatColumn::Size,
         ),
         (
             crate::columns::add_column(&column_view, "Date", crate::columns::ColKind::Modified, ui_getter.clone()),
-            SortCol::Modified,
+            opusdm_ipc::FormatColumn::Date,
         ),
         (
             crate::columns::add_column(&column_view, "User", crate::columns::ColKind::User, ui_getter.clone()),
-            SortCol::User,
+            opusdm_ipc::FormatColumn::User,
         ),
         (
             crate::columns::add_column(&column_view, "Group", crate::columns::ColKind::Group, ui_getter.clone()),
-            SortCol::Group,
+            opusdm_ipc::FormatColumn::Group,
         ),
         (
             crate::columns::add_column(&column_view, "Access", crate::columns::ColKind::Access, ui_getter),
-            SortCol::Access,
+            opusdm_ipc::FormatColumn::Access,
         ),
     ]);
     let name_col = col_map[0].0.clone();
@@ -201,9 +201,11 @@ fn build_window(
     // draws the arrow indicator; the model sorter below only reads its state.
     let cv_sorter = column_view.sorter().and_downcast::<gtk::ColumnViewSorter>();
 
+    let separate = Rc::new(Cell::new(opusdm_ipc::Separate::DirsFirst));
     let model_sorter = gtk::CustomSorter::new({
         let cv_sorter = cv_sorter.clone();
         let col_map = col_map.clone();
+        let separate = separate.clone();
         move |a, b| {
             let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>();
             let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>();
@@ -211,11 +213,11 @@ fn build_window(
                 .as_ref()
                 .and_then(|s| {
                     let active = s.primary_sort_column()?;
-                    let col = col_map.iter().find(|(c, _)| *c == active).map(|(_, sc)| *sc)?;
+                    let col = col_map.iter().find(|(c, _)| *c == active).map(|(_, fc)| SortCol::from(*fc))?;
                     Some((col, s.primary_sort_order() == gtk::SortType::Descending))
                 })
                 .unwrap_or((SortCol::Name, false));
-            dir_first_cmp(&ra, &rb, col, desc, opusdm_ipc::Separate::DirsFirst).into()
+            dir_first_cmp(&ra, &rb, col, desc, separate.get()).into()
         }
     });
     sort_model.set_sorter(Some(&model_sorter));
@@ -386,6 +388,9 @@ fn build_window(
             cursor: Cell::new(0),
             filter_bar: filter_bar.clone(),
             show_hidden: Cell::new(false),
+            col_map: col_map.clone(),
+            separate: separate.clone(),
+            model_sorter: model_sorter.clone(),
         },
         status_bar: StatusBar {
             label: stat_info,
@@ -405,6 +410,8 @@ fn build_window(
         function_log: RefCell::new(None),
         typeahead_buffer: RefCell::new(String::new()),
         typeahead_timer: RefCell::new(None),
+        format: RefCell::new(opusdm_ipc::ListerFormat::builtin()),
+        temp_format: RefCell::new(None),
         last_selection: RefCell::new(Vec::new()),
         user_menu_btn: user_menu_btn.clone(),
     });
