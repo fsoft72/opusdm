@@ -382,12 +382,13 @@ impl ThemeModeSection {
     }
 }
 
-/// The BEHAVIOUR section: currently just the auto-refresh toggle.
+/// The BEHAVIOUR section: the auto-refresh and recursive-filter toggles.
 /// `auto_refresh_debounce_ms` has no control here - same as the dialog this
 /// replaced - so it round-trips untouched through [`Self::read`].
 pub struct BehaviorSection {
     pub root: gtk::Box,
     auto_refresh: gtk::CheckButton,
+    recursive_filter: gtk::CheckButton,
     debounce_ms: u64,
 }
 
@@ -404,11 +405,21 @@ impl BehaviorSection {
         auto_refresh.set_active(initial.auto_refresh);
         root.append(&auto_refresh);
 
-        Self { root, auto_refresh, debounce_ms: initial.auto_refresh_debounce_ms }
+        let recursive_filter = gtk::CheckButton::with_label(
+            "Ask for a file pattern before a recursive Copy, Move or Delete",
+        );
+        recursive_filter.set_active(initial.recursive_filter);
+        root.append(&recursive_filter);
+
+        Self { root, auto_refresh, recursive_filter, debounce_ms: initial.auto_refresh_debounce_ms }
     }
 
     pub fn read(&self) -> Behavior {
-        Behavior { auto_refresh: self.auto_refresh.is_active(), auto_refresh_debounce_ms: self.debounce_ms }
+        Behavior {
+            auto_refresh: self.auto_refresh.is_active(),
+            auto_refresh_debounce_ms: self.debounce_ms,
+            recursive_filter: self.recursive_filter.is_active(),
+        }
     }
 }
 

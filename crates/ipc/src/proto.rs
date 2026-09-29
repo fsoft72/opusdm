@@ -41,6 +41,38 @@ pub enum Op {
     MakeDir { name: String },
     /// Create one empty file named `name` inside `dest_dir`.
     NewFile { name: String },
+    /// Copy `srcs` into `dest_dir`, giving source `i` the name `new_names[i]`.
+    CopyAs { new_names: Vec<String> },
+    /// Move `srcs` into `dest_dir`, giving source `i` the name `new_names[i]`.
+    MoveAs { new_names: Vec<String> },
+    /// Copy each source next to itself as `name.copy`, `name.copy2`, ...
+    Duplicate,
+}
+
+/// Modifiers for a job, carried next to its [`Op`]. Everything off (the
+/// `Default`) is the plain behaviour, so payloads without options still work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobOptions {
+    /// Copy/Move only files whose name already exists at the destination.
+    pub update: bool,
+    /// Copy/Move only files missing at the destination or newer than it.
+    pub newer: bool,
+    /// Run a Copy as a Move when source and destination share a device.
+    pub move_when_same: bool,
+    /// Suppress warning requesters (never conflict prompts).
+    pub quiet: bool,
+    /// Only files whose name matches this `;`-separated glob list are
+    /// affected; directories are always traversed.
+    pub include_glob: Option<String>,
+}
+
+impl JobOptions {
+    /// Whether the job may leave some source files untouched, so a Move
+    /// must delete only what it actually copied.
+    pub fn is_partial(&self) -> bool {
+        self.update || self.newer || self.include_glob.is_some()
+    }
 }
 
 /// The user's answer to an overwrite conflict.
@@ -93,7 +125,13 @@ pub enum ToHub {
     /// Request a filesystem job. `dest_dir` is `None` for a button Copy/Move
     /// (the hub fills it from the DEST Lister's current path) and `Some` for
     /// an explicit destination (drag-drop, Delete, MakeDir, NewFile).
-    RunJob { op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf> },
+    RunJob {
+        op: Op,
+        srcs: Vec<PathBuf>,
+        dest_dir: Option<PathBuf>,
+        #[serde(default)]
+        options: JobOptions,
+    },
     /// Ask the hub to open another Lister.
     SpawnLister { start_path: Option<PathBuf> },
     /// Ask the hub to raise another Lister's window. Used by the Tab binding to
@@ -217,6 +255,9 @@ pub struct Behavior {
     /// itself before the Lister reloads. Clamped by
     /// [`AUTO_REFRESH_DEBOUNCE_RANGE_MS`] when used.
     pub auto_refresh_debounce_ms: u64,
+    /// Ask for a file pattern before a recursive Copy/Move/Delete and only
+    /// touch the matching files.
+    pub recursive_filter: bool,
 }
 
 /// Accepted range for [`Behavior::auto_refresh_debounce_ms`]. Too low and a
@@ -225,7 +266,7 @@ pub const AUTO_REFRESH_DEBOUNCE_RANGE_MS: (u64, u64) = (50, 5_000);
 
 impl Default for Behavior {
     fn default() -> Self {
-        Self { auto_refresh: true, auto_refresh_debounce_ms: 250 }
+        Self { auto_refresh: true, auto_refresh_debounce_ms: 250, recursive_filter: false }
     }
 }
 
@@ -372,8 +413,30 @@ mod tests {
             op: Op::Copy,
             srcs: vec!["/a".into(), "/b".into()],
             dest_dir: Some("/dst".into()),
+            options: JobOptions::default(),
         });
-        roundtrip_tohub(ToHub::RunJob { op: Op::Move, srcs: vec![], dest_dir: None });
+        roundtrip_tohub(ToHub::RunJob {
+            op: Op::CopyAs { new_names: vec!["x".into()] },
+            srcs: vec!["/a".into()],
+            dest_dir: None,
+            options: JobOptions {
+                newer: true,
+                include_glob: Some("*.rs".into()),
+                ..JobOptions::default()
+            },
+        });
+        roundtrip_tohub(ToHub::RunJob {
+            op: Op::Duplicate,
+            srcs: vec![],
+            dest_dir: None,
+            options: JobOptions::default(),
+        });
+        roundtrip_tohub(ToHub::RunJob {
+            op: Op::Move,
+            srcs: vec![],
+            dest_dir: None,
+            options: JobOptions::default(),
+        });
         roundtrip_tohub(ToHub::SpawnLister { start_path: Some("/etc".into()) });
         roundtrip_tohub(ToHub::PresentLister(ListerId(5)));
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
@@ -518,7 +581,7 @@ mod tests {
     #[test]
     fn a_hand_edited_debounce_is_clamped_to_something_usable() {
         let (lo, hi) = AUTO_REFRESH_DEBOUNCE_RANGE_MS;
-        let at = |ms| Behavior { auto_refresh: true, auto_refresh_debounce_ms: ms }.debounce_ms();
+        let at = |ms| Behavior { auto_refresh: true, auto_refresh_debounce_ms: ms, ..Behavior::default() }.debounce_ms();
         assert_eq!(at(0), lo, "0 would spin the watcher");
         assert_eq!(at(u64::MAX), hi, "a huge value would look frozen");
         assert_eq!(at(lo), lo);
@@ -551,9 +614,42 @@ mod tests {
                 theme_window: true,
                 theme_mode: ThemeMode::Light,
             },
-            behavior: Behavior { auto_refresh: false, auto_refresh_debounce_ms: 900 },
+            behavior: Behavior {
+                auto_refresh: false,
+                auto_refresh_debounce_ms: 900,
+                recursive_filter: true,
+            },
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
+    }
+
+    #[test]
+    fn run_job_without_options_still_parses() {
+        let json = r#"{"RunJob":{"op":"Copy","srcs":["/a"],"dest_dir":null}}"#;
+        let msg: ToHub = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            msg,
+            ToHub::RunJob {
+                op: Op::Copy,
+                srcs: vec!["/a".into()],
+                dest_dir: None,
+                options: JobOptions::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn settings_without_recursive_filter_default_to_off() {
+        let s: Settings = serde_json::from_str(r#"{"behavior":{"auto_refresh":false}}"#).unwrap();
+        assert!(!s.behavior.recursive_filter);
+    }
+
+    #[test]
+    fn partial_options_are_detected() {
+        assert!(!JobOptions::default().is_partial());
+        assert!(JobOptions { update: true, ..JobOptions::default() }.is_partial());
+        assert!(JobOptions { include_glob: Some("*".into()), ..JobOptions::default() }.is_partial());
+        assert!(!JobOptions { quiet: true, ..JobOptions::default() }.is_partial());
     }
 }
