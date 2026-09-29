@@ -36,8 +36,8 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 ## 3. Viewers and search
 
-- [ ] F-16 Full Reader: Read / AnsiRead / HexRead / SmartRead
-- [ ] F-17 Show (image slideshow)
+- [x] F-16 Full Reader: Read / AnsiRead / HexRead / SmartRead
+- [x] F-17 Show (image slideshow)
 - [ ] F-18 Play (sound files) + beep/flash commands
 - [ ] F-19 FindFile (search by name across tree)
 - [ ] F-20 Search (content search)

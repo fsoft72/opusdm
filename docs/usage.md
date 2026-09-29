@@ -184,6 +184,15 @@ Open **Lister Format...** from the command palette (`Ctrl+P`).
 - **Type**: files and directories, files only, or directories only.
 - **Select** adds the matching entries to the selection, **Deselect** removes them. Entries hidden by the filter bar or a Show / Hide pattern are not touched. A wrong value is reported next to the field and the requester stays open. `+` and `-` keep working as the quick single-pattern versions.
 
+### 3.10f Viewer and slideshow
+Quick Look (`F3` / `Space`) is still the light preview that follows the selection. For real reading, select one or more files and use the command palette (`Ctrl+P`):
+- **Read (SmartRead)** picks the mode: pictures by extension, ANSI art for `.ans` / `.diz` / `.asc` files or when the first 4 KiB hold a colour escape sequence, text for readable files, hex for everything else. **Read as Text**, **Read as ANSI** and **Read as Hex** force a mode.
+- The Viewer pages through the selected files (directories are skipped; with nothing selected it opens the file under the cursor). Keys: `n` / `p` next / previous file (wrapping), `t` `a` `x` `s` switch to Text / ANSI / Hex / Smart, `Ctrl+F` opens the search bar, `Esc` closes the search bar and then the window.
+- **Search**: type to highlight every match (case-insensitive) with a `3/17` counter; `Enter` / `F3` jump to the next match, `Shift+Enter` / `Shift+F3` to the previous, both wrapping around. In hex mode the search runs on the dump text.
+- ANSI mode decodes CP437 and understands the colour, bold and cursor-forward sequences; the SAUCE record after a `Ctrl+Z` byte is not shown.
+- Text and ANSI show up to the first 16 MiB of a file, hex the first 1 MiB; the header says "showing the first N" when a file is cut.
+- **Show (image slideshow)** takes the pictures among the selected files. `Left` / `Right` move, `Delete` (or `m`) marks or unmarks the current picture (`MARKED` and a counter show in the header). Closing the window asks "Delete N marked file(s)?"; nothing is removed unless you answer Delete.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
