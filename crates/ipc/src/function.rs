@@ -71,6 +71,8 @@ pub enum InternalCmd {
     MoveAs,
     /// Copy every source next to itself as `name.copy`.
     Duplicate,
+    /// Navigate the SOURCE Lister to a directory; later steps run from it.
+    ChangeDir,
 }
 
 impl InternalCmd {
@@ -86,6 +88,7 @@ impl InternalCmd {
             InternalCmd::CopyAs => "Copy As",
             InternalCmd::MoveAs => "Move As",
             InternalCmd::Duplicate => "Duplicate",
+            InternalCmd::ChangeDir => "Change Directory",
         }
     }
 }
@@ -201,6 +204,12 @@ pub mod schema {
             InternalCmd::Rename => &[ParamSpec {
                 key: "new_name",
                 label: "New name",
+                required: true,
+                kind: ParamKind::PathTemplate,
+            }],
+            InternalCmd::ChangeDir => &[ParamSpec {
+                key: "path",
+                label: "Directory (absolute, ~ or relative to the current one)",
                 required: true,
                 kind: ParamKind::PathTemplate,
             }],

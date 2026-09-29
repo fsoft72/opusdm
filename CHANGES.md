@@ -2,6 +2,7 @@
 
 ## 2026-09-29
 
+- Functions: new internal command "Change Directory" (`InternalCmd::ChangeDir`, required `path` parameter with `{f}`/`{o}`/... placeholders, `~` and paths relative to the current directory). The hub validates that the target is an existing directory, sends `ToLister::GoTo` to the SOURCE Lister and runs every later step from the new directory.
 - Lister nav bar: Back, Forward and History buttons now use SVG icons (`arrow-left.svg`, `arrow-right.svg`, `chevron-down.svg`) like Home and Parent, instead of the Unicode triangle glyphs.
 
 ## 2026-09-27 (4)

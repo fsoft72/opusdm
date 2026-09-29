@@ -853,6 +853,7 @@ impl Hub {
             return;
         }
         let msg = match ev {
+            crate::functions::FnEvent::ChangeDir { path } => ToLister::GoTo { path },
             crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
             crate::functions::FnEvent::StepDone { step_idx, exit_code } => {
                 ToLister::FunctionStepDone { step_idx, exit_code }

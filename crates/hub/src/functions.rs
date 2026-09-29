@@ -9,6 +9,7 @@ use opusdm_ipc::function::{expand_argv_element, expand_text, ExpandError, Expand
 use opusdm_ipc::glob::expand_new_name;
 use opusdm_ipc::{Op, Resolution};
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Sender};
 
@@ -22,6 +23,8 @@ pub enum FnEvent {
     StepDone { step_idx: usize, exit_code: Option<i32> },
     /// A step failed; the run stops here.
     Failed { step_idx: usize, error: String },
+    /// A `ChangeDir` step resolved `path`: the SOURCE Lister must go there.
+    ChangeDir { path: PathBuf },
     /// Every step finished successfully.
     AllDone,
 }
@@ -51,11 +54,16 @@ fn run_steps(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) {
+    // A `ChangeDir` step moves the working directory of every later step.
+    let mut source = source.clone();
     for (step_idx, step) in steps.iter().enumerate() {
         let result = match step {
-            FnStep::Internal { cmd, args } => run_internal(run_id, step_idx, *cmd, args, source, dest, events_tx),
+            FnStep::Internal { cmd: InternalCmd::ChangeDir, args } => {
+                run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx)
+            }
+            FnStep::Internal { cmd, args } => run_internal(run_id, step_idx, *cmd, args, &source, dest, events_tx),
             FnStep::External { argv, cwd_source } => {
-                run_external(run_id, step_idx, argv, *cwd_source, source, dest, events_tx)
+                run_external(run_id, step_idx, argv, *cwd_source, &source, dest, events_tx)
             }
         };
         if let Err(error) = result {
@@ -72,6 +80,43 @@ fn expand_err_msg(e: ExpandError) -> String {
     }
 }
 
+/// Run a `ChangeDir` step: expand the path template, resolve `~` and
+/// relative paths against the SOURCE cwd, require an existing directory,
+/// ask the hub to navigate the SOURCE Lister there, and make it the cwd of
+/// every later step.
+fn run_change_dir(
+    run_id: u64,
+    step_idx: usize,
+    args: &InternalArgs,
+    source: &mut SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Change Directory: path is empty".to_string());
+    }
+    let expanded = match text.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            let home = std::env::var_os("HOME").ok_or_else(|| "Change Directory: HOME is not set".to_string())?;
+            PathBuf::from(home).join(rest.trim_start_matches('/'))
+        }
+        _ => PathBuf::from(text),
+    };
+    let target = source.cwd.join(expanded);
+    let target = std::fs::canonicalize(&target)
+        .map_err(|e| format!("Change Directory: cannot open {}: {e}", target.display()))?;
+    if !Path::new(&target).is_dir() {
+        return Err(format!("Change Directory: {} is not a directory", target.display()));
+    }
+    source.cwd = target.clone();
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("cd {}", target.display()) }));
+    let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target }));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
 /// Run one `Internal` step. `Copy`/`Move`/`Delete` reuse the same
 /// `opusdm_fsops::run_job` the hub's own `JobEngine` calls; `MakeDir`/
 /// `NewFile` create directly (no scan/progress needed for one entry);
@@ -86,6 +131,7 @@ fn run_internal(
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
     match cmd {
+        InternalCmd::ChangeDir => unreachable!("ChangeDir is handled by run_change_dir"),
         InternalCmd::Rename => {
             let template = args.get("new_name").unwrap_or("");
             let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;
@@ -151,7 +197,7 @@ fn run_internal(
                         Op::MoveAs { new_names }
                     }
                 }
-                _ => unreachable!("Rename/MakeDir/NewFile handled above"),
+                _ => unreachable!("Rename/MakeDir/NewFile/ChangeDir handled above"),
             };
             // Delete, Duplicate and the "As" commands work in place, so a
             // missing DEST falls back to the SOURCE directory.
@@ -395,6 +441,42 @@ mod tests {
         run_steps(1, &steps, &src, None, &tx);
         drop(tx);
         assert_eq!(std::fs::read(td.path().join("notes.txt")).unwrap(), b"important content");
+        let events = drain(rx);
+        assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, .. })));
+    }
+
+    #[test]
+    fn changedir_step_moves_later_steps_and_asks_the_lister_to_navigate() {
+        let td = tempfile::tempdir().unwrap();
+        let sub = td.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let (tx, rx) = channel();
+        let mut args = BTreeMap::new();
+        args.insert("path".to_string(), "sub".to_string());
+        let steps = vec![
+            FnStep::Internal { cmd: InternalCmd::ChangeDir, args: InternalArgs(args) },
+            FnStep::External { argv: vec!["pwd".into()], cwd_source: true },
+        ];
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &steps, &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        let want = std::fs::canonicalize(&sub).unwrap();
+        assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { path } if *path == want)));
+        assert!(events.iter().any(|e| matches!(e, FnEvent::Output { line, .. } if *line == want.to_string_lossy())));
+        assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn changedir_step_fails_on_a_missing_directory() {
+        let td = tempfile::tempdir().unwrap();
+        let (tx, rx) = channel();
+        let mut args = BTreeMap::new();
+        args.insert("path".to_string(), "nope".to_string());
+        let steps = vec![FnStep::Internal { cmd: InternalCmd::ChangeDir, args: InternalArgs(args) }];
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &steps, &src, None, &tx);
+        drop(tx);
         let events = drain(rx);
         assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, .. })));
     }
