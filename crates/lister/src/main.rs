@@ -17,6 +17,7 @@ mod hotkey_editor;
 mod hotkeys;
 mod icons;
 mod keys;
+mod menu_editor;
 mod model;
 mod palette;
 mod passwd;
@@ -24,6 +25,7 @@ mod preview;
 mod terminal;
 mod theme;
 mod tools;
+mod user_menu;
 mod watcher;
 mod window;
 

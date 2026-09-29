@@ -353,6 +353,11 @@ fn build_window(
         }
     };
 
+    let user_menu_btn = gtk::MenuButton::new();
+    user_menu_btn.set_label("Menu");
+    user_menu_btn.set_tooltip_text(Some("User menu"));
+    user_menu_btn.add_css_class("opus-btn");
+
     let ui = Rc::new(Ui {
         window: window.clone(),
         hub: HubConnection {
@@ -393,6 +398,7 @@ fn build_window(
         css_provider,
         nav_generation: Cell::new(0),
         function_log: RefCell::new(None),
+        user_menu_btn: user_menu_btn.clone(),
     });
 
     // Drain coalesced watch notices on the GTK thread.
@@ -548,6 +554,7 @@ fn build_window(
     }
 
     crate::actions::attach(&ui);
+    crate::user_menu::install(&ui);
     button_row.append(&view_toggle);
     crate::dnd::attach(&ui, &column_view);
 

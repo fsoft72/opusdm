@@ -51,6 +51,8 @@ pub enum CommandId {
     ManageHotkeys,
     /// Ask for a key combination and say what it does.
     FindKey,
+    /// Open the user menu editor.
+    ManageUserMenu,
 }
 
 /// Where the keyboard focus is when the key arrives.
@@ -312,5 +314,11 @@ mod tests {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageHotkeys));
         assert!(known.contains(&CommandId::FindKey));
+    }
+
+    #[test]
+    fn user_menu_command_exists_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::ManageUserMenu));
     }
 }

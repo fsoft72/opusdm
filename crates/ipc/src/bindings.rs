@@ -381,6 +381,62 @@ pub fn validate_scripts(scripts: &[ScriptBinding], known: &HashSet<FunctionId>) 
     errors
 }
 
+/// The child list at `parent` (an empty path is the root list), or `None`
+/// when the path does not lead to a submenu.
+pub fn children_mut<'a>(tree: &'a mut Vec<MenuNode>, parent: &[usize]) -> Option<&'a mut Vec<MenuNode>> {
+    let Some((&first, rest)) = parent.split_first() else { return Some(tree) };
+    match tree.get_mut(first)? {
+        MenuNode::Submenu { children, .. } => children_mut(children, rest),
+        _ => None,
+    }
+}
+
+/// Append `node` to the list at `parent`. `false` when `parent` is not a
+/// submenu path.
+pub fn add_node(tree: &mut Vec<MenuNode>, parent: &[usize], node: MenuNode) -> bool {
+    let Some(list) = children_mut(tree, parent) else { return false };
+    list.push(node);
+    true
+}
+
+/// Remove the node at `path`. `false` when there is no such node.
+pub fn remove_node(tree: &mut Vec<MenuNode>, path: &[usize]) -> bool {
+    let Some((&index, parent)) = path.split_last() else { return false };
+    let Some(list) = children_mut(tree, parent) else { return false };
+    if index >= list.len() {
+        return false;
+    }
+    list.remove(index);
+    true
+}
+
+/// Swap the node at `path` with its neighbour `delta` places away (`-1` up,
+/// `1` down). `false` when it is already at that edge or does not exist.
+pub fn move_node(tree: &mut Vec<MenuNode>, path: &[usize], delta: isize) -> bool {
+    let Some((&index, parent)) = path.split_last() else { return false };
+    let Some(list) = children_mut(tree, parent) else { return false };
+    let Some(target) = index.checked_add_signed(delta) else { return false };
+    if index >= list.len() || target >= list.len() {
+        return false;
+    }
+    list.swap(index, target);
+    true
+}
+
+/// Set the label of the entry or submenu at `path`. `false` for a separator
+/// or a path that does not exist.
+pub fn rename_node(tree: &mut Vec<MenuNode>, path: &[usize], new_label: &str) -> bool {
+    let Some((&index, parent)) = path.split_last() else { return false };
+    let Some(list) = children_mut(tree, parent) else { return false };
+    match list.get_mut(index) {
+        Some(MenuNode::Entry { label, .. }) | Some(MenuNode::Submenu { label, .. }) => {
+            *label = new_label.to_string();
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The hub's tolerant clean-up of a [`Bindings`] it received or loaded: drop
 /// what can never work, keep the first of any duplicate, canonicalize hotkey
 /// text, and log each removal. Dangling function ids are kept (they are
@@ -686,5 +742,69 @@ mod tests {
         let loaded = load_bindings_from(dir.path());
         assert!(loaded.hotkeys.is_empty());
         assert_eq!(loaded.scripts.len(), 1);
+    }
+
+    fn entry(label: &str) -> MenuNode {
+        MenuNode::Entry { label: label.into(), function: "a".into() }
+    }
+
+    fn sub(label: &str, children: Vec<MenuNode>) -> MenuNode {
+        MenuNode::Submenu { label: label.into(), children }
+    }
+
+    #[test]
+    fn add_node_appends_at_the_root_or_inside_a_submenu() {
+        let mut tree = vec![entry("a"), sub("s", vec![])];
+        assert!(add_node(&mut tree, &[], entry("b")));
+        assert!(add_node(&mut tree, &[1], entry("inner")));
+        assert_eq!(tree.len(), 3);
+        assert!(matches!(&tree[1], MenuNode::Submenu { children, .. } if children.len() == 1));
+    }
+
+    #[test]
+    fn add_node_refuses_a_path_that_is_not_a_submenu() {
+        let mut tree = vec![entry("a")];
+        assert!(!add_node(&mut tree, &[0], entry("b")), "an entry has no children");
+        assert!(!add_node(&mut tree, &[5], entry("b")), "no such node");
+    }
+
+    #[test]
+    fn remove_node_deletes_by_path() {
+        let mut tree = vec![entry("a"), sub("s", vec![entry("x"), entry("y")])];
+        assert!(remove_node(&mut tree, &[1, 0]));
+        assert!(matches!(&tree[1], MenuNode::Submenu { children, .. } if children.len() == 1));
+        assert!(remove_node(&mut tree, &[0]));
+        assert_eq!(tree.len(), 1);
+        assert!(!remove_node(&mut tree, &[9]));
+        assert!(!remove_node(&mut tree, &[]));
+    }
+
+    #[test]
+    fn move_node_swaps_with_a_neighbour_and_stops_at_the_edges() {
+        let mut tree = vec![entry("a"), entry("b"), entry("c")];
+        assert!(move_node(&mut tree, &[1], -1));
+        assert!(matches!(&tree[0], MenuNode::Entry { label, .. } if label == "b"));
+        assert!(!move_node(&mut tree, &[0], -1), "already first");
+        assert!(move_node(&mut tree, &[1], 1));
+        assert!(matches!(&tree[2], MenuNode::Entry { label, .. } if label == "a"));
+        assert!(!move_node(&mut tree, &[2], 1), "already last");
+    }
+
+    #[test]
+    fn move_node_works_inside_a_submenu() {
+        let mut tree = vec![sub("s", vec![entry("x"), entry("y")])];
+        assert!(move_node(&mut tree, &[0, 1], -1));
+        assert!(matches!(&tree[0], MenuNode::Submenu { children, .. }
+            if matches!(&children[0], MenuNode::Entry { label, .. } if label == "y")));
+    }
+
+    #[test]
+    fn rename_node_changes_entries_and_submenus_but_not_separators() {
+        let mut tree = vec![entry("a"), sub("s", vec![]), MenuNode::Separator];
+        assert!(rename_node(&mut tree, &[0], "A"));
+        assert!(rename_node(&mut tree, &[1], "S"));
+        assert!(!rename_node(&mut tree, &[2], "x"));
+        assert!(matches!(&tree[0], MenuNode::Entry { label, .. } if label == "A"));
+        assert!(matches!(&tree[1], MenuNode::Submenu { label, .. } if label == "S"));
     }
 }

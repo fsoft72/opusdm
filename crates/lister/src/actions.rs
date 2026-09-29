@@ -60,6 +60,7 @@ pub fn attach(ui: &Rc<Ui>) {
     row.append(&hidden_btn);
     row.append(&preview_btn);
     row.append(&term_btn);
+    row.append(&ui.user_menu_btn);
 
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);

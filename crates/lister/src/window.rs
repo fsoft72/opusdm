@@ -133,6 +133,9 @@ pub struct Ui {
     /// editor window is open (a palette-triggered run then only flashes a
     /// summary).
     pub function_log: RefCell<Option<gtk::TextBuffer>>,
+    /// The "Menu" drop-down of the button row; its popup is built lazily by
+    /// `user_menu::install`.
+    pub user_menu_btn: gtk::MenuButton,
 }
 
 impl Ui {
