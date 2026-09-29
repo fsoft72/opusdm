@@ -216,7 +216,7 @@ fn run_search_capped(query: &FindQuery, cancel: &AtomicBool, max_results: usize,
             continue;
         }
         scanned += 1;
-        if scanned % PROGRESS_EVERY == 0 {
+        if scanned.is_multiple_of(PROGRESS_EVERY) {
             emit(SearchEvent::Scanned(scanned));
         }
         if !query.name.allows(&name) {
