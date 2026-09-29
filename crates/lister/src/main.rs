@@ -1,6 +1,7 @@
 //! opusdm-lister: one file-manager window. Spawned by opusdm-hub.
 
 mod actions;
+mod advanced_select;
 mod archive;
 mod attr_dialogs;
 mod batch_rename;
@@ -36,6 +37,7 @@ mod passwd;
 mod preview;
 mod reselect;
 mod scripts_editor;
+mod select_criteria;
 mod status_format;
 mod terminal;
 mod theme;

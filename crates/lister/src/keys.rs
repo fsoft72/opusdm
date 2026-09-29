@@ -21,6 +21,8 @@ pub enum CommandId {
     DeselectAll,
     InvertSelection,
     SelectPattern,
+    /// Open the Advanced Select requester.
+    AdvancedSelect,
     DeselectPattern,
     ToggleHidden,
     Copy,

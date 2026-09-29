@@ -41,7 +41,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [ ] F-18 Play (sound files) + beep/flash commands
 - [ ] F-19 FindFile (search by name across tree)
 - [ ] F-20 Search (content search)
-- [ ] F-21 Advanced Select requester
+- [x] F-21 Advanced Select requester
 
 ## 4. Lister capabilities
 

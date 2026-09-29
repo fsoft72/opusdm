@@ -176,6 +176,14 @@ Open **Lister Format...** from the command palette (`Ctrl+P`).
 - Next to the path bar, **back** and **forward** buttons and a **history** drop-down list the directories you visited in this Lister (newest first, the current one in bold). `Alt+Left` and `Alt+Right` do the same from the keyboard. Going somewhere new after stepping back drops the entries you stepped back over. The history keeps 50 entries and is not saved between sessions.
 - **Cache List...** (command palette) shows the cached directories of every Lister. Double click an entry to raise the Lister that holds it and show the directory there; **Open here** opens the selected directory in the Lister you are in; **Free all caches** empties every Lister's cache (also available on its own as **Free Caches**).
 
+### 3.10e Advanced Select
+**Advanced Select...** (command palette) selects or deselects the listed entries by several criteria at once. Every filled-in field must hold; empty fields are ignored.
+- **Name**: the same pattern lists as Show / Hide (`*.rs, *.toml`, `!test*` excludes).
+- **Size at least / at most**: `512K`, `1M`, `2G`. A size limit never matches a directory.
+- **Modified after / before**: `30m`, `12h`, `7d`, `2w` (that long ago) or `YYYY-MM-DD [HH:MM[:SS]]` in local time; a bare date means midnight.
+- **Type**: files and directories, files only, or directories only.
+- **Select** adds the matching entries to the selection, **Deselect** removes them. Entries hidden by the filter bar or a Show / Hide pattern are not touched. A wrong value is reported next to the field and the requester stays open. `+` and `-` keep working as the quick single-pattern versions.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
