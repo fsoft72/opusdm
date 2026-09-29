@@ -195,6 +195,52 @@ state (icon layout) lives in a `.opusdm/` directory inside the folder.
 
 ---
 
+### 3.13 User Hotkeys
+
+Any saved function (see Manage Functions) can be bound to a key. Open the
+Command Palette and choose **Edit Hotkeys...**. Each row has a key (click it,
+then press the combination; Escape cancels), the function to run and a
+**Global** check box. Rules:
+
+- A user hotkey wins over a built-in binding; the editor notes when it does.
+- Two hotkeys cannot share a key, whatever their Global flag: the row shows an
+  error and Save stays disabled.
+- While a text field has focus, a user hotkey only fires if it has Ctrl, Alt
+  or Super, or is a function key, so a plain letter never steals a character.
+- A **Global** hotkey works while any window has focus. It needs at least one
+  of Ctrl, Alt or Super. It uses the X11 key grab, so it needs an X11 session:
+  on Wayland, global hotkeys are not supported (local ones work everywhere).
+  A key another program already owns cannot be grabbed and is logged.
+- A global hotkey runs the function on the current SOURCE lister's selection;
+  with no lister open the selection is empty.
+
+**Find Key...** (Command Palette) asks for a key combination and tells you
+what it does: a function, a built-in command, or nothing.
+
+Bindings are stored in `~/.config/opusdm/hotkeys.json`.
+
+### 3.14 User Menu
+
+The **Menu** drop-down in the lister button row shows your own menu. Choose
+**Edit User Menu...** at the bottom of it (or the Command Palette entry of the
+same name) to add entries (each runs a saved function), submenus and
+separators, rename and reorder them. Changes show up in every open lister
+without a restart, and an entry whose function was deleted disappears from
+the menu (the editor marks it). Stored in `~/.config/opusdm/usermenu.json`.
+
+### 3.15 Script Events
+
+**Edit Script Events...** (Command Palette) runs saved functions on system
+events: `Startup`, `Shutdown` (the hub waits up to 10 seconds for these to
+finish), `Lister opened`, `Lister closed`, and double clicks on the desktop
+background with the primary, middle and right buttons. Functions started by an
+event run without a lister asking for them: they use the current SOURCE
+lister's selection, or an empty selection in your home directory.
+
+To stop a hook that opens a lister from looping, an event is ignored while its
+previous run is still going and never fires twice within 2 seconds. Stored in
+`~/.config/opusdm/scripts.json`.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

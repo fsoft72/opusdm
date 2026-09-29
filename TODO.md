@@ -13,13 +13,13 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [x] F-01 Function Editor and internal command language (core: data model, placeholders, `functions.json`, hub execution, editor UI, Command Palette)
   - [ ] F-01 follow-up: optional arguments `{x!}` (verify/implement)
   - [ ] F-01 follow-up: function flags (run async, wait, windowed output)
-  - [ ] F-01 follow-up: per-function hotkey (needs F-03)
+  - [x] F-01 follow-up: per-function hotkey (done through hotkeys.json, F-03)
   - [ ] F-01 follow-up: conflict prompt UI for Copy/Move/Delete steps (currently auto-skip)
   - [ ] F-01 follow-up: more internal commands beyond Copy/Move/Delete/MakeDir/NewFile/Rename
 - [ ] F-02 Button Banks + Button Bank Editor
-- [ ] F-03 Hotkey Editor (local + system-global hotkeys, KeyFinder)
-- [ ] F-04 User menus in listers
-- [ ] F-05 Script events (event hooks, viewer overrides)
+- [x] F-03 Hotkey Editor (local + system-global hotkeys, KeyFinder)
+- [x] F-04 User menus in listers
+- [x] F-05 Script events (system events only; viewer overrides wait for F-16, Hidden/Revealed for F-38)
 - [ ] F-06 Filetypes system (classes, matching, actions, Filetype Creator)
 
 ## 2. File operations
@@ -93,7 +93,7 @@ Intentionally out of scope, see section 8 of [FEATURES.md](FEATURES.md). Do not 
 Follows section 9 of [FEATURES.md](FEATURES.md):
 
 1. [x] Function system core (F-01, core only, see follow-ups above)
-2. [ ] Hotkeys + user menus + scripts (F-03, F-04, F-05)
+2. [x] Hotkeys + user menus + scripts (F-03, F-04, F-05)
 3. [ ] File operation variants (F-07, F-08, F-09, F-10, F-12, F-13, F-15, F-31)
 4. [ ] Lister formats and patterns (F-22, F-23, F-24, F-29, F-32)
 5. [ ] Search trio (F-19, F-20, F-21) + viewer upgrades (F-16, F-17)
