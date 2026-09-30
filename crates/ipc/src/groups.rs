@@ -108,8 +108,21 @@ impl Groups {
     }
 
     /// Create an empty group called `name` (trimmed). Returns its id, unique
-    /// among the groups. Empty or duplicate names are refused.
+    /// among the groups. Empty or duplicate names are refused. Pure: it knows
+    /// nothing about files, see [`Groups::create_in_dir`] for the real thing.
     pub fn create(&mut self, name: &str) -> Result<String, String> {
+        self.create_with(name, |_| false)
+    }
+
+    /// Like [`Groups::create`], but the id also avoids every `<id>.json`
+    /// already present in `dir`, including files that failed to load, so a new
+    /// group can never overwrite a file it did not read.
+    pub fn create_in_dir(&mut self, dir: &Path, name: &str) -> Result<String, String> {
+        self.create_with(name, |id| dir.join(format!("{id}.json")).exists())
+    }
+
+    /// [`Groups::create`] with an extra `taken` test on candidate ids.
+    fn create_with(&mut self, name: &str, taken: impl Fn(&str) -> bool) -> Result<String, String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("Group name is empty".to_string());
@@ -120,7 +133,7 @@ impl Groups {
         let base = slugify(name);
         let mut id = base.clone();
         let mut n = 2;
-        while self.get(&id).is_some() {
+        while self.get(&id).is_some() || taken(&id) {
             id = format!("{base}-{n}");
             n += 1;
         }
@@ -404,5 +417,18 @@ mod tests {
     fn load_from_a_missing_directory_is_empty() {
         let td = tempfile::tempdir().unwrap();
         assert_eq!(Groups::load_from_dir(&td.path().join("nope")), Groups::default());
+    }
+
+    #[test]
+    fn create_in_dir_never_reuses_an_id_whose_file_exists_even_if_it_failed_to_load() {
+        let td = tempfile::tempdir().unwrap();
+        let bad = td.path().join("foo.json");
+        std::fs::write(&bad, b"{ truncated").unwrap();
+        let mut g = Groups::load_from_dir(td.path());
+        assert!(g.groups.is_empty(), "the malformed file is skipped");
+        let id = g.create_in_dir(td.path(), "Foo").unwrap();
+        assert_eq!(id, "foo-2");
+        g.save_group_to(td.path(), &id).unwrap();
+        assert_eq!(std::fs::read(&bad).unwrap(), b"{ truncated", "the original file is untouched");
     }
 }

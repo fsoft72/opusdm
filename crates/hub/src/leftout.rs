@@ -101,10 +101,21 @@ pub fn launch_action(entry: &IconEntry) -> LaunchAction {
     if entry.kind == IconKind::File && entry.ext.as_deref() == Some("desktop") {
         return LaunchAction::DesktopEntry;
     }
-    if entry.kind == IconKind::File && entry.mode & 0o111 != 0 {
+    if entry.kind == IconKind::File && entry.mode & 0o111 != 0 && looks_like_program(&entry.path) {
         return LaunchAction::Program;
     }
     LaunchAction::Default
+}
+
+/// Whether the file starts like something the kernel can run: an ELF binary
+/// or a `#!` script. The exec bit alone proves nothing (every file on a vfat
+/// or SMB mount is mode 0777), and running a non-program only fails.
+fn looks_like_program(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0_u8; 4];
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    let Ok(n) = file.read(&mut magic) else { return false };
+    magic[..n].starts_with(b"\x7fELF") || magic[..n].starts_with(b"#!")
 }
 
 /// Latest-wins gate for asynchronous desktop reloads. Every reload takes a
@@ -290,5 +301,27 @@ mod tests {
         assert_eq!(action("tool"), LaunchAction::Program);
         assert_eq!(action("notes.txt"), LaunchAction::Default);
         assert_eq!(action("missing"), LaunchAction::Default);
+    }
+
+    #[test]
+    fn launch_action_runs_only_files_that_are_really_programs() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        let make = |name: &str, bytes: &[u8]| {
+            std::fs::write(base.join(name), bytes).unwrap();
+            std::fs::set_permissions(base.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        make("elf-tool", b"\x7fELF\x02\x01\x01\x00rest");
+        make("script", b"#!/bin/sh\necho hi\n");
+        make("report.pdf", b"%PDF-1.7 not a program");
+        make("empty", b"");
+        make("noshebang.sh", b"echo hi\n");
+        let action = |name: &str| launch_action(&opusdm_iconview::scan::entry_for_path(&base.join(name)));
+        assert_eq!(action("elf-tool"), LaunchAction::Program);
+        assert_eq!(action("script"), LaunchAction::Program);
+        assert_eq!(action("report.pdf"), LaunchAction::Default, "exec bit alone is not enough (vfat, SMB)");
+        assert_eq!(action("empty"), LaunchAction::Default);
+        assert_eq!(action("noshebang.sh"), LaunchAction::Default);
     }
 }

@@ -22,8 +22,8 @@ group window from which every member can be launched.
 - Group window: a normal top-level window (one per group, re-presented when
   already open) with an `IconField` in grid mode. Double click launches:
   folder (or symlink to a folder) opens a Lister, `.desktop` file launches
-  the application, an executable regular file runs (detached, in its own
-  folder), anything else opens with the default application.
+  the application, an executable regular file that starts with an ELF header or `#!` runs
+  (detached, in its own folder; the exec bit alone is not trusted), anything else opens with the default application.
 - Adding members: drop files on the group icon on the desktop, or on an open
   group window. Only absolute paths are accepted; a path already in the group is
   skipped. A member whose file disappears stays and shows as a broken icon.

@@ -387,7 +387,7 @@ Drag a left-out icon to place it: the position is remembered across restarts (ic
 A group gathers programs, files or folders under one desktop icon.
 - Right-click the desktop and choose **New Group...**, then type a name (names must be unique, upper and lower case do not count). The group appears as a folder icon with a small group badge; drag it wherever you like, the position is remembered.
 - Drag files or applications from a lister (or the desktop) onto the group icon to add them. Something already in the group is skipped.
-- Double click the icon to open the group window. Double click a member to start it: a folder opens in a lister, a `.desktop` file starts that application, an executable file runs, anything else opens with its default application. You can also drop files on the open window, and right-click a member and choose **Remove from Group**.
+- Double click the icon to open the group window. Double click a member to start it: a folder opens in a lister, a `.desktop` file starts that application, a binary or a `#!` script that is executable runs, anything else opens with its default application (the exec bit alone is not trusted: on vfat or SMB mounts every file has it). A launch that fails shows a message. You can also drop files on the open window, and right-click a member and choose **Remove from Group**.
 - The icon menu offers **Open**, **Rename Group...** and **Delete Group...**. Deleting a group never touches the files in it. A member whose file disappeared shows as a broken icon until you remove it.
 
 Each group is stored in `~/.config/opusdm/groups/<name>.json`. Groups appear on the primary monitor only.

@@ -626,6 +626,7 @@ fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconEntry) {
             Some(info) => {
                 if let Err(e) = info.launch(&[], gio::AppLaunchContext::NONE) {
                     opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", entry.path.display());
+                    show_group_error(widgets, &format!("Cannot launch {}: {e}", entry.path.display()));
                 }
             }
             None => opusdm_ipc::err_log!("hub", "{} is not a valid .desktop file", entry.path.display()),
@@ -640,12 +641,14 @@ fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconEntry) {
                 .stderr(std::process::Stdio::null());
             if let Err(e) = cmd.spawn() {
                 opusdm_ipc::err_log!("hub", "cannot run {}: {e}", entry.path.display());
+                show_group_error(widgets, &format!("Cannot run {}: {e}", entry.path.display()));
             }
         }
         LaunchAction::Default => {
             let uri = gio::File::for_path(&entry.path).uri();
             if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
                 opusdm_ipc::err_log!("hub", "cannot open {}: {e}", entry.path.display());
+                show_group_error(widgets, &format!("Cannot open {}: {e}", entry.path.display()));
             }
         }
     }
@@ -687,7 +690,11 @@ fn new_group_dialog(widgets: &Rc<Widgets>) {
             if !accepted {
                 return;
             }
-            let created = widgets.desktop.groups.borrow_mut().create(&text);
+            let created = widgets
+                .desktop
+                .groups
+                .borrow_mut()
+                .create_in_dir(&opusdm_ipc::groups::groups_dir(), &text);
             match created {
                 Ok(id) => {
                     save_group(&widgets, &id);
