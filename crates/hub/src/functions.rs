@@ -25,6 +25,10 @@ pub enum FnEvent {
     Failed { step_idx: usize, error: String },
     /// A `ChangeDir` step resolved `path`: the SOURCE Lister must go there.
     ChangeDir { path: PathBuf },
+    /// A `SetBackground` step validated `path` (canonical): the hub must
+    /// install it as the desktop background. `fit` is `None` to keep the
+    /// current one.
+    SetBackground { path: PathBuf, fit: Option<opusdm_ipc::ImageFit> },
     /// Every step finished successfully.
     AllDone,
 }
@@ -83,6 +87,19 @@ fn expand_err_msg(e: ExpandError) -> String {
     }
 }
 
+/// Turn the user-typed `text` into a path: a leading `~` becomes `$HOME`,
+/// anything else is returned as is (the caller joins it to the cwd).
+/// `label` names the command in the error message.
+fn expand_home(text: &str, label: &str) -> Result<PathBuf, String> {
+    match text.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            let home = std::env::var_os("HOME").ok_or_else(|| format!("{label}: HOME is not set"))?;
+            Ok(PathBuf::from(home).join(rest.trim_start_matches('/')))
+        }
+        _ => Ok(PathBuf::from(text)),
+    }
+}
+
 /// Run a `ChangeDir` step: expand the path template, resolve `~` and
 /// relative paths against the SOURCE cwd, require an existing directory,
 /// ask the hub to navigate the SOURCE Lister there, and make it the cwd of
@@ -100,13 +117,7 @@ fn run_change_dir(
     if text.is_empty() {
         return Err("Change Directory: path is empty".to_string());
     }
-    let expanded = match text.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-            let home = std::env::var_os("HOME").ok_or_else(|| "Change Directory: HOME is not set".to_string())?;
-            PathBuf::from(home).join(rest.trim_start_matches('/'))
-        }
-        _ => PathBuf::from(text),
-    };
+    let expanded = expand_home(text, "Change Directory")?;
     let target = source.cwd.join(expanded);
     let target = std::fs::canonicalize(&target)
         .map_err(|e| format!("Change Directory: cannot open {}: {e}", target.display()))?;
@@ -120,16 +131,46 @@ fn run_change_dir(
     Ok(())
 }
 
-/// Run a `SetBackground` step. Filled in by the next task.
+/// Run a `SetBackground` step: expand the path template, resolve `~` and
+/// relative paths against the SOURCE cwd, require an existing regular file
+/// with an image extension (checked on the name the user picked, so a
+/// symlink `wall.png` is fine), parse the optional `fit`, and ask the hub to
+/// install the image. Nothing is emitted when any check fails.
 fn run_set_background(
-    _run_id: u64,
-    _step_idx: usize,
-    _args: &InternalArgs,
-    _source: &SelectionCtx,
-    _dest: Option<&SelectionCtx>,
-    _events_tx: &Sender<(u64, FnEvent)>,
+    run_id: u64,
+    step_idx: usize,
+    args: &InternalArgs,
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    Err("Set Background: not implemented".to_string())
+    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Set Background: path is empty".to_string());
+    }
+    let picked = source.cwd.join(expand_home(text, "Set Background")?);
+    if !opusdm_ipc::is_background_image(&picked) {
+        return Err(format!(
+            "Set Background: \"{}\" is not a supported image (png, jpg, jpeg, webp, bmp, gif)",
+            picked.display()
+        ));
+    }
+    let fit = match args.get("fit").map(str::trim).filter(|f| !f.is_empty()) {
+        Some(text) => Some(opusdm_ipc::ImageFit::parse(text).ok_or_else(|| {
+            format!("Set Background: unknown fit \"{text}\" (use fill, fit, center or tile)")
+        })?),
+        None => None,
+    };
+    let target = std::fs::canonicalize(&picked)
+        .map_err(|e| format!("Set Background: cannot open {}: {e}", picked.display()))?;
+    if !target.is_file() {
+        return Err(format!("Set Background: {} is not a file", target.display()));
+    }
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("background {}", target.display()) }));
+    let _ = events_tx.send((run_id, FnEvent::SetBackground { path: target, fit }));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
 }
 
 /// Run one `Internal` step. `Copy`/`Move`/`Delete` reuse the same
@@ -538,5 +579,119 @@ mod tests {
         let events = drain(rx);
         assert!(matches!(events.last(), Some(FnEvent::AllDone)));
         assert_eq!(std::fs::read(dst_dir.path().join("a.txt")).unwrap(), b"existing", "conflict must be skipped, not overwritten");
+    }
+
+    fn set_background_steps(path: &str, fit: Option<&str>) -> Vec<FnStep> {
+        let mut args = BTreeMap::new();
+        args.insert("path".to_string(), path.to_string());
+        if let Some(fit) = fit {
+            args.insert("fit".to_string(), fit.to_string());
+        }
+        vec![FnStep::Internal { cmd: InternalCmd::SetBackground, args: InternalArgs(args) }]
+    }
+
+    fn has_set_background(events: &[FnEvent]) -> bool {
+        events.iter().any(|e| matches!(e, FnEvent::SetBackground { .. }))
+    }
+
+    #[test]
+    fn set_background_resolves_a_relative_path_and_parses_the_fit() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("wall.PNG"), b"x").unwrap();
+        let (tx, rx) = channel();
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &set_background_steps("wall.PNG", Some("Tile")), &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        let want = std::fs::canonicalize(td.path().join("wall.PNG")).unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            FnEvent::SetBackground { path, fit: Some(opusdm_ipc::ImageFit::Tile) } if *path == want
+        )));
+        assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn set_background_without_fit_keeps_the_current_one() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("wall.png"), b"x").unwrap();
+        let (tx, rx) = channel();
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &set_background_steps("wall.png", None), &src, None, &tx);
+        drop(tx);
+        assert!(drain(rx).iter().any(|e| matches!(e, FnEvent::SetBackground { fit: None, .. })));
+    }
+
+    #[test]
+    fn set_background_rejects_a_non_image_and_changes_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("notes.txt"), b"x").unwrap();
+        let (tx, rx) = channel();
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &set_background_steps("notes.txt", None), &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        assert!(!has_set_background(&events));
+        assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("notes.txt")));
+    }
+
+    #[test]
+    fn set_background_rejects_a_directory_and_a_missing_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("dir.png")).unwrap();
+        for name in ["dir.png", "missing.png"] {
+            let (tx, rx) = channel();
+            let src = ctx(&[], td.path().to_str().unwrap());
+            run_steps(1, &set_background_steps(name, None), &src, None, &tx);
+            drop(tx);
+            let events = drain(rx);
+            assert!(!has_set_background(&events), "{name}");
+            assert!(matches!(events.last(), Some(FnEvent::Failed { .. })), "{name}");
+        }
+    }
+
+    #[test]
+    fn set_background_rejects_an_unknown_fit_and_changes_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("wall.png"), b"x").unwrap();
+        let (tx, rx) = channel();
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &set_background_steps("wall.png", Some("stretch")), &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        assert!(!has_set_background(&events));
+        assert!(matches!(events.last(), Some(FnEvent::Failed { error, .. }) if error.contains("stretch")));
+    }
+
+    #[test]
+    fn set_background_follows_a_symlink_and_fails_on_a_dangling_one() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("real.dat"), b"x").unwrap();
+        std::os::unix::fs::symlink(td.path().join("real.dat"), td.path().join("link.png")).unwrap();
+        std::os::unix::fs::symlink(td.path().join("gone.dat"), td.path().join("dangling.png")).unwrap();
+        let src = ctx(&[], td.path().to_str().unwrap());
+
+        let (tx, rx) = channel();
+        run_steps(1, &set_background_steps("link.png", None), &src, None, &tx);
+        drop(tx);
+        assert!(has_set_background(&drain(rx)), "extension is checked on the name the user picked");
+
+        let (tx, rx) = channel();
+        run_steps(1, &set_background_steps("dangling.png", None), &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        assert!(!has_set_background(&events));
+        assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
+    }
+
+    #[test]
+    fn set_background_keeps_unknown_braces_in_the_path_literal() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("a{x}.png"), b"x").unwrap();
+        let (tx, rx) = channel();
+        let src = ctx(&[], td.path().to_str().unwrap());
+        run_steps(1, &set_background_steps("a{x}.png", None), &src, None, &tx);
+        drop(tx);
+        assert!(has_set_background(&drain(rx)));
     }
 }
