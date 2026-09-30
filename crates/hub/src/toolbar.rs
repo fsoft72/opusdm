@@ -25,7 +25,7 @@ const DESKTOP_MENU_BORDER: &str = "#1b1d1e";
 /// Approximate menu width/height, reserved when clamping the menu inside the
 /// desktop so a right-click near an edge still shows the whole menu.
 const DESKTOP_MENU_W: i32 = 180;
-const DESKTOP_MENU_H: i32 = 210;
+const DESKTOP_MENU_H: i32 = 240;
 
 /// Delay before re-asserting a desktop window's geometry once, after the WM
 /// has had a chance to run its placement policy (on first map) or after a
@@ -119,6 +119,11 @@ struct DesktopState {
     /// Latest-wins gate shared by every reload of the desktop field, so a slow
     /// off-thread read never overwrites the result of a newer one.
     reload_gate: opusdm_hub::leftout::ReloadGate,
+    /// The program groups (`groups/<id>.json`), owned by the GTK side like
+    /// `leftout`: every change is saved and the field and windows refreshed.
+    groups: RefCell<opusdm_ipc::Groups>,
+    /// The group windows currently open.
+    group_windows: crate::group_window::GroupWindows,
 }
 
 /// Live widget handles shared by the event pump.
@@ -172,6 +177,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
             settings: RefCell::new(desktop_settings),
             desired_dir: RefCell::new(desired_desktop_dir),
             leftout: RefCell::new(opusdm_ipc::LeftOut::load()),
+            groups: RefCell::new(opusdm_ipc::Groups::load()),
             ..Default::default()
         },
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
@@ -362,7 +368,7 @@ fn build_one_desktop_window(
     let (desktop_area, field) = build_desktop_area(
         if is_primary { desktop_dir } else { None },
         icon_set,
-        widgets.desktop.leftout.borrow().clone(),
+        desktop_extras(widgets),
         panel_position,
     );
     window.set_child(Some(&desktop_area));
@@ -403,9 +409,14 @@ fn build_one_desktop_window(
 fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconField) {
     {
         let cmd_tx = widgets.cmd_tx.clone();
+        let widgets = widgets.clone();
         let field_for_open = field.clone();
         field.connect_activate(move |i| {
             let Some(entry) = field_for_open.entry(i) else { return };
+            if let Some(id) = opusdm_ipc::groups::group_id(&entry.path) {
+                open_group(&widgets, id);
+                return;
+            }
             if entry.left_out && entry.kind == opusdm_iconview::IconKind::Broken {
                 opusdm_ipc::err_log!("hub", "left-out target missing: {}", entry.path.display());
                 return;
@@ -427,8 +438,19 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
     }
     {
         let widgets = widgets.clone();
-        field.connect_drop_uris(move |srcs, _target, shift| {
+        let field_for_drop = field.clone();
+        field.connect_drop_uris(move |srcs, target, shift| {
             if srcs.is_empty() {
+                return;
+            }
+            // Dropped on a group icon: add the items to the group instead of
+            // copying them into the desktop folder.
+            let group_target = usize::try_from(target)
+                .ok()
+                .and_then(|i| field_for_drop.entry(i))
+                .and_then(|e| opusdm_ipc::groups::group_id(&e.path).map(str::to_string));
+            if let Some(id) = group_target {
+                add_to_group(&widgets, &id, srcs);
                 return;
             }
             let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
@@ -439,11 +461,26 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
     {
         let widgets = widgets.clone();
         field.connect_pinned_moved(move |moved| {
-            let mut left = widgets.desktop.leftout.borrow_mut();
+            let mut left_out_moved = false;
+            let mut moved_groups = Vec::new();
             for (path, (x, y)) in &moved {
-                left.set_position(path, *x, *y);
+                match opusdm_ipc::groups::group_id(path) {
+                    Some(id) => {
+                        widgets.desktop.groups.borrow_mut().set_position(id, *x, *y);
+                        moved_groups.push(id.to_string());
+                    }
+                    None => {
+                        widgets.desktop.leftout.borrow_mut().set_position(path, *x, *y);
+                        left_out_moved = true;
+                    }
+                }
             }
-            save_leftout(&left);
+            if left_out_moved {
+                save_leftout(&widgets.desktop.leftout.borrow());
+            }
+            for id in moved_groups {
+                save_group(&widgets, &id);
+            }
         });
     }
 }
@@ -491,12 +528,12 @@ fn install_desktop_css(bg: &opusdm_ipc::Background) {
 /// a left-out target on a slow disk) never freezes the desktop and panel.
 fn read_entries_async(
     dir: PathBuf,
-    left: opusdm_ipc::LeftOut,
+    extras: opusdm_hub::leftout::DesktopExtras,
     on_done: impl Fn(std::io::Result<Vec<opusdm_iconview::IconEntry>>) + 'static,
 ) {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
-        let _ = tx.send_blocking(opusdm_hub::leftout::read_desktop_entries(&dir, &opusdm_hub::leftout::DesktopExtras::from(left)));
+        let _ = tx.send_blocking(opusdm_hub::leftout::read_desktop_entries(&dir, &extras));
     });
     glib::spawn_future_local(async move {
         if let Ok(result) = rx.recv().await {
@@ -507,8 +544,12 @@ fn read_entries_async(
 
 /// Show `entries` in `field`, first handing it the saved positions of the
 /// left-out icons so they land where the user dragged them.
-fn show_entries(field: &opusdm_iconview::IconField, left: &opusdm_ipc::LeftOut, entries: &[opusdm_iconview::IconEntry]) {
-    field.set_pinned_positions(left.positions());
+fn show_entries(
+    field: &opusdm_iconview::IconField,
+    extras: &opusdm_hub::leftout::DesktopExtras,
+    entries: &[opusdm_iconview::IconEntry],
+) {
+    field.set_pinned_positions(extras.positions());
     field.set_entries(entries);
 }
 
@@ -519,19 +560,221 @@ fn reload_desktop_field(widgets: &Rc<Widgets>) {
     let dir = widgets.desktop.dir.borrow().clone();
     let (Some(field), Some(dir)) = (field, dir) else { return };
     let ticket = widgets.desktop.reload_gate.begin();
-    let left = widgets.desktop.leftout.borrow().clone();
+    let extras = desktop_extras(widgets);
     let widgets = widgets.clone();
-    read_entries_async(dir.clone(), left, move |result| {
+    read_entries_async(dir.clone(), extras, move |result| {
         if !widgets.desktop.reload_gate.is_latest(ticket) {
             return;
         }
         match result {
             // The store as it is now, not as it was when the read started: an
             // icon dragged in the meantime keeps its new spot.
-            Ok(entries) => show_entries(&field, &widgets.desktop.leftout.borrow(), &entries),
+            Ok(entries) => show_entries(&field, &desktop_extras(&widgets), &entries),
             Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
         }
     });
+}
+
+/// Everything the desktop shows besides the Desktop folder, as it is now.
+fn desktop_extras(widgets: &Widgets) -> opusdm_hub::leftout::DesktopExtras {
+    opusdm_hub::leftout::DesktopExtras {
+        left_out: widgets.desktop.leftout.borrow().clone(),
+        groups: widgets.desktop.groups.borrow().clone(),
+    }
+}
+
+/// Persist group `id`, logging (not failing) on error.
+fn save_group(widgets: &Widgets, id: &str) {
+    if let Err(e) = widgets.desktop.groups.borrow().save_group(id) {
+        opusdm_ipc::err_log!("hub", "cannot save group {id}: {e}");
+    }
+}
+
+/// After any change to the groups: bring the open group windows and the
+/// desktop icons in line with the store.
+fn groups_changed(widgets: &Rc<Widgets>) {
+    let snapshot = widgets.desktop.groups.borrow().clone();
+    widgets.desktop.group_windows.refresh(&snapshot);
+    reload_desktop_field(widgets);
+}
+
+/// Tell the user why a group operation was refused.
+fn show_group_error(widgets: &Rc<Widgets>, message: &str) {
+    opusdm_ui::requester(&widgets.primary_window(), "Request", message, None, &[("OK", true)], |_| {});
+}
+
+/// Add `paths` to group `id`, save and refresh. Nothing happens when every path
+/// is already a member (or is not absolute).
+fn add_to_group(widgets: &Rc<Widgets>, id: &str, paths: Vec<PathBuf>) {
+    let added = widgets.desktop.groups.borrow_mut().add_items(id, &paths);
+    if added == 0 {
+        return;
+    }
+    save_group(widgets, id);
+    groups_changed(widgets);
+}
+
+/// Start a group member the way [`opusdm_hub::leftout::launch_action`] says.
+/// Failures are logged.
+fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconEntry) {
+    use opusdm_hub::leftout::LaunchAction;
+    match opusdm_hub::leftout::launch_action(entry) {
+        LaunchAction::Lister => {
+            let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path.clone()) });
+        }
+        LaunchAction::DesktopEntry => match gio::DesktopAppInfo::from_filename(&entry.path) {
+            Some(info) => {
+                if let Err(e) = info.launch(&[], gio::AppLaunchContext::NONE) {
+                    opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", entry.path.display());
+                }
+            }
+            None => opusdm_ipc::err_log!("hub", "{} is not a valid .desktop file", entry.path.display()),
+        },
+        LaunchAction::Program => {
+            let mut cmd = std::process::Command::new(&entry.path);
+            if let Some(dir) = entry.path.parent() {
+                cmd.current_dir(dir);
+            }
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if let Err(e) = cmd.spawn() {
+                opusdm_ipc::err_log!("hub", "cannot run {}: {e}", entry.path.display());
+            }
+        }
+        LaunchAction::Default => {
+            let uri = gio::File::for_path(&entry.path).uri();
+            if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
+                opusdm_ipc::err_log!("hub", "cannot open {}: {e}", entry.path.display());
+            }
+        }
+    }
+}
+
+/// The callbacks a group window uses to talk back to the desktop.
+fn group_actions(widgets: &Rc<Widgets>) -> crate::group_window::GroupActions {
+    let for_launch = widgets.clone();
+    let for_add = widgets.clone();
+    let for_remove = widgets.clone();
+    crate::group_window::GroupActions {
+        launch: Rc::new(move |entry| launch_entry(&for_launch, entry)),
+        add: Rc::new(move |id, paths| add_to_group(&for_add, id, paths)),
+        remove: Rc::new(move |id, path| {
+            for_remove.desktop.groups.borrow_mut().remove_item(id, &path);
+            save_group(&for_remove, id);
+            groups_changed(&for_remove);
+        }),
+    }
+}
+
+/// Open (or raise) the window of group `id`.
+fn open_group(widgets: &Rc<Widgets>, id: &str) {
+    let Some(app) = widgets.primary_window().application() else { return };
+    let Some(group) = widgets.desktop.groups.borrow().get(id).cloned() else { return };
+    let icon_set = widgets.desktop.icon_set.borrow().clone();
+    widgets.desktop.group_windows.show(&app, &group, &icon_set, &group_actions(widgets));
+}
+
+/// Ask for a name and create a new, empty group.
+fn new_group_dialog(widgets: &Rc<Widgets>) {
+    let widgets = widgets.clone();
+    opusdm_ui::requester_entry(
+        &widgets.primary_window(),
+        "New group name",
+        "",
+        &[("OK", true), ("Cancel", false)],
+        move |accepted, text| {
+            if !accepted {
+                return;
+            }
+            let created = widgets.desktop.groups.borrow_mut().create(&text);
+            match created {
+                Ok(id) => {
+                    save_group(&widgets, &id);
+                    groups_changed(&widgets);
+                }
+                Err(message) => show_group_error(&widgets, &message),
+            }
+        },
+    );
+}
+
+/// The context menu of a group icon: Open, Rename Group..., Delete Group...
+fn fill_group_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconEntry) {
+    let Some(id) = opusdm_ipc::groups::group_id(&entry.path).map(str::to_string) else { return };
+    {
+        let id = id.clone();
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Open");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            open_group(&widgets, &id);
+        });
+        menu.append(&btn);
+    }
+    {
+        let id = id.clone();
+        let name = entry.name.clone();
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Rename Group...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let id = id.clone();
+            let widgets_for_cb = widgets.clone();
+            opusdm_ui::requester_entry(
+                &widgets.primary_window(),
+                "Rename group",
+                &name,
+                &[("OK", true), ("Cancel", false)],
+                move |accepted, text| {
+                    if !accepted {
+                        return;
+                    }
+                    let renamed = widgets_for_cb.desktop.groups.borrow_mut().rename(&id, &text);
+                    match renamed {
+                        Ok(()) => {
+                            save_group(&widgets_for_cb, &id);
+                            groups_changed(&widgets_for_cb);
+                        }
+                        Err(message) => show_group_error(&widgets_for_cb, &message),
+                    }
+                },
+            );
+        });
+        menu.append(&btn);
+    }
+    {
+        let id = id.clone();
+        let name = entry.name.clone();
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Delete Group...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let id = id.clone();
+            let widgets_for_cb = widgets.clone();
+            opusdm_ui::requester(
+                &widgets.primary_window(),
+                "Request",
+                &format!("Delete the group \"{name}\"? Its members are not touched."),
+                None,
+                &[("Delete", true), ("Cancel", false)],
+                move |confirmed| {
+                    if !confirmed {
+                        return;
+                    }
+                    widgets_for_cb.desktop.groups.borrow_mut().delete(&id);
+                    if let Err(e) = opusdm_ipc::Groups::remove_group_file(&id) {
+                        opusdm_ipc::err_log!("hub", "cannot delete group file {id}: {e}");
+                    }
+                    groups_changed(&widgets_for_cb);
+                },
+            );
+        });
+        menu.append(&btn);
+    }
 }
 
 /// Persist the left-out store, logging (not failing) on error: the in-memory
@@ -566,14 +809,14 @@ fn spawn_desktop_watch(
                     let ticket = widgets.desktop.reload_gate.begin();
                     let field = field.clone();
                     let dir = dir.clone();
-                    let left = widgets.desktop.leftout.borrow().clone();
+                    let extras = desktop_extras(&widgets);
                     let widgets = widgets.clone();
-                    read_entries_async(dir.clone(), left, move |result| {
+                    read_entries_async(dir.clone(), extras, move |result| {
                         if !widgets.desktop.reload_gate.is_latest(ticket) {
                             return;
                         }
                         match result {
-                            Ok(entries) => show_entries(&field, &widgets.desktop.leftout.borrow(), &entries),
+                            Ok(entries) => show_entries(&field, &desktop_extras(&widgets), &entries),
                             Err(e) => {
                                 opusdm_ipc::err_log!("hub", "desktop reload failed for {}: {e}", dir.display())
                             }
@@ -617,7 +860,7 @@ fn launch_theme_config() {
 fn build_desktop_area(
     desktop_dir: Option<&Path>,
     icon_set: opusdm_ipc::IconSetId,
-    left: opusdm_ipc::LeftOut,
+    extras: opusdm_hub::leftout::DesktopExtras,
     panel_position: opusdm_ipc::PanelPosition,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
@@ -637,9 +880,9 @@ fn build_desktop_area(
             {
                 let f = f.clone();
                 let dir = dir.to_path_buf();
-                let left_for_show = left.clone();
-                read_entries_async(dir.clone(), left, move |result| match result {
-                    Ok(entries) => show_entries(&f, &left_for_show, &entries),
+                let extras_for_show = extras.clone();
+                read_entries_async(dir.clone(), extras, move |result| match result {
+                    Ok(entries) => show_entries(&f, &extras_for_show, &entries),
                     Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
                 });
             }
@@ -819,6 +1062,11 @@ fn attach_desktop_menu(overlay: &gtk::Overlay, widgets: &Rc<Widgets>, field: Opt
 fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconEntry) {
     while let Some(child) = menu.first_child() {
         menu.remove(&child);
+    }
+
+    if entry.group {
+        fill_group_menu(menu, widgets, entry);
+        return;
     }
 
     // Open
@@ -1004,6 +1252,18 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
                 dest_dir,
                 |name| opusdm_ipc::Op::NewFile { name },
             );
+        });
+        menu.append(&btn);
+    }
+
+    // New Group
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("New Group...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            new_group_dialog(&widgets);
         });
         menu.append(&btn);
     }

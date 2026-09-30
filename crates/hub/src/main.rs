@@ -2,6 +2,7 @@
 
 mod desktop;
 mod desktop_ops;
+mod group_window;
 mod progress_window;
 mod toolbar;
 
