@@ -58,6 +58,10 @@ pub(super) struct LayoutState {
     pub(super) grid_gap: Cell<i32>,
     pub(super) arrange: RefCell<Box<dyn Arrange>>,
     pub(super) free_positions: RefCell<HashMap<usize, (f64, f64)>>,
+    /// Positions pinned by path (left-out desktop icons). Applied on top of
+    /// the index-keyed `free_positions` by `apply_pinned`, so they survive a
+    /// reload that clears or reorders the entries.
+    pub(super) pinned: RefCell<HashMap<PathBuf, (f64, f64)>>,
     /// Last laid-out rectangle per item: (x, y, w, h) in the `Fixed`'s space.
     /// Filled by `relayout`; hit-testing and nav read this, not GTK geometry,
     /// so they work before the widget is realized.
@@ -84,6 +88,7 @@ pub(super) struct Events {
     pub(super) on_rename_requested: Listeners<dyn Fn(usize, String)>,
     pub(super) on_zoom_requested: Listeners<dyn Fn(i32)>,
     pub(super) on_move_icons: Listeners<dyn Fn()>,
+    pub(super) on_pinned_moved: Listeners<dyn Fn(Vec<(PathBuf, (f64, f64))>)>,
 }
 
 pub(super) struct Inner {
@@ -129,6 +134,7 @@ impl IconField {
                 grid_gap: Cell::new(4),
                 arrange: RefCell::new(Box::new(GridArrange::new())),
                 free_positions: RefCell::new(HashMap::new()),
+                pinned: RefCell::new(HashMap::new()),
                 item_rects: RefCell::new(Vec::new()),
                 reposition_active: Cell::new(false),
                 drag_bases: RefCell::new(Vec::new()),
@@ -147,6 +153,7 @@ impl IconField {
                 on_rename_requested: RefCell::new(Vec::new()),
                 on_zoom_requested: RefCell::new(Vec::new()),
                 on_move_icons: RefCell::new(Vec::new()),
+                on_pinned_moved: RefCell::new(Vec::new()),
             },
             thumb_pool,
         });
@@ -192,6 +199,7 @@ impl IconField {
         self.inner.layout.thumb_cache.borrow_mut().clear();
         *self.inner.layout.entries.borrow_mut() = entries.to_vec();
         self.inner.layout.free_positions.borrow_mut().clear();
+        self.apply_pinned();
         self.inner.selection.selected.borrow_mut().clear();
         self.inner.selection.anchor.set(None);
         self.inner.selection.cursor.set(None);
@@ -238,6 +246,8 @@ impl IconField {
                 }
             }
         }
+
+        self.apply_pinned();
 
         // Re-key cached thumbnails to the new indices; entries that kept
         // their path keep their thumbnail.
@@ -478,6 +488,34 @@ impl IconField {
         self.inner.events.on_move_icons.borrow_mut().push(Box::new(f));
     }
 
+    /// Replace the pinned positions (by path). They apply to the entries
+    /// shown by the next `set_entries` / `refresh_entries`.
+    pub fn set_pinned_positions(&self, positions: HashMap<PathBuf, (f64, f64)>) {
+        *self.inner.layout.pinned.borrow_mut() = positions;
+    }
+
+    /// Register a listener fired at the end of a reposition drag with the new
+    /// position of every moved entry whose `left_out` flag is set. Not fired
+    /// when no such entry moved.
+    pub fn connect_pinned_moved(&self, f: impl Fn(Vec<(PathBuf, (f64, f64))>) + 'static) {
+        self.inner.events.on_pinned_moved.borrow_mut().push(Box::new(f));
+    }
+
+    /// Copy the pinned positions onto the entries that currently have one.
+    fn apply_pinned(&self) {
+        let pinned = self.inner.layout.pinned.borrow();
+        if pinned.is_empty() {
+            return;
+        }
+        let entries = self.inner.layout.entries.borrow();
+        let mut fp = self.inner.layout.free_positions.borrow_mut();
+        for (i, entry) in entries.iter().enumerate() {
+            if let Some(&pos) = pinned.get(&entry.path) {
+                fp.insert(i, pos);
+            }
+        }
+    }
+
     /// The entry behind index `i`, cloned.
     pub fn entry(&self, i: usize) -> Option<IconEntry> {
         self.inner.layout.entries.borrow().get(i).cloned()
@@ -565,13 +603,36 @@ impl IconField {
         }
         {
             let mut fp = self.inner.layout.free_positions.borrow_mut();
-            for (i, (bx, by)) in bases {
+            for &(i, (bx, by)) in &bases {
                 fp.insert(i, ((bx + ox).max(0.0), (by + oy).max(0.0)));
+            }
+        }
+        // Left-out entries also update their pin, so a reload keeps the spot.
+        let moved: Vec<(PathBuf, (f64, f64))> = {
+            let fp = self.inner.layout.free_positions.borrow();
+            let entries = self.inner.layout.entries.borrow();
+            bases
+                .iter()
+                .filter_map(|&(i, _)| {
+                    let entry = entries.get(i).filter(|e| e.left_out)?;
+                    Some((entry.path.clone(), *fp.get(&i)?))
+                })
+                .collect()
+        };
+        {
+            let mut pinned = self.inner.layout.pinned.borrow_mut();
+            for (path, pos) in &moved {
+                pinned.insert(path.clone(), *pos);
             }
         }
         self.relayout();
         for cb in self.inner.events.on_move_icons.borrow().iter() {
             cb();
+        }
+        if !moved.is_empty() {
+            for cb in self.inner.events.on_pinned_moved.borrow().iter() {
+                cb(moved.clone());
+            }
         }
     }
 
@@ -1023,6 +1084,49 @@ mod tests {
         fs.relayout();
         let narrow_y = fs.inner.layout.item_rects.borrow()[1].1;
         assert!(wide_y > narrow_y, "row pitch should track grid spacing ({wide_y} vs {narrow_y})");
+
+        // --- IconField: pinned positions follow left-out entries by path ---
+        let mk_left = |n: usize| {
+            let mut e = entries(n);
+            e[1].left_out = true;
+            e
+        };
+        let target = PathBuf::from("/tmp/file1.txt");
+        let fp = IconField::new();
+        fp.set_mode(LayoutMode::Free);
+        fp.inner.layout.scroller.set_size_request(600, 400);
+        fp.set_pinned_positions(HashMap::from([(target.clone(), (200.0, 150.0))]));
+        fp.set_entries(&mk_left(3));
+        assert_eq!(fp.free_positions().get(&1), Some(&(200.0, 150.0)));
+        assert!(!fp.free_positions().contains_key(&0), "unpinned entries stay auto-slotted");
+        // A refresh that reorders the entries keeps the pin on the same path.
+        let mut reordered = mk_left(3);
+        reordered.swap(0, 1);
+        fp.refresh_entries(&reordered);
+        assert_eq!(fp.free_positions().get(&0), Some(&(200.0, 150.0)));
+        // A full reload pins it again.
+        fp.set_entries(&mk_left(3));
+        assert_eq!(fp.free_positions().get(&1), Some(&(200.0, 150.0)));
+
+        // Dragging reports only left-out entries, and remembers the new spot.
+        let moved_log: Rc<RefCell<Vec<(PathBuf, (f64, f64))>>> = Rc::new(RefCell::new(Vec::new()));
+        let log = moved_log.clone();
+        fp.connect_pinned_moved(move |m| log.borrow_mut().extend(m));
+        fp.select_all();
+        let r1 = fp.inner.layout.item_rects.borrow()[1];
+        fp.begin_reposition(r1.0 + 2.0, r1.1 + 2.0);
+        fp.update_reposition(50.0, 30.0);
+        fp.end_reposition(50.0, 30.0);
+        assert_eq!(*moved_log.borrow(), vec![(target.clone(), (250.0, 180.0))]);
+        fp.set_entries(&mk_left(3));
+        assert_eq!(fp.free_positions().get(&1), Some(&(250.0, 180.0)));
+
+        // A sub-threshold nudge reports nothing.
+        moved_log.borrow_mut().clear();
+        let r1 = fp.inner.layout.item_rects.borrow()[1];
+        fp.begin_reposition(r1.0 + 2.0, r1.1 + 2.0);
+        fp.end_reposition(1.0, 1.0);
+        assert!(moved_log.borrow().is_empty());
 
         // --- IconField: virtualization above VIRTUALIZE_THRESHOLD ---
         let big = entries(VIRTUALIZE_THRESHOLD + 100);
