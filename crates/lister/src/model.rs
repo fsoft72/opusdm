@@ -351,6 +351,7 @@ pub fn row_to_entry(row: &Row, dir: &Path) -> opusdm_iconview::IconEntry {
         kind,
         mode: row.mode,
         ext,
+        left_out: false,
     }
 }
 

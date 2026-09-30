@@ -19,6 +19,8 @@ struct Inner {
     name_entry: gtk::Entry,
     original_name: RefCell<String>,
     on_commit: CommitFn,
+    /// The left-out arrow badge, when the entry is a left-out desktop icon.
+    badge: Option<gtk::Label>,
 }
 
 /// A single item widget. Cheap to clone (shared `Rc`).
@@ -98,8 +100,26 @@ impl IconItem {
         name_stack.add_named(&name_label, Some("label"));
         name_stack.set_visible_child_name("label");
 
-        root.append(&icon);
-        root.append(&thumb);
+        // A left-out entry wraps the icon art in an overlay that carries the
+        // arrow badge; an overlay child never changes the measured size.
+        let badge = if entry.left_out {
+            let art = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            art.append(&icon);
+            art.append(&thumb);
+            let badge = gtk::Label::new(Some("\u{2197}"));
+            badge.add_css_class("icon-item-badge");
+            badge.set_halign(gtk::Align::End);
+            badge.set_valign(gtk::Align::End);
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&art));
+            overlay.add_overlay(&badge);
+            root.append(&overlay);
+            Some(badge)
+        } else {
+            root.append(&icon);
+            root.append(&thumb);
+            None
+        };
         root.append(&name_stack);
 
         let inner = Rc::new(Inner {
@@ -111,6 +131,7 @@ impl IconItem {
             name_entry,
             original_name: RefCell::new(entry.name.clone()),
             on_commit: RefCell::new(None),
+            badge,
         });
 
         let item = IconItem { inner };
@@ -193,6 +214,11 @@ impl IconItem {
     /// or content thumbnail) rather than the blank placeholder.
     pub fn shows_image(&self) -> bool {
         self.inner.thumb.is_visible()
+    }
+
+    /// Whether the left-out arrow badge is drawn on this item.
+    pub fn shows_badge(&self) -> bool {
+        self.inner.badge.is_some()
     }
 
     /// Show `texture` in place of the placeholder.

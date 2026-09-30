@@ -72,6 +72,9 @@ pub struct IconEntry {
     pub mode: u32,
     /// Lowercase final extension, if any.
     pub ext: Option<String>,
+    /// Whether this entry is a "left out" desktop icon (drawn with an arrow
+    /// badge, position pinned by path).
+    pub left_out: bool,
 }
 
 impl IconEntry {

@@ -731,6 +731,7 @@ mod tests {
                 kind: IconKind::File,
                 mode: 0o100_644,
                 ext: Some("txt".into()),
+                left_out: false,
             })
             .collect()
     }
@@ -782,6 +783,7 @@ mod tests {
             kind: IconKind::File,
             mode: 0o100_644,
             ext: Some("jpg".into()),
+            left_out: false,
         };
         let long = IconItem::new(&long_name, 64, &no_icons());
         // Width of the same text on one unwrapped line, for reference.
@@ -818,6 +820,15 @@ mod tests {
         );
         plain.set_thumbnail(tall.upcast_ref::<gtk::gdk::Texture>());
         assert_eq!(plain.measure(), before);
+
+        // --- IconItem: a left-out entry shows the badge without changing size ---
+        let mut left = entries(1).remove(0);
+        left.left_out = true;
+        let badged = IconItem::new(&left, 64, &no_icons());
+        let unbadged = IconItem::new(&entries(1)[0], 64, &no_icons());
+        assert!(badged.shows_badge());
+        assert!(!unbadged.shows_badge());
+        assert_eq!(badged.measure(), unbadged.measure());
 
         // --- IconField: background double-click fires connect_background_activate ---
         let f = IconField::new();
@@ -972,6 +983,7 @@ mod tests {
             kind: IconKind::File,
             mode: 0o100_644,
             ext: Some("rs".into()),
+            left_out: false,
         }]);
         // "rs" is not previewable, so no job is queued and nothing panics.
         f_on.set_icon_size(200);

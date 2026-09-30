@@ -59,10 +59,34 @@ pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>>
             }
         };
         let ext = if kind == IconKind::Dir { None } else { IconEntry::ext_of(&name) };
-        out.push(IconEntry { name, path: entry.path(), kind, mode, ext });
+        out.push(IconEntry { name, path: entry.path(), kind, mode, ext, left_out: false });
     }
     sort_dirs_first(&mut out);
     Ok(out)
+}
+
+/// Build the entry for one absolute `path`, wherever it lives. A path that
+/// does not exist (or cannot be inspected) is `IconKind::Broken` with mode 0;
+/// a symlink is `Symlink` when its target resolves and `Broken` when it
+/// dangles. The name is the final path component. `left_out` is `false`.
+pub fn entry_for_path(path: &Path) -> IconEntry {
+    use std::os::unix::fs::MetadataExt;
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let (kind, mode) = match std::fs::symlink_metadata(path) {
+        Err(_) => (IconKind::Broken, 0),
+        Ok(m) if m.file_type().is_symlink() => match std::fs::metadata(path) {
+            Ok(target) => (IconKind::Symlink, target.mode()),
+            Err(_) => (IconKind::Broken, 0),
+        },
+        Ok(m) if m.is_dir() => (IconKind::Dir, m.mode()),
+        Ok(m) => (IconKind::File, m.mode()),
+    };
+    let ext = if kind == IconKind::Dir { None } else { IconEntry::ext_of(&name) };
+    IconEntry { name, path: path.to_path_buf(), kind, mode, ext, left_out: false }
 }
 
 /// Sort entries for a tidy grid: directories first, then files, each block by
@@ -150,6 +174,7 @@ mod tests {
             kind,
             mode: 0,
             ext: None,
+            left_out: false,
         };
         let mut v = vec![
             mk("Zebra", IconKind::File),
@@ -160,5 +185,24 @@ mod tests {
         sort_dirs_first(&mut v);
         let names: Vec<&str> = v.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Acme", "beta", "Alpha", "Zebra"]);
+    }
+
+    #[test]
+    fn entry_for_path_reports_file_dir_symlink_and_missing() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        fs::write(base.join("a.txt"), b"x").unwrap();
+        fs::create_dir(base.join("d")).unwrap();
+        std::os::unix::fs::symlink("a.txt", base.join("good")).unwrap();
+        std::os::unix::fs::symlink("nope", base.join("bad")).unwrap();
+
+        let f = entry_for_path(&base.join("a.txt"));
+        assert_eq!((f.name.as_str(), f.kind, f.ext.as_deref()), ("a.txt", IconKind::File, Some("txt")));
+        assert!(!f.left_out);
+        assert_eq!(entry_for_path(&base.join("d")).kind, IconKind::Dir);
+        assert_eq!(entry_for_path(&base.join("good")).kind, IconKind::Symlink);
+        assert_eq!(entry_for_path(&base.join("bad")).kind, IconKind::Broken);
+        let missing = entry_for_path(&base.join("gone.png"));
+        assert_eq!((missing.name.as_str(), missing.kind, missing.mode), ("gone.png", IconKind::Broken, 0));
     }
 }
