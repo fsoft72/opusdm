@@ -133,6 +133,32 @@ pub fn show_context_menu(
         menu_box.append(&btn);
     }
 
+    // Set as Desktop Background (image files only). The path goes in as a
+    // literal template, so a name holding a `{...}` placeholder is refused
+    // instead of being expanded.
+    if !row.is_dir && opusdm_ipc::is_background_image(&target_path) {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let btn = menu_button("Set as Desktop Background");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            let text = target_path.to_string_lossy().into_owned();
+            if text.contains('{') {
+                crate::actions::flash(&ui, "cannot set a background from a path containing '{'");
+                return;
+            }
+            let mut args = std::collections::BTreeMap::new();
+            args.insert("path".to_string(), text);
+            let steps = vec![opusdm_ipc::function::FnStep::Internal {
+                cmd: opusdm_ipc::function::InternalCmd::SetBackground,
+                args: opusdm_ipc::function::InternalArgs(args),
+            }];
+            let _ = ui.hub.client.send(&opusdm_ipc::ToHub::RunFunction { steps });
+        });
+        menu_box.append(&btn);
+    }
+
     // 4. Checksums & Dimensioni cartelle (solo per directories)
     if row.is_dir {
         let ui = ui.clone();
