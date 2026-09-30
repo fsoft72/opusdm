@@ -337,12 +337,57 @@ fn build_flag_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::Par
     row
 }
 
+/// One button-bank parameter: a drop-down of the saved banks, read from disk
+/// now. When the step has no bank yet the first one is stored, so what the
+/// drop-down shows is what gets saved. With no banks at all the field says so
+/// and the required parameter stays missing.
+fn build_bank_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let label = gtk::Label::new(Some(spec.label));
+    label.set_xalign(0.0);
+    row.append(&label);
+
+    let names = opusdm_ipc::buttonbank::Banks::load().names();
+    if names.is_empty() {
+        row.append(&gtk::Label::new(Some("(no button banks yet, create one first)")));
+        return row;
+    }
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let dropdown = gtk::DropDown::from_strings(&refs);
+    let key = spec.key;
+    let current = match state.function.borrow().steps.get(step_idx) {
+        Some(FnStep::Internal { args, .. }) => args.get(key).map(str::to_string),
+        _ => None,
+    };
+    match current.and_then(|c| names.iter().position(|n| *n == c)) {
+        Some(i) => dropdown.set_selected(i as u32),
+        None => {
+            if let Some(FnStep::Internal { args, .. }) = state.function.borrow_mut().steps.get_mut(step_idx) {
+                args.0.insert(key.to_string(), names[0].clone());
+            }
+        }
+    }
+    let state_clone = state.clone();
+    dropdown.connect_selected_notify(move |d| {
+        let Some(name) = names.get(d.selected() as usize) else { return };
+        if let Some(FnStep::Internal { args, .. }) = state_clone.function.borrow_mut().steps.get_mut(step_idx) {
+            args.0.insert(key.to_string(), name.clone());
+        }
+        update_button_states(&state_clone);
+    });
+    row.append(&dropdown);
+    row
+}
+
 /// One parameter entry, writing back into `InternalArgs` on every
 /// keystroke and re-validating so Save/Test flip live. Checkbox parameters
 /// go through [`build_flag_field`].
 fn build_param_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec) -> gtk::Box {
     if spec.kind == schema::ParamKind::Bool {
         return build_flag_field(state, step_idx, spec);
+    }
+    if spec.kind == schema::ParamKind::Bank {
+        return build_bank_field(state, step_idx, spec);
     }
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let label = gtk::Label::new(Some(spec.label));
@@ -385,6 +430,10 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::Hide,
     InternalCmd::Reveal,
     InternalCmd::ToggleHide,
+    InternalCmd::OpenBank,
+    InternalCmd::CloseBank,
+    InternalCmd::ToggleBank,
+    InternalCmd::HideBank,
 ];
 
 /// Ask which `InternalCmd` to add, append it with empty args, and rebuild.

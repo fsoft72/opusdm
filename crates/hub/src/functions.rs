@@ -251,6 +251,9 @@ fn run_internal(
         InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide => {
             unreachable!("Hide, Reveal and ToggleHide are handled by run_hide")
         }
+        InternalCmd::OpenBank | InternalCmd::CloseBank | InternalCmd::ToggleBank | InternalCmd::HideBank => {
+            unreachable!("bank commands are handled by run_bank")
+        }
         InternalCmd::Rename => {
             let template = args.get("new_name").unwrap_or("");
             let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;

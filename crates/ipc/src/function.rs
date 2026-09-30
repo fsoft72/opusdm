@@ -85,9 +85,29 @@ pub enum InternalCmd {
     Reveal,
     /// `Hide` when the desktop is showing, `Reveal` when it is hidden.
     ToggleHide,
+    /// Open (or show) a button bank by name.
+    OpenBank,
+    /// Close a button bank by name.
+    CloseBank,
+    /// Open a bank that is closed or hidden, close one that is showing.
+    ToggleBank,
+    /// Hide a button bank's window without closing it.
+    HideBank,
 }
 
 impl InternalCmd {
+    /// The bank command this is, or `None` for every other command.
+    pub fn bank_action(self) -> Option<crate::buttonbank::BankAction> {
+        use crate::buttonbank::BankAction;
+        match self {
+            InternalCmd::OpenBank => Some(BankAction::Open),
+            InternalCmd::CloseBank => Some(BankAction::Close),
+            InternalCmd::ToggleBank => Some(BankAction::Toggle),
+            InternalCmd::HideBank => Some(BankAction::Hide),
+            _ => None,
+        }
+    }
+
     /// Human-readable label, used in the editor and in error/log messages.
     pub fn label(self) -> &'static str {
         match self {
@@ -107,6 +127,10 @@ impl InternalCmd {
             InternalCmd::Hide => "Hide",
             InternalCmd::Reveal => "Reveal",
             InternalCmd::ToggleHide => "Toggle Hide",
+            InternalCmd::OpenBank => "Open Bank",
+            InternalCmd::CloseBank => "Close Bank",
+            InternalCmd::ToggleBank => "Toggle Bank",
+            InternalCmd::HideBank => "Hide Bank",
         }
     }
 }
@@ -156,6 +180,8 @@ pub mod schema {
         /// Text that may contain `{f}`/`{o}`/... placeholders, expanded at
         /// run time.
         PathTemplate,
+        /// The name of a button bank, picked from the saved banks.
+        Bank,
     }
 
     /// One configurable parameter of an [`InternalCmd`].
@@ -236,6 +262,12 @@ pub mod schema {
             | InternalCmd::Hide
             | InternalCmd::Reveal
             | InternalCmd::ToggleHide => &[],
+            InternalCmd::OpenBank | InternalCmd::CloseBank | InternalCmd::ToggleBank | InternalCmd::HideBank => &[ParamSpec {
+                key: "bank",
+                label: "Button bank",
+                required: true,
+                kind: ParamKind::Bank,
+            }],
             InternalCmd::SetBackground => &[
                 ParamSpec {
                     key: "path",
@@ -745,5 +777,30 @@ mod tests {
             let json = serde_json::to_string(&step).unwrap();
             assert_eq!(serde_json::from_str::<FnStep>(&json).unwrap(), step);
         }
+    }
+
+    #[test]
+    fn bank_commands_need_a_bank_name_and_map_to_actions() {
+        use crate::buttonbank::BankAction;
+        for (cmd, label, action) in [
+            (InternalCmd::OpenBank, "Open Bank", BankAction::Open),
+            (InternalCmd::CloseBank, "Close Bank", BankAction::Close),
+            (InternalCmd::ToggleBank, "Toggle Bank", BankAction::Toggle),
+            (InternalCmd::HideBank, "Hide Bank", BankAction::Hide),
+        ] {
+            assert_eq!(cmd.label(), label);
+            assert_eq!(cmd.bank_action(), Some(action));
+            let params = schema::params_for(cmd);
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].key, "bank");
+            assert!(params[0].required);
+            assert_eq!(params[0].kind, schema::ParamKind::Bank);
+            let step = FnStep::Internal { cmd, args: InternalArgs::default() };
+            let json = serde_json::to_string(&step).unwrap();
+            assert_eq!(serde_json::from_str::<FnStep>(&json).unwrap(), step);
+            let f = Function { id: "x".into(), name: "n".into(), steps: vec![step] };
+            assert_eq!(validate(&f).len(), 1, "an empty bank name must not validate");
+        }
+        assert_eq!(InternalCmd::Copy.bank_action(), None);
     }
 }
