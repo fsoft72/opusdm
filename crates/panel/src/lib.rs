@@ -74,7 +74,7 @@ fn build_bar_window(
 ) -> BarWindow {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("OpusDM Panel")
+        .title(WINDOW_TITLE)
         .decorated(false)
         // Resizable on the GTK side so the dock follows the X geometry we pin
         // when the screen size changes; see the same note in opusdm-hub's
@@ -182,6 +182,9 @@ fn build_bar_window(
 
     BarWindow { window: win, place, menu, pager, tasklist, tray }
 }
+
+/// Title of every panel bar window; the hub uses it to hide and show the panel.
+pub const WINDOW_TITLE: &str = "OpusDM Panel";
 
 /// Build one bar window per monitor, wire every widget, and keep them in sync
 /// with monitor hotplug and mirror changes. Identical monitor rects (a

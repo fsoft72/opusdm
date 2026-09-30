@@ -387,6 +387,7 @@ fn build_window(
     let cache_capacity = settings.behavior.cache_capacity();
     let ui = Rc::new(Ui {
         window: window.clone(),
+        hidden_by_hub: Cell::new(false),
         hub: HubConnection {
             client,
             id,

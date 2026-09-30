@@ -34,6 +34,12 @@ pub enum FnEvent {
     LeaveOut { paths: Vec<PathBuf> },
     /// A `PutAway` step: the hub must remove `paths` from the left-out icons.
     PutAway { paths: Vec<PathBuf> },
+    /// A `Hide` step: the hub must hide the desktop's windows.
+    Hide,
+    /// A `Reveal` step: the hub must bring them back.
+    Reveal,
+    /// A `ToggleHide` step: the hub must flip the hidden state.
+    ToggleHide,
     /// Every step finished successfully.
     AllDone,
 }
@@ -75,6 +81,9 @@ fn run_steps(
             }
             FnStep::Internal { cmd: cmd @ (InternalCmd::LeaveOut | InternalCmd::PutAway), .. } => {
                 run_leave_out(run_id, step_idx, *cmd == InternalCmd::PutAway, &source, events_tx)
+            }
+            FnStep::Internal { cmd: cmd @ (InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide), .. } => {
+                run_hide(run_id, step_idx, *cmd, events_tx)
             }
             FnStep::Internal { cmd, args } => run_internal(run_id, step_idx, *cmd, args, &source, dest, events_tx),
             FnStep::External { argv, cwd_source } => {
@@ -206,6 +215,20 @@ fn run_leave_out(
     Ok(())
 }
 
+/// Run a `Hide`, `Reveal` or `ToggleHide` step: no parameters and no selection
+/// needed, the hub does the work when it receives the event.
+fn run_hide(run_id: u64, step_idx: usize, cmd: InternalCmd, events_tx: &Sender<(u64, FnEvent)>) -> Result<(), String> {
+    let event = match cmd {
+        InternalCmd::Hide => FnEvent::Hide,
+        InternalCmd::Reveal => FnEvent::Reveal,
+        _ => FnEvent::ToggleHide,
+    };
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: cmd.label().to_string() }));
+    let _ = events_tx.send((run_id, event));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
 /// Run one `Internal` step. `Copy`/`Move`/`Delete` reuse the same
 /// `opusdm_fsops::run_job` the hub's own `JobEngine` calls; `MakeDir`/
 /// `NewFile` create directly (no scan/progress needed for one entry);
@@ -224,6 +247,9 @@ fn run_internal(
         InternalCmd::SetBackground => unreachable!("SetBackground is handled by run_set_background"),
         InternalCmd::LeaveOut | InternalCmd::PutAway => {
             unreachable!("LeaveOut and PutAway are handled by run_leave_out")
+        }
+        InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide => {
+            unreachable!("Hide, Reveal and ToggleHide are handled by run_hide")
         }
         InternalCmd::Rename => {
             let template = args.get("new_name").unwrap_or("");
@@ -784,5 +810,23 @@ mod tests {
         let events = drain(rx);
         assert!(events.iter().any(|e| matches!(e, FnEvent::PutAway { paths } if paths.len() == 1)));
         assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn hide_reveal_and_toggle_steps_emit_their_events_without_a_selection() {
+        let cases: [(InternalCmd, fn(&FnEvent) -> bool); 3] = [
+            (InternalCmd::Hide, |e| matches!(e, FnEvent::Hide)),
+            (InternalCmd::Reveal, |e| matches!(e, FnEvent::Reveal)),
+            (InternalCmd::ToggleHide, |e| matches!(e, FnEvent::ToggleHide)),
+        ];
+        for (cmd, is_event) in cases {
+            let (tx, rx) = channel();
+            let src = ctx(&[], "/tmp");
+            run_steps(1, &selection_step(cmd), &src, None, &tx);
+            drop(tx);
+            let events = drain(rx);
+            assert!(events.iter().any(is_event), "{cmd:?} must emit its event");
+            assert!(matches!(events.last(), Some(FnEvent::AllDone)), "{cmd:?}");
+        }
     }
 }

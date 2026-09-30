@@ -75,6 +75,9 @@ pub enum HubEvent {
     LeftOutAdd(Vec<PathBuf>),
     /// Paths to put away: remove them from `leftout.json` and refresh.
     LeftOutRemove(Vec<PathBuf>),
+    /// The desktop was hidden (`true`) or revealed (`false`): the GTK side
+    /// hides or shows the panel, the dock and the group windows.
+    HiddenChanged(bool),
 }
 
 /// Commands the GTK toolbar (or the SIGCHLD handler) sends to the server.
@@ -89,6 +92,10 @@ pub enum HubCmd {
     CancelJob(u64),
     /// Ask a Lister to raise its window.
     PresentLister(ListerId),
+    /// Hide (`true`) or reveal (`false`) the whole desktop environment.
+    SetHidden(bool),
+    /// Flip the hidden state (desktop menu).
+    ToggleHidden,
     /// Run a saved Function on the hub's own initiative (global hotkey,
     /// script event): SOURCE is the current SOURCE Lister, or an empty
     /// selection when there is none.
@@ -309,6 +316,9 @@ struct Hub {
     /// Same lifecycle for desktop settings; updated in place by
     /// `ToHub::SetDesktopSettings` and pushed to the GTK side.
     current_desktop: DesktopSettings,
+    /// Whether the desktop is hidden (Lister windows minimized, panel and dock
+    /// hidden). Not persisted: the hub always starts revealed.
+    hidden: bool,
     /// Loaded once at startup; updated in place by `ToHub::SetBindings`.
     current_bindings: Bindings,
     /// Loaded once at startup; updated in place by `ToHub::SetFormats`.
@@ -486,6 +496,11 @@ impl Hub {
                     emit_roles(&self.roles, &self.conns, &self.evt_tx);
                 }
                 if self.conns.get(&cid).is_some_and(|c| c.registered) {
+                    // A Lister opening while everything is hidden means the user
+                    // wants to see it: bring the whole desktop back.
+                    if self.hidden {
+                        self.set_hidden(false);
+                    }
                     self.emit_script_event(ScriptEvent::ListerOpened);
                 }
             }
@@ -842,6 +857,21 @@ impl Hub {
         let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
     }
 
+    /// Hide or reveal the desktop environment. Does nothing when the state
+    /// already matches; otherwise tells every registered Lister (which
+    /// minimize or restore themselves) and the GTK side (panel, dock, group
+    /// windows).
+    fn set_hidden(&mut self, hidden: bool) {
+        if self.hidden == hidden {
+            return;
+        }
+        self.hidden = hidden;
+        for c in self.conns.values_mut().filter(|c| c.registered) {
+            let _ = c.tx.send(ToLister::SetHidden(hidden).into());
+        }
+        let _ = self.evt_tx.send(HubEvent::HiddenChanged(hidden));
+    }
+
     /// Leave `paths` out on the desktop: refuse the whole request (log only)
     /// when any path is not absolute or does not exist, otherwise ask the GTK
     /// side to add them. Shared by `ToHub::LeaveOut` and the `LeaveOut` step.
@@ -896,6 +926,18 @@ impl Hub {
                 let _ = self.evt_tx.send(HubEvent::LeftOutRemove(paths.clone()));
                 return;
             }
+            crate::functions::FnEvent::Hide => {
+                self.set_hidden(true);
+                return;
+            }
+            crate::functions::FnEvent::Reveal => {
+                self.set_hidden(false);
+                return;
+            }
+            crate::functions::FnEvent::ToggleHide => {
+                self.set_hidden(!self.hidden);
+                return;
+            }
             _ => {}
         }
         if requester == HUB_REQUESTER {
@@ -914,7 +956,11 @@ impl Hub {
             crate::functions::FnEvent::ChangeDir { path } => ToLister::GoTo { path },
             // Applied above, before this match.
             crate::functions::FnEvent::SetBackground { .. } => return,
-            crate::functions::FnEvent::LeaveOut { .. } | crate::functions::FnEvent::PutAway { .. } => return,
+            crate::functions::FnEvent::LeaveOut { .. }
+            | crate::functions::FnEvent::PutAway { .. }
+            | crate::functions::FnEvent::Hide
+            | crate::functions::FnEvent::Reveal
+            | crate::functions::FnEvent::ToggleHide => return,
             crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
             crate::functions::FnEvent::StepDone { step_idx, exit_code } => {
                 ToLister::FunctionStepDone { step_idx, exit_code }
@@ -1067,6 +1113,10 @@ impl Hub {
             HubCmd::RunFunctionHeadless(id) => {
                 self.run_headless(&id);
             }
+
+            HubCmd::SetHidden(hidden) => self.set_hidden(hidden),
+
+            HubCmd::ToggleHidden => self.set_hidden(!self.hidden),
 
             HubCmd::PresentLister(id) => {
                 if let Some(c) = self.conns.get_mut(&id.0) {
@@ -1263,6 +1313,7 @@ fn owner_loop(
         roles: RoleState::default(),
         current_settings: settings::load_settings(),
         current_desktop,
+        hidden: false,
         event_guard: EventGuard::new(),
         global_keys_enabled: opts.global_keys,
         owner_tx: owner_tx.clone(),
@@ -2352,5 +2403,99 @@ mod tests {
         ack_rx.recv_timeout(Duration::from_secs(5)).expect("no acknowledgement");
         let lines = std::fs::read_to_string(&marker).map(|s| s.lines().count()).unwrap_or(0);
         assert_eq!(lines, 1, "the ack came before the Shutdown hook finished");
+    }
+
+    #[test]
+    fn set_hidden_tells_listers_and_the_gtk_side_once_and_toggle_flips_it() {
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut c = connect(&path);
+        send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut c).unwrap().unwrap();
+        let hidden_event = |ev: HubEvent| match ev {
+            HubEvent::HiddenChanged(h) => Some(h),
+            _ => None,
+        };
+
+        handle.cmd_tx.send(HubCmd::SetHidden(true)).unwrap();
+        assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(true));
+        loop {
+            match recv::<_, ToLister>(&mut c).unwrap() {
+                Some(ToLister::SetHidden(true)) => break,
+                Some(_) => continue,
+                None => panic!("connection closed before SetHidden(true)"),
+            }
+        }
+        // Already hidden: no second event.
+        handle.cmd_tx.send(HubCmd::SetHidden(true)).unwrap();
+        assert_eq!(next_matching(&handle, Duration::from_millis(300), hidden_event), None);
+        // Toggle reveals.
+        handle.cmd_tx.send(HubCmd::ToggleHidden).unwrap();
+        assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(false));
+        loop {
+            match recv::<_, ToLister>(&mut c).unwrap() {
+                Some(ToLister::SetHidden(false)) => break,
+                Some(_) => continue,
+                None => panic!("connection closed before SetHidden(false)"),
+            }
+        }
+    }
+
+    #[test]
+    fn registering_a_lister_while_hidden_reveals_everything() {
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        handle.cmd_tx.send(HubCmd::SetHidden(true)).unwrap();
+        let hidden_event = |ev: HubEvent| match ev {
+            HubEvent::HiddenChanged(h) => Some(h),
+            _ => None,
+        };
+        assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(true));
+        let mut c = connect(&path);
+        send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut c).unwrap().unwrap();
+        assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(false));
+    }
+
+    #[test]
+    fn hide_reveal_and_toggle_steps_drive_the_hidden_state() {
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut c = connect(&path);
+        send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut c).unwrap().unwrap();
+        let hidden_event = |ev: HubEvent| match ev {
+            HubEvent::HiddenChanged(h) => Some(h),
+            _ => None,
+        };
+        for (cmd, expected) in [
+            (opusdm_ipc::function::InternalCmd::Hide, true),
+            (opusdm_ipc::function::InternalCmd::ToggleHide, false),
+            (opusdm_ipc::function::InternalCmd::ToggleHide, true),
+            (opusdm_ipc::function::InternalCmd::Reveal, false),
+        ] {
+            let steps = vec![opusdm_ipc::function::FnStep::Internal {
+                cmd,
+                args: opusdm_ipc::function::InternalArgs::default(),
+            }];
+            send(&mut c, &ToHub::RunFunction { steps }).unwrap();
+            let q = loop {
+                match recv::<_, ToLister>(&mut c).unwrap() {
+                    Some(ToLister::QuerySelection) => break true,
+                    Some(_) => continue,
+                    None => break false,
+                }
+            };
+            assert!(q, "no QuerySelection for {cmd:?}");
+            send(&mut c, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+            assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(expected), "{cmd:?}");
+            loop {
+                match recv::<_, ToLister>(&mut c).unwrap() {
+                    Some(ToLister::FunctionDone) => break,
+                    Some(_) => continue,
+                    None => panic!("no FunctionDone"),
+                }
+            }
+        }
     }
 }

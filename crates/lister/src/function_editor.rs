@@ -382,6 +382,9 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::SetBackground,
     InternalCmd::LeaveOut,
     InternalCmd::PutAway,
+    InternalCmd::Hide,
+    InternalCmd::Reveal,
+    InternalCmd::ToggleHide,
 ];
 
 /// Ask which `InternalCmd` to add, append it with empty args, and rebuild.

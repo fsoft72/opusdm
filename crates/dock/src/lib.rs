@@ -56,6 +56,9 @@ struct Dock {
     config_monitor: RefCell<Option<gio::FileMonitor>>,
 }
 
+/// Title of the dock window; the hub uses it to hide and show the dock.
+pub const WINDOW_TITLE: &str = "OpusDM Dock";
+
 /// Build the dock on the primary monitor and present it. The window is owned
 /// by `app`, so it lives as long as the application does. The returned
 /// function applies a new layout live; call it when the desktop settings
@@ -67,7 +70,7 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
     let monitor = primary_monitor();
     let win = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("OpusDM Dock")
+        .title(WINDOW_TITLE)
         .decorated(false)
         // Resizable on the GTK side so the window follows the X geometry we
         // pin; the WM is kept from resizing it by the min = max size hints.

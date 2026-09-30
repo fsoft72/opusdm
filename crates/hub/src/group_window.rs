@@ -119,6 +119,15 @@ impl GroupWindows {
         self.open.borrow_mut().insert(group.id.clone(), Open { window, field });
     }
 
+    /// Show or hide every open group window (used when the desktop is hidden
+    /// or revealed).
+    pub fn set_visible(&self, visible: bool) {
+        let windows: Vec<gtk::Window> = self.open.borrow().values().map(|o| o.window.clone()).collect();
+        for window in windows {
+            window.set_visible(visible);
+        }
+    }
+
     /// Bring every open window in line with `groups`: new title and members,
     /// or closed when its group is gone.
     pub fn refresh(&self, groups: &Groups) {

@@ -397,6 +397,10 @@ pub enum ToLister {
     CheckFitFailed { message: String },
     /// Ask this Lister to raise and focus its window.
     Present,
+    /// The desktop was hidden (`true`) or revealed (`false`): a Lister that
+    /// was on screen minimizes itself, or restores itself if the hub
+    /// minimized it.
+    SetHidden(bool),
     /// Global roles changed. There is at most one SOURCE and zero or more
     /// DEST Listers (a locked DEST persists; the unlocked one is transient).
     /// `source_locked` tells a Lister that isn't SOURCE whether trying to
@@ -793,5 +797,11 @@ mod tests {
     #[test]
     fn leave_out_roundtrips() {
         roundtrip_tohub(ToHub::LeaveOut { paths: vec!["/etc/fstab".into(), "/home/x".into()] });
+    }
+
+    #[test]
+    fn set_hidden_roundtrips() {
+        roundtrip_tolister(ToLister::SetHidden(true));
+        roundtrip_tolister(ToLister::SetHidden(false));
     }
 }

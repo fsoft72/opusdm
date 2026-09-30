@@ -79,6 +79,12 @@ pub enum InternalCmd {
     LeaveOut,
     /// Remove the SOURCE selection from the desktop's left-out icons.
     PutAway,
+    /// Hide every Lister, the panel and the dock; the desktop stays.
+    Hide,
+    /// Bring back what `Hide` hid.
+    Reveal,
+    /// `Hide` when the desktop is showing, `Reveal` when it is hidden.
+    ToggleHide,
 }
 
 impl InternalCmd {
@@ -98,6 +104,9 @@ impl InternalCmd {
             InternalCmd::SetBackground => "Set Background",
             InternalCmd::LeaveOut => "Leave Out",
             InternalCmd::PutAway => "Put Away",
+            InternalCmd::Hide => "Hide",
+            InternalCmd::Reveal => "Reveal",
+            InternalCmd::ToggleHide => "Toggle Hide",
         }
     }
 }
@@ -222,7 +231,11 @@ pub mod schema {
                 required: true,
                 kind: ParamKind::PathTemplate,
             }],
-            InternalCmd::LeaveOut | InternalCmd::PutAway => &[],
+            InternalCmd::LeaveOut
+            | InternalCmd::PutAway
+            | InternalCmd::Hide
+            | InternalCmd::Reveal
+            | InternalCmd::ToggleHide => &[],
             InternalCmd::SetBackground => &[
                 ParamSpec {
                     key: "path",
@@ -713,6 +726,21 @@ mod tests {
         assert!(schema::params_for(InternalCmd::LeaveOut).is_empty());
         assert!(schema::params_for(InternalCmd::PutAway).is_empty());
         for cmd in [InternalCmd::LeaveOut, InternalCmd::PutAway] {
+            let step = FnStep::Internal { cmd, args: InternalArgs::default() };
+            let json = serde_json::to_string(&step).unwrap();
+            assert_eq!(serde_json::from_str::<FnStep>(&json).unwrap(), step);
+        }
+    }
+
+    #[test]
+    fn hide_commands_have_labels_and_no_parameters() {
+        for (cmd, label) in [
+            (InternalCmd::Hide, "Hide"),
+            (InternalCmd::Reveal, "Reveal"),
+            (InternalCmd::ToggleHide, "Toggle Hide"),
+        ] {
+            assert_eq!(cmd.label(), label);
+            assert!(schema::params_for(cmd).is_empty());
             let step = FnStep::Internal { cmd, args: InternalArgs::default() };
             let json = serde_json::to_string(&step).unwrap();
             assert_eq!(serde_json::from_str::<FnStep>(&json).unwrap(), step);

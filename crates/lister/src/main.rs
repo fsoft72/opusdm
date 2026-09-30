@@ -27,6 +27,7 @@ mod gauge;
 mod glyphs;
 mod history;
 mod hotkey_editor;
+mod hidden;
 mod hotkeys;
 mod icons;
 mod job_submit;

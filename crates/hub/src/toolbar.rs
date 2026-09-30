@@ -25,7 +25,7 @@ const DESKTOP_MENU_BORDER: &str = "#1b1d1e";
 /// Approximate menu width/height, reserved when clamping the menu inside the
 /// desktop so a right-click near an edge still shows the whole menu.
 const DESKTOP_MENU_W: i32 = 180;
-const DESKTOP_MENU_H: i32 = 240;
+const DESKTOP_MENU_H: i32 = 270;
 
 /// Delay before re-asserting a desktop window's geometry once, after the WM
 /// has had a chance to run its placement policy (on first map) or after a
@@ -124,6 +124,11 @@ struct DesktopState {
     groups: RefCell<opusdm_ipc::Groups>,
     /// The group windows currently open.
     group_windows: crate::group_window::GroupWindows,
+    /// Whether the desktop is currently hidden (mirrors `HubEvent::HiddenChanged`).
+    hidden: Cell<bool>,
+    /// The "Hide All" / "Reveal" buttons of the desktop menus, relabelled when
+    /// the state changes. Buttons of destroyed windows are pruned on the way.
+    hide_buttons: RefCell<Vec<gtk::Button>>,
 }
 
 /// Live widget handles shared by the event pump.
@@ -573,6 +578,40 @@ fn reload_desktop_field(widgets: &Rc<Widgets>) {
             Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
         }
     });
+}
+
+/// Text of the desktop menu's hide button for the current state.
+fn hide_label(hidden: bool) -> &'static str {
+    if hidden {
+        "Reveal"
+    } else {
+        "Hide All"
+    }
+}
+
+/// Hide (`true`) or show the panel, the dock and the group windows, and
+/// relabel the desktop menu button. The desktop itself always stays, so it can
+/// reveal the rest; the Lister windows react to their own `SetHidden`.
+fn apply_hidden(widgets: &Rc<Widgets>, hidden: bool) {
+    widgets.desktop.hidden.set(hidden);
+    if let Some(app) = widgets.primary_window().application() {
+        for window in app.windows() {
+            let title = window.title();
+            let is_chrome = matches!(
+                title.as_deref(),
+                Some(t) if t == opusdm_panel::WINDOW_TITLE || t == opusdm_dock::WINDOW_TITLE
+            );
+            if is_chrome {
+                window.set_visible(!hidden);
+            }
+        }
+    }
+    widgets.desktop.group_windows.set_visible(!hidden);
+    let mut buttons = widgets.desktop.hide_buttons.borrow_mut();
+    buttons.retain(|b| b.root().is_some());
+    for button in buttons.iter() {
+        button.set_label(hide_label(hidden));
+    }
 }
 
 /// Everything the desktop shows besides the Desktop folder, as it is now.
@@ -1263,6 +1302,19 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
         menu.append(&btn);
     }
 
+    // Hide All / Reveal
+    {
+        let cmd_tx = widgets.cmd_tx.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button(hide_label(widgets.desktop.hidden.get()));
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let _ = cmd_tx.send(HubCmd::ToggleHidden);
+        });
+        widgets.desktop.hide_buttons.borrow_mut().push(btn.clone());
+        menu.append(&btn);
+    }
+
     // New Group
     {
         let widgets = widgets.clone();
@@ -1439,6 +1491,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 field.set_icon_set(theme.icon_set);
             }
         }
+        HubEvent::HiddenChanged(hidden) => apply_hidden(widgets, hidden),
         HubEvent::LeftOutAdd(paths) => {
             {
                 let mut left = widgets.desktop.leftout.borrow_mut();

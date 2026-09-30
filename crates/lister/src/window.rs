@@ -131,6 +131,9 @@ pub struct Ui {
     pub hub: HubConnection,
     /// Current directory.
     pub cwd: RefCell<PathBuf>,
+    /// Whether the hub minimized this window when it hid the desktop, so a
+    /// reveal knows it should bring it back.
+    pub hidden_by_hub: Cell<bool>,
     /// The file area's model, selection and view-mode state.
     pub view: ViewState,
     /// Top status bar widgets and cached totals.
@@ -385,6 +388,26 @@ impl Ui {
         self.navigate(&cwd, false, move || this.select_names(&selected));
     }
 
+    /// Answer the hub hiding (`true`) or revealing (`false`) the desktop:
+    /// minimize this window, or bring it back if the hub minimized it.
+    pub fn set_hidden(&self, hidden: bool) {
+        let minimized = self
+            .window
+            .surface()
+            .and_then(|s| s.downcast::<gtk::gdk::Toplevel>().ok())
+            .is_some_and(|t| t.state().contains(gtk::gdk::ToplevelState::MINIMIZED));
+        let (action, hidden_by_hub) = crate::hidden::next_step(self.hidden_by_hub.get(), minimized, hidden);
+        self.hidden_by_hub.set(hidden_by_hub);
+        match action {
+            crate::hidden::HideAction::Minimize => self.window.minimize(),
+            crate::hidden::HideAction::Restore => {
+                self.window.unminimize();
+                self.window.present();
+            }
+            crate::hidden::HideAction::Nothing => {}
+        }
+    }
+
     /// Absolute paths of the selected rows.
     pub fn selected_paths(&self) -> Vec<PathBuf> {
         let cwd = self.cwd.borrow().clone();
@@ -497,6 +520,7 @@ impl Ui {
                 }
             }
             ToLister::Present => self.window.present(),
+            ToLister::SetHidden(hidden) => self.set_hidden(hidden),
             ToLister::Shutdown => self.window.close(),
             // Progress is shown centrally by the hub's progress window now.
             ToLister::JobProgress { .. } => {}
