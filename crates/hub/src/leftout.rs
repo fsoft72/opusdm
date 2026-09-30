@@ -4,9 +4,11 @@
 
 use opusdm_iconview::scan;
 use opusdm_iconview::{IconEntry, IconKind};
-use opusdm_ipc::LeftOut;
+use opusdm_ipc::groups::group_path;
+use opusdm_ipc::{Group, Groups, LeftOut};
+use std::collections::HashMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Combine the Desktop folder `desktop` entries with the left-out items. A
 /// left-out path already listed is flagged in place (it appears once); the
@@ -25,9 +27,84 @@ pub fn merge_entries(mut desktop: Vec<IconEntry>, left: &LeftOut) -> Vec<IconEnt
     desktop
 }
 
-/// Read the Desktop folder `dir` (hidden files skipped) and merge in `left`.
-pub fn read_desktop_entries(dir: &Path, left: &LeftOut) -> io::Result<Vec<IconEntry>> {
-    Ok(merge_entries(scan::read_entries(dir, false)?, left))
+/// What the desktop shows besides the contents of the Desktop folder: the
+/// left-out icons and the program groups.
+#[derive(Clone, Default)]
+pub struct DesktopExtras {
+    pub left_out: LeftOut,
+    pub groups: Groups,
+}
+
+impl From<LeftOut> for DesktopExtras {
+    /// Left-out icons only, no groups.
+    fn from(left_out: LeftOut) -> Self {
+        DesktopExtras { left_out, groups: Groups::default() }
+    }
+}
+
+/// The desktop icon of `group`: the folder icon, flagged `group`, keyed by its
+/// virtual `group:<id>` path.
+pub fn group_entry(group: &Group) -> IconEntry {
+    IconEntry {
+        name: group.name.clone(),
+        path: group_path(&group.id),
+        kind: IconKind::Dir,
+        mode: 0o040_755,
+        ext: None,
+        left_out: false,
+        group: true,
+    }
+}
+
+impl DesktopExtras {
+    /// `desktop` (the Desktop folder entries) merged with the left-out icons
+    /// (see [`merge_entries`]), then one group icon per group in store order.
+    pub fn merge(&self, desktop: Vec<IconEntry>) -> Vec<IconEntry> {
+        let mut entries = merge_entries(desktop, &self.left_out);
+        entries.extend(self.groups.groups.iter().map(group_entry));
+        entries
+    }
+
+    /// The saved position of every left-out icon (by real path) and group
+    /// (by virtual path) that has one.
+    pub fn positions(&self) -> HashMap<PathBuf, (f64, f64)> {
+        let mut all = self.left_out.positions();
+        all.extend(self.groups.positions());
+        all
+    }
+}
+
+/// Read the Desktop folder `dir` (hidden files skipped) and merge in
+/// `extras`.
+pub fn read_desktop_entries(dir: &Path, extras: &DesktopExtras) -> io::Result<Vec<IconEntry>> {
+    Ok(extras.merge(scan::read_entries(dir, false)?))
+}
+
+/// How a group member is started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchAction {
+    /// Open a Lister on it (a folder, or a symlink to one).
+    Lister,
+    /// Launch the application a `.desktop` file describes.
+    DesktopEntry,
+    /// Run the executable regular file.
+    Program,
+    /// Hand it to the default application.
+    Default,
+}
+
+/// Decide how `entry` is started when double-clicked in a group.
+pub fn launch_action(entry: &IconEntry) -> LaunchAction {
+    if opens_in_lister(entry) {
+        return LaunchAction::Lister;
+    }
+    if entry.kind == IconKind::File && entry.ext.as_deref() == Some("desktop") {
+        return LaunchAction::DesktopEntry;
+    }
+    if entry.kind == IconKind::File && entry.mode & 0o111 != 0 {
+        return LaunchAction::Program;
+    }
+    LaunchAction::Default
 }
 
 /// Latest-wins gate for asynchronous desktop reloads. Every reload takes a
@@ -80,7 +157,7 @@ mod tests {
         std::fs::write(td.path().join("a.txt"), b"x").unwrap();
         std::fs::write(td.path().join("b.txt"), b"x").unwrap();
         let left = store(&[&td.path().join("a.txt")]);
-        let got = read_desktop_entries(td.path(), &left).unwrap();
+        let got = read_desktop_entries(td.path(), &DesktopExtras::from(left.clone())).unwrap();
         assert_eq!(got.len(), 2);
         let a = got.iter().find(|e| e.name == "a.txt").unwrap();
         let b = got.iter().find(|e| e.name == "b.txt").unwrap();
@@ -95,7 +172,7 @@ mod tests {
         std::fs::write(desk.path().join("mine.txt"), b"x").unwrap();
         std::fs::create_dir(other.path().join("proj")).unwrap();
         let left = store(&[&other.path().join("proj")]);
-        let got = read_desktop_entries(desk.path(), &left).unwrap();
+        let got = read_desktop_entries(desk.path(), &DesktopExtras::from(left.clone())).unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "mine.txt");
         assert!(!got[0].left_out);
@@ -106,7 +183,7 @@ mod tests {
     fn a_missing_target_becomes_a_flagged_broken_entry_and_stays_in_the_store() {
         let desk = tempfile::tempdir().unwrap();
         let left = store(&[Path::new("/definitely/not/here/movie.mkv")]);
-        let got = read_desktop_entries(desk.path(), &left).unwrap();
+        let got = read_desktop_entries(desk.path(), &DesktopExtras::from(left.clone())).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!((got[0].name.as_str(), got[0].kind, got[0].left_out), ("movie.mkv", IconKind::Broken, true));
         assert_eq!(left.items.len(), 1, "merging never edits the store");
@@ -117,7 +194,7 @@ mod tests {
         let desk = tempfile::tempdir().unwrap();
         std::fs::write(desk.path().join("z.txt"), b"x").unwrap();
         let left = store(&[Path::new("/nope/b"), Path::new("/nope/a")]);
-        let got = read_desktop_entries(desk.path(), &left).unwrap();
+        let got = read_desktop_entries(desk.path(), &DesktopExtras::from(left.clone())).unwrap();
         let names: Vec<_> = got.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["z.txt", "b", "a"]);
     }
@@ -126,7 +203,7 @@ mod tests {
     fn an_empty_store_changes_nothing() {
         let desk = tempfile::tempdir().unwrap();
         std::fs::write(desk.path().join("a.txt"), b"x").unwrap();
-        let got = read_desktop_entries(desk.path(), &LeftOut::default()).unwrap();
+        let got = read_desktop_entries(desk.path(), &DesktopExtras::default()).unwrap();
         assert_eq!(got.len(), 1);
         assert!(!got[0].left_out);
     }
@@ -156,5 +233,62 @@ mod tests {
         assert!(!opens_in_lister(&entry("f.txt")));
         assert!(!opens_in_lister(&entry("link_to_file")));
         assert!(!opens_in_lister(&entry("dangling")));
+    }
+
+    fn groups_with(names: &[&str]) -> opusdm_ipc::Groups {
+        let mut g = opusdm_ipc::Groups::default();
+        for n in names {
+            g.create(n).unwrap();
+        }
+        g
+    }
+
+    #[test]
+    fn group_icons_come_after_the_desktop_and_left_out_entries_and_are_flagged() {
+        let desk = tempfile::tempdir().unwrap();
+        std::fs::write(desk.path().join("a.txt"), b"x").unwrap();
+        let extras = DesktopExtras {
+            left_out: store(&[Path::new("/nope/lo")]),
+            groups: groups_with(&["Editors", "Games"]),
+        };
+        let got = read_desktop_entries(desk.path(), &extras).unwrap();
+        let names: Vec<_> = got.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a.txt", "lo", "Editors", "Games"]);
+        let g = &got[2];
+        assert_eq!((g.kind, g.group, g.left_out), (IconKind::Dir, true, false));
+        assert_eq!(g.path, PathBuf::from("group:editors"));
+        assert!(!got[0].group && !got[1].group);
+    }
+
+    #[test]
+    fn positions_merge_left_out_paths_and_group_paths() {
+        let mut left = store(&[Path::new("/a")]);
+        left.set_position(Path::new("/a"), 1.0, 2.0);
+        let mut groups = groups_with(&["Tools"]);
+        groups.set_position("tools", 3.0, 4.0);
+        let pos = DesktopExtras { left_out: left, groups }.positions();
+        assert_eq!(pos.len(), 2);
+        assert_eq!(pos.get(Path::new("/a")), Some(&(1.0, 2.0)));
+        assert_eq!(pos.get(Path::new("group:tools")), Some(&(3.0, 4.0)));
+    }
+
+    #[test]
+    fn launch_action_classifies_group_members() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        std::fs::create_dir(base.join("dir")).unwrap();
+        std::fs::write(base.join("app.desktop"), b"[Desktop Entry]").unwrap();
+        std::fs::write(base.join("tool"), b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(base.join("tool"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(base.join("notes.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(base.join("dir"), base.join("link_to_dir")).unwrap();
+        let action = |name: &str| launch_action(&opusdm_iconview::scan::entry_for_path(&base.join(name)));
+        assert_eq!(action("dir"), LaunchAction::Lister);
+        assert_eq!(action("link_to_dir"), LaunchAction::Lister);
+        assert_eq!(action("app.desktop"), LaunchAction::DesktopEntry);
+        assert_eq!(action("tool"), LaunchAction::Program);
+        assert_eq!(action("notes.txt"), LaunchAction::Default);
+        assert_eq!(action("missing"), LaunchAction::Default);
     }
 }

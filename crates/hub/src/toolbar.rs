@@ -496,7 +496,7 @@ fn read_entries_async(
 ) {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
-        let _ = tx.send_blocking(opusdm_hub::leftout::read_desktop_entries(&dir, &left));
+        let _ = tx.send_blocking(opusdm_hub::leftout::read_desktop_entries(&dir, &opusdm_hub::leftout::DesktopExtras::from(left)));
     });
     glib::spawn_future_local(async move {
         if let Ok(result) = rx.recv().await {
