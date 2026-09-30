@@ -29,6 +29,11 @@ pub enum FnEvent {
     /// install it as the desktop background. `fit` is `None` to keep the
     /// current one.
     SetBackground { path: PathBuf, fit: Option<opusdm_ipc::ImageFit> },
+    /// A `LeaveOut` step validated `paths`: the hub must leave them out on
+    /// the desktop.
+    LeaveOut { paths: Vec<PathBuf> },
+    /// A `PutAway` step: the hub must remove `paths` from the left-out icons.
+    PutAway { paths: Vec<PathBuf> },
     /// Every step finished successfully.
     AllDone,
 }
@@ -67,6 +72,9 @@ fn run_steps(
             }
             FnStep::Internal { cmd: InternalCmd::SetBackground, args } => {
                 run_set_background(run_id, step_idx, args, &source, dest, events_tx)
+            }
+            FnStep::Internal { cmd: cmd @ (InternalCmd::LeaveOut | InternalCmd::PutAway), .. } => {
+                run_leave_out(run_id, step_idx, *cmd == InternalCmd::PutAway, &source, events_tx)
             }
             FnStep::Internal { cmd, args } => run_internal(run_id, step_idx, *cmd, args, &source, dest, events_tx),
             FnStep::External { argv, cwd_source } => {
@@ -173,6 +181,31 @@ fn run_set_background(
     Ok(())
 }
 
+/// Run a `LeaveOut` or (with `put_away`) `PutAway` step on the SOURCE
+/// selection. The selection must not be empty; leaving out also requires
+/// every path to be absolute and present. Nothing is emitted on failure.
+fn run_leave_out(
+    run_id: u64,
+    step_idx: usize,
+    put_away: bool,
+    source: &SelectionCtx,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let label = if put_away { "Put Away" } else { "Leave Out" };
+    if source.paths.is_empty() {
+        return Err(format!("{label}: nothing selected"));
+    }
+    if !put_away {
+        opusdm_ipc::leftout::check_leavable(&source.paths)?;
+    }
+    let paths = source.paths.clone();
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("{label} {} item(s)", paths.len()) }));
+    let event = if put_away { FnEvent::PutAway { paths } } else { FnEvent::LeaveOut { paths } };
+    let _ = events_tx.send((run_id, event));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
 /// Run one `Internal` step. `Copy`/`Move`/`Delete` reuse the same
 /// `opusdm_fsops::run_job` the hub's own `JobEngine` calls; `MakeDir`/
 /// `NewFile` create directly (no scan/progress needed for one entry);
@@ -189,6 +222,9 @@ fn run_internal(
     match cmd {
         InternalCmd::ChangeDir => unreachable!("ChangeDir is handled by run_change_dir"),
         InternalCmd::SetBackground => unreachable!("SetBackground is handled by run_set_background"),
+        InternalCmd::LeaveOut | InternalCmd::PutAway => {
+            unreachable!("LeaveOut and PutAway are handled by run_leave_out")
+        }
         InternalCmd::Rename => {
             let template = args.get("new_name").unwrap_or("");
             let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;
@@ -693,5 +729,60 @@ mod tests {
         run_steps(1, &set_background_steps("a{x}.png", None), &src, None, &tx);
         drop(tx);
         assert!(has_set_background(&drain(rx)));
+    }
+
+    fn selection_step(cmd: InternalCmd) -> Vec<FnStep> {
+        vec![FnStep::Internal { cmd, args: InternalArgs::default() }]
+    }
+
+    #[test]
+    fn leave_out_emits_the_selection() {
+        let td = tempfile::tempdir().unwrap();
+        let a = td.path().join("a.txt");
+        std::fs::write(&a, b"x").unwrap();
+        let (tx, rx) = channel();
+        let src = ctx(&[a.to_str().unwrap()], td.path().to_str().unwrap());
+        run_steps(1, &selection_step(InternalCmd::LeaveOut), &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        assert!(events.iter().any(|e| matches!(e, FnEvent::LeaveOut { paths } if *paths == vec![a.clone()])));
+        assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn leave_out_and_put_away_fail_on_an_empty_selection() {
+        for (cmd, text) in [(InternalCmd::LeaveOut, "Leave Out: nothing selected"), (InternalCmd::PutAway, "Put Away: nothing selected")] {
+            let (tx, rx) = channel();
+            let src = ctx(&[], "/tmp");
+            run_steps(1, &selection_step(cmd), &src, None, &tx);
+            drop(tx);
+            let events = drain(rx);
+            assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error == text), "{text}");
+            assert!(!events.iter().any(|e| matches!(e, FnEvent::LeaveOut { .. } | FnEvent::PutAway { .. })));
+        }
+    }
+
+    #[test]
+    fn leave_out_refuses_a_missing_path_and_emits_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        let gone = td.path().join("gone.txt");
+        let (tx, rx) = channel();
+        let src = ctx(&[gone.to_str().unwrap()], td.path().to_str().unwrap());
+        run_steps(1, &selection_step(InternalCmd::LeaveOut), &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        assert!(!events.iter().any(|e| matches!(e, FnEvent::LeaveOut { .. })));
+        assert!(matches!(events.last(), Some(FnEvent::Failed { error, .. }) if error.contains("gone.txt")));
+    }
+
+    #[test]
+    fn put_away_emits_the_selection_even_when_the_target_is_gone() {
+        let (tx, rx) = channel();
+        let src = ctx(&["/no/longer/here.txt"], "/tmp");
+        run_steps(1, &selection_step(InternalCmd::PutAway), &src, None, &tx);
+        drop(tx);
+        let events = drain(rx);
+        assert!(events.iter().any(|e| matches!(e, FnEvent::PutAway { paths } if paths.len() == 1)));
+        assert!(matches!(events.last(), Some(FnEvent::AllDone)));
     }
 }

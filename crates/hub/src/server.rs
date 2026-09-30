@@ -70,6 +70,11 @@ pub enum HubEvent {
     /// the GTK side applies `appearance.theme_mode` live via
     /// `opusdm_ui::apply_theme_mode`.
     AppearanceChanged(opusdm_ipc::Appearance),
+    /// Paths to leave out on the desktop (already checked to exist). The GTK
+    /// side adds them to `leftout.json` and refreshes the icon field.
+    LeftOutAdd(Vec<PathBuf>),
+    /// Paths to put away: remove them from `leftout.json` and refresh.
+    LeftOutRemove(Vec<PathBuf>),
 }
 
 /// Commands the GTK toolbar (or the SIGCHLD handler) sends to the server.
@@ -524,6 +529,8 @@ impl Hub {
                 self.run_function_by_id(cid, Some(cid), &id);
             }
 
+            ToHub::LeaveOut { paths } => self.leave_out(paths),
+
             ToHub::SelectionReply { paths, cwd } => {
                 self.selection_reply(cid, paths, cwd);
             }
@@ -835,6 +842,20 @@ impl Hub {
         let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
     }
 
+    /// Leave `paths` out on the desktop: refuse the whole request (log only)
+    /// when any path is not absolute or does not exist, otherwise ask the GTK
+    /// side to add them. Shared by `ToHub::LeaveOut` and the `LeaveOut` step.
+    fn leave_out(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if let Err(e) = opusdm_ipc::leftout::check_leavable(&paths) {
+            opusdm_ipc::err_log!("hub", "{e}");
+            return;
+        }
+        let _ = self.evt_tx.send(HubEvent::LeftOutAdd(paths));
+    }
+
     /// Install `path` as the desktop background image. `fit` overrides the
     /// current fit when `Some`; `None` keeps it.
     fn apply_background_image(&mut self, path: PathBuf, fit: Option<opusdm_ipc::ImageFit>) {
@@ -866,6 +887,17 @@ impl Hub {
             self.apply_background_image(path.clone(), *fit);
             return;
         }
+        match &ev {
+            crate::functions::FnEvent::LeaveOut { paths } => {
+                self.leave_out(paths.clone());
+                return;
+            }
+            crate::functions::FnEvent::PutAway { paths } => {
+                let _ = self.evt_tx.send(HubEvent::LeftOutRemove(paths.clone()));
+                return;
+            }
+            _ => {}
+        }
         if requester == HUB_REQUESTER {
             match ev {
                 crate::functions::FnEvent::Failed { step_idx, error } => {
@@ -882,6 +914,7 @@ impl Hub {
             crate::functions::FnEvent::ChangeDir { path } => ToLister::GoTo { path },
             // Applied above, before this match.
             crate::functions::FnEvent::SetBackground { .. } => return,
+            crate::functions::FnEvent::LeaveOut { .. } | crate::functions::FnEvent::PutAway { .. } => return,
             crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
             crate::functions::FnEvent::StepDone { step_idx, exit_code } => {
                 ToLister::FunctionStepDone { step_idx, exit_code }
@@ -1547,6 +1580,79 @@ mod tests {
         assert_eq!(theme.background.image_path, Some(std::fs::canonicalize(&img).unwrap()));
         assert_eq!(theme.background.image_fit, opusdm_ipc::ImageFit::Tile);
         wait_for_file(&cfg.path().join("opusdm").join("settings.json"));
+    }
+
+    /// Read events until `pick` returns `Some`, or `wait` passes without one.
+    fn next_matching<T>(handle: &ServerHandle, wait: Duration, pick: impl Fn(HubEvent) -> Option<T>) -> Option<T> {
+        while let Ok(ev) = handle.evt_rx.recv_timeout(wait) {
+            if let Some(v) = pick(ev) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn leave_out_from_a_lister_emits_left_out_add_for_existing_paths_only() {
+        let td = tempfile::tempdir().unwrap();
+        let file = td.path().join("real.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut c = connect(&path);
+
+        // A path that does not exist (e.g. inside an archive) is refused.
+        send(&mut c, &ToHub::LeaveOut { paths: vec![td.path().join("archive.zip#inner/x")] }).unwrap();
+        let none = next_matching(&handle, Duration::from_millis(300), |ev| match ev {
+            HubEvent::LeftOutAdd(p) => Some(p),
+            _ => None,
+        });
+        assert!(none.is_none(), "a missing path must not be left out");
+
+        send(&mut c, &ToHub::LeaveOut { paths: vec![file.clone()] }).unwrap();
+        let got = next_matching(&handle, Duration::from_millis(1000), |ev| match ev {
+            HubEvent::LeftOutAdd(p) => Some(p),
+            _ => None,
+        });
+        assert_eq!(got, Some(vec![file]));
+    }
+
+    #[test]
+    fn leave_out_and_put_away_steps_emit_hub_events() {
+        let td = tempfile::tempdir().unwrap();
+        let file = td.path().join("real.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut c = connect(&path);
+        send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut c).unwrap().unwrap();
+
+        for cmd in [opusdm_ipc::function::InternalCmd::LeaveOut, opusdm_ipc::function::InternalCmd::PutAway] {
+            let steps = vec![opusdm_ipc::function::FnStep::Internal {
+                cmd,
+                args: opusdm_ipc::function::InternalArgs::default(),
+            }];
+            send(&mut c, &ToHub::RunFunction { steps }).unwrap();
+            let q: ToLister = recv(&mut c).unwrap().unwrap();
+            assert!(matches!(q, ToLister::QuerySelection));
+            send(&mut c, &ToHub::SelectionReply { paths: vec![file.clone()], cwd: td.path().to_path_buf() }).unwrap();
+            let expect_add = cmd == opusdm_ipc::function::InternalCmd::LeaveOut;
+            let got = next_matching(&handle, Duration::from_millis(1000), |ev| match ev {
+                HubEvent::LeftOutAdd(p) if expect_add => Some(p),
+                HubEvent::LeftOutRemove(p) if !expect_add => Some(p),
+                _ => None,
+            });
+            assert_eq!(got, Some(vec![file.clone()]), "{cmd:?}");
+            // Drain the function's own replies before the next run.
+            loop {
+                match recv::<_, ToLister>(&mut c) {
+                    Ok(Some(ToLister::FunctionDone)) => break,
+                    Ok(Some(_)) => continue,
+                    _ => panic!("no FunctionDone"),
+                }
+            }
+        }
     }
 
     #[test]

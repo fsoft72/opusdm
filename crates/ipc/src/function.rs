@@ -75,6 +75,10 @@ pub enum InternalCmd {
     ChangeDir,
     /// Install an image as the desktop background.
     SetBackground,
+    /// Leave the SOURCE selection out on the desktop.
+    LeaveOut,
+    /// Remove the SOURCE selection from the desktop's left-out icons.
+    PutAway,
 }
 
 impl InternalCmd {
@@ -92,6 +96,8 @@ impl InternalCmd {
             InternalCmd::Duplicate => "Duplicate",
             InternalCmd::ChangeDir => "Change Directory",
             InternalCmd::SetBackground => "Set Background",
+            InternalCmd::LeaveOut => "Leave Out",
+            InternalCmd::PutAway => "Put Away",
         }
     }
 }
@@ -216,6 +222,7 @@ pub mod schema {
                 required: true,
                 kind: ParamKind::PathTemplate,
             }],
+            InternalCmd::LeaveOut | InternalCmd::PutAway => &[],
             InternalCmd::SetBackground => &[
                 ParamSpec {
                     key: "path",
@@ -697,5 +704,18 @@ mod tests {
         let step = FnStep::Internal { cmd: InternalCmd::SetBackground, args: InternalArgs(args) };
         let json = serde_json::to_string(&step).unwrap();
         assert_eq!(serde_json::from_str::<FnStep>(&json).unwrap(), step);
+    }
+
+    #[test]
+    fn leave_out_and_put_away_have_labels_and_no_parameters() {
+        assert_eq!(InternalCmd::LeaveOut.label(), "Leave Out");
+        assert_eq!(InternalCmd::PutAway.label(), "Put Away");
+        assert!(schema::params_for(InternalCmd::LeaveOut).is_empty());
+        assert!(schema::params_for(InternalCmd::PutAway).is_empty());
+        for cmd in [InternalCmd::LeaveOut, InternalCmd::PutAway] {
+            let step = FnStep::Internal { cmd, args: InternalArgs::default() };
+            let json = serde_json::to_string(&step).unwrap();
+            assert_eq!(serde_json::from_str::<FnStep>(&json).unwrap(), step);
+        }
     }
 }

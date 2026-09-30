@@ -183,6 +183,11 @@ pub enum ToHub {
     /// validates it and runs it with this Lister as SOURCE. Used by hotkeys
     /// and the user menu; `RunFunction { steps }` stays for unsaved edits.
     RunFunctionById { id: crate::function::FunctionId },
+    /// Leave `paths` out on the desktop as permanent icons. Sent by a Lister
+    /// (context menu). The hub refuses the whole request when any path is not
+    /// absolute or does not exist, and otherwise emits `HubEvent::LeftOutAdd`.
+    /// No reply.
+    LeaveOut { paths: Vec<PathBuf> },
     /// Reply to `ToLister::QuerySelection`.
     SelectionReply { paths: Vec<PathBuf>, cwd: PathBuf },
     /// Replace the hotkeys, user menu and script events. The hub sanitizes,
@@ -783,5 +788,10 @@ mod tests {
         assert!(JobOptions { update: true, ..JobOptions::default() }.is_partial());
         assert!(JobOptions { include_glob: Some("*".into()), ..JobOptions::default() }.is_partial());
         assert!(!JobOptions { quiet: true, ..JobOptions::default() }.is_partial());
+    }
+
+    #[test]
+    fn leave_out_roundtrips() {
+        roundtrip_tohub(ToHub::LeaveOut { paths: vec!["/etc/fstab".into(), "/home/x".into()] });
     }
 }

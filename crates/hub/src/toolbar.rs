@@ -1097,6 +1097,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 field.set_icon_set(theme.icon_set);
             }
         }
+        HubEvent::LeftOutAdd(_) | HubEvent::LeftOutRemove(_) => {}
         HubEvent::AppearanceChanged(appearance) => {
             opusdm_ui::apply_theme_mode(appearance.theme_mode);
         }
