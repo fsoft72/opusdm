@@ -25,6 +25,7 @@ macro_rules! err_log {
 }
 
 pub mod bindings;
+pub mod buttonbank;
 pub mod desktop;
 pub mod dock;
 pub mod format;
@@ -55,6 +56,7 @@ pub use function::{Function, FnStep, FunctionId, InternalArgs, InternalCmd};
 pub use menu::{MenuConfig, MenuItem};
 pub use leftout::{LeftOut, LeftOutItem};
 pub use groups::{Group, Groups};
+pub use buttonbank::{BankAction, BankView, Banks, Btn, ButtonBank, MouseButton, Orientation};
 pub use proto::{
     Appearance, Behavior, CacheEntry, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
     Settings, ThemeMode, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
