@@ -101,6 +101,7 @@ impl IconField {
             mode: 0,
             ext: None,
             left_out: false,
+            group: false,
         };
         let probe = IconItem::new(&probe_entry, size, &self.inner.layout.icon_set.borrow());
         let (w, h) = probe.measure();

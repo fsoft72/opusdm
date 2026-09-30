@@ -505,7 +505,7 @@ impl IconField {
     }
 
     /// Register a listener fired at the end of a reposition drag with the new
-    /// position of every moved entry whose `left_out` flag is set. Not fired
+    /// position of every moved entry whose `left_out` or `group` flag is set. Not fired
     /// when no such entry moved.
     pub fn connect_pinned_moved(&self, f: impl Fn(Vec<(PathBuf, (f64, f64))>) + 'static) {
         self.inner.events.on_pinned_moved.borrow_mut().push(Box::new(f));
@@ -624,7 +624,7 @@ impl IconField {
             bases
                 .iter()
                 .filter_map(|&(i, _)| {
-                    let entry = entries.get(i).filter(|e| e.left_out)?;
+                    let entry = entries.get(i).filter(|e| e.left_out || e.group)?;
                     Some((entry.path.clone(), *fp.get(&i)?))
                 })
                 .collect()
@@ -803,6 +803,7 @@ mod tests {
                 mode: 0o100_644,
                 ext: Some("txt".into()),
                 left_out: false,
+                group: false,
             })
             .collect()
     }
@@ -855,6 +856,7 @@ mod tests {
             mode: 0o100_644,
             ext: Some("jpg".into()),
             left_out: false,
+            group: false,
         };
         let long = IconItem::new(&long_name, 64, &no_icons());
         // Width of the same text on one unwrapped line, for reference.
@@ -1055,6 +1057,7 @@ mod tests {
             mode: 0o100_644,
             ext: Some("rs".into()),
             left_out: false,
+            group: false,
         }]);
         // "rs" is not previewable, so no job is queued and nothing panics.
         f_on.set_icon_size(200);
@@ -1168,6 +1171,32 @@ mod tests {
         fr.refresh_entries(&all_left());
         fr.end_reposition(50.0, 30.0);
         assert!(stray.borrow().is_empty(), "the drag must be cancelled by refresh_entries: {:?}", stray.borrow());
+
+        // --- IconField: a group entry shows a badge and reports its pinned move ---
+        let mut grp = entries(1).remove(0);
+        grp.group = true;
+        grp.path = PathBuf::from("group:tools");
+        let badged = IconItem::new(&grp, 64, &no_icons());
+        assert!(badged.shows_badge());
+        let unbadged = IconItem::new(&entries(1)[0], 64, &no_icons());
+        assert_eq!(badged.measure(), unbadged.measure());
+        let fg = IconField::new();
+        fg.set_mode(LayoutMode::Free);
+        fg.inner.layout.scroller.set_size_request(600, 400);
+        let mut with_group = entries(2);
+        with_group.push(grp.clone());
+        fg.set_pinned_positions(HashMap::from([(PathBuf::from("group:tools"), (300.0, 200.0))]));
+        fg.set_entries(&with_group);
+        assert_eq!(fg.free_positions().get(&2), Some(&(300.0, 200.0)));
+        let group_log: Rc<RefCell<Vec<(PathBuf, (f64, f64))>>> = Rc::new(RefCell::new(Vec::new()));
+        let log = group_log.clone();
+        fg.connect_pinned_moved(move |m| log.borrow_mut().extend(m));
+        fg.select_all();
+        let rg = fg.inner.layout.item_rects.borrow()[2];
+        fg.begin_reposition(rg.0 + 2.0, rg.1 + 2.0);
+        fg.update_reposition(40.0, 20.0);
+        fg.end_reposition(40.0, 20.0);
+        assert_eq!(*group_log.borrow(), vec![(PathBuf::from("group:tools"), (340.0, 220.0))]);
 
         // --- IconField: virtualization above VIRTUALIZE_THRESHOLD ---
         let big = entries(VIRTUALIZE_THRESHOLD + 100);

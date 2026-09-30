@@ -75,6 +75,9 @@ pub struct IconEntry {
     /// Whether this entry is a "left out" desktop icon (drawn with an arrow
     /// badge, position pinned by path).
     pub left_out: bool,
+    /// Whether this entry is a program group icon (drawn with a group badge,
+    /// position pinned by its virtual `group:<id>` path).
+    pub group: bool,
 }
 
 impl IconEntry {

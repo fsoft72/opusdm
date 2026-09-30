@@ -19,7 +19,7 @@ struct Inner {
     name_entry: gtk::Entry,
     original_name: RefCell<String>,
     on_commit: CommitFn,
-    /// The left-out arrow badge, when the entry is a left-out desktop icon.
+    /// The badge (arrow for left-out icons, trigram for groups), when drawn.
     badge: Option<gtk::Label>,
 }
 
@@ -102,11 +102,11 @@ impl IconItem {
 
         // A left-out entry wraps the icon art in an overlay that carries the
         // arrow badge; an overlay child never changes the measured size.
-        let badge = if entry.left_out {
+        let badge = if entry.left_out || entry.group {
             let art = gtk::Box::new(gtk::Orientation::Vertical, 0);
             art.append(&icon);
             art.append(&thumb);
-            let badge = gtk::Label::new(Some("\u{2197}"));
+            let badge = gtk::Label::new(Some(if entry.group { "\u{2630}" } else { "\u{2197}" }));
             badge.add_css_class("icon-item-badge");
             badge.set_halign(gtk::Align::End);
             badge.set_valign(gtk::Align::End);

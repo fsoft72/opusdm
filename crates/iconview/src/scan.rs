@@ -59,7 +59,7 @@ pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>>
             }
         };
         let ext = if kind == IconKind::Dir { None } else { IconEntry::ext_of(&name) };
-        out.push(IconEntry { name, path: entry.path(), kind, mode, ext, left_out: false });
+        out.push(IconEntry { name, path: entry.path(), kind, mode, ext, left_out: false, group: false });
     }
     sort_dirs_first(&mut out);
     Ok(out)
@@ -86,7 +86,7 @@ pub fn entry_for_path(path: &Path) -> IconEntry {
         Ok(m) => (IconKind::File, m.mode()),
     };
     let ext = if kind == IconKind::Dir { None } else { IconEntry::ext_of(&name) };
-    IconEntry { name, path: path.to_path_buf(), kind, mode, ext, left_out: false }
+    IconEntry { name, path: path.to_path_buf(), kind, mode, ext, left_out: false, group: false }
 }
 
 /// Sort entries for a tidy grid: directories first, then files, each block by
@@ -175,6 +175,7 @@ mod tests {
             mode: 0,
             ext: None,
             left_out: false,
+            group: false,
         };
         let mut v = vec![
             mk("Zebra", IconKind::File),
