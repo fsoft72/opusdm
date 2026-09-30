@@ -113,6 +113,9 @@ struct DesktopState {
     /// layout), kept so a full rebuild on monitor hotplug shows the same
     /// folder rather than re-reading it from disk.
     desired_dir: RefCell<Option<PathBuf>>,
+    /// The left-out icons (`leftout.json`), owned by the GTK side: every
+    /// change is saved here and the icon field refreshed.
+    leftout: RefCell<opusdm_ipc::LeftOut>,
 }
 
 /// Live widget handles shared by the event pump.
@@ -165,6 +168,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
             icon_set: RefCell::new(initial_settings.theme.icon_set.clone()),
             settings: RefCell::new(desktop_settings),
             desired_dir: RefCell::new(desired_desktop_dir),
+            leftout: RefCell::new(opusdm_ipc::LeftOut::load()),
             ..Default::default()
         },
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
@@ -355,6 +359,7 @@ fn build_one_desktop_window(
     let (desktop_area, field) = build_desktop_area(
         if is_primary { desktop_dir } else { None },
         icon_set,
+        widgets.desktop.leftout.borrow().clone(),
         panel_position,
     );
     window.set_child(Some(&desktop_area));
@@ -398,6 +403,10 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
         let field_for_open = field.clone();
         field.connect_activate(move |i| {
             let Some(entry) = field_for_open.entry(i) else { return };
+            if entry.left_out && entry.kind == opusdm_iconview::IconKind::Broken {
+                opusdm_ipc::err_log!("hub", "left-out target missing: {}", entry.path.display());
+                return;
+            }
             if entry.kind == opusdm_iconview::IconKind::Dir {
                 let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
             } else {
@@ -422,6 +431,16 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
             let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
             let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
             let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
+        });
+    }
+    {
+        let widgets = widgets.clone();
+        field.connect_pinned_moved(move |moved| {
+            let mut left = widgets.desktop.leftout.borrow_mut();
+            for (path, (x, y)) in &moved {
+                left.set_position(path, *x, *y);
+            }
+            save_leftout(&left);
         });
     }
 }
@@ -463,22 +482,52 @@ fn install_desktop_css(bg: &opusdm_ipc::Background) {
     DESKTOP_CSS_PROVIDER.with(|p| p.load_from_data(&desktop_rule_css(bg)));
 }
 
-/// Read `dir` into desktop entries on a background thread and invoke
-/// `on_done` with the result back on the GTK main loop, so scanning a large
-/// or slow desktop directory never freezes the desktop and panel.
+/// Read `dir` into desktop entries, merged with the left-out icons in `left`,
+/// on a background thread and invoke `on_done` with the result back on the
+/// GTK main loop, so scanning a large or slow desktop directory (or stat-ing
+/// a left-out target on a slow disk) never freezes the desktop and panel.
 fn read_entries_async(
     dir: PathBuf,
+    left: opusdm_ipc::LeftOut,
     on_done: impl Fn(std::io::Result<Vec<opusdm_iconview::IconEntry>>) + 'static,
 ) {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
-        let _ = tx.send_blocking(opusdm_iconview::scan::read_entries(&dir, false));
+        let _ = tx.send_blocking(opusdm_hub::leftout::read_desktop_entries(&dir, &left));
     });
     glib::spawn_future_local(async move {
         if let Ok(result) = rx.recv().await {
             on_done(result);
         }
     });
+}
+
+/// Show `entries` in `field`, first handing it the saved positions of the
+/// left-out icons so they land where the user dragged them.
+fn show_entries(field: &opusdm_iconview::IconField, left: &opusdm_ipc::LeftOut, entries: &[opusdm_iconview::IconEntry]) {
+    field.set_pinned_positions(left.positions());
+    field.set_entries(entries);
+}
+
+/// Re-read the desktop directory and refresh the icon field with the current
+/// left-out store merged in. Does nothing without a field or directory.
+fn reload_desktop_field(widgets: &Rc<Widgets>) {
+    let field = widgets.desktop.field.borrow().clone();
+    let dir = widgets.desktop.dir.borrow().clone();
+    let (Some(field), Some(dir)) = (field, dir) else { return };
+    let left = widgets.desktop.leftout.borrow().clone();
+    read_entries_async(dir.clone(), left.clone(), move |result| match result {
+        Ok(entries) => show_entries(&field, &left, &entries),
+        Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
+    });
+}
+
+/// Persist the left-out store, logging (not failing) on error: the in-memory
+/// state stays valid and the next change tries again.
+fn save_leftout(left: &opusdm_ipc::LeftOut) {
+    if let Err(e) = left.save() {
+        opusdm_ipc::err_log!("hub", "cannot save {}: {e}", opusdm_ipc::leftout::leftout_path().display());
+    }
 }
 
 /// Start (or restart) the inotify watch on `dir` and the local future that
@@ -495,7 +544,9 @@ fn spawn_desktop_watch(
         Ok((watch, rx)) => {
             let field = field.clone();
             let dir = dir.to_path_buf();
+            let widgets_in = widgets.clone();
             glib::spawn_future_local(async move {
+                let widgets = widgets_in;
                 // Reloads run off-thread, so several can be in flight at
                 // once; a generation counter drops any read superseded by a
                 // later event instead of applying stale entries out of order.
@@ -506,12 +557,13 @@ fn spawn_desktop_watch(
                     let generation = generation.clone();
                     let field = field.clone();
                     let dir = dir.clone();
-                    read_entries_async(dir.clone(), move |result| {
+                    let left = widgets.desktop.leftout.borrow().clone();
+                    read_entries_async(dir.clone(), left.clone(), move |result| {
                         if generation.get() != gen {
                             return;
                         }
                         match result {
-                            Ok(entries) => field.set_entries(&entries),
+                            Ok(entries) => show_entries(&field, &left, &entries),
                             Err(e) => {
                                 opusdm_ipc::err_log!("hub", "desktop reload failed for {}: {e}", dir.display())
                             }
@@ -555,6 +607,7 @@ fn launch_theme_config() {
 fn build_desktop_area(
     desktop_dir: Option<&Path>,
     icon_set: opusdm_ipc::IconSetId,
+    left: opusdm_ipc::LeftOut,
     panel_position: opusdm_ipc::PanelPosition,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
@@ -574,8 +627,9 @@ fn build_desktop_area(
             {
                 let f = f.clone();
                 let dir = dir.to_path_buf();
-                read_entries_async(dir.clone(), move |result| match result {
-                    Ok(entries) => f.set_entries(&entries),
+                let left_for_show = left.clone();
+                read_entries_async(dir.clone(), left, move |result| match result {
+                    Ok(entries) => show_entries(&f, &left_for_show, &entries),
                     Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
                 });
             }
@@ -776,6 +830,24 @@ fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconvie
         menu.append(&btn);
     }
 
+    // Put Away (left-out icons only): forget the icon, never touch the file.
+    if entry.left_out {
+        let path = entry.path.clone();
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Put Away");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            {
+                let mut left = widgets.desktop.leftout.borrow_mut();
+                left.remove(std::slice::from_ref(&path));
+                save_leftout(&left);
+            }
+            reload_desktop_field(&widgets);
+        });
+        menu.append(&btn);
+    }
+
     menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     // Cut
@@ -969,15 +1041,7 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             let btn = menu_button("Rearrange icons");
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
-                let field = widgets.desktop.field.borrow().clone();
-                let dir = widgets.desktop.dir.borrow().clone();
-                let (Some(field), Some(dir)) = (field, dir) else {
-                    return;
-                };
-                read_entries_async(dir, move |result| match result {
-                    Ok(entries) => field.set_entries(&entries),
-                    Err(e) => opusdm_ipc::err_log!("hub", "rearrange failed: {e}"),
-                });
+                reload_desktop_field(&widgets);
             });
             sub.append(&btn);
         }
@@ -1097,7 +1161,22 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 field.set_icon_set(theme.icon_set);
             }
         }
-        HubEvent::LeftOutAdd(_) | HubEvent::LeftOutRemove(_) => {}
+        HubEvent::LeftOutAdd(paths) => {
+            {
+                let mut left = widgets.desktop.leftout.borrow_mut();
+                left.add(&paths);
+                save_leftout(&left);
+            }
+            reload_desktop_field(widgets);
+        }
+        HubEvent::LeftOutRemove(paths) => {
+            {
+                let mut left = widgets.desktop.leftout.borrow_mut();
+                left.remove(&paths);
+                save_leftout(&left);
+            }
+            reload_desktop_field(widgets);
+        }
         HubEvent::AppearanceChanged(appearance) => {
             opusdm_ui::apply_theme_mode(appearance.theme_mode);
         }
@@ -1127,16 +1206,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 if let (Some(field), Some(dir)) = (field.as_ref(), wanted.as_ref()) {
                     let field = field.clone();
                     let dir = dir.clone();
-                    {
-                        let field = field.clone();
-                        let dir = dir.clone();
-                        read_entries_async(dir.clone(), move |result| match result {
-                            Ok(entries) => field.set_entries(&entries),
-                            Err(e) => {
-                                opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display())
-                            }
-                        });
-                    }
+                    reload_desktop_field(widgets);
                     spawn_desktop_watch(widgets, &field, &dir);
                 }
             }
