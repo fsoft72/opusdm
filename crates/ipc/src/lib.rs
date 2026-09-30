@@ -31,6 +31,7 @@ pub mod format;
 pub mod frame;
 pub mod function;
 pub mod glob;
+pub mod groups;
 pub mod inotify;
 pub mod leftout;
 pub mod menu;
@@ -53,6 +54,7 @@ pub use format::{FormatColumn, FormatEntry, FormatSource, FormatStore, ListerFor
 pub use function::{Function, FnStep, FunctionId, InternalArgs, InternalCmd};
 pub use menu::{MenuConfig, MenuItem};
 pub use leftout::{LeftOut, LeftOutItem};
+pub use groups::{Group, Groups};
 pub use proto::{
     Appearance, Behavior, CacheEntry, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
     Settings, ThemeMode, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
