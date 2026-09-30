@@ -63,7 +63,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [ ] F-34 Program Groups
 - [ ] F-35 Full themes (images + sounds + fonts), Build/Load/Save theme
 - [ ] F-36 Sound Events
-- [ ] F-37 SetAsBackground command
+- [x] F-37 SetAsBackground command (palette use needs a saved function with `SetBackground {f}`; the filetype action waits for F-06)
 - [ ] F-38 Backdrop / hide system
 
 ## 6. Network

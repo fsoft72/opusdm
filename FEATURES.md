@@ -486,9 +486,10 @@ Acceptance: assign a wav to "lister opened", hear it.
 requester background with tile/center/stretch options; designed for filetype
 context menus ("set this image as background").
 
-**Spec**: palette command + filetype action "Set as Desktop Background"
-updating `DesktopSettings` (already supports image + fit mode). Acceptance:
-right-click a PNG -> set as background applies live.
+**Spec**: internal command `SetBackground` (params `path`, optional `fit`)
+updating `Settings.theme.background`, plus a Lister context menu entry on image
+files; the filetype action arrives with F-06. Acceptance: right-click a PNG ->
+set as background applies live.
 
 ### F-38 Backdrop / hide system
 **Original** (`Project - Backdrop`, `Hide`, `Reveal`,
