@@ -6,6 +6,7 @@ pub mod desktop_files;
 pub mod desktop_settings;
 pub mod functions;
 pub mod jobs;
+pub mod leftout;
 pub mod roles;
 pub mod server;
 pub mod settings;
