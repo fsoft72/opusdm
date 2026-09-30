@@ -1,0 +1,16 @@
+[package]
+name = "opusdm-buttonbank"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_buttonbank"
+path = "src/lib.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
+gtk4.workspace = true
+gdk4-x11 = "0.10"
+x11rb.workspace = true
