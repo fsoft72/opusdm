@@ -8,6 +8,7 @@ use gtk::prelude::*;
 use opusdm_ipc::function::{load_functions, Function};
 use opusdm_ipc::{Banks, Btn, ButtonBank, MouseButton, Orientation};
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::rc::Rc;
 
 /// What changed in the store, for the owner of the windows.
@@ -39,6 +40,26 @@ fn show_error(parent: &impl IsA<gtk::Window>, message: &str) {
 /// Persist bank `id`, returning the OS error as text.
 fn save(banks: &Banks, id: &str) -> Result<(), String> {
     banks.save_bank(id).map_err(|e| format!("Cannot save the bank: {e}"))
+}
+
+/// Replace bank `id` with `edited` in the store and write its file to `dir`.
+/// The store keeps the old bank when the new one is invalid or the file
+/// cannot be written, so memory and disk never disagree. The store is never
+/// borrowed mutably while the file is written.
+fn save_edit(banks: &RefCell<Banks>, id: &str, edited: ButtonBank, dir: &Path) -> Result<(), String> {
+    let previous = banks.borrow().get(id).cloned();
+    let replaced = banks.borrow_mut().replace(id, edited);
+    replaced?;
+    let written = banks.borrow().save_bank_to(dir, id);
+    if let Err(e) = written {
+        if let Some(previous) = previous {
+            if let Some(slot) = banks.borrow_mut().banks.iter_mut().find(|b| b.id == id) {
+                *slot = previous;
+            }
+        }
+        return Err(format!("Cannot save the bank: {e}"));
+    }
+    Ok(())
 }
 
 /// Open the manager window.
@@ -279,11 +300,8 @@ pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id
     {
         let (state, hooks, after_save) = (state.clone(), hooks, after_save);
         save_btn.connect_clicked(move |_| {
-            let result = state
-                .banks
-                .borrow_mut()
-                .replace(&state.id, state.bank.borrow().clone())
-                .and_then(|()| save(&state.banks.borrow(), &state.id));
+            let edited = state.bank.borrow().clone();
+            let result = save_edit(&state.banks, &state.id, edited, &opusdm_ipc::buttonbank::banks_dir());
             match result {
                 Ok(()) => {
                     (hooks.changed)(BankChange::Saved(state.id.clone()));
@@ -513,4 +531,49 @@ fn wire_toolbar(state: &Rc<State>, buttons: [&gtk::Button; 7]) {
             s.selected.set(Some(new));
         }
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A store with one saved bank called "Tools", and its directory.
+    fn store() -> (tempfile::TempDir, RefCell<Banks>, String) {
+        let td = tempfile::tempdir().unwrap();
+        let mut banks = Banks::default();
+        let id = banks.create_in_dir(td.path(), "Tools").unwrap();
+        banks.save_bank_to(td.path(), &id).unwrap();
+        (td, RefCell::new(banks), id)
+    }
+
+    fn edited(name: &str) -> ButtonBank {
+        ButtonBank { name: name.to_string(), buttons: vec![Btn { label: "One".to_string(), ..Btn::default() }], ..ButtonBank::default() }
+    }
+
+    #[test]
+    fn save_edit_updates_the_store_and_writes_the_file_without_a_double_borrow() {
+        let (td, banks, id) = store();
+        save_edit(&banks, &id, edited("Renamed"), td.path()).unwrap();
+        assert_eq!(banks.borrow().get(&id).unwrap().buttons.len(), 1);
+        let on_disk = Banks::load_from_dir(td.path());
+        assert_eq!(on_disk.get(&id).unwrap().name, "Renamed");
+    }
+
+    #[test]
+    fn save_edit_leaves_the_store_alone_when_the_bank_is_invalid() {
+        let (td, banks, id) = store();
+        assert!(save_edit(&banks, &id, edited("  "), td.path()).is_err());
+        assert_eq!(banks.borrow().get(&id).unwrap().name, "Tools");
+    }
+
+    #[test]
+    fn save_edit_restores_the_store_when_the_file_cannot_be_written() {
+        let (td, banks, id) = store();
+        let blocker = td.path().join("blocker");
+        std::fs::write(&blocker, "a file, not a directory").unwrap();
+        let error = save_edit(&banks, &id, edited("Renamed"), &blocker.join("sub")).unwrap_err();
+        assert!(error.contains("Cannot save"), "{error}");
+        assert_eq!(banks.borrow().get(&id).unwrap().name, "Tools");
+        assert!(banks.borrow().get(&id).unwrap().buttons.is_empty());
+    }
 }
