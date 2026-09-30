@@ -451,10 +451,13 @@ menu. Acceptance: leave out `/etc/fstab`, restart hub, icon persists.
 related programs/files; dropping icons onto the group adds them; opening
 shows a group window.
 
-**Spec**: a group is a JSON list (`groups/<name>.json`) of paths rendered as
-an icon window by the hub; drag&drop onto the group icon adds; "New Group" on
-the desktop context menu. Acceptance: create group, drop 3 apps, open group,
-launch from it.
+**Spec**: a group is one JSON file, `~/.config/opusdm/groups/<id>.json`
+(`{"name":...,"items":[paths],"x":...,"y":...}`), shown as a folder icon with a
+group badge whose position is saved once dragged. Opening it shows a group
+window; double click on a member launches it (folder in a Lister, `.desktop`
+application, executable, default application). "New Group..." is in the desktop
+menu; dropping files on the group icon or on its window adds them. Acceptance:
+create group, drop 3 apps, open group, launch from it.
 
 ### F-35 Full themes (images + sounds + fonts), Build/Load/Save theme
 **Original** (`LoadTheme`, `SaveTheme`, `BuildTheme`, `ConvertTheme`,

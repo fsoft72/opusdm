@@ -382,6 +382,16 @@ Any file or folder can sit on the desktop as a permanent icon with a small arrow
 
 Drag a left-out icon to place it: the position is remembered across restarts (icons of the Desktop folder itself are still auto-arranged). A left-out entry whose file disappeared (deleted, or its disk not mounted) shows as a broken icon and stays until you put it away; the desktop only notices a change outside the Desktop folder the next time it reloads (for instance with **Desktop -> Rearrange icons**). The icon menu of a left-out icon offers Open, Put Away and Copy, but not Cut, Rename or Delete, since those would act on the real file somewhere else: do them from a lister. Double click opens a folder in a new lister and a file with its default application. Left-out icons appear on the primary monitor only. Stored in `~/.config/opusdm/leftout.json`.
 
+### 3.22 Program Groups
+
+A group gathers programs, files or folders under one desktop icon.
+- Right-click the desktop and choose **New Group...**, then type a name (names must be unique, upper and lower case do not count). The group appears as a folder icon with a small group badge; drag it wherever you like, the position is remembered.
+- Drag files or applications from a lister (or the desktop) onto the group icon to add them. Something already in the group is skipped.
+- Double click the icon to open the group window. Double click a member to start it: a folder opens in a lister, a `.desktop` file starts that application, an executable file runs, anything else opens with its default application. You can also drop files on the open window, and right-click a member and choose **Remove from Group**.
+- The icon menu offers **Open**, **Rename Group...** and **Delete Group...**. Deleting a group never touches the files in it. A member whose file disappeared shows as a broken icon until you remove it.
+
+Each group is stored in `~/.config/opusdm/groups/<name>.json`. Groups appear on the primary monitor only.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

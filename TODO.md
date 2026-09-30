@@ -60,7 +60,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 ## 5. Desktop, main window, themes
 
 - [x] F-33 LeaveOut (icons left out on the desktop; position saved only for left-out icons, primary monitor only, no drag and drop entry point yet)
-- [ ] F-34 Program Groups
+- [x] F-34 Program Groups (groups are created from the desktop menu and filled by drag and drop; no Lister menu entry, primary monitor only)
 - [ ] F-35 Full themes (images + sounds + fonts), Build/Load/Save theme
 - [ ] F-36 Sound Events
 - [x] F-37 SetAsBackground command (palette use needs a saved function with `SetBackground {f}`; the filetype action waits for F-06)
