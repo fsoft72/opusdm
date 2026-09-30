@@ -78,6 +78,10 @@ pub enum HubEvent {
     /// The desktop was hidden (`true`) or revealed (`false`): the GTK side
     /// hides or shows the panel, the dock and the group windows.
     HiddenChanged(bool),
+    /// A Function step asked to apply `action` to the bank called `bank`.
+    Bank { action: opusdm_ipc::buttonbank::BankAction, bank: String },
+    /// Open the button bank manager window.
+    OpenBankManager,
 }
 
 /// Commands the GTK toolbar (or the SIGCHLD handler) sends to the server.
@@ -462,6 +466,10 @@ impl Hub {
                 if let Some(c) = self.conns.get(&cid) {
                     let _ = c.tx.send(ToLister::CacheList(entries).into());
                 }
+            }
+
+            ToHub::OpenBankManager => {
+                let _ = self.evt_tx.send(HubEvent::OpenBankManager);
             }
 
             ToHub::FreeAllCaches => {
@@ -972,6 +980,10 @@ impl Hub {
                 self.set_hidden(!self.hidden);
                 return;
             }
+            crate::functions::FnEvent::Bank { action, bank } => {
+                let _ = self.evt_tx.send(HubEvent::Bank { action: *action, bank: bank.clone() });
+                return;
+            }
             _ => {}
         }
         if requester == HUB_REQUESTER {
@@ -994,7 +1006,8 @@ impl Hub {
             | crate::functions::FnEvent::PutAway { .. }
             | crate::functions::FnEvent::Hide
             | crate::functions::FnEvent::Reveal
-            | crate::functions::FnEvent::ToggleHide => return,
+            | crate::functions::FnEvent::ToggleHide
+            | crate::functions::FnEvent::Bank { .. } => return,
             crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
             crate::functions::FnEvent::StepDone { step_idx, exit_code } => {
                 ToLister::FunctionStepDone { step_idx, exit_code }

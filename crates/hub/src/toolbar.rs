@@ -1493,6 +1493,8 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             }
         }
         HubEvent::HiddenChanged(hidden) => apply_hidden(widgets, hidden),
+        HubEvent::Bank { action, bank } => opusdm_ipc::err_log!("hub", "bank command {action:?} {bank}: not wired yet"),
+        HubEvent::OpenBankManager => opusdm_ipc::err_log!("hub", "bank manager: not wired yet"),
         HubEvent::LeftOutAdd(paths) => {
             {
                 let mut left = widgets.desktop.leftout.borrow_mut();

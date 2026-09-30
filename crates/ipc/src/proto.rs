@@ -207,6 +207,8 @@ pub enum ToHub {
     /// Ask `lister` to raise its window and go to `path` (`ToLister::GoTo`).
     /// Ignored when there is no such Lister.
     JumpTo { lister: ListerId, path: PathBuf },
+    /// Ask the hub to open the button bank manager window. No reply.
+    OpenBankManager,
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
@@ -552,6 +554,7 @@ mod tests {
         roundtrip_tohub(ToHub::CacheReport(vec!["/a".into()]));
         roundtrip_tohub(ToHub::QueryCaches);
         roundtrip_tohub(ToHub::FreeAllCaches);
+        roundtrip_tohub(ToHub::OpenBankManager);
         roundtrip_tohub(ToHub::JumpTo { lister: ListerId(2), path: "/p".into() });
     }
 

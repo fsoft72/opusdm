@@ -40,6 +40,8 @@ pub enum FnEvent {
     Reveal,
     /// A `ToggleHide` step: the hub must flip the hidden state.
     ToggleHide,
+    /// A bank step: the hub must apply `action` to the bank called `bank`.
+    Bank { action: opusdm_ipc::buttonbank::BankAction, bank: String },
     /// Every step finished successfully.
     AllDone,
 }
@@ -84,6 +86,10 @@ fn run_steps(
             }
             FnStep::Internal { cmd: cmd @ (InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide), .. } => {
                 run_hide(run_id, step_idx, *cmd, events_tx)
+            }
+            FnStep::Internal { cmd, args } if cmd.bank_action().is_some() => {
+                let action = cmd.bank_action().expect("guarded by is_some");
+                run_bank(run_id, step_idx, action, args, bank_exists, events_tx)
             }
             FnStep::Internal { cmd, args } => run_internal(run_id, step_idx, *cmd, args, &source, dest, events_tx),
             FnStep::External { argv, cwd_source } => {
@@ -225,6 +231,35 @@ fn run_hide(run_id: u64, step_idx: usize, cmd: InternalCmd, events_tx: &Sender<(
     };
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: cmd.label().to_string() }));
     let _ = events_tx.send((run_id, event));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
+/// Whether a button bank called `name` exists on disk.
+fn bank_exists(name: &str) -> bool {
+    opusdm_ipc::buttonbank::Banks::load().get_by_name(name).is_some()
+}
+
+/// Run a bank step: check the named bank exists (`exists`), then hand the
+/// action to the hub. No selection is needed. An empty or unknown name fails
+/// the step and emits nothing.
+fn run_bank(
+    run_id: u64,
+    step_idx: usize,
+    action: opusdm_ipc::buttonbank::BankAction,
+    args: &InternalArgs,
+    exists: impl Fn(&str) -> bool,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let name = args.get("bank").map(str::trim).unwrap_or("");
+    if name.is_empty() {
+        return Err("Bank: no bank name given".to_string());
+    }
+    if !exists(name) {
+        return Err(format!("Bank \"{name}\" not found"));
+    }
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("{action:?} bank {name}") }));
+    let _ = events_tx.send((run_id, FnEvent::Bank { action, bank: name.to_string() }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
 }
@@ -831,5 +866,46 @@ mod tests {
             assert!(events.iter().any(is_event), "{cmd:?} must emit its event");
             assert!(matches!(events.last(), Some(FnEvent::AllDone)), "{cmd:?}");
         }
+    }
+
+    fn bank_args(name: &str) -> InternalArgs {
+        InternalArgs(std::collections::BTreeMap::from([("bank".to_string(), name.to_string())]))
+    }
+
+    #[test]
+    fn run_bank_emits_the_action_for_a_known_bank() {
+        use opusdm_ipc::buttonbank::BankAction;
+        for action in [BankAction::Open, BankAction::Close, BankAction::Toggle, BankAction::Hide] {
+            let (tx, rx) = channel();
+            let result = run_bank(1, 0, action, &bank_args(" Tools "), |n| n == "Tools", &tx);
+            drop(tx);
+            assert_eq!(result, Ok(()), "{action:?}");
+            let events = drain(rx);
+            assert!(events.iter().any(|e| matches!(e, FnEvent::Bank { action: a, bank } if *a == action && bank == "Tools")));
+            assert!(matches!(events.last(), Some(FnEvent::StepDone { step_idx: 0, exit_code: Some(0) })));
+        }
+    }
+
+    #[test]
+    fn run_bank_fails_for_an_unknown_or_missing_bank_and_emits_no_event() {
+        use opusdm_ipc::buttonbank::BankAction;
+        for args in [bank_args("Nope"), InternalArgs::default(), bank_args("  ")] {
+            let (tx, rx) = channel();
+            let result = run_bank(1, 0, BankAction::Open, &args, |_| false, &tx);
+            drop(tx);
+            let error = result.unwrap_err();
+            assert!(error.contains("Bank"), "{error}");
+            assert!(!drain(rx).iter().any(|e| matches!(e, FnEvent::Bank { .. })));
+        }
+    }
+
+    #[test]
+    fn run_steps_reports_an_unknown_bank_as_a_failed_step() {
+        let (tx, rx) = channel();
+        let src = ctx(&[], "/tmp");
+        let steps = vec![FnStep::Internal { cmd: InternalCmd::OpenBank, args: bank_args("definitely-not-a-real-bank-name") }];
+        run_steps(1, &steps, &src, None, &tx);
+        drop(tx);
+        assert!(matches!(drain(rx).last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("not found")));
     }
 }
