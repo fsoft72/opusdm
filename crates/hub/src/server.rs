@@ -402,16 +402,7 @@ impl Hub {
                     .send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
             }
 
-            ToHub::SetSettings(mut new_settings) => {
-                new_settings.theme.background = new_settings.theme.background.sanitized();
-                self.current_settings = new_settings;
-                let _ = self.persist_tx.send(PersistMsg::Settings(self.current_settings.clone()));
-                for c in self.conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::SettingsUpdate(self.current_settings.clone()).into());
-                }
-                let _ = self.evt_tx.send(HubEvent::ThemeChanged(self.current_settings.theme.clone()));
-                let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
-            }
+            ToHub::SetSettings(new_settings) => self.apply_settings(new_settings),
 
             ToHub::SetBindings(new_bindings) => {
                 self.current_bindings = bindings::sanitize(new_bindings);
@@ -829,6 +820,34 @@ impl Hub {
         );
     }
 
+    /// Adopt `new_settings`: sanitize the background, persist to
+    /// `settings.json`, push the change to every registered Lister and to
+    /// the GTK side. Shared by `ToHub::SetSettings` and the `SetBackground`
+    /// function step.
+    fn apply_settings(&mut self, mut new_settings: opusdm_ipc::Settings) {
+        new_settings.theme.background = new_settings.theme.background.sanitized();
+        self.current_settings = new_settings;
+        let _ = self.persist_tx.send(PersistMsg::Settings(self.current_settings.clone()));
+        for c in self.conns.values_mut().filter(|c| c.registered) {
+            let _ = c.tx.send(ToLister::SettingsUpdate(self.current_settings.clone()).into());
+        }
+        let _ = self.evt_tx.send(HubEvent::ThemeChanged(self.current_settings.theme.clone()));
+        let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
+    }
+
+    /// Install `path` as the desktop background image. `fit` overrides the
+    /// current fit when `Some`; `None` keeps it.
+    fn apply_background_image(&mut self, path: PathBuf, fit: Option<opusdm_ipc::ImageFit>) {
+        let mut settings = self.current_settings.clone();
+        let background = &mut settings.theme.background;
+        background.mode = opusdm_ipc::BackgroundMode::Image;
+        background.image_path = Some(path);
+        if let Some(fit) = fit {
+            background.image_fit = fit;
+        }
+        self.apply_settings(settings);
+    }
+
     /// A `FnEvent` arrived from a running Function's executor thread; turn
     /// it into the matching `ToLister` and send it to whichever connection
     /// asked for this run. A hub-originated run has no such connection: its
@@ -839,6 +858,13 @@ impl Hub {
         if terminal {
             self.function_requesters.remove(&run_id);
             self.event_guard.finish(run_id);
+        }
+        // A background change applies for every requester, hub-originated
+        // runs (script events) included; the requester still gets the
+        // step's Output and StepDone lines from the executor.
+        if let crate::functions::FnEvent::SetBackground { path, fit } = &ev {
+            self.apply_background_image(path.clone(), *fit);
+            return;
         }
         if requester == HUB_REQUESTER {
             match ev {
@@ -1480,6 +1506,47 @@ mod tests {
 
         // desktop.json landed under the temp config dir.
         wait_for_file(&cfg.path().join("opusdm").join("desktop.json"));
+    }
+
+    #[test]
+    fn set_background_step_applies_and_persists_the_image() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let img_dir = tempfile::tempdir().unwrap();
+        let img = img_dir.path().join("wall.png");
+        std::fs::write(&img, b"not really a png").unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut c = connect(&path);
+        send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut c).unwrap().unwrap();
+
+        let mut args = std::collections::BTreeMap::new();
+        args.insert("path".to_string(), img.to_string_lossy().into_owned());
+        args.insert("fit".to_string(), "tile".to_string());
+        let steps = vec![opusdm_ipc::function::FnStep::Internal {
+            cmd: opusdm_ipc::function::InternalCmd::SetBackground,
+            args: opusdm_ipc::function::InternalArgs(args),
+        }];
+        send(&mut c, &ToHub::RunFunction { steps }).unwrap();
+        let q: ToLister = recv(&mut c).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection));
+        send(&mut c, &ToHub::SelectionReply { paths: vec![], cwd: img_dir.path().to_path_buf() }).unwrap();
+
+        let mut got = None;
+        while let Ok(ev) = handle.evt_rx.recv_timeout(Duration::from_millis(1000)) {
+            if let HubEvent::ThemeChanged(t) = ev {
+                got = Some(t);
+                break;
+            }
+        }
+        let theme = got.expect("ThemeChanged not emitted");
+        assert_eq!(theme.background.mode, opusdm_ipc::BackgroundMode::Image);
+        assert_eq!(theme.background.image_path, Some(std::fs::canonicalize(&img).unwrap()));
+        assert_eq!(theme.background.image_fit, opusdm_ipc::ImageFit::Tile);
+        wait_for_file(&cfg.path().join("opusdm").join("settings.json"));
     }
 
     #[test]
