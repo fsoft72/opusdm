@@ -353,6 +353,26 @@ first and then changes only matching files, never directories.
   selection that a job (Copy, Move, Delete, ...) or Deselect All / Esc cleared,
   as long as they are still listed. `Ctrl+A` still selects everything.
 
+### 3.20 Change Directory and Set Background (function steps)
+
+Two internal commands of the Function Editor act on the desktop instead of on files:
+
+- **Change Directory** navigates the SOURCE lister to a folder. Its **Directory** field takes an
+  absolute path, `~` (your home) or a path relative to the folder the lister is in, and may hold the
+  usual placeholders (`{f}`, `{o}`, ...). The folder must exist, otherwise the step fails and the
+  function stops. It also moves the working directory of every later step: after
+  `Change Directory  ~/Projects`, a `Make Directory` step creates its folder in `~/Projects` and an
+  external program with "run in the SOURCE folder" starts there.
+- **Set Background** installs a picture as the desktop background. **Image file** takes the same
+  kind of path (`png`, `jpg`, `jpeg`, `webp`, `bmp` or `gif`); the optional **Fit** is `fill`, `fit`,
+  `center` or `tile` (case does not matter), and empty keeps the fit already set in Settings. The
+  change is applied at once and saved in `settings.json`. A wrong extension, a missing file or an
+  unknown fit stops the step and leaves the background as it was.
+
+To run either from the Command Palette, save a function that contains the step, for example
+`Set Background` with `{f}` as the image. Right-clicking an image file in a lister also offers
+**Set as Desktop Background** directly (not for names that contain a `{`).
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

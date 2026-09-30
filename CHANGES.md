@@ -4,6 +4,7 @@
 
 - Functions: new internal command "Set Background" (`InternalCmd::SetBackground`, required `path` with placeholders, `~` and cwd-relative paths, optional `fit` = fill / fit / center / tile, empty keeps the current fit). The step checks the file exists and has a png / jpg / jpeg / webp / bmp / gif extension, then the hub sets `theme.background` to that image and applies it through the same path as `ToHub::SetSettings` (now `Hub::apply_settings`): persisted to `settings.json`, live redraw. Hub-originated runs (script events) apply it too. New helpers `ImageFit::parse` and `is_background_image` in `opusdm_ipc::desktop`.
 - Lister: right-click an image file, "Set as Desktop Background" (refused for paths containing `{`).
+- Docs: `docs/usage.md` section 3.20 describes the Change Directory and Set Background function steps.
 
 ## 2026-09-29
 
