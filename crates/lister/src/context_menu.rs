@@ -159,6 +159,27 @@ pub fn show_context_menu(
         menu_box.append(&btn);
     }
 
+    // Leave Out on Desktop: the whole selection when the clicked row is part
+    // of it, otherwise just the clicked row. A path that cannot be left out
+    // (for example inside an archive) is refused here with a message.
+    {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let btn = menu_button("Leave Out on Desktop");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            let selected = ui.selected_paths();
+            let paths = if selected.contains(&target_path) { selected } else { vec![target_path.clone()] };
+            if let Err(msg) = opusdm_ipc::leftout::check_leavable(&paths) {
+                crate::actions::flash(&ui, &msg);
+                return;
+            }
+            let _ = ui.hub.client.send(&opusdm_ipc::ToHub::LeaveOut { paths });
+        });
+        menu_box.append(&btn);
+    }
+
     // 4. Checksums & Dimensioni cartelle (solo per directories)
     if row.is_dir {
         let ui = ui.clone();

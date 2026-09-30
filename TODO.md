@@ -59,7 +59,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 ## 5. Desktop, main window, themes
 
-- [ ] F-33 LeaveOut (icons left out on the desktop)
+- [x] F-33 LeaveOut (icons left out on the desktop; position saved only for left-out icons, primary monitor only, no drag and drop entry point yet)
 - [ ] F-34 Program Groups
 - [ ] F-35 Full themes (images + sounds + fonts), Build/Load/Save theme
 - [ ] F-36 Sound Events

@@ -236,8 +236,8 @@ standalone window with three sections:
 
 **Apply** sends the change to the running hub, which repaints the desktop immediately; **Save** does
 the same and closes. When no hub is running the settings are written to
-`~/.config/opusdm/desktop.json` and take effect the next time the hub starts. Per-folder desktop
-state (icon layout) lives in a `.opusdm/` directory inside the folder.
+`~/.config/opusdm/desktop.json` and take effect the next time the hub starts. Icon positions of the
+Desktop folder are not saved; only left-out icons (see 3.21) remember where they were dragged.
 
 ---
 
@@ -372,6 +372,15 @@ Two internal commands of the Function Editor act on the desktop instead of on fi
 To run either from the Command Palette, save a function that contains the step, for example
 `Set Background` with `{f}` as the image. Right-clicking an image file in a lister also offers
 **Set as Desktop Background** directly (not for names that contain a `{`).
+
+### 3.21 Leave Out (icons on the desktop)
+
+Any file or folder can sit on the desktop as a permanent icon with a small arrow badge, wherever it really lives:
+- Right-click it in a lister and choose **Leave Out on Desktop**. If the clicked entry is part of the selection, the whole selection is left out.
+- Or use the **Leave Out** and **Put Away** steps of the Function Editor on the SOURCE selection, so they can be bound to a hotkey.
+- **Put Away** is also in the context menu of a left-out icon on the desktop. It only removes the icon; the file is never touched.
+
+Drag a left-out icon to place it: the position is remembered across restarts (icons of the Desktop folder itself are still auto-arranged). A left-out entry whose file disappeared (deleted, or its disk not mounted) stays as a broken icon until you put it away. Double click opens a folder in a new lister and a file with its default application. Left-out icons appear on the primary monitor only. Stored in `~/.config/opusdm/leftout.json`.
 
 ## 4. Keyboard Shortcuts Reference
 

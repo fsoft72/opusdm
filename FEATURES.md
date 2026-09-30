@@ -439,11 +439,12 @@ Acceptance: `%f files, %b` renders accordingly.
 shortcut icons for any file/dir onto the main window/desktop; arrow badge
 marks them.
 
-**Spec**: desktop-mode "left-out" entries stored in
-`~/.config/opusdm/leftout.json` (path + position), rendered by the hub icon
-field with an overlay arrow; context menu "Put Away" removes. Distinct from
-the desktop folder contents. Acceptance: leave out `/etc/fstab`, restart hub,
-icon persists.
+**Spec**: left-out entries are stored in `~/.config/opusdm/leftout.json`
+(`{"items":[{"path":...,"x":...,"y":...}]}`, position optional and saved per
+path once dragged), merged by the hub into the desktop icon field with an arrow
+badge. Entry points are the Lister context menu "Leave Out on Desktop", the
+`Leave Out` / `Put Away` function steps, and "Put Away" in the desktop icon
+menu. Acceptance: leave out `/etc/fstab`, restart hub, icon persists.
 
 ### F-34 Program Groups
 **Original** (`Program Group`, `Icons - New Group`): group icons collect
