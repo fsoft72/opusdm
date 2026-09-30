@@ -25,7 +25,7 @@ const DESKTOP_MENU_BORDER: &str = "#1b1d1e";
 /// Approximate menu width/height, reserved when clamping the menu inside the
 /// desktop so a right-click near an edge still shows the whole menu.
 const DESKTOP_MENU_W: i32 = 180;
-const DESKTOP_MENU_H: i32 = 270;
+const DESKTOP_MENU_H: i32 = 300;
 
 /// Delay before re-asserting a desktop window's geometry once, after the WM
 /// has had a chance to run its placement policy (on first map) or after a
@@ -152,6 +152,10 @@ struct Widgets {
     /// Re-lays out the dock (edge, icon size, panel edge). Set once the dock
     /// window exists.
     set_dock_layout: RefCell<Option<Rc<dyn Fn(opusdm_dock::DockLayout)>>>,
+    /// The button banks (`buttons/<id>.json`), owned by the GTK side.
+    banks: Rc<RefCell<opusdm_ipc::Banks>>,
+    /// The open bank windows.
+    bank_windows: crate::bank_windows::BankWindows,
 }
 
 impl Widgets {
@@ -173,6 +177,9 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         desktop_settings.desktop_dir.as_deref(),
     );
 
+    let banks = Rc::new(RefCell::new(opusdm_ipc::Banks::load()));
+    let bank_windows = crate::bank_windows::BankWindows::new(banks.clone(), cmd_tx.clone());
+
     let widgets = Rc::new(Widgets {
         windows: RefCell::new(Vec::new()),
         cmd_tx: cmd_tx.clone(),
@@ -186,6 +193,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
             ..Default::default()
         },
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
+        banks,
+        bank_windows,
         set_panel_position: RefCell::new(None),
         set_dock_layout: RefCell::new(None),
     });
@@ -194,6 +203,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     let display = gtk::gdk::Display::default();
     let rects = display.as_ref().map(opusdm_ui::list_monitors).unwrap_or_default();
     full_rebuild_desktop_windows(app, &widgets, rects);
+    widgets.bank_windows.restore(app);
 
     // Follow the monitor layout live: a resolution change (real mode switch,
     // or a Xephyr host-window resize), a monitor plugged/unplugged, or a
@@ -608,6 +618,7 @@ fn apply_hidden(widgets: &Rc<Widgets>, hidden: bool) {
         }
     }
     widgets.desktop.group_windows.set_visible(!hidden);
+    widgets.bank_windows.set_desktop_hidden(hidden);
     let mut buttons = widgets.desktop.hide_buttons.borrow_mut();
     buttons.retain(|b| b.root().is_some());
     for button in buttons.iter() {
@@ -708,6 +719,30 @@ fn group_actions(widgets: &Rc<Widgets>) -> crate::group_window::GroupActions {
             groups_changed(&for_remove);
         }),
     }
+}
+
+/// The callbacks the bank manager and editor use to reach the hub.
+fn bank_hooks(widgets: &Rc<Widgets>) -> opusdm_buttonbank::editor::Hooks {
+    use opusdm_buttonbank::editor::{BankChange, Hooks};
+    let for_changed = widgets.clone();
+    let for_open = widgets.clone();
+    let for_close = widgets.clone();
+    Hooks {
+        changed: Rc::new(move |change| match change {
+            BankChange::Saved(id) | BankChange::Deleted(id) => for_changed.bank_windows.refresh(&id),
+        }),
+        open: Rc::new(move |id| {
+            if let Some(app) = for_open.primary_window().application() {
+                for_open.bank_windows.open_id(&app, id);
+            }
+        }),
+        close: Rc::new(move |id| for_close.bank_windows.close_id(id)),
+    }
+}
+
+/// Open the button bank manager.
+fn open_bank_manager(widgets: &Rc<Widgets>) {
+    opusdm_buttonbank::editor::open_manager(&widgets.primary_window(), widgets.banks.clone(), bank_hooks(widgets));
 }
 
 /// Open (or raise) the window of group `id`.
@@ -1328,6 +1363,18 @@ fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
         menu.append(&btn);
     }
 
+    // Button Banks
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Button Banks...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            open_bank_manager(&widgets);
+        });
+        menu.append(&btn);
+    }
+
     // Open Terminal Here
     {
         let widgets = widgets.clone();
@@ -1451,6 +1498,7 @@ fn request_quit(widgets: &Rc<Widgets>) {
                 return;
             }
             widgets.quitting.set(true);
+            widgets.bank_windows.begin_shutdown();
             // Wait for the Shutdown hooks (capped): the process exits right
             // after this returns and would kill a hook still running.
             let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -1493,8 +1541,12 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             }
         }
         HubEvent::HiddenChanged(hidden) => apply_hidden(widgets, hidden),
-        HubEvent::Bank { action, bank } => opusdm_ipc::err_log!("hub", "bank command {action:?} {bank}: not wired yet"),
-        HubEvent::OpenBankManager => opusdm_ipc::err_log!("hub", "bank manager: not wired yet"),
+        HubEvent::Bank { action, bank } => {
+            if let Some(app) = widgets.primary_window().application() {
+                widgets.bank_windows.apply(&app, action, &bank);
+            }
+        }
+        HubEvent::OpenBankManager => open_bank_manager(widgets),
         HubEvent::LeftOutAdd(paths) => {
             {
                 let mut left = widgets.desktop.leftout.borrow_mut();

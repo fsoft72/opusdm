@@ -79,6 +79,7 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::SetNone, title: Cow::Borrowed("Set Role: NONE"), category: Cow::Borrowed("Roles"), shortcut: None },
         CommandItem { id: CommandId::TogglePin, title: Cow::Borrowed("Toggle Role Pin / Lock"), category: Cow::Borrowed("Roles"), shortcut: None },
         CommandItem { id: CommandId::ManageFunctions, title: Cow::Borrowed("Manage Functions..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::ManageBanks, title: Cow::Borrowed("Button Banks..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageHotkeys, title: Cow::Borrowed("Edit Hotkeys..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::FindKey, title: Cow::Borrowed("Find Key..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageUserMenu, title: Cow::Borrowed("Edit User Menu..."), category: Cow::Borrowed("Functions"), shortcut: None },
@@ -353,6 +354,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             ui.status_bar.role_lock_btn.set_active(active);
             let msg = if active { ToHub::LockRole } else { ToHub::UnlockRole };
             let _ = ui.hub.client.send(&msg);
+        }
+        CommandId::ManageBanks => {
+            let _ = ui.hub.client.send(&ToHub::OpenBankManager);
         }
         CommandId::ManageFunctions => {
             crate::function_editor::open_functions_manager(ui);

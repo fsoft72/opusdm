@@ -19,6 +19,7 @@ opusdm-fsops = { path = "../fsops" }
 opusdm-iconview = { path = "../iconview" }
 opusdm-panel = { path = "../panel" }
 opusdm-dock = { path = "../dock" }
+opusdm-buttonbank = { path = "../buttonbank" }
 async-channel.workspace = true
 signal-hook.workspace = true
 libc.workspace = true

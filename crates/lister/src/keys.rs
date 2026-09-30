@@ -98,6 +98,7 @@ pub enum CommandId {
     HistoryForward,
     /// Open the Function Editor's manager window (list/new/edit/delete).
     ManageFunctions,
+    ManageBanks,
     /// Run a saved Function by id.
     RunFunction(opusdm_ipc::function::FunctionId),
     /// Open the hotkey editor.
@@ -350,6 +351,7 @@ mod tests {
     fn manage_functions_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageFunctions));
+        assert!(known.contains(&CommandId::ManageBanks));
     }
 
     #[test]
