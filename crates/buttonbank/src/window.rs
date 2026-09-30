@@ -7,6 +7,11 @@ use gtk::prelude::*;
 use opusdm_ipc::ButtonBank;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
+
+/// Delays after map at which the taskbar hint and the saved position are
+/// (re)applied.
+const MAP_RETRY_DELAYS_MS: [u64; 3] = [50, 200, 600];
 
 /// What a bank window asks of its owner.
 #[derive(Clone)]
@@ -53,9 +58,17 @@ impl BankWindow {
         fill(&window, &shared, bank, hooks);
         let saved = bank.x.zip(bank.y);
         window.connect_map(move |w| {
-            x11::set_skip_taskbar(w);
-            if let Some((x, y)) = saved {
-                x11::move_to(w, x, y);
+            // The window manager ignores state and position requests made
+            // while it is still adopting the window, so ask again a couple of
+            // times over the first moments, like the dock does.
+            for delay in MAP_RETRY_DELAYS_MS {
+                let window = w.clone();
+                glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+                    x11::set_skip_taskbar(&window);
+                    if let Some((x, y)) = saved {
+                        x11::move_to(&window, x, y);
+                    }
+                });
             }
         });
         BankWindow { window, bank: shared }

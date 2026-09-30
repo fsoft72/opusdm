@@ -40,12 +40,21 @@ pub fn set_skip_taskbar(window: &gtk::Window) {
     }
 }
 
-/// Move `window` so its top-left corner is at `(x, y)` on the screen.
+/// `_NET_MOVERESIZE_WINDOW` flags: gravity NorthWest (the position is the
+/// top-left of the window frame), x and y are set, source is an application.
+const MOVE_FLAGS: u32 = 1 | (1 << 8) | (1 << 9) | (1 << 12);
+
+/// Move `window` so the top-left corner of its frame is at `(x, y)` on the
+/// screen. The request goes to the window manager, which ignores a plain
+/// `ConfigureWindow` from another client.
 pub fn move_to(window: &gtk::Window, x: i32, y: i32) {
     let Some(xid) = xid(window) else { return };
     let run = || -> Result<(), Box<dyn std::error::Error>> {
-        let (conn, _) = x11rb::connect(None)?;
-        conn.configure_window(xid, &xproto::ConfigureWindowAux::new().x(x).y(y))?;
+        let (conn, screen_num) = x11rb::connect(None)?;
+        let root = conn.setup().roots[screen_num].root;
+        let atom = conn.intern_atom(false, b"_NET_MOVERESIZE_WINDOW")?.reply()?.atom;
+        let ev = ClientMessageEvent::new(32, xid, atom, [MOVE_FLAGS, x as u32, y as u32, 0, 0]);
+        conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)?;
         conn.flush()?;
         Ok(())
     };
@@ -54,12 +63,19 @@ pub fn move_to(window: &gtk::Window, x: i32, y: i32) {
     }
 }
 
-/// The position of `window` on the screen, or `None` when it cannot be read
-/// (not X11, not mapped).
+/// The position of the top-left corner of the frame of `window` on the
+/// screen (the same point [`move_to`] takes), or `None` when it cannot be
+/// read (not X11, not mapped).
 pub fn position(window: &gtk::Window) -> Option<(i32, i32)> {
     let xid = xid(window)?;
     let (conn, screen_num) = x11rb::connect(None).ok()?;
     let root = conn.setup().roots[screen_num].root;
     let reply = conn.translate_coordinates(xid, root, 0, 0).ok()?.reply().ok()?;
-    Some((i32::from(reply.dst_x), i32::from(reply.dst_y)))
+    let extents = conn.intern_atom(false, b"_NET_FRAME_EXTENTS").ok()?.reply().ok()?.atom;
+    let prop = conn.get_property(false, xid, extents, xproto::AtomEnum::CARDINAL, 0, 4).ok()?.reply().ok()?;
+    let (left, top) = match prop.value32().map(|v| v.collect::<Vec<u32>>()) {
+        Some(v) if v.len() == 4 => (v[0] as i32, v[2] as i32),
+        _ => (0, 0),
+    };
+    Some((i32::from(reply.dst_x) - left, i32::from(reply.dst_y) - top))
 }
