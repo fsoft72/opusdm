@@ -337,10 +337,28 @@ fn build_flag_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::Par
     row
 }
 
+/// The entries of a bank drop-down: the saved bank names, preceded by the
+/// value the step already holds when it is not among them (marked missing),
+/// so opening a step whose bank was renamed or deleted never rewrites it
+/// silently. Returns the entries and the index of `current` in them.
+fn bank_choices(names: &[String], current: Option<&str>) -> (Vec<String>, Option<usize>) {
+    let current = current.map(str::trim).filter(|c| !c.is_empty());
+    match current {
+        Some(c) if !names.iter().any(|n| n == c) => {
+            let mut all = vec![format!("{c} (missing)")];
+            all.extend(names.iter().cloned());
+            (all, Some(0))
+        }
+        Some(c) => (names.to_vec(), names.iter().position(|n| n == c)),
+        None => (names.to_vec(), None),
+    }
+}
+
 /// One button-bank parameter: a drop-down of the saved banks, read from disk
-/// now. When the step has no bank yet the first one is stored, so what the
-/// drop-down shows is what gets saved. With no banks at all the field says so
-/// and the required parameter stays missing.
+/// now. A step with no bank yet gets the first one stored, so what the
+/// drop-down shows is what gets saved. A bank the step holds that no longer
+/// exists stays selected as "(missing)" until the user picks another. With no
+/// banks at all the field says so and the required parameter stays missing.
 fn build_bank_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let label = gtk::Label::new(Some(spec.label));
@@ -348,30 +366,33 @@ fn build_bank_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::Par
     row.append(&label);
 
     let names = opusdm_ipc::buttonbank::Banks::load().names();
-    if names.is_empty() {
-        row.append(&gtk::Label::new(Some("(no button banks yet, create one first)")));
-        return row;
-    }
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let dropdown = gtk::DropDown::from_strings(&refs);
     let key = spec.key;
     let current = match state.function.borrow().steps.get(step_idx) {
         Some(FnStep::Internal { args, .. }) => args.get(key).map(str::to_string),
         _ => None,
     };
-    match current.and_then(|c| names.iter().position(|n| *n == c)) {
+    if names.is_empty() && current.as_deref().map_or(true, |c| c.trim().is_empty()) {
+        row.append(&gtk::Label::new(Some("(no button banks yet, create one first)")));
+        return row;
+    }
+    let (choices, selected) = bank_choices(&names, current.as_deref());
+    let refs: Vec<&str> = choices.iter().map(String::as_str).collect();
+    let dropdown = gtk::DropDown::from_strings(&refs);
+    match selected {
         Some(i) => dropdown.set_selected(i as u32),
         None => {
             if let Some(FnStep::Internal { args, .. }) = state.function.borrow_mut().steps.get_mut(step_idx) {
-                args.0.insert(key.to_string(), names[0].clone());
+                args.0.insert(key.to_string(), choices[0].clone());
             }
         }
     }
     let state_clone = state.clone();
     dropdown.connect_selected_notify(move |d| {
-        let Some(name) = names.get(d.selected() as usize) else { return };
+        let Some(choice) = choices.get(d.selected() as usize) else { return };
+        // Picking the "(missing)" entry again keeps the stale value as it was.
+        let value = choice.strip_suffix(" (missing)").unwrap_or(choice).to_string();
         if let Some(FnStep::Internal { args, .. }) = state_clone.function.borrow_mut().steps.get_mut(step_idx) {
-            args.0.insert(key.to_string(), name.clone());
+            args.0.insert(key.to_string(), value);
         }
         update_button_states(&state_clone);
     });
@@ -476,4 +497,30 @@ fn prompt_add_external(state: &Rc<EditorState>) {
         state_clone.function.borrow_mut().steps.push(FnStep::External { argv, cwd_source: true });
         rebuild_steps(&state_clone);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bank_choices;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_known_bank_is_selected_in_place() {
+        assert_eq!(bank_choices(&names(&["A", "B"]), Some("B")), (names(&["A", "B"]), Some(1)));
+    }
+
+    #[test]
+    fn a_missing_bank_stays_selected_as_missing_instead_of_being_replaced() {
+        assert_eq!(bank_choices(&names(&["A", "B"]), Some("Old")), (names(&["Old (missing)", "A", "B"]), Some(0)));
+        assert_eq!(bank_choices(&[], Some("Old")), (names(&["Old (missing)"]), Some(0)));
+    }
+
+    #[test]
+    fn a_step_without_a_bank_selects_nothing_yet() {
+        assert_eq!(bank_choices(&names(&["A"]), None), (names(&["A"]), None));
+        assert_eq!(bank_choices(&names(&["A"]), Some("  ")), (names(&["A"]), None));
+    }
 }

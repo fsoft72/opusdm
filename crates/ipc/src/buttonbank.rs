@@ -18,6 +18,23 @@ pub const DEFAULT_COLUMNS: u32 = 4;
 /// Saved window positions outside `0..=MAX_POSITION` are dropped on load.
 const MAX_POSITION: i32 = 32_000;
 
+/// A window whose top-left corner is closer than this to the right or bottom
+/// edge of a monitor is treated as off screen.
+const MIN_VISIBLE_PX: i32 = 40;
+
+/// The saved position `pos` if it lands on one of `monitors` (each
+/// `(x, y, width, height)`), so a bank saved on a monitor that is gone is
+/// left to the window manager instead of opening off screen. With no monitor
+/// information the position is kept.
+pub fn position_on_screen(pos: (i32, i32), monitors: &[(i32, i32, i32, i32)]) -> Option<(i32, i32)> {
+    if monitors.is_empty() {
+        return Some(pos);
+    }
+    let (x, y) = pos;
+    let visible = monitors.iter().any(|&(mx, my, w, h)| x >= mx && x < mx + w - MIN_VISIBLE_PX && y >= my && y < my + h - MIN_VISIBLE_PX);
+    visible.then_some(pos)
+}
+
 /// Base directory of the bank files (`~/.config/opusdm/buttons`).
 pub fn banks_dir() -> PathBuf {
     crate::settings::config_dir().join("buttons")
@@ -622,5 +639,17 @@ mod tests {
     fn saving_an_unknown_id_is_an_error() {
         let td = tempfile::tempdir().unwrap();
         assert!(Banks::default().save_bank_to(td.path(), "nope").is_err());
+    }
+
+    #[test]
+    fn position_on_screen_drops_a_position_no_monitor_shows() {
+        let one = [(0, 0, 1920, 1080)];
+        assert_eq!(position_on_screen((300, 200), &one), Some((300, 200)));
+        assert_eq!(position_on_screen((2500, 100), &one), None);
+        assert_eq!(position_on_screen((1900, 100), &one), None);
+        assert_eq!(position_on_screen((100, 1070), &one), None);
+        let two = [(0, 0, 1920, 1080), (1920, 0, 1280, 1024)];
+        assert_eq!(position_on_screen((2500, 100), &two), Some((2500, 100)));
+        assert_eq!(position_on_screen((100, 100), &[]), Some((100, 100)));
     }
 }

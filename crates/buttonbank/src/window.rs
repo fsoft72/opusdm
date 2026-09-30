@@ -1,17 +1,21 @@
 //! One bank window: a top-level window with the grid of buttons.
 
 use crate::{grid, x11};
+use opusdm_ipc::buttonbank::position_on_screen;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::ButtonBank;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-/// Delays after map at which the taskbar hint and the saved position are
-/// (re)applied.
-const MAP_RETRY_DELAYS_MS: [u64; 3] = [50, 200, 600];
+/// How often, and at most how many times, the taskbar hint and the saved
+/// position are (re)applied after the window is mapped.
+const MAP_RETRY_MS: u64 = 250;
+const MAP_RETRY_LIMIT: u32 = 60;
+/// Tries when there is no position to restore (only the taskbar hint).
+const MAP_HINT_ONLY_TRIES: u32 = 4;
 
 /// What a bank window asks of its owner.
 #[derive(Clone)]
@@ -22,12 +26,21 @@ pub struct WindowHooks {
     pub function_exists: Rc<dyn Fn(&str) -> bool>,
 }
 
+/// The rectangles of the monitors connected now, empty when there is no
+/// display.
+fn current_monitors() -> Vec<(i32, i32, i32, i32)> {
+    gtk::gdk::Display::default().map(|d| opusdm_ui::list_monitors(&d)).unwrap_or_default()
+}
+
 /// A bank window. Cloning shares the same window.
 #[derive(Clone)]
 pub struct BankWindow {
     window: gtk::Window,
     /// The bank the grid was last built from, so a click maps to its button.
     bank: Rc<RefCell<ButtonBank>>,
+    /// Where the window should be placed when it is mapped: the saved
+    /// position at first, then wherever it was when it was last hidden.
+    place: Rc<Cell<Option<(i32, i32)>>>,
 }
 
 /// Fill `window` with the grid for `bank` and apply its appearance.
@@ -56,22 +69,34 @@ impl BankWindow {
         let window = gtk::Window::builder().application(app).resizable(false).build();
         let shared = Rc::new(RefCell::new(ButtonBank::default()));
         fill(&window, &shared, bank, hooks);
-        let saved = bank.x.zip(bank.y);
+        let place = Rc::new(Cell::new(bank.x.zip(bank.y)));
+        let place_for_map = place.clone();
         window.connect_map(move |w| {
             // The window manager ignores state and position requests made
-            // while it is still adopting the window, so ask again a couple of
-            // times over the first moments, like the dock does.
-            for delay in MAP_RETRY_DELAYS_MS {
-                let window = w.clone();
-                glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                    x11::set_skip_taskbar(&window);
-                    if let Some((x, y)) = saved {
-                        x11::move_to(&window, x, y);
-                    }
-                });
-            }
+            // while it is still adopting the window, and how long that takes
+            // depends on how busy the hub is at startup. So keep asking, a
+            // few times a second, until the window sits where it should (or
+            // gives up after MAP_RETRY_LIMIT tries).
+            let window = w.clone();
+            let place = place_for_map.clone();
+            let tries = Cell::new(0_u32);
+            glib::timeout_add_local(Duration::from_millis(MAP_RETRY_MS), move || {
+                tries.set(tries.get() + 1);
+                x11::set_skip_taskbar(&window);
+                let target = place.get().and_then(|p| position_on_screen(p, &current_monitors()));
+                // Without a saved position only the taskbar hint is retried,
+                // for a shorter while.
+                let Some((x, y)) = target else {
+                    return if tries.get() >= MAP_HINT_ONLY_TRIES { glib::ControlFlow::Break } else { glib::ControlFlow::Continue };
+                };
+                if x11::position(&window) == Some((x, y)) || tries.get() >= MAP_RETRY_LIMIT {
+                    return glib::ControlFlow::Break;
+                }
+                x11::move_to(&window, x, y);
+                glib::ControlFlow::Continue
+            });
         });
-        BankWindow { window, bank: shared }
+        BankWindow { window, bank: shared, place }
     }
 
     /// Rebuild the grid, title and decoration from `bank`.
@@ -81,6 +106,11 @@ impl BankWindow {
 
     /// Show or hide the window without destroying it.
     pub fn set_visible(&self, visible: bool) {
+        if !visible {
+            if let Some(pos) = x11::position(&self.window) {
+                self.place.set(Some(pos));
+            }
+        }
         self.window.set_visible(visible);
     }
 

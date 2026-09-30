@@ -328,8 +328,9 @@ fn refresh_all(state: &Rc<State>) {
             load_form(&state);
         })
     };
-    let ids: Vec<String> = state.functions.iter().map(|f| f.id.clone()).collect();
-    let grid = grid::build_grid(&state.bank.borrow(), on_click, &|id| ids.iter().any(|i| i == id));
+    // Every Function counts as existing here: an insensitive button could not be
+    // selected, and selecting it is how a dead binding gets fixed.
+    let grid = grid::build_grid(&state.bank.borrow(), on_click, &|_| true);
     state.preview.append(&grid);
     load_form(state);
 }
@@ -472,8 +473,7 @@ fn refresh_preview_only(state: &Rc<State>) {
             load_form(&state);
         })
     };
-    let ids: Vec<String> = state.functions.iter().map(|f| f.id.clone()).collect();
-    state.preview.append(&grid::build_grid(&state.bank.borrow(), on_click, &|id| ids.iter().any(|i| i == id)));
+    state.preview.append(&grid::build_grid(&state.bank.borrow(), on_click, &|_| true));
 }
 
 /// What one toolbar button does to the editor state.
