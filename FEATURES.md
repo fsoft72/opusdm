@@ -500,9 +500,12 @@ set as background applies live.
 `Environment - Hide Method`): the whole environment hides to a clock, an
 AppIcon, a hotkey-only state, etc.; Reveal brings it back.
 
-**Spec**: hub command `Hide` iconifies all listers/panel/dock to a tray or
-dock icon; configurable global hotkey (F-03) or dock click reveals.
-Acceptance: hotkey toggles hidden/revealed with all windows restored.
+**Spec**: internal commands `Hide`, `Reveal` and `Toggle Hide` (usable from
+any function, user menu entry or global hotkey) and a "Hide All" / "Reveal"
+button in the desktop menu. Hidden means every Lister minimized, panel, dock and
+group windows hidden; the desktop stays as the backdrop. Only windows the hub
+minimized are restored on reveal. Acceptance: a global hotkey bound to a
+`Toggle Hide` function toggles hidden and revealed with all windows restored.
 
 ---
 

@@ -392,6 +392,12 @@ A group gathers programs, files or folders under one desktop icon.
 
 Each group is stored in `~/.config/opusdm/groups/<name>.json`. Groups appear on the primary monitor only.
 
+### 3.23 Hide and Reveal
+
+**Hide All** in the desktop context menu minimizes every lister and hides the panel, the dock and the group windows, leaving only the desktop; the same menu entry now reads **Reveal** and brings everything back. A lister you had already minimized yourself stays minimized after a reveal. Opening a new lister while hidden reveals everything too.
+
+To do it from the keyboard, make a function with the **Hide**, **Reveal** or **Toggle Hide** step (Manage Functions) and bind it in **Edit Hotkeys...** with **Global** ticked: the hotkey then works from any window and toggles the desktop. Not persisted: OpusDM always starts revealed.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

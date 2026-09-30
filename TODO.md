@@ -64,7 +64,7 @@ Legend: `- [x]` done, `- [ ]` to do.
 - [ ] F-35 Full themes (images + sounds + fonts), Build/Load/Save theme
 - [ ] F-36 Sound Events
 - [x] F-37 SetAsBackground command (palette use needs a saved function with `SetBackground {f}`; the filetype action waits for F-06)
-- [ ] F-38 Backdrop / hide system
+- [x] F-38 Backdrop / hide system (Hide, Reveal and Toggle Hide commands plus a desktop menu button; the clock and AppIcon hide methods are not implemented)
 
 ## 6. Network
 
@@ -97,7 +97,7 @@ Follows section 9 of [FEATURES.md](FEATURES.md):
 3. [x] File operation variants (F-07, F-08, F-09, F-10, F-12, F-13, F-15, F-31)
 4. [x] Lister formats and patterns (F-22, F-23, F-24, F-29, F-32)
 5. [x] Search trio (F-19, F-20, F-21) + viewer upgrades (F-16, F-17)
-6. [ ] Desktop features (F-33, F-34, F-37, F-38)
+6. [x] Desktop features (F-33, F-34, F-37, F-38)
 7. [ ] Themes and sounds (F-35, F-36, F-50)
 8. [ ] Button banks (F-02)
 9. [ ] Dual lister, icon-mode listers, tiling/snapshot, devices view (F-27, F-28, F-25, F-26, F-30)
