@@ -24,12 +24,15 @@ Out of scope:
 
 ## Existing pieces reused
 
-- `DesktopSettings.background` (`crates/ipc/src/desktop.rs`): `mode`
-  (`Solid` / `Gradient` / `Image`), `image_path`, `fit`
-  (`Fill` / `Fit` / `Center` / `Tile`), rendered by `background_css`.
-- `ToHub::SetDesktopSettings` handling in `crates/hub/src/server.rs`:
-  sanitize, persist to `desktop.json`, redraw the CSS, broadcast
-  `HubEvent::DesktopSettingsChanged`.
+- `Background` (`crates/ipc/src/desktop.rs`): `mode`
+  (`Solid` / `Gradient` / `Image`), `image_path`, `image_fit: ImageFit`
+  (`Fill` / `Fit` / `Center` / `Tile`), rendered by `background_css`. The
+  live value is `Settings.theme.background` (`settings.json`), NOT
+  `DesktopSettings`.
+- `ToHub::SetSettings` handling in `crates/hub/src/server.rs`: sanitize the
+  background, persist to `settings.json`, send `ToLister::SettingsUpdate` to
+  every Lister, emit `HubEvent::ThemeChanged` (the GTK side redraws the CSS
+  with `install_desktop_css`).
 - `ChangeDir` step handling in `crates/hub/src/functions.rs`: path template
   expansion, `~` and cwd-relative resolution, and the `FnEvent` channel that
   the server maps to messages.
@@ -54,12 +57,15 @@ Out of scope:
   - the extension is not one of png, jpg, jpeg, webp, bmp, gif
     (case-insensitive);
   - `fit` is present and not one of the four accepted values.
-- On success it sends `FnEvent::SetBackground { path, fit: Option<ImageFit> }`.
-- The server handler takes the current `DesktopSettings`, sets
-  `background.mode = Image`, `background.image_path = path`, and
-  `background.fit` only when `fit` is `Some` (otherwise the current fit is
-  kept). It then runs the same code path as `SetDesktopSettings`
-  (sanitize, persist, apply live, broadcast). No new persistence code.
+- On success it sends `FnEvent::SetBackground { path, fit: Option<ImageFit> }` (`ImageFit` from
+  `opusdm_ipc::desktop`).
+- The `SetSettings` arm of the server is extracted into
+  `Hub::apply_settings(Settings)`. The `SetBackground` handler clones
+  `current_settings`, sets `theme.background.mode = Image`,
+  `theme.background.image_path = Some(path)`, and `theme.background.image_fit`
+  only when `fit` is `Some` (otherwise the current fit is kept), then calls
+  `apply_settings`. No new persistence code. The event is handled for every
+  requester, including hub-originated runs (script events).
 
 ### 3. Lister context menu (`crates/lister/src/context_menu.rs`)
 
@@ -90,6 +96,8 @@ Unit tests, next to the existing ones in `crates/hub/src/functions.rs` and
 - relative and `~` paths resolve, like `ChangeDir`;
 - non-file path, non-image extension and invalid `fit` each produce an error;
 - `fit` omitted keeps the current fit, `fit` given overrides it;
+- `ImageFit::parse` and `is_background_image` (in `crates/ipc/src/desktop.rs`,
+  shared by hub and Lister) accept the documented values only;
 - the schema lists `path` as required and `fit` as optional, and the command
   survives a JSON roundtrip.
 
