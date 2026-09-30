@@ -400,10 +400,10 @@ impl Ui {
         self.hidden_by_hub.set(hidden_by_hub);
         match action {
             crate::hidden::HideAction::Minimize => self.window.minimize(),
-            crate::hidden::HideAction::Restore => {
-                self.window.unminimize();
-                self.window.present();
-            }
+            // No `present()`: raising every restored window in turn would give
+            // the focus (and the SOURCE role) to whichever comes last. The hub
+            // raises the SOURCE Lister itself once everyone is back.
+            crate::hidden::HideAction::Restore => self.window.unminimize(),
             crate::hidden::HideAction::Nothing => {}
         }
     }

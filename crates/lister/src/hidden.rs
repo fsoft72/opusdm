@@ -9,7 +9,7 @@ pub enum HideAction {
     Nothing,
     /// Minimize it.
     Minimize,
-    /// Restore it and bring it to the front.
+    /// Restore it (without raising it; the hub raises the SOURCE Lister).
     Restore,
 }
 

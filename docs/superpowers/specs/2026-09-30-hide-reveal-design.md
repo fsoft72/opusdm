@@ -26,8 +26,17 @@ another action (hotkey, menu, function) brings it back exactly as it was.
 - A Lister that was already minimized by the user is left alone on hide and
   stays minimized on reveal; only windows the hub minimized are restored
   (`opusdm-lister` `hidden::next_step`, a pure function).
-- A new Lister registering while hidden reveals everything: the user opened it
-  to see it.
+- A Lister somebody asked for (desktop menu, "New Lister" button) registering
+  while hidden reveals everything: the user opened it to see it. One nobody
+  asked for (the initial Lister, for instance when a `Startup` script hides the
+  desktop) is told to hide with the rest. The hub counts the requested spawns
+  that have not registered yet to tell them apart.
+- On reveal the Listers restore themselves without raising (raising each in map
+  order would hand the focus, and with it the SOURCE role, to a random one);
+  afterwards the hub raises only the SOURCE Lister, so the roles stay as they
+  were. A reveal caused by a new Lister does not raise the old SOURCE.
+- A panel bar rebuilt while hidden (monitor change) stays hidden
+  (`opusdm_panel::set_hidden`).
 - Panel and dock windows are found by their window title
   (`opusdm_panel::WINDOW_TITLE`, `opusdm_dock::WINDOW_TITLE`).
 

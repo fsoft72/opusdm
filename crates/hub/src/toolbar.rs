@@ -594,6 +594,7 @@ fn hide_label(hidden: bool) -> &'static str {
 /// reveal the rest; the Lister windows react to their own `SetHidden`.
 fn apply_hidden(widgets: &Rc<Widgets>, hidden: bool) {
     widgets.desktop.hidden.set(hidden);
+    opusdm_panel::set_hidden(hidden);
     if let Some(app) = widgets.primary_window().application() {
         for window in app.windows() {
             let title = window.title();

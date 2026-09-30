@@ -319,6 +319,11 @@ struct Hub {
     /// Whether the desktop is hidden (Lister windows minimized, panel and dock
     /// hidden). Not persisted: the hub always starts revealed.
     hidden: bool,
+    /// Lister spawns someone asked for (desktop menu, "New Lister") that have
+    /// not registered yet. A Lister registering while hidden reveals the
+    /// desktop only when it was asked for; the initial Lister of a `Startup`
+    /// script that hides the desktop was not, and just hides with the rest.
+    visible_spawns_pending: u32,
     /// Loaded once at startup; updated in place by `ToHub::SetBindings`.
     current_bindings: Bindings,
     /// Loaded once at startup; updated in place by `ToHub::SetFormats`.
@@ -496,10 +501,18 @@ impl Hub {
                     emit_roles(&self.roles, &self.conns, &self.evt_tx);
                 }
                 if self.conns.get(&cid).is_some_and(|c| c.registered) {
-                    // A Lister opening while everything is hidden means the user
-                    // wants to see it: bring the whole desktop back.
+                    // While everything is hidden, a Lister somebody asked for
+                    // means the user wants to see it: bring the desktop back
+                    // (without raising the old SOURCE over the new window). One
+                    // nobody asked for (the initial Lister) hides with the rest.
+                    let requested = self.visible_spawns_pending > 0;
+                    self.visible_spawns_pending = self.visible_spawns_pending.saturating_sub(1);
                     if self.hidden {
-                        self.set_hidden(false);
+                        if requested {
+                            self.set_hidden_with(false, false);
+                        } else if let Some(c) = self.conns.get_mut(&cid) {
+                            let _ = c.tx.send(ToLister::SetHidden(true).into());
+                        }
                     }
                     self.emit_script_event(ScriptEvent::ListerOpened);
                 }
@@ -528,9 +541,7 @@ impl Hub {
                 emit_roles(&self.roles, &self.conns, &self.evt_tx);
             }
 
-            ToHub::SpawnLister { start_path } => {
-                (self.on_spawn)(start_path);
-            }
+            ToHub::SpawnLister { start_path } => self.spawn_lister(start_path),
 
             ToHub::RunJob { op, srcs, dest_dir, options } => {
                 self.lister_run_job(cid, op, srcs, dest_dir, options);
@@ -862,6 +873,15 @@ impl Hub {
     /// minimize or restore themselves) and the GTK side (panel, dock, group
     /// windows).
     fn set_hidden(&mut self, hidden: bool) {
+        self.set_hidden_with(hidden, true);
+    }
+
+    /// [`Hub::set_hidden`], with control over the focus on reveal: the Listers
+    /// restore themselves without raising (raising them in map order would
+    /// hand the focus, and with it the SOURCE role, to a random one), so when
+    /// `present_source` is set the hub afterwards raises only the SOURCE
+    /// Lister, which keeps the roles as they were.
+    fn set_hidden_with(&mut self, hidden: bool, present_source: bool) {
         if self.hidden == hidden {
             return;
         }
@@ -870,6 +890,20 @@ impl Hub {
             let _ = c.tx.send(ToLister::SetHidden(hidden).into());
         }
         let _ = self.evt_tx.send(HubEvent::HiddenChanged(hidden));
+        if hidden || !present_source {
+            return;
+        }
+        if let Some(source) = self.roles.source() {
+            if let Some(c) = self.conns.get_mut(&source.0) {
+                let _ = c.tx.send(ToLister::Present.into());
+            }
+        }
+    }
+
+    /// Start a Lister on request and remember that one is on its way.
+    fn spawn_lister(&mut self, start_path: Option<PathBuf>) {
+        self.visible_spawns_pending = self.visible_spawns_pending.saturating_add(1);
+        (self.on_spawn)(start_path);
     }
 
     /// Leave `paths` out on the desktop: refuse the whole request (log only)
@@ -1077,7 +1111,7 @@ impl Hub {
     /// Returns `false` when the owner loop should shut down.
     fn gtk_cmd(&mut self, cmd: HubCmd) -> bool {
         match cmd {
-            HubCmd::SpawnRequested { start_path } => (self.on_spawn)(start_path),
+            HubCmd::SpawnRequested { start_path } => self.spawn_lister(start_path),
 
             HubCmd::RunJob { op, srcs, dest_dir } => {
                 // A hub-originated job has no requesting Lister, so progress and
@@ -1314,6 +1348,7 @@ fn owner_loop(
         current_settings: settings::load_settings(),
         current_desktop,
         hidden: false,
+        visible_spawns_pending: 0,
         event_guard: EventGuard::new(),
         global_keys_enabled: opts.global_keys,
         owner_tx: owner_tx.clone(),
@@ -2442,10 +2477,12 @@ mod tests {
     }
 
     #[test]
-    fn registering_a_lister_while_hidden_reveals_everything() {
+    fn a_requested_lister_registering_while_hidden_reveals_everything() {
         let (_td, listener, path) = bind_temp();
         let handle = spawn_server(listener, Box::new(|_p| {}));
         handle.cmd_tx.send(HubCmd::SetHidden(true)).unwrap();
+        // The user asked for a new Lister (desktop menu, "New Lister" button).
+        handle.cmd_tx.send(HubCmd::SpawnRequested { start_path: None }).unwrap();
         let hidden_event = |ev: HubEvent| match ev {
             HubEvent::HiddenChanged(h) => Some(h),
             _ => None,
@@ -2497,5 +2534,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_lister_nobody_asked_for_registering_while_hidden_is_told_to_hide_too() {
+        // The initial Lister of a Startup script that hides the desktop.
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        handle.cmd_tx.send(HubCmd::SetHidden(true)).unwrap();
+        let hidden_event = |ev: HubEvent| match ev {
+            HubEvent::HiddenChanged(h) => Some(h),
+            _ => None,
+        };
+        assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(true));
+        let mut c = connect(&path);
+        send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut c).unwrap().unwrap();
+        loop {
+            match recv::<_, ToLister>(&mut c).unwrap() {
+                Some(ToLister::SetHidden(true)) => break,
+                Some(_) => continue,
+                None => panic!("the new Lister was not told to hide"),
+            }
+        }
+        assert_eq!(
+            next_matching(&handle, Duration::from_millis(300), hidden_event),
+            None,
+            "an unrequested Lister must not reveal the desktop"
+        );
+    }
+
+    #[test]
+    fn reveal_presents_only_the_source_lister_after_telling_everyone() {
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        let mut b = connect(&path);
+        send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
+        let _w: Welcome = recv(&mut b).unwrap().unwrap();
+        send(&mut a, &ToHub::FocusGained).unwrap();
+        loop {
+            match recv::<_, ToLister>(&mut a).unwrap() {
+                Some(ToLister::RoleChanged { .. }) => break,
+                Some(_) => continue,
+                None => panic!("no RoleChanged"),
+            }
+        }
+        handle.cmd_tx.send(HubCmd::SetHidden(true)).unwrap();
+        handle.cmd_tx.send(HubCmd::SetHidden(false)).unwrap();
+        // SOURCE Lister a: SetHidden(true), SetHidden(false), then Present.
+        let mut seen_reveal = false;
+        loop {
+            match recv::<_, ToLister>(&mut a).unwrap() {
+                Some(ToLister::SetHidden(false)) => seen_reveal = true,
+                Some(ToLister::Present) => {
+                    assert!(seen_reveal, "Present must come after SetHidden(false)");
+                    break;
+                }
+                Some(_) => continue,
+                None => panic!("the SOURCE Lister never got Present"),
+            }
+        }
+        // Lister b (not SOURCE) is told to reveal but never asked to present.
+        let mut got_reveal = false;
+        b.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        while let Ok(Some(msg)) = recv::<_, ToLister>(&mut b) {
+            match msg {
+                ToLister::SetHidden(false) => got_reveal = true,
+                ToLister::Present => panic!("a non-SOURCE Lister must not be presented"),
+                _ => {}
+            }
+        }
+        assert!(got_reveal);
     }
 }

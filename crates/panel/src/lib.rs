@@ -178,13 +178,32 @@ fn build_bar_window(
     bar.set_end_widget(Some(&right));
 
     win.set_child(Some(&bar));
-    win.present();
+    // While the desktop is hidden a rebuilt bar (monitor change) stays hidden
+    // too; the hub shows every panel window again on reveal.
+    if !is_hidden() {
+        win.present();
+    }
 
     BarWindow { window: win, place, menu, pager, tasklist, tray }
 }
 
 /// Title of every panel bar window; the hub uses it to hide and show the panel.
 pub const WINDOW_TITLE: &str = "OpusDM Panel";
+
+/// Whether the desktop is hidden: a bar built while it is stays unpresented.
+static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tell the panel the desktop is now hidden (`true`) or revealed. The hub
+/// hides and shows the existing bar windows itself; this only stops a bar
+/// rebuilt in between (monitor change) from popping up while hidden.
+pub fn set_hidden(hidden: bool) {
+    HIDDEN.store(hidden, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether [`set_hidden`] last said hidden.
+pub fn is_hidden() -> bool {
+    HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Build one bar window per monitor, wire every widget, and keep them in sync
 /// with monitor hotplug and mirror changes. Identical monitor rects (a
@@ -369,4 +388,17 @@ fn install_css() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+
+    #[test]
+    fn the_hidden_flag_can_be_set_and_cleared() {
+        set_hidden(true);
+        assert!(is_hidden());
+        set_hidden(false);
+        assert!(!is_hidden());
+    }
 }

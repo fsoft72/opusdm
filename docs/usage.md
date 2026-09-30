@@ -394,7 +394,7 @@ Each group is stored in `~/.config/opusdm/groups/<name>.json`. Groups appear on 
 
 ### 3.23 Hide and Reveal
 
-**Hide All** in the desktop context menu minimizes every lister and hides the panel, the dock and the group windows, leaving only the desktop; the same menu entry now reads **Reveal** and brings everything back. A lister you had already minimized yourself stays minimized after a reveal. Opening a new lister while hidden reveals everything too.
+**Hide All** in the desktop context menu minimizes every lister and hides the panel, the dock and the group windows, leaving only the desktop; the same menu entry now reads **Reveal** and brings everything back. A lister you had already minimized yourself stays minimized after a reveal. Opening a new lister while hidden (**New Lister**) reveals everything too. After a reveal the lister that was the SOURCE is raised again, so SOURCE and DEST stay as they were. A `Hide` step in a `Startup` script also hides the first lister OpusDM opens.
 
 To do it from the keyboard, make a function with the **Hide**, **Reveal** or **Toggle Hide** step (Manage Functions) and bind it in **Edit Hotkeys...** with **Global** ticked: the hotkey then works from any window and toggles the desktop. Not persisted: OpusDM always starts revealed.
 
