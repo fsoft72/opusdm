@@ -379,6 +379,7 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::MoveAs,
     InternalCmd::Duplicate,
     InternalCmd::ChangeDir,
+    InternalCmd::SetBackground,
 ];
 
 /// Ask which `InternalCmd` to add, append it with empty args, and rebuild.

@@ -73,6 +73,8 @@ pub enum InternalCmd {
     Duplicate,
     /// Navigate the SOURCE Lister to a directory; later steps run from it.
     ChangeDir,
+    /// Install an image as the desktop background.
+    SetBackground,
 }
 
 impl InternalCmd {
@@ -89,6 +91,7 @@ impl InternalCmd {
             InternalCmd::MoveAs => "Move As",
             InternalCmd::Duplicate => "Duplicate",
             InternalCmd::ChangeDir => "Change Directory",
+            InternalCmd::SetBackground => "Set Background",
         }
     }
 }
@@ -213,6 +216,20 @@ pub mod schema {
                 required: true,
                 kind: ParamKind::PathTemplate,
             }],
+            InternalCmd::SetBackground => &[
+                ParamSpec {
+                    key: "path",
+                    label: "Image file (png, jpg, jpeg, webp, bmp, gif)",
+                    required: true,
+                    kind: ParamKind::PathTemplate,
+                },
+                ParamSpec {
+                    key: "fit",
+                    label: "Fit: fill, fit, center or tile (empty = keep current)",
+                    required: false,
+                    kind: ParamKind::Text,
+                },
+            ],
         }
     }
 }
@@ -662,5 +679,23 @@ mod tests {
         save_functions(std::slice::from_ref(&f)).unwrap();
         let loaded = load_functions();
         assert_eq!(loaded, vec![f]);
+    }
+
+    #[test]
+    fn set_background_schema_has_a_required_path_and_an_optional_fit() {
+        let params = schema::params_for(InternalCmd::SetBackground);
+        assert_eq!(params.len(), 2);
+        assert_eq!((params[0].key, params[0].required), ("path", true));
+        assert_eq!((params[1].key, params[1].required), ("fit", false));
+        assert_eq!(InternalCmd::SetBackground.label(), "Set Background");
+    }
+
+    #[test]
+    fn set_background_step_survives_a_json_roundtrip() {
+        let mut args = BTreeMap::new();
+        args.insert("path".to_string(), "{f}".to_string());
+        let step = FnStep::Internal { cmd: InternalCmd::SetBackground, args: InternalArgs(args) };
+        let json = serde_json::to_string(&step).unwrap();
+        assert_eq!(serde_json::from_str::<FnStep>(&json).unwrap(), step);
     }
 }

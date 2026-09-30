@@ -61,6 +61,9 @@ fn run_steps(
             FnStep::Internal { cmd: InternalCmd::ChangeDir, args } => {
                 run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx)
             }
+            FnStep::Internal { cmd: InternalCmd::SetBackground, args } => {
+                run_set_background(run_id, step_idx, args, &source, dest, events_tx)
+            }
             FnStep::Internal { cmd, args } => run_internal(run_id, step_idx, *cmd, args, &source, dest, events_tx),
             FnStep::External { argv, cwd_source } => {
                 run_external(run_id, step_idx, argv, *cwd_source, &source, dest, events_tx)
@@ -117,6 +120,18 @@ fn run_change_dir(
     Ok(())
 }
 
+/// Run a `SetBackground` step. Filled in by the next task.
+fn run_set_background(
+    _run_id: u64,
+    _step_idx: usize,
+    _args: &InternalArgs,
+    _source: &SelectionCtx,
+    _dest: Option<&SelectionCtx>,
+    _events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    Err("Set Background: not implemented".to_string())
+}
+
 /// Run one `Internal` step. `Copy`/`Move`/`Delete` reuse the same
 /// `opusdm_fsops::run_job` the hub's own `JobEngine` calls; `MakeDir`/
 /// `NewFile` create directly (no scan/progress needed for one entry);
@@ -132,6 +147,7 @@ fn run_internal(
 ) -> Result<(), String> {
     match cmd {
         InternalCmd::ChangeDir => unreachable!("ChangeDir is handled by run_change_dir"),
+        InternalCmd::SetBackground => unreachable!("SetBackground is handled by run_set_background"),
         InternalCmd::Rename => {
             let template = args.get("new_name").unwrap_or("");
             let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;

@@ -91,6 +91,32 @@ pub enum ImageFit {
     Tile,
 }
 
+impl ImageFit {
+    /// Parse `fill` / `fit` / `center` / `tile`, ignoring case and
+    /// surrounding whitespace. Anything else is `None`.
+    pub fn parse(text: &str) -> Option<ImageFit> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "fill" => Some(ImageFit::Fill),
+            "fit" => Some(ImageFit::Fit),
+            "center" => Some(ImageFit::Center),
+            "tile" => Some(ImageFit::Tile),
+            _ => None,
+        }
+    }
+}
+
+/// File extensions (lower case) accepted as a desktop background image.
+pub const BACKGROUND_IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+
+/// Whether `path` has one of the [`BACKGROUND_IMAGE_EXTS`] extensions,
+/// ignoring case. Looks at the name only, never at the file content.
+pub fn is_background_image(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| BACKGROUND_IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
 /// The desktop background. Only the field selected by [`Background::mode`] is
 /// painted; the others keep their last value so switching modes back and forth
 /// is lossless.
@@ -437,5 +463,35 @@ mod tests {
             path_to_file_url(Path::new("/home/\u{00fc}ser/p.png")),
             "file:///home/%C3%BCser/p.png"
         );
+    }
+
+    #[test]
+    fn image_fit_parse_accepts_the_four_names_case_insensitively() {
+        assert_eq!(ImageFit::parse("fill"), Some(ImageFit::Fill));
+        assert_eq!(ImageFit::parse(" FIT "), Some(ImageFit::Fit));
+        assert_eq!(ImageFit::parse("Center"), Some(ImageFit::Center));
+        assert_eq!(ImageFit::parse("tile"), Some(ImageFit::Tile));
+        assert_eq!(ImageFit::parse("stretch"), None);
+        assert_eq!(ImageFit::parse(""), None);
+    }
+
+    #[test]
+    fn is_background_image_checks_the_extension_case_insensitively() {
+        for name in ["a.png", "a.JPG", "a.jpeg", "a.WebP", "a.bmp", "a.gif"] {
+            assert!(is_background_image(std::path::Path::new(name)), "{name}");
+        }
+        for name in ["a.txt", "a.svg", "png", "a."] {
+            assert!(!is_background_image(std::path::Path::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn background_css_percent_encodes_spaces_in_the_image_path() {
+        let bg = Background {
+            mode: BackgroundMode::Image,
+            image_path: Some(PathBuf::from("/tmp/my wall.png")),
+            ..Background::default()
+        };
+        assert!(background_css(&bg).contains("my%20wall.png"));
     }
 }
