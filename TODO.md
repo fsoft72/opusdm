@@ -16,7 +16,7 @@ Legend: `- [x]` done, `- [ ]` to do.
   - [x] F-01 follow-up: per-function hotkey (done through hotkeys.json, F-03)
   - [ ] F-01 follow-up: conflict prompt UI for Copy/Move/Delete steps (currently auto-skip)
   - [ ] F-01 follow-up: more internal commands beyond Copy/Move/Delete/MakeDir/NewFile/Rename
-- [ ] F-02 Button Banks + Button Bank Editor
+- [x] F-02 Button Banks + Button Bank Editor (open under the mouse, Start Menu variant and the Lister toolbar as a bank are not implemented)
 - [x] F-03 Hotkey Editor (local + system-global hotkeys, KeyFinder)
 - [x] F-04 User menus in listers
 - [x] F-05 Script events (system events only; viewer overrides wait for F-16, Hidden/Revealed for F-38)
@@ -99,6 +99,6 @@ Follows section 9 of [FEATURES.md](FEATURES.md):
 5. [x] Search trio (F-19, F-20, F-21) + viewer upgrades (F-16, F-17)
 6. [x] Desktop features (F-33, F-34, F-37, F-38)
 7. [ ] Themes and sounds (F-35, F-36, F-50)
-8. [ ] Button banks (F-02)
+8. [x] Button banks (F-02)
 9. [ ] Dual lister, icon-mode listers, tiling/snapshot, devices view (F-27, F-28, F-25, F-26, F-30)
 10. [ ] Network (F-39), Print (F-47), encryption (F-14)

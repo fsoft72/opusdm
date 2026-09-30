@@ -95,8 +95,9 @@ Functions:
   button with no Function for that mouse button does nothing. A button whose
   Function no longer exists is shown insensitive with a tooltip
   "Function not found" (the check uses the callback `function_exists`).
-- The window reports moves and close through callbacks (`moved(x, y)`,
-  `closed`), so the hub can persist `x`, `y` and `open`.
+- The window reports its position through a close callback, and the hub saves
+  it just before quitting, so `x`, `y` and `open` survive a restart. Bank
+  windows hide and show with the desktop (`Hide` / `Reveal`).
 - The window is marked `_NET_WM_STATE_SKIP_TASKBAR` and
   `_NET_WM_STATE_SKIP_PAGER` once mapped, using the same `x11rb` approach as
   `crates/dock/src/window.rs`. Bank windows therefore never appear in the
@@ -133,12 +134,12 @@ Two windows, both modeled on `lister/src/function_editor.rs`:
   `CloseBank` sets `open: false`. Opening a bank that is already open presents
   it.
 - The Function Editor parameter form gets a drop-down of bank names for the
-  `bank` parameter (`Welcome` carries the list of names, and `BanksUpdate`
-  keeps it current, modeled on `BindingsUpdate`).
+  `bank` parameter, read from the bank files when the step form is built (no
+  protocol change: the files are the source of truth).
 - Entry points: a "Button Banks..." item in the desktop menu and in the Command
-  Palette (a new `CommandId::ManageBanks`) open the manager. The manager runs
-  in the hub process (like the desktop-config windows), so it needs no extra
-  IPC to save.
+  Palette (a new `CommandId::ManageBanks`, which sends `ToHub::OpenBankManager`)
+  open the manager. The manager runs in the hub process (like the
+  desktop-config windows) and saves directly.
 - After every save or delete the hub refreshes the affected open window and
   broadcasts the names.
 

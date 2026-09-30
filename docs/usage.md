@@ -398,6 +398,29 @@ Each group is stored in `~/.config/opusdm/groups/<name>.json`. Groups appear on 
 
 To do it from the keyboard, make a function with the **Hide**, **Reveal** or **Toggle Hide** step (Manage Functions) and bind it in **Edit Hotkeys...** with **Global** ticked: the hotkey then works from any window and toggles the desktop. Not persisted: OpusDM always starts revealed.
 
+### 3.24 Button Banks
+
+A button bank is a small floating window of buttons. Each button has a label
+and/or an icon and up to three Functions: one for the left, one for the right
+and one for the middle mouse button. Bank windows do not appear in the window
+list or the pager.
+
+- **Manage banks:** "Button Banks..." in the desktop menu or in the Command
+  Palette. The manager lists the banks (New, Edit, Delete, Open, Close Bank).
+- **Edit a bank:** the preview on the left shows the buttons; click one to
+  select it. Add, Insert (before the selection), Delete, Copy, Paste, Up and
+  Down work on the selected button. The form sets its label, icon file and the
+  three Functions, and the bank's name, orientation (Horizontal fills rows,
+  Vertical fills columns), columns and Borderless. Save is disabled while
+  something is invalid; the reason is shown under the form.
+- **Commands:** the Function steps `Open Bank`, `Close Bank`, `Toggle Bank` and
+  `Hide Bank` take a bank name, so a hotkey, a user menu entry or a script event
+  can drive a bank. `Hide Bank` hides the window but keeps the bank open.
+- **Restore:** a bank that was open when the hub quit opens again at the same
+  position at the next start. `Hide All` hides the bank windows too.
+- **Files:** one JSON file per bank in `~/.config/opusdm/buttons/`. A file that
+  cannot be read is copied to `<name>.json.bak` and left alone.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

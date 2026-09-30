@@ -25,3 +25,10 @@ disk) is a separate, larger project and is not planned yet.
 Find / Search in Files stops at 5000 results (`MAX_RESULTS`) and reads at most
 16 MiB of each file (`SEARCH_FILE_MAX`). Make both settings alongside the Viewer
 read caps above.
+
+## Button banks: not done (from F-02)
+
+Open a bank under the mouse, the Start Menu variant (a bank shown as a popup
+menu), the Lister toolbar as an editable bank, drag and drop reordering of
+buttons, and saving the window position on every move (it is saved when the
+window closes and before the hub quits).
