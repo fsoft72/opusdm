@@ -3,7 +3,7 @@
 //! unit-tested. See `docs/superpowers/specs/2026-09-30-leaveout-design.md`.
 
 use opusdm_iconview::scan;
-use opusdm_iconview::IconEntry;
+use opusdm_iconview::{IconEntry, IconKind};
 use opusdm_ipc::LeftOut;
 use std::io;
 use std::path::Path;
@@ -30,10 +30,43 @@ pub fn read_desktop_entries(dir: &Path, left: &LeftOut) -> io::Result<Vec<IconEn
     Ok(merge_entries(scan::read_entries(dir, false)?, left))
 }
 
+/// Latest-wins gate for asynchronous desktop reloads. Every reload takes a
+/// ticket with [`ReloadGate::begin`] and, when its (off-thread) read finishes,
+/// applies the result only if [`ReloadGate::is_latest`] still holds, so a slow
+/// read can never overwrite the result of a newer one.
+#[derive(Default)]
+pub struct ReloadGate {
+    latest: std::cell::Cell<u64>,
+}
+
+impl ReloadGate {
+    /// Start a reload: returns its ticket and makes every older one stale.
+    pub fn begin(&self) -> u64 {
+        let ticket = self.latest.get() + 1;
+        self.latest.set(ticket);
+        ticket
+    }
+
+    /// Whether `ticket` is still the newest one handed out.
+    pub fn is_latest(&self, ticket: u64) -> bool {
+        self.latest.get() == ticket
+    }
+}
+
+/// Whether activating `entry` should open a Lister on it: a folder, or a
+/// symlink whose target is a folder. Everything else goes to the default
+/// application.
+pub fn opens_in_lister(entry: &IconEntry) -> bool {
+    match entry.kind {
+        IconKind::Dir => true,
+        IconKind::Symlink => entry.path.is_dir(),
+        IconKind::File | IconKind::Broken => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opusdm_iconview::IconKind;
 
     fn store(paths: &[&Path]) -> LeftOut {
         let mut lo = LeftOut::default();
@@ -96,5 +129,32 @@ mod tests {
         let got = read_desktop_entries(desk.path(), &LeftOut::default()).unwrap();
         assert_eq!(got.len(), 1);
         assert!(!got[0].left_out);
+    }
+
+    #[test]
+    fn reload_gate_only_accepts_the_latest_ticket() {
+        let gate = ReloadGate::default();
+        let first = gate.begin();
+        assert!(gate.is_latest(first));
+        let second = gate.begin();
+        assert!(!gate.is_latest(first), "an older reload must be dropped");
+        assert!(gate.is_latest(second));
+    }
+
+    #[test]
+    fn opens_in_lister_covers_dirs_and_symlinks_to_dirs_only() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        std::fs::create_dir(base.join("d")).unwrap();
+        std::fs::write(base.join("f.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(base.join("d"), base.join("link_to_dir")).unwrap();
+        std::os::unix::fs::symlink(base.join("f.txt"), base.join("link_to_file")).unwrap();
+        std::os::unix::fs::symlink(base.join("nope"), base.join("dangling")).unwrap();
+        let entry = |name: &str| opusdm_iconview::scan::entry_for_path(&base.join(name));
+        assert!(opens_in_lister(&entry("d")));
+        assert!(opens_in_lister(&entry("link_to_dir")));
+        assert!(!opens_in_lister(&entry("f.txt")));
+        assert!(!opens_in_lister(&entry("link_to_file")));
+        assert!(!opens_in_lister(&entry("dangling")));
     }
 }

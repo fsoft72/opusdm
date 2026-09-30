@@ -116,6 +116,9 @@ struct DesktopState {
     /// The left-out icons (`leftout.json`), owned by the GTK side: every
     /// change is saved here and the icon field refreshed.
     leftout: RefCell<opusdm_ipc::LeftOut>,
+    /// Latest-wins gate shared by every reload of the desktop field, so a slow
+    /// off-thread read never overwrites the result of a newer one.
+    reload_gate: opusdm_hub::leftout::ReloadGate,
 }
 
 /// Live widget handles shared by the event pump.
@@ -407,7 +410,7 @@ fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconF
                 opusdm_ipc::err_log!("hub", "left-out target missing: {}", entry.path.display());
                 return;
             }
-            if entry.kind == opusdm_iconview::IconKind::Dir {
+            if opusdm_hub::leftout::opens_in_lister(&entry) {
                 let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
             } else {
                 let uri = format!("file://{}", entry.path.display());
@@ -515,10 +518,19 @@ fn reload_desktop_field(widgets: &Rc<Widgets>) {
     let field = widgets.desktop.field.borrow().clone();
     let dir = widgets.desktop.dir.borrow().clone();
     let (Some(field), Some(dir)) = (field, dir) else { return };
+    let ticket = widgets.desktop.reload_gate.begin();
     let left = widgets.desktop.leftout.borrow().clone();
-    read_entries_async(dir.clone(), left.clone(), move |result| match result {
-        Ok(entries) => show_entries(&field, &left, &entries),
-        Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
+    let widgets = widgets.clone();
+    read_entries_async(dir.clone(), left, move |result| {
+        if !widgets.desktop.reload_gate.is_latest(ticket) {
+            return;
+        }
+        match result {
+            // The store as it is now, not as it was when the read started: an
+            // icon dragged in the meantime keeps its new spot.
+            Ok(entries) => show_entries(&field, &widgets.desktop.leftout.borrow(), &entries),
+            Err(e) => opusdm_ipc::err_log!("hub", "cannot read desktop {}: {e}", dir.display()),
+        }
     });
 }
 
@@ -548,22 +560,20 @@ fn spawn_desktop_watch(
             glib::spawn_future_local(async move {
                 let widgets = widgets_in;
                 // Reloads run off-thread, so several can be in flight at
-                // once; a generation counter drops any read superseded by a
-                // later event instead of applying stale entries out of order.
-                let generation = Rc::new(Cell::new(0_u64));
+                // once; the shared reload gate drops any read superseded by a
+                // later one (from here or from `reload_desktop_field`).
                 while rx.recv().await.is_ok() {
-                    let gen = generation.get() + 1;
-                    generation.set(gen);
-                    let generation = generation.clone();
+                    let ticket = widgets.desktop.reload_gate.begin();
                     let field = field.clone();
                     let dir = dir.clone();
                     let left = widgets.desktop.leftout.borrow().clone();
-                    read_entries_async(dir.clone(), left.clone(), move |result| {
-                        if generation.get() != gen {
+                    let widgets = widgets.clone();
+                    read_entries_async(dir.clone(), left, move |result| {
+                        if !widgets.desktop.reload_gate.is_latest(ticket) {
                             return;
                         }
                         match result {
-                            Ok(entries) => show_entries(&field, &left, &entries),
+                            Ok(entries) => show_entries(&field, &widgets.desktop.leftout.borrow(), &entries),
                             Err(e) => {
                                 opusdm_ipc::err_log!("hub", "desktop reload failed for {}: {e}", dir.display())
                             }
@@ -814,13 +824,13 @@ fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconvie
     // Open
     {
         let path = entry.path.clone();
-        let kind = entry.kind;
+        let opens_in_lister = opusdm_hub::leftout::opens_in_lister(entry);
         let widgets = widgets.clone();
         let menu_ref = menu.clone();
         let btn = menu_button("Open");
         btn.connect_clicked(move |_| {
             menu_ref.set_visible(false);
-            if kind == opusdm_iconview::IconKind::Dir {
+            if opens_in_lister {
                 let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(path.clone()) });
             } else {
                 let uri = format!("file://{}", path.display());
@@ -850,8 +860,10 @@ fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconvie
 
     menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
+    // Cut, Rename and Delete act on the real file, which for a left-out icon
+    // lives somewhere else and is not what the user sees: not offered there.
     // Cut
-    {
+    if !entry.left_out {
         let path = entry.path.clone();
         let menu_ref = menu.clone();
         let btn = menu_button("Cut");
@@ -875,7 +887,7 @@ fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconvie
     }
 
     // Rename...
-    {
+    if !entry.left_out {
         let path = entry.path.clone();
         let name = entry.name.clone();
         let widgets = widgets.clone();
@@ -888,10 +900,9 @@ fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconvie
         menu.append(&btn);
     }
 
-    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
     // Delete...
-    {
+    if !entry.left_out {
+        menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let path = entry.path.clone();
         let name = entry.name.clone();
         let widgets = widgets.clone();

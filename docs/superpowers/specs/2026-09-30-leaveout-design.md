@@ -35,6 +35,10 @@ Out of scope:
 - Saving positions of Desktop folder icons.
 - Drag and drop onto the desktop with a modifier key.
 - Filetype actions (F-06), left-out icons on secondary monitors.
+- Watching left-out targets that live outside the Desktop folder: a change to
+  them shows up at the next desktop reload (any Desktop folder change, or
+  "Rearrange icons"). Cut, Rename and Delete are not offered on left-out
+  icons because they would act on the real file elsewhere.
 
 ## Facts about the current code
 

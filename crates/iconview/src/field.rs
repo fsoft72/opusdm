@@ -191,12 +191,21 @@ impl IconField {
         self.inner.layout.scroller.upcast_ref()
     }
 
+    /// Abandon a reposition drag in progress. `drag_bases` holds entry indices,
+    /// which mean something else once the entry list is replaced, so a reload
+    /// must not let the drag commit.
+    fn cancel_reposition(&self) {
+        self.inner.layout.reposition_active.set(false);
+        self.inner.layout.drag_bases.borrow_mut().clear();
+    }
+
     /// Replace all entries. Rebuilds the item widgets and re-lays-out.
     pub fn set_entries(&self, entries: &[IconEntry]) {
         for it in self.inner.layout.realized.borrow_mut().drain() {
             self.inner.layout.fixed.remove(it.1.widget());
         }
         self.inner.layout.thumb_cache.borrow_mut().clear();
+        self.cancel_reposition();
         *self.inner.layout.entries.borrow_mut() = entries.to_vec();
         self.inner.layout.free_positions.borrow_mut().clear();
         self.apply_pinned();
@@ -216,6 +225,7 @@ impl IconField {
     /// entries that actually changed get their widget rebuilt and their
     /// thumbnail re-requested. Use `set_entries` for a different directory.
     pub fn refresh_entries(&self, entries: &[IconEntry]) {
+        self.cancel_reposition();
         let old = std::mem::replace(&mut *self.inner.layout.entries.borrow_mut(), entries.to_vec());
         let new_index_of: HashMap<&std::path::Path, usize> = entries
             .iter()
@@ -1127,6 +1137,37 @@ mod tests {
         fp.begin_reposition(r1.0 + 2.0, r1.1 + 2.0);
         fp.end_reposition(1.0, 1.0);
         assert!(moved_log.borrow().is_empty());
+
+        // --- IconField: a reload during a drag cancels it (no wrong pin is reported) ---
+        let all_left = || {
+            let mut e = entries(3);
+            for x in &mut e {
+                x.left_out = true;
+            }
+            e
+        };
+        let fr = IconField::new();
+        fr.set_mode(LayoutMode::Free);
+        fr.inner.layout.scroller.set_size_request(600, 400);
+        fr.set_entries(&all_left());
+        let stray: Rc<RefCell<Vec<(PathBuf, (f64, f64))>>> = Rc::new(RefCell::new(Vec::new()));
+        let log = stray.clone();
+        fr.connect_pinned_moved(move |m| log.borrow_mut().extend(m));
+        fr.select_all();
+        let r1 = fr.inner.layout.item_rects.borrow()[1];
+        fr.begin_reposition(r1.0 + 2.0, r1.1 + 2.0); // press on file1
+        let mut swapped = all_left();
+        swapped.swap(0, 1); // a reload puts file0 at index 1
+        fr.set_entries(&swapped);
+        fr.end_reposition(50.0, 30.0);
+        assert!(stray.borrow().is_empty(), "the drag must be cancelled by set_entries: {:?}", stray.borrow());
+        // Same for refresh_entries.
+        fr.select_all();
+        let r1 = fr.inner.layout.item_rects.borrow()[1];
+        fr.begin_reposition(r1.0 + 2.0, r1.1 + 2.0);
+        fr.refresh_entries(&all_left());
+        fr.end_reposition(50.0, 30.0);
+        assert!(stray.borrow().is_empty(), "the drag must be cancelled by refresh_entries: {:?}", stray.borrow());
 
         // --- IconField: virtualization above VIRTUALIZE_THRESHOLD ---
         let big = entries(VIRTUALIZE_THRESHOLD + 100);
