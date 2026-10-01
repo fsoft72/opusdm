@@ -218,22 +218,15 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
             return;
         }
 
+        // An archive is extracted first, off the GTK thread.
         let cwd = ui.cwd.borrow().clone();
-        // A remote folder: the hub hands the job back (see `remote_xfer`).
-        if crate::remote::url_of(&cwd).is_some() {
-            let srcs = ui.selected_paths();
-            if srcs.is_empty() {
-                flash(&ui, "nothing selected");
-                return;
-            }
-            crate::job_submit::submit_job(&ui, op.clone(), srcs, None, opusdm_ipc::JobOptions::default());
-            return;
-        }
         if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
             transfer_from_archive(&ui, op.clone(), arch, inner);
             return;
         }
 
+        // Local and remote folders alike: the hub hands a remote job back to
+        // this Lister (see `remote_xfer`).
         let srcs = ui.selected_paths();
         if srcs.is_empty() {
             flash(&ui, "nothing selected");

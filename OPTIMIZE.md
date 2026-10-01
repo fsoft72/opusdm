@@ -49,5 +49,5 @@
   - File(s): `crates/lister/src/model.rs`
 - [ ] **`save_functions` clones the whole list just to serialize it** - `&functions.to_vec()` allocates a copy; `save_json` can take the slice directly.
   - File(s): `crates/ipc/src/function.rs`
-- [ ] **`wire_transfer` repeats the "nothing selected" / submit tail three times** - the remote, archive and local branches each check the selection and call `submit_job` with the same options. Resolve the sources first, then submit once.
+- [x] **`wire_transfer` repeats the "nothing selected" / submit tail three times** - the remote, archive and local branches each check the selection and call `submit_job` with the same options. Resolve the sources first, then submit once.
   - File(s): `crates/lister/src/actions.rs`
