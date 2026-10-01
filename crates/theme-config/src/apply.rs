@@ -86,7 +86,7 @@ pub fn merge_custom_theme(
 /// Overwrite the parts of `target` that `theme` sets. An image name that is
 /// not a bare file name is ignored, so a theme can never point outside its
 /// own `backgrounds/` folder.
-fn merge_surface(target: &mut SurfaceImage, theme: Option<&ThemeSurface>, slug: &str) {
+pub(crate) fn merge_surface(target: &mut SurfaceImage, theme: Option<&ThemeSurface>, slug: &str) {
     let Some(theme) = theme else { return };
     if let Some(fit) = theme.fit {
         target.fit = fit;
@@ -97,7 +97,7 @@ fn merge_surface(target: &mut SurfaceImage, theme: Option<&ThemeSurface>, slug: 
     target.image_path = Some(opusdm_ipc::themes::background_image_path(slug, name));
 }
 
-fn merge_background(bg: &mut Background, theme_bg: &opusdm_ipc::themes::ThemeBackground, slug: &str) {
+pub(crate) fn merge_background(bg: &mut Background, theme_bg: &opusdm_ipc::themes::ThemeBackground, slug: &str) {
     if let Some(mode) = theme_bg.mode {
         bg.mode = mode;
     }

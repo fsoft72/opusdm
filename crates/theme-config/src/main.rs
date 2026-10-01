@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 mod apply;
 mod builder;
+mod draft;
 mod exporter;
 mod importer;
 mod model;
