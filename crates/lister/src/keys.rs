@@ -9,136 +9,168 @@
 
 use gtk4::gdk;
 
-/// One entry in the command palette / a target `Action::Command` can name.
-/// A single enum shared by `keys::resolve`, `palette::get_commands` and
-/// `palette::execute_command` so a typo in any one of them is a compile
-/// error instead of a silently dead-ending shortcut.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum CommandId {
-    Filter,
-    Preview,
-    SelectAll,
-    DeselectAll,
-    InvertSelection,
-    SelectPattern,
+/// Declares [`CommandId`] together with what the command palette shows for each
+/// built-in command: title, category and shortcut. One entry per command is the
+/// only place a new command needs describing (the palette entry order is the
+/// order written here); `palette::execute_command` still has to handle it, and
+/// its `match` is exhaustive, so forgetting that is a compile error.
+macro_rules! commands {
+    ($( $(#[$doc:meta])* $name:ident => ($title:expr, $category:expr, $shortcut:expr) ),* $(,)?) => {
+        /// One entry in the command palette / a target `Action::Command` can name.
+        #[derive(Clone, PartialEq, Eq, Debug)]
+        pub enum CommandId {
+            $( $(#[$doc])* $name, )*
+            /// Run a saved Function by id (not a built-in: it has no [`CommandMeta`]).
+            RunFunction(opusdm_ipc::function::FunctionId),
+        }
+
+        impl CommandId {
+            /// Every built-in command, in palette order.
+            pub const BUILTIN: &'static [CommandId] = &[ $( CommandId::$name, )* ];
+
+            /// Title, category and shortcut of a built-in command; `None` for
+            /// [`CommandId::RunFunction`], whose title is the function's name.
+            pub fn meta(&self) -> Option<CommandMeta> {
+                match self {
+                    $( CommandId::$name => Some(CommandMeta { title: $title, category: $category, shortcut: $shortcut }), )*
+                    CommandId::RunFunction(_) => None,
+                }
+            }
+        }
+    };
+}
+
+/// What the command palette shows for a built-in command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandMeta {
+    pub title: &'static str,
+    pub category: &'static str,
+    pub shortcut: Option<&'static str>,
+}
+
+commands! {
+    Filter => ("Filter Files in Current View", "View", Some("/")),
+    Preview => ("Quick Look File Preview", "View", Some("F3 / Space")),
+    SelectAll => ("Select All", "Selection", Some("Ctrl+A")),
+    DeselectAll => ("Deselect All", "Selection", Some("Esc")),
+    InvertSelection => ("Invert Selection", "Selection", Some("*")),
+    SelectPattern => ("Select by Pattern (*.rs, etc.)", "Selection", Some("+")),
     /// Open the Advanced Select requester.
-    AdvancedSelect,
-    DeselectPattern,
-    ToggleHidden,
+    AdvancedSelect => ("Advanced Select... (name, size, date, type)", "Selection", None),
+    DeselectPattern => ("Deselect by Pattern", "Selection", Some("-")),
+    ToggleHidden => ("Toggle Hidden Files", "View", Some("Ctrl+H")),
     /// Open the Size Format requester (how the Size column is written).
-    SizeFormat,
-    Copy,
-    Move,
-    Delete,
-    /// Copy to DEST under names built from a pattern.
-    CopyAs,
-    /// Move to DEST under names built from a pattern.
-    MoveAs,
-    /// Copy each selected entry next to itself as `name.copy`.
-    Duplicate,
-    /// Copy to DEST only what is missing there or newer than the DEST copy.
-    CopyNewer,
-    /// Open the permissions dialog.
-    ChangePermissions,
-    /// Open the timestamp dialog.
-    SetTimestamp,
-    /// Open the link dialog.
-    MakeLink,
-    /// Open the join dialog.
-    JoinFiles,
-    /// Open the split dialog.
-    SplitFile,
-    /// Check whether the selection fits in the free space at DEST.
-    CheckFit,
-    /// Select again what the last job or Deselect All cleared.
-    Reselect,
-    ClipCopy,
-    ClipCut,
-    ClipPaste,
-    Mkdir,
-    NewFile,
-    Rename,
-    BatchRename,
-    Reload,
-    ParentDir,
-    HomeDir,
-    Terminal,
-    CalcSizes,
-    /// Calculate directory sizes again, ignoring the ones already known.
-    CalcSizesForce,
-    CalcChecksums,
-    CompareDirs,
-    SetSource,
-    SetDest,
-    SetNone,
-    TogglePin,
-    /// Open the Lister Format editor.
-    ListerFormat,
-    /// Ask for the persistent Show pattern list.
-    SetShowPattern,
-    /// Ask for the persistent Hide pattern list.
-    SetHidePattern,
+    SizeFormat => ("Size Format...", "View", None),
     /// Open the Find dialog on the Name field.
-    FindFiles,
+    FindFiles => ("Find Files...", "View", None),
     /// Open the Find dialog on the Contains field.
-    SearchInFiles,
+    SearchInFiles => ("Search in Files...", "View", None),
     /// Open the Viewer in SmartRead mode.
-    ReadSmart,
+    ReadSmart => ("Read (SmartRead)", "View", None),
     /// Open the Viewer as text.
-    ReadText,
+    ReadText => ("Read as Text", "View", None),
     /// Open the Viewer as ANSI art.
-    ReadAnsi,
+    ReadAnsi => ("Read as ANSI", "View", None),
     /// Open the Viewer as a hex dump.
-    ReadHex,
+    ReadHex => ("Read as Hex", "View", None),
     /// Open the image slideshow.
-    ShowImages,
+    ShowImages => ("Show (image slideshow)", "View", None),
     /// Open the Cache List.
-    CacheList,
+    CacheList => ("Cache List...", "View", None),
     /// Drop every Lister's directory cache.
-    FreeCaches,
+    FreeCaches => ("Free Caches", "View", None),
+    /// Open the Lister Format editor.
+    ListerFormat => ("Lister Format...", "View", None),
+    /// Ask for the persistent Show pattern list.
+    SetShowPattern => ("Set Show Pattern...", "View", None),
+    /// Ask for the persistent Hide pattern list.
+    SetHidePattern => ("Set Hide Pattern...", "View", None),
+    Copy => ("Copy (Source -> Dest)", "File Ops", Some("F5")),
+    Move => ("Move (Source -> Dest)", "File Ops", Some("F6")),
+    Delete => ("Delete Selected Items", "File Ops", Some("Del")),
+    /// Copy to DEST under names built from a pattern.
+    CopyAs => ("Copy As... (Source -> Dest, new names)", "File Ops", None),
+    /// Move to DEST under names built from a pattern.
+    MoveAs => ("Move As... (Source -> Dest, new names)", "File Ops", None),
+    /// Copy each selected entry next to itself as `name.copy`.
+    Duplicate => ("Duplicate Selected Items", "File Ops", None),
+    /// Copy to DEST only what is missing there or newer than the DEST copy.
+    CopyNewer => ("Copy (newer only, Source -> Dest)", "File Ops", None),
+    /// Open the permissions dialog.
+    ChangePermissions => ("Change Permissions...", "File Ops", None),
+    /// Open the timestamp dialog.
+    SetTimestamp => ("Set Timestamp...", "File Ops", None),
+    /// Open the link dialog.
+    MakeLink => ("Make Link... (hard or symbolic, Source -> Dest)", "File Ops", None),
+    /// Open the join dialog.
+    JoinFiles => ("Join Files...", "File Ops", None),
+    /// Open the split dialog.
+    SplitFile => ("Split File...", "File Ops", None),
+    /// Check whether the selection fits in the free space at DEST.
+    CheckFit => ("Check Fit (Source -> Dest free space)...", "File Ops", None),
+    /// Select again what the last job or Deselect All cleared.
+    Reselect => ("Reselect Previous Selection", "Selection", Some("Ctrl+Shift+A")),
+    ClipCopy => ("Copy to Clipboard", "Clipboard", Some("Ctrl+C")),
+    ClipCut => ("Cut to Clipboard", "Clipboard", Some("Ctrl+X")),
+    ClipPaste => ("Paste from Clipboard", "Clipboard", Some("Ctrl+V")),
+    Mkdir => ("Make Directory...", "File Ops", Some("Ctrl+N")),
+    NewFile => ("New File...", "File Ops", Some("Ctrl+Shift+N")),
+    Rename => ("Rename...", "File Ops", Some("F2")),
+    BatchRename => ("Batch Rename Selected Files (Regex/Numbering)...", "File Ops", Some("F2 (multi)")),
+    Reload => ("Reload / Refresh Current Directory", "View", Some("Ctrl+R")),
     /// Go back in the history.
-    HistoryBack,
+    HistoryBack => ("History Back", "Navigation", Some("Alt+Left")),
     /// Go forward in the history.
-    HistoryForward,
+    HistoryForward => ("History Forward", "Navigation", Some("Alt+Right")),
+    ParentDir => ("Go to Parent Directory", "Navigation", Some("Backspace")),
+    HomeDir => ("Go to Home Directory (~)", "Navigation", Some("~")),
+    Terminal => ("Toggle Terminal Drawer", "Tools", Some("F4 / `")),
+    CalcSizes => ("Calculate Directory Sizes", "Tools", Some("Space (on dir)")),
+    /// Calculate directory sizes again, ignoring the ones already known.
+    CalcSizesForce => ("Calculate Directory Sizes (force rescan)", "Tools", None),
+    CalcChecksums => ("Calculate Checksums (SHA-256 / MD5)...", "Tools", None),
+    CompareDirs => ("Compare / Sync Directories (Visual Diff)...", "Tools", None),
+    SetSource => ("Set Role: SOURCE", "Roles", None),
+    SetDest => ("Set Role: DEST", "Roles", None),
+    SetNone => ("Set Role: NONE", "Roles", None),
+    TogglePin => ("Toggle Role Pin / Lock", "Roles", None),
     /// Open the Function Editor's manager window (list/new/edit/delete).
-    ManageFunctions,
-    ManageBanks,
-    /// Run a saved Function by id.
-    RunFunction(opusdm_ipc::function::FunctionId),
+    ManageFunctions => ("Manage Functions...", "Functions", None),
+    ManageBanks => ("Button Banks...", "Functions", None),
     /// Open the hotkey editor.
-    ManageHotkeys,
+    ManageHotkeys => ("Edit Hotkeys...", "Functions", None),
     /// Ask for a key combination and say what it does.
-    FindKey,
+    FindKey => ("Find Key...", "Functions", None),
     /// Open the user menu editor.
-    ManageUserMenu,
+    ManageUserMenu => ("Edit User Menu...", "Functions", None),
     /// Open the script events editor.
-    ManageScripts,
+    ManageScripts => ("Edit Script Events...", "Functions", None),
     /// Encrypt the selection with a password.
-    Encrypt,
+    Encrypt => ("Encrypt... (password, Source -> Dest as .enc)", "File Ops", None),
     /// Decrypt the selected `.enc` files with a password.
-    Decrypt,
+    Decrypt => ("Decrypt... (.enc files, Source -> Dest)", "File Ops", None),
     /// Open the font previewer.
-    ViewFont,
+    ViewFont => ("View Font...", "Tools", None),
     /// Open the bookmark manager.
-    Bookmarks,
+    Bookmarks => ("Bookmarks...", "Navigation", None),
     /// Bookmark the current folder.
-    AddBookmark,
+    AddBookmark => ("Add Bookmark for This Folder...", "Navigation", None),
     /// Go to the root of the current tree.
-    RootDir,
+    RootDir => ("Go to Root", "Navigation", None),
     /// Open the parent folder in a new Lister.
-    ParentNew,
+    ParentNew => ("Open Parent in NEW Lister", "Navigation", None),
     /// Open the root of the current tree in a new Lister.
-    RootNew,
+    RootNew => ("Open Root in NEW Lister", "Navigation", None),
     /// Open the internal command line.
-    CommandLine,
+    CommandLine => ("Command Line...", "Functions", None),
     /// Open the FTP address book.
-    FtpBook,
+    FtpBook => ("FTP / SFTP Address Book...", "Network", None),
     /// Close every FTP / SFTP connection.
-    FtpQuit,
+    FtpQuit => ("FTP Quit (close all connections)", "Network", None),
     /// Open the File Types editor.
-    ManageFiletypes,
+    ManageFiletypes => ("Edit File Types...", "Functions", None),
     /// Open the File Types editor with a new type derived from the selected file.
-    CreateFiletype,
+    CreateFiletype => ("Filetype Creator (from selected file)...", "Functions", None),
 }
 
 /// Where the keyboard focus is when the key arrives.
@@ -471,5 +503,16 @@ mod tests {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageFiletypes));
         assert!(known.contains(&CommandId::CreateFiletype));
+    }
+
+    #[test]
+    fn every_builtin_command_has_a_distinct_title_and_a_category() {
+        let mut titles = std::collections::HashSet::new();
+        for id in CommandId::BUILTIN {
+            let meta = id.meta().expect("a built-in command has metadata");
+            assert!(!meta.title.is_empty() && !meta.category.is_empty(), "{id:?}");
+            assert!(titles.insert(meta.title), "duplicate palette title: {}", meta.title);
+        }
+        assert!(CommandId::RunFunction(Default::default()).meta().is_none());
     }
 }

@@ -337,3 +337,4 @@
 - Perf: `save_functions` serializes the slice directly (`save_json` accepts unsized values), no copy of the list.
 - Refactor: the "read, parse, back up to `.bak`, log" sequence lives only in `settings::load_json` / `settings::read_json`; bookmarks, formats, file types, bindings, button banks and groups use them. One policy everywhere: an existing backup is kept. Groups now also back up a malformed file.
 - Refactor: the pure "rows -> visible rows + totals" step of `apply_navigation` is `model::visible_rows` (hidden / `.opusdm` / name filter, remembered directory sizes, totals), unit tested without GTK.
+- Refactor: a command is described once. `keys.rs` declares `CommandId` through the `commands!` macro (title, category, shortcut next to the variant, `CommandId::meta()`, `CommandId::BUILTIN`); the palette table is built from it, so a variant can no longer be missing from the palette (it happened with `SizeFormat`). The palette order is the order in the macro.

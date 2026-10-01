@@ -19,87 +19,22 @@ pub struct CommandItem {
     pub shortcut: Option<&'static str>,
 }
 
-/// The command palette's entries. Entirely static, so this is a `const`
-/// array instead of a `Vec` rebuilt (and heap-allocated) on every palette
-/// open; `get_commands` just borrows it.
-static COMMANDS: &[CommandItem] = &[
-        CommandItem { id: CommandId::Filter, title: Cow::Borrowed("Filter Files in Current View"), category: Cow::Borrowed("View"), shortcut: Some("/") },
-        CommandItem { id: CommandId::Preview, title: Cow::Borrowed("Quick Look File Preview"), category: Cow::Borrowed("View"), shortcut: Some("F3 / Space") },
-        CommandItem { id: CommandId::SelectAll, title: Cow::Borrowed("Select All"), category: Cow::Borrowed("Selection"), shortcut: Some("Ctrl+A") },
-        CommandItem { id: CommandId::DeselectAll, title: Cow::Borrowed("Deselect All"), category: Cow::Borrowed("Selection"), shortcut: Some("Esc") },
-        CommandItem { id: CommandId::InvertSelection, title: Cow::Borrowed("Invert Selection"), category: Cow::Borrowed("Selection"), shortcut: Some("*") },
-        CommandItem { id: CommandId::SelectPattern, title: Cow::Borrowed("Select by Pattern (*.rs, etc.)"), category: Cow::Borrowed("Selection"), shortcut: Some("+") },
-        CommandItem { id: CommandId::AdvancedSelect, title: Cow::Borrowed("Advanced Select... (name, size, date, type)"), category: Cow::Borrowed("Selection"), shortcut: None },
-        CommandItem { id: CommandId::DeselectPattern, title: Cow::Borrowed("Deselect by Pattern"), category: Cow::Borrowed("Selection"), shortcut: Some("-") },
-        CommandItem { id: CommandId::ToggleHidden, title: Cow::Borrowed("Toggle Hidden Files"), category: Cow::Borrowed("View"), shortcut: Some("Ctrl+H") },
-        CommandItem { id: CommandId::SizeFormat, title: Cow::Borrowed("Size Format..."), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::FindFiles, title: Cow::Borrowed("Find Files..."), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::SearchInFiles, title: Cow::Borrowed("Search in Files..."), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::ReadSmart, title: Cow::Borrowed("Read (SmartRead)"), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::ReadText, title: Cow::Borrowed("Read as Text"), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::ReadAnsi, title: Cow::Borrowed("Read as ANSI"), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::ReadHex, title: Cow::Borrowed("Read as Hex"), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::ShowImages, title: Cow::Borrowed("Show (image slideshow)"), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::CacheList, title: Cow::Borrowed("Cache List..."), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::FreeCaches, title: Cow::Borrowed("Free Caches"), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::ListerFormat, title: Cow::Borrowed("Lister Format..."), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::SetShowPattern, title: Cow::Borrowed("Set Show Pattern..."), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::SetHidePattern, title: Cow::Borrowed("Set Hide Pattern..."), category: Cow::Borrowed("View"), shortcut: None },
-        CommandItem { id: CommandId::Copy, title: Cow::Borrowed("Copy (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("F5") },
-        CommandItem { id: CommandId::Move, title: Cow::Borrowed("Move (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("F6") },
-        CommandItem { id: CommandId::Delete, title: Cow::Borrowed("Delete Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: Some("Del") },
-        CommandItem { id: CommandId::CopyAs, title: Cow::Borrowed("Copy As... (Source -> Dest, new names)"), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::MoveAs, title: Cow::Borrowed("Move As... (Source -> Dest, new names)"), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::Duplicate, title: Cow::Borrowed("Duplicate Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::CopyNewer, title: Cow::Borrowed("Copy (newer only, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::ChangePermissions, title: Cow::Borrowed("Change Permissions..."), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::SetTimestamp, title: Cow::Borrowed("Set Timestamp..."), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::MakeLink, title: Cow::Borrowed("Make Link... (hard or symbolic, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::JoinFiles, title: Cow::Borrowed("Join Files..."), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::SplitFile, title: Cow::Borrowed("Split File..."), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::CheckFit, title: Cow::Borrowed("Check Fit (Source -> Dest free space)..."), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::Reselect, title: Cow::Borrowed("Reselect Previous Selection"), category: Cow::Borrowed("Selection"), shortcut: Some("Ctrl+Shift+A") },
-        CommandItem { id: CommandId::ClipCopy, title: Cow::Borrowed("Copy to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+C") },
-        CommandItem { id: CommandId::ClipCut, title: Cow::Borrowed("Cut to Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+X") },
-        CommandItem { id: CommandId::ClipPaste, title: Cow::Borrowed("Paste from Clipboard"), category: Cow::Borrowed("Clipboard"), shortcut: Some("Ctrl+V") },
-        CommandItem { id: CommandId::Mkdir, title: Cow::Borrowed("Make Directory..."), category: Cow::Borrowed("File Ops"), shortcut: Some("Ctrl+N") },
-        CommandItem { id: CommandId::NewFile, title: Cow::Borrowed("New File..."), category: Cow::Borrowed("File Ops"), shortcut: Some("Ctrl+Shift+N") },
-        CommandItem { id: CommandId::Rename, title: Cow::Borrowed("Rename..."), category: Cow::Borrowed("File Ops"), shortcut: Some("F2") },
-        CommandItem { id: CommandId::BatchRename, title: Cow::Borrowed("Batch Rename Selected Files (Regex/Numbering)..."), category: Cow::Borrowed("File Ops"), shortcut: Some("F2 (multi)") },
-        CommandItem { id: CommandId::Reload, title: Cow::Borrowed("Reload / Refresh Current Directory"), category: Cow::Borrowed("View"), shortcut: Some("Ctrl+R") },
-        CommandItem { id: CommandId::HistoryBack, title: Cow::Borrowed("History Back"), category: Cow::Borrowed("Navigation"), shortcut: Some("Alt+Left") },
-        CommandItem { id: CommandId::HistoryForward, title: Cow::Borrowed("History Forward"), category: Cow::Borrowed("Navigation"), shortcut: Some("Alt+Right") },
-        CommandItem { id: CommandId::ParentDir, title: Cow::Borrowed("Go to Parent Directory"), category: Cow::Borrowed("Navigation"), shortcut: Some("Backspace") },
-        CommandItem { id: CommandId::HomeDir, title: Cow::Borrowed("Go to Home Directory (~)"), category: Cow::Borrowed("Navigation"), shortcut: Some("~") },
-        CommandItem { id: CommandId::Terminal, title: Cow::Borrowed("Toggle Terminal Drawer"), category: Cow::Borrowed("Tools"), shortcut: Some("F4 / `") },
-        CommandItem { id: CommandId::CalcSizes, title: Cow::Borrowed("Calculate Directory Sizes"), category: Cow::Borrowed("Tools"), shortcut: Some("Space (on dir)") },
-        CommandItem { id: CommandId::CalcSizesForce, title: Cow::Borrowed("Calculate Directory Sizes (force rescan)"), category: Cow::Borrowed("Tools"), shortcut: None },
-        CommandItem { id: CommandId::CalcChecksums, title: Cow::Borrowed("Calculate Checksums (SHA-256 / MD5)..."), category: Cow::Borrowed("Tools"), shortcut: None },
-        CommandItem { id: CommandId::CompareDirs, title: Cow::Borrowed("Compare / Sync Directories (Visual Diff)..."), category: Cow::Borrowed("Tools"), shortcut: None },
-        CommandItem { id: CommandId::SetSource, title: Cow::Borrowed("Set Role: SOURCE"), category: Cow::Borrowed("Roles"), shortcut: None },
-        CommandItem { id: CommandId::SetDest, title: Cow::Borrowed("Set Role: DEST"), category: Cow::Borrowed("Roles"), shortcut: None },
-        CommandItem { id: CommandId::SetNone, title: Cow::Borrowed("Set Role: NONE"), category: Cow::Borrowed("Roles"), shortcut: None },
-        CommandItem { id: CommandId::TogglePin, title: Cow::Borrowed("Toggle Role Pin / Lock"), category: Cow::Borrowed("Roles"), shortcut: None },
-        CommandItem { id: CommandId::ManageFunctions, title: Cow::Borrowed("Manage Functions..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::ManageBanks, title: Cow::Borrowed("Button Banks..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::ManageHotkeys, title: Cow::Borrowed("Edit Hotkeys..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::FindKey, title: Cow::Borrowed("Find Key..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::ManageUserMenu, title: Cow::Borrowed("Edit User Menu..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::Encrypt, title: Cow::Borrowed("Encrypt... (password, Source -> Dest as .enc)"), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::Decrypt, title: Cow::Borrowed("Decrypt... (.enc files, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
-        CommandItem { id: CommandId::ViewFont, title: Cow::Borrowed("View Font..."), category: Cow::Borrowed("Tools"), shortcut: None },
-        CommandItem { id: CommandId::Bookmarks, title: Cow::Borrowed("Bookmarks..."), category: Cow::Borrowed("Navigation"), shortcut: None },
-        CommandItem { id: CommandId::AddBookmark, title: Cow::Borrowed("Add Bookmark for This Folder..."), category: Cow::Borrowed("Navigation"), shortcut: None },
-        CommandItem { id: CommandId::RootDir, title: Cow::Borrowed("Go to Root"), category: Cow::Borrowed("Navigation"), shortcut: None },
-        CommandItem { id: CommandId::ParentNew, title: Cow::Borrowed("Open Parent in NEW Lister"), category: Cow::Borrowed("Navigation"), shortcut: None },
-        CommandItem { id: CommandId::RootNew, title: Cow::Borrowed("Open Root in NEW Lister"), category: Cow::Borrowed("Navigation"), shortcut: None },
-        CommandItem { id: CommandId::CommandLine, title: Cow::Borrowed("Command Line..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::FtpBook, title: Cow::Borrowed("FTP / SFTP Address Book..."), category: Cow::Borrowed("Network"), shortcut: None },
-        CommandItem { id: CommandId::FtpQuit, title: Cow::Borrowed("FTP Quit (close all connections)"), category: Cow::Borrowed("Network"), shortcut: None },
-        CommandItem { id: CommandId::ManageFiletypes, title: Cow::Borrowed("Edit File Types..."), category: Cow::Borrowed("Functions"), shortcut: None },
-        CommandItem { id: CommandId::CreateFiletype, title: Cow::Borrowed("Filetype Creator (from selected file)..."), category: Cow::Borrowed("Functions"), shortcut: None },
-];
+/// The built-in entries, built once from [`CommandId::BUILTIN`] and
+/// [`CommandId::meta`] so `get_commands` just clones them.
+static COMMANDS: std::sync::LazyLock<Vec<CommandItem>> = std::sync::LazyLock::new(|| {
+    CommandId::BUILTIN
+        .iter()
+        .filter_map(|id| {
+            let meta = id.meta()?;
+            Some(CommandItem {
+                id: id.clone(),
+                title: Cow::Borrowed(meta.title),
+                category: Cow::Borrowed(meta.category),
+                shortcut: meta.shortcut,
+            })
+        })
+        .collect()
+});
 
 /// Borrow the command palette's entries.
 /// Every palette entry: the static commands, plus one dynamic "Function"
@@ -107,7 +42,7 @@ static COMMANDS: &[CommandItem] = &[
 /// so a function created/renamed/deleted since the palette last opened is
 /// always current).
 pub fn get_commands() -> Vec<CommandItem> {
-    let mut items: Vec<CommandItem> = COMMANDS.to_vec();
+    let mut items: Vec<CommandItem> = COMMANDS.clone();
     for f in opusdm_ipc::function::load_functions() {
         items.push(CommandItem {
             id: CommandId::RunFunction(f.id),
@@ -122,7 +57,7 @@ pub fn get_commands() -> Vec<CommandItem> {
 /// The static built-in commands, without the dynamic per-function entries
 /// (no disk read): what "Find Key" names a built-in key by.
 pub fn builtin_commands() -> &'static [CommandItem] {
-    COMMANDS
+    &COMMANDS
 }
 
 /// Ask the hub for `role`. Closing the palette hands the focus back to the
