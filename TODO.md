@@ -23,7 +23,6 @@ To be prioritised after section 1 is finished.
 - [ ] F-36 Sound Events
 - [ ] F-50 Custom panel title format codes
 - [ ] F-28 Icon mode and Icon Action mode listers
-- [ ] Minor commands (F-40..F-49):
 
 ## 3. Not classified yet
 
