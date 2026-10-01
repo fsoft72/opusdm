@@ -1,8 +1,9 @@
 //! Name-column decoration: converts a `Row` to a display string with an
 //! optional `ls -F` type indicator. Icons come from the active theme (see
-//! `icon_bytes_for_row`).
+//! `icon_texture_for_row`).
 
 use crate::model::Row;
+use gtk4 as gtk;
 use opusdm_iconview::IconKind;
 
 /// Unix file-type mask and the type values we distinguish for the indicator.
@@ -27,11 +28,11 @@ fn kind_of(row: &Row) -> IconKind {
     IconKind::File
 }
 
-/// Real icon bytes for `row` under icon set `set`, or `None` when the theme
-/// has no icon for it (the icon slot stays hidden). Extension is derived the same way `IconEntry` does.
-pub fn icon_bytes_for_row(row: &Row, set: &opusdm_ipc::IconSetId) -> Option<std::borrow::Cow<'static, [u8]>> {
+/// Cached decoded icon for `row` under icon set `set` (see
+/// `opusdm_iconview::icon_set::icon_texture_for`), or `None` when the theme has none.
+pub fn icon_texture_for_row(row: &Row, set: &opusdm_ipc::IconSetId) -> Option<gtk::gdk::Texture> {
     let ext = opusdm_iconview::IconEntry::ext_of(&row.name);
-    opusdm_iconview::icon_set::icon_bytes_for(kind_of(row), row.mode, ext.as_deref(), set)
+    opusdm_iconview::icon_set::icon_texture_for(kind_of(row), row.mode, ext.as_deref(), set)
 }
 
 /// The `ls -F` style type character: `/` directory, `@` symlink, `=` socket,
@@ -131,16 +132,28 @@ mod tests {
         assert_eq!(decorate_name(&link, true), "l@");
     }
 
+    /// A valid 1x1 PNG.
+    const ONE_PIXEL_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
     #[test]
-    fn icon_bytes_for_row_matches_the_extension() {
+    fn icon_texture_for_row_matches_the_extension_and_is_cached() {
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         let icons_dir = td.path().join("opusdm").join("themes").join("t").join("icons");
         std::fs::create_dir_all(&icons_dir).unwrap();
-        std::fs::write(icons_dir.join("code.png"), b"bytes").unwrap();
+        std::fs::write(icons_dir.join("code.png"), ONE_PIXEL_PNG).unwrap();
         let set = opusdm_ipc::IconSetId::Custom("t".to_string());
-        assert!(icon_bytes_for_row(&row("a.rs"), &set).is_some());
+        let first = icon_texture_for_row(&row("a.rs"), &set).expect("code.png decodes");
+        let second = icon_texture_for_row(&row("b.py"), &set).expect("same icon");
+        assert_eq!(first, second, "the decoded texture is shared");
+        assert!(icon_texture_for_row(&row("a.txt"), &set).is_none());
     }
 }

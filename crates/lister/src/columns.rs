@@ -224,12 +224,9 @@ pub fn add_column(
                     .first_child()
                     .and_downcast::<gtk::Image>()
                     .unwrap();
-                if let Some(bytes) = crate::glyphs::icon_bytes_for_row(&row, &icon_set) {
-                    let gbytes = gtk::glib::Bytes::from_owned(bytes.into_owned());
-                    if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                        icon_widget.set_paintable(Some(&texture));
-                        icon_widget.set_visible(true);
-                    }
+                if let Some(texture) = crate::glyphs::icon_texture_for_row(&row, &icon_set) {
+                    icon_widget.set_paintable(Some(&texture));
+                    icon_widget.set_visible(true);
                 } else {
                     icon_widget.set_visible(false);
                 }

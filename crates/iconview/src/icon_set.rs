@@ -4,7 +4,9 @@
 
 use crate::types::IconKind;
 use opusdm_ipc::IconSetId;
+use gtk4 as gtk;
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -88,6 +90,33 @@ pub fn icon_bytes_for(kind: IconKind, mode: u32, ext: Option<&str>, set: &IconSe
     let filename = icon_filename(kind, mode, ext);
     let icons = load_custom(slug);
     icons.get(filename).map(|bytes| Cow::Owned(bytes.clone()))
+}
+
+thread_local! {
+    /// Decoded textures per `(theme slug, icon filename)`. `gdk::Texture` is not
+    /// `Send`, so the cache lives on the GTK thread that binds the rows.
+    static TEXTURE_CACHE: RefCell<HashMap<(String, &'static str), Option<gtk::gdk::Texture>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Decoded texture for `kind`/`mode`/`ext` under icon set `set`, or `None` when
+/// the theme has no usable file for that icon. Each icon file is decoded once
+/// per process and the texture is shared by the list and the icon view.
+pub fn icon_texture_for(kind: IconKind, mode: u32, ext: Option<&str>, set: &IconSetId) -> Option<gtk::gdk::Texture> {
+    let IconSetId::Custom(slug) = set;
+    let filename = icon_filename(kind, mode, ext);
+    TEXTURE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(hit) = cache.get(&(slug.clone(), filename)) {
+            return hit.clone();
+        }
+        let texture = load_custom(slug).get(filename).and_then(|bytes| {
+            let gbytes = gtk::glib::Bytes::from(bytes.as_slice());
+            gtk::gdk::Texture::from_bytes(&gbytes).ok()
+        });
+        cache.insert((slug.clone(), filename), texture.clone());
+        texture
+    })
 }
 
 #[cfg(test)]

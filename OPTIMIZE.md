@@ -11,7 +11,7 @@
 
 ## High
 
-- [ ] **Icon textures are decoded on every row bind** - the Name column calls `Texture::from_bytes` (PNG/SVG decode) each time a row is bound, so scrolling a large directory decodes the same handful of icons thousands of times; the icon view does the same per item. Cache `gdk::Texture` per `(IconSetId, IconKind, ext)` in `opusdm_iconview::icon_set` and share it between both views.
+- [x] **Icon textures are decoded on every row bind** - the Name column calls `Texture::from_bytes` (PNG/SVG decode) each time a row is bound, so scrolling a large directory decodes the same handful of icons thousands of times; the icon view does the same per item. Cache `gdk::Texture` per `(IconSetId, IconKind, ext)` in `opusdm_iconview::icon_set` and share it between both views.
   - File(s): `crates/lister/src/columns.rs`, `crates/iconview/src/item.rs`, `crates/iconview/src/icon_set.rs`
 - [ ] **Copying out of an archive blocks the GTK thread** - `wire_transfer` runs `extract_items_to_dir` (a synchronous `unzip` / `tar` subprocess) inside the button handler, freezing the Lister for big archives. Run the extraction on a thread and submit the job from `glib::spawn_future_local`, like `preview.rs` and `tools.rs` already do.
   - File(s): `crates/lister/src/actions.rs`, `crates/lister/src/archive.rs`

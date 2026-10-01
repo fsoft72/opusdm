@@ -63,16 +63,13 @@ impl IconItem {
         // a thumbnail-size-bucket change) reverts to the blank slot rather
         // than the themed icon; that rare resize path is an accepted
         // limitation, not a regression.
-        if let Some(bytes) =
-            crate::icon_set::icon_bytes_for(entry.kind, entry.mode, entry.ext.as_deref(), icon_set)
+        if let Some(texture) =
+            crate::icon_set::icon_texture_for(entry.kind, entry.mode, entry.ext.as_deref(), icon_set)
         {
-            let gbytes = glib::Bytes::from_owned(bytes.into_owned());
-            if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                thumb.set_paintable(Some(&texture));
-                thumb.set_pixel_size(icon_size);
-                thumb.set_visible(true);
-                icon.set_visible(false);
-            }
+            thumb.set_paintable(Some(&texture));
+            thumb.set_pixel_size(icon_size);
+            thumb.set_visible(true);
+            icon.set_visible(false);
         }
 
         let name_label = gtk::Label::new(Some(&entry.name));
