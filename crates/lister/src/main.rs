@@ -7,6 +7,7 @@ mod archive;
 mod attr_dialogs;
 mod batch_rename;
 mod binding_ui;
+mod bookmarks_ui;
 mod build;
 mod busy;
 mod cache_list;

@@ -115,6 +115,10 @@ pub enum CommandId {
     Encrypt,
     /// Decrypt the selected `.enc` files with a password.
     Decrypt,
+    /// Open the bookmark manager.
+    Bookmarks,
+    /// Bookmark the current folder.
+    AddBookmark,
     /// Go to the root of the current tree.
     RootDir,
     /// Open the parent folder in a new Lister.
@@ -410,6 +414,12 @@ mod tests {
     fn script_events_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageScripts));
+    }
+
+    #[test]
+    fn bookmark_commands_exist_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::Bookmarks) && known.contains(&CommandId::AddBookmark));
     }
 
     #[test]

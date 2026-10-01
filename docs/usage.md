@@ -260,6 +260,9 @@ The **Run** command starts an external program from a function. The command line
 - **Wait for it to finish** makes the step wait; a non-zero exit stops the function. Its output goes to the function log, like an External step.
 - **Show its output in a window** opens a text window on the Lister that started the function, filled as the program prints and left open after it ends (with the exit code). It works with or without Wait. A function started by a script event has no Lister, so it gets no window.
 
+### 3.10r Bookmarks
+Bookmarks give a name to a folder, like an Amiga assign. **Add Bookmark for This Folder...** (palette, Navigation) names the current folder; **Bookmarks...** lists, adds, edits, deletes and goes to them. Names use letters, digits, `_` and `-` (not `ftp`, `ftps`, `sftp`). In the path bar, `docs:` goes to the bookmark's folder and `docs:sub/dir` to a folder below it (`..` is refused). They live in `~/.config/opusdm/bookmarks.json`.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

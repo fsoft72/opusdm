@@ -518,6 +518,16 @@ fn build_window(
         let ui = ui.clone();
         path_entry.connect_activate(move |entry| {
             let candidate = PathBuf::from(entry.text().to_string());
+            // `name:` or `name:sub/dir` is a bookmark.
+            if let Some(target) = crate::bookmarks_ui::resolve_text(entry.text().as_str()) {
+                if target.is_dir() {
+                    ui.navigate_to(&target);
+                } else {
+                    crate::actions::flash(&ui, &format!("{} is not a folder", target.display()));
+                    ui.refresh_path_entry();
+                }
+                return;
+            }
             if opusdm_ftp::is_remote(entry.text().as_str()) {
                 match opusdm_ftp::RemoteUrl::parse(entry.text().as_str()) {
                     Ok(url) => ui.navigate_to(&crate::remote::path_of(&url)),
