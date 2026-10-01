@@ -64,8 +64,8 @@ mod tests {
     use super::*;
     use crate::test_support::{install_source, picture, scratch_config, ENV_LOCK};
     use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
-    use opusdm_ipc::look::FontSpec;
-    use opusdm_ipc::themes::{load_theme_data, theme_dir};
+    use opusdm_ipc::look::{FontSpec, SurfaceImage};
+    use opusdm_ipc::themes::{load_theme_data, theme_dir, themes_dir};
 
     #[test]
     fn slugify_lowercases_and_collapses_separators() {
@@ -107,5 +107,34 @@ mod tests {
         let _td = scratch_config();
         let r = save_theme(&BuildRequest { label: "T", slug: "Bad Slug", source_slug: "src", settings: &Settings::default(), desktop: &DesktopSettings::default() });
         assert!(matches!(r, Err(BuildError::InvalidName(_))));
+    }
+
+    /// Acceptance: a saved, exported, wiped and re-imported theme restores colours and pictures.
+    #[test]
+    fn save_export_wipe_import_apply_restores_colours_and_pictures() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let td = scratch_config();
+        opusdm_ipc::themes::ensure_default_theme();
+        let mut settings = Settings::default();
+        settings.theme.colors.file_bg = "#102030".into();
+        settings.theme.background.mode = BackgroundMode::Image;
+        settings.theme.background.image_path = Some(picture(td.path(), "wall.png"));
+        settings.surfaces.requester = SurfaceImage { image_path: Some(picture(td.path(), "req.png")), fit: ImageFit::Fit };
+        settings.fonts.ui = FontSpec { family: "Cantarell".into(), size: 10 };
+        save_theme(&BuildRequest { label: "Round Trip", slug: "round-trip", source_slug: "breeze-dark", settings: &settings, desktop: &DesktopSettings::default() }).unwrap();
+        let zip = td.path().join("round-trip.zip");
+        crate::exporter::export_theme("round-trip", &zip).unwrap();
+
+        std::fs::remove_dir_all(themes_dir()).unwrap();
+        let slug = crate::importer::import_theme_archive(&zip).unwrap();
+        let merged = crate::apply::merge_custom_theme(&slug, &load_theme_data(&slug), &Settings::default(), &DesktopSettings::default());
+
+        assert_eq!(merged.theme.colors.file_bg, "#102030");
+        assert_eq!(merged.theme.background.mode, BackgroundMode::Image);
+        assert_eq!(std::fs::read(merged.theme.background.image_path.unwrap()).unwrap(), b"wall.png");
+        assert_eq!(std::fs::read(merged.surfaces.requester.image_path.unwrap()).unwrap(), b"req.png");
+        assert_eq!(merged.surfaces.requester.fit, ImageFit::Fit);
+        assert_eq!(merged.fonts.ui.family, "Cantarell");
+        assert!(theme_dir("round-trip").join("icons/dir.png").is_file(), "icons travel with the theme");
     }
 }

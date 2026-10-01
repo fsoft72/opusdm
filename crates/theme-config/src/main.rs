@@ -116,8 +116,14 @@ fn build_window(app: &gtk::Application) {
     let icon_set = Rc::new(RefCell::new(Rc::new(ui::IconSetSection::new(&theme.icon_set))));
     desktop_page.append(&icon_set.borrow().root);
 
+    let theme_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let import_btn = gtk::Button::with_label("Import theme...");
-    desktop_page.append(&import_btn);
+    let save_btn = gtk::Button::with_label("Save theme...");
+    let export_btn = gtk::Button::with_label("Export theme...");
+    theme_buttons.append(&import_btn);
+    theme_buttons.append(&save_btn);
+    theme_buttons.append(&export_btn);
+    desktop_page.append(&theme_buttons);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let bg = Rc::new(BackgroundSection::new(&window, &theme.background));
@@ -235,24 +241,23 @@ fn build_window(app: &gtk::Application) {
         let window = window.clone();
         cancel.connect_clicked(move |_| window.close());
     }
-    {
-        let icon_set = icon_set.clone();
+    // Fonts and surfaces are not edited by this window, only carried.
+    let look = Rc::new(RefCell::new((settings_data.fonts.clone(), settings_data.surfaces.clone())));
+
+    // Reads every editable control back into settings, shared by Apply and Save theme.
+    let read_ui: Rc<dyn Fn() -> (opusdm_ipc::Settings, opusdm_ipc::DesktopSettings)> = {
         let colors = colors.clone();
         let bg = bg.clone();
         let grid = grid.clone();
         let folder = folder.clone();
         let panel = panel.clone();
         let dock_section = dock_section.clone();
-        let dock_apps_section = dock_apps_section.clone();
-        let menu_section = menu_section.clone();
         let appearance_section = appearance_section.clone();
         let behavior_section = behavior_section.clone();
         let theme_mode_section = theme_mode_section.clone();
-        let note = note.clone();
-        let settings_data = settings_data.clone();
-        apply.connect_clicked(move |_| {
-            let selected = icon_set.borrow().value();
-            let ui_settings = opusdm_ipc::Settings {
+        let look = look.clone();
+        Rc::new(move || {
+            let settings = opusdm_ipc::Settings {
                 theme: opusdm_ipc::Theme {
                     icon_set: opusdm_ipc::IconSetId::default(),
                     colors: colors.read(),
@@ -260,10 +265,10 @@ fn build_window(app: &gtk::Application) {
                 },
                 appearance: appearance_section.read(theme_mode_section.value()),
                 behavior: behavior_section.read(),
-                fonts: settings_data.fonts.clone(),
-                surfaces: settings_data.surfaces.clone(),
+                fonts: look.borrow().0.clone(),
+                surfaces: look.borrow().1.clone(),
             };
-            let ui_desktop = opusdm_ipc::DesktopSettings {
+            let desktop = opusdm_ipc::DesktopSettings {
                 icon_size: grid.icon_size(),
                 grid_spacing: grid.grid_spacing(),
                 grid_gap: grid.grid_gap(),
@@ -273,6 +278,33 @@ fn build_window(app: &gtk::Application) {
                 dock_icon_size: dock_section.icon_size(),
             }
             .sanitized();
+            (settings, desktop)
+        })
+    };
+
+    // Rebuilds the icon-set picker with `slug` selected, keeping its place above the theme buttons.
+    let select_theme: Rc<dyn Fn(String)> = {
+        let icon_set = icon_set.clone();
+        let desktop_page = desktop_page.clone();
+        Rc::new(move |slug: String| {
+            let old_root = icon_set.borrow().root.clone();
+            let new_section = Rc::new(ui::IconSetSection::new(&opusdm_ipc::IconSetId::Custom(slug)));
+            desktop_page.insert_child_after(&new_section.root, Some(&old_root));
+            desktop_page.remove(&old_root);
+            *icon_set.borrow_mut() = new_section;
+        })
+    };
+
+    {
+        let icon_set = icon_set.clone();
+        let read_ui = read_ui.clone();
+        let dock_apps_section = dock_apps_section.clone();
+        let menu_section = menu_section.clone();
+        let note = note.clone();
+        let look = look.clone();
+        apply.connect_clicked(move |_| {
+            let selected = icon_set.borrow().value();
+            let (ui_settings, ui_desktop) = read_ui();
             if let Err(e) = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig {
                 apps: dock_apps_section.apps(),
             }) {
@@ -284,6 +316,7 @@ fn build_window(app: &gtk::Application) {
                 opusdm_ipc::err_log!("theme-config", "cannot write menu.json: {e}");
             }
             let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);
+            *look.borrow_mut() = (result.settings.fonts.clone(), result.settings.surfaces.clone());
             match model::apply_full(&result.settings, &result.desktop) {
                 model::ApplyOutcome::SentToHub => {
                     note.set_text("Applied to the running desktop.");
@@ -302,8 +335,7 @@ fn build_window(app: &gtk::Application) {
     }
     {
         let window = window.clone();
-        let icon_set = icon_set.clone();
-        let desktop_page = desktop_page.clone();
+        let select_theme = select_theme.clone();
         let note = note.clone();
         import_btn.connect_clicked(move |_| {
             let filter = gtk::FileFilter::new();
@@ -316,8 +348,7 @@ fn build_window(app: &gtk::Application) {
             filters.append(&filter);
 
             let dialog = gtk::FileDialog::builder().title("Import Theme").filters(&filters).build();
-            let icon_set = icon_set.clone();
-            let desktop_page = desktop_page.clone();
+            let select_theme = select_theme.clone();
             let note = note.clone();
             dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
                 let Ok(file) = result else { return };
@@ -326,17 +357,89 @@ fn build_window(app: &gtk::Application) {
                     Ok(slug) => {
                         note.set_text(&format!("Imported theme \"{slug}\". Select it above and click Apply."));
                         note.set_visible(true);
-                        let old_root = icon_set.borrow().root.clone();
-                        let new_section = Rc::new(ui::IconSetSection::new(&opusdm_ipc::IconSetId::Custom(slug)));
-                        desktop_page.insert_child_after(&new_section.root, Some(&old_root));
-                        desktop_page.remove(&old_root);
-                        *icon_set.borrow_mut() = new_section;
+                        select_theme(slug.clone());
                     }
                     Err(e) => {
                         note.set_text(&format!("Import failed: {e}"));
                         note.set_visible(true);
                     }
                 }
+            });
+        });
+    }
+
+    {
+        let window = window.clone();
+        let icon_set = icon_set.clone();
+        let read_ui = read_ui.clone();
+        let select_theme = select_theme.clone();
+        let note = note.clone();
+        save_btn.connect_clicked(move |_| {
+            let window2 = window.clone();
+            let icon_set = icon_set.clone();
+            let read_ui = read_ui.clone();
+            let select_theme = select_theme.clone();
+            let note = note.clone();
+            opusdm_ui::requester_entry(&window, "Save Theme", "", &[("Save", true), ("Cancel", false)], move |save, label| {
+                if !save {
+                    return;
+                }
+                let Some(slug) = builder::slugify(&label) else {
+                    note.set_text("Save failed: the name needs at least one letter or digit.");
+                    note.set_visible(true);
+                    return;
+                };
+                let do_save = {
+                    let icon_set = icon_set.clone();
+                    let read_ui = read_ui.clone();
+                    let select_theme = select_theme.clone();
+                    let note = note.clone();
+                    let slug = slug.clone();
+                    move || {
+                        let opusdm_ipc::IconSetId::Custom(source) = icon_set.borrow().value();
+                        let (settings, desktop) = read_ui();
+                        let req = builder::BuildRequest { label: &label, slug: &slug, source_slug: &source, settings: &settings, desktop: &desktop };
+                        match builder::save_theme(&req) {
+                            Ok(_) => {
+                                note.set_text(&format!("Saved theme \"{slug}\"."));
+                                select_theme(slug.clone());
+                            }
+                            Err(e) => note.set_text(&format!("Save failed: {e}")),
+                        }
+                        note.set_visible(true);
+                    }
+                };
+                if !opusdm_ipc::themes::theme_dir(&slug).exists() {
+                    do_save();
+                    return;
+                }
+                opusdm_ui::requester(&window2, "Replace Theme", &format!("A theme named \"{slug}\" already exists. Replace it?"), None, &[("Replace", true), ("Cancel", false)], move |replace| {
+                    if replace {
+                        do_save();
+                    }
+                });
+            });
+        });
+    }
+    {
+        let window = window.clone();
+        let icon_set = icon_set.clone();
+        let note = note.clone();
+        export_btn.connect_clicked(move |_| {
+            let opusdm_ipc::IconSetId::Custom(slug) = icon_set.borrow().value();
+            let dialog = gtk::FileDialog::builder().title("Export Theme").initial_name(format!("{slug}.zip")).build();
+            let note = note.clone();
+            dialog.save(Some(&window), gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else { return };
+                let Some(mut path) = file.path() else { return };
+                if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("zip")) {
+                    path.set_extension("zip");
+                }
+                match exporter::export_theme(&slug, &path) {
+                    Ok(()) => note.set_text(&format!("Exported to {}.", path.display())),
+                    Err(e) => note.set_text(&format!("Export failed: {e}")),
+                }
+                note.set_visible(true);
             });
         });
     }
