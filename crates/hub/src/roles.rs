@@ -311,6 +311,19 @@ mod tests {
     }
 
     #[test]
+    fn focus_gain_after_set_role_dest_makes_the_lister_source_again() {
+        // Why the Lister must send a palette "Set Role" only after its window
+        // has regained the focus: a focus event arriving later wins.
+        let (a, b, _) = ids();
+        let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));
+        let (s, _) = ev(s, RoleEvent::SetRole(b, Role::Dest));
+        let (s, _) = ev(s, RoleEvent::FocusGained(b));
+        assert_eq!(s.source(), Some(b));
+        let (s, _) = ev(s, RoleEvent::SetRole(b, Role::Dest));
+        assert_eq!(s.dests(), vec![b], "sent after the focus, the request sticks");
+    }
+
+    #[test]
     fn set_role_none_clears_and_unlocks() {
         let (a, b, _) = ids();
         let (s, _) = ev(RoleState::default(), RoleEvent::FocusGained(a));

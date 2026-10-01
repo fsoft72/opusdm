@@ -110,6 +110,29 @@ pub fn builtin_commands() -> &'static [CommandItem] {
     COMMANDS
 }
 
+/// Ask the hub for `role`. Closing the palette hands the focus back to the
+/// Lister window, and the hub makes a window that gains focus the SOURCE, which
+/// would undo a DEST or NONE request sent just before. So while the window is
+/// not active yet the request waits until it is, and then goes out after the
+/// focus notification.
+fn request_role(ui: &Rc<Ui>, role: Role) {
+    if ui.window.is_active() {
+        let _ = ui.hub.client.send(&ToHub::SetRole(role));
+        return;
+    }
+    let ui = ui.clone();
+    let sent = std::rc::Rc::new(std::cell::Cell::new(false));
+    ui.window.clone().connect_is_active_notify(move |w| {
+        if !w.is_active() || sent.replace(true) {
+            return;
+        }
+        let ui = ui.clone();
+        glib::idle_add_local_once(move || {
+            let _ = ui.hub.client.send(&ToHub::SetRole(role));
+        });
+    });
+}
+
 /// Execute a command by ID. The match is exhaustive (no wildcard arm): a
 /// `CommandId` added without a handler here is a compile error, not a
 /// silently dead-ended shortcut.
@@ -348,13 +371,13 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             crate::tools::open_compare_dialog(ui);
         }
         CommandId::SetSource => {
-            let _ = ui.hub.client.send(&ToHub::SetRole(Role::Source));
+            request_role(ui, Role::Source);
         }
         CommandId::SetDest => {
-            let _ = ui.hub.client.send(&ToHub::SetRole(Role::Dest));
+            request_role(ui, Role::Dest);
         }
         CommandId::SetNone => {
-            let _ = ui.hub.client.send(&ToHub::SetRole(Role::None));
+            request_role(ui, Role::None);
         }
         CommandId::TogglePin => {
             let active = !ui.status_bar.role_lock_btn.is_active();

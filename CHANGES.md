@@ -283,3 +283,4 @@
 - Change: `F8` no longer deletes; only `Del` does. Palette label and docs follow.
 - Fix: the rename dialog (F2 and the toolbar button) preselects only the name, leaving the extension out of the selection (`actions::rename_selection`, new `opusdm_ui::requester_entry_selecting`). Directories and dotfiles are selected whole.
 - Fix: Ctrl+H (and the palette entry) now toggles the toolbar eye button, so its state and icon follow (`Ui::hidden_btn`).
+- Fix: palette "Set Role: DEST/NONE" now works. Closing the palette gave the focus back to the Lister, and the hub turned the focused window into SOURCE right after the request; the request now waits until the window is active (`palette::request_role`).
