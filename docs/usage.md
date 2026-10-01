@@ -234,6 +234,13 @@ The **Confirm** command asks a yes / no question inside a function; the function
 ### 3.10l Busy indicator
 While a function started from a Lister (palette, hotkey, user menu, filetype action, Function Editor Test) is running, a spinner with "Running a function..." (or "Running N functions...") appears next to the message line at the bottom of that Lister. It goes away when the function finishes or fails. Functions started elsewhere (button banks, script events) do not show it.
 
+### 3.10m Command Line
+**Command Line...** (command palette) runs one line:
+- `!ls -l {f}` runs a shell command in the SOURCE folder.
+- An internal command with arguments: `MakeDir backup`, `cd ~/Documents`, `CopyAs new_name=*.bak`, `Copy newer`. Names are not case sensitive and spaces, `_` and `-` are ignored (`make-directory` works); `cd`, `md`, `mkdir` and `mv` are short names. A word without `name=` fills the first parameter not named, a checkbox is turned on by its name (`newer`) or `newer=yes`, and quotes group words. The codes `{f}`, `{o}` and so on work as in functions.
+- The name of a saved function runs it.
+Errors (unknown command, missing or extra parameter) show in the prompt; the last line is offered again next time.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

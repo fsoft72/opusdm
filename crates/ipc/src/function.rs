@@ -98,6 +98,31 @@ pub enum InternalCmd {
 }
 
 impl InternalCmd {
+    /// Every internal command, in the order the editor offers them.
+    pub const ALL: [InternalCmd; 21] = [
+        InternalCmd::Copy,
+        InternalCmd::Move,
+        InternalCmd::Delete,
+        InternalCmd::MakeDir,
+        InternalCmd::NewFile,
+        InternalCmd::Rename,
+        InternalCmd::CopyAs,
+        InternalCmd::MoveAs,
+        InternalCmd::Duplicate,
+        InternalCmd::ChangeDir,
+        InternalCmd::SetBackground,
+        InternalCmd::LeaveOut,
+        InternalCmd::PutAway,
+        InternalCmd::Hide,
+        InternalCmd::Reveal,
+        InternalCmd::ToggleHide,
+        InternalCmd::OpenBank,
+        InternalCmd::CloseBank,
+        InternalCmd::ToggleBank,
+        InternalCmd::HideBank,
+        InternalCmd::Confirm,
+    ];
+
     /// The bank command this is, or `None` for every other command.
     pub fn bank_action(self) -> Option<crate::buttonbank::BankAction> {
         use crate::buttonbank::BankAction;

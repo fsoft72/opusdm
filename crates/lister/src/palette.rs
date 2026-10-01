@@ -86,6 +86,7 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::Encrypt, title: Cow::Borrowed("Encrypt... (password, Source -> Dest as .enc)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::Decrypt, title: Cow::Borrowed("Decrypt... (.enc files, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::CommandLine, title: Cow::Borrowed("Command Line..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::FtpBook, title: Cow::Borrowed("FTP / SFTP Address Book..."), category: Cow::Borrowed("Network"), shortcut: None },
         CommandItem { id: CommandId::FtpQuit, title: Cow::Borrowed("FTP Quit (close all connections)"), category: Cow::Borrowed("Network"), shortcut: None },
         CommandItem { id: CommandId::ManageFiletypes, title: Cow::Borrowed("Edit File Types..."), category: Cow::Borrowed("Functions"), shortcut: None },
@@ -414,6 +415,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::Decrypt => {
             crate::crypt_dialog::open_crypt(ui, false, ui.selected_paths());
+        }
+        CommandId::CommandLine => {
+            crate::cli_dialog::open_command_line(ui);
         }
         CommandId::FtpBook => {
             crate::remote_ui::open_address_book(ui);

@@ -24,7 +24,6 @@ To be prioritised after section 1 is finished.
 - [ ] F-50 Custom panel title format codes
 - [ ] F-28 Icon mode and Icon Action mode listers
 - [ ] Minor commands (F-40..F-49):
-  - [ ] F-42 Internal CLI (command line interpreting internal commands)
   - [ ] F-43 ScanDir options (NEW, MODE, CONTAINER)
   - [ ] F-44 Root / Parent variants ("Open parent in NEW lister")
   - [ ] F-45 GetSizes FORCE
@@ -54,6 +53,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 
 ## 5. Completed
 
+- [x] F-42 Internal CLI (command line interpreting internal commands) (palette prompt; no history navigation)
 - [x] F-41 Busy / function running indicator (per Lister, for runs it started)
 - [x] F-40 Confirm (requester step inside functions) (palette-less: it is a function step; headless runs fail the step)
 - [x] F-01 Function Editor and internal command language (core: data model, placeholders, `functions.json`, hub execution, editor UI, Command Palette)

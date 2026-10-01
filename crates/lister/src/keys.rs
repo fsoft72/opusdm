@@ -113,6 +113,8 @@ pub enum CommandId {
     Encrypt,
     /// Decrypt the selected `.enc` files with a password.
     Decrypt,
+    /// Open the internal command line.
+    CommandLine,
     /// Open the FTP address book.
     FtpBook,
     /// Close every FTP / SFTP connection.
@@ -400,6 +402,12 @@ mod tests {
     fn script_events_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageScripts));
+    }
+
+    #[test]
+    fn command_line_exists_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::CommandLine));
     }
 
     #[test]

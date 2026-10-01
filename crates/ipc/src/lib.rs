@@ -26,6 +26,7 @@ macro_rules! err_log {
 
 pub mod bindings;
 pub mod buttonbank;
+pub mod cli;
 pub mod desktop;
 pub mod dock;
 pub mod filetypes;
