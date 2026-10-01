@@ -118,6 +118,26 @@ pub fn show_context_menu(
         menu_box.append(&btn);
     }
 
+    // File type "Open With" entries: one button per function of the type
+    // the file matches.
+    if let Some(file_type) = crate::filetypes_ui::type_for(&target_path, row) {
+        let entries = crate::filetypes_ui::menu_entries(&file_type, &opusdm_ipc::function::load_functions());
+        if !entries.is_empty() {
+            menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        }
+        for (function, label) in entries {
+            let ui = ui.clone();
+            let pop = popover.clone();
+            let name = row.name.clone();
+            let btn = menu_button(&format!("Open With: {label}"));
+            btn.connect_clicked(move |_| {
+                pop.popdown();
+                crate::filetypes_ui::run_on_row(&ui, &name, &function);
+            });
+            menu_box.append(&btn);
+        }
+    }
+
     // 2. Separatore
     menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 

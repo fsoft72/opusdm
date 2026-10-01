@@ -642,7 +642,8 @@ impl Ui {
     }
 
     /// Open the row at `position`: descend into a directory, step into an
-    /// archive, or hand the file to its default application.
+    /// archive, run the double click function of its file type, or hand the
+    /// file to its default application.
     pub fn activate_row(self: &Rc<Self>, position: u32) {
         let Some(row) = self.row_at(position) else { return };
         let cwd = self.cwd.borrow().clone();
@@ -667,6 +668,8 @@ impl Ui {
             self.navigate_to(&target);
         } else if crate::archive::is_archive_file(&target) {
             self.navigate_to(&crate::archive::make_archive_path(&target, ""));
+        } else if let Some(function) = crate::filetypes_ui::type_for(&target, &row).and_then(|t| t.actions.dblclick) {
+            crate::filetypes_ui::run_on_row(self, &row.name, &function);
         } else {
             let uri = format!("file://{}", target.to_string_lossy());
             let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);

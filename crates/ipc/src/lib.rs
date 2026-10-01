@@ -28,6 +28,7 @@ pub mod bindings;
 pub mod buttonbank;
 pub mod desktop;
 pub mod dock;
+pub mod filetypes;
 pub mod format;
 pub mod frame;
 pub mod function;

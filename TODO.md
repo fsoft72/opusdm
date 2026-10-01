@@ -12,7 +12,6 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 Work on these in order. Decide what comes next only when all of them are done.
 
-- [ ] F-06 Filetypes system (classes, matching, actions, Filetype Creator)
 - [ ] F-01 follow-up: conflict prompt UI for Copy/Move/Delete steps (currently auto-skip)
 - [ ] F-39 FTP / FTPS / SFTP module (new crate with `suppaftp` and `ssh2`)
 - [ ] F-14 Encrypt / Decrypt
@@ -66,6 +65,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 - [x] F-03 Hotkey Editor (local + system-global hotkeys, KeyFinder)
 - [x] F-04 User menus in listers
 - [x] F-05 Script events (system events only; viewer overrides wait for F-16, Hidden/Revealed for F-38)
+- [x] F-06 Filetypes system (matching rules, double click and Open With actions, editor, Filetype Creator; the `drop` action is stored but not wired, no MIME sniffing: unmatched files use xdg-open)
 - [x] F-07 CopyAs, MoveAs, Duplicate, UPDATE/NEWER/MOVEWHENSAME (`quiet` flag is carried but has no requester to suppress yet)
 - [x] F-08 CheckFit (space pre-check; requester only, no status-bar Y/N badge)
 - [x] F-09 Protect (chmod requester; chown not implemented, needs privileges)

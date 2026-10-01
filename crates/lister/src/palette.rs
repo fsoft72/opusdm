@@ -84,6 +84,8 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::FindKey, title: Cow::Borrowed("Find Key..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageUserMenu, title: Cow::Borrowed("Edit User Menu..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::ManageFiletypes, title: Cow::Borrowed("Edit File Types..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::CreateFiletype, title: Cow::Borrowed("Filetype Creator (from selected file)..."), category: Cow::Borrowed("Functions"), shortcut: None },
 ];
 
 /// Borrow the command palette's entries.
@@ -402,6 +404,19 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::ManageScripts => {
             crate::scripts_editor::open_scripts_editor(ui);
+        }
+        CommandId::ManageFiletypes => {
+            crate::filetypes_ui::open_editor(ui, None);
+        }
+        CommandId::CreateFiletype => {
+            let sample = ui.selected_names().into_iter().next().map(|name| {
+                let path = ui.cwd_path().join(&name);
+                (name, path)
+            });
+            match sample {
+                Some(sample) => crate::filetypes_ui::open_editor(ui, Some(sample)),
+                None => crate::actions::flash(ui, "select a file to derive the file type from"),
+            }
         }
         CommandId::RunFunction(id) => {
             let Some(function) = opusdm_ipc::function::load_functions().into_iter().find(|f| f.id == id) else {

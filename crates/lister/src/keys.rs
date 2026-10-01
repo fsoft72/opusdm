@@ -109,6 +109,10 @@ pub enum CommandId {
     ManageUserMenu,
     /// Open the script events editor.
     ManageScripts,
+    /// Open the File Types editor.
+    ManageFiletypes,
+    /// Open the File Types editor with a new type derived from the selected file.
+    CreateFiletype,
 }
 
 /// Where the keyboard focus is when the key arrives.
@@ -388,5 +392,12 @@ mod tests {
     fn script_events_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageScripts));
+    }
+
+    #[test]
+    fn filetype_commands_exist_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::ManageFiletypes));
+        assert!(known.contains(&CommandId::CreateFiletype));
     }
 }
