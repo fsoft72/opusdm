@@ -6,6 +6,7 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -39,7 +40,8 @@ fn has_name(list: &gtk::ListBox, name: &str) -> bool {
 impl AssetList {
     /// Build the list under `title`, showing `names`. `suffixes` are the file
     /// extensions the Add chooser offers. `add_op` builds the operation for a
-    /// chosen file; `remove` queues (or cancels) the removal of a name.
+    /// chosen file; `remove` queues the removal of a name, told whether a file
+    /// of that name was installed when the list was built.
     pub fn new(
         window: &gtk::ApplicationWindow,
         title: &str,
@@ -47,8 +49,9 @@ impl AssetList {
         suffixes: &'static [&'static str],
         ops: Rc<RefCell<Vec<AssetOp>>>,
         add_op: fn(PathBuf) -> AssetOp,
-        remove: fn(&mut Vec<AssetOp>, &str),
+        remove: fn(&mut Vec<AssetOp>, &str, bool),
     ) -> Self {
+        let installed: HashSet<String> = names.iter().cloned().collect();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let heading = gtk::Label::new(Some(title));
         heading.set_xalign(0.0);
@@ -100,7 +103,7 @@ impl AssetList {
             remove_btn.connect_clicked(move |_| {
                 let Some(row) = list.selected_row() else { return };
                 let Some(name) = row_name(&row) else { return };
-                remove(&mut ops.borrow_mut(), &name);
+                remove(&mut ops.borrow_mut(), &name, installed.contains(&name));
                 list.remove(&row);
             });
         }

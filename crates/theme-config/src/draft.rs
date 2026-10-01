@@ -99,24 +99,38 @@ pub fn is_dirty(saved: &ThemeDraft, now: &ThemeDraft, ops: &[AssetOp]) -> bool {
     saved != now || !ops.is_empty()
 }
 
-/// Queue the removal of font `name`; if that font was only added in this
-/// session, cancel the add instead.
-pub fn queue_remove_font(ops: &mut Vec<AssetOp>, name: &str) {
-    let before = ops.len();
-    ops.retain(|op| !matches!(op, AssetOp::AddFont(p) if p.file_name().is_some_and(|n| n == name)));
-    if ops.len() == before {
-        ops.push(AssetOp::RemoveFont(name.to_string()));
+/// Cancel any pending add of `name` and, when a file of that name is
+/// `installed` in the theme, queue its removal once. `is_add` and `make_remove`
+/// pick the font or sound variants.
+fn queue_remove(
+    ops: &mut Vec<AssetOp>,
+    name: &str,
+    installed: bool,
+    is_add: fn(&AssetOp, &str) -> bool,
+    make_remove: fn(String) -> AssetOp,
+) {
+    ops.retain(|op| !is_add(op, name));
+    if !installed {
+        return;
+    }
+    let remove = make_remove(name.to_string());
+    if !ops.contains(&remove) {
+        ops.push(remove);
     }
 }
 
-/// Queue the removal of sound `name`; if that sound was only added in this
-/// session, cancel the add instead.
-pub fn queue_remove_sound(ops: &mut Vec<AssetOp>, name: &str) {
-    let before = ops.len();
-    ops.retain(|op| !matches!(op, AssetOp::AddSound(p) if p.file_name().is_some_and(|n| n == name)));
-    if ops.len() == before {
-        ops.push(AssetOp::RemoveSound(name.to_string()));
-    }
+/// Queue the removal of font `name`. A pending add of that name is always
+/// cancelled; the removal itself is queued only when `installed` (a font of
+/// that name is in the theme folder) and not already queued.
+pub fn queue_remove_font(ops: &mut Vec<AssetOp>, name: &str, installed: bool) {
+    let is_add = |op: &AssetOp, n: &str| matches!(op, AssetOp::AddFont(p) if p.file_name().is_some_and(|f| f == n));
+    queue_remove(ops, name, installed, is_add, AssetOp::RemoveFont);
+}
+
+/// Queue the removal of sound `name`; same rules as `queue_remove_font`.
+pub fn queue_remove_sound(ops: &mut Vec<AssetOp>, name: &str, installed: bool) {
+    let is_add = |op: &AssetOp, n: &str| matches!(op, AssetOp::AddSound(p) if p.file_name().is_some_and(|f| f == n));
+    queue_remove(ops, name, installed, is_add, AssetOp::RemoveSound);
 }
 
 /// Queue replacing icon `name` with `src`, superseding an earlier pending
@@ -246,21 +260,53 @@ mod tests {
         assert!(is_dirty(&a, &a, &[AssetOp::RemoveFont("x.ttf".into())]));
     }
 
+    /// Removing a font that was only added this session cancels the add.
     #[test]
     fn removing_a_font_that_was_only_pending_cancels_the_add() {
         let mut ops = vec![AssetOp::AddFont("/tmp/new.ttf".into())];
-        queue_remove_font(&mut ops, "new.ttf");
+        queue_remove_font(&mut ops, "new.ttf", false);
         assert!(ops.is_empty());
-        queue_remove_font(&mut ops, "old.ttf");
+        queue_remove_font(&mut ops, "old.ttf", true);
         assert_eq!(ops, [AssetOp::RemoveFont("old.ttf".into())]);
     }
 
+    /// Replacing an installed font then removing the row still removes the installed file.
     #[test]
-    fn removing_a_sound_that_was_only_pending_cancels_the_add() {
+    fn removing_an_installed_font_with_a_pending_add_queues_the_remove() {
+        let mut ops = vec![AssetOp::AddFont("/tmp/x.ttf".into())];
+        queue_remove_font(&mut ops, "x.ttf", true);
+        assert_eq!(ops, [AssetOp::RemoveFont("x.ttf".into())]);
+    }
+
+    /// Removing the same installed font twice queues a single removal.
+    #[test]
+    fn removing_an_installed_font_twice_queues_one_remove() {
+        let mut ops = Vec::new();
+        queue_remove_font(&mut ops, "x.ttf", true);
+        queue_remove_font(&mut ops, "x.ttf", true);
+        assert_eq!(ops, [AssetOp::RemoveFont("x.ttf".into())]);
+    }
+
+    /// Remove, re-add, remove again of an installed font keeps one removal and no add.
+    #[test]
+    fn remove_readd_remove_of_an_installed_font_leaves_one_remove() {
+        let mut ops = Vec::new();
+        queue_remove_font(&mut ops, "x.ttf", true);
+        ops.push(AssetOp::AddFont("/tmp/x.ttf".into()));
+        assert_eq!(ops.len(), 2);
+        queue_remove_font(&mut ops, "x.ttf", true);
+        assert_eq!(ops, [AssetOp::RemoveFont("x.ttf".into())]);
+    }
+
+    /// Same rules for sounds: pending only, installed with pending add, installed twice.
+    #[test]
+    fn sound_removal_follows_the_same_rules() {
         let mut ops = vec![AssetOp::AddSound("/tmp/a.wav".into())];
-        queue_remove_sound(&mut ops, "a.wav");
+        queue_remove_sound(&mut ops, "a.wav", false);
         assert!(ops.is_empty());
-        queue_remove_sound(&mut ops, "b.wav");
+        let mut ops = vec![AssetOp::AddSound("/tmp/b.wav".into())];
+        queue_remove_sound(&mut ops, "b.wav", true);
+        queue_remove_sound(&mut ops, "b.wav", true);
         assert_eq!(ops, [AssetOp::RemoveSound("b.wav".into())]);
     }
 
