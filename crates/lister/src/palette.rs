@@ -186,8 +186,15 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::ToggleHidden => {
             let active = !ui.view.show_hidden.get();
-            ui.view.show_hidden.set(active);
-            ui.reload();
+            // The toggle's handler sets the flag, swaps the icon and reloads.
+            let button = ui.hidden_btn.borrow().clone();
+            match button {
+                Some(btn) => btn.set_active(active),
+                None => {
+                    ui.view.show_hidden.set(active);
+                    ui.reload();
+                }
+            }
         }
         CommandId::Copy => {
             if let Err(msg) = crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {

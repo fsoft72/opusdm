@@ -168,6 +168,9 @@ pub struct Ui {
     pub user_menu_btn: gtk::MenuButton,
     /// Text typed so far for type-to-find; empty when no search is open.
     pub typeahead_buffer: RefCell<String>,
+    /// The toolbar's show-hidden toggle, so keyboard and palette changes can
+    /// keep its state and icon in step.
+    pub hidden_btn: RefCell<Option<gtk::ToggleButton>>,
     /// Idle timeout that closes type-to-find.
     pub typeahead_timer: RefCell<Option<glib::SourceId>>,
     /// The format applied to the current directory.

@@ -36,11 +36,12 @@ pub fn attach(ui: &Rc<Ui>) {
     
     let is_hidden_active = ui.view.show_hidden.get();
     let hidden_btn = crate::icons::icon_toggle_button(
-        if is_hidden_active { crate::icons::SVG_EYE } else { crate::icons::SVG_EYE_OFF },
+        hidden_icon(is_hidden_active),
         "Toggle Hidden Files",
         icon_size,
     );
     hidden_btn.set_active(is_hidden_active);
+    *ui.hidden_btn.borrow_mut() = Some(hidden_btn.clone());
 
     let preview_btn = gtk::Button::with_label("👁");
     preview_btn.set_tooltip_text(Some("Quick Look Preview (F3 / Space)"));
@@ -84,10 +85,7 @@ pub fn attach(ui: &Rc<Ui>) {
         hidden_btn.connect_toggled(move |btn| {
             let active = btn.is_active();
             ui.view.show_hidden.set(active);
-            btn.set_child(Some(&crate::icons::svg_image(
-                if active { crate::icons::SVG_EYE } else { crate::icons::SVG_EYE_OFF },
-                icon_size,
-            )));
+            btn.set_child(Some(&crate::icons::svg_image(hidden_icon(active), icon_size)));
             ui.reload();
         });
     }
@@ -386,6 +384,11 @@ pub fn prompt(
     );
 }
 
+/// The toolbar icon for the show-hidden toggle: open eye while dotfiles show.
+pub fn hidden_icon(active: bool) -> &'static [u8] {
+    if active { crate::icons::SVG_EYE } else { crate::icons::SVG_EYE_OFF }
+}
+
 /// Character range of `name` a rename dialog preselects: the name without its
 /// extension. A directory, a name without a dot and a leading-dot name such as
 /// `.bashrc` are selected whole.
@@ -425,6 +428,12 @@ pub fn prompt_rename(
 mod tests {
     use super::*;
     use crate::client::Roles;
+
+    #[test]
+    fn the_hidden_toggle_icon_follows_its_state() {
+        assert_eq!(hidden_icon(true), crate::icons::SVG_EYE);
+        assert_eq!(hidden_icon(false), crate::icons::SVG_EYE_OFF);
+    }
 
     #[test]
     fn rename_preselects_the_name_without_its_extension() {

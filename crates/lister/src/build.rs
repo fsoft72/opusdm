@@ -434,6 +434,7 @@ fn build_window(
         function_log: RefCell::new(None),
         typeahead_buffer: RefCell::new(String::new()),
         typeahead_timer: RefCell::new(None),
+        hidden_btn: RefCell::new(None),
         format: RefCell::new(opusdm_ipc::ListerFormat::builtin()),
         temp_format: RefCell::new(None),
         dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
