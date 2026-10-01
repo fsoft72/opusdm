@@ -25,6 +25,8 @@ pub enum CommandId {
     AdvancedSelect,
     DeselectPattern,
     ToggleHidden,
+    /// Open the Size Format requester (how the Size column is written).
+    SizeFormat,
     Copy,
     Move,
     Delete,

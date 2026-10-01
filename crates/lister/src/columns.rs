@@ -1,7 +1,7 @@
 //! Column setup and cell rendering for the Lister ColumnView.
 
 use crate::model::{
-    dir_first_cmp, format_access, format_group, format_mtime, format_size, format_user,
+    dir_first_cmp, format_access, format_group, format_mtime, format_size_as, format_user,
     local_tz_offset_secs, Row, SortCol,
 };
 use gtk4 as gtk;
@@ -237,7 +237,8 @@ pub fn add_column(
             }
             ColKind::Size => {
                 label.set_xalign(1.0);
-                label.set_text(&format_size(row.is_dir, row.size));
+                let fmt = ui_getter_bind().map(|ui| ui.view.size_format.get()).unwrap_or_default();
+                label.set_text(&format_size_as(fmt, row.is_dir, row.size));
             }
             ColKind::Modified => {
                 label.set_xalign(0.0);

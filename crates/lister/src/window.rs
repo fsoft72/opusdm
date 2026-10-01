@@ -110,6 +110,8 @@ pub struct ViewState {
     pub filter_bar: Rc<crate::filter::FilterBar>,
     /// Whether dotfiles are shown in the file list. Off by default.
     pub show_hidden: Cell<bool>,
+    /// How the Size column is written in this Lister. Session only.
+    pub size_format: Cell<crate::model::SizeFormat>,
     /// Every column with the format column it shows. The columns are built
     /// once; a format only changes visibility and order.
     pub col_map: Rc<Vec<(gtk::ColumnViewColumn, opusdm_ipc::FormatColumn)>>,

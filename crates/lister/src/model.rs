@@ -171,22 +171,94 @@ fn metadata_perms(_m: &std::fs::Metadata) -> (u32, u32, u32) {
     (0, 0, 0)
 }
 
+/// How the Size column of one Lister is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SizeFormat {
+    /// Binary units with one decimal (`1.5K`, `3.0M`). The default.
+    #[default]
+    Auto,
+    /// Decimal (SI, base 1000) units with one decimal (`1.5kB`, `3.0MB`).
+    Si,
+    /// The exact byte count with thousands separators (`1,234,567 B`).
+    Bytes,
+    /// Always kilobytes (base 1024), two decimals.
+    Kilobytes,
+    /// Always megabytes (base 1024), two decimals.
+    Megabytes,
+    /// Always gigabytes (base 1024), two decimals.
+    Gigabytes,
+}
+
+impl SizeFormat {
+    /// Every format, in the order the requester lists them.
+    pub const ALL: [SizeFormat; 6] = [
+        SizeFormat::Auto,
+        SizeFormat::Si,
+        SizeFormat::Bytes,
+        SizeFormat::Kilobytes,
+        SizeFormat::Megabytes,
+        SizeFormat::Gigabytes,
+    ];
+
+    /// The label shown in the requester.
+    pub fn label(self) -> &'static str {
+        match self {
+            SizeFormat::Auto => "Auto (1.5K, 3.0M ...)",
+            SizeFormat::Si => "Auto, decimal units (1.5kB, 3.0MB ...)",
+            SizeFormat::Bytes => "Exact bytes (1,234,567 B)",
+            SizeFormat::Kilobytes => "Always KB (1.18 KB)",
+            SizeFormat::Megabytes => "Always MB (1.18 MB)",
+            SizeFormat::Gigabytes => "Always GB (1.18 GB)",
+        }
+    }
+}
+
 /// Human-readable size. Empty string for directories.
 pub fn format_size(is_dir: bool, size: u64) -> String {
+    format_size_as(SizeFormat::Auto, is_dir, size)
+}
+
+/// `size` written the way `fmt` asks. Empty string for directories.
+pub fn format_size_as(fmt: SizeFormat, is_dir: bool, size: u64) -> String {
     if is_dir {
         return String::new();
     }
-    const UNITS: [&str; 6] = ["B", "K", "M", "G", "T", "P"];
-    if size < 1024 {
+    match fmt {
+        SizeFormat::Auto => scaled(size, 1024.0, &["B", "K", "M", "G", "T", "P"]),
+        SizeFormat::Si => scaled(size, 1000.0, &["B", "kB", "MB", "GB", "TB", "PB"]),
+        SizeFormat::Bytes => format!("{} B", group_thousands(size)),
+        SizeFormat::Kilobytes => format!("{:.2} KB", size as f64 / 1024.0),
+        SizeFormat::Megabytes => format!("{:.2} MB", size as f64 / 1024.0 / 1024.0),
+        SizeFormat::Gigabytes => format!("{:.2} GB", size as f64 / 1024.0 / 1024.0 / 1024.0),
+    }
+}
+
+/// `size` divided down by `base` until it fits, one decimal. Under one
+/// `base` it is a plain byte count.
+fn scaled(size: u64, base: f64, units: &[&str]) -> String {
+    if (size as f64) < base {
         return format!("{size} B");
     }
     let mut value = size as f64;
     let mut unit = 0usize;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
+    while value >= base && unit < units.len() - 1 {
+        value /= base;
         unit += 1;
     }
-    format!("{value:.1}{}", UNITS[unit])
+    format!("{value:.1}{}", units[unit])
+}
+
+/// `n` with a comma between every group of three digits.
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Format `unix` seconds as `YYYY-MM-DD HH:MM` at `tz_offset_secs` east of UTC.
@@ -387,6 +459,24 @@ mod tests {
         assert_eq!(format_size(false, 1024), "1.0K");
         assert_eq!(format_size(false, 1536), "1.5K");
         assert_eq!(format_size(false, 3 * 1024 * 1024), "3.0M");
+    }
+
+    #[test]
+    fn size_formats() {
+        use SizeFormat::*;
+        assert_eq!(format_size_as(Bytes, true, 99), "");
+        assert_eq!(format_size_as(Bytes, false, 0), "0 B");
+        assert_eq!(format_size_as(Bytes, false, 999), "999 B");
+        assert_eq!(format_size_as(Bytes, false, 1_234_567), "1,234,567 B");
+        assert_eq!(format_size_as(Si, false, 999), "999 B");
+        assert_eq!(format_size_as(Si, false, 1500), "1.5kB");
+        assert_eq!(format_size_as(Si, false, 3_000_000), "3.0MB");
+        assert_eq!(format_size_as(Kilobytes, false, 0), "0.00 KB");
+        assert_eq!(format_size_as(Kilobytes, false, 1536), "1.50 KB");
+        assert_eq!(format_size_as(Megabytes, false, 1_234_567), "1.18 MB");
+        assert_eq!(format_size_as(Gigabytes, false, 3 * 1024 * 1024 * 1024), "3.00 GB");
+        assert_eq!(format_size_as(Auto, false, 1023), "1023 B");
+        assert_eq!(format_size_as(Auto, false, 1024), "1.0K");
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod ansi;
 mod archive;
 mod attr_dialogs;
 mod batch_rename;
+mod size_format;
 mod binding_ui;
 mod bookmarks_ui;
 mod build;

@@ -2,6 +2,7 @@
 
 ## 2026-10-01
 
+- Feature: "Size Format..." command (View, no default key) sets how this Lister writes the Size column: Auto (default, binary `1.5K`), decimal units (`1.5kB`), exact bytes (`1,234,567 B`), or always KB / MB / GB with two decimals. Per Lister, session only. `model::SizeFormat` and `format_size_as` (`format_size` is unchanged, used by the viewer, preview and tools), `Ui.view.size_format`, new `size_format.rs` requester.
 - Fix: right clicking Copy / Move opened the "As..." dialog on button press, so the modal dialog swallowed the release and the button stayed pressed after Cancel. The dialog now opens on release (`wire_transfer` in `lister/src/actions.rs`).
 - Release: version bumped to 0.5.0 (`opusdm_ui::VERSION` shown in the About requester, every crate and `Cargo.lock`).
 - Docs: `OpusDM-Features-Guide.md` updated with the new features: Root/Parent variants and bookmarks (3.7, 3.8), Copy As/Move As on several items, rename preselection, Encrypt/Decrypt (7.10), FTP/FTPS/SFTP (11.3), size reuse and force rescan, View Font (12.4), Confirm, Run, Change Directory options, function conflicts, busy indicator and Command Line (15.4 to 15.8), File Types (16.5), full themes and the Theme Editor (19.6); the "not available yet" list follows `TODO.md`.

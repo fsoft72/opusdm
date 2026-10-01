@@ -420,6 +420,7 @@ fn build_window(
             cursor: Cell::new(0),
             filter_bar: filter_bar.clone(),
             show_hidden: Cell::new(false),
+            size_format: Cell::new(crate::model::SizeFormat::default()),
             col_map: col_map.clone(),
             separate: separate.clone(),
             model_sorter: model_sorter.clone(),
