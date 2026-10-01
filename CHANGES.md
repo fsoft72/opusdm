@@ -286,3 +286,4 @@
 - Fix: palette "Set Role: DEST/NONE" now works. Closing the palette gave the focus back to the Lister, and the hub turned the focused window into SOURCE right after the request; the request now waits until the window is active (`palette::request_role`).
 - Feature: right click on the toolbar Copy / Move buttons opens Copy As... / Move As... (tooltips say so).
 - Feature: Copy As... / Move As... on several items open the batch renamer rules dialog (find/replace, prefix, suffix, case, numbering, live preview) and submit the previewed names; `batch_rename::open_rules_dialog` is shared with Batch Rename. A single item keeps the pattern dialog.
+- Fix: `run-x11.sh` starts Xephyr with `-no-host-grab`, so it no longer captures the mouse and keyboard inside its window.

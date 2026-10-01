@@ -70,6 +70,7 @@ Xephyr "$DISPLAY_NUM" \
     -screen "$RESOLUTION" \
     -glamor \
     -resizeable \
+    -no-host-grab \
     -title "Xephyr $DISPLAY_NUM" &
 XEPHYR_PID=$!
 CHILD_PIDS+=("$XEPHYR_PID")
