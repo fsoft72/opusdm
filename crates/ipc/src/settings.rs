@@ -41,7 +41,9 @@ pub fn desktop_settings_path() -> PathBuf {
 ///
 /// - If `path` does not exist: returns `T::default()` silently (clean first run).
 /// - If reading `path` fails: logs an error with `app_tag` to stderr and returns `T::default()`.
-/// - If parsing fails: logs an error with `app_tag` to stderr and returns `T::default()`.
+/// - If parsing fails: copies the file to `<name>.bak` (an existing backup is kept),
+///   logs an error with `app_tag` to stderr and returns `T::default()`. The copy
+///   matters because the next save would otherwise overwrite what the user wrote.
 pub fn load_json<T: DeserializeOwned + Default>(path: &Path, app_tag: &str, entity_name: &str) -> T {
     if !path.exists() {
         return T::default();
@@ -57,8 +59,24 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path, app_tag: &str, enti
         Ok(val) => val,
         Err(e) => {
             eprintln!("{app_tag}: malformed {entity_name} in {}: {e}", path.display());
+            backup_malformed(path, app_tag);
             T::default()
         }
+    }
+}
+
+/// Copy the malformed file at `path` to `<name>.bak` unless a backup already
+/// exists (the first broken copy is the one worth keeping). Failures are logged.
+fn backup_malformed(path: &Path, app_tag: &str) {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".bak");
+    let backup = path.with_file_name(name);
+    if backup.exists() {
+        return;
+    }
+    match fs::copy(path, &backup) {
+        Ok(_) => eprintln!("{app_tag}: a copy of the malformed file was kept in {}", backup.display()),
+        Err(e) => eprintln!("{app_tag}: could not back up {}: {e}", path.display()),
     }
 }
 
@@ -156,6 +174,28 @@ mod tests {
         let path = td.path().join("settings.json");
         fs::write(&path, b"{ not json").unwrap();
         assert_eq!(load_settings_from(&path, "test"), Settings::default());
+    }
+
+    #[test]
+    fn malformed_file_is_copied_to_bak_and_an_existing_bak_is_kept() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        let bak = td.path().join("settings.json.bak");
+        fs::write(&path, b"{ first").unwrap();
+        load_settings_from(&path, "test");
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "{ first");
+        fs::write(&path, b"{ second").unwrap();
+        load_settings_from(&path, "test");
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "{ first");
+    }
+
+    #[test]
+    fn valid_file_leaves_no_bak() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        save_settings_to(&path, &Settings::default()).unwrap();
+        load_settings_from(&path, "test");
+        assert!(!td.path().join("settings.json.bak").exists());
     }
 
     #[test]
