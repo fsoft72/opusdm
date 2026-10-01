@@ -26,7 +26,7 @@
 
 ## Medium
 
-- [ ] **`hub/src/server.rs` is a god module** - about 1,670 lines of production code (plus 1,300 of tests) mixing connection handling, roles, Function runs, script events, persistence and hide/reveal; `lister_msg` alone is a 200-line match. Split the Function-run state machine (`start_function_run`, `selection_reply`, `function_event`, `function_conflict`, `function_confirm`) and the persistence thread into their own modules.
+- [x] **`hub/src/server.rs` is a god module** - about 1,670 lines of production code (plus 1,300 of tests) mixing connection handling, roles, Function runs, script events, persistence and hide/reveal; `lister_msg` alone is a 200-line match. Split the Function-run state machine (`start_function_run`, `selection_reply`, `function_event`, `function_conflict`, `function_confirm`) and the persistence thread into their own modules.
   - File(s): `crates/hub/src/server.rs`
 - [x] **`hub/src/toolbar.rs` holds the whole desktop** - despite its name it builds desktop windows, icon fields, desktop menus, groups, the About dialog and quit handling (1,670 lines). Split into `desktop_windows.rs`, `desktop_menu.rs` and `groups_ui.rs`, keeping only the toolbar in `toolbar.rs`.
   - File(s): `crates/hub/src/toolbar.rs`
