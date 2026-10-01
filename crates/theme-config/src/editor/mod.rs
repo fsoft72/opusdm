@@ -9,7 +9,9 @@ mod asset_list;
 mod colours;
 mod fonts;
 mod general;
+mod icons;
 mod optional;
+mod pictures;
 mod sounds;
 
 use crate::draft;
@@ -28,6 +30,7 @@ struct Tabs {
     general: general::GeneralTab,
     colours: colours::ColoursTab,
     fonts: fonts::FontsTab,
+    pictures: pictures::PicturesTab,
 }
 
 impl Tabs {
@@ -42,9 +45,13 @@ impl Tabs {
         notebook.append_page(&colours.root, Some(&gtk::Label::new(Some("Colours"))));
         let fonts = fonts::FontsTab::new(window, slug, draft, ops);
         notebook.append_page(&fonts.root, Some(&gtk::Label::new(Some("Fonts"))));
+        let pictures = pictures::PicturesTab::new(window, draft);
+        notebook.append_page(&pictures.root, Some(&gtk::Label::new(Some("Pictures"))));
+        let icons = icons::IconsTab::new(window, slug, ops);
+        notebook.append_page(&icons.root, Some(&gtk::Label::new(Some("Icons"))));
         let sounds = sounds::SoundsTab::new(window, slug, ops);
         notebook.append_page(&sounds.root, Some(&gtk::Label::new(Some("Sounds"))));
-        Self { notebook, general, colours, fonts }
+        Self { notebook, general, colours, fonts, pictures }
     }
 
     /// The draft the widgets describe now: `base` with each tab's changes
@@ -54,6 +61,7 @@ impl Tabs {
         self.general.collect_into(&mut draft);
         self.colours.collect_into(&mut draft);
         self.fonts.collect_into(&mut draft);
+        self.pictures.collect_into(&mut draft);
         draft
     }
 }
