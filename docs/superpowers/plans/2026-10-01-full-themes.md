@@ -24,7 +24,7 @@
 
 ## Review Focus
 
-Failure modes the spec implies but a first reading would miss; each has a test in the named task (items 7 is covered by the manual checklist in Task 11, GTK widgets have no unit tests).
+Failure modes the spec implies but a first reading would miss; each has a test in the named task (item 7 is covered by the manual checklist in Task 11, GTK widgets have no unit tests).
 
 1. An imported `theme.json` with an image name like `../../etc/x` or `a/b.png` must not resolve outside `backgrounds/` (Task 1: `is_plain_file_name`).
 2. A font family or image path containing `"`, `\`, `;`, `}` or a newline must not break out of the generated CSS (Task 2: `css_quote`, `file_url` tests).
@@ -1989,7 +1989,7 @@ Run `./run-x11.sh` (read it first for what it starts) then `opusdm-settings`:
 4. Quit, delete `~/.config/opusdm/themes/test-one`, run `opusdm-settings`, Import the zip, select it, Apply.
 5. Hand-edit `settings.json` to set `fonts.list` to an installed family and `surfaces.lister.image_path` / `surfaces.requester.image_path` to real pictures, with fits `tile`, `center`, `fill`, `fit`; restart a Lister and open a requester (for example Delete). Confirm the list font changes, the picture shows behind the file rows with legible text, and the requester shows its picture.
 6. Put a `.ttf` of a font that is not installed in `themes/<slug>/fonts/`, select that theme, Apply, set `fonts.list.family` to it: confirm it renders in the Lister (if it only works after a restart, record that in `CHANGES.md`).
-Record what was and was not exercised in `CHANGES.md` (Task 8), same honesty as the F-39 entry.
+Record what was and was not exercised in `CHANGES.md` (Task 12), same honesty as the F-39 entry.
 
 - [ ] **Step 5: Commit**
 
@@ -3620,7 +3620,7 @@ git commit -m "docs: record full themes and the Theme Editor (F-35) in CHANGES a
 
 ## Self-Review (done)
 
-- **Spec coverage:** data model (Task 1), Save / Export / Import (Tasks 5, 6, 7), font registration and CSS (Tasks 2, 3), requester class (Task 3), shared packer (Task 4), acceptance round trip (Task 7), Theme Editor data side (Task 8), window, tabs, Save & Apply (Tasks 9 to 11), manual GTK verification (Tasks 7 and 11), docs (Task 12). Spec deltas are listed and written back into the spec in Task 8.
+- **Spec coverage:** data model (Task 1), Save / Export / Import (Tasks 5, 6, 7), font registration and CSS (Tasks 2, 3), requester class (Task 3), shared packer (Task 4), acceptance round trip (Task 7), Theme Editor data side (Task 8), window, tabs, Save & Apply (Tasks 9 to 11), manual GTK verification (Tasks 7 and 11), docs (Task 12). Spec deltas are listed and written back into the spec in Task 12.
 - **Placeholders:** none. The only conditional instructions are the explicit fallbacks in Task 3 Step 3 (link failure) and Task 5 Step 3 (`Copy`).
 - **Type consistency:** `FontSpec`, `Fonts`, `SurfaceImage`, `Surfaces`, `ThemeSurface`, `ThemeSurfaces` are defined in Task 1 and used with the same names in Tasks 2 to 7. `font_rule` / `surface_rule` / `ui_look_css` / `REQUESTER_CLASS` / `ROW_ALPHA_WITH_PICTURE` (Task 2) are the names used in Task 3. `BuildRequest` fields match between Tasks 5 and 7; `ThemeDraft`, `AssetOp` and `write_theme` (Task 5) are used with the same names in Tasks 8 to 11; `Tabs::new` grows from `(window, draft)` in Task 9 to `(window, slug, draft, ops)` in Task 10, as stated there.
 - **Review Focus:** every line has a test: 1 in Task 1, 2 in Task 2, 3 and 4 in Task 5, 5 in Tasks 2 and 3, 6 and 8 in Task 8, 7 in the Task 11 checklist.
