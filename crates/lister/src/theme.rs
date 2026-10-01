@@ -225,6 +225,8 @@ mod tests {
                 theme_mode: opusdm_ipc::ThemeMode::default(),
             },
             behavior: Default::default(),
+            fonts: Default::default(),
+            surfaces: Default::default(),
         };
         provider.load_from_data(&generate_css(&settings));
         assert!(errors.borrow().is_empty(), "dark: {:?}", errors.borrow());

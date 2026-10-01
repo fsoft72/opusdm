@@ -38,6 +38,7 @@ pub mod glob;
 pub mod groups;
 pub mod inotify;
 pub mod leftout;
+pub mod look;
 pub mod menu;
 pub mod proto;
 pub mod settings;

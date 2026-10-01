@@ -216,6 +216,7 @@ fn build_window(app: &gtk::Application) {
         let behavior_section = behavior_section.clone();
         let theme_mode_section = theme_mode_section.clone();
         let note = note.clone();
+        let settings_data = settings_data.clone();
         apply.connect_clicked(move |_| {
             let selected = icon_set.borrow().value();
             let ui_settings = opusdm_ipc::Settings {
@@ -226,6 +227,8 @@ fn build_window(app: &gtk::Application) {
                 },
                 appearance: appearance_section.read(theme_mode_section.value()),
                 behavior: behavior_section.read(),
+                fonts: settings_data.fonts.clone(),
+                surfaces: settings_data.surfaces.clone(),
             };
             let ui_desktop = opusdm_ipc::DesktopSettings {
                 icon_size: grid.icon_size(),

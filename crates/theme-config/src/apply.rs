@@ -5,6 +5,7 @@
 //! fully unit-testable.
 
 use opusdm_ipc::desktop::Background;
+use opusdm_ipc::look::{Fonts, SurfaceImage, Surfaces, ThemeSurface};
 use opusdm_ipc::themes::CustomThemeData;
 use opusdm_ipc::{Appearance, Behavior, DesktopSettings, IconSetId, Settings, Theme};
 
@@ -15,6 +16,8 @@ pub struct MergedTheme {
     pub appearance: Appearance,
     pub behavior: Behavior,
     pub desktop: DesktopSettings,
+    pub fonts: Fonts,
+    pub surfaces: Surfaces,
 }
 
 /// Merge `slug`'s `data` over `current`/`current_desktop`. Only fields
@@ -59,12 +62,39 @@ pub fn merge_custom_theme(
         }
     }
 
+    let mut fonts = current.fonts.clone();
+    if let Some(f) = &data.fonts {
+        fonts = f.clone();
+    }
+
+    let mut surfaces = current.surfaces.clone();
+    if let Some(s) = &data.surfaces {
+        merge_surface(&mut surfaces.lister, s.lister.as_ref(), slug);
+        merge_surface(&mut surfaces.requester, s.requester.as_ref(), slug);
+    }
+
     MergedTheme {
         theme: Theme { icon_set: IconSetId::Custom(slug.to_string()), colors, background },
         appearance,
         behavior,
         desktop,
+        fonts,
+        surfaces,
     }
+}
+
+/// Overwrite the parts of `target` that `theme` sets. An image name that is
+/// not a bare file name is ignored, so a theme can never point outside its
+/// own `backgrounds/` folder.
+fn merge_surface(target: &mut SurfaceImage, theme: Option<&ThemeSurface>, slug: &str) {
+    let Some(theme) = theme else { return };
+    if let Some(fit) = theme.fit {
+        target.fit = fit;
+    }
+    let Some(name) = theme.image.as_deref().filter(|n| opusdm_ipc::themes::is_plain_file_name(n)) else {
+        return;
+    };
+    target.image_path = Some(opusdm_ipc::themes::background_image_path(slug, name));
 }
 
 fn merge_background(bg: &mut Background, theme_bg: &opusdm_ipc::themes::ThemeBackground, slug: &str) {
@@ -86,7 +116,7 @@ fn merge_background(bg: &mut Background, theme_bg: &opusdm_ipc::themes::ThemeBac
     if let Some(fit) = theme_bg.image_fit {
         bg.image_fit = fit;
     }
-    if let Some(filename) = &theme_bg.image {
+    if let Some(filename) = theme_bg.image.as_deref().filter(|n| opusdm_ipc::themes::is_plain_file_name(n)) {
         bg.image_path = Some(opusdm_ipc::themes::background_image_path(slug, filename));
     }
 }
@@ -97,6 +127,7 @@ mod tests {
     use crate::test_support::ENV_LOCK;
     use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
     use opusdm_ipc::themes::{CustomThemeData, ThemeBackground, ThemeDesktopMetrics};
+    use opusdm_ipc::look::{FontSpec, Fonts, ThemeSurface, ThemeSurfaces};
     use opusdm_ipc::{Appearance, ColorSettings, DesktopSettings, IconSetId, Settings};
 
     fn base_settings() -> Settings {
@@ -201,5 +232,50 @@ mod tests {
 
         assert_eq!(merged.theme.background.solid, "#123456");
         assert_eq!(merged.theme.background.gradient_start, "#abcdef");
+    }
+
+    #[test]
+    fn theme_fonts_replace_the_current_fonts_and_absent_fonts_keep_them() {
+        let mut current = Settings::default();
+        current.fonts.ui.size = 9;
+        let kept = merge_custom_theme("t", &CustomThemeData::default(), &current, &base_desktop());
+        assert_eq!(kept.fonts, current.fonts);
+
+        let mut data = CustomThemeData::default();
+        data.fonts = Some(Fonts { list: FontSpec { family: "Iosevka".into(), size: 12 }, ui: FontSpec::default() });
+        let merged = merge_custom_theme("t", &data, &current, &base_desktop());
+        assert_eq!(merged.fonts.list.family, "Iosevka");
+        assert_eq!(merged.fonts.ui.size, 0);
+    }
+
+    #[test]
+    fn surface_image_resolves_under_the_theme_backgrounds_folder() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        let mut data = CustomThemeData::default();
+        data.surfaces = Some(ThemeSurfaces {
+            lister: Some(ThemeSurface { image: Some("l.png".into()), fit: Some(ImageFit::Tile) }),
+            requester: None,
+        });
+        let mut current = Settings::default();
+        current.surfaces.requester.fit = ImageFit::Fit;
+        let merged = merge_custom_theme("t", &data, &current, &base_desktop());
+        assert!(merged.surfaces.lister.image_path.unwrap().ends_with("themes/t/backgrounds/l.png"));
+        assert_eq!(merged.surfaces.lister.fit, ImageFit::Tile);
+        assert_eq!(merged.surfaces.requester.fit, ImageFit::Fit, "untouched surface keeps its value");
+    }
+
+    #[test]
+    fn image_names_that_are_paths_are_ignored() {
+        let mut data = CustomThemeData::default();
+        data.surfaces = Some(ThemeSurfaces {
+            lister: Some(ThemeSurface { image: Some("../../x.png".into()), fit: None }),
+            requester: None,
+        });
+        data.background = Some(ThemeBackground { image: Some("a/b.png".into()), ..Default::default() });
+        let merged = merge_custom_theme("t", &data, &Settings::default(), &base_desktop());
+        assert_eq!(merged.surfaces.lister.image_path, None);
+        assert_eq!(merged.theme.background.image_path, None);
     }
 }

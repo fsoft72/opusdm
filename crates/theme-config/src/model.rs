@@ -34,7 +34,13 @@ pub fn apply_icon_set(icon_set: &IconSetId, ui: &Settings, ui_desktop: &DesktopS
         IconSetId::Custom(slug) => {
             let data = opusdm_ipc::themes::load_theme_data(slug);
             let merged = crate::apply::merge_custom_theme(slug, &data, ui, ui_desktop);
-            let settings = Settings { theme: merged.theme, appearance: merged.appearance, behavior: merged.behavior };
+            let settings = Settings {
+                theme: merged.theme,
+                appearance: merged.appearance,
+                behavior: merged.behavior,
+                fonts: merged.fonts,
+                surfaces: merged.surfaces,
+            };
             IconSetApplication { settings, desktop: merged.desktop }
         }
     }

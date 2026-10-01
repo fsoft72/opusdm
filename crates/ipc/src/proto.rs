@@ -390,6 +390,10 @@ pub struct Settings {
     pub theme: crate::theme::Theme,
     pub appearance: Appearance,
     pub behavior: Behavior,
+    /// Fonts for the file list and the UI. Empty means system default.
+    pub fonts: crate::look::Fonts,
+    /// Background pictures for the Lister file list and for requesters.
+    pub surfaces: crate::look::Surfaces,
 }
 
 /// Reply to `Register`, sent once as its own frame before the connection
@@ -796,6 +800,14 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_from_before_fonts_and_surfaces_loads() {
+        let s: Settings = serde_json::from_str(r#"{"appearance":{"monospace_list":true}}"#).unwrap();
+        assert!(s.appearance.monospace_list);
+        assert_eq!(s.fonts, crate::look::Fonts::default());
+        assert_eq!(s.surfaces, crate::look::Surfaces::default());
+    }
+
+    #[test]
     fn settings_survive_a_full_json_round_trip() {
         let s = Settings {
             theme: crate::theme::Theme {
@@ -819,6 +831,17 @@ mod tests {
                 recursive_filter: true,
                 status_format: "%f files, %b".to_string(),
                 cache_size: 7,
+            },
+            fonts: crate::look::Fonts {
+                list: crate::look::FontSpec { family: "Iosevka".into(), size: 12 },
+                ui: crate::look::FontSpec::default(),
+            },
+            surfaces: crate::look::Surfaces {
+                lister: crate::look::SurfaceImage {
+                    image_path: Some("/tmp/l.png".into()),
+                    fit: crate::desktop::ImageFit::Tile,
+                },
+                requester: crate::look::SurfaceImage::default(),
             },
         };
         let json = serde_json::to_string(&s).unwrap();

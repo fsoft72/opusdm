@@ -4,6 +4,7 @@
 //! imports archives).
 
 use crate::desktop::{BackgroundMode, ImageFit};
+use crate::look::{Fonts, ThemeSurfaces};
 use crate::proto::{Appearance, Behavior, ColorSettings};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -171,6 +172,15 @@ pub struct CustomThemeData {
     pub behavior: Option<Behavior>,
     pub desktop: Option<ThemeDesktopMetrics>,
     pub background: Option<ThemeBackground>,
+    pub fonts: Option<Fonts>,
+    pub surfaces: Option<ThemeSurfaces>,
+}
+
+/// Whether `name` is a bare file name: non-empty, not `.` / `..`, and with
+/// no path separator. Theme files are only ever looked up inside their own
+/// folders, so anything else in an imported `theme.json` is rejected.
+pub fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
 }
 
 /// Parse `<slug>/theme.json`. A missing or unparseable file yields
@@ -190,6 +200,34 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn plain_file_names_reject_paths_and_dots() {
+        assert!(is_plain_file_name("wall.png"));
+        assert!(!is_plain_file_name(""));
+        assert!(!is_plain_file_name(".."));
+        assert!(!is_plain_file_name("../x.png"));
+        assert!(!is_plain_file_name("a/b.png"));
+        assert!(!is_plain_file_name("a\\b.png"));
+    }
+
+    #[test]
+    fn an_old_theme_json_without_fonts_or_surfaces_still_parses() {
+        let data: CustomThemeData = serde_json::from_str(r#"{"colors":null}"#).unwrap();
+        assert!(data.fonts.is_none());
+        assert!(data.surfaces.is_none());
+    }
+
+    #[test]
+    fn theme_json_reads_fonts_and_surfaces() {
+        let data: CustomThemeData = serde_json::from_str(
+            r#"{"fonts":{"list":{"family":"Iosevka","size":12}},
+                "surfaces":{"requester":{"image":"r.png","fit":"center"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(data.fonts.unwrap().list.family, "Iosevka");
+        assert_eq!(data.surfaces.unwrap().requester.unwrap().image.as_deref(), Some("r.png"));
+    }
 
     fn with_config_home() -> tempfile::TempDir {
         let td = tempfile::tempdir().unwrap();
