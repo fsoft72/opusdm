@@ -108,12 +108,63 @@ pub fn generate_css(settings: &Settings) -> String {
     // `@theme_bg_color`/`@theme_fg_color` later in this same stylesheet
     // (the `button.opus-btn` gradients), and GTK's CSS parser enforces that
     // ordering strictly.
-    format!("{chrome_css}{shared_chrome_css}{list_css}{mono_css}{base}")
+    let look = opusdm_ui::ui_look_css(settings);
+    let list_look = list_look_css(settings);
+    format!("{chrome_css}{shared_chrome_css}{list_css}{mono_css}{base}{look}{list_look}")
+}
+
+/// Font and background picture of the file list. With a picture, rows turn
+/// semi-transparent so the picture shows through while the text stays legible.
+fn list_look_css(settings: &Settings) -> String {
+    let mut css = opusdm_ui::font_rule("columnview > listview > row > cell label", &settings.fonts.list);
+    let picture = opusdm_ui::surface_rule("columnview > listview", &settings.surfaces.lister);
+    if picture.is_empty() {
+        return css;
+    }
+    css.push_str(&picture);
+    let c = &settings.theme.colors;
+    let alpha = opusdm_ui::ROW_ALPHA_WITH_PICTURE;
+    css.push_str(&format!(
+        ".row-dir {{ background-color: alpha({}, {alpha}); }} .row-file {{ background-color: alpha({}, {alpha}); }} ",
+        c.dir_bg, c.file_bg
+    ));
+    css
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_font_and_picture_reach_the_stylesheet() {
+        let mut s = Settings::default();
+        s.fonts.list = opusdm_ipc::look::FontSpec { family: "Iosevka".into(), size: 12 };
+        s.fonts.ui = opusdm_ipc::look::FontSpec { family: "Cantarell".into(), size: 10 };
+        s.surfaces.lister.image_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));
+        let css = generate_css(&s);
+        assert!(css.contains("columnview > listview > row > cell label { font-family: \"Iosevka\"; font-size: 12pt; }"));
+        assert!(css.contains("window { font-family: \"Cantarell\"; font-size: 10pt; }"));
+        assert!(css.contains("columnview > listview { background-image: url(\"file://"));
+        assert!(css.contains(".row-file { background-color: alpha("));
+    }
+
+    #[test]
+    fn without_a_picture_rows_keep_their_solid_colours() {
+        let css = generate_css(&Settings::default());
+        assert!(!css.contains("alpha(#"));
+        assert!(!css.contains("background-image: url("));
+    }
+
+    #[test]
+    fn list_font_wins_over_monospace_list() {
+        let mut s = Settings::default();
+        s.appearance.monospace_list = true;
+        s.fonts.list.family = "Iosevka".into();
+        let css = generate_css(&s);
+        let mono = css.find("font-family: monospace;").unwrap();
+        let theme_font = css.find("font-family: \"Iosevka\"").unwrap();
+        assert!(theme_font > mono, "later rule wins");
+    }
 
     #[test]
     fn generates_css_with_colors() {
@@ -225,8 +276,16 @@ mod tests {
                 theme_mode: opusdm_ipc::ThemeMode::default(),
             },
             behavior: Default::default(),
-            fonts: Default::default(),
-            surfaces: Default::default(),
+            fonts: opusdm_ipc::look::Fonts {
+                ui: opusdm_ipc::look::FontSpec { family: "Cantarell".into(), size: 10 },
+                list: opusdm_ipc::look::FontSpec { family: "Iosevka".into(), size: 12 },
+                ..Default::default()
+            },
+            surfaces: {
+                let mut surfaces = opusdm_ipc::look::Surfaces::default();
+                surfaces.lister.image_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));
+                surfaces
+            },
         };
         provider.load_from_data(&generate_css(&settings));
         assert!(errors.borrow().is_empty(), "dark: {:?}", errors.borrow());

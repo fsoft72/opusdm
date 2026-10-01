@@ -35,6 +35,7 @@ impl DialogShell {
             .transient_for(parent)
             .modal(true)
             .build();
+        window.add_css_class(crate::REQUESTER_CLASS);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, WIDGET_SPACING);
         content.set_margin_start(DIALOG_MARGIN);

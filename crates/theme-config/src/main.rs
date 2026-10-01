@@ -6,6 +6,7 @@ use gtk::prelude::*;
 use gtk::gio;
 use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_desktop_config::menu_ui::MenuSection;
+use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::ui::{BackgroundSection, FolderSection, GridSection, PanelSection};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -32,6 +33,9 @@ fn main() -> gtk::glib::ExitCode {
 
 fn build_window(app: &gtk::Application) {
     let settings_data = model::load_settings();
+    let IconSetId::Custom(active_slug) = &settings_data.theme.icon_set;
+    opusdm_ui::register_theme_fonts(active_slug);
+    let look_css = opusdm_ui::ui_look_css(&settings_data);
     opusdm_ui::apply_theme_mode(settings_data.appearance.theme_mode);
     let theme = settings_data.theme.clone();
     let desktop_data = opusdm_desktop_config::model::load();
@@ -47,7 +51,7 @@ fn build_window(app: &gtk::Application) {
     // (`opusdm_ui::chrome_css`), so this window matches the rest of
     // OpusDM regardless of what GTK theme is or isn't installed.
     let chrome_provider = gtk::CssProvider::new();
-    chrome_provider.load_from_data(&opusdm_ui::chrome_css(settings_data.appearance.theme_mode));
+    chrome_provider.load_from_data(&format!("{}{look_css}", opusdm_ui::chrome_css(settings_data.appearance.theme_mode)));
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().expect("no default GDK display: cannot run without one"),
         &chrome_provider,
@@ -74,9 +78,10 @@ fn build_window(app: &gtk::Application) {
     desktop_page.append(&theme_mode_section.root);
     {
         let chrome_provider = chrome_provider.clone();
+        let look_css = look_css.clone();
         theme_mode_section.connect_mode_changed(move |mode| {
             opusdm_ui::apply_theme_mode(mode);
-            chrome_provider.load_from_data(&opusdm_ui::chrome_css(mode));
+            chrome_provider.load_from_data(&format!("{}{look_css}", opusdm_ui::chrome_css(mode)));
         });
     }
 

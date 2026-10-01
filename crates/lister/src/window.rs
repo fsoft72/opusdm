@@ -881,6 +881,8 @@ impl Ui {
     /// content) instead of registering a fresh provider each time.
     pub fn update_css_for_colors(&self) {
         let s = self.hub.settings.borrow();
+        let opusdm_ipc::IconSetId::Custom(slug) = &s.theme.icon_set;
+        opusdm_ui::register_theme_fonts(slug);
         let css_data = crate::theme::generate_css(&s);
         self.css_provider.load_from_data(&css_data);
     }

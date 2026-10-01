@@ -177,6 +177,7 @@ fn build(
         .decorated(true)
         .resizable(false)
         .build();
+    dialog.add_css_class(crate::REQUESTER_CLASS);
 
     // The contract is that `on_choice` runs exactly once, whatever closes the
     // requester; `deliver` is the single place that enforces it, so every exit
