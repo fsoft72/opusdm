@@ -5,9 +5,12 @@
 //! never broken, so the editor state leaks after the window closes; it is
 //! small and the editor is opened rarely, so this is accepted.
 
+mod asset_list;
 mod colours;
+mod fonts;
 mod general;
 mod optional;
+mod sounds;
 
 use crate::draft;
 use crate::model::{apply_full, apply_icon_set, load_settings, ApplyOutcome};
@@ -24,11 +27,12 @@ struct Tabs {
     notebook: gtk::Notebook,
     general: general::GeneralTab,
     colours: colours::ColoursTab,
+    fonts: fonts::FontsTab,
 }
 
 impl Tabs {
-    /// Build every tab for `draft`.
-    fn new(window: &gtk::ApplicationWindow, draft: &ThemeDraft) -> Self {
+    /// Build every tab for theme `slug` and `draft`; file changes are queued in `ops`.
+    fn new(window: &gtk::ApplicationWindow, slug: &str, draft: &ThemeDraft, ops: &Rc<RefCell<Vec<AssetOp>>>) -> Self {
         let notebook = gtk::Notebook::new();
         notebook.set_vexpand(true);
         notebook.set_hexpand(true);
@@ -36,7 +40,11 @@ impl Tabs {
         notebook.append_page(&general.root, Some(&gtk::Label::new(Some("General"))));
         let colours = colours::ColoursTab::new(window, draft);
         notebook.append_page(&colours.root, Some(&gtk::Label::new(Some("Colours"))));
-        Self { notebook, general, colours }
+        let fonts = fonts::FontsTab::new(window, slug, draft, ops);
+        notebook.append_page(&fonts.root, Some(&gtk::Label::new(Some("Fonts"))));
+        let sounds = sounds::SoundsTab::new(window, slug, ops);
+        notebook.append_page(&sounds.root, Some(&gtk::Label::new(Some("Sounds"))));
+        Self { notebook, general, colours, fonts }
     }
 
     /// The draft the widgets describe now: `base` with each tab's changes
@@ -45,6 +53,7 @@ impl Tabs {
         let mut draft = base.clone();
         self.general.collect_into(&mut draft);
         self.colours.collect_into(&mut draft);
+        self.fonts.collect_into(&mut draft);
         draft
     }
 }
@@ -287,12 +296,13 @@ impl Editor {
                 return false;
             }
         };
-        let tabs = Tabs::new(&self.window, &draft);
+        let ops = Rc::new(RefCell::new(Vec::new()));
+        let tabs = Tabs::new(&self.window, slug, &draft, &ops);
         while let Some(child) = self.right.first_child() {
             self.right.remove(&child);
         }
         self.right.append(&tabs.notebook);
-        *self.current.borrow_mut() = Some(Current { slug: slug.to_string(), saved: draft, ops: Rc::new(RefCell::new(Vec::new())), tabs });
+        *self.current.borrow_mut() = Some(Current { slug: slug.to_string(), saved: draft, ops, tabs });
         true
     }
 
