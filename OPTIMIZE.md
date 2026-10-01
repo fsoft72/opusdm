@@ -28,7 +28,7 @@
 
 - [ ] **`hub/src/server.rs` is a god module** - about 1,670 lines of production code (plus 1,300 of tests) mixing connection handling, roles, Function runs, script events, persistence and hide/reveal; `lister_msg` alone is a 200-line match. Split the Function-run state machine (`start_function_run`, `selection_reply`, `function_event`, `function_conflict`, `function_confirm`) and the persistence thread into their own modules.
   - File(s): `crates/hub/src/server.rs`
-- [ ] **`hub/src/toolbar.rs` holds the whole desktop** - despite its name it builds desktop windows, icon fields, desktop menus, groups, the About dialog and quit handling (1,670 lines). Split into `desktop_windows.rs`, `desktop_menu.rs` and `groups_ui.rs`, keeping only the toolbar in `toolbar.rs`.
+- [x] **`hub/src/toolbar.rs` holds the whole desktop** - despite its name it builds desktop windows, icon fields, desktop menus, groups, the About dialog and quit handling (1,670 lines). Split into `desktop_windows.rs`, `desktop_menu.rs` and `groups_ui.rs`, keeping only the toolbar in `toolbar.rs`.
   - File(s): `crates/hub/src/toolbar.rs`
 - [x] **"Load JSON, back up if malformed" is copied in six modules** - `bookmarks`, `format`, `filetypes`, `bindings`, `buttonbank` and `groups` each reimplement the read / parse / copy-to-`.bak` / log sequence with small differences (some keep an existing backup, some overwrite it). One `load_json_with_backup` in `settings.rs` removes the drift (pairs with the Critical item above).
   - File(s): `crates/ipc/src/bookmarks.rs`, `crates/ipc/src/format.rs`, `crates/ipc/src/filetypes.rs`, `crates/ipc/src/bindings.rs`, `crates/ipc/src/buttonbank.rs`, `crates/ipc/src/groups.rs`

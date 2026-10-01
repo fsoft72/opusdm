@@ -5,6 +5,9 @@ mod desktop_ops;
 mod bank_windows;
 mod group_window;
 mod progress_window;
+mod desktop_menu;
+mod desktop_windows;
+mod groups_ui;
 mod toolbar;
 
 use opusdm_hub::{children, server, settings};

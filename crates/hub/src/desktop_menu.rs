@@ -1,0 +1,513 @@
+//! The desktop right-click menus (background and icon), the double click
+//! script events and the About dialog.
+
+use crate::server::HubCmd;
+use opusdm_ipc::bindings::ScriptEvent;
+use gtk4 as gtk;
+use gtk::gio;
+use gtk::prelude::*;
+use std::path::PathBuf;
+use std::rc::Rc;
+use super::toolbar::{request_quit, Widgets};
+use super::{desktop_windows::*, groups_ui::*};
+
+/// Approximate menu width/height, reserved when clamping the menu inside the
+/// desktop so a right-click near an edge still shows the whole menu.
+pub(crate) const DESKTOP_MENU_W: i32 = 180;
+
+pub(crate) const DESKTOP_MENU_H: i32 = 300;
+
+/// Resolve the `opus-desktop-config` binary: preferably a sibling of the
+/// running hub executable (so a `cargo run` / installed pair stay together),
+/// otherwise the bare name for a `PATH` lookup.
+/// Resolve the `opusdm-settings` binary: preferably a sibling of the running
+/// hub executable (so a `cargo run` / installed pair stay together),
+/// otherwise the bare name for a `PATH` lookup.
+pub(crate) fn theme_config_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("opusdm-settings");
+        }
+    }
+    PathBuf::from("opusdm-settings")
+}
+
+/// Spawn the theme configuration app, detached.
+pub(crate) fn launch_theme_config() {
+    let bin = theme_config_bin();
+    if let Err(e) = std::process::Command::new(&bin).spawn() {
+        opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", bin.display());
+    }
+}
+
+/// Approximate icon menu width/height, reserved when clamping it inside the
+/// desktop the same way as [`DESKTOP_MENU_W`]/[`DESKTOP_MENU_H`].
+pub(crate) const ICON_MENU_W: i32 = 160;
+
+pub(crate) const ICON_MENU_H: i32 = 140;
+
+/// Place `menu` at `(x, y)` inside `overlay`, clamped so it never runs past
+/// the overlay's edge, and show it.
+pub(crate) fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, w: i32, h: i32) {
+    let max_x = (overlay.width() - w).max(0);
+    let max_y = (overlay.height() - h).max(0);
+    menu.set_margin_start((x as i32).clamp(0, max_x));
+    menu.set_margin_top((y as i32).clamp(0, max_y));
+    menu.set_visible(true);
+}
+
+/// Emit `DesktopMiddleDoubleClick` and `DesktopRightDoubleClick` for double
+/// clicks on the desktop overlay. The gestures run in the capture phase and
+/// never claim the sequence, so the icon field and the context menu keep
+/// working. The right button already opens the context menu on its first
+/// press, so a right double click also shows the menu (accepted).
+pub(crate) fn attach_desktop_double_click_events(overlay: &gtk::Overlay, cmd_tx: &std::sync::mpsc::Sender<HubCmd>) {
+    for (button, event) in [
+        (gtk::gdk::BUTTON_MIDDLE, ScriptEvent::DesktopMiddleDoubleClick),
+        (gtk::gdk::BUTTON_SECONDARY, ScriptEvent::DesktopRightDoubleClick),
+    ] {
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(button);
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let cmd_tx = cmd_tx.clone();
+        gesture.connect_pressed(move |_, n_press, _, _| {
+            if n_press == 2 {
+                let _ = cmd_tx.send(HubCmd::EmitScriptEvent(event));
+            }
+        });
+        overlay.add_controller(gesture);
+    }
+}
+
+/// Wire the right-click context menus onto the desktop overlay: the
+/// background menu (System actions, New Folder/File, Paste, Terminal), and -
+/// when `field` is `Some` (the primary monitor only) - a per-icon menu with
+/// the same file operations a Lister offers on a row (Open, Cut, Copy,
+/// Rename, Delete). The desktop window never holds the input focus, so a
+/// `Popover` parented to it can never grab; both menus are plain boxes laid
+/// on the overlay instead, positioned with margins at the click point.
+pub(crate) fn attach_desktop_menu(overlay: &gtk::Overlay, widgets: &Rc<Widgets>, field: Option<opusdm_iconview::IconField>) {
+    attach_desktop_double_click_events(overlay, &widgets.cmd_tx);
+    let bg_menu = build_desktop_menu(widgets);
+    bg_menu.set_halign(gtk::Align::Start);
+    bg_menu.set_valign(gtk::Align::Start);
+    bg_menu.set_visible(false);
+    overlay.add_overlay(&bg_menu);
+
+    let icon_menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    icon_menu.add_css_class("opusdm-desktop-menu");
+    icon_menu.set_halign(gtk::Align::Start);
+    icon_menu.set_valign(gtk::Align::Start);
+    icon_menu.set_visible(false);
+    overlay.add_overlay(&icon_menu);
+
+    match field {
+        // Primary monitor: the field's own secondary-click controller already
+        // hit-tests icons vs. background (see `IconField::connect_context_menu`),
+        // so route through it instead of a second overlay-level gesture.
+        Some(field) => {
+            let widgets = widgets.clone();
+            let overlay = overlay.clone();
+            let bg_menu = bg_menu.clone();
+            let icon_menu = icon_menu.clone();
+            let field_for_cb = field.clone();
+            field.connect_context_menu(move |idx, x, y| {
+                let field = &field_for_cb;
+                let (x, y) = field.translate_from_canvas(&overlay, x, y).unwrap_or((x, y));
+                if idx >= 0 {
+                    let Some(entry) = field.entry(idx as usize) else { return };
+                    fill_icon_menu(&icon_menu, &widgets, &entry);
+                    bg_menu.set_visible(false);
+                    popup_at(&icon_menu, &overlay, x, y, ICON_MENU_W, ICON_MENU_H);
+                } else {
+                    icon_menu.set_visible(false);
+                    popup_at(&bg_menu, &overlay, x, y, DESKTOP_MENU_W, DESKTOP_MENU_H);
+                }
+            });
+        }
+        // No icon field on this monitor (secondary monitor, or no desktop
+        // directory resolved): background menu only.
+        None => {
+            let open = gtk::GestureClick::new();
+            open.set_button(gtk::gdk::BUTTON_SECONDARY);
+            {
+                let bg_menu = bg_menu.clone();
+                let overlay = overlay.clone();
+                open.connect_pressed(move |gesture, n_press, x, y| {
+                    if n_press != 1 {
+                        return;
+                    }
+                    popup_at(&bg_menu, &overlay, x, y, DESKTOP_MENU_W, DESKTOP_MENU_H);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                });
+            }
+            overlay.add_controller(open);
+        }
+    }
+
+    // Primary click outside whichever menu is open: dismiss it. Clicks on the
+    // menu buttons are handled by the buttons themselves.
+    let dismiss = gtk::GestureClick::new();
+    dismiss.set_button(gtk::gdk::BUTTON_PRIMARY);
+    {
+        let overlay = overlay.clone();
+        dismiss.connect_pressed(move |_, _, x, y| {
+            for menu in [&bg_menu, &icon_menu] {
+                if !menu.get_visible() {
+                    continue;
+                }
+                if let Some(b) = menu.compute_bounds(&overlay) {
+                    let (x, y) = (x as f32, y as f32);
+                    let inside = x >= b.x()
+                        && x < b.x() + b.width()
+                        && y >= b.y()
+                        && y < b.y() + b.height();
+                    if inside {
+                        continue;
+                    }
+                }
+                menu.set_visible(false);
+            }
+        });
+    }
+    overlay.add_controller(dismiss);
+}
+
+/// The per-icon context menu, rebuilt into `menu` on every click since its
+/// content (name, file vs. directory) depends on the clicked entry: Open,
+/// Cut, Copy, Rename, Delete. Every item hides the menu before running its
+/// action.
+pub(crate) fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconEntry) {
+    while let Some(child) = menu.first_child() {
+        menu.remove(&child);
+    }
+
+    if entry.group {
+        fill_group_menu(menu, widgets, entry);
+        return;
+    }
+
+    // Open
+    {
+        let path = entry.path.clone();
+        let opens_in_lister = opusdm_hub::leftout::opens_in_lister(entry);
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Open");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            if opens_in_lister {
+                let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(path.clone()) });
+            } else {
+                let uri = format!("file://{}", path.display());
+                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+            }
+        });
+        menu.append(&btn);
+    }
+
+    // Put Away (left-out icons only): forget the icon, never touch the file.
+    if entry.left_out {
+        let path = entry.path.clone();
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Put Away");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            {
+                let mut left = widgets.desktop.leftout.borrow_mut();
+                left.remove(std::slice::from_ref(&path));
+                save_leftout(&left);
+            }
+            reload_desktop_field(&widgets);
+        });
+        menu.append(&btn);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Cut, Rename and Delete act on the real file, which for a left-out icon
+    // lives somewhere else and is not what the user sees: not offered there.
+    // Cut
+    if !entry.left_out {
+        let path = entry.path.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Cut");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            crate::desktop_ops::copy_or_cut(std::slice::from_ref(&path), true);
+        });
+        menu.append(&btn);
+    }
+
+    // Copy
+    {
+        let path = entry.path.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Copy");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            crate::desktop_ops::copy_or_cut(std::slice::from_ref(&path), false);
+        });
+        menu.append(&btn);
+    }
+
+    // Rename...
+    if !entry.left_out {
+        let path = entry.path.clone();
+        let name = entry.name.clone();
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Rename...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            crate::desktop_ops::rename(&widgets.primary_window(), path.clone(), &name);
+        });
+        menu.append(&btn);
+    }
+
+    // Delete...
+    if !entry.left_out {
+        menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let path = entry.path.clone();
+        let name = entry.name.clone();
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Delete...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
+            crate::desktop_ops::confirm_delete(
+                &widgets.primary_window(),
+                &widgets.cmd_tx,
+                &format!("Delete \"{name}\" permanently?"),
+                vec![path.clone()],
+                dest_dir,
+            );
+        });
+        menu.append(&btn);
+    }
+}
+
+/// Flat, left-aligned menu button, matching the Lister context menu look.
+pub(crate) fn menu_button(title: &str) -> gtk::Button {
+    let btn = gtk::Button::with_label(title);
+    btn.add_css_class("flat");
+    btn.set_halign(gtk::Align::Fill);
+    if let Some(child) = btn.child().and_downcast::<gtk::Label>() {
+        child.set_xalign(0.0);
+    }
+    btn
+}
+
+/// The desktop context menu box: New Lister / --- / Paste, New Folder, New
+/// File, Open Terminal Here / --- / Settings / About / --- / Quit. Every
+/// item hides the menu before running its action.
+pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
+    let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    menu.add_css_class("opusdm-desktop-menu");
+
+    // New Lister
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("New Lister");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
+        });
+        menu.append(&btn);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Paste: whatever a Cut/Copy (here or in a Lister) last put on the
+    // clipboard, into the desktop directory. A no-op if there is nothing
+    // pasteable, so it is always shown rather than probed asynchronously.
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Paste");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
+            crate::desktop_ops::paste(&widgets.cmd_tx, dest_dir);
+        });
+        menu.append(&btn);
+    }
+
+    // New Folder
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("New Folder...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
+            crate::desktop_ops::prompt_new(
+                &widgets.primary_window(),
+                "New folder name",
+                &widgets.cmd_tx,
+                dest_dir,
+                |name| opusdm_ipc::Op::MakeDir { name },
+            );
+        });
+        menu.append(&btn);
+    }
+
+    // New File
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("New File...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
+            crate::desktop_ops::prompt_new(
+                &widgets.primary_window(),
+                "New file name",
+                &widgets.cmd_tx,
+                dest_dir,
+                |name| opusdm_ipc::Op::NewFile { name },
+            );
+        });
+        menu.append(&btn);
+    }
+
+    // Hide All / Reveal
+    {
+        let cmd_tx = widgets.cmd_tx.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button(hide_label(widgets.desktop.hidden.get()));
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let _ = cmd_tx.send(HubCmd::ToggleHidden);
+        });
+        widgets.desktop.hide_buttons.borrow_mut().push(btn.clone());
+        menu.append(&btn);
+    }
+
+    // New Group
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("New Group...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            new_group_dialog(&widgets);
+        });
+        menu.append(&btn);
+    }
+
+    // Button Banks
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Button Banks...");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            open_bank_manager(&widgets);
+        });
+        menu.append(&btn);
+    }
+
+    // Open Terminal Here
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Open Terminal Here");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            let Some(dir) = widgets.desktop.dir.borrow().clone() else { return };
+            crate::desktop_ops::open_terminal_in(&dir);
+        });
+        menu.append(&btn);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // About
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("About");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            show_about_dialog(&widgets.primary_window());
+        });
+        menu.append(&btn);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Desktop submenu: an expander so the hand-rolled flyout can still nest
+    // without a real GtkPopoverMenu (the desktop window cannot grab focus).
+    {
+        let sub = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        sub.set_margin_start(12);
+
+        // Rearrange icons: re-read the desktop, sort dirs-first by name, and
+        // hand the sorted list back so the field auto-slots it into the grid
+        // (set_entries clears any manual positions).
+        {
+            let widgets = widgets.clone();
+            let menu_ref = menu.clone();
+            let btn = menu_button("Rearrange icons");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                reload_desktop_field(&widgets);
+            });
+            sub.append(&btn);
+        }
+
+        // Settings: launch the standalone opusdm-settings app. Icon grid
+        // metrics and the desktop folder override live there too now.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Settings");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                launch_theme_config();
+            });
+            sub.append(&btn);
+        }
+
+        let expander = gtk::Expander::new(Some("Desktop"));
+        expander.set_child(Some(&sub));
+        menu.append(&expander);
+    }
+
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Quit always asks for confirmation before closing everything.
+    {
+        let widgets = widgets.clone();
+        let menu_ref = menu.clone();
+        let btn = menu_button("Quit");
+        btn.connect_clicked(move |_| {
+            menu_ref.set_visible(false);
+            request_quit(&widgets);
+        });
+        menu.append(&btn);
+    }
+
+    menu
+}
+
+pub(crate) fn show_about_dialog(parent: &gtk::ApplicationWindow) {
+    opusdm_ui::requester_rich(
+        parent,
+        "About OpusDM",
+        &format!(
+            "<span size='xx-large' weight='bold'>OpusDM</span>\n\
+             <i>A Linux tribute to Amiga Directory Opus 5</i>\n\n\
+             Version {version}\n\n\
+             Written by Fabio Rotondo\n\
+             <a href='https://github.com/fsof72'>https://github.com/fsof72</a>\n\n\
+             <small>This software is Open Source</small>",
+            version = opusdm_ui::VERSION,
+        ),
+        &[("OK", ())],
+        |_| {},
+    );
+}
