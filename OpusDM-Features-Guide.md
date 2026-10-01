@@ -330,9 +330,9 @@ risolvere il conflitto (sovrascrivere o saltare).
 5. Conferma per rinominare: il Lister si aggiorna subito. (Puoi annullare con
    Cancel se non vuoi tenere i nuovi nomi.)
 
-### Step 6.6 - Elimina (F8 o Del)
+### Step 6.6 - Elimina (Del)
 
-1. Seleziona `nuova_cartella` e premi `F8` (o `Del`, o il pulsante **Delete**).
+1. Seleziona `nuova_cartella` e premi `Del` (o il pulsante **Delete**).
 2. Compare una richiesta di conferma: la cancellazione è definitiva (non c'è
    cestino). Clicca **Delete**.
 
@@ -975,7 +975,7 @@ barra del filtro, del percorso o nel terminale, restano attivi solo `Esc`,
 | `F4` o `` ` `` | Terminale a cassetto |
 | `F5` | Copy da SOURCE a DEST |
 | `F6` | Move da SOURCE a DEST |
-| `F8` o `Del` | Elimina |
+| `Del` | Elimina |
 | `F2` | Rinomina (un file) o Batch Renamer (più file) |
 | `Ctrl+N` | Nuova cartella |
 | `Ctrl+Shift+N` | Nuovo file |

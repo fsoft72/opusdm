@@ -199,7 +199,7 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         // File operations.
         gdk::Key::F5 => Some(Action::Command(CommandId::Copy)),
         gdk::Key::F6 => Some(Action::Command(CommandId::Move)),
-        gdk::Key::F8 | gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command(CommandId::Delete)),
+        gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command(CommandId::Delete)),
         gdk::Key::F2 => Some(Action::Command(CommandId::Rename)),
 
         // Roles and panels.
@@ -235,7 +235,7 @@ mod tests {
     fn file_operations_are_on_function_keys() {
         assert_eq!(list(gdk::Key::F5), Some(Action::Command(CommandId::Copy)));
         assert_eq!(list(gdk::Key::F6), Some(Action::Command(CommandId::Move)));
-        assert_eq!(list(gdk::Key::F8), Some(Action::Command(CommandId::Delete)));
+        assert_eq!(list(gdk::Key::F8), None, "F8 is no longer bound");
         assert_eq!(list(gdk::Key::Delete), Some(Action::Command(CommandId::Delete)));
     }
 

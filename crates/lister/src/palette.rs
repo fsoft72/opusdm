@@ -46,7 +46,7 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::SetHidePattern, title: Cow::Borrowed("Set Hide Pattern..."), category: Cow::Borrowed("View"), shortcut: None },
         CommandItem { id: CommandId::Copy, title: Cow::Borrowed("Copy (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("F5") },
         CommandItem { id: CommandId::Move, title: Cow::Borrowed("Move (Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: Some("F6") },
-        CommandItem { id: CommandId::Delete, title: Cow::Borrowed("Delete Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: Some("F8 / Del") },
+        CommandItem { id: CommandId::Delete, title: Cow::Borrowed("Delete Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: Some("Del") },
         CommandItem { id: CommandId::CopyAs, title: Cow::Borrowed("Copy As... (Source -> Dest, new names)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::MoveAs, title: Cow::Borrowed("Move As... (Source -> Dest, new names)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::Duplicate, title: Cow::Borrowed("Duplicate Selected Items"), category: Cow::Borrowed("File Ops"), shortcut: None },

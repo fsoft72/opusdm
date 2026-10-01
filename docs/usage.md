@@ -460,7 +460,7 @@ There are no single-letter commands in OpusDM.
 | **`F4`** or **`` ` ``** | Toggle Quake-style dropdown terminal drawer |
 | **`F5`** | Copy selected items from SOURCE to DEST |
 | **`F6`** | Move selected items from SOURCE to DEST |
-| **`F8`** or **`Del`** | Delete selected items permanently |
+| **`Del`** | Delete selected items permanently |
 | **`F2`** | Rename single item / Open Batch Renamer on multiple items |
 | **`Ctrl+N`** | Create new directory |
 | **`Ctrl+Shift+N`** | Create new blank file |
