@@ -180,7 +180,10 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         // Navigation. Arrows are left to the list widget.
         gdk::Key::Return | gdk::Key::KP_Enter => Some(Action::Enter),
         gdk::Key::BackSpace => Some(Action::Command(CommandId::ParentDir)),
-        gdk::Key::asciitilde => Some(Action::Command(CommandId::HomeDir)),
+        // `~` is AltGr+ì on an Italian layout, where GTK may report the dead
+        // tilde keyval instead of `asciitilde`, so the character is checked too.
+        gdk::Key::asciitilde | gdk::Key::dead_tilde => Some(Action::Command(CommandId::HomeDir)),
+        k if k.to_unicode() == Some('~') => Some(Action::Command(CommandId::HomeDir)),
 
         // Selection.
         gdk::Key::Insert | gdk::Key::KP_Insert => Some(Action::ToggleSelectAndAdvance),
@@ -263,6 +266,13 @@ mod tests {
         // Two different keyvals, so they can mean two different things.
         assert_eq!(list(gdk::Key::grave), Some(Action::ToggleTerminal));
         assert_eq!(list(gdk::Key::asciitilde), Some(Action::Command(CommandId::HomeDir)));
+    }
+
+    #[test]
+    fn every_tilde_keyval_goes_home() {
+        for key in [gdk::Key::asciitilde, gdk::Key::dead_tilde] {
+            assert_eq!(list(key), Some(Action::Command(CommandId::HomeDir)), "{key:?}");
+        }
     }
 
     #[test]
