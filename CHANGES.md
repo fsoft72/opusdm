@@ -329,3 +329,4 @@
 - Fix: Copy / Move out of an archive extracts on a worker thread (`actions::transfer_from_archive`, `glib::spawn_future_local`), so the Lister no longer freezes on big archives.
 - Fix: extraction goes to a unique `tempfile::TempDir` per operation instead of the shared `opusdm-extract-<pid>`; it is deleted when the jobs it feeds are done (`archive::keep_scratch` / `scratch_job_done`, one reply per DEST Lister) and anything left is removed at exit (`archive::cleanup_temp_dirs`). A failed preview extraction removes its folder at once. A failure to create the folder is shown in the status line.
 - Fix: Move from an archive no longer reports a Move that left the archive untouched: it runs as a Copy and the status line says why.
+- Fix: archive extraction no longer ignores setup errors (the `flash` message carries the real cause). The remote paths already propagated theirs (`remote::new_download_dir` with `?`), so nothing changed there.

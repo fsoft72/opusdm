@@ -34,7 +34,7 @@
   - File(s): `crates/ipc/src/bookmarks.rs`, `crates/ipc/src/format.rs`, `crates/ipc/src/filetypes.rs`, `crates/ipc/src/bindings.rs`, `crates/ipc/src/buttonbank.rs`, `crates/ipc/src/groups.rs`
 - [x] **Archive item names can be read as options** - `extract_items_to_dir` appends entry names straight after `unzip` / `tar` arguments; an entry named `-something` becomes a flag, and `unzip` also treats `[`, `*`, `?` in names as wildcards. Pass `--` before the names for `tar` and escape the wildcard characters for `unzip`.
   - File(s): `crates/lister/src/archive.rs`
-- [ ] **Remote and archive operations ignore setup errors** - `let _ = std::fs::create_dir_all(&temp_extract)` and similar calls swallow the real cause, so the user later sees a vaguer "extraction failed". Propagate the error into the `flash` message.
+- [x] **Remote and archive operations ignore setup errors** - `let _ = std::fs::create_dir_all(&temp_extract)` and similar calls swallow the real cause, so the user later sees a vaguer "extraction failed". Propagate the error into the `flash` message.
   - File(s): `crates/lister/src/actions.rs`, `crates/lister/src/remote_xfer.rs`
 - [ ] **`apply_navigation` does too much** - one function filters rows, totals sizes, applies formats, resets the cursor, syncs the terminal, the watcher, the history, the gauge and the icon view. Extract the pure "rows -> visible rows + totals" step into `model.rs` so it can be unit-tested without GTK.
   - File(s): `crates/lister/src/window.rs`, `crates/lister/src/model.rs`
