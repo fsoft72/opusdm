@@ -17,7 +17,7 @@
   - File(s): `crates/lister/src/actions.rs`, `crates/lister/src/archive.rs`
 - [ ] **Archive temp folders are shared and never cleaned** - extraction goes to `opusdm-extract-<pid>` (reused by every copy of the session, never removed) and previews to a fixed `/tmp/opusdm-preview` (shared by every Lister and every user, a predictable path). Use a `tempfile::TempDir` per operation, removed when the job ends.
   - File(s): `crates/lister/src/actions.rs`, `crates/lister/src/archive.rs`
-- [ ] **`extract_single_file_temp` returns the wrong path and ignores failures** - the tar branch extracts `inner_file` with its subfolders but returns `temp_dir/<file name>`, so any nested entry opens a missing file; neither branch checks the exit status (a failed `unzip -p` writes an empty file that is then shown as the content), and `.7z` (accepted by `is_archive_file`) always falls to `tar`. Check `status.success()`, return `temp_dir.join(inner_file)` and reject unsupported formats explicitly.
+- [x] **`extract_single_file_temp` returns the wrong path and ignores failures** - the tar branch extracts `inner_file` with its subfolders but returns `temp_dir/<file name>`, so any nested entry opens a missing file; neither branch checks the exit status (a failed `unzip -p` writes an empty file that is then shown as the content), and `.7z` (accepted by `is_archive_file`) always falls to `tar`. Check `status.success()`, return `temp_dir.join(inner_file)` and reject unsupported formats explicitly.
   - File(s): `crates/lister/src/archive.rs`
 - [ ] **Move from an archive does not move** - `wire_transfer` extracts the items and submits the same `Op::Move` on the extracted copies, so the user sees a successful Move while the archive is untouched. Either refuse Move inside an archive with a clear message or turn it into Copy and say so.
   - File(s): `crates/lister/src/actions.rs`
@@ -32,7 +32,7 @@
   - File(s): `crates/hub/src/toolbar.rs`
 - [ ] **"Load JSON, back up if malformed" is copied in six modules** - `bookmarks`, `format`, `filetypes`, `bindings`, `buttonbank` and `groups` each reimplement the read / parse / copy-to-`.bak` / log sequence with small differences (some keep an existing backup, some overwrite it). One `load_json_with_backup` in `settings.rs` removes the drift (pairs with the Critical item above).
   - File(s): `crates/ipc/src/bookmarks.rs`, `crates/ipc/src/format.rs`, `crates/ipc/src/filetypes.rs`, `crates/ipc/src/bindings.rs`, `crates/ipc/src/buttonbank.rs`, `crates/ipc/src/groups.rs`
-- [ ] **Archive item names can be read as options** - `extract_items_to_dir` appends entry names straight after `unzip` / `tar` arguments; an entry named `-something` becomes a flag, and `unzip` also treats `[`, `*`, `?` in names as wildcards. Pass `--` before the names for `tar` and escape the wildcard characters for `unzip`.
+- [x] **Archive item names can be read as options** - `extract_items_to_dir` appends entry names straight after `unzip` / `tar` arguments; an entry named `-something` becomes a flag, and `unzip` also treats `[`, `*`, `?` in names as wildcards. Pass `--` before the names for `tar` and escape the wildcard characters for `unzip`.
   - File(s): `crates/lister/src/archive.rs`
 - [ ] **Remote and archive operations ignore setup errors** - `let _ = std::fs::create_dir_all(&temp_extract)` and similar calls swallow the real cause, so the user later sees a vaguer "extraction failed". Propagate the error into the `flash` message.
   - File(s): `crates/lister/src/actions.rs`, `crates/lister/src/remote_xfer.rs`

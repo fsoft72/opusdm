@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct ArchiveItem {
@@ -288,85 +289,166 @@ pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec
     Ok(rows)
 }
 
-/// Extract a single file from the archive into a temporary file for viewing.
-pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<PathBuf> {
-    let temp_dir = std::env::temp_dir().join("opusdm-preview");
-    std::fs::create_dir_all(&temp_dir)?;
-
-    let filename = Path::new(inner_file)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "preview_file".into());
-    let dest_path = temp_dir.join(filename);
-
-    let ext = arch
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if ext == "zip" {
-        let output = Command::new("unzip")
-            .arg("-p")
-            .arg(arch)
-            .arg(inner_file)
-            .output()?;
-        std::fs::write(&dest_path, &output.stdout)?;
-    } else {
-        Command::new("tar")
-            .arg("-xf")
-            .arg(arch)
-            .arg("-C")
-            .arg(&temp_dir)
-            .arg(inner_file)
-            .output()?;
-    }
-
-    Ok(dest_path)
+/// Archive formats the extraction commands know how to handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveKind {
+    Zip,
+    Tar,
+    SevenZ,
 }
 
-/// Extract items from archive into `dest_dir`.
+/// Classify `arch` by its name, or fail with `Unsupported` for any other format.
+fn _archive_kind(arch: &Path) -> io::Result<ArchiveKind> {
+    let name = arch.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+    let tar_suffixes = [".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar.zst"];
+    if name.ends_with(".zip") {
+        Ok(ArchiveKind::Zip)
+    } else if tar_suffixes.iter().any(|s| name.ends_with(s)) {
+        Ok(ArchiveKind::Tar)
+    } else if name.ends_with(".7z") {
+        Ok(ArchiveKind::SevenZ)
+    } else {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "Unsupported archive format"))
+    }
+}
+
+/// Escape an entry name for `unzip`, which reads `[`, `*` and `?` as wildcards
+/// and a leading `-` as an option.
+fn _unzip_pattern(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    for (i, c) in name.chars().enumerate() {
+        if matches!(c, '[' | ']' | '*' | '?' | '\\') || (i == 0 && c == '-') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Fail with a descriptive error unless `status` is a success.
+fn _check_status(status: std::process::ExitStatus, what: &str) -> io::Result<()> {
+    if status.success() {
+        return Ok(());
+    }
+    Err(io::Error::other(format!("{what} failed ({status})")))
+}
+
+/// Fail unless `path` exists (`7z` exits with success when an entry is not in the archive).
+fn _check_extracted(path: &Path) -> io::Result<()> {
+    if path.symlink_metadata().is_ok() {
+        return Ok(());
+    }
+    Err(io::Error::new(io::ErrorKind::NotFound, format!("not found in the archive: {}", path.display())))
+}
+
+/// Reject entry names that would climb out of the extraction folder.
+fn _check_inner_path(inner_file: &str) -> io::Result<()> {
+    let climbs = Path::new(inner_file).components().any(|c| matches!(c, std::path::Component::ParentDir));
+    if climbs || inner_file.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("invalid archive entry: {inner_file:?}")));
+    }
+    Ok(())
+}
+
+/// Extract a single file from the archive into a private temporary folder for
+/// viewing, and return the path of the extracted file.
+///
+/// The folder is unique per call (mode 0700, unpredictable name) and is kept
+/// so an external viewer can open the file; [`cleanup_previews`] removes every
+/// folder created by this process.
+pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<PathBuf> {
+    let kind = _archive_kind(arch)?;
+    _check_inner_path(inner_file)?;
+    let temp_dir = tempfile::Builder::new().prefix("opusdm-preview-").tempdir()?.keep();
+    PREVIEW_DIRS.lock().unwrap().push(temp_dir.clone());
+
+    match kind {
+        ArchiveKind::Zip => {
+            let name = Path::new(inner_file).file_name().unwrap_or_default();
+            let dest_path = temp_dir.join(name);
+            let output = Command::new("unzip").arg("-p").arg(arch).arg(_unzip_pattern(inner_file)).output()?;
+            _check_status(output.status, "unzip")?;
+            std::fs::write(&dest_path, &output.stdout)?;
+            Ok(dest_path)
+        }
+        ArchiveKind::Tar => {
+            let output = Command::new("tar")
+                .arg("-xf")
+                .arg(arch)
+                .arg("--no-wildcards")
+                .arg("-C")
+                .arg(&temp_dir)
+                .arg("--")
+                .arg(inner_file)
+                .output()?;
+            _check_status(output.status, "tar")?;
+            let extracted = temp_dir.join(inner_file);
+            _check_extracted(&extracted)?;
+            Ok(extracted)
+        }
+        ArchiveKind::SevenZ => {
+            let output = Command::new("7z")
+                .args(["x", "-y", "-spd", "-bso0", "-bsp0"])
+                .arg(format!("-o{}", temp_dir.display()))
+                .arg("--")
+                .arg(arch)
+                .arg(inner_file)
+                .output()?;
+            _check_status(output.status, "7z")?;
+            let extracted = temp_dir.join(inner_file);
+            _check_extracted(&extracted)?;
+            Ok(extracted)
+        }
+    }
+}
+
+/// Preview folders created by [`extract_single_file_temp`] in this process.
+static PREVIEW_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Remove every preview folder this process created (call when the app quits).
+pub fn cleanup_previews() {
+    for dir in PREVIEW_DIRS.lock().unwrap().drain(..) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Extract items from archive into `dest_dir`. Entry names are passed so they
+/// can never be read as options or wildcards.
 pub fn extract_items_to_dir(
     arch: &Path,
     items: &[String],
     dest_dir: &Path,
 ) -> io::Result<Vec<PathBuf>> {
-    let ext = arch
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let kind = _archive_kind(arch)?;
+    items.iter().try_for_each(|i| _check_inner_path(i))?;
 
-    let mut extracted = Vec::new();
-
-    if ext == "zip" {
-        let mut cmd = Command::new("unzip");
-        cmd.arg("-o").arg(arch);
-        for item in items {
-            cmd.arg(item);
+    match kind {
+        ArchiveKind::Zip => {
+            let mut cmd = Command::new("unzip");
+            cmd.arg("-o").arg(arch);
+            for item in items {
+                cmd.arg(_unzip_pattern(item));
+            }
+            cmd.arg("-d").arg(dest_dir);
+            _check_status(cmd.status()?, "unzip")?;
         }
-        cmd.arg("-d").arg(dest_dir);
-        let status = cmd.status()?;
-        if !status.success() {
-            return Err(io::Error::other("Failed to extract zip items"));
+        ArchiveKind::Tar => {
+            let mut cmd = Command::new("tar");
+            cmd.arg("-xf").arg(arch).arg("--no-wildcards").arg("-C").arg(dest_dir).arg("--");
+            cmd.args(items);
+            _check_status(cmd.status()?, "tar")?;
         }
-    } else {
-        let mut cmd = Command::new("tar");
-        cmd.arg("-xf").arg(arch).arg("-C").arg(dest_dir);
-        for item in items {
-            cmd.arg(item);
-        }
-        let status = cmd.status()?;
-        if !status.success() {
-            return Err(io::Error::other("Failed to extract tar items"));
+        ArchiveKind::SevenZ => {
+            let mut cmd = Command::new("7z");
+            cmd.args(["x", "-y", "-spd", "-bso0", "-bsp0"]).arg(format!("-o{}", dest_dir.display()));
+            cmd.arg("--").arg(arch);
+            cmd.args(items);
+            _check_status(cmd.status()?, "7z")?;
         }
     }
 
-    for item in items {
-        let p = dest_dir.join(item);
-        extracted.push(p);
-    }
-
+    let extracted: Vec<PathBuf> = items.iter().map(|item| dest_dir.join(item)).collect();
+    extracted.iter().try_for_each(|p| _check_extracted(p))?;
     Ok(extracted)
 }
 
@@ -397,5 +479,79 @@ mod tests {
         let (arch, inner) = parse_archive_path(p_root).unwrap();
         assert_eq!(arch, PathBuf::from("/home/user/test.zip"));
         assert_eq!(inner, "");
+    }
+
+    /// Build `a.zip`, `a.tar` and `a.7z` holding a nested file plus names that
+    /// look like options and wildcards. Returns `None` when a tool is missing.
+    fn fixture(dir: &Path) -> Option<()> {
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("sub")).ok()?;
+        std::fs::write(src.join("sub/a.txt"), "nested").ok()?;
+        std::fs::write(src.join("-dash.txt"), "dash").ok()?;
+        std::fs::write(src.join("st[ar]*.txt"), "star").ok()?;
+        let run = |prog: &str, args: &[&str]| {
+            Command::new(prog).current_dir(&src).args(args).output().is_ok_and(|o| o.status.success())
+        };
+        let ok = run("zip", &["-q", "../a.zip", "sub/a.txt", "--", "-dash.txt", "st[ar]*.txt"])
+            && run("tar", &["cf", "../a.tar", "sub/a.txt", "--", "-dash.txt", "st[ar]*.txt"])
+            && run("7z", &["a", "-bso0", "-spd", "../a.7z", "sub/a.txt", "--", "-dash.txt", "st[ar]*.txt"]);
+        ok.then_some(())
+    }
+
+    #[test]
+    fn extract_single_file_returns_the_real_nested_path_for_every_format() {
+        let td = tempfile::tempdir().unwrap();
+        if fixture(td.path()).is_none() {
+            return;
+        }
+        for name in ["a.zip", "a.tar", "a.7z"] {
+            let path = extract_single_file_temp(&td.path().join(name), "sub/a.txt").unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested", "{name}");
+        }
+        cleanup_previews();
+    }
+
+    #[test]
+    fn extract_single_file_reports_a_missing_entry_instead_of_an_empty_file() {
+        let td = tempfile::tempdir().unwrap();
+        if fixture(td.path()).is_none() {
+            return;
+        }
+        for name in ["a.zip", "a.tar", "a.7z"] {
+            assert!(extract_single_file_temp(&td.path().join(name), "nope.txt").is_err(), "{name}");
+        }
+        cleanup_previews();
+    }
+
+    #[test]
+    fn extract_rejects_unsupported_formats_and_parent_components() {
+        let td = tempfile::tempdir().unwrap();
+        let err = extract_single_file_temp(&td.path().join("a.rar"), "x").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        let err = extract_items_to_dir(&td.path().join("a.zip"), &["../x".to_string()], td.path()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn extract_items_treats_names_literally() {
+        let td = tempfile::tempdir().unwrap();
+        if fixture(td.path()).is_none() {
+            return;
+        }
+        let items = vec!["-dash.txt".to_string(), "st[ar]*.txt".to_string()];
+        for name in ["a.zip", "a.tar", "a.7z"] {
+            let out = td.path().join(format!("out-{name}"));
+            std::fs::create_dir(&out).unwrap();
+            let paths = extract_items_to_dir(&td.path().join(name), &items, &out).unwrap();
+            assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "dash", "{name}");
+            assert_eq!(std::fs::read_to_string(&paths[1]).unwrap(), "star", "{name}");
+            assert_eq!(std::fs::read_dir(&out).unwrap().count(), 2, "{name}: nothing else extracted");
+        }
+    }
+
+    #[test]
+    fn unzip_pattern_escapes_wildcards_and_a_leading_dash() {
+        assert_eq!(_unzip_pattern("-a[1]*?"), "\\-a\\[1\\]\\*\\?");
+        assert_eq!(_unzip_pattern("dir/-a"), "dir/-a");
     }
 }

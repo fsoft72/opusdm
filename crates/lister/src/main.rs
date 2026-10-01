@@ -108,5 +108,6 @@ fn main() {
     crate::dlog!("connected to hub, lister_id={lister_id:?}, start={}", start_path.display());
     let code = build::run(client, lister_id, roles, settings, bindings, formats, start_path);
     crate::dlog!("event loop exited, code={code:?}");
+    archive::cleanup_previews();
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }
