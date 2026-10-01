@@ -3,7 +3,7 @@
 use crate::book::{load_known_hosts, HostCheck};
 use crate::{ConnectParams, RemoteEntry, RemoteError, RemoteFs, TIMEOUT_SECS};
 use ssh2::{HashType, Session, Sftp};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::time::Duration;
@@ -106,6 +106,30 @@ impl RemoteFs for SftpFs {
     fn read_file(&mut self, path: &str, out: &mut dyn Write) -> Result<u64, RemoteError> {
         let mut file = self.sftp.open(Path::new(path)).map_err(failed)?;
         Ok(std::io::copy(&mut file, out)?)
+    }
+
+    fn write_file(&mut self, path: &str, data: &mut dyn Read) -> Result<u64, RemoteError> {
+        let mut file = self.sftp.create(Path::new(path)).map_err(failed)?;
+        Ok(std::io::copy(data, &mut file)?)
+    }
+
+    fn mkdir(&mut self, path: &str) -> Result<(), RemoteError> {
+        match self.sftp.mkdir(Path::new(path), 0o755) {
+            Ok(()) => Ok(()),
+            // Already there as a directory is fine.
+            Err(e) => match self.sftp.stat(Path::new(path)) {
+                Ok(stat) if stat.is_dir() => Ok(()),
+                _ => Err(failed(e)),
+            },
+        }
+    }
+
+    fn remove_file(&mut self, path: &str) -> Result<(), RemoteError> {
+        self.sftp.unlink(Path::new(path)).map_err(failed)
+    }
+
+    fn remove_dir(&mut self, path: &str) -> Result<(), RemoteError> {
+        self.sftp.rmdir(Path::new(path)).map_err(failed)
     }
 
     fn close(&mut self) {

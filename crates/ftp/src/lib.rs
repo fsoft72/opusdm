@@ -8,11 +8,11 @@ mod sftp_backend;
 pub mod transfer;
 pub mod url;
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 pub use book::{AddressBook, HostCheck, KnownHosts, Site};
-pub use transfer::{download, RemoteItem};
+pub use transfer::{download, existing_remote, remove_tree, upload, RemoteItem};
 pub use url::{is_remote, RemoteUrl, Scheme};
 
 /// Everything that can go wrong talking to a server.
@@ -76,6 +76,15 @@ pub trait RemoteFs: Send {
     fn list(&mut self, path: &str) -> Result<Vec<RemoteEntry>, RemoteError>;
     /// Stream the file at `path` into `out`; returns the bytes written.
     fn read_file(&mut self, path: &str, out: &mut dyn Write) -> Result<u64, RemoteError>;
+    /// Create the file at `path` (replacing an existing one) from `data`;
+    /// returns the bytes written.
+    fn write_file(&mut self, path: &str, data: &mut dyn Read) -> Result<u64, RemoteError>;
+    /// Create the directory at `path`. Succeeds when it already exists.
+    fn mkdir(&mut self, path: &str) -> Result<(), RemoteError>;
+    /// Delete the file at `path`.
+    fn remove_file(&mut self, path: &str) -> Result<(), RemoteError>;
+    /// Delete the empty directory at `path`.
+    fn remove_dir(&mut self, path: &str) -> Result<(), RemoteError>;
     /// Say goodbye to the server. Errors are not interesting here.
     fn close(&mut self);
 }

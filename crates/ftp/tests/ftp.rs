@@ -2,18 +2,29 @@
 //! QUIT) that serves a fixed tree in passive mode.
 
 use opusdm_ftp::{connect, download, ConnectParams, RemoteError, RemoteItem, RemoteUrl};
-use std::io::{BufRead, BufReader, Write};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 const LISTING: &str = "drwxr-xr-x   2 ftp ftp      4096 Jan 15 10:30 pub\r\n-rw-r--r--   1 ftp ftp        11 Jan 15  2020 readme.txt\r\n";
+
+/// What the server was asked to change.
+#[derive(Default)]
+struct State {
+    stored: HashMap<String, Vec<u8>>,
+    log: Vec<String>,
+}
+
+type Shared = Arc<Mutex<State>>;
 
 fn reply(out: &mut TcpStream, line: &str) {
     out.write_all(format!("{line}\r\n").as_bytes()).unwrap();
 }
 
 /// Serve one client; `password` is the only accepted password for user `bob`.
-fn serve(stream: TcpStream, password: &'static str) {
+fn serve(stream: TcpStream, password: &'static str, state: Shared) {
     let mut out = stream.try_clone().unwrap();
     let mut input = BufReader::new(stream);
     reply(&mut out, "220 ready");
@@ -67,6 +78,23 @@ fn serve(stream: TcpStream, password: &'static str) {
                     None => reply(&mut out, "550 no such file"),
                 }
             }
+            "STOR" => {
+                let Some(listener) = data.take() else {
+                    reply(&mut out, "425 no data connection");
+                    continue;
+                };
+                reply(&mut out, "150 send it");
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut body = Vec::new();
+                conn.read_to_end(&mut body).unwrap();
+                drop(conn);
+                state.lock().unwrap().stored.insert(arg.to_string(), body);
+                reply(&mut out, "226 stored");
+            }
+            "MKD" | "DELE" | "RMD" => {
+                state.lock().unwrap().log.push(format!("{cmd} {arg}"));
+                reply(&mut out, if cmd == "MKD" { "257 created" } else { "250 done" });
+            }
             "QUIT" => {
                 reply(&mut out, "221 bye");
                 return;
@@ -77,15 +105,18 @@ fn serve(stream: TcpStream, password: &'static str) {
 }
 
 /// Start the server on a loopback port.
-fn start() -> u16 {
+fn start() -> (u16, Shared) {
+    let state = Shared::default();
+    let shared = state.clone();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            std::thread::spawn(move || serve(stream, "secret"));
+            let state = shared.clone();
+            std::thread::spawn(move || serve(stream, "secret", state));
         }
     });
-    port
+    (port, state)
 }
 
 fn params(port: u16, user: &str, password: Option<&str>) -> ConnectParams {
@@ -97,7 +128,7 @@ fn params(port: u16, user: &str, password: Option<&str>) -> ConnectParams {
 
 #[test]
 fn anonymous_login_lists_and_downloads() {
-    let port = start();
+    let (port, _state) = start();
     let mut fs = connect(&params(port, "", None)).unwrap();
     let mut entries = fs.list("/").unwrap();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -113,7 +144,7 @@ fn anonymous_login_lists_and_downloads() {
 
 #[test]
 fn a_named_user_needs_the_right_password() {
-    let port = start();
+    let (port, _state) = start();
     assert_eq!(connect(&params(port, "bob", None)).err(), Some(RemoteError::AuthRequired));
     assert!(matches!(connect(&params(port, "bob", Some("wrong"))).err(), Some(RemoteError::AuthFailed(_))));
     assert!(connect(&params(port, "bob", Some("secret"))).is_ok());
@@ -121,10 +152,25 @@ fn a_named_user_needs_the_right_password() {
 
 #[test]
 fn a_missing_file_fails_and_leaves_nothing_behind() {
-    let port = start();
+    let (port, _state) = start();
     let mut fs = connect(&params(port, "", None)).unwrap();
     let local = tempfile::tempdir().unwrap();
     let items = vec![RemoteItem { path: "/nope".into(), name: "nope".into(), is_dir: false }];
     assert!(download(fs.as_mut(), &items, local.path(), &AtomicBool::new(false), &mut |_| {}).is_err());
     assert!(!local.path().join("nope").exists());
+}
+
+#[test]
+fn upload_creates_folders_and_stores_files() {
+    let (port, state) = start();
+    let mut fs = connect(&params(port, "", None)).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(local.path().join("d/sub")).unwrap();
+    std::fs::write(local.path().join("d/a.txt"), b"AAA").unwrap();
+    std::fs::write(local.path().join("d/sub/b.txt"), b"BB").unwrap();
+    opusdm_ftp::upload(fs.as_mut(), &[local.path().join("d")], "/in", &AtomicBool::new(false), &mut |_| {}).unwrap();
+    let state = state.lock().unwrap();
+    assert_eq!(state.stored["/in/d/a.txt"], b"AAA");
+    assert_eq!(state.stored["/in/d/sub/b.txt"], b"BB");
+    assert_eq!(state.log, vec!["MKD /in/d".to_string(), "MKD /in/d/sub".to_string()]);
 }

@@ -5,7 +5,7 @@ use suppaftp::list::File;
 use suppaftp::native_tls::TlsConnector;
 use suppaftp::types::FileType;
 use suppaftp::{FtpError, FtpStream, Mode, NativeTlsConnector, NativeTlsFtpStream};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::ToSocketAddrs;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -109,6 +109,31 @@ impl RemoteFs for FtpFs {
             s.finalize_retr_stream(data).map_err(failed)?;
             Ok(copied)
         })
+    }
+
+    fn write_file(&mut self, path: &str, data: &mut dyn Read) -> Result<u64, RemoteError> {
+        let mut reader = data;
+        with_stream!(&mut self.conn, s => s.put_file(path, &mut reader)).map_err(failed)
+    }
+
+    fn mkdir(&mut self, path: &str) -> Result<(), RemoteError> {
+        let made = with_stream!(&mut self.conn, s => s.mkdir(path));
+        match made {
+            Ok(()) => Ok(()),
+            // Already there: listing it works.
+            Err(e) => match with_stream!(&mut self.conn, s => s.list(Some(path))) {
+                Ok(_) => Ok(()),
+                Err(_) => Err(failed(e)),
+            },
+        }
+    }
+
+    fn remove_file(&mut self, path: &str) -> Result<(), RemoteError> {
+        with_stream!(&mut self.conn, s => s.rm(path)).map_err(failed)
+    }
+
+    fn remove_dir(&mut self, path: &str) -> Result<(), RemoteError> {
+        with_stream!(&mut self.conn, s => s.rmdir(path)).map_err(failed)
     }
 
     fn close(&mut self) {

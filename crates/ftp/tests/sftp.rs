@@ -145,3 +145,37 @@ fn a_changed_host_key_is_refused() {
         Ok(_) => panic!("expected HostChanged, got a connection"),
     }
 }
+
+#[test]
+fn upload_and_remove_round_trip_on_the_server() {
+    let Some(server) = start() else {
+        eprintln!("skipped: no usable sshd on this machine");
+        return;
+    };
+    let params = params(&server);
+    trust_host(&params.known_hosts, "127.0.0.1", server.port, &match connect(&params) {
+        Err(RemoteError::UnknownHost { fingerprint, .. }) => fingerprint,
+        _ => panic!("expected UnknownHost"),
+    })
+    .unwrap();
+    let mut fs = connect(&params).unwrap();
+
+    let local = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(local.path().join("d/sub")).unwrap();
+    std::fs::write(local.path().join("d/a.txt"), b"AAA").unwrap();
+    std::fs::write(local.path().join("d/sub/b.txt"), vec![5u8; 200_000]).unwrap();
+    let remote = tempfile::tempdir().unwrap();
+    let root = remote.path().to_string_lossy().into_owned();
+
+    opusdm_ftp::upload(fs.as_mut(), &[local.path().join("d")], &root, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(std::fs::read(remote.path().join("d/a.txt")).unwrap(), b"AAA");
+    assert_eq!(std::fs::read(remote.path().join("d/sub/b.txt")).unwrap().len(), 200_000);
+    // Uploading again over existing folders and files works.
+    opusdm_ftp::upload(fs.as_mut(), &[local.path().join("d")], &root, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert_eq!(opusdm_ftp::existing_remote(fs.as_mut(), &root, &["d".to_string(), "x".to_string()]).unwrap(), vec!["d".to_string()]);
+
+    let item = RemoteItem { path: format!("{root}/d"), name: "d".into(), is_dir: true };
+    opusdm_ftp::remove_tree(fs.as_mut(), &[item], &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(!remote.path().join("d").exists());
+    fs.close();
+}

@@ -103,6 +103,112 @@ fn download_dir(
     Ok(())
 }
 
+/// Upload the local files and folders in `local` into the remote directory
+/// `remote_dir`. A folder keeps its tree; symbolic links and other special
+/// files are skipped. Returns the remote path of every top-level item.
+pub fn upload(
+    fs: &mut dyn RemoteFs,
+    local: &[PathBuf],
+    remote_dir: &str,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Vec<String>, RemoteError> {
+    let mut made = Vec::with_capacity(local.len());
+    for path in local {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !safe_name(&name) {
+            return Err(RemoteError::Failed(format!("{}: not a usable file name", path.display())));
+        }
+        let target = join_remote(remote_dir, &name);
+        upload_item(fs, path, &target, cancel, progress, 0)?;
+        made.push(target);
+    }
+    Ok(made)
+}
+
+fn upload_item(
+    fs: &mut dyn RemoteFs,
+    local: &Path,
+    remote: &str,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&str),
+    depth: usize,
+) -> Result<(), RemoteError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(RemoteError::Failed("cancelled".to_string()));
+    }
+    let meta = std::fs::symlink_metadata(local)?;
+    if meta.is_dir() {
+        if depth > MAX_DEPTH {
+            return Err(RemoteError::Failed(format!("{}: folders nested too deep", local.display())));
+        }
+        fs.mkdir(remote)?;
+        let mut children: Vec<_> = std::fs::read_dir(local)?.filter_map(Result::ok).collect();
+        children.sort_by_key(|c| c.file_name());
+        for child in children {
+            let name = child.file_name().to_string_lossy().into_owned();
+            upload_item(fs, &child.path(), &join_remote(remote, &name), cancel, progress, depth + 1)?;
+        }
+    } else if meta.is_file() {
+        progress(remote);
+        let mut file = File::open(local)?;
+        fs.write_file(remote, &mut file)?;
+    }
+    Ok(())
+}
+
+/// Delete `items` on the server, folders with everything inside. Files go
+/// first, so a failure leaves a consistent remainder.
+pub fn remove_tree(
+    fs: &mut dyn RemoteFs,
+    items: &[RemoteItem],
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), RemoteError> {
+    for item in items {
+        remove_item(fs, &item.path, item.is_dir, cancel, progress, 0)?;
+    }
+    Ok(())
+}
+
+fn remove_item(
+    fs: &mut dyn RemoteFs,
+    path: &str,
+    is_dir: bool,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&str),
+    depth: usize,
+) -> Result<(), RemoteError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(RemoteError::Failed("cancelled".to_string()));
+    }
+    if path.trim_end_matches('/').is_empty() {
+        return Err(RemoteError::Failed("refusing to delete the server root".to_string()));
+    }
+    progress(path);
+    if !is_dir {
+        return fs.remove_file(path);
+    }
+    if depth > MAX_DEPTH {
+        return Err(RemoteError::Failed(format!("{path}: folders nested too deep (a link loop?)")));
+    }
+    for entry in fs.list(path)? {
+        if !safe_name(&entry.name) {
+            return Err(RemoteError::Failed(format!("{path}: refusing the unsafe name {:?}", entry.name)));
+        }
+        // A link is removed as a link, never followed into.
+        let child_is_dir = entry.is_dir && !entry.is_symlink;
+        remove_item(fs, &join_remote(path, &entry.name), child_is_dir, cancel, progress, depth + 1)?;
+    }
+    fs.remove_dir(path)
+}
+
+/// Which of `names` already exist in the remote directory `dir`.
+pub fn existing_remote(fs: &mut dyn RemoteFs, dir: &str, names: &[String]) -> Result<Vec<String>, RemoteError> {
+    let present: Vec<String> = fs.list(dir)?.into_iter().map(|e| e.name).collect();
+    Ok(names.iter().filter(|n| present.contains(n)).cloned().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,7 +236,55 @@ mod tests {
             out.write_all(data)?;
             Ok(data.len() as u64)
         }
+        fn write_file(&mut self, path: &str, data: &mut dyn std::io::Read) -> Result<u64, RemoteError> {
+            let mut buf = Vec::new();
+            data.read_to_end(&mut buf)?;
+            let n = buf.len() as u64;
+            self.files.insert(path.to_string(), buf);
+            self.add_to_parent(path, false);
+            Ok(n)
+        }
+        fn mkdir(&mut self, path: &str) -> Result<(), RemoteError> {
+            if !self.dirs.contains_key(path) {
+                self.dirs.insert(path.to_string(), Vec::new());
+                self.add_to_parent(path, true);
+            }
+            Ok(())
+        }
+        fn remove_file(&mut self, path: &str) -> Result<(), RemoteError> {
+            self.files.remove(path).ok_or_else(|| RemoteError::Failed(format!("no file {path}")))?;
+            self.drop_from_parent(path);
+            Ok(())
+        }
+        fn remove_dir(&mut self, path: &str) -> Result<(), RemoteError> {
+            if !self.dirs.get(path).is_some_and(|d| d.is_empty()) {
+                return Err(RemoteError::Failed(format!("{path}: not empty")));
+            }
+            self.dirs.remove(path);
+            self.drop_from_parent(path);
+            Ok(())
+        }
         fn close(&mut self) {}
+    }
+
+    impl Fake {
+        fn split(path: &str) -> (String, String) {
+            let cut = path.rfind('/').unwrap_or(0);
+            let parent = if cut == 0 { "/".to_string() } else { path[..cut].to_string() };
+            (parent, path[cut + 1..].to_string())
+        }
+        fn add_to_parent(&mut self, path: &str, is_dir: bool) {
+            let (parent, name) = Self::split(path);
+            let list = self.dirs.entry(parent).or_default();
+            list.retain(|e| e.name != name);
+            list.push(entry(&name, is_dir));
+        }
+        fn drop_from_parent(&mut self, path: &str) {
+            let (parent, name) = Self::split(path);
+            if let Some(list) = self.dirs.get_mut(&parent) {
+                list.retain(|e| e.name != name);
+            }
+        }
     }
 
     fn tree() -> Fake {
@@ -205,5 +359,59 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let item = vec![RemoteItem { path: "/l".into(), name: "l".into(), is_dir: true }];
         assert!(download(&mut f, &item, td.path(), &AtomicBool::new(false), &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn upload_creates_the_tree_and_replaces_files() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join("d/sub")).unwrap();
+        std::fs::write(td.path().join("d/a.txt"), b"AAA").unwrap();
+        std::fs::write(td.path().join("d/sub/b.txt"), b"BB").unwrap();
+        std::fs::write(td.path().join("top.txt"), b"T").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", td.path().join("d/link")).unwrap();
+
+        let mut fake = Fake::default();
+        fake.dirs.insert("/up".into(), Vec::new());
+        fake.files.insert("/up/top.txt".into(), b"old".to_vec());
+        let made = upload(&mut fake, &[td.path().join("d"), td.path().join("top.txt")], "/up", &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(made, vec!["/up/d".to_string(), "/up/top.txt".to_string()]);
+        assert_eq!(fake.files["/up/d/a.txt"], b"AAA");
+        assert_eq!(fake.files["/up/d/sub/b.txt"], b"BB");
+        assert_eq!(fake.files["/up/top.txt"], b"T");
+        assert!(!fake.files.contains_key("/up/d/link"), "links are skipped");
+    }
+
+    #[test]
+    fn upload_stops_when_cancelled() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("a"), b"A").unwrap();
+        let mut fake = Fake::default();
+        fake.dirs.insert("/up".into(), Vec::new());
+        assert!(upload(&mut fake, &[td.path().join("a")], "/up", &AtomicBool::new(true), &mut |_| {}).is_err());
+        assert!(fake.files.is_empty());
+    }
+
+    #[test]
+    fn remove_tree_deletes_files_then_folders() {
+        let mut fake = tree();
+        remove_tree(&mut fake, &items(), &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert!(fake.files.is_empty());
+        assert!(!fake.dirs.contains_key("/d") && !fake.dirs.contains_key("/d/sub"));
+    }
+
+    #[test]
+    fn remove_tree_refuses_the_root_and_unsafe_names() {
+        let mut fake = tree();
+        let root = vec![RemoteItem { path: "/".into(), name: "".into(), is_dir: true }];
+        assert!(remove_tree(&mut fake, &root, &AtomicBool::new(false), &mut |_| {}).is_err());
+        fake.dirs.insert("/d".into(), vec![entry("..", true)]);
+        assert!(remove_tree(&mut fake, &items()[..1], &AtomicBool::new(false), &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn existing_remote_reports_only_names_that_are_there() {
+        let mut fake = tree();
+        let found = existing_remote(&mut fake, "/d", &["a.txt".to_string(), "zzz".to_string()]).unwrap();
+        assert_eq!(found, vec!["a.txt".to_string()]);
     }
 }
