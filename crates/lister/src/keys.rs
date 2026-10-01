@@ -146,11 +146,16 @@ pub enum Action {
 /// Map a key press to an [`Action`], or `None` to let GTK handle it.
 ///
 /// `shift` is only consulted for keys whose keyval does not already encode it
-/// (F7); shifted characters such as `*`, `+`, `~` and `G` arrive as their own
+/// (Ctrl+N versus Ctrl+Shift+N); shifted characters such as `*`, `+`, `~` and `G` arrive as their own
 /// keyvals.
 pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<Action> {
     // Ctrl chords work wherever the focus is, including inside text fields.
     if ctrl {
+        // New folder / new file only fire over the list: inside a text field
+        // Ctrl+N must not create anything.
+        if focus == Focus::List && matches!(key, gdk::Key::n | gdk::Key::N) {
+            return Some(Action::Command(if shift { CommandId::NewFile } else { CommandId::Mkdir }));
+        }
         return match key {
             gdk::Key::p | gdk::Key::P => Some(Action::OpenPalette),
             gdk::Key::f | gdk::Key::F => Some(Action::RevealFilter),
@@ -196,8 +201,6 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         gdk::Key::F6 => Some(Action::Command(CommandId::Move)),
         gdk::Key::F8 | gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command(CommandId::Delete)),
         gdk::Key::F2 => Some(Action::Command(CommandId::Rename)),
-        gdk::Key::F7 if shift => Some(Action::Command(CommandId::NewFile)),
-        gdk::Key::F7 => Some(Action::Command(CommandId::Mkdir)),
 
         // Roles and panels.
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab => Some(Action::SwapRoleFocus),
@@ -278,8 +281,11 @@ mod tests {
 
     #[test]
     fn shift_only_matters_where_the_keyval_does_not_encode_it() {
-        assert_eq!(resolve(gdk::Key::F7, false, false, Focus::List), Some(Action::Command(CommandId::Mkdir)));
-        assert_eq!(resolve(gdk::Key::F7, false, true, Focus::List), Some(Action::Command(CommandId::NewFile)));
+        assert_eq!(resolve(gdk::Key::n, true, false, Focus::List), Some(Action::Command(CommandId::Mkdir)));
+        assert_eq!(resolve(gdk::Key::N, true, true, Focus::List), Some(Action::Command(CommandId::NewFile)));
+        assert_eq!(resolve(gdk::Key::F7, false, false, Focus::List), None, "F7 is no longer bound");
+        assert_eq!(resolve(gdk::Key::F7, false, true, Focus::List), None, "Shift+F7 is no longer bound");
+        assert_eq!(resolve(gdk::Key::n, true, false, Focus::Editing), None, "Ctrl+N stays out of text fields");
     }
 
     #[test]
@@ -342,7 +348,7 @@ mod tests {
         let keys = [
             gdk::Key::asciitilde, gdk::Key::Insert, gdk::Key::asterisk,
             gdk::Key::plus, gdk::Key::minus, gdk::Key::c, gdk::Key::h,
-            gdk::Key::F5, gdk::Key::F6, gdk::Key::F8,
+            gdk::Key::F5, gdk::Key::F6, gdk::Key::F8, gdk::Key::n, gdk::Key::N,
             gdk::Key::Delete, gdk::Key::F2, gdk::Key::F7, gdk::Key::Tab,
             gdk::Key::grave, gdk::Key::F3, gdk::Key::space, gdk::Key::slash,
             gdk::Key::BackSpace, gdk::Key::Return, gdk::Key::F4, gdk::Key::Escape,

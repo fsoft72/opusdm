@@ -279,3 +279,4 @@
 - Fix: type-to-find swallows Backspace while active, including the grace period after the buffer was emptied, so extra Backspaces no longer walk up the folder tree.
 - Fix: `~` (Home) also accepts the dead tilde keyval and any key whose character is `~`, for layouts such as the Italian one where it is typed with AltGr.
 - Fix: the keypad `*` (`KP_Multiply`) inverts the selection like the main `*`.
+- Change: new folder moved from `F7` to `Ctrl+N` and new file from `Shift+F7` to `Ctrl+Shift+N` (only over the file list, not inside text fields). Palette labels and docs follow.

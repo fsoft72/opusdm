@@ -302,8 +302,8 @@ risolvere il conflitto (sovrascrivere o saltare).
 
 ### Step 6.3 - Crea cartelle e file
 
-1. In `sorgente` premi `F7`, scrivi `nuova_cartella` e conferma.
-2. Premi `Shift+F7`, scrivi `vuoto.txt` e conferma: si crea un file vuoto.
+1. In `sorgente` premi `Ctrl+N`, scrivi `nuova_cartella` e conferma.
+2. Premi `Ctrl+Shift+N`, scrivi `vuoto.txt` e conferma: si crea un file vuoto.
 
 ### Step 6.4 - Rinomina (F2)
 
@@ -357,6 +357,9 @@ nome). Usa SOURCE `sorgente` e DEST `destinazione`.
 1. Seleziona `prova.c` e usa **Duplicate Selected Items**.
 2. Nella stessa cartella nasce `prova.c.copy`; ripetendo il comando, `.copy2` e
    così via.
+
+
+=== FINO A QUI
 
 ### Step 7.3 - Copy (newer only)
 
@@ -974,8 +977,8 @@ barra del filtro, del percorso o nel terminale, restano attivi solo `Esc`,
 | `F6` | Move da SOURCE a DEST |
 | `F8` o `Del` | Elimina |
 | `F2` | Rinomina (un file) o Batch Renamer (più file) |
-| `F7` | Nuova cartella |
-| `Shift+F7` | Nuovo file |
+| `Ctrl+N` | Nuova cartella |
+| `Ctrl+Shift+N` | Nuovo file |
 | `Ctrl+A` | Seleziona tutto |
 | `Ctrl+Shift+A` | Reselect |
 | `*` | Inverti la selezione |

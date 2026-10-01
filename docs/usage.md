@@ -48,8 +48,8 @@ Click any column header to sort ascending or descending.
 - **Copy (`c`)**: Copies selected items from SOURCE to DEST.
 - **Move (`m`)**: Moves selected items from SOURCE to DEST.
 - **Delete (`Del`)**: Prompts for confirmation and permanently deletes selected items.
-- **MakeDir (`F7`)**: Prompts to create a new directory in current view.
-- **NewFile (`Shift+F7`)**: Creates a new blank file.
+- **MakeDir (`Ctrl+N`)**: Prompts to create a new directory in current view.
+- **NewFile (`Ctrl+Shift+N`)**: Creates a new blank file.
 - **Rename (`F2`)**: 
   - If a single item is selected: opens an inline prompt to rename it.
   - If multiple items are selected: opens the **Batch Renamer**.
@@ -462,8 +462,8 @@ There are no single-letter commands in OpusDM.
 | **`F6`** | Move selected items from SOURCE to DEST |
 | **`F8`** or **`Del`** | Delete selected items permanently |
 | **`F2`** | Rename single item / Open Batch Renamer on multiple items |
-| **`F7`** | Create new directory |
-| **`Shift+F7`** | Create new blank file |
+| **`Ctrl+N`** | Create new directory |
+| **`Ctrl+Shift+N`** | Create new blank file |
 | **`Ctrl+A`** | Select all items |
 | **`Ctrl+Shift+A`** | Reselect the previous selection |
 | **`*`** | Invert current selection |
