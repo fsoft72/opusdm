@@ -331,3 +331,4 @@
 - Fix: Move from an archive no longer reports a Move that left the archive untouched: it runs as a Copy and the status line says why.
 - Fix: archive extraction no longer ignores setup errors (the `flash` message carries the real cause). The remote paths already propagated theirs (`remote::new_download_dir` with `?`), so nothing changed there.
 - Refactor: `wire_transfer` handles the archive case first and then resolves the selection and submits once for local and remote folders (they were identical).
+- Perf: changing the Size Format rebinds the rows (`touch_rows`, selection restored by name) instead of re-reading the directory.

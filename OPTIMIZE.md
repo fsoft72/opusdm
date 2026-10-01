@@ -41,7 +41,7 @@
 
 ## Low / Nice to have
 
-- [ ] **Changing the Size Format re-reads the directory** - `size_format::open` calls `ui.reload()`, which hits the disk again; `ui.touch_rows()` already rebinds the rows without I/O.
+- [x] **Changing the Size Format re-reads the directory** - `size_format::open` calls `ui.reload()`, which hits the disk again; `ui.touch_rows()` already rebinds the rows without I/O.
   - File(s): `crates/lister/src/size_format.rs`
 - [ ] **Timezone offset is computed once per column factory** - `local_tz_offset_secs()` is captured when the Modified column is built, so after a DST change every Lister shows times off by one hour until it is reopened. Compute it per bind (cheap) or refresh it on navigation.
   - File(s): `crates/lister/src/columns.rs`

@@ -27,7 +27,10 @@ pub fn open(ui: &Rc<Ui>) {
     ok_btn.connect_clicked(move |_| {
         if let Some(fmt) = SizeFormat::ALL.get(choice.selected() as usize) {
             ui.view.size_format.set(*fmt);
-            ui.reload();
+            // Sizes are formatted when a row is bound: rebind, no disk access.
+            let selected = ui.selected_names();
+            ui.touch_rows();
+            ui.select_names(&selected);
         }
         window.close();
     });
