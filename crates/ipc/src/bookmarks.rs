@@ -95,13 +95,8 @@ pub fn bookmarks_path() -> PathBuf {
 }
 
 /// Load the bookmarks from `path` (empty when missing; a file that does not
-/// parse is copied to `.bak` first so a later save cannot destroy it).
+/// parse is copied to `.bak` by [`load_json`] so a later save cannot destroy it).
 pub fn load_bookmarks_from(path: &Path) -> Bookmarks {
-    let unparsable = std::fs::read_to_string(path).is_ok_and(|t| serde_json::from_str::<Bookmarks>(&t).is_err());
-    if unparsable {
-        let _ = std::fs::copy(path, path.with_extension("json.bak"));
-        crate::err_log!("opusdm", "bookmarks.json does not parse; a copy was kept in bookmarks.json.bak");
-    }
     load_json(path, "opusdm", "bookmarks")
 }
 

@@ -253,18 +253,6 @@ pub fn load_filetypes() -> FileTypes {
 
 /// Testable core of [`load_filetypes`].
 pub fn load_filetypes_from(path: &Path) -> FileTypes {
-    let unparsable = std::fs::read_to_string(path).is_ok_and(|text| serde_json::from_str::<FileTypes>(&text).is_err());
-    if unparsable {
-        let backup = path.with_extension("json.bak");
-        match std::fs::copy(path, &backup) {
-            Ok(_) => {
-                crate::err_log!("opusdm", "filetypes.json does not parse; a copy was kept in {}", backup.display());
-            }
-            Err(e) => {
-                crate::err_log!("opusdm", "filetypes.json does not parse and could not be backed up: {e}");
-            }
-        }
-    }
     load_json(path, "opusdm", "file types")
 }
 

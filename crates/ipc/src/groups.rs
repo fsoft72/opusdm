@@ -208,7 +208,7 @@ impl Groups {
 
     /// Load every `*.json` file of `dir` (sorted by name). A missing directory
     /// gives no groups; an unreadable or malformed file is skipped with a log
-    /// line and left alone. Members and positions are cleaned; an empty name
+    /// line (a malformed one is also copied to `<file>.json.bak`). Members and positions are cleaned; an empty name
     /// falls back to the file name.
     pub fn load_from_dir(dir: &Path) -> Groups {
         let Ok(read) = std::fs::read_dir(dir) else { return Groups::default() };
@@ -221,23 +221,14 @@ impl Groups {
         let mut groups = Vec::new();
         for path in files {
             let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else { continue };
-            let text = match std::fs::read_to_string(&path) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("opusdm: cannot read group {}: {e}", path.display());
-                    continue;
-                }
+            let Some(mut group) = crate::settings::read_json::<Group>(&path, "opusdm", "group file") else {
+                continue;
             };
-            match serde_json::from_str::<Group>(&text) {
-                Ok(mut group) => {
-                    group.id = id.clone();
-                    if group.name.trim().is_empty() {
-                        group.name = id;
-                    }
-                    groups.push(group.cleaned());
-                }
-                Err(e) => eprintln!("opusdm: malformed group file {}: {e}", path.display()),
+            group.id = id.clone();
+            if group.name.trim().is_empty() {
+                group.name = id;
             }
+            groups.push(group.cleaned());
         }
         Groups { groups }
     }
@@ -401,6 +392,7 @@ mod tests {
         assert_eq!(g.groups[0].id, "ok");
         assert_eq!(g.groups[0].items, vec![p("/a")], "duplicates and relative paths cleaned");
         assert!(td.path().join("bad.json").exists());
+        assert_eq!(std::fs::read_to_string(td.path().join("bad.json.bak")).unwrap(), "{ not json");
     }
 
     #[test]

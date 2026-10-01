@@ -335,3 +335,4 @@
 - Fix: the Modified column computes the timezone offset per timestamp (`local_tz_offset_secs_at`) at bind time, so it follows DST changes and a file from another season keeps the offset that was valid on its date. Test with `TZ=Europe/Rome`.
 - Refactor: `format_user` and `format_group` share one `cached_name` helper (tested: one resolve per id).
 - Perf: `save_functions` serializes the slice directly (`save_json` accepts unsized values), no copy of the list.
+- Refactor: the "read, parse, back up to `.bak`, log" sequence lives only in `settings::load_json` / `settings::read_json`; bookmarks, formats, file types, bindings, button banks and groups use them. One policy everywhere: an existing backup is kept. Groups now also back up a malformed file.

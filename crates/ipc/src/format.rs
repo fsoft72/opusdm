@@ -2,7 +2,7 @@
 //! separates directories, and its show/hide name patterns. Formats are saved
 //! per directory in `formats.json` and resolved again on every navigation.
 
-use crate::settings::{config_dir, save_json};
+use crate::settings::{config_dir, load_json, save_json};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -250,17 +250,7 @@ pub fn load_formats() -> FormatStore {
 /// that does not parse is copied to `formats.json.bak` first, because the next
 /// save rewrites the file from memory and would destroy what the user wrote.
 pub fn load_formats_from(dir: &Path) -> FormatStore {
-    let path = dir.join("formats.json");
-    let Ok(text) = std::fs::read_to_string(&path) else { return FormatStore::default() };
-    match serde_json::from_str::<FormatStore>(&text) {
-        Ok(store) => store.sanitized(),
-        Err(e) => {
-            let backup = dir.join("formats.json.bak");
-            crate::err_log!("opusdm", "malformed formats.json ({e}); keeping a copy in {}", backup.display());
-            let _ = std::fs::copy(&path, &backup);
-            FormatStore::default()
-        }
-    }
+    load_json::<FormatStore>(&dir.join("formats.json"), "opusdm", "formats").sanitized()
 }
 
 /// Save the store under the standard config directory.

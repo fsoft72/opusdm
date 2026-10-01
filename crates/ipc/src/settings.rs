@@ -45,22 +45,29 @@ pub fn desktop_settings_path() -> PathBuf {
 ///   logs an error with `app_tag` to stderr and returns `T::default()`. The copy
 ///   matters because the next save would otherwise overwrite what the user wrote.
 pub fn load_json<T: DeserializeOwned + Default>(path: &Path, app_tag: &str, entity_name: &str) -> T {
+    read_json(path, app_tag, entity_name).unwrap_or_default()
+}
+
+/// Like [`load_json`] but tells a file that could not be used (missing,
+/// unreadable or malformed, the last one backed up to `<name>.bak`) from a valid
+/// one, for callers that skip such files instead of falling back to a default.
+pub fn read_json<T: DeserializeOwned>(path: &Path, app_tag: &str, entity_name: &str) -> Option<T> {
     if !path.exists() {
-        return T::default();
+        return None;
     }
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{app_tag}: cannot read {entity_name} from {}: {e}", path.display());
-            return T::default();
+            return None;
         }
     };
     match serde_json::from_str(&content) {
-        Ok(val) => val,
+        Ok(val) => Some(val),
         Err(e) => {
             eprintln!("{app_tag}: malformed {entity_name} in {}: {e}", path.display());
             backup_malformed(path, app_tag);
-            T::default()
+            None
         }
     }
 }

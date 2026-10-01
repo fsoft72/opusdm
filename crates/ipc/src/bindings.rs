@@ -515,18 +515,6 @@ pub fn load_bindings() -> Bindings {
 /// which would otherwise destroy what the user wrote.
 fn load_section<T: serde::de::DeserializeOwned + Default>(dir: &Path, file: &str, entity: &str) -> T {
     let path = dir.join(file);
-    let unparsable = std::fs::read_to_string(&path).is_ok_and(|text| serde_json::from_str::<T>(&text).is_err());
-    if unparsable {
-        let backup = dir.join(format!("{file}.bak"));
-        match std::fs::copy(&path, &backup) {
-            Ok(_) => {
-                crate::err_log!("opusdm", "{file} does not parse; a copy was kept in {}", backup.display());
-            }
-            Err(e) => {
-                crate::err_log!("opusdm", "{file} does not parse and could not be backed up: {e}");
-            }
-        }
-    }
     load_json(&path, "opusdm", entity)
 }
 

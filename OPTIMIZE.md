@@ -30,7 +30,7 @@
   - File(s): `crates/hub/src/server.rs`
 - [ ] **`hub/src/toolbar.rs` holds the whole desktop** - despite its name it builds desktop windows, icon fields, desktop menus, groups, the About dialog and quit handling (1,670 lines). Split into `desktop_windows.rs`, `desktop_menu.rs` and `groups_ui.rs`, keeping only the toolbar in `toolbar.rs`.
   - File(s): `crates/hub/src/toolbar.rs`
-- [ ] **"Load JSON, back up if malformed" is copied in six modules** - `bookmarks`, `format`, `filetypes`, `bindings`, `buttonbank` and `groups` each reimplement the read / parse / copy-to-`.bak` / log sequence with small differences (some keep an existing backup, some overwrite it). One `load_json_with_backup` in `settings.rs` removes the drift (pairs with the Critical item above).
+- [x] **"Load JSON, back up if malformed" is copied in six modules** - `bookmarks`, `format`, `filetypes`, `bindings`, `buttonbank` and `groups` each reimplement the read / parse / copy-to-`.bak` / log sequence with small differences (some keep an existing backup, some overwrite it). One `load_json_with_backup` in `settings.rs` removes the drift (pairs with the Critical item above).
   - File(s): `crates/ipc/src/bookmarks.rs`, `crates/ipc/src/format.rs`, `crates/ipc/src/filetypes.rs`, `crates/ipc/src/bindings.rs`, `crates/ipc/src/buttonbank.rs`, `crates/ipc/src/groups.rs`
 - [x] **Archive item names can be read as options** - `extract_items_to_dir` appends entry names straight after `unzip` / `tar` arguments; an entry named `-something` becomes a flag, and `unzip` also treats `[`, `*`, `?` in names as wildcards. Pass `--` before the names for `tar` and escape the wildcard characters for `unzip`.
   - File(s): `crates/lister/src/archive.rs`

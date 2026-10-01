@@ -331,31 +331,14 @@ impl Banks {
         let mut banks = Vec::new();
         for path in files {
             let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else { continue };
-            let text = match std::fs::read_to_string(&path) {
-                Ok(t) => t,
-                Err(e) => {
-                    crate::err_log!("buttonbank", "cannot read {}: {e}", path.display());
-                    continue;
-                }
+            let Some(mut bank) = crate::settings::read_json::<ButtonBank>(&path, "buttonbank", "bank file") else {
+                continue;
             };
-            match serde_json::from_str::<ButtonBank>(&text) {
-                Ok(mut bank) => {
-                    bank.id = id.clone();
-                    if bank.name.trim().is_empty() {
-                        bank.name = id;
-                    }
-                    banks.push(bank.cleaned());
-                }
-                Err(e) => {
-                    crate::err_log!("buttonbank", "malformed bank file {}: {e}", path.display());
-                    let backup = path.with_extension("json.bak");
-                    if !backup.exists() {
-                        if let Err(e) = std::fs::copy(&path, &backup) {
-                            crate::err_log!("buttonbank", "cannot back up {}: {e}", path.display());
-                        }
-                    }
-                }
+            bank.id = id.clone();
+            if bank.name.trim().is_empty() {
+                bank.name = id;
             }
+            banks.push(bank.cleaned());
         }
         Banks { banks }
     }
