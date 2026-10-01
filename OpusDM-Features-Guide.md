@@ -27,7 +27,7 @@ Indice:
 8. [Filtro, ricerca e Quick Look](#8-filtro-ricerca-e-quick-look)
 9. [Viewer e slideshow](#9-viewer-e-slideshow)
 10. [Terminale integrato](#10-terminale-integrato)
-11. [Archivi virtuali](#11-archivi-virtuali)
+11. [Archivi virtuali e server remoti](#11-archivi-virtuali-e-server-remoti)
 12. [Strumenti: checksum, dimensioni, confronto cartelle](#12-strumenti-checksum-dimensioni-confronto-cartelle)
 13. [Formato del Lister, cache e cronologia](#13-formato-del-lister-cache-e-cronologia)
 14. [Drag and drop e clipboard](#14-drag-and-drop-e-clipboard)
@@ -203,6 +203,29 @@ richiama.
 Nota: in OpusDM non ci sono comandi a lettera singola, per questo scrivere sopra
 l'elenco avvia sempre la ricerca per prefisso.
 
+### Step 3.7 - Radice e cartella superiore in un nuovo Lister
+
+1. `Ctrl+P` > **Go to Root**: il Lister va alla radice (`/` per una cartella
+   normale, la cima dell'archivio dentro un archivio, la `/` del server per una
+   cartella remota).
+2. `Ctrl+P` > **Open Parent in NEW Lister** apre la cartella superiore in una
+   nuova finestra, **Open Root in NEW Lister** apre la radice.
+3. Dentro un archivio `Backspace` sale correttamente: cartella interna, cima
+   dell'archivio, poi la cartella che contiene l'archivio.
+
+### Step 3.8 - Segnalibri (bookmark)
+
+Un segnalibro dà un nome a una cartella, come un "assign" dell'Amiga.
+
+1. Vai in `~/opusdm-tour/sorgente`, poi `Ctrl+P` > **Add Bookmark for This
+   Folder...** e scrivi `tour` (lettere, cifre, `_` e `-`; non `ftp`, `ftps`,
+   `sftp`).
+2. Vai in un'altra cartella. Nella barra del percorso scrivi `tour:` e premi
+   `Invio`: torni in `sorgente`. `tour:cartella_a` va in una sottocartella
+   (`..` viene rifiutato).
+3. `Ctrl+P` > **Bookmarks...** elenca, aggiunge, modifica, elimina i segnalibri
+   e permette di andare in uno di essi.
+
 ---
 
 ## 4. SOURCE e DEST
@@ -308,7 +331,10 @@ risolvere il conflitto (sovrascrivere o saltare).
 ### Step 6.4 - Rinomina (F2)
 
 1. Seleziona un solo file, ad esempio `vuoto.txt`, e premi `F2`.
-2. Scrivi `vuoto_rinominato.txt` e conferma.
+2. Il campo del nome ha preselezionato solo il nome, senza l'estensione:
+   scrivendo si sostituisce `vuoto` e `.txt` resta. (Cartelle e file che
+   iniziano con `.` sono selezionati per intero.)
+3. Scrivi `vuoto_rinominato` e conferma.
 
 ### Step 6.5 - Rinomina in blocco (Batch Renamer)
 
@@ -351,6 +377,12 @@ nome). Usa SOURCE `sorgente` e DEST `destinazione`.
    copia si chiamerà `prova.c.bak`. L'anteprima in tempo reale mostra il
    risultato.
 4. Conferma con **OK**. **Move As...** funziona allo stesso modo ma sposta.
+5. Scorciatoia: **click destro** sui pulsanti **Copy** / **Move** della riga dei
+   pulsanti apre **Copy As...** / **Move As...**.
+6. Con **più elementi** selezionati, **Copy As...** e **Move As...** aprono la
+   finestra delle regole del Batch Renamer (cerca/sostituisci, prefisso,
+   suffisso, case, numerazione, anteprima in tempo reale) e usano i nomi
+   mostrati nell'anteprima.
 
 ### Step 7.2 - Duplicate
 
@@ -415,6 +447,25 @@ nome). Usa SOURCE `sorgente` e DEST `destinazione`.
    (le directory vengono percorse, ma quelle senza file corrispondenti non
    vengono create). Vuoto = tutto, **Cancel** = annulla il job.
 4. Disattiva di nuovo l'opzione quando hai finito.
+
+### Step 7.10 - Cifratura e decifratura
+
+1. Seleziona `documento_01.txt` e `documento_02.txt` nel SOURCE.
+2. `Ctrl+P` > **Encrypt...**, scrivi una password e ripetila (il campo di
+   conferma c'è solo quando si cifra), poi conferma.
+3. Nel DEST (o nella stessa cartella se non c'è un DEST) nascono
+   `documento_01.txt.enc` e `documento_02.txt.enc`. Le cartelle mantengono la
+   loro struttura. I file esistenti non vengono mai sovrascritti.
+4. Seleziona un `.enc` e usa **Decrypt...** con la password giusta: ottieni il
+   file originale (un file che non finisce in `.enc` diventa `nome.dec`). Con la
+   password sbagliata, o con un file manomesso o troncato, il file fallisce e
+   non lascia nulla di parziale, mentre gli altri proseguono.
+5. Le stesse voci sono anche nel **click destro** su un file: **Encrypt...** e,
+   sui `.enc`, **Decrypt...**. Agiscono sulla selezione se il file cliccato ne
+   fa parte, altrimenti solo su quel file.
+
+Attenzione: **non esiste il recupero della password**. Il formato è
+XChaCha20-Poly1305 con chiave derivata da Argon2id.
 
 ---
 
@@ -524,7 +575,7 @@ Anche il menu del desktop ha **Open Terminal Here**.
 
 ---
 
-## 11. Archivi virtuali
+## 11. Archivi virtuali e server remoti
 
 ### Step 11.1 - Entra in un archivio
 
@@ -547,6 +598,37 @@ Formati supportati: `.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`,
 Nota: le cartelle dentro un archivio non vengono osservate da inotify (non c'è
 nulla su disco da osservare).
 
+### Step 11.3 - Naviga un server FTP, FTPS o SFTP
+
+Un server remoto si sfoglia come una cartella. Ti serve un server raggiungibile
+(per SFTP basta una macchina con `sshd`, anche `localhost`).
+
+1. Nella barra del percorso scrivi `sftp://utente@host/percorso` (oppure
+   `ftp://...`, `ftps://...`) e premi `Invio`.
+2. La password viene chiesta quando serve e resta solo in memoria. SFTP prova
+   prima l'ssh-agent e le chiavi `~/.ssh/id_*`. FTP senza utente entra come
+   anonimo.
+3. Al primo collegamento SFTP compare l'impronta SHA-256 della chiave dell'host:
+   confermala per proseguire. Se in futuro la chiave cambia, il collegamento
+   viene rifiutato.
+4. `Ctrl+P` > **FTP / SFTP Address Book...** apre la rubrica: nome, protocollo,
+   host, porta, utente, cartella iniziale, modalità passiva (FTP) e verifica del
+   certificato (FTPS). **Connect** apre il sito.
+5. `Backspace`, il pulsante **Parent** e il doppio click funzionano come nelle
+   cartelle locali. Il doppio click su un file remoto lo scarica e lo apre con
+   l'applicazione predefinita.
+6. **Copy**, **Move** e **Delete** funzionano con una cartella remota come
+   SOURCE, come DEST o entrambe (due server). Da remoto a locale scarica, da
+   locale a remoto carica, da remoto a remoto passa da una cartella temporanea.
+   Una finestrella mostra il file in trasferimento e ha **Cancel**. Se i
+   bersagli esistono già scegli tra **Overwrite**, **Skip existing** e
+   **Cancel**. Un Move cancella i sorgenti solo a copia riuscita.
+7. **New Folder** e **New File** funzionano anche in una cartella remota.
+8. `Ctrl+P` > **FTP Quit** chiude tutte le connessioni.
+
+Non disponibili su cartelle remote: Rename, Duplicate, permessi, timestamp,
+link, Join e Split. Le cartelle remote non vengono messe in cache né osservate.
+
 ---
 
 ## 12. Strumenti: checksum, dimensioni, confronto cartelle
@@ -557,6 +639,12 @@ nulla su disco da osservare).
    **Calculate Directory Sizes**).
 2. Il calcolo gira in background: la colonna **Size** della cartella si riempie
    con il totale e la dimensione complessiva compare nella barra di stato.
+3. Il risultato viene ricordato: chiedendo di nuovo, le dimensioni note
+   compaiono subito e vengono calcolate solo le cartelle nuove. Restano anche
+   dopo un ricaricamento.
+4. `Ctrl+P` > **Calculate Directory Sizes (force rescan)** dimentica le
+   dimensioni ricordate delle cartelle scelte e le rimisura. La memoria si
+   svuota anche dopo ogni Copy / Move / Delete e con **Free Caches**.
 
 ### Step 12.2 - Checksum
 
@@ -574,6 +662,14 @@ nulla su disco da osservare).
    più recente in B, dimensione diversa, identici.
 5. Clicca **Select Differences in Lister** per selezionare nel Lister tutto ciò
    che è nuovo o modificato. Poi puoi copiare con `F5`.
+
+### Step 12.4 - Anteprima dei font
+
+1. `Ctrl+P` > **View Font...**.
+2. Scegli una famiglia dall'elenco (c'è una casella di ricerca), imposta la
+   dimensione e **Bold** / **Italic**.
+3. Modifica il testo di esempio per provare le tue parole. La finestra non è
+   modale: può restare aperta mentre lavori.
 
 ---
 
@@ -650,8 +746,10 @@ percorso, `%%` per il segno di percento. Vuoto = formato predefinito.
 
 **Click destro** su un file in un Lister. Compaiono: **Copy (Source -> Dest)**,
 **Move (Source -> Dest)**, **Rename...**, **Delete...**, **Quick Look
-(Preview)**, **Checksums & Dimensioni cartelle**, **Leave Out on Desktop** e,
-sulle immagini, **Set as Desktop Background**.
+(Preview)**, **Checksums & Dimensioni cartelle**, **Encrypt...** (e **Decrypt...** sui
+`.enc`), **Leave Out on Desktop** e, sulle immagini, **Set as Desktop
+Background**. Se per quel file esiste un file type (step 16.5) compaiono anche
+le sue voci **Open With**.
 
 ---
 
@@ -698,7 +796,8 @@ Nel menu a tendina di **Add Internal Step...** trovi: **Copy**, **Move**,
 **Delete**, **Make Directory**, **New File**, **Rename**, **Copy As**,
 **Move As**, **Duplicate**, **Change Directory**, **Set Background**,
 **Leave Out**, **Put Away**, **Hide**, **Reveal**, **Toggle Hide**,
-**Open Bank**, **Close Bank**, **Toggle Bank**, **Hide Bank**.
+**Open Bank**, **Close Bank**, **Toggle Bank**, **Hide Bank**, **Confirm** e
+**Run**.
 
 Prova una function con due passi, **Change Directory** (`~/opusdm-tour`) e poi
 **Make Directory** (`creata_da_function`): la cartella viene creata proprio lì,
@@ -706,6 +805,70 @@ perché Change Directory sposta anche la directory di lavoro dei passi successiv
 
 Per modificare o eliminare una function, apri **Manage Functions...** e
 seleziona la riga, poi **Edit...** o **Delete**.
+
+### Step 15.4 - Confirm: chiedere prima di procedere
+
+1. In una nuova function aggiungi un passo interno **Confirm** con il messaggio
+   `Cancello {o}?` (i codici `{f}`, `{o}`... funzionano).
+2. Aggiungi dopo un passo **Delete**, salva e lancia la function su un file di
+   prova.
+3. Compare una richiesta sì/no. Con **No**, o se il Lister si chiude, il passo
+   fallisce e la function si ferma. Una function lanciata senza nessun Lister
+   a cui chiedere (evento script, hotkey globale senza Lister) si ferma sempre
+   al Confirm.
+
+### Step 15.5 - Run: lanciare un programma
+
+1. Aggiungi un passo interno **Run** con `ls -l {f}` come **command** (le
+   virgolette raggruppano le parole; gira nella cartella del SOURCE).
+2. Di default la function **non aspetta**: il passo finisce appena il programma
+   è partito e l'output viene scartato.
+3. **Wait for it to finish** fa aspettare il passo; un'uscita diversa da zero
+   ferma la function e l'output va nel log, come per un passo External.
+4. **Show its output in a window** apre una finestra di testo sul Lister che ha
+   lanciato la function, riempita man mano e lasciata aperta alla fine con il
+   codice di uscita. Funziona con o senza Wait. Una function lanciata da un
+   evento script non ha Lister, quindi niente finestra.
+
+### Step 15.6 - Change Directory: le nuove opzioni
+
+Il passo **Change Directory** ha tre parametri facoltativi:
+
+- **Open in a NEW Lister** apre la cartella in una nuova finestra invece di
+  spostare quella SOURCE;
+- **The path may be a file** apre la cartella del file e lo seleziona;
+- **View** (`details` o `icons`) cambia la vista del Lister SOURCE (le ultime
+  due non valgono per un Lister nuovo).
+
+I passi successivi girano comunque dalla nuova cartella.
+
+### Step 15.7 - Conflitti e indicatore di attività
+
+1. Se un passo **Copy** o **Move** trova un nome già presente a destinazione,
+   il Lister che ha avviato la function mostra la solita richiesta
+   **Overwrite / Skip / Overwrite All / Skip All / Cancel** e il passo prosegue
+   con la risposta. Senza un Lister a cui chiedere (evento script, hook di
+   Shutdown) l'elemento esistente viene saltato. **Delete** non va mai in
+   conflitto.
+2. Finché una function avviata da un Lister (palette, hotkey, menu utente,
+   azione di file type, **Test** dell'editor) è in esecuzione, in basso nel
+   Lister compare uno spinner con "Running a function..." (o "Running N
+   functions..."). Sparisce a fine o in caso di errore. Le function avviate da
+   Button Bank o da eventi script non lo mostrano.
+
+### Step 15.8 - Riga di comando interna
+
+1. `Ctrl+P` > **Command Line...**.
+2. `!ls -l {f}` esegue un comando di shell nella cartella SOURCE.
+3. Un comando interno con argomenti: `MakeDir backup`, `cd ~/opusdm-tour`,
+   `CopyAs new_name=*.bak`, `Copy newer`. I nomi non distinguono maiuscole e
+   ignorano spazi, `_` e `-` (`make-directory` funziona). `cd`, `md`, `mkdir`,
+   `mv` sono nomi brevi. Una parola senza `nome=` riempie il primo parametro
+   libero, una casella si attiva col suo nome (`newer`) o con `newer=yes`, le
+   virgolette raggruppano le parole.
+4. Il nome di una function salvata la lancia.
+5. Gli errori (comando sconosciuto, parametro mancante o in più) compaiono nella
+   richiesta e l'ultima riga viene riproposta la volta dopo.
 
 ---
 
@@ -763,6 +926,34 @@ segnala).
 
 Per evitare cicli, un evento viene ignorato mentre la sua esecuzione precedente
 non è finita e non scatta due volte nell'arco di 2 secondi.
+
+### Step 16.5 - File type: cosa fa il doppio click
+
+Un file type decide cosa succede al doppio click su un file e quali voci **Open
+With** compaiono nel click destro. Serve una function salvata (step 15).
+
+1. `Ctrl+P` > **Edit File Types...**: si apre l'elenco (salvato in
+   `~/.config/opusdm/filetypes.json`). Vince il primo tipo, dall'alto, la cui
+   regola corrisponde al file; le frecce riordinano.
+2. Crea un nuovo tipo. In **Match** aggiungi una o più condizioni, combinate con
+   "all of" o "any of": pattern dei nomi, byte a un offset (esadecimale, es.
+   `89 50 4E 47`), testo nei primi N byte, intervallo di dimensione (`10K`,
+   `4M`), intervallo di data (`7d`, `2026-01-01`). Il contenuto viene letto dai
+   primi 64 KiB.
+3. In **Actions** scegli la function da lanciare al **doppio click** e quelle da
+   mostrare in **Open With**. La function lavora sul file cliccato, che diventa
+   l'unico selezionato.
+4. **Save** resta disabilitato finché un tipo ha un problema (indicato sotto il
+   modulo). Le modifiche valgono subito per tutti i Lister.
+5. Scorciatoia: seleziona un file e usa **Filetype Creator (from selected
+   file)...**: l'editor si apre con un tipo già derivato dal file (`*.ext` se ha
+   un'estensione, i primi byte se è binario senza estensione, altrimenti il nome
+   esatto).
+6. Prova con un doppio click su un file che corrisponde: parte la function.
+   Cartelle e archivi si comportano come sempre, un file senza tipo si apre con
+   l'applicazione predefinita.
+
+L'azione **drop** viene salvata ma non è ancora collegata al drag and drop.
 
 ---
 
@@ -922,6 +1113,42 @@ si aggiorna subito.
 5. **BEHAVIOUR**: **auto-refresh (inotify)**, **Status bar format**,
    **Directory cache size** e il **recursive filter** (step 7.9).
 
+### Step 19.6 - Temi completi e Theme Editor
+
+Un tema ora può portare con sé, oltre ai colori, anche **font** e **immagini**
+(sfondo del desktop, sfondo dei Lister e delle finestre di richiesta) e **icone**.
+Un tema è una cartella in `~/.config/opusdm/themes/<nome>/`.
+
+1. Nella scheda **Desktop** (o dove trovi **Import theme...**) ci sono anche
+   **Save theme...**, **Export theme...** ed **Edit theme...**.
+2. **Save theme...**: dai un nome e salvi come tema installato lo stato attuale
+   delle impostazioni. Salvando sopra un tema esistente ne mantieni autore e
+   versione.
+3. **Export theme...**: impacchetta un tema installato in un archivio che puoi
+   passare ad altri; **Import theme...** lo importa (i file che non sono font
+   `.ttf`/`.otf` in `fonts/` o immagini in `backgrounds/`, e i link simbolici,
+   vengono scartati).
+4. **Edit theme...** apre il **Theme Editor**:
+   - a sinistra l'elenco dei temi con **New**, **Duplicate**, **Delete**;
+   - in basso **Save**, **Save as copy...**, **Revert** (torna alla versione
+     salvata) e **Save & Apply** (salva e applica subito);
+   - schede **General** (nome, autore, versione), **Colours** (con Appearance),
+     **Fonts** (font dell'interfaccia e dell'elenco file), **Pictures**
+     (desktop, Lister, finestre di richiesta), **Icons** e **Sounds**;
+   - ogni sezione ha la casella **Set by this theme**: se è spenta, il tema non
+     tocca quella parte e il campo resta com'è nelle tue impostazioni.
+5. Prova: duplica un tema, in **Fonts** imposta un font per l'elenco file, in
+   **Pictures** scegli un'immagine per il Lister, premi **Save & Apply** e
+   guarda i Lister cambiare. Quando un Lister ha un'immagine, le righe dei file
+   sono disegnate leggermente trasparenti per restare leggibili.
+
+Note: i suoni vengono salvati nel tema ma non ancora riprodotti. L'editor non
+modifica comportamento e metriche del desktop (restano invariati). Le immagini
+delle finestre di richiesta si vedono solo nelle richieste mostrate da Lister e
+Impostazioni, non in pannello, dock e Button Bank. Questa parte non è ancora
+stata verificata a mano in tutti i dettagli: se qualcosa non torna, è utile
+segnalarlo.
+
 ---
 
 ## 20. Chiusura e funzioni non ancora disponibili
@@ -938,18 +1165,21 @@ si aggiorna subito.
 
 Per non cercare funzioni che non esistono, queste sono segnate come da fare:
 
-- filetype personalizzati (azioni sul doppio click per tipo di file);
-- commenti sui file, cifratura e decifratura;
-- riproduzione audio, `beep` / `flash`;
-- tiling e cascade dei Lister, salvataggio del layout, Lister doppio in una
-  sola finestra, modalità icone nei Lister, vista dei dispositivi;
-- temi completi con immagini e suoni, eventi sonori, formato del titolo del
-  pannello;
-- FTP / SFTP, stampa, riga di comando interna, Confirm e indicatore di
-  function in esecuzione;
+- commenti sui file;
+- riproduzione audio (`Play`), `beep` / `flash`, eventi sonori e riproduzione
+  dei suoni dei temi;
+- modalità icone nei Lister, vista dei dispositivi (`devices://`), formato del
+  titolo del pannello;
+- argomenti facoltativi `{x!}` nelle function (da verificare) e, per FTP, la
+  rinomina remota, il keep-alive e i comandi grezzi;
+- nel Theme Editor: modifica del comportamento e delle metriche del desktop,
+  scelta di `preview.png`;
 - nelle Button Banks: apertura sotto il mouse, variante Start Menu, toolbar del
   Lister come bank, riordino con drag and drop dei pulsanti;
 - il cambio di proprietario dei file (chown): sono supportati solo i permessi.
+
+Scelte definitive: Lister doppio in una sola finestra, tiling e cascade,
+salvataggio del layout delle finestre e stampa non verranno realizzati.
 
 ---
 
