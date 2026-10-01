@@ -216,8 +216,10 @@ Type `sftp://user@host[:port]/path`, `ftp://...` or `ftps://...` in the path bar
 - **Address book** (`~/.config/opusdm/ftp.json`): name, protocol, host, port, user, start folder, FTP passive mode and, for FTPS, certificate verification. **Connect** opens the site; the box at the top opens any address.
 - **Passwords** are asked when needed and kept in memory only. SFTP tries your ssh-agent and `~/.ssh/id_*` keys first. FTP without a user logs in as anonymous.
 - **Host keys** (SFTP) are checked against `~/.config/opusdm/known_hosts.json`. A new host shows its SHA-256 fingerprint and asks before connecting; a changed key is refused.
-- **Copy** from a remote folder downloads the selection (folders included) to a scratch folder in the system temp directory and then runs the normal Copy job to the DEST Lister. Double click on a remote file downloads it and opens it with the default application. Scratch folders older than a day are removed.
-- Remote folders are **read-only**: Move, Delete and a remote DEST are refused. **FTP Quit** closes every connection.
+- **Copy**, **Move** and **Delete** work with a remote folder as source, as DEST, or both (two servers). Remote to local downloads, local to remote uploads, remote to remote goes through a scratch folder in the system temp directory (cleaned afterwards; stale ones older than a day are removed). **New Folder** and **New File** work in a remote folder too. A Move deletes its sources only after the copy succeeded.
+- A small window shows the file being transferred and has **Cancel** (closing it cancels too). When some targets already exist you are asked to Overwrite, Skip the existing ones or Cancel; folders merge, and with Overwrite nested files are replaced.
+- Double click on a remote file downloads it and opens it with the default application.
+- Not available on remote folders: Rename, Duplicate, permissions, timestamps, links and Join/Split. **FTP Quit** closes every connection.
 
 ### 3.10j Encrypt and Decrypt
 **Encrypt...** and **Decrypt...** (command palette) ask for a password and write into the DEST Lister (or this folder when there is no DEST).

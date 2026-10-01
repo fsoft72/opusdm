@@ -47,7 +47,7 @@ pub fn validate_job(srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
 }
 
 /// Whether `path` is an ftp://, ftps:// or sftp:// location.
-fn is_remote_path(path: &Path) -> bool {
+pub fn is_remote_path(path: &Path) -> bool {
     let text = path.to_string_lossy().to_ascii_lowercase();
     ["ftp://", "ftps://", "sftp://"].iter().any(|p| text.starts_with(p))
 }
@@ -58,8 +58,8 @@ fn is_remote_path(path: &Path) -> bool {
 /// output names differ from the source names). Other ops need no check. Remote
 /// locations are refused for every op.
 pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
-    // Remote (ftp://, ftps://, sftp://) locations can be browsed and
-    // downloaded from, but the job engine only works on local files.
+    // The job engine only works on local files. Remote (ftp://, ftps://,
+    // sftp://) jobs are handed back to the Lister before they get here.
     if std::iter::once(dest_dir).chain(srcs.iter().map(PathBuf::as_path)).any(is_remote_path) {
         return Err("remote locations are read-only: copy from them to a local DEST".into());
     }

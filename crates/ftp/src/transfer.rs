@@ -203,6 +203,29 @@ fn remove_item(
     fs.remove_dir(path)
 }
 
+/// Look up the server paths in `paths` (absolute, no trailing `/`) and say
+/// which are folders. Fails when one does not exist.
+pub fn resolve_items(fs: &mut dyn RemoteFs, paths: &[String]) -> Result<Vec<RemoteItem>, RemoteError> {
+    let mut listed: Option<(String, Vec<crate::RemoteEntry>)> = None;
+    let mut items = Vec::with_capacity(paths.len());
+    for path in paths {
+        let cut = path.rfind('/').ok_or_else(|| RemoteError::Failed(format!("{path}: not an absolute path")))?;
+        let (dir, name) = (if cut == 0 { "/" } else { &path[..cut] }, &path[cut + 1..]);
+        if !safe_name(name) {
+            return Err(RemoteError::Failed(format!("{path}: not a usable name")));
+        }
+        if listed.as_ref().is_none_or(|(d, _)| d != dir) {
+            listed = Some((dir.to_string(), fs.list(dir)?));
+        }
+        let entry = listed
+            .as_ref()
+            .and_then(|(_, entries)| entries.iter().find(|e| e.name == name))
+            .ok_or_else(|| RemoteError::Failed(format!("{path}: no such file or folder")))?;
+        items.push(RemoteItem { path: path.clone(), name: name.to_string(), is_dir: entry.is_dir });
+    }
+    Ok(items)
+}
+
 /// Which of `names` already exist in the remote directory `dir`.
 pub fn existing_remote(fs: &mut dyn RemoteFs, dir: &str, names: &[String]) -> Result<Vec<String>, RemoteError> {
     let present: Vec<String> = fs.list(dir)?.into_iter().map(|e| e.name).collect();
@@ -406,6 +429,16 @@ mod tests {
         assert!(remove_tree(&mut fake, &root, &AtomicBool::new(false), &mut |_| {}).is_err());
         fake.dirs.insert("/d".into(), vec![entry("..", true)]);
         assert!(remove_tree(&mut fake, &items()[..1], &AtomicBool::new(false), &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn resolve_items_finds_kinds_and_rejects_missing_paths() {
+        let mut fake = tree();
+        let items = resolve_items(&mut fake, &["/d/sub".to_string(), "/d/a.txt".to_string()]).unwrap();
+        assert_eq!(items[0], RemoteItem { path: "/d/sub".into(), name: "sub".into(), is_dir: true });
+        assert!(!items[1].is_dir);
+        assert!(resolve_items(&mut fake, &["/d/missing".to_string()]).is_err());
+        assert!(resolve_items(&mut fake, &["/d/..".to_string()]).is_err());
     }
 
     #[test]

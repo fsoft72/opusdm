@@ -531,6 +531,7 @@ impl Ui {
             ToLister::Shutdown => self.window.close(),
             // Progress is shown centrally by the hub's progress window now.
             ToLister::JobProgress { .. } => {}
+            ToLister::RemoteTransfer { op, srcs, dest_dir } => self.run_remote_transfer(op, srcs, dest_dir),
             ToLister::JobDone { job_id, outcome, errors } => {
                 crate::actions::on_job_done(self, job_id, &outcome, &errors);
             }

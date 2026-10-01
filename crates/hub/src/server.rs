@@ -481,6 +481,12 @@ impl Hub {
                 }
             }
 
+            ToHub::Invalidate(path) => {
+                for c in self.conns.values_mut().filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::InvalidatePath(path.clone()).into());
+                }
+            }
+
             ToHub::JumpTo { lister, path } => {
                 if let Some(c) = self.conns.get(&lister.0).filter(|c| c.registered) {
                     let _ = c.tx.send(ToLister::GoTo { path }.into());
@@ -1144,6 +1150,14 @@ impl Hub {
             .filter_map(|s| s.parent().map(PathBuf::from))
             .collect();
         for dest_dir in dest_dirs {
+            // Remote locations are the Lister's business: hand the job back
+            // with the destination resolved.
+            if std::iter::once(dest_dir.as_path()).chain(srcs.iter().map(PathBuf::as_path)).any(crate::jobs::is_remote_path) {
+                if let Some(c) = self.conns.get_mut(&cid) {
+                    let _ = c.tx.send(ToLister::RemoteTransfer { op: op.clone(), srcs: srcs.clone(), dest_dir }.into());
+                }
+                continue;
+            }
             if let Err(msg) = validate_op(&op, &srcs, &dest_dir) {
                 fail(&mut self.conns, msg);
                 continue;
@@ -1935,6 +1949,47 @@ mod tests {
         let _r: ToLister = recv(&mut src).unwrap().unwrap();
         let _r: ToLister = recv(&mut dst).unwrap().unwrap();
         (src, dst)
+    }
+
+    #[test]
+    fn remote_jobs_are_handed_back_to_the_requester_with_the_destination_resolved() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let (mut src, mut dst) = source_and_dest(&path);
+        send(&mut src, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
+        recv_until(&mut src, |m| matches!(m, ToLister::RoleChanged { source: Some(_), .. }).then_some(()));
+        send(&mut dst, &ToHub::PathChanged("sftp://me@host/in".into())).unwrap();
+
+        // Remote destination, local source: bounced with the DEST path.
+        send(&mut src, &ToHub::RunJob { op: Op::Copy, srcs: vec!["/tmp/a".into()], dest_dir: None, options: Default::default() }).unwrap();
+        let (op, srcs, dest) = recv_until(&mut src, |m| match m {
+            ToLister::RemoteTransfer { op, srcs, dest_dir } => Some((op, srcs, dest_dir)),
+            _ => None,
+        });
+        assert_eq!((op, srcs, dest), (Op::Copy, vec!["/tmp/a".into()], "sftp://me@host/in".into()));
+
+        // Remote source with an explicit destination (Delete): bounced too.
+        send(&mut src, &ToHub::RunJob { op: Op::Delete, srcs: vec!["sftp://me@host/x".into()], dest_dir: Some("sftp://me@host/".into()), options: Default::default() }).unwrap();
+        let op = recv_until(&mut src, |m| match m {
+            ToLister::RemoteTransfer { op, .. } => Some(op),
+            _ => None,
+        });
+        assert_eq!(op, Op::Delete);
+    }
+
+    #[test]
+    fn invalidate_reaches_every_lister() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let (mut a, mut b) = source_and_dest(&path);
+        send(&mut a, &ToHub::Invalidate("sftp://h/a".into())).unwrap();
+        for lister in [&mut a, &mut b] {
+            let p = recv_until(lister, |m| match m {
+                ToLister::InvalidatePath(p) => Some(p),
+                _ => None,
+            });
+            assert_eq!(p, std::path::PathBuf::from("sftp://h/a"));
+        }
     }
 
     #[test]

@@ -224,6 +224,9 @@ pub enum ToHub {
     /// Ask `lister` to raise its window and go to `path` (`ToLister::GoTo`).
     /// Ignored when there is no such Lister.
     JumpTo { lister: ListerId, path: PathBuf },
+    /// Tell every Lister that `path` changed (`ToLister::InvalidatePath`), for
+    /// changes the hub did not make itself (remote transfers). No reply.
+    Invalidate(PathBuf),
     /// Ask the hub to open the button bank manager window. No reply.
     OpenBankManager,
 }
@@ -488,6 +491,10 @@ pub enum ToLister {
     FreeCaches,
     /// Raise the window and navigate to `path`.
     GoTo { path: PathBuf },
+    /// A job the requester submitted touches an ftp:// / ftps:// / sftp://
+    /// location, which only the Lister (it holds the connections) can run.
+    /// `dest_dir` is already resolved by the hub, one message per target.
+    RemoteTransfer { op: Op, srcs: Vec<PathBuf>, dest_dir: PathBuf },
 }
 
 #[cfg(test)]
@@ -582,6 +589,7 @@ mod tests {
         roundtrip_tohub(ToHub::FreeAllCaches);
         roundtrip_tohub(ToHub::OpenBankManager);
         roundtrip_tohub(ToHub::JumpTo { lister: ListerId(2), path: "/p".into() });
+        roundtrip_tohub(ToHub::Invalidate("sftp://h/a".into()));
     }
 
     #[test]
@@ -660,6 +668,7 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
         roundtrip_tolister(ToLister::FunctionDone);
         roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
+        roundtrip_tolister(ToLister::RemoteTransfer { op: Op::Copy, srcs: vec!["sftp://h/a".into()], dest_dir: "/d".into() });
         roundtrip_tolister(ToLister::FormatsUpdate(crate::format::FormatStore::default()));
         roundtrip_tolister(ToLister::CacheList(vec![CacheEntry { lister: ListerId(1), path: "/p".into() }]));
         roundtrip_tolister(ToLister::FreeCaches);

@@ -21,6 +21,7 @@ mod dnd;
 mod filetype_form;
 mod remote;
 mod remote_ui;
+mod remote_xfer;
 mod filetypes_ui;
 mod filter;
 mod format_apply;

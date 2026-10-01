@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 pub use book::{AddressBook, HostCheck, KnownHosts, Site};
-pub use transfer::{download, existing_remote, remove_tree, upload, RemoteItem};
+pub use transfer::{download, existing_remote, remove_tree, resolve_items, upload, RemoteItem};
 pub use url::{is_remote, RemoteUrl, Scheme};
 
 /// Everything that can go wrong talking to a server.

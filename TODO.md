@@ -61,7 +61,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
   - [x] F-01 follow-up: conflict prompt for Copy/Move steps (Delete never conflicts; runs with no Lister to ask still skip)
 - [x] F-02 Button Banks + Button Bank Editor (open under the mouse, Start Menu variant and the Lister toolbar as a bank are not implemented)
 - [x] F-03 Hotkey Editor (local + system-global hotkeys, KeyFinder)
-- [x] F-39 FTP / FTPS / SFTP (browse and download only: no upload, remote Move/Delete or remote DEST; no keep-alive, logging, raw commands or download cancel; the Lister UI was not exercised by hand)
+- [x] F-39 FTP / FTPS / SFTP (browse, download, upload, remote Copy/Move/Delete/New Folder/New File with cancel; no remote rename, keep-alive, logging or raw commands; the Lister UI was not exercised by hand)
 - [x] F-04 User menus in listers
 - [x] F-05 Script events (system events only; viewer overrides wait for F-16, Hidden/Revealed for F-38)
 - [x] F-06 Filetypes system (matching rules, double click and Open With actions, editor, Filetype Creator; the `drop` action is stored but not wired, no MIME sniffing: unmatched files use xdg-open)

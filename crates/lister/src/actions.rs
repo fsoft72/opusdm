@@ -215,23 +215,14 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
         }
 
         let cwd = ui.cwd.borrow().clone();
-        if let Some(url) = crate::remote::url_of(&cwd) {
-            if !matches!(op, Op::Copy) {
-                flash(&ui, "remote folders are read-only: use Copy to download");
-                return;
-            }
-            let names = ui.selected_names();
-            if names.is_empty() {
+        // A remote folder: the hub hands the job back (see `remote_xfer`).
+        if crate::remote::url_of(&cwd).is_some() {
+            let srcs = ui.selected_paths();
+            if srcs.is_empty() {
                 flash(&ui, "nothing selected");
                 return;
             }
-            let shown: Vec<(String, bool)> =
-                (0..ui.view.selection.n_items()).filter_map(|i| ui.row_at(i)).map(|r| (r.name.clone(), r.is_dir)).collect();
-            let items = crate::remote::items_for(&url, &names, &shown);
-            let op = op.clone();
-            ui.clone().download_remote(&url, items, move |ui, paths| {
-                crate::job_submit::submit_job(ui, op, paths, None, opusdm_ipc::JobOptions::default());
-            });
+            crate::job_submit::submit_job(&ui, op.clone(), srcs, None, opusdm_ipc::JobOptions::default());
             return;
         }
         if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {

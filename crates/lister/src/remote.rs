@@ -3,7 +3,7 @@
 //! scratch folders downloads land in. The GTK flows are in `remote_ui.rs`.
 
 use crate::model::Row;
-use opusdm_ftp::{ConnectParams, RemoteEntry, RemoteItem, RemoteUrl};
+use opusdm_ftp::{ConnectParams, RemoteEntry, RemoteUrl};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -43,19 +43,6 @@ pub fn rows_from(entries: Vec<RemoteEntry>) -> Vec<Row> {
         .map(|e| {
             let mode = if e.mode != 0 { e.mode } else if e.is_dir { 0o755 } else { 0o644 };
             Row::new(e.name, e.is_dir, e.is_symlink, false, if e.is_dir { 0 } else { e.size }, e.modified, 1000, 1000, mode)
-        })
-        .collect()
-}
-
-/// What to download for the rows called `names` of the folder `dir`.
-/// A name not in `rows` is skipped.
-pub fn items_for(dir: &RemoteUrl, names: &[String], rows: &[(String, bool)]) -> Vec<RemoteItem> {
-    names
-        .iter()
-        .filter_map(|n| {
-            rows.iter()
-                .find(|(name, _)| name == n)
-                .map(|(name, is_dir)| RemoteItem { path: dir.join(name).path, name: name.clone(), is_dir: *is_dir })
         })
         .collect()
 }
@@ -130,20 +117,6 @@ mod tests {
         let rows = rows_from(vec![entry("d", true, 4096), entry("f", false, 7)]);
         assert_eq!((rows[0].is_dir, rows[0].size, rows[0].mode), (true, 0, 0o755));
         assert_eq!((rows[1].size, rows[1].mode, rows[1].modified_unix), (7, 0o644, 5));
-    }
-
-    #[test]
-    fn items_are_built_from_the_selected_names() {
-        let dir = RemoteUrl::parse("sftp://h/data").unwrap();
-        let rows = vec![("a".to_string(), false), ("sub".to_string(), true)];
-        let items = items_for(&dir, &["sub".into(), "gone".into(), "a".into()], &rows);
-        assert_eq!(
-            items,
-            vec![
-                RemoteItem { path: "/data/sub".into(), name: "sub".into(), is_dir: true },
-                RemoteItem { path: "/data/a".into(), name: "a".into(), is_dir: false },
-            ]
-        );
     }
 
     #[test]
