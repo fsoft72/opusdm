@@ -1604,6 +1604,7 @@ dependencies = [
  "async-channel",
  "gtk4",
  "opusdm-ipc",
+ "tempfile",
  "x11rb",
 ]
 
