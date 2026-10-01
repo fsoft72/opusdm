@@ -12,9 +12,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 mod apply;
+mod builder;
 mod importer;
 mod model;
 mod ui;
+mod writer;
 
 /// Shared across every test module in this crate that mutates the
 /// process-wide `XDG_CONFIG_HOME`/`OPUSDM_HUB_SOCK` env vars - libtest runs
@@ -23,6 +25,31 @@ mod ui;
 #[cfg(test)]
 pub(crate) mod test_support {
     pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Point `XDG_CONFIG_HOME` at a fresh temporary folder. Hold `ENV_LOCK` first.
+    pub fn scratch_config() -> tempfile::TempDir {
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        td
+    }
+
+    /// Install a minimal theme `slug` with an icon, a font and a sound.
+    pub fn install_source(slug: &str) {
+        let dir = opusdm_ipc::themes::theme_dir(slug);
+        let manifest = format!(r#"{{"name":"{slug}","label":"Src"}}"#);
+        for (rel, body) in [("manifest.json", manifest.as_bytes()), ("icons/dir.png", b"icon"), ("fonts/f.ttf", b"font"), ("sounds/a.wav", b"snd")] {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+    }
+
+    /// Write a tiny file named `name` under `dir` whose content is its name.
+    pub fn picture(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, name.as_bytes()).unwrap();
+        p
+    }
 }
 
 fn main() -> gtk::glib::ExitCode {

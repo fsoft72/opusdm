@@ -1591,6 +1591,7 @@ dependencies = [
  "opusdm-iconview",
  "opusdm-ipc",
  "opusdm-ui",
+ "serde",
  "serde_json",
  "tar",
  "tempfile",
