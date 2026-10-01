@@ -336,3 +336,4 @@
 - Refactor: `format_user` and `format_group` share one `cached_name` helper (tested: one resolve per id).
 - Perf: `save_functions` serializes the slice directly (`save_json` accepts unsized values), no copy of the list.
 - Refactor: the "read, parse, back up to `.bak`, log" sequence lives only in `settings::load_json` / `settings::read_json`; bookmarks, formats, file types, bindings, button banks and groups use them. One policy everywhere: an existing backup is kept. Groups now also back up a malformed file.
+- Refactor: the pure "rows -> visible rows + totals" step of `apply_navigation` is `model::visible_rows` (hidden / `.opusdm` / name filter, remembered directory sizes, totals), unit tested without GTK.

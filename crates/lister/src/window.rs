@@ -307,36 +307,13 @@ impl Ui {
         }
         let name_filter = opusdm_ipc::NameFilter::new(&format.show_glob, &format.hide_glob);
         let show_hidden = self.view.show_hidden.get();
-        let mut total_dirs = 0u32;
-        let mut total_files = 0u32;
-        let mut total_bytes = 0u64;
-        let mut new_items = Vec::new();
-        let cwd_for_sizes = dir.to_path_buf();
-        for mut row in rows {
-            if row.name == opusdm_iconview::scan::OPUSDM_DIR {
-                continue;
-            }
-            if row.is_dir {
-                if let Some(size) = self.size_cache.borrow().get(&cwd_for_sizes.join(&row.name)) {
-                    row.size = size;
-                }
-            }
-            if !show_hidden && row.name.starts_with('.') {
-                continue;
-            }
-            if !row.is_dir && !name_filter.allows(&row.name) {
-                continue;
-            }
-            if row.is_dir {
-                total_dirs += 1;
-            } else {
-                total_files += 1;
-                total_bytes += row.size;
-            }
-            new_items.push(BoxedAnyObject::new(Rc::new(row)));
-        }
+        let visible = crate::model::visible_rows(rows, show_hidden, &name_filter, |name| {
+            self.size_cache.borrow().get(&dir.join(name))
+        });
+        let new_items: Vec<BoxedAnyObject> =
+            visible.rows.into_iter().map(|row| BoxedAnyObject::new(Rc::new(row))).collect();
         self.sync_watch(dir);
-        self.status_bar.totals.set((total_dirs, total_files, total_bytes));
+        self.status_bar.totals.set((visible.dirs, visible.files, visible.bytes));
         // A new listing invalidates the old cursor row.
         self.view.cursor.set(0);
         let old_len = self.view.store.n_items();

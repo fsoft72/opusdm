@@ -332,6 +332,53 @@ use std::sync::Mutex;
 static USER_CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
 static GROUP_CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
 
+/// The rows of a listing that pass the hidden-file and name filters, with the
+/// totals the status bar shows.
+#[derive(Default)]
+pub struct VisibleRows {
+    pub rows: Vec<Row>,
+    pub dirs: u32,
+    pub files: u32,
+    pub bytes: u64,
+}
+
+/// Reduce a raw listing to what the Lister shows: drops the `.opusdm` folder,
+/// hidden entries unless `show_hidden`, and files rejected by `filter`
+/// (directories are never name-filtered). Directories take their remembered
+/// size from `dir_size`. Totals count only the kept rows.
+pub fn visible_rows(
+    rows: Vec<Row>,
+    show_hidden: bool,
+    filter: &opusdm_ipc::NameFilter,
+    dir_size: impl Fn(&str) -> Option<u64>,
+) -> VisibleRows {
+    let mut out = VisibleRows::default();
+    for mut row in rows {
+        if row.name == opusdm_iconview::scan::OPUSDM_DIR {
+            continue;
+        }
+        if row.is_dir {
+            if let Some(size) = dir_size(&row.name) {
+                row.size = size;
+            }
+        }
+        if !show_hidden && row.name.starts_with('.') {
+            continue;
+        }
+        if !row.is_dir && !filter.allows(&row.name) {
+            continue;
+        }
+        if row.is_dir {
+            out.dirs += 1;
+        } else {
+            out.files += 1;
+            out.bytes += row.size;
+        }
+        out.rows.push(row);
+    }
+    out
+}
+
 /// Look `id` up in `cache`, calling `resolve` (and remembering the answer) on a
 /// miss. A poisoned lock just skips the cache.
 fn cached_name(cache: &Mutex<Option<HashMap<u32, String>>>, id: u32, resolve: fn(u32) -> String) -> String {
@@ -470,6 +517,27 @@ mod tests {
         assert_eq!(format_size_as(Gigabytes, false, 3 * 1024 * 1024 * 1024), "3.00 GB");
         assert_eq!(format_size_as(Auto, false, 1023), "1023 B");
         assert_eq!(format_size_as(Auto, false, 1024), "1.0K");
+    }
+
+    #[test]
+    fn visible_rows_filters_and_totals_what_is_kept() {
+        let rows = vec![
+            row("src", true, 0, 0),
+            row(".git", true, 0, 0),
+            row(opusdm_iconview::scan::OPUSDM_DIR, true, 0, 0),
+            row("a.rs", false, 10, 0),
+            row("b.txt", false, 5, 0),
+            row(".hidden", false, 100, 0),
+        ];
+        let filter = opusdm_ipc::NameFilter::new("*.rs", "");
+        let out = visible_rows(rows.clone(), false, &filter, |name| (name == "src").then_some(4096));
+        let names: Vec<_> = out.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["src", "a.rs"], "hidden, .opusdm and non matching files dropped");
+        assert_eq!((out.dirs, out.files, out.bytes), (1, 1, 10));
+        assert_eq!(out.rows[0].size, 4096, "the remembered directory size is applied");
+
+        let all = visible_rows(rows, true, &opusdm_ipc::NameFilter::new("", ""), |_| None);
+        assert_eq!((all.dirs, all.files, all.bytes), (2, 3, 115));
     }
 
     #[test]
