@@ -27,8 +27,8 @@ pub fn attach(ui: &Rc<Ui>) {
     let row = &ui.button_row;
     let icon_size = 18;
 
-    let copy_btn = crate::icons::icon_button(crate::icons::SVG_COPY, "Copy (Source -> Dest)", icon_size);
-    let move_btn = crate::icons::icon_button(crate::icons::SVG_MOVE, "Move (Source -> Dest)", icon_size);
+    let copy_btn = crate::icons::icon_button(crate::icons::SVG_COPY, "Copy (Source -> Dest). Right click: Copy As...", icon_size);
+    let move_btn = crate::icons::icon_button(crate::icons::SVG_MOVE, "Move (Source -> Dest). Right click: Move As...", icon_size);
     let delete_btn = crate::icons::icon_button(crate::icons::SVG_DELETE, "Delete", icon_size);
     let mkdir_btn = crate::icons::icon_button(crate::icons::SVG_MKDIR, "Make Directory", icon_size);
     let newfile_btn = crate::icons::icon_button(crate::icons::SVG_NEWFILE, "New File", icon_size);
@@ -186,7 +186,27 @@ pub fn attach(ui: &Rc<Ui>) {
     sync_role_buttons(ui);
 }
 
+/// The "As..." command a right click on the Copy / Move button runs.
+fn as_command(op: &Op) -> Option<crate::keys::CommandId> {
+    match op {
+        Op::Copy => Some(crate::keys::CommandId::CopyAs),
+        Op::Move => Some(crate::keys::CommandId::MoveAs),
+        _ => None,
+    }
+}
+
 fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
+    // Right click: the "As..." variant (naming dialog) of the same operation.
+    if let Some(cmd) = as_command(&op) {
+        let ui = ui.clone();
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+        gesture.connect_pressed(move |g, _, _, _| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            crate::palette::execute_command(&ui, cmd.clone());
+        });
+        btn.add_controller(gesture);
+    }
     let ui = ui.clone();
     btn.connect_clicked(move |_| {
         if let Err(msg) = resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
@@ -428,6 +448,14 @@ pub fn prompt_rename(
 mod tests {
     use super::*;
     use crate::client::Roles;
+
+    #[test]
+    fn right_click_on_copy_and_move_runs_the_as_variants() {
+        use crate::keys::CommandId;
+        assert_eq!(as_command(&Op::Copy), Some(CommandId::CopyAs));
+        assert_eq!(as_command(&Op::Move), Some(CommandId::MoveAs));
+        assert_eq!(as_command(&Op::Delete), None);
+    }
 
     #[test]
     fn the_hidden_toggle_icon_follows_its_state() {
