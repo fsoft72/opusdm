@@ -51,6 +51,9 @@ pub enum FnEvent {
         dst: opusdm_ipc::FileMeta,
         reply: Sender<Resolution>,
     },
+    /// A `Confirm` step asks the user `message`; `reply` gets their answer. A
+    /// dropped `reply` (nobody to ask) fails the step.
+    Confirm { step_idx: usize, message: String, reply: Sender<bool> },
     /// Every step finished successfully.
     AllDone,
 }
@@ -86,6 +89,9 @@ fn run_steps(
         let result = match step {
             FnStep::Internal { cmd: InternalCmd::ChangeDir, args } => {
                 run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx)
+            }
+            FnStep::Internal { cmd: InternalCmd::Confirm, args } => {
+                run_confirm(run_id, step_idx, args, &source, dest, events_tx)
             }
             FnStep::Internal { cmd: InternalCmd::SetBackground, args } => {
                 run_set_background(run_id, step_idx, args, &source, dest, events_tx)
@@ -249,6 +255,33 @@ fn bank_exists(name: &str) -> bool {
     opusdm_ipc::buttonbank::Banks::load().get_by_name(name).is_some()
 }
 
+/// Run a `Confirm` step: expand the question, ask through the hub and wait.
+/// Anything but a yes stops the function.
+fn run_confirm(
+    run_id: u64,
+    step_idx: usize,
+    args: &InternalArgs,
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let template = args.get("message").unwrap_or("");
+    let message = expand_text(template, source, dest).map_err(expand_err_msg)?;
+    if message.trim().is_empty() {
+        return Err("Confirm: no question given".to_string());
+    }
+    let (reply, answer) = channel::<bool>();
+    let _ = events_tx.send((run_id, FnEvent::Confirm { step_idx, message, reply }));
+    match answer.recv() {
+        Ok(true) => {
+            let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+            Ok(())
+        }
+        Ok(false) => Err("Confirm: stopped by the user".to_string()),
+        Err(_) => Err("Confirm: nobody was there to answer".to_string()),
+    }
+}
+
 /// Run a bank step: check the named bank exists (`exists`), then hand the
 /// action to the hub. No selection is needed. An empty or unknown name fails
 /// the step and emits nothing.
@@ -287,6 +320,7 @@ fn run_internal(
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
     match cmd {
+        InternalCmd::Confirm => unreachable!("Confirm is handled by run_confirm"),
         InternalCmd::ChangeDir => unreachable!("ChangeDir is handled by run_change_dir"),
         InternalCmd::SetBackground => unreachable!("SetBackground is handled by run_set_background"),
         InternalCmd::LeaveOut | InternalCmd::PutAway => {
@@ -956,5 +990,63 @@ mod tests {
         run_steps(1, &steps, &src, None, &tx);
         drop(tx);
         assert!(matches!(drain(rx).last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("not found")));
+    }
+
+    fn confirm_steps(message: &str) -> Vec<FnStep> {
+        let mut args = BTreeMap::new();
+        args.insert("message".to_string(), message.to_string());
+        vec![
+            FnStep::Internal { cmd: InternalCmd::Confirm, args: InternalArgs(args) },
+            FnStep::External { argv: vec!["echo".into(), "after".into()], cwd_source: true },
+        ]
+    }
+
+    /// Run `steps`, answering every Confirm with `answer` (`None` drops it).
+    fn run_answering(steps: &[FnStep], answer: Option<bool>) -> (Vec<String>, Vec<FnEvent>) {
+        let (tx, rx) = channel();
+        let src = ctx(&["/tmp/a.txt"], "/tmp");
+        let mut asked = Vec::new();
+        let mut others = Vec::new();
+        std::thread::scope(|scope| {
+            let src = &src;
+            // The thread owns the only sender, so the loop ends with the run.
+            scope.spawn(move || run_steps(1, steps, src, None, &tx));
+            for (_, ev) in rx {
+                match ev {
+                    FnEvent::Confirm { message, reply, .. } => {
+                        asked.push(message);
+                        if let Some(a) = answer {
+                            let _ = reply.send(a);
+                        }
+                    }
+                    other => others.push(other),
+                }
+            }
+        });
+        (asked, others)
+    }
+
+    #[test]
+    fn confirm_yes_lets_the_function_go_on_and_expands_the_question() {
+        let (asked, events) = run_answering(&confirm_steps("Really touch {o}?"), Some(true));
+        assert_eq!(asked, vec!["Really touch a.txt?".to_string()]);
+        assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+        assert!(events.iter().any(|e| matches!(e, FnEvent::Output { line, .. } if line == "after")));
+    }
+
+    #[test]
+    fn confirm_no_or_no_answer_aborts_before_the_next_step() {
+        for answer in [Some(false), None] {
+            let (_, events) = run_answering(&confirm_steps("Sure?"), answer);
+            assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, .. })), "{answer:?}");
+            assert!(!events.iter().any(|e| matches!(e, FnEvent::Output { line, .. } if line == "after")));
+        }
+    }
+
+    #[test]
+    fn confirm_without_a_question_fails_without_asking() {
+        let (asked, events) = run_answering(&confirm_steps("  "), Some(true));
+        assert!(asked.is_empty());
+        assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
     }
 }

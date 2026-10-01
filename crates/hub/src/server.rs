@@ -349,6 +349,8 @@ struct Hub {
     /// Connection that must answer each Function conflict prompt in `replies`
     /// (by request id), so a closed Lister releases the job waiting on it.
     fn_conflict_owners: HashMap<u64, u64>,
+    /// Pending `Confirm` questions: request id to (answer channel, asked Lister).
+    confirms: HashMap<u64, (Sender<bool>, u64)>,
     next_req: u64,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
@@ -586,6 +588,12 @@ impl Hub {
             ToHub::PresentLister(target) => {
                 if let Some(c) = self.conns.get_mut(&target.0).filter(|c| c.registered) {
                     let _ = c.tx.send(ToLister::Present.into());
+                }
+            }
+
+            ToHub::ConfirmReply { req_id, ok } => {
+                if let Some((tx, _)) = self.confirms.remove(&req_id) {
+                    let _ = tx.send(ok);
                 }
             }
 
@@ -963,6 +971,10 @@ impl Hub {
             self.function_conflict(run_id, path, src, dst, reply);
             return;
         }
+        if let crate::functions::FnEvent::Confirm { message, reply, .. } = ev {
+            self.function_confirm(run_id, message, reply);
+            return;
+        }
         let Some(&requester) = self.function_requesters.get(&run_id) else { return };
         let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
         if terminal {
@@ -1018,7 +1030,9 @@ impl Hub {
         let msg = match ev {
             crate::functions::FnEvent::ChangeDir { path } => ToLister::GoTo { path },
             // Applied above, before this match.
-            crate::functions::FnEvent::SetBackground { .. } | crate::functions::FnEvent::Conflict { .. } => return,
+            crate::functions::FnEvent::SetBackground { .. }
+            | crate::functions::FnEvent::Conflict { .. }
+            | crate::functions::FnEvent::Confirm { .. } => return,
             crate::functions::FnEvent::LeaveOut { .. }
             | crate::functions::FnEvent::PutAway { .. }
             | crate::functions::FnEvent::Hide
@@ -1067,6 +1081,28 @@ impl Hub {
         }
     }
 
+    /// A `Confirm` step of run `run_id` wants an answer from the Lister that
+    /// started the run. Without one (script event, headless, Lister gone) the
+    /// reply is dropped, which fails the step: a confirmation nobody gave is
+    /// not a yes.
+    fn function_confirm(&mut self, run_id: u64, message: String, reply: Sender<bool>) {
+        let owner = self
+            .function_requesters
+            .get(&run_id)
+            .copied()
+            .filter(|cid| *cid != HUB_REQUESTER && self.conns.contains_key(cid));
+        let Some(cid) = owner else {
+            opusdm_ipc::err_log!("hub", "function run {run_id}: Confirm has nobody to ask, the step fails");
+            return;
+        };
+        let req_id = self.next_req;
+        self.next_req += 1;
+        self.confirms.insert(req_id, (reply, cid));
+        if let Some(c) = self.conns.get_mut(&cid) {
+            let _ = c.tx.send(ToLister::ConfirmPrompt { req_id, message }.into());
+        }
+    }
+
     /// Clean up any Function-run bookkeeping referencing `cid`, called when
     /// its connection drops. A pending run waiting on `cid` for one of its
     /// two selections can now never complete (its other side, if any, would
@@ -1089,6 +1125,9 @@ impl Hub {
         self.selection_waiters.remove(&cid);
         self.selection_waiters.retain(|_, queue| !queue.is_empty());
         self.function_requesters.retain(|_, requester| *requester != cid);
+        // A question to a closed Lister is never answered: dropping the sender
+        // fails the waiting step instead of hanging it.
+        self.confirms.retain(|_, (_, owner)| *owner != cid);
         // Dropping the reply senders releases the jobs waiting on this Lister.
         let orphaned: Vec<u64> =
             self.fn_conflict_owners.iter().filter(|(_, owner)| **owner == cid).map(|(req, _)| *req).collect();
@@ -1442,6 +1481,7 @@ fn owner_loop(
         jobs: HashMap::new(),
         replies: HashMap::new(),
         fn_conflict_owners: HashMap::new(),
+        confirms: HashMap::new(),
         next_req: 1,
         evt_tx,
         on_spawn,
@@ -1975,6 +2015,39 @@ mod tests {
             _ => None,
         });
         assert_eq!(op, Op::Delete);
+    }
+
+    /// Run a Confirm step from one Lister and answer the question with `ok`.
+    /// Returns whether the function finished (`true`) or failed (`false`).
+    fn confirm_round_trip(ok: bool) -> bool {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        let mut args = std::collections::BTreeMap::new();
+        args.insert("message".to_string(), "Go on?".to_string());
+        let steps = vec![FnStep::Internal { cmd: opusdm_ipc::function::InternalCmd::Confirm, args: opusdm_ipc::function::InternalArgs(args) }];
+        send(&mut a, &ToHub::RunFunction { steps }).unwrap();
+        recv_until(&mut a, |m| matches!(m, ToLister::QuerySelection).then_some(()));
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+        let (req_id, message) = recv_until(&mut a, |m| match m {
+            ToLister::ConfirmPrompt { req_id, message } => Some((req_id, message)),
+            _ => None,
+        });
+        assert_eq!(message, "Go on?");
+        send(&mut a, &ToHub::ConfirmReply { req_id, ok }).unwrap();
+        recv_until(&mut a, |m| match m {
+            ToLister::FunctionDone => Some(true),
+            ToLister::FunctionFailed { .. } => Some(false),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_confirm_step_waits_for_the_users_answer() {
+        assert!(confirm_round_trip(true), "a yes lets the function finish");
+        assert!(!confirm_round_trip(false), "a no stops it");
     }
 
     #[test]

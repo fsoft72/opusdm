@@ -455,6 +455,7 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::CloseBank,
     InternalCmd::ToggleBank,
     InternalCmd::HideBank,
+    InternalCmd::Confirm,
 ];
 
 /// Ask which `InternalCmd` to add, append it with empty args, and rebuild.

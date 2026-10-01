@@ -228,6 +228,9 @@ Type `sftp://user@host[:port]/path`, `ftp://...` or `ftps://...` in the path bar
 - Format: XChaCha20-Poly1305 in 64 KiB chunks, key from the password with Argon2id and a random salt per file. Tampering, truncation and a wrong password are detected; a failed file leaves nothing behind and the rest still run. **There is no password recovery.**
 - The password travels from the Lister to the hub over the local socket, in memory only; it is never written to disk or to logs.
 
+### 3.10k Confirm step
+The **Confirm** command asks a yes / no question inside a function; the function stops there unless the user confirms. The question may use the usual codes (`{o}`, `{f}`, ...). A function started with no Lister to ask (script events) stops at a Confirm step.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

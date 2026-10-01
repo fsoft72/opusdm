@@ -93,6 +93,8 @@ pub enum InternalCmd {
     ToggleBank,
     /// Hide a button bank's window without closing it.
     HideBank,
+    /// Ask the user to confirm; the function stops unless they do.
+    Confirm,
 }
 
 impl InternalCmd {
@@ -131,6 +133,7 @@ impl InternalCmd {
             InternalCmd::CloseBank => "Close Bank",
             InternalCmd::ToggleBank => "Toggle Bank",
             InternalCmd::HideBank => "Hide Bank",
+            InternalCmd::Confirm => "Confirm",
         }
     }
 }
@@ -267,6 +270,12 @@ pub mod schema {
                 label: "Button bank",
                 required: true,
                 kind: ParamKind::Bank,
+            }],
+            InternalCmd::Confirm => &[ParamSpec {
+                key: "message",
+                label: "Question to ask (may use {f}, {o}, ...)",
+                required: true,
+                kind: ParamKind::PathTemplate,
             }],
             InternalCmd::SetBackground => &[
                 ParamSpec {

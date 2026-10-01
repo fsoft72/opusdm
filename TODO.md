@@ -24,7 +24,6 @@ To be prioritised after section 1 is finished.
 - [ ] F-50 Custom panel title format codes
 - [ ] F-28 Icon mode and Icon Action mode listers
 - [ ] Minor commands (F-40..F-49):
-  - [ ] F-40 Confirm (requester step inside functions)
   - [ ] F-41 Busy / function running indicator
   - [ ] F-42 Internal CLI (command line interpreting internal commands)
   - [ ] F-43 ScanDir options (NEW, MODE, CONTAINER)
@@ -56,6 +55,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 
 ## 5. Completed
 
+- [x] F-40 Confirm (requester step inside functions) (palette-less: it is a function step; headless runs fail the step)
 - [x] F-01 Function Editor and internal command language (core: data model, placeholders, `functions.json`, hub execution, editor UI, Command Palette)
   - [x] F-01 follow-up: per-function hotkey (done through hotkeys.json, F-03)
   - [x] F-01 follow-up: conflict prompt for Copy/Move steps (Delete never conflicts; runs with no Lister to ask still skip)
@@ -72,7 +72,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 - [x] F-12 MakeLink / MakeLinkAs (hard and symbolic)
 - [x] F-13 Join / Split
 - [x] F-14 Encrypt / Decrypt (palette only; no internal commands for functions yet; the password is not zeroized in memory)
-- [x] F-15 Recursive filter for operations (Copy/Move/Delete now; Protect/DateStamp/Comment hook in when they exist)
+- [x] F-40 Confirm (requester step inside functions)\n- [x] F-15 Recursive filter for operations (Copy/Move/Delete now; Protect/DateStamp/Comment hook in when they exist)
 - [x] F-16 Full Reader: Read / AnsiRead / HexRead / SmartRead
 - [x] F-17 Show (image slideshow)
 - [x] F-19 FindFile (search by name across tree)

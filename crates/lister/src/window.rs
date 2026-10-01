@@ -531,6 +531,12 @@ impl Ui {
             ToLister::Shutdown => self.window.close(),
             // Progress is shown centrally by the hub's progress window now.
             ToLister::JobProgress { .. } => {}
+            ToLister::ConfirmPrompt { req_id, message } => {
+                let ui = self.clone();
+                opusdm_ui::requester(&self.window, "Confirm", &message, None, &[("OK", true), ("Cancel", false)], move |ok| {
+                    let _ = ui.hub.client.send(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
+                });
+            }
             ToLister::RemoteTransfer { op, srcs, dest_dir } => self.run_remote_transfer(op, srcs, dest_dir),
             ToLister::JobDone { job_id, outcome, errors } => {
                 crate::actions::on_job_done(self, job_id, &outcome, &errors);
