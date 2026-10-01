@@ -84,6 +84,8 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::FindKey, title: Cow::Borrowed("Find Key..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageUserMenu, title: Cow::Borrowed("Edit User Menu..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::FtpBook, title: Cow::Borrowed("FTP / SFTP Address Book..."), category: Cow::Borrowed("Network"), shortcut: None },
+        CommandItem { id: CommandId::FtpQuit, title: Cow::Borrowed("FTP Quit (close all connections)"), category: Cow::Borrowed("Network"), shortcut: None },
         CommandItem { id: CommandId::ManageFiletypes, title: Cow::Borrowed("Edit File Types..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::CreateFiletype, title: Cow::Borrowed("Filetype Creator (from selected file)..."), category: Cow::Borrowed("Functions"), shortcut: None },
 ];
@@ -353,7 +355,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             ui.reload();
         }
         CommandId::ParentDir => {
-            let parent = ui.cwd.borrow().parent().map(std::path::PathBuf::from);
+            let parent = crate::remote::parent_of(&ui.cwd.borrow());
             if let Some(p) = parent {
                 ui.navigate_to(&p);
             }
@@ -404,6 +406,12 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::ManageScripts => {
             crate::scripts_editor::open_scripts_editor(ui);
+        }
+        CommandId::FtpBook => {
+            crate::remote_ui::open_address_book(ui);
+        }
+        CommandId::FtpQuit => {
+            ui.quit_remote();
         }
         CommandId::ManageFiletypes => {
             crate::filetypes_ui::open_editor(ui, None);

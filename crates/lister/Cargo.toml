@@ -12,6 +12,7 @@ path = "src/main.rs"
 opusdm-ipc = { path = "../ipc" }
 opusdm-ui = { path = "../ui" }
 opusdm-iconview = { path = "../iconview" }
+opusdm-ftp = { path = "../ftp" }
 async-channel.workspace = true
 libc.workspace = true
 gtk4.workspace = true

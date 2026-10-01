@@ -211,6 +211,14 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 
 **Conflicts inside functions.** When a Copy or Move step finds a name already at the destination, the Lister that started the function shows the usual Overwrite / Skip / Overwrite All / Skip All / Cancel requester and the step goes on with the answer. A function started with no Lister to ask (a script event or a Shutdown hook) skips the existing entry. Delete steps never conflict.
 
+### 3.10i FTP, FTPS and SFTP
+Type `sftp://user@host[:port]/path`, `ftp://...` or `ftps://...` in the path bar (or use **FTP / SFTP Address Book...** in the palette) to browse a server like a folder. Backspace, the parent button and double click work as usual.
+- **Address book** (`~/.config/opusdm/ftp.json`): name, protocol, host, port, user, start folder, FTP passive mode and, for FTPS, certificate verification. **Connect** opens the site; the box at the top opens any address.
+- **Passwords** are asked when needed and kept in memory only. SFTP tries your ssh-agent and `~/.ssh/id_*` keys first. FTP without a user logs in as anonymous.
+- **Host keys** (SFTP) are checked against `~/.config/opusdm/known_hosts.json`. A new host shows its SHA-256 fingerprint and asks before connecting; a changed key is refused.
+- **Copy** from a remote folder downloads the selection (folders included) to a scratch folder in the system temp directory and then runs the normal Copy job to the DEST Lister. Double click on a remote file downloads it and opens it with the default application. Scratch folders older than a day are removed.
+- Remote folders are **read-only**: Move, Delete and a remote DEST are refused. **FTP Quit** closes every connection.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

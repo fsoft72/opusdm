@@ -18,6 +18,8 @@ mod context_menu;
 mod dircache;
 mod dnd;
 mod filetype_form;
+mod remote;
+mod remote_ui;
 mod filetypes_ui;
 mod filter;
 mod format_apply;

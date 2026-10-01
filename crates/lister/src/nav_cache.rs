@@ -33,20 +33,31 @@ impl Ui {
         on_done: impl Fn() + 'static,
     ) {
         crate::dlog!("navigate {} (cache: {use_cache})", dir.display());
+        // A remote folder needs a connection first; the attempt is repeated
+        // once it exists. Nothing changes if the user gives up.
+        let remote_url = crate::remote::url_of(dir);
+        if let Some(url) = remote_url.as_ref().filter(|u| self.remote_session(u).is_none()) {
+            let target = dir.to_path_buf();
+            self.ensure_remote(url, move |ui| ui.navigate_from(&target, false, history_before, on_done));
+            return;
+        }
         let previous = self.cwd_path();
         let gen = self.nav_generation.get() + 1;
         self.nav_generation.set(gen);
 
-        let is_archive = crate::archive::parse_archive_path(dir).is_some();
+        let is_archive = crate::archive::parse_archive_path(dir).is_some() || remote_url.is_some();
         let cached = if use_cache && !is_archive { self.dir_cache.borrow_mut().get(dir) } else { None };
         if let Some(rows) = &cached {
             self.apply_navigation(dir, Ok((**rows).clone()));
         }
 
         let dir_owned = dir.to_path_buf();
+        let session = remote_url.as_ref().and_then(|u| self.remote_session(u));
         let (tx, rx) = async_channel::bounded::<io::Result<Vec<Row>>>(1);
         std::thread::spawn(move || {
-            let result = if let Some((arch, inner)) = crate::archive::parse_archive_path(&dir_owned) {
+            let result = if let (Some(url), Some(session)) = (crate::remote::url_of(&dir_owned), session.as_ref()) {
+                crate::remote_ui::read_rows(session, &url)
+            } else if let Some((arch, inner)) = crate::archive::parse_archive_path(&dir_owned) {
                 crate::archive::read_archive_rows(&arch, &inner)
             } else {
                 read_dir_rows(&dir_owned)
@@ -81,10 +92,16 @@ impl Ui {
         previous: std::path::PathBuf,
         history_before: crate::history::History,
     ) -> bool {
-        let is_archive = crate::archive::parse_archive_path(dir).is_some();
+        let remote_url = crate::remote::url_of(dir);
+        let is_archive = crate::archive::parse_archive_path(dir).is_some() || remote_url.is_some();
         let rows = match result {
             Ok(rows) => rows,
             Err(e) => {
+                // A failed remote listing usually means a dead connection:
+                // forget it so the next visit connects again.
+                if let Some(url) = &remote_url {
+                    self.drop_remote_session(url);
+                }
                 // The directory is gone or unreadable: forget any copy of it.
                 if !is_archive && self.dir_cache.borrow_mut().remove(dir) {
                     self.report_cache();

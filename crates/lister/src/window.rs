@@ -180,6 +180,8 @@ pub struct Ui {
     pub temp_format: RefCell<Option<(PathBuf, opusdm_ipc::ListerFormat)>>,
     /// Recently read directory listings (raw rows, before the Show / Hide filter).
     pub dir_cache: RefCell<crate::dircache::DirCache>,
+    /// Open FTP / SFTP connections (F-39).
+    pub remote: crate::remote_ui::RemoteState,
     /// Back / forward history.
     pub history: RefCell<crate::history::History>,
     /// Back / forward buttons and the history drop-down.
@@ -262,6 +264,8 @@ impl Ui {
             Err(e) => {
                 if let Some((arch, _)) = crate::archive::parse_archive_path(dir) {
                     self.status_bar.job_line.set_text(&format!("cannot read archive {}: {e}", arch.display()));
+                } else if crate::remote::url_of(dir).is_some() {
+                    self.status_bar.job_line.set_text(&format!("cannot open {dir}: {e}", dir = dir.display()));
                 } else {
                     self.status_bar.job_line.set_text(&format!("cannot open {}: {e}", dir.display()));
                 }
@@ -273,7 +277,7 @@ impl Ui {
             if let Some(parent) = arch.parent() {
                 self.terminal.sync_cwd(parent);
             }
-        } else {
+        } else if crate::remote::url_of(dir).is_none() {
             self.terminal.sync_cwd(dir);
         }
         *self.cwd.borrow_mut() = dir.to_path_buf();
@@ -664,6 +668,20 @@ impl Ui {
             return;
         }
         let target = cwd.join(&row.name);
+        if let Some(url) = crate::remote::url_of(&cwd) {
+            if row.is_dir {
+                self.navigate_to(&target);
+            } else {
+                let item = opusdm_ftp::RemoteItem { path: url.join(&row.name).path, name: row.name.clone(), is_dir: false };
+                self.download_remote(&url, vec![item], |_ui, paths| {
+                    if let Some(path) = paths.first() {
+                        let uri = format!("file://{}", path.to_string_lossy());
+                        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                    }
+                });
+            }
+            return;
+        }
         if row.is_dir {
             self.navigate_to(&target);
         } else if crate::archive::is_archive_file(&target) {
@@ -753,7 +771,7 @@ impl Ui {
     fn sync_watch(&self, dir: &Path) {
         let Some(watcher) = &self.hub.watcher else { return };
         let enabled = self.hub.settings.borrow().behavior.auto_refresh;
-        if enabled && crate::archive::parse_archive_path(dir).is_none() {
+        if enabled && crate::archive::parse_archive_path(dir).is_none() && crate::remote::url_of(dir).is_none() {
             watcher.watch(dir);
         } else {
             watcher.unwatch();

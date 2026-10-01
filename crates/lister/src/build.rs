@@ -438,6 +438,7 @@ fn build_window(
         format: RefCell::new(opusdm_ipc::ListerFormat::builtin()),
         temp_format: RefCell::new(None),
         dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
+        remote: crate::remote_ui::RemoteState::default(),
         history: RefCell::new(crate::history::History::new()),
         nav_history: crate::window::NavHistory {
             back: back_btn.clone(),
@@ -497,7 +498,7 @@ fn build_window(
                         .unwrap_or_default();
                     ui.navigate_to(&crate::archive::make_archive_path(&arch, &parent_inner));
                 }
-            } else if let Some(p) = cwd.parent().map(PathBuf::from) {
+            } else if let Some(p) = crate::remote::parent_of(&cwd) {
                 ui.navigate_to(&p);
             }
         });
@@ -514,6 +515,16 @@ fn build_window(
         let ui = ui.clone();
         path_entry.connect_activate(move |entry| {
             let candidate = PathBuf::from(entry.text().to_string());
+            if opusdm_ftp::is_remote(entry.text().as_str()) {
+                match opusdm_ftp::RemoteUrl::parse(entry.text().as_str()) {
+                    Ok(url) => ui.navigate_to(&crate::remote::path_of(&url)),
+                    Err(e) => {
+                        crate::actions::flash(&ui, &e);
+                        ui.refresh_path_entry();
+                    }
+                }
+                return;
+            }
             let is_arch_sub = crate::archive::parse_archive_path(&candidate).is_some();
             let is_arch_file = crate::archive::is_archive_file(&candidate) && candidate.is_file();
             if candidate.is_dir() || is_arch_sub || is_arch_file {

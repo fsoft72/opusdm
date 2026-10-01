@@ -46,10 +46,22 @@ pub fn validate_job(srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `path` is an ftp://, ftps:// or sftp:// location.
+fn is_remote_path(path: &Path) -> bool {
+    let text = path.to_string_lossy().to_ascii_lowercase();
+    ["ftp://", "ftps://", "sftp://"].iter().any(|p| text.starts_with(p))
+}
+
 /// Validate the parameters of `op`. Copy and Move refuse in-place transfers;
 /// the "As" variants and Duplicate legitimately land in the source directory,
-/// so they only need a non-empty selection. Other ops need no check.
+/// so they only need a non-empty selection. Other ops need no check. Remote
+/// locations are refused for every op.
 pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
+    // Remote (ftp://, ftps://, sftp://) locations can be browsed and
+    // downloaded from, but the job engine only works on local files.
+    if std::iter::once(dest_dir).chain(srcs.iter().map(PathBuf::as_path)).any(is_remote_path) {
+        return Err("remote locations are read-only: copy from them to a local DEST".into());
+    }
     match op {
         Op::Copy | Op::Move => validate_job(srcs, dest_dir),
         Op::CopyAs { .. }
@@ -240,6 +252,16 @@ pub fn map_progress(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_locations_are_refused_as_source_or_destination() {
+        let local = PathBuf::from("/tmp/a");
+        let remote = PathBuf::from("sftp://me@host/data/a");
+        assert!(validate_op(&Op::Copy, &[local.clone()], Path::new("sftp://host/dest")).is_err());
+        assert!(validate_op(&Op::Delete, &[remote.clone()], Path::new("/tmp")).is_err());
+        assert!(validate_op(&Op::Copy, &[PathBuf::from("FTP://h/x")], Path::new("/tmp")).is_err());
+        assert!(validate_op(&Op::Copy, &[local], Path::new("/other")).is_ok());
+    }
+
     use super::*;
     use opusdm_ipc::Op;
     use std::sync::mpsc::channel;
