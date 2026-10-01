@@ -2,6 +2,7 @@
 
 ## 2026-10-01
 
+- Release: version bumped to 0.5.0 (`opusdm_ui::VERSION` shown in the About requester, every crate and `Cargo.lock`).
 - Docs: `OpusDM-Features-Guide.md` updated with the new features: Root/Parent variants and bookmarks (3.7, 3.8), Copy As/Move As on several items, rename preselection, Encrypt/Decrypt (7.10), FTP/FTPS/SFTP (11.3), size reuse and force rescan, View Font (12.4), Confirm, Run, Change Directory options, function conflicts, busy indicator and Command Line (15.4 to 15.8), File Types (16.5), full themes and the Theme Editor (19.6); the "not available yet" list follows `TODO.md`.
 - Docs: new `OpusDM-Features-Guide.md`, a step by step tour in Italian of every OpusDM feature (setup, Lister, SOURCE/DEST, file operations, search, viewer, terminal, archives, Functions, hotkeys, user menu, script events, desktop, Button Banks, settings), with the keys to press and where to click.
 - Docs: `TODO.md` reorganised by priority: to do now (F-06, conflict prompt UI, F-39, F-14), to do later, not classified, will not be done (F-25, F-26, F-27, F-47) and completed.
