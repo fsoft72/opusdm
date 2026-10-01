@@ -332,18 +332,22 @@ use std::sync::Mutex;
 static USER_CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
 static GROUP_CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
 
+/// Look `id` up in `cache`, calling `resolve` (and remembering the answer) on a
+/// miss. A poisoned lock just skips the cache.
+fn cached_name(cache: &Mutex<Option<HashMap<u32, String>>>, id: u32, resolve: fn(u32) -> String) -> String {
+    let Ok(mut guard) = cache.lock() else { return resolve(id) };
+    let names = guard.get_or_insert_with(HashMap::new);
+    if let Some(name) = names.get(&id) {
+        return name.clone();
+    }
+    let resolved = resolve(id);
+    names.insert(id, resolved.clone());
+    resolved
+}
+
 /// Human-readable user name or UID fallback (cached globally).
 pub fn format_user(uid: u32) -> String {
-    if let Ok(mut guard) = USER_CACHE.lock() {
-        let cache = guard.get_or_insert_with(HashMap::new);
-        if let Some(name) = cache.get(&uid) {
-            return name.clone();
-        }
-        let resolved = resolve_user_nss(uid);
-        cache.insert(uid, resolved.clone());
-        return resolved;
-    }
-    resolve_user_nss(uid)
+    cached_name(&USER_CACHE, uid, resolve_user_nss)
 }
 
 fn resolve_user_nss(uid: u32) -> String {
@@ -352,16 +356,7 @@ fn resolve_user_nss(uid: u32) -> String {
 
 /// Human-readable group name or GID fallback (cached globally).
 pub fn format_group(gid: u32) -> String {
-    if let Ok(mut guard) = GROUP_CACHE.lock() {
-        let cache = guard.get_or_insert_with(HashMap::new);
-        if let Some(name) = cache.get(&gid) {
-            return name.clone();
-        }
-        let resolved = resolve_group_nss(gid);
-        cache.insert(gid, resolved.clone());
-        return resolved;
-    }
-    resolve_group_nss(gid)
+    cached_name(&GROUP_CACHE, gid, resolve_group_nss)
 }
 
 fn resolve_group_nss(gid: u32) -> String {
@@ -475,6 +470,20 @@ mod tests {
         assert_eq!(format_size_as(Gigabytes, false, 3 * 1024 * 1024 * 1024), "3.00 GB");
         assert_eq!(format_size_as(Auto, false, 1023), "1023 B");
         assert_eq!(format_size_as(Auto, false, 1024), "1.0K");
+    }
+
+    #[test]
+    fn cached_name_resolves_once_per_id() {
+        static CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn resolve(id: u32) -> String {
+            CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            format!("name{id}")
+        }
+        assert_eq!(cached_name(&CACHE, 7, resolve), "name7");
+        assert_eq!(cached_name(&CACHE, 7, resolve), "name7");
+        assert_eq!(cached_name(&CACHE, 8, resolve), "name8");
+        assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]

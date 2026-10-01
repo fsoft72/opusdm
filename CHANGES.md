@@ -333,3 +333,4 @@
 - Refactor: `wire_transfer` handles the archive case first and then resolves the selection and submits once for local and remote folders (they were identical).
 - Perf: changing the Size Format rebinds the rows (`touch_rows`, selection restored by name) instead of re-reading the directory.
 - Fix: the Modified column computes the timezone offset per timestamp (`local_tz_offset_secs_at`) at bind time, so it follows DST changes and a file from another season keeps the offset that was valid on its date. Test with `TZ=Europe/Rome`.
+- Refactor: `format_user` and `format_group` share one `cached_name` helper (tested: one resolve per id).

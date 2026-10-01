@@ -45,7 +45,7 @@
   - File(s): `crates/lister/src/size_format.rs`
 - [x] **Timezone offset is computed once per column factory** - `local_tz_offset_secs()` is captured when the Modified column is built, so after a DST change every Lister shows times off by one hour until it is reopened. Compute it per bind (cheap) or refresh it on navigation.
   - File(s): `crates/lister/src/columns.rs`
-- [ ] **User and group name caches are duplicated** - `format_user` and `format_group` repeat the same `Mutex<Option<HashMap>>` lookup code. One generic `cached_name(cache, id, resolve)` helper removes it.
+- [x] **User and group name caches are duplicated** - `format_user` and `format_group` repeat the same `Mutex<Option<HashMap>>` lookup code. One generic `cached_name(cache, id, resolve)` helper removes it.
   - File(s): `crates/lister/src/model.rs`
 - [ ] **`save_functions` clones the whole list just to serialize it** - `&functions.to_vec()` allocates a copy; `save_json` can take the slice directly.
   - File(s): `crates/ipc/src/function.rs`
