@@ -1,8 +1,9 @@
 //! The Theme Editor: a window that edits the folder of an installed theme.
 //! Widgets read and write a `ThemeDraft` plus a list of pending file
 //! operations; nothing on disk changes until Save. The window and its
-//! signal handlers share one `Rc<Editor>`; that reference cycle lives as long
-//! as the window, which is the lifetime of the editor anyway.
+//! signal handlers share one `Rc<Editor>`. That is a reference cycle which is
+//! never broken, so the editor state leaks after the window closes; it is
+//! small and the editor is opened rarely, so this is accepted.
 
 mod colours;
 mod general;
@@ -154,7 +155,10 @@ pub fn open(parent: &gtk::ApplicationWindow, on_saved: Rc<dyn Fn(String)>) {
             }
             let go = editor.clone();
             let back = editor.clone();
-            editor.confirm_discard(move || go.load(&slug), move || back.refresh_list(back.current_slug().as_deref()));
+            editor.confirm_discard(move || {
+                go.reload(&slug);
+            },
+            move || back.refresh_list(back.current_slug().as_deref()));
         });
     }
     {
@@ -173,8 +177,9 @@ pub fn open(parent: &gtk::ApplicationWindow, on_saved: Rc<dyn Fn(String)>) {
         let editor = editor.clone();
         revert_btn.connect_clicked(move |_| {
             if let Some(slug) = editor.current_slug() {
-                editor.load(&slug);
-                editor.status.set_text("Reverted to the saved theme.");
+                if editor.reload(&slug) {
+                    editor.status.set_text("Reverted to the saved theme.");
+                }
             }
         });
     }
@@ -230,7 +235,7 @@ pub fn open(parent: &gtk::ApplicationWindow, on_saved: Rc<dyn Fn(String)>) {
     editor.refresh_list(None);
     let first = editor.slugs.borrow().first().cloned();
     if let Some(slug) = first {
-        editor.load(&slug);
+        editor.reload(&slug);
     }
     window.present();
 }
@@ -261,13 +266,25 @@ impl Editor {
         self.programmatic.set(false);
     }
 
+    /// Like `load`, but when it fails re-sync the list highlight with the
+    /// theme that is still open. Returns whether the theme was loaded.
+    fn reload(self: &Rc<Self>, slug: &str) -> bool {
+        let loaded = self.load(slug);
+        if !loaded {
+            self.refresh_list(self.current_slug().as_deref());
+        }
+        loaded
+    }
+
     /// Open theme `slug`: load its draft from disk and rebuild the tabs.
-    fn load(self: &Rc<Self>, slug: &str) {
+    /// Returns false, with the error in the status line and the previous
+    /// theme left open, when it cannot be loaded.
+    fn load(self: &Rc<Self>, slug: &str) -> bool {
         let draft = match draft::load_draft(slug) {
             Ok(d) => d,
             Err(e) => {
                 self.status.set_text(&format!("Cannot open \"{slug}\": {e}"));
-                return;
+                return false;
             }
         };
         let tabs = Tabs::new(&self.window, &draft);
@@ -276,6 +293,15 @@ impl Editor {
         }
         self.right.append(&tabs.notebook);
         *self.current.borrow_mut() = Some(Current { slug: slug.to_string(), saved: draft, ops: Rc::new(RefCell::new(Vec::new())), tabs });
+        true
+    }
+
+    /// Close the open theme: no tabs, no current theme, so nothing can be saved.
+    fn clear(&self) {
+        while let Some(child) = self.right.first_child() {
+            self.right.remove(&child);
+        }
+        *self.current.borrow_mut() = None;
     }
 
     /// Whether the open theme has unsaved changes.
@@ -327,10 +353,12 @@ impl Editor {
             self.status.set_text(&format!("Save failed: {e}"));
             return;
         }
-        self.load(&slug);
+        let loaded = self.reload(&slug);
         (self.on_saved)(slug.clone());
         let message = if apply { apply_theme(&slug) } else { "Saved.".to_string() };
-        self.status.set_text(&message);
+        if loaded {
+            self.status.set_text(&message);
+        }
     }
 
     /// Save the widgets' state plus pending operations as a new theme and open it.
@@ -359,9 +387,11 @@ impl Editor {
                 match write_theme(&slug, &copy, Some(&source), &ops) {
                     Ok(_) => {
                         editor.refresh_list(Some(&slug));
-                        editor.load(&slug);
+                        let loaded = editor.reload(&slug);
                         (editor.on_saved)(slug);
-                        editor.status.set_text("Saved as a copy.");
+                        if loaded {
+                            editor.status.set_text("Saved as a copy.");
+                        }
                     }
                     Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
                 }
@@ -416,11 +446,14 @@ impl Editor {
                     Ok(()) => {
                         editor.refresh_list(None);
                         let first = editor.slugs.borrow().first().cloned();
-                        if let Some(first) = first {
-                            editor.load(&first);
+                        let loaded = first.is_some_and(|first| editor.load(&first));
+                        if !loaded {
+                            editor.clear();
                         }
                         (editor.on_saved)(opusdm_ipc::theme::DEFAULT_THEME_SLUG.to_string());
-                        editor.status.set_text("Deleted.");
+                        if loaded {
+                            editor.status.set_text("Deleted.");
+                        }
                     }
                     Err(e) => editor.status.set_text(&format!("Cannot delete: {e}")),
                 }
@@ -431,9 +464,11 @@ impl Editor {
     /// Select and open a theme that was just created or duplicated.
     fn opened(self: &Rc<Self>, slug: String, message: &str) {
         self.refresh_list(Some(&slug));
-        self.load(&slug);
+        let loaded = self.reload(&slug);
         (self.on_saved)(slug);
-        self.status.set_text(message);
+        if loaded {
+            self.status.set_text(message);
+        }
     }
 }
 
