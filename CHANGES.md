@@ -3,6 +3,7 @@
 ## 2026-10-01
 
 - Docs: new `OpusDM-Features-Guide.md`, a step by step tour in Italian of every OpusDM feature (setup, Lister, SOURCE/DEST, file operations, search, viewer, terminal, archives, Functions, hotkeys, user menu, script events, desktop, Button Banks, settings), with the keys to press and where to click.
+- Docs: `TODO.md` reorganised by priority: to do now (F-06, conflict prompt UI, F-39, F-14), to do later, not classified, will not be done (F-25, F-26, F-27, F-47) and completed.
 
 ## 2026-09-30
 
