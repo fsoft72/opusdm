@@ -254,6 +254,12 @@ Palette (Navigation): **Go to Root**, **Open Parent in NEW Lister** and **Open R
 ### 3.10p Directory sizes: reuse and force
 Calculating directory sizes (`Space` on a folder, the context menu, or **Calculate Directory Sizes**) now remembers each result. Asking again shows the remembered sizes at once and only calculates the folders not seen yet; the sizes also stay when the folder is reloaded. **Calculate Directory Sizes (force rescan)** drops the remembered sizes of the folders it works on and measures them again. The memory is cleared after any Copy / Move / Delete job and by **Free Caches**.
 
+### 3.10q Run step
+The **Run** command starts an external program from a function. The command line is split like a shell line (quotes group words) and may use the codes `{f}`, `{o}`, ... It runs in the SOURCE folder.
+- By default the function does not wait: the step ends as soon as the program started and its output is dropped.
+- **Wait for it to finish** makes the step wait; a non-zero exit stops the function. Its output goes to the function log, like an External step.
+- **Show its output in a window** opens a text window on the Lister that started the function, filled as the program prints and left open after it ends (with the exit code). It works with or without Wait. A function started by a script event has no Lister, so it gets no window.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

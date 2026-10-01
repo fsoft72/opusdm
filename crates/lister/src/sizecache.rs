@@ -37,6 +37,7 @@ impl SizeCache {
     }
 
     /// How many sizes are remembered.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.sizes.len()
     }

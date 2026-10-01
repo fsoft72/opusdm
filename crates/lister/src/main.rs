@@ -45,6 +45,7 @@ mod menu_editor;
 mod model;
 mod nav_cache;
 mod navpath;
+mod output_window;
 mod palette;
 mod passwd;
 mod preview;

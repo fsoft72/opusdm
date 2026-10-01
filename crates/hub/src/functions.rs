@@ -56,8 +56,22 @@ pub enum FnEvent {
     /// A `Confirm` step asks the user `message`; `reply` gets their answer. A
     /// dropped `reply` (nobody to ask) fails the step.
     Confirm { step_idx: usize, message: String, reply: Sender<bool> },
+    /// A `Run` step with a window: the program's output. The window outlives
+    /// the function, so these events are routed by `(run_id, step_idx)`.
+    Window { step_idx: usize, title: String, msg: WindowMsg },
     /// Every step finished successfully.
     AllDone,
+}
+
+/// What a `Run` output window is told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowMsg {
+    /// The program started: open the window.
+    Open,
+    /// One line of its output.
+    Line(String),
+    /// It ended with this exit code (`None` when killed by a signal).
+    Closed(Option<i32>),
 }
 
 /// Spawn the thread that runs `steps` in order, reporting each event on
@@ -92,6 +106,7 @@ fn run_steps(
             FnStep::Internal { cmd: InternalCmd::ChangeDir, args } => {
                 run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx)
             }
+            FnStep::Internal { cmd: InternalCmd::Run, args } => run_run(run_id, step_idx, args, &source, dest, events_tx),
             FnStep::Internal { cmd: InternalCmd::Confirm, args } => {
                 run_confirm(run_id, step_idx, args, &source, dest, events_tx)
             }
@@ -339,6 +354,7 @@ fn run_internal(
 ) -> Result<(), String> {
     match cmd {
         InternalCmd::Confirm => unreachable!("Confirm is handled by run_confirm"),
+        InternalCmd::Run => unreachable!("Run is handled by run_run"),
         InternalCmd::ChangeDir => unreachable!("ChangeDir is handled by run_change_dir"),
         InternalCmd::SetBackground => unreachable!("SetBackground is handled by run_set_background"),
         InternalCmd::LeaveOut | InternalCmd::PutAway => {
@@ -469,6 +485,101 @@ fn run_internal(
     }
 }
 
+/// Expand every argv element: each one on its own, and an element that is
+/// exactly one `{f}`/`{o}`/... code flattens into one element per path.
+/// Fails when nothing is left to run.
+fn expand_argv(argv: &[String], source: &SelectionCtx, dest: Option<&SelectionCtx>) -> Result<Vec<String>, String> {
+    let mut expanded: Vec<String> = Vec::with_capacity(argv.len());
+    for a in argv {
+        match expand_argv_element(a, source, dest).map_err(expand_err_msg)? {
+            ExpandedArg::Many(values) => expanded.extend(values),
+            ExpandedArg::One(value) => expanded.push(value),
+        }
+    }
+    if expanded.is_empty() {
+        return Err("command expanded to nothing (empty selection?)".to_string());
+    }
+    Ok(expanded)
+}
+
+/// Run a `Run` step: split the command line, expand it and start the program
+/// in the SOURCE folder. Without `wait` the step ends at once and the
+/// program is left running (and reaped); with `window` its output streams to
+/// a window on the requesting Lister that stays open after the function ends.
+fn run_run(
+    run_id: u64,
+    step_idx: usize,
+    args: &InternalArgs,
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let templates = opusdm_ipc::cli::tokenize(args.get("command").unwrap_or("")).map_err(|e| format!("Run: {e}"))?;
+    if templates.is_empty() {
+        return Err("Run: no program given".to_string());
+    }
+    let (wait, window) = (args.flag("wait"), args.flag("window"));
+    // Waiting without a window is the plain External step.
+    if wait && !window {
+        return run_external(run_id, step_idx, &templates, true, source, dest, events_tx);
+    }
+    let argv = expand_argv(&templates, source, dest).map_err(|e| format!("Run: {e}"))?;
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]).current_dir(&source.cwd).stdin(Stdio::null());
+    if window {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    } else {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let mut child = command.spawn().map_err(|e| format!("Run: cannot start '{}': {e}", argv[0]))?;
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("started {} (pid {})", argv[0], child.id()) }));
+
+    if !window {
+        // Nobody waits: a thread reaps it so it never lingers as a zombie.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+        return Ok(());
+    }
+
+    let title = argv.join(" ");
+    // Sent before the step ends, so the hub knows who owns the window.
+    let _ = events_tx.send((run_id, FnEvent::Window { step_idx, title: title.clone(), msg: WindowMsg::Open }));
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stream = |reader: Box<dyn std::io::Read + Send>| {
+        let (tx, title) = (events_tx.clone(), title.clone());
+        std::thread::spawn(move || {
+            for line in BufReader::new(reader).lines().map_while(Result::ok) {
+                let _ = tx.send((run_id, FnEvent::Window { step_idx, title: title.clone(), msg: WindowMsg::Line(line) }));
+            }
+        })
+    };
+    let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
+    let finish = {
+        let (tx, title) = (events_tx.clone(), title.clone());
+        move |mut child: std::process::Child, readers: [std::thread::JoinHandle<()>; 2]| {
+            for r in readers {
+                let _ = r.join();
+            }
+            let code = child.wait().ok().and_then(|s| s.code());
+            let _ = tx.send((run_id, FnEvent::Window { step_idx, title, msg: WindowMsg::Closed(code) }));
+            code
+        }
+    };
+    if wait {
+        let code = finish(child, readers);
+        let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: code }));
+        return if code == Some(0) { Ok(()) } else { Err(format!("Run: '{}' exited with {code:?}", argv[0])) };
+    }
+    std::thread::spawn(move || {
+        finish(child, readers);
+    });
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
 /// Run one `External` step: expand every argv element, spawn it with piped
 /// stdout/stderr, stream every line as it arrives, and report the exit
 /// status.
@@ -484,21 +595,7 @@ fn run_external(
     if argv.is_empty() {
         return Err("External step: command is required".to_string());
     }
-    // Each argv element expands independently; a whole element that is
-    // exactly one `{f}`/`{o}`/... placeholder flattens into one argv
-    // element per selected path/name (see `expand_argv_element`) instead of
-    // being joined into a single string - there is no shell splitting them
-    // back apart, since this runs the command directly.
-    let mut expanded: Vec<String> = Vec::with_capacity(argv.len());
-    for a in argv {
-        match expand_argv_element(a, source, dest).map_err(expand_err_msg)? {
-            ExpandedArg::Many(values) => expanded.extend(values),
-            ExpandedArg::One(value) => expanded.push(value),
-        }
-    }
-    if expanded.is_empty() {
-        return Err("External step: command expanded to nothing (empty selection?)".to_string());
-    }
+    let expanded = expand_argv(argv, source, dest)?;
     let cwd = if cwd_source { &source.cwd } else { dest.map(|d| &d.cwd).unwrap_or(&source.cwd) };
 
     let mut child = Command::new(&expanded[0])
@@ -1103,5 +1200,80 @@ mod tests {
         assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
         let events = change_dir_events(&[("path", "d")], td.path());
         assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { new_lister: false, mode: None, .. })));
+    }
+
+    fn run_args(command: &str, flags: &[&str]) -> Vec<FnStep> {
+        let mut map = BTreeMap::new();
+        map.insert("command".to_string(), command.to_string());
+        for f in flags {
+            map.insert(f.to_string(), "true".to_string());
+        }
+        vec![FnStep::Internal { cmd: InternalCmd::Run, args: InternalArgs(map) }]
+    }
+
+    fn run_events(steps: &[FnStep], src: &SelectionCtx) -> Vec<FnEvent> {
+        let (tx, rx) = channel();
+        run_steps(1, steps, src, None, &tx);
+        drop(tx);
+        // Reader and waiter threads hold clones: this ends when they are done.
+        drain(rx)
+    }
+
+    #[test]
+    fn run_starts_a_program_without_waiting_and_reaps_it() {
+        let td = tempfile::tempdir().unwrap();
+        let marker = td.path().join("made");
+        let events = run_events(&run_args(&format!("sh -c 'sleep 0.2; touch {}'", marker.display()), &[]), &ctx(&[], td.path().to_str().unwrap()));
+        assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+        assert!(!marker.exists(), "the step must not wait for the program");
+        for _ in 0..50 {
+            if marker.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the program never ran");
+    }
+
+    #[test]
+    fn run_with_wait_fails_the_step_on_a_bad_exit_and_succeeds_otherwise() {
+        let td = tempfile::tempdir().unwrap();
+        let src = ctx(&[], td.path().to_str().unwrap());
+        assert!(matches!(run_events(&run_args("true", &["wait"]), &src).last(), Some(FnEvent::AllDone)));
+        assert!(matches!(run_events(&run_args("false", &["wait"]), &src).last(), Some(FnEvent::Failed { step_idx: 0, .. })));
+    }
+
+    #[test]
+    fn run_with_a_window_streams_output_and_reports_the_exit() {
+        let td = tempfile::tempdir().unwrap();
+        let events = run_events(&run_args("sh -c 'echo one; echo two >&2; exit 3'", &["window"]), &ctx(&[], td.path().to_str().unwrap()));
+        let msgs: Vec<&WindowMsg> = events.iter().filter_map(|e| match e { FnEvent::Window { msg, .. } => Some(msg), _ => None }).collect();
+        assert_eq!(msgs.first(), Some(&&WindowMsg::Open));
+        assert!(msgs.contains(&&WindowMsg::Line("one".into())) && msgs.contains(&&WindowMsg::Line("two".into())));
+        assert_eq!(msgs.last(), Some(&&WindowMsg::Closed(Some(3))));
+        // Not waiting: the step itself succeeded.
+        assert!(events.iter().any(|e| matches!(e, FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn run_with_window_and_wait_blocks_and_checks_the_exit() {
+        let td = tempfile::tempdir().unwrap();
+        let src = ctx(&[], td.path().to_str().unwrap());
+        let ok = run_events(&run_args("echo hi", &["window", "wait"]), &src);
+        assert!(matches!(ok.last(), Some(FnEvent::AllDone)));
+        let bad = run_events(&run_args("sh -c 'exit 2'", &["window", "wait"]), &src);
+        assert!(matches!(bad.last(), Some(FnEvent::Failed { .. })));
+        assert!(bad.iter().any(|e| matches!(e, FnEvent::Window { msg: WindowMsg::Closed(Some(2)), .. })));
+    }
+
+    #[test]
+    fn run_expands_codes_and_rejects_empty_or_unknown_programs() {
+        let td = tempfile::tempdir().unwrap();
+        let src = ctx(&["/tmp/some file.txt"], td.path().to_str().unwrap());
+        let events = run_events(&run_args("echo {o}", &["wait"]), &src);
+        assert!(events.iter().any(|e| matches!(e, FnEvent::Output { line, .. } if line.contains("some file.txt"))));
+        assert!(matches!(run_events(&run_args("  ", &[]), &src).last(), Some(FnEvent::Failed { .. })));
+        assert!(matches!(run_events(&run_args("definitely-not-a-program-xyz", &[]), &src).last(), Some(FnEvent::Failed { .. })));
+        assert!(matches!(run_events(&run_args("echo 'unclosed", &[]), &src).last(), Some(FnEvent::Failed { .. })));
     }
 }

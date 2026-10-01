@@ -21,6 +21,7 @@ impl Busy {
     }
 
     /// How many are running.
+    #[cfg(test)]
     pub fn running(&self) -> u32 {
         self.running.get()
     }

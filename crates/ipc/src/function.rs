@@ -95,11 +95,14 @@ pub enum InternalCmd {
     HideBank,
     /// Ask the user to confirm; the function stops unless they do.
     Confirm,
+    /// Start an external program. By default the function does not wait for
+    /// it; it can wait, and its output can go to a window.
+    Run,
 }
 
 impl InternalCmd {
     /// Every internal command, in the order the editor offers them.
-    pub const ALL: [InternalCmd; 21] = [
+    pub const ALL: [InternalCmd; 22] = [
         InternalCmd::Copy,
         InternalCmd::Move,
         InternalCmd::Delete,
@@ -121,6 +124,7 @@ impl InternalCmd {
         InternalCmd::ToggleBank,
         InternalCmd::HideBank,
         InternalCmd::Confirm,
+        InternalCmd::Run,
     ];
 
     /// The bank command this is, or `None` for every other command.
@@ -159,6 +163,7 @@ impl InternalCmd {
             InternalCmd::ToggleBank => "Toggle Bank",
             InternalCmd::HideBank => "Hide Bank",
             InternalCmd::Confirm => "Confirm",
+            InternalCmd::Run => "Run",
         }
     }
 }
@@ -306,6 +311,16 @@ pub mod schema {
                 required: true,
                 kind: ParamKind::Bank,
             }],
+            InternalCmd::Run => &[
+                ParamSpec {
+                    key: "command",
+                    label: "Program and arguments (quotes group words; {f}, {o}, ... allowed)",
+                    required: true,
+                    kind: ParamKind::PathTemplate,
+                },
+                ParamSpec { key: "wait", label: "Wait for it to finish (a failure stops the function)", required: false, kind: ParamKind::Bool },
+                ParamSpec { key: "window", label: "Show its output in a window", required: false, kind: ParamKind::Bool },
+            ],
             InternalCmd::Confirm => &[ParamSpec {
                 key: "message",
                 label: "Question to ask (may use {f}, {o}, ...)",

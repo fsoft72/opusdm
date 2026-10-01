@@ -188,6 +188,8 @@ pub struct Ui {
     pub dir_cache: RefCell<crate::dircache::DirCache>,
     /// Directory sizes already calculated.
     pub size_cache: RefCell<crate::sizecache::SizeCache>,
+    /// Open `Run` output windows by id.
+    pub output_windows: RefCell<std::collections::HashMap<u64, gtk::TextBuffer>>,
     /// Functions this Lister started that are still running.
     pub busy: crate::busy::Busy,
     /// Open FTP / SFTP connections (F-39).
@@ -585,6 +587,9 @@ impl Ui {
             }
             ToLister::Pong => {}
             ToLister::FreeCaches => self.free_caches(),
+            ToLister::OutputOpen { id, title } => crate::output_window::open(self, id, &title),
+            ToLister::OutputLine { id, line } => crate::output_window::append(self, id, &format!("{line}\n")),
+            ToLister::OutputEnd { id, exit } => crate::output_window::end(self, id, exit),
             ToLister::ScanDir { path, select, mode } => {
                 self.window.present();
                 // The toggle button drives the view, so its state follows.

@@ -497,6 +497,13 @@ pub enum ToLister {
     /// A Function's `Confirm` step asks the user; reply with
     /// `ToHub::ConfirmReply`.
     ConfirmPrompt { req_id: u64, message: String },
+    /// A `Run` step with an output window started a program: open the
+    /// window `id` titled `title`.
+    OutputOpen { id: u64, title: String },
+    /// One line of output for window `id`.
+    OutputLine { id: u64, line: String },
+    /// The program of window `id` ended (`None` = killed by a signal).
+    OutputEnd { id: u64, exit: Option<i32> },
     /// A function's `ChangeDir` step: go to `path`, switch to the `details`
     /// or `icons` view when `mode` is given, and select the entry `select`.
     ScanDir { path: PathBuf, select: Option<String>, mode: Option<String> },
@@ -678,6 +685,9 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
         roundtrip_tolister(ToLister::FunctionDone);
         roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
+        roundtrip_tolister(ToLister::OutputOpen { id: 7, title: "ls -l".into() });
+        roundtrip_tolister(ToLister::OutputLine { id: 7, line: "x".into() });
+        roundtrip_tolister(ToLister::OutputEnd { id: 7, exit: Some(0) });
         roundtrip_tolister(ToLister::ScanDir { path: "/p".into(), select: Some("f".into()), mode: Some("icons".into()) });
         roundtrip_tolister(ToLister::ConfirmPrompt { req_id: 3, message: "Sure?".into() });
         roundtrip_tolister(ToLister::RemoteTransfer { op: Op::Copy, srcs: vec!["sftp://h/a".into()], dest_dir: "/d".into() });

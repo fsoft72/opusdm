@@ -351,6 +351,9 @@ struct Hub {
     fn_conflict_owners: HashMap<u64, u64>,
     /// Pending `Confirm` questions: request id to (answer channel, asked Lister).
     confirms: HashMap<u64, (Sender<bool>, u64)>,
+    /// Which Lister shows each `Run` output window, by `(run id, step)`. It
+    /// outlives the function run that opened it.
+    output_windows: HashMap<(u64, usize), u64>,
     next_req: u64,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
@@ -971,6 +974,10 @@ impl Hub {
             self.function_conflict(run_id, path, src, dst, reply);
             return;
         }
+        if let crate::functions::FnEvent::Window { step_idx, msg, .. } = &ev {
+            self.run_window_event(run_id, *step_idx, msg.clone(), &ev);
+            return;
+        }
         if let crate::functions::FnEvent::Confirm { message, reply, .. } = ev {
             self.function_confirm(run_id, message, reply);
             return;
@@ -1036,7 +1043,8 @@ impl Hub {
             // Applied above, before this match.
             crate::functions::FnEvent::SetBackground { .. }
             | crate::functions::FnEvent::Conflict { .. }
-            | crate::functions::FnEvent::Confirm { .. } => return,
+            | crate::functions::FnEvent::Confirm { .. }
+            | crate::functions::FnEvent::Window { .. } => return,
             crate::functions::FnEvent::LeaveOut { .. }
             | crate::functions::FnEvent::PutAway { .. }
             | crate::functions::FnEvent::Hide
@@ -1082,6 +1090,41 @@ impl Hub {
         self.fn_conflict_owners.insert(req_id, cid);
         if let Some(c) = self.conns.get_mut(&cid) {
             let _ = c.tx.send(ToLister::ConflictPrompt { req_id, job_id: run_id, path, src, dst }.into());
+        }
+    }
+
+    /// Route one output-window event. `Open` records which Lister owns the
+    /// window (the one that started the run); later events go to it even
+    /// after the run itself has finished. A run nobody watches has no window.
+    fn run_window_event(&mut self, run_id: u64, step_idx: usize, msg: crate::functions::WindowMsg, ev: &crate::functions::FnEvent) {
+        use crate::functions::WindowMsg;
+        let key = (run_id, step_idx);
+        let id = run_id * 1000 + step_idx as u64;
+        if msg == WindowMsg::Open {
+            match self.function_requesters.get(&run_id).copied().filter(|c| *c != HUB_REQUESTER) {
+                Some(cid) => {
+                    self.output_windows.insert(key, cid);
+                }
+                None => return,
+            }
+        }
+        let Some(&cid) = self.output_windows.get(&key) else { return };
+        let message = match (msg, ev) {
+            (WindowMsg::Open, crate::functions::FnEvent::Window { title, .. }) => ToLister::OutputOpen { id, title: title.clone() },
+            (WindowMsg::Line(line), _) => ToLister::OutputLine { id, line },
+            (WindowMsg::Closed(exit), _) => {
+                self.output_windows.remove(&key);
+                ToLister::OutputEnd { id, exit }
+            }
+            _ => return,
+        };
+        match self.conns.get_mut(&cid) {
+            Some(c) => {
+                let _ = c.tx.send(message.into());
+            }
+            None => {
+                self.output_windows.remove(&key);
+            }
         }
     }
 
@@ -1132,6 +1175,7 @@ impl Hub {
         // A question to a closed Lister is never answered: dropping the sender
         // fails the waiting step instead of hanging it.
         self.confirms.retain(|_, (_, owner)| *owner != cid);
+        self.output_windows.retain(|_, owner| *owner != cid);
         // Dropping the reply senders releases the jobs waiting on this Lister.
         let orphaned: Vec<u64> =
             self.fn_conflict_owners.iter().filter(|(_, owner)| **owner == cid).map(|(req, _)| *req).collect();
@@ -1486,6 +1530,7 @@ fn owner_loop(
         replies: HashMap::new(),
         fn_conflict_owners: HashMap::new(),
         confirms: HashMap::new(),
+        output_windows: HashMap::new(),
         next_req: 1,
         evt_tx,
         on_spawn,
@@ -2056,6 +2101,42 @@ mod tests {
     fn a_confirm_step_waits_for_the_users_answer() {
         assert!(confirm_round_trip(true), "a yes lets the function finish");
         assert!(!confirm_round_trip(false), "a no stops it");
+    }
+
+    #[test]
+    fn a_run_window_keeps_receiving_output_after_the_function_finished() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        let mut args = std::collections::BTreeMap::new();
+        args.insert("command".to_string(), "sh -c 'sleep 0.3; echo late'".to_string());
+        args.insert("window".to_string(), "true".to_string());
+        let steps = vec![FnStep::Internal { cmd: opusdm_ipc::function::InternalCmd::Run, args: opusdm_ipc::function::InternalArgs(args) }];
+        send(&mut a, &ToHub::RunFunction { steps }).unwrap();
+        recv_until(&mut a, |m| matches!(m, ToLister::QuerySelection).then_some(()));
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+
+        // Collect everything up to the end of the output, in arrival order.
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..40 {
+            let m: ToLister = recv(&mut a).unwrap().unwrap();
+            match m {
+                ToLister::OutputOpen { .. } => seen.push("open".into()),
+                ToLister::OutputLine { line, .. } => seen.push(format!("line:{line}")),
+                ToLister::OutputEnd { exit, .. } => {
+                    seen.push(format!("end:{exit:?}"));
+                    break;
+                }
+                ToLister::FunctionDone => seen.push("done".into()),
+                _ => {}
+            }
+        }
+        let pos = |s: &str| seen.iter().position(|x| x == s).unwrap_or_else(|| panic!("{s} missing in {seen:?}"));
+        assert!(pos("open") < pos("done"), "{seen:?}");
+        assert!(pos("done") < pos("line:late"), "the output outlives the function: {seen:?}");
+        assert!(pos("line:late") < pos("end:Some(0)"), "{seen:?}");
     }
 
     #[test]

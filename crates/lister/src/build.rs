@@ -451,6 +451,7 @@ fn build_window(
         temp_format: RefCell::new(None),
         dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
         size_cache: RefCell::new(crate::sizecache::SizeCache::default()),
+        output_windows: RefCell::new(std::collections::HashMap::new()),
         busy: crate::busy::Busy::default(),
         remote: crate::remote_ui::RemoteState::default(),
         history: RefCell::new(crate::history::History::new()),
