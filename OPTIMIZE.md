@@ -21,7 +21,7 @@
   - File(s): `crates/lister/src/archive.rs`
 - [x] **Move from an archive does not move** - `wire_transfer` extracts the items and submits the same `Op::Move` on the extracted copies, so the user sees a successful Move while the archive is untouched. Either refuse Move inside an archive with a clear message or turn it into Copy and say so.
   - File(s): `crates/lister/src/actions.rs`
-- [ ] **A new command must be added in three places** - `CommandId` (`keys.rs`), the `COMMANDS` table and the 330-line `execute_command` match (`palette.rs`) are kept in step by hand; it is easy to commit one without the others (it happened with `SizeFormat`). Keep title, category and shortcut next to the variant (a `CommandId::meta()` method) and split `execute_command` into per-category functions.
+- [x] **A new command must be added in three places** - `CommandId` (`keys.rs`), the `COMMANDS` table and the 330-line `execute_command` match (`palette.rs`) are kept in step by hand; it is easy to commit one without the others (it happened with `SizeFormat`). Keep title, category and shortcut next to the variant (a `CommandId::meta()` method) and split `execute_command` into per-category functions.
   - File(s): `crates/lister/src/keys.rs`, `crates/lister/src/palette.rs`
 
 ## Medium

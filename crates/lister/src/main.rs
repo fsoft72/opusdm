@@ -18,6 +18,7 @@ mod copy_as;
 mod crypt_dialog;
 mod cli_dialog;
 mod clip;
+mod commands;
 mod columns;
 mod context_menu;
 mod dircache;
