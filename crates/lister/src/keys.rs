@@ -115,6 +115,8 @@ pub enum CommandId {
     Encrypt,
     /// Decrypt the selected `.enc` files with a password.
     Decrypt,
+    /// Open the font previewer.
+    ViewFont,
     /// Open the bookmark manager.
     Bookmarks,
     /// Bookmark the current folder.
@@ -414,6 +416,12 @@ mod tests {
     fn script_events_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageScripts));
+    }
+
+    #[test]
+    fn view_font_exists_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::ViewFont));
     }
 
     #[test]

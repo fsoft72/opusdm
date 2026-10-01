@@ -24,7 +24,6 @@ To be prioritised after section 1 is finished.
 - [ ] F-50 Custom panel title format codes
 - [ ] F-28 Icon mode and Icon Action mode listers
 - [ ] Minor commands (F-40..F-49):
-  - [ ] F-49 ViewFont (low priority)
 
 ## 3. Not classified yet
 
@@ -48,6 +47,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 
 ## 5. Completed
 
+- [x] F-49 ViewFont (low priority) (system fonts only; no font file preview)
 - [x] F-48 Assign equivalent (bookmarks/aliases, low priority) (bookmarks usable as name: in the path bar; local folders only)
 - [x] F-46 Run (external program from a function, output window) (internal command; output window per run)
 - [x] F-45 GetSizes FORCE (size cache; also reused on reload)

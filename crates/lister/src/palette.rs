@@ -87,6 +87,7 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::Encrypt, title: Cow::Borrowed("Encrypt... (password, Source -> Dest as .enc)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::Decrypt, title: Cow::Borrowed("Decrypt... (.enc files, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::ViewFont, title: Cow::Borrowed("View Font..."), category: Cow::Borrowed("Tools"), shortcut: None },
         CommandItem { id: CommandId::Bookmarks, title: Cow::Borrowed("Bookmarks..."), category: Cow::Borrowed("Navigation"), shortcut: None },
         CommandItem { id: CommandId::AddBookmark, title: Cow::Borrowed("Add Bookmark for This Folder..."), category: Cow::Borrowed("Navigation"), shortcut: None },
         CommandItem { id: CommandId::RootDir, title: Cow::Borrowed("Go to Root"), category: Cow::Borrowed("Navigation"), shortcut: None },
@@ -424,6 +425,9 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::Decrypt => {
             crate::crypt_dialog::open_crypt(ui, false, ui.selected_paths());
+        }
+        CommandId::ViewFont => {
+            crate::font_viewer::open(ui);
         }
         CommandId::Bookmarks => {
             crate::bookmarks_ui::open_manager(ui);

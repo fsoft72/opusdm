@@ -31,6 +31,7 @@ mod format_apply;
 mod format_editor;
 mod find_dialog;
 mod find_search;
+mod font_viewer;
 mod function_editor;
 mod gauge;
 mod glyphs;

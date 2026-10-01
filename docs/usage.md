@@ -263,6 +263,9 @@ The **Run** command starts an external program from a function. The command line
 ### 3.10r Bookmarks
 Bookmarks give a name to a folder, like an Amiga assign. **Add Bookmark for This Folder...** (palette, Navigation) names the current folder; **Bookmarks...** lists, adds, edits, deletes and goes to them. Names use letters, digits, `_` and `-` (not `ftp`, `ftps`, `sftp`). In the path bar, `docs:` goes to the bookmark's folder and `docs:sub/dir` to a folder below it (`..` is refused). They live in `~/.config/opusdm/bookmarks.json`.
 
+### 3.10s View Font
+**View Font...** (palette, Tools) previews the fonts installed on the system: pick a family from the searchable list, set the size and Bold / Italic, and edit the sample text to try your own. The window is not modal, so it can stay open while you work.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
