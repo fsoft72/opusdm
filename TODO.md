@@ -12,7 +12,6 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 Work on these in order. Decide what comes next only when all of them are done.
 
-- [ ] F-01 follow-up: conflict prompt UI for Copy/Move/Delete steps (currently auto-skip)
 - [ ] F-39 FTP / FTPS / SFTP module (new crate with `suppaftp` and `ssh2`)
 - [ ] F-14 Encrypt / Decrypt
 
@@ -61,6 +60,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 
 - [x] F-01 Function Editor and internal command language (core: data model, placeholders, `functions.json`, hub execution, editor UI, Command Palette)
   - [x] F-01 follow-up: per-function hotkey (done through hotkeys.json, F-03)
+  - [x] F-01 follow-up: conflict prompt for Copy/Move steps (Delete never conflicts; runs with no Lister to ask still skip)
 - [x] F-02 Button Banks + Button Bank Editor (open under the mouse, Start Menu variant and the Lister toolbar as a bank are not implemented)
 - [x] F-03 Hotkey Editor (local + system-global hotkeys, KeyFinder)
 - [x] F-04 User menus in listers

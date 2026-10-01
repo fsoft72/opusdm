@@ -42,6 +42,15 @@ pub enum FnEvent {
     ToggleHide,
     /// A bank step: the hub must apply `action` to the bank called `bank`.
     Bank { action: opusdm_ipc::buttonbank::BankAction, bank: String },
+    /// A Copy/Move step found `path` already at the destination. The hub
+    /// must answer on `reply`; a dropped `reply` aborts the step's job.
+    Conflict {
+        step_idx: usize,
+        path: PathBuf,
+        src: opusdm_ipc::FileMeta,
+        dst: opusdm_ipc::FileMeta,
+        reply: Sender<Resolution>,
+    },
     /// Every step finished successfully.
     AllDone,
 }
@@ -383,16 +392,11 @@ fn run_internal(
                     Progress::File { path, .. } => {
                         let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("{}: {}", cmd.label(), path.display()) }));
                     }
-                    // No conflict-prompt UI exists for Function steps yet
-                    // (see the design doc's non-goals): always skip, so a
-                    // pre-existing destination entry cannot hang this
-                    // thread forever waiting on a reply nobody will send.
-                    Progress::Conflict { reply, path, .. } => {
-                        let _ = reply.send(Resolution::Skip);
-                        let _ = events_tx.send((run_id, FnEvent::Output {
-                            step_idx,
-                            line: format!("conflict: {} already exists, skipped", path.display()),
-                        }));
+                    // The hub asks the requesting Lister (or skips when there
+                    // is none) and answers on `reply`; this thread keeps
+                    // draining `rx` so the job thread is never starved.
+                    Progress::Conflict { reply, path, src, dst } => {
+                        let _ = events_tx.send((run_id, FnEvent::Conflict { step_idx, path, src, dst, reply }));
                     }
                     Progress::Done { copied, skipped, errors, .. } => {
                         if let Some((path, msg)) = errors.first() {
@@ -659,26 +663,71 @@ mod tests {
         assert!(matches!(events.last(), Some(FnEvent::AllDone)));
     }
 
-    #[test]
-    fn copy_conflict_is_auto_skipped_instead_of_deadlocking() {
+    /// Run a Copy step over an existing `a.txt` and answer every conflict with
+    /// `answer`, the way the hub relays the Lister's choice. Returns the
+    /// destination file's content and the paths the conflicts named.
+    fn copy_with_conflict(answer: Option<Resolution>) -> (Vec<u8>, Vec<PathBuf>, Vec<FnEvent>) {
         let src_dir = tempfile::tempdir().unwrap();
         let dst_dir = tempfile::tempdir().unwrap();
         let src_file = src_dir.path().join("a.txt");
         std::fs::write(&src_file, b"new").unwrap();
         std::fs::write(dst_dir.path().join("a.txt"), b"existing").unwrap();
 
-        let (tx, rx) = channel();
         let steps = vec![FnStep::Internal { cmd: InternalCmd::Copy, args: InternalArgs::default() }];
         let src = ctx(&[src_file.to_str().unwrap()], src_dir.path().to_str().unwrap());
         let dst = ctx(&[], dst_dir.path().to_str().unwrap());
+        let (tx, rx) = channel();
+        let mut asked = Vec::new();
+        let mut others = Vec::new();
+        std::thread::scope(|scope| {
+            let (steps, src, dst) = (&steps, &src, &dst);
+            // The thread owns the only sender, so the loop below ends when
+            // run_steps returns.
+            scope.spawn(move || run_steps(1, steps, src, Some(dst), &tx));
+            for (_, ev) in rx {
+                match ev {
+                    FnEvent::Conflict { path, reply, .. } => {
+                        asked.push(path);
+                        if let Some(answer) = answer {
+                            let _ = reply.send(answer);
+                        }
+                    }
+                    other => others.push(other),
+                }
+            }
+        });
+        (std::fs::read(dst_dir.path().join("a.txt")).unwrap(), asked, others)
+    }
 
-        // Must return promptly (the test's own completion is the proof this
-        // does not deadlock on Progress::Conflict).
-        run_steps(1, &steps, &src, Some(&dst), &tx);
-        drop(tx);
-        let events = drain(rx);
+    #[test]
+    fn copy_conflict_is_relayed_and_skip_keeps_the_destination() {
+        let (content, asked, events) = copy_with_conflict(Some(Resolution::Skip));
+        assert_eq!(content, b"existing");
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].ends_with("a.txt"));
         assert!(matches!(events.last(), Some(FnEvent::AllDone)));
-        assert_eq!(std::fs::read(dst_dir.path().join("a.txt")).unwrap(), b"existing", "conflict must be skipped, not overwritten");
+    }
+
+    #[test]
+    fn copy_conflict_overwrite_replaces_the_destination() {
+        let (content, asked, events) = copy_with_conflict(Some(Resolution::Overwrite));
+        assert_eq!(content, b"new");
+        assert_eq!(asked.len(), 1);
+        assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn copy_conflict_cancel_stops_the_job_without_overwriting() {
+        let (content, _, _) = copy_with_conflict(Some(Resolution::Cancel));
+        assert_eq!(content, b"existing");
+    }
+
+    #[test]
+    fn a_dropped_conflict_reply_does_not_hang_the_step() {
+        // Nobody answers and the reply sender is dropped: the job must end.
+        let (content, asked, _) = copy_with_conflict(None);
+        assert_eq!(content, b"existing");
+        assert_eq!(asked.len(), 1);
     }
 
     fn set_background_steps(path: &str, fit: Option<&str>) -> Vec<FnStep> {

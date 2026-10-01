@@ -346,6 +346,9 @@ struct Hub {
     engine: JobEngine,
     jobs: HashMap<u64, JobMeta>,
     replies: HashMap<u64, Sender<Resolution>>,
+    /// Connection that must answer each Function conflict prompt in `replies`
+    /// (by request id), so a closed Lister releases the job waiting on it.
+    fn_conflict_owners: HashMap<u64, u64>,
     next_req: u64,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
@@ -581,6 +584,7 @@ impl Hub {
             }
 
             ToHub::ConflictReply { req_id, resolution } => {
+                self.fn_conflict_owners.remove(&req_id);
                 if let Some(tx) = self.replies.remove(&req_id) {
                     let _ = tx.send(resolution);
                 }
@@ -710,6 +714,9 @@ impl Hub {
                     Ok((_, crate::functions::FnEvent::Failed { step_idx, error })) => {
                         opusdm_ipc::err_log!("hub", "shutdown hook failed at step {step_idx}: {error}");
                         break;
+                    }
+                    Ok((_, crate::functions::FnEvent::Conflict { reply, .. })) => {
+                        let _ = reply.send(Resolution::Skip);
                     }
                     Ok(_) => continue,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -946,6 +953,10 @@ impl Hub {
     /// asked for this run. A hub-originated run has no such connection: its
     /// failures are logged instead.
     fn function_event(&mut self, run_id: u64, ev: crate::functions::FnEvent) {
+        if let crate::functions::FnEvent::Conflict { path, src, dst, reply, .. } = ev {
+            self.function_conflict(run_id, path, src, dst, reply);
+            return;
+        }
         let Some(&requester) = self.function_requesters.get(&run_id) else { return };
         let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
         if terminal {
@@ -1001,7 +1012,7 @@ impl Hub {
         let msg = match ev {
             crate::functions::FnEvent::ChangeDir { path } => ToLister::GoTo { path },
             // Applied above, before this match.
-            crate::functions::FnEvent::SetBackground { .. } => return,
+            crate::functions::FnEvent::SetBackground { .. } | crate::functions::FnEvent::Conflict { .. } => return,
             crate::functions::FnEvent::LeaveOut { .. }
             | crate::functions::FnEvent::PutAway { .. }
             | crate::functions::FnEvent::Hide
@@ -1017,6 +1028,36 @@ impl Hub {
         };
         if let Some(c) = self.conns.get_mut(&requester) {
             let _ = c.tx.send(msg.into());
+        }
+    }
+
+    /// A Copy/Move step of run `run_id` hit an existing destination: ask the
+    /// Lister that started the run. A run nobody watches (script event,
+    /// headless) or whose Lister is gone skips the entry instead.
+    fn function_conflict(
+        &mut self,
+        run_id: u64,
+        path: PathBuf,
+        src: opusdm_ipc::FileMeta,
+        dst: opusdm_ipc::FileMeta,
+        reply: Sender<Resolution>,
+    ) {
+        let owner = self
+            .function_requesters
+            .get(&run_id)
+            .copied()
+            .filter(|cid| *cid != HUB_REQUESTER && self.conns.contains_key(cid));
+        let Some(cid) = owner else {
+            opusdm_ipc::err_log!("hub", "function run {run_id}: {} already exists, skipped (nobody to ask)", path.display());
+            let _ = reply.send(Resolution::Skip);
+            return;
+        };
+        let req_id = self.next_req;
+        self.next_req += 1;
+        self.replies.insert(req_id, reply);
+        self.fn_conflict_owners.insert(req_id, cid);
+        if let Some(c) = self.conns.get_mut(&cid) {
+            let _ = c.tx.send(ToLister::ConflictPrompt { req_id, job_id: run_id, path, src, dst }.into());
         }
     }
 
@@ -1042,6 +1083,13 @@ impl Hub {
         self.selection_waiters.remove(&cid);
         self.selection_waiters.retain(|_, queue| !queue.is_empty());
         self.function_requesters.retain(|_, requester| *requester != cid);
+        // Dropping the reply senders releases the jobs waiting on this Lister.
+        let orphaned: Vec<u64> =
+            self.fn_conflict_owners.iter().filter(|(_, owner)| **owner == cid).map(|(req, _)| *req).collect();
+        for req_id in orphaned {
+            self.fn_conflict_owners.remove(&req_id);
+            self.replies.remove(&req_id);
+        }
     }
 
     /// `ToHub::RunJob` from a Lister: resolve the destinations (a `None`
@@ -1379,6 +1427,7 @@ fn owner_loop(
         engine: JobEngine::new(default_runner(), jp_tx),
         jobs: HashMap::new(),
         replies: HashMap::new(),
+        fn_conflict_owners: HashMap::new(),
         next_req: 1,
         evt_tx,
         on_spawn,
@@ -1872,6 +1921,102 @@ mod tests {
         }
         assert!(done, "expected FunctionDone on the requesting (SOURCE) connection");
         let _ = handle;
+    }
+
+    /// SOURCE and DEST listers, DEST role set, ready for a function run.
+    fn source_and_dest(path: &std::path::Path) -> (UnixStream, UnixStream) {
+        let mut src = connect(path);
+        send(&mut src, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+        let _w: Welcome = recv(&mut src).unwrap().unwrap();
+        let mut dst = connect(path);
+        send(&mut dst, &ToHub::Register { pid: 2, initial_path: "/dst".into() }).unwrap();
+        let _w: Welcome = recv(&mut dst).unwrap().unwrap();
+        send(&mut dst, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+        let _r: ToLister = recv(&mut src).unwrap().unwrap();
+        let _r: ToLister = recv(&mut dst).unwrap().unwrap();
+        (src, dst)
+    }
+
+    #[test]
+    fn function_copy_conflict_is_prompted_and_the_answer_is_applied() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let (mut src, mut dst) = source_and_dest(&path);
+
+        let src_dir = tempfile::tempdir().unwrap();
+        let dst_dir = tempfile::tempdir().unwrap();
+        let src_file = src_dir.path().join("a.txt");
+        std::fs::write(&src_file, b"new").unwrap();
+        std::fs::write(dst_dir.path().join("a.txt"), b"existing").unwrap();
+
+        let steps = vec![FnStep::Internal { cmd: opusdm_ipc::function::InternalCmd::Copy, args: Default::default() }];
+        send(&mut src, &ToHub::RunFunction { steps }).unwrap();
+        let _q: ToLister = recv(&mut src).unwrap().unwrap();
+        let _q: ToLister = recv(&mut dst).unwrap().unwrap();
+        send(&mut src, &ToHub::SelectionReply { paths: vec![src_file], cwd: src_dir.path().to_path_buf() }).unwrap();
+        send(&mut dst, &ToHub::SelectionReply { paths: vec![], cwd: dst_dir.path().to_path_buf() }).unwrap();
+
+        // The prompt goes to the Lister that started the run.
+        let (mut req_id, mut done) = (None, false);
+        for _ in 0..50 {
+            match recv::<_, ToLister>(&mut src) {
+                Ok(Some(ToLister::ConflictPrompt { req_id: id, path, .. })) => {
+                    assert!(path.ends_with("a.txt"));
+                    req_id = Some(id);
+                    send(&mut src, &ToHub::ConflictReply { req_id: id, resolution: opusdm_ipc::Resolution::Overwrite }).unwrap();
+                }
+                Ok(Some(ToLister::FunctionDone)) => {
+                    done = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                _ => break,
+            }
+        }
+        assert!(req_id.is_some(), "expected a ConflictPrompt on the requesting connection");
+        assert!(done, "expected FunctionDone after the answer");
+        assert_eq!(std::fs::read(dst_dir.path().join("a.txt")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn headless_function_copy_as_conflict_is_skipped_without_a_prompt() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"new").unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"existing").unwrap();
+        let marker = dir.path().join("marker");
+
+        // Copy a.txt over the existing b.txt (it works in place, so no DEST
+        // is needed), then a marker step proving the run went on.
+        let mut args = std::collections::BTreeMap::new();
+        args.insert("new_name".to_string(), "b.txt".to_string());
+        let mut f = opusdm_ipc::Function::new("copy-as-then-mark");
+        f.steps = vec![
+            FnStep::Internal {
+                cmd: opusdm_ipc::function::InternalCmd::CopyAs,
+                args: opusdm_ipc::function::InternalArgs(args),
+            },
+            FnStep::External { argv: vec!["sh".into(), "-c".into(), format!("echo x >> {}", marker.display())], cwd_source: true },
+        ];
+        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
+        let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
+
+        handle.cmd_tx.send(HubCmd::RunFunctionHeadless(f.id)).unwrap();
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection), "got {q:?}");
+        send(&mut a, &ToHub::SelectionReply { paths: vec![dir.path().join("a.txt")], cwd: dir.path().to_path_buf() }).unwrap();
+
+        wait_for_lines(&marker, 1);
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"existing");
     }
 
     #[test]

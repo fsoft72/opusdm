@@ -209,6 +209,8 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 - **Filetype Creator (from selected file)...** opens the editor with a new type derived from the selected file: `*.ext` for a file with an extension, its first bytes for a binary file without one, the exact name otherwise.
 - Changes apply at once to every Lister; Save is disabled while a type has a problem (shown under the form). A nested rule written by hand in the JSON is shown read-only and kept as it is.
 
+**Conflicts inside functions.** When a Copy or Move step finds a name already at the destination, the Lister that started the function shows the usual Overwrite / Skip / Overwrite All / Skip All / Cancel requester and the step goes on with the answer. A function started with no Lister to ask (a script event or a Shutdown hook) skips the existing entry. Delete steps never conflict.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.
