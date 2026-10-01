@@ -4,7 +4,7 @@
 
 ## Critical
 
-- [ ] **Config saves are not atomic** - `save_json` writes straight over the target with `fs::write`; a crash, a full disk or a kill mid-write leaves a truncated `settings.json`, `functions.json`, `bindings` file, bank or group. Write to a sibling temp file, `fsync`, then `rename` over the target (the theme writer already does a staging swap).
+- [x] **Config saves are not atomic** - `save_json` writes straight over the target with `fs::write`; a crash, a full disk or a kill mid-write leaves a truncated `settings.json`, `functions.json`, `bindings` file, bank or group. Write to a sibling temp file, `fsync`, then `rename` over the target (the theme writer already does a staging swap).
   - File(s): `crates/ipc/src/settings.rs`
 - [ ] **A malformed `settings.json` / `functions.json` is silently replaced by defaults** - `load_json` returns `T::default()` on a parse error without keeping a copy, so the next save destroys every user setting or every saved Function. Bookmarks, formats, file types, bindings and banks already copy the bad file to `.bak`; move that logic into `load_json` itself so every entity gets it.
   - File(s): `crates/ipc/src/settings.rs`, `crates/ipc/src/function.rs`, `crates/ipc/src/leftout.rs`

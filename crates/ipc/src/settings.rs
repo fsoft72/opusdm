@@ -64,13 +64,31 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path, app_tag: &str, enti
 
 /// Serialize and save a JSON configuration entity to `path`, creating parent
 /// directories if necessary.
+///
+/// The write is atomic: the JSON goes to a sibling temporary file, is flushed
+/// to disk and then renamed over `path`, so a crash or a full disk never leaves
+/// a truncated file behind (the previous content stays intact).
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(value)?;
-    fs::write(path, json)?;
-    Ok(())
+    let mut tmp_name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
+    let written = write_synced(&tmp, json.as_bytes()).and_then(|_| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// Write `data` to `path` and flush it to disk before returning.
+fn write_synced(path: &Path, data: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::File::create(path)?;
+    file.write_all(data)?;
+    file.sync_all()
 }
 
 /// Load `Settings` from the standard path (`~/.config/opusdm/settings.json`).
@@ -149,6 +167,31 @@ mod tests {
         save_settings_to(&path, &s).unwrap();
         let loaded = load_settings_from(&path, "test");
         assert!(loaded.appearance.monospace_list);
+    }
+
+    #[test]
+    fn save_json_replaces_content_and_leaves_no_temp_file() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        save_json(&path, &vec![1, 2, 3]).unwrap();
+        save_json(&path, &vec![4]).unwrap();
+        let loaded: Vec<i32> = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded, vec![4]);
+        let names: Vec<_> = fs::read_dir(td.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("settings.json")]);
+    }
+
+    #[test]
+    fn save_json_failure_keeps_the_old_file() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        save_json(&path, &vec![1]).unwrap();
+        // A map with non-string keys cannot be serialized: nothing may be touched.
+        let mut bad = std::collections::HashMap::new();
+        bad.insert(vec![1u8], 1);
+        assert!(save_json(&path, &bad).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[\n  1\n]");
+        assert_eq!(fs::read_dir(td.path()).unwrap().count(), 1);
     }
 
     #[test]
