@@ -45,7 +45,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 
 ## 5. Completed
 
-- [x] F-35 Full themes (images + sounds + fonts), Build/Load/Save theme (import/export) (fonts and Lister / requester pictures applied; Theme Editor window; sounds are carried in the package but not played until F-36; the editor does not edit behaviour or desktop metrics)
+- [x] F-35 Full themes (images + sounds + fonts), Build/Load/Save theme (import/export) (fonts and Lister / requester pictures applied; Theme Editor window; sounds are carried in the package but not played until F-36; the editor does not edit behaviour or desktop metrics) (GUI not manually verified: Theme Editor, Save/Export buttons, picture and font rendering still need the manual checklists)
 - [x] F-49 ViewFont (low priority) (system fonts only; no font file preview)
 - [x] F-48 Assign equivalent (bookmarks/aliases, low priority) (bookmarks usable as name: in the path bar; local folders only)
 - [x] F-46 Run (external program from a function, output window) (internal command; output window per run)

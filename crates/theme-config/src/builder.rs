@@ -3,7 +3,7 @@
 //! `writer::write_theme`.
 
 use crate::writer::{write_theme, BuildError, ThemeDraft};
-use opusdm_ipc::themes::{valid_slug, ThemeDesktopMetrics};
+use opusdm_ipc::themes::{theme_dir, valid_slug, ThemeDesktopMetrics, ThemeManifest};
 use opusdm_ipc::{DesktopSettings, Settings};
 use std::path::PathBuf;
 
@@ -35,14 +35,26 @@ pub fn slugify(label: &str) -> Option<String> {
     valid_slug(&slug).then_some(slug)
 }
 
+/// The `author` and `version` of the installed theme `slug`, or `None`s when
+/// it is not installed or its manifest cannot be read.
+fn existing_credits(slug: &str) -> (Option<String>, Option<String>) {
+    if !valid_slug(slug) {
+        return (None, None);
+    }
+    let Ok(text) = std::fs::read_to_string(theme_dir(slug).join("manifest.json")) else { return (None, None) };
+    let Ok(manifest) = serde_json::from_str::<ThemeManifest>(&text) else { return (None, None) };
+    (manifest.author, manifest.version)
+}
+
 /// Install the current settings as theme `req.slug`, replacing any theme with
 /// that slug. Returns the installed folder.
 pub fn save_theme(req: &BuildRequest) -> Result<PathBuf, BuildError> {
     let s = req.settings;
+    let (author, version) = existing_credits(req.slug);
     let draft = ThemeDraft {
         label: req.label.trim().to_string(),
-        author: None,
-        version: None,
+        author,
+        version,
         colors: Some(s.theme.colors.clone()),
         appearance: Some(s.appearance.clone()),
         behavior: Some(s.behavior.clone()),
@@ -65,7 +77,7 @@ mod tests {
     use crate::test_support::{install_source, picture, scratch_config, ENV_LOCK};
     use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
     use opusdm_ipc::look::{FontSpec, SurfaceImage};
-    use opusdm_ipc::themes::{load_theme_data, theme_dir, themes_dir};
+    use opusdm_ipc::themes::{load_theme_data, themes_dir};
 
     #[test]
     fn slugify_lowercases_and_collapses_separators() {
@@ -107,6 +119,19 @@ mod tests {
         let _td = scratch_config();
         let r = save_theme(&BuildRequest { label: "T", slug: "Bad Slug", source_slug: "src", settings: &Settings::default(), desktop: &DesktopSettings::default() });
         assert!(matches!(r, Err(BuildError::InvalidName(_))));
+    }
+
+    /// Saving over an installed theme keeps the author and version it had.
+    #[test]
+    fn saving_over_an_existing_theme_keeps_its_author_and_version() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _td = scratch_config();
+        install_source("src");
+        std::fs::write(theme_dir("src").join("manifest.json"), br#"{"name":"src","label":"Src","author":"me","version":"3"}"#).unwrap();
+        let req = BuildRequest { label: "Src", slug: "src", source_slug: "src", settings: &Settings::default(), desktop: &DesktopSettings::default() };
+        save_theme(&req).unwrap();
+        let m: opusdm_ipc::themes::ThemeManifest = serde_json::from_str(&std::fs::read_to_string(theme_dir("src").join("manifest.json")).unwrap()).unwrap();
+        assert_eq!((m.author.as_deref(), m.version.as_deref()), (Some("me"), Some("3")));
     }
 
     /// Acceptance: a saved, exported, wiped and re-imported theme restores colours and pictures.

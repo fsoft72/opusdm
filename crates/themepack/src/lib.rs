@@ -8,7 +8,8 @@ use std::path::Path;
 /// Zip the contents of `src` into `zip_path`. Entries use `/` separators and
 /// are sorted by name, so the same folder always yields the same archive
 /// layout. The folder itself is not an entry: `manifest.json` ends up at the
-/// archive root, as the importer expects.
+/// archive root, as the importer expects. Symbolic links are never followed
+/// or stored: they are skipped.
 pub fn pack_theme_dir(src: &Path, zip_path: &Path) -> io::Result<()> {
     if !src.is_dir() {
         return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a folder", src.display())));
@@ -22,6 +23,9 @@ pub fn pack_theme_dir(src: &Path, zip_path: &Path) -> io::Result<()> {
             continue;
         }
         let name = rel.to_string_lossy().replace('\\', "/");
+        if entry.path_is_symlink() {
+            continue;
+        }
         if entry.file_type().is_dir() {
             zip.add_directory(format!("{name}/"), options).map_err(io::Error::other)?;
         } else {
@@ -62,5 +66,25 @@ mod tests {
     fn a_missing_source_folder_is_an_error() {
         let out = tempfile::tempdir().unwrap();
         assert!(pack_theme_dir(std::path::Path::new("/no/such/theme"), &out.path().join("t.zip")).is_err());
+    }
+
+    #[test]
+    fn symlinks_are_skipped_not_read_through() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), b"TOPSECRET").unwrap();
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("manifest.json"), b"{}").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), src.path().join("leak.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), src.path().join("leakdir")).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let zip_path = out.path().join("t.zip");
+
+        pack_theme_dir(src.path(), &zip_path).unwrap();
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+        assert_eq!(names, ["manifest.json"]);
+        let raw = std::fs::read(&zip_path).unwrap();
+        assert!(!raw.windows(9).any(|w| w == b"TOPSECRET"));
     }
 }

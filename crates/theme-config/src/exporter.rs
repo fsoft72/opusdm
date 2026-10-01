@@ -60,8 +60,10 @@ mod tests {
         let dir = theme_dir("broken");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), br#"{"name":"broken"}"#).unwrap();
-        // A dangling symlink makes reading the entry fail after the zip was created.
-        std::os::unix::fs::symlink(td.path().join("missing"), dir.join("zz-dangling")).unwrap();
+        // An unreadable regular file makes reading the entry fail after the zip was created.
+        let locked = dir.join("zz-locked");
+        std::fs::write(&locked, b"x").unwrap();
+        std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
         let zip = td.path().join("out.zip");
 
         let err = export_theme("broken", &zip).unwrap_err();

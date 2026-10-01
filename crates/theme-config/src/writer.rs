@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 /// `manifest.json` `version` written when the draft has none.
 const DEFAULT_VERSION: &str = "1";
 
+/// The preview picture a theme may carry at its root.
+const PREVIEW_FILE: &str = "preview.png";
+
 /// The icon files a theme provides, without the `.png` extension.
 pub const ICON_NAMES: [&str; 12] =
     ["archive", "audio", "broken", "code", "dir", "exec", "file", "image", "pdf", "symlink", "text", "video"];
@@ -125,12 +128,17 @@ pub fn validate_draft(draft: &ThemeDraft, ops: &[AssetOp]) -> Result<(), BuildEr
 }
 
 /// Write `draft` as theme `slug`, replacing any theme with that slug.
-/// `source_slug` names an installed theme whose `icons/`, `fonts/` and
-/// `sounds/` are carried over before `ops` are applied. Returns the installed
-/// folder.
+/// `source_slug` names an installed theme whose `icons/`, `fonts/`, `sounds/`
+/// and `preview.png` are carried over before `ops` are applied. Returns the
+/// installed folder.
 pub fn write_theme(slug: &str, draft: &ThemeDraft, source_slug: Option<&str>, ops: &[AssetOp]) -> Result<PathBuf, BuildError> {
     if !valid_slug(slug) {
         return Err(BuildError::InvalidName(slug.to_string()));
+    }
+    if let Some(source) = source_slug {
+        if !valid_slug(source) {
+            return Err(BuildError::InvalidName(source.to_string()));
+        }
     }
     validate_draft(draft, ops)?;
     let root = themes_dir();
@@ -197,6 +205,7 @@ fn stage(slug: &str, draft: &ThemeDraft, source_slug: Option<&str>, ops: &[Asset
         for part in ["icons", "fonts", "sounds"] {
             copy_dir_if_exists(&theme_dir(source).join(part), &dir.join(part))?;
         }
+        copy_file_if_regular(&theme_dir(source).join(PREVIEW_FILE), &dir.join(PREVIEW_FILE))?;
     }
     for op in ops {
         apply_op(op, dir)?;
@@ -293,7 +302,19 @@ fn remove_if_exists(path: &Path) -> Result<(), BuildError> {
     }
 }
 
+/// Copy `src` to `dst` when `src` is a regular file (not a link); anything
+/// else, including a missing file, is skipped.
+fn copy_file_if_regular(src: &Path, dst: &Path) -> Result<(), BuildError> {
+    let Ok(meta) = std::fs::symlink_metadata(src) else { return Ok(()) };
+    if !meta.file_type().is_file() {
+        return Ok(());
+    }
+    std::fs::copy(src, dst).map_err(io_err(src))?;
+    Ok(())
+}
+
 /// Recursively copy `src` to `dst`; a missing `src` is not an error.
+/// Symbolic links are skipped (and logged), never followed.
 fn copy_dir_if_exists(src: &Path, dst: &Path) -> Result<(), BuildError> {
     if !src.is_dir() {
         return Ok(());
@@ -301,10 +322,13 @@ fn copy_dir_if_exists(src: &Path, dst: &Path) -> Result<(), BuildError> {
     std::fs::create_dir_all(dst).map_err(io_err(dst))?;
     for entry in std::fs::read_dir(src).map_err(io_err(src))? {
         let entry = entry.map_err(io_err(src))?;
+        let kind = entry.file_type().map_err(io_err(&entry.path()))?;
         let to = dst.join(entry.file_name());
-        if entry.path().is_dir() {
+        if kind.is_symlink() {
+            opusdm_ipc::err_log!("theme-config", "skipping symbolic link {}", entry.path().display());
+        } else if kind.is_dir() {
             copy_dir_if_exists(&entry.path(), &to)?;
-        } else {
+        } else if kind.is_file() {
             std::fs::copy(entry.path(), &to).map_err(io_err(&entry.path()))?;
         }
     }
@@ -441,6 +465,47 @@ mod tests {
         assert!(swap_in(&root.join(".dest.tmp"), &root.join("dest")).is_err());
         assert_eq!(std::fs::read(root.join("dest/old.txt")).unwrap(), b"old");
         assert_eq!(folder_names(), ["dest"]);
+    }
+
+    /// The source theme's `preview.png` survives a save, also over the same slug.
+    #[test]
+    fn preview_png_is_carried_over_from_the_source_theme() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _td = scratch_config();
+        install_source("src");
+        std::fs::write(theme_dir("src").join("preview.png"), b"preview-bytes").unwrap();
+        let copy = write_theme("copy", &draft("Copy"), Some("src"), &[]).unwrap();
+        assert_eq!(std::fs::read(copy.join("preview.png")).unwrap(), b"preview-bytes");
+        write_theme("src", &draft("Src"), Some("src"), &[]).unwrap();
+        assert_eq!(std::fs::read(theme_dir("src").join("preview.png")).unwrap(), b"preview-bytes");
+    }
+
+    /// Symlinks in the source theme are skipped: no loop, no link target content.
+    #[test]
+    fn symlinks_in_the_source_theme_are_not_followed() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let td = scratch_config();
+        install_source("src");
+        let icons = theme_dir("src").join("icons");
+        std::os::unix::fs::symlink(".", icons.join("loop")).unwrap();
+        let secret = picture(td.path(), "secret.txt");
+        std::os::unix::fs::symlink(&secret, icons.join("leak.png")).unwrap();
+        std::os::unix::fs::symlink(&secret, theme_dir("src").join("preview.png")).unwrap();
+        let dir = write_theme("out", &draft("Out"), Some("src"), &[]).unwrap();
+        assert!(dir.join("icons/dir.png").is_file());
+        assert!(std::fs::symlink_metadata(dir.join("icons/loop")).is_err());
+        assert!(std::fs::symlink_metadata(dir.join("icons/leak.png")).is_err());
+        assert!(std::fs::symlink_metadata(dir.join("preview.png")).is_err());
+    }
+
+    /// A source slug that is not a valid theme name is refused.
+    #[test]
+    fn an_invalid_source_slug_is_rejected() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _td = scratch_config();
+        let r = write_theme("ok", &draft("Ok"), Some("../.."), &[]);
+        assert!(matches!(r, Err(BuildError::InvalidName(_))));
+        assert!(!themes_dir().join("ok").exists());
     }
 
     #[test]

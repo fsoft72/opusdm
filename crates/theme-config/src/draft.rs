@@ -6,7 +6,7 @@ use crate::builder::slugify;
 use crate::writer::{write_theme, AssetOp, BuildError, ThemeDraft};
 use opusdm_ipc::desktop::Background;
 use opusdm_ipc::look::{SurfaceImage, ThemeSurface};
-use opusdm_ipc::themes::{theme_dir, CustomThemeData, ThemeManifest};
+use opusdm_ipc::themes::{theme_dir, valid_slug, CustomThemeData, ThemeManifest};
 use std::path::{Path, PathBuf};
 
 /// Load installed theme `slug` as an editable draft. Pictures are resolved to
@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 /// `theme.json` that exists but cannot be parsed is an error so the editor
 /// never replaces it with an empty one.
 pub fn load_draft(slug: &str) -> Result<ThemeDraft, String> {
+    if !valid_slug(slug) {
+        return Err(format!("invalid theme name: {slug:?}"));
+    }
     let dir = theme_dir(slug);
     let manifest_path = dir.join("manifest.json");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
@@ -85,6 +88,9 @@ pub fn duplicate_theme(src_slug: &str, label: &str) -> Result<String, BuildError
 pub fn delete_theme(slug: &str) -> Result<(), String> {
     if slug == opusdm_ipc::theme::DEFAULT_THEME_SLUG {
         return Err("the default theme cannot be deleted".to_string());
+    }
+    if !valid_slug(slug) {
+        return Err(format!("invalid theme name: {slug:?}"));
     }
     let dir = theme_dir(slug);
     if !dir.join("manifest.json").is_file() {
@@ -248,6 +254,20 @@ mod tests {
         install_source(opusdm_ipc::theme::DEFAULT_THEME_SLUG);
         assert!(delete_theme(opusdm_ipc::theme::DEFAULT_THEME_SLUG).is_err());
         assert!(theme_dir(opusdm_ipc::theme::DEFAULT_THEME_SLUG).exists());
+    }
+
+    /// Slugs that are not plain theme names touch nothing.
+    #[test]
+    fn unsafe_slugs_are_rejected_by_delete_and_load() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let td = scratch_config();
+        install_source("keep");
+        let outside = td.path().join("opusdm/x");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(delete_theme("../x").is_err());
+        assert!(outside.exists(), "nothing outside themes/ may be touched");
+        assert!(load_draft("a/b").is_err());
+        assert!(theme_dir("keep").exists());
     }
 
     #[test]

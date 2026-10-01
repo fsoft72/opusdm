@@ -72,7 +72,7 @@ loading):
 
 ## 2. Save, Export, Import (`opusdm-theme-config`)
 
-UI: `opusdm-settings` gets "Save theme..." and "Export..." next to the
+UI: `opusdm-settings` gets "Save theme..." and "Export theme..." next to the
 existing "Import theme...".
 
 **Save theme** (capture the current settings):
@@ -130,9 +130,12 @@ Hook points already in the code: the Lister regenerates its CSS with
 **Surfaces**
 - `surfaces.lister.image` becomes a rule on `columnview > listview` with
   `background-image: url(...)`. `surfaces.requester.image` becomes a rule on
-  requester windows. Requesters need a shared CSS class; the old
-  `requester` class was removed as dead, so it is reintroduced at the single
-  construction point of requesters (to be located during implementation).
+  windows with the `opus-requester` CSS class, which `opusdm-ui` sets in its
+  requester and `DialogShell` windows (`REQUESTER_CLASS`). The look CSS
+  (`ui_look_css`: UI font and requester picture) is loaded only by the Lister
+  and Settings processes, so the picture shows on requesters displayed by
+  those two. Hub dialogs, the panel, the dock and Button Banks do not load it
+  and do not get the UI font or the picture.
 - Fit mapping reuses the desktop `ImageFit` enum, so the fits are the four
   existing ones (`fill`, `fit`, `center`, `tile`; there is no `stretch`):
   `tile` = `background-repeat: repeat`; `center` = `no-repeat` plus
@@ -155,7 +158,8 @@ they are edited.
 
 **Layout**: a list of installed themes on the left (New, Duplicate, Delete),
 tabs on the right:
-- **General**: label, author, version, `preview.png`.
+- **General**: label, author and version. It does NOT edit `preview.png`: the
+  file is carried over unchanged by every save (a chooser is deferred).
 - **Colours**: the existing colour widgets and preset picker.
 - **Appearance** (in the same tab as Colours): monospace list, type
   indicators, `theme_window`, dark / light. Behaviour and desktop metrics are

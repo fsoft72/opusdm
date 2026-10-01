@@ -132,11 +132,9 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), ImportError> {
     Ok(())
 }
 
-// Threat model: this guards against a malicious *path* (zip-slip / tar-slip)
-// escaping the extraction root. It does not attempt to sanitize symlink or
-// hardlink entries inside a tarball - `tar::Entry::unpack` handles those
-// per the `tar` crate's own defaults. Theme archives are user-supplied and
-// imported locally, not processed as untrusted server-side uploads.
+/// Unpack the entries of a tarball under `dest`. Guards against a malicious
+/// *path* (tar-slip) and only unpacks regular files and folders: symlink,
+/// hardlink and device entries are skipped with a log line.
 fn extract_tar_entries<R: Read>(mut archive: tar::Archive<R>, dest: &Path) -> Result<(), ImportError> {
     for entry in archive.entries().map_err(|e| ImportError::ExtractFailed(e.to_string()))? {
         let mut entry = entry.map_err(|e| ImportError::ExtractFailed(e.to_string()))?;
@@ -144,6 +142,11 @@ fn extract_tar_entries<R: Read>(mut archive: tar::Archive<R>, dest: &Path) -> Re
         let name = path.to_string_lossy().to_string();
         if !is_safe_entry(&name) {
             return Err(ImportError::PathTraversal(name));
+        }
+        let kind = entry.header().entry_type();
+        if !kind.is_file() && !kind.is_dir() {
+            opusdm_ipc::err_log!("theme-config", "import: skipping non-regular archive entry {name}");
+            continue;
         }
         let out_path = dest.join(&path);
         entry.unpack(&out_path).map_err(|e| ImportError::ExtractFailed(e.to_string()))?;
@@ -175,17 +178,23 @@ fn prune_theme_assets(root: &Path) {
     prune_dir(&root.join("backgrounds"), opusdm_ipc::desktop::is_background_image);
 }
 
-/// Delete the files directly inside `dir` that `keep` rejects. A missing
-/// folder is fine.
+/// Delete what is directly inside `dir` unless it is a regular file `keep`
+/// accepts. Symbolic links (never followed) and subfolders are removed too.
+/// A missing folder is fine.
 fn prune_dir(dir: &Path, keep: impl Fn(&Path) -> bool) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() || keep(&path) {
+        let kind = entry.file_type();
+        if kind.as_ref().is_ok_and(|k| k.is_file()) && keep(&path) {
             continue;
         }
-        opusdm_ipc::err_log!("theme-config", "import: dropping unexpected file {}", path.display());
-        if let Err(e) = std::fs::remove_file(&path) {
+        opusdm_ipc::err_log!("theme-config", "import: dropping unexpected entry {}", path.display());
+        let removed = match kind {
+            Ok(k) if k.is_dir() => std::fs::remove_dir_all(&path),
+            _ => std::fs::remove_file(&path),
+        };
+        if let Err(e) = removed {
             opusdm_ipc::err_log!("theme-config", "cannot remove {}: {e}", path.display());
         }
     }
@@ -390,5 +399,54 @@ mod tests {
         assert!(dir.join("backgrounds/ok.png").is_file());
         assert!(!dir.join("backgrounds/readme.txt").exists());
         assert!(dir.join("sounds/a.wav").is_file(), "sounds are an opaque container");
+    }
+
+    /// Build a `.tar.gz` holding a manifest and a symlink entry `fonts/x.ttf`.
+    fn tar_gz_with_symlink() -> tempfile::NamedTempFile {
+        let file = tempfile::Builder::new().suffix(".tar.gz").tempfile().unwrap();
+        let enc = flate2::write::GzEncoder::new(file.reopen().unwrap(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(enc);
+        let data = br#"{"name":"linky","label":"Linky"}"#;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_cksum();
+        builder.append_data(&mut header, "manifest.json", &data[..]).unwrap();
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        builder.append_link(&mut link, "fonts/x.ttf", "/etc/passwd").unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+        file
+    }
+
+    /// A symlink entry in a tarball is never unpacked into the installed theme.
+    #[test]
+    fn a_tar_symlink_entry_is_never_unpacked() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        let archive = tar_gz_with_symlink();
+        assert_eq!(import_theme_archive(archive.path()).unwrap(), "linky");
+        assert!(std::fs::symlink_metadata(theme_dir("linky").join("fonts/x.ttf")).is_err(), "no link may be installed");
+    }
+
+    /// Pruning drops symlinks and subfolders from `fonts/` and `backgrounds/`.
+    #[test]
+    fn prune_removes_symlinks_and_subfolders_from_fonts_and_backgrounds() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        std::fs::create_dir_all(root.join("fonts/sub")).unwrap();
+        std::fs::create_dir_all(root.join("backgrounds")).unwrap();
+        std::fs::write(root.join("fonts/ok.ttf"), b"f").unwrap();
+        std::fs::write(root.join("fonts/sub/inner.ttf"), b"f").unwrap();
+        let secret = root.join("secret.txt");
+        std::fs::write(&secret, b"s").unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("fonts/x.ttf")).unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("backgrounds/y.png")).unwrap();
+        prune_theme_assets(root);
+        assert!(root.join("fonts/ok.ttf").is_file());
+        assert!(std::fs::symlink_metadata(root.join("fonts/x.ttf")).is_err());
+        assert!(std::fs::symlink_metadata(root.join("backgrounds/y.png")).is_err());
+        assert!(!root.join("fonts/sub").exists());
     }
 }
