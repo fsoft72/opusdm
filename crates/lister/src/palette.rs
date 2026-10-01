@@ -86,6 +86,9 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::Encrypt, title: Cow::Borrowed("Encrypt... (password, Source -> Dest as .enc)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::Decrypt, title: Cow::Borrowed("Decrypt... (.enc files, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::RootDir, title: Cow::Borrowed("Go to Root"), category: Cow::Borrowed("Navigation"), shortcut: None },
+        CommandItem { id: CommandId::ParentNew, title: Cow::Borrowed("Open Parent in NEW Lister"), category: Cow::Borrowed("Navigation"), shortcut: None },
+        CommandItem { id: CommandId::RootNew, title: Cow::Borrowed("Open Root in NEW Lister"), category: Cow::Borrowed("Navigation"), shortcut: None },
         CommandItem { id: CommandId::CommandLine, title: Cow::Borrowed("Command Line..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::FtpBook, title: Cow::Borrowed("FTP / SFTP Address Book..."), category: Cow::Borrowed("Network"), shortcut: None },
         CommandItem { id: CommandId::FtpQuit, title: Cow::Borrowed("FTP Quit (close all connections)"), category: Cow::Borrowed("Network"), shortcut: None },
@@ -358,7 +361,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             ui.reload();
         }
         CommandId::ParentDir => {
-            let parent = crate::remote::parent_of(&ui.cwd.borrow());
+            let parent = crate::navpath::parent(&ui.cwd.borrow());
             if let Some(p) = parent {
                 ui.navigate_to(&p);
             }
@@ -415,6 +418,20 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::Decrypt => {
             crate::crypt_dialog::open_crypt(ui, false, ui.selected_paths());
+        }
+        CommandId::RootDir => {
+            let root = crate::navpath::root(&ui.cwd.borrow());
+            ui.navigate_to(&root);
+        }
+        CommandId::ParentNew => match crate::navpath::parent(&ui.cwd.borrow()) {
+            Some(parent) => {
+                let _ = ui.hub.client.send(&ToHub::SpawnLister { start_path: Some(parent) });
+            }
+            None => crate::actions::flash(ui, "already at the top"),
+        },
+        CommandId::RootNew => {
+            let root = crate::navpath::root(&ui.cwd.borrow());
+            let _ = ui.hub.client.send(&ToHub::SpawnLister { start_path: Some(root) });
         }
         CommandId::CommandLine => {
             crate::cli_dialog::open_command_line(ui);

@@ -113,6 +113,12 @@ pub enum CommandId {
     Encrypt,
     /// Decrypt the selected `.enc` files with a password.
     Decrypt,
+    /// Go to the root of the current tree.
+    RootDir,
+    /// Open the parent folder in a new Lister.
+    ParentNew,
+    /// Open the root of the current tree in a new Lister.
+    RootNew,
     /// Open the internal command line.
     CommandLine,
     /// Open the FTP address book.
@@ -402,6 +408,14 @@ mod tests {
     fn script_events_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageScripts));
+    }
+
+    #[test]
+    fn root_and_parent_variants_exist_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        for id in [CommandId::RootDir, CommandId::ParentNew, CommandId::RootNew] {
+            assert!(known.contains(&id));
+        }
     }
 
     #[test]

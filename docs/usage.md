@@ -248,6 +248,9 @@ The **Change Directory** command has three optional parameters:
 - **View** (`details` or `icons`) switches the SOURCE Lister's view. These last two do not apply to a NEW Lister.
 Later steps of the function run from the folder either way.
 
+### 3.10o Root and Parent variants
+Palette (Navigation): **Go to Root**, **Open Parent in NEW Lister** and **Open Root in NEW Lister**. The root is `/` for a local folder, the archive's top for a folder inside an archive, and the server's `/` for a remote folder. The parent button and Backspace now also step out of archive folders properly (inner folder, then the archive's top, then the folder that holds the archive).
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

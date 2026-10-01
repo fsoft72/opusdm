@@ -498,20 +498,8 @@ fn build_window(
     {
         let ui = ui.clone();
         parent_btn.connect_clicked(move |_| {
-            let cwd = ui.cwd.borrow().clone();
-            if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
-                if inner.is_empty() {
-                    if let Some(p) = arch.parent() {
-                        ui.navigate_to(p);
-                    }
-                } else {
-                    let parent_inner = Path::new(&inner)
-                        .parent()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    ui.navigate_to(&crate::archive::make_archive_path(&arch, &parent_inner));
-                }
-            } else if let Some(p) = crate::remote::parent_of(&cwd) {
+            let parent = crate::navpath::parent(&ui.cwd.borrow());
+            if let Some(p) = parent {
                 ui.navigate_to(&p);
             }
         });
