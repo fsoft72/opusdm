@@ -187,7 +187,7 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
 
         // Selection.
         gdk::Key::Insert | gdk::Key::KP_Insert => Some(Action::ToggleSelectAndAdvance),
-        gdk::Key::asterisk => Some(Action::Command(CommandId::InvertSelection)),
+        gdk::Key::asterisk | gdk::Key::KP_Multiply => Some(Action::Command(CommandId::InvertSelection)),
         gdk::Key::plus | gdk::Key::KP_Add => Some(Action::Command(CommandId::SelectPattern)),
         gdk::Key::minus | gdk::Key::KP_Subtract => Some(Action::Command(CommandId::DeselectPattern)),
 
@@ -251,6 +251,7 @@ mod tests {
     fn selection_keys_are_bound() {
         assert_eq!(list(gdk::Key::Insert), Some(Action::ToggleSelectAndAdvance));
         assert_eq!(list(gdk::Key::asterisk), Some(Action::Command(CommandId::InvertSelection)));
+        assert_eq!(list(gdk::Key::KP_Multiply), Some(Action::Command(CommandId::InvertSelection)));
         assert_eq!(list(gdk::Key::plus), Some(Action::Command(CommandId::SelectPattern)));
         assert_eq!(list(gdk::Key::minus), Some(Action::Command(CommandId::DeselectPattern)));
     }

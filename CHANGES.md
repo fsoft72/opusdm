@@ -278,3 +278,4 @@
 
 - Fix: type-to-find swallows Backspace while active, including the grace period after the buffer was emptied, so extra Backspaces no longer walk up the folder tree.
 - Fix: `~` (Home) also accepts the dead tilde keyval and any key whose character is `~`, for layouts such as the Italian one where it is typed with AltGr.
+- Fix: the keypad `*` (`KP_Multiply`) inverts the selection like the main `*`.
