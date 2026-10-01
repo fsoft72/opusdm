@@ -18,10 +18,19 @@ pub fn check_passwords(password: &str, confirm: Option<&str>) -> Result<String, 
     Ok(password.to_string())
 }
 
-/// Ask for a password and encrypt (`encrypt`) or decrypt the selection into
-/// the DEST Lister, or into this folder when there is no DEST.
-pub fn open_crypt(ui: &Rc<Ui>, encrypt: bool) {
-    let srcs = ui.selected_paths();
+/// The paths a context menu action on `target` applies to: the whole
+/// selection when `target` is part of it, otherwise just `target`.
+pub fn targets_for(selected: Vec<std::path::PathBuf>, target: &std::path::Path) -> Vec<std::path::PathBuf> {
+    if selected.iter().any(|p| p == target) {
+        selected
+    } else {
+        vec![target.to_path_buf()]
+    }
+}
+
+/// Ask for a password and encrypt (`encrypt`) or decrypt `srcs` into the
+/// DEST Lister, or into this folder when there is no DEST.
+pub fn open_crypt(ui: &Rc<Ui>, encrypt: bool, srcs: Vec<std::path::PathBuf>) {
     if srcs.is_empty() {
         crate::actions::flash(ui, "nothing selected");
         return;
@@ -79,6 +88,14 @@ pub fn open_crypt(ui: &Rc<Ui>, encrypt: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_targets_follow_the_selection_only_when_it_holds_the_clicked_file() {
+        use std::path::PathBuf;
+        let (a, b, c) = (PathBuf::from("/d/a"), PathBuf::from("/d/b"), PathBuf::from("/d/c"));
+        assert_eq!(targets_for(vec![a.clone(), b.clone()], &b), vec![a.clone(), b.clone()]);
+        assert_eq!(targets_for(vec![a, b], &c), vec![c]);
+    }
 
     #[test]
     fn passwords_must_be_present_and_match_when_confirmed() {

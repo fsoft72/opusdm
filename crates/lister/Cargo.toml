@@ -13,6 +13,7 @@ opusdm-ipc = { path = "../ipc" }
 opusdm-ui = { path = "../ui" }
 opusdm-iconview = { path = "../iconview" }
 opusdm-ftp = { path = "../ftp" }
+opusdm-fsops = { path = "../fsops" }
 async-channel.workspace = true
 libc.workspace = true
 gtk4.workspace = true

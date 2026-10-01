@@ -138,6 +138,26 @@ pub fn show_context_menu(
         }
     }
 
+    // Encrypt / Decrypt. Decrypt is offered on `.enc` files only.
+    {
+        let mut entries = vec![("Encrypt...", true)];
+        if !row.is_dir && row.name.to_ascii_lowercase().ends_with(opusdm_fsops::crypt::ENC_SUFFIX) {
+            entries.push(("Decrypt...", false));
+        }
+        for (label, encrypt) in entries {
+            let ui = ui.clone();
+            let pop = popover.clone();
+            let target_path = target_path.clone();
+            let btn = menu_button(label);
+            btn.connect_clicked(move |_| {
+                pop.popdown();
+                let srcs = crate::crypt_dialog::targets_for(ui.selected_paths(), &target_path);
+                crate::crypt_dialog::open_crypt(&ui, encrypt, srcs);
+            });
+            menu_box.append(&btn);
+        }
+    }
+
     // 2. Separatore
     menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 

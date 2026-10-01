@@ -410,10 +410,10 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             crate::scripts_editor::open_scripts_editor(ui);
         }
         CommandId::Encrypt => {
-            crate::crypt_dialog::open_crypt(ui, true);
+            crate::crypt_dialog::open_crypt(ui, true, ui.selected_paths());
         }
         CommandId::Decrypt => {
-            crate::crypt_dialog::open_crypt(ui, false);
+            crate::crypt_dialog::open_crypt(ui, false, ui.selected_paths());
         }
         CommandId::FtpBook => {
             crate::remote_ui::open_address_book(ui);
