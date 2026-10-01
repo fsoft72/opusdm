@@ -84,6 +84,8 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::FindKey, title: Cow::Borrowed("Find Key..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageUserMenu, title: Cow::Borrowed("Edit User Menu..."), category: Cow::Borrowed("Functions"), shortcut: None },
         CommandItem { id: CommandId::ManageScripts, title: Cow::Borrowed("Edit Script Events..."), category: Cow::Borrowed("Functions"), shortcut: None },
+        CommandItem { id: CommandId::Encrypt, title: Cow::Borrowed("Encrypt... (password, Source -> Dest as .enc)"), category: Cow::Borrowed("File Ops"), shortcut: None },
+        CommandItem { id: CommandId::Decrypt, title: Cow::Borrowed("Decrypt... (.enc files, Source -> Dest)"), category: Cow::Borrowed("File Ops"), shortcut: None },
         CommandItem { id: CommandId::FtpBook, title: Cow::Borrowed("FTP / SFTP Address Book..."), category: Cow::Borrowed("Network"), shortcut: None },
         CommandItem { id: CommandId::FtpQuit, title: Cow::Borrowed("FTP Quit (close all connections)"), category: Cow::Borrowed("Network"), shortcut: None },
         CommandItem { id: CommandId::ManageFiletypes, title: Cow::Borrowed("Edit File Types..."), category: Cow::Borrowed("Functions"), shortcut: None },
@@ -406,6 +408,12 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         }
         CommandId::ManageScripts => {
             crate::scripts_editor::open_scripts_editor(ui);
+        }
+        CommandId::Encrypt => {
+            crate::crypt_dialog::open_crypt(ui, true);
+        }
+        CommandId::Decrypt => {
+            crate::crypt_dialog::open_crypt(ui, false);
         }
         CommandId::FtpBook => {
             crate::remote_ui::open_address_book(ui);

@@ -12,7 +12,6 @@ Legend: `- [x]` done, `- [ ]` to do.
 
 Work on these in order. Decide what comes next only when all of them are done.
 
-- [ ] F-14 Encrypt / Decrypt
 
 ## 2. To do later
 
@@ -72,6 +71,7 @@ Amiga-only features are also out of scope, see section 8 of [FEATURES.md](FEATUR
 - [x] F-10 DateStamp (touch)
 - [x] F-12 MakeLink / MakeLinkAs (hard and symbolic)
 - [x] F-13 Join / Split
+- [x] F-14 Encrypt / Decrypt (palette only; no internal commands for functions yet; the password is not zeroized in memory)
 - [x] F-15 Recursive filter for operations (Copy/Move/Delete now; Protect/DateStamp/Comment hook in when they exist)
 - [x] F-16 Full Reader: Read / AnsiRead / HexRead / SmartRead
 - [x] F-17 Show (image slideshow)

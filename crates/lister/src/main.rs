@@ -12,6 +12,7 @@ mod cache_list;
 mod checkfit_ui;
 mod client;
 mod copy_as;
+mod crypt_dialog;
 mod clip;
 mod columns;
 mod context_menu;

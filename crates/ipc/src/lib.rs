@@ -59,7 +59,7 @@ pub use leftout::{LeftOut, LeftOutItem};
 pub use groups::{Group, Groups};
 pub use buttonbank::{BankAction, BankView, Banks, Btn, ButtonBank, MouseButton, Orientation};
 pub use proto::{
-    Appearance, Behavior, CacheEntry, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
+    Appearance, Behavior, Secret, CacheEntry, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
     Settings, ThemeMode, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
     CACHE_SIZE_RANGE, DEFAULT_CACHE_SIZE, DEFAULT_STATUS_FORMAT,
 };

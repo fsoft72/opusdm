@@ -219,6 +219,12 @@ Type `sftp://user@host[:port]/path`, `ftp://...` or `ftps://...` in the path bar
 - **Copy** from a remote folder downloads the selection (folders included) to a scratch folder in the system temp directory and then runs the normal Copy job to the DEST Lister. Double click on a remote file downloads it and opens it with the default application. Scratch folders older than a day are removed.
 - Remote folders are **read-only**: Move, Delete and a remote DEST are refused. **FTP Quit** closes every connection.
 
+### 3.10j Encrypt and Decrypt
+**Encrypt...** and **Decrypt...** (command palette) ask for a password and write into the DEST Lister (or this folder when there is no DEST).
+- Encrypt writes `name.enc` for every selected file; folders keep their tree. Decrypt turns `name.enc` back into `name` (a file not ending in `.enc` becomes `name.dec`). Existing files are never overwritten.
+- Format: XChaCha20-Poly1305 in 64 KiB chunks, key from the password with Argon2id and a random salt per file. Tampering, truncation and a wrong password are detected; a failed file leaves nothing behind and the rest still run. **There is no password recovery.**
+- The password travels from the Lister to the hub over the local socket, in memory only; it is never written to disk or to logs.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

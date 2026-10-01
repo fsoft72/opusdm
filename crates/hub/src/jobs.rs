@@ -54,7 +54,8 @@ fn is_remote_path(path: &Path) -> bool {
 
 /// Validate the parameters of `op`. Copy and Move refuse in-place transfers;
 /// the "As" variants and Duplicate legitimately land in the source directory,
-/// so they only need a non-empty selection. Other ops need no check. Remote
+/// so they only need a non-empty selection, as do Encrypt and Decrypt (their
+/// output names differ from the source names). Other ops need no check. Remote
 /// locations are refused for every op.
 pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
     // Remote (ftp://, ftps://, sftp://) locations can be browsed and
@@ -70,6 +71,8 @@ pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), Str
         | Op::Link { .. }
         | Op::Join { .. }
         | Op::Split { .. }
+        | Op::Encrypt { .. }
+        | Op::Decrypt { .. }
             if srcs.is_empty() =>
         {
             Err("no source files selected".into())

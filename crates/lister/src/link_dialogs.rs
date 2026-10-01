@@ -46,7 +46,7 @@ pub fn default_join_name(first: &str) -> String {
 
 /// `None` (the hub uses the DEST Lister) when this Lister is the SOURCE with
 /// a DEST set, otherwise the current directory.
-fn dest_or_cwd(ui: &Rc<Ui>) -> Option<PathBuf> {
+pub(crate) fn dest_or_cwd(ui: &Rc<Ui>) -> Option<PathBuf> {
     match crate::actions::resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
         Ok(()) => None,
         Err(_) => Some(ui.cwd_path()),

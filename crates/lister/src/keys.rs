@@ -109,6 +109,10 @@ pub enum CommandId {
     ManageUserMenu,
     /// Open the script events editor.
     ManageScripts,
+    /// Encrypt the selection with a password.
+    Encrypt,
+    /// Decrypt the selected `.enc` files with a password.
+    Decrypt,
     /// Open the FTP address book.
     FtpBook,
     /// Close every FTP / SFTP connection.
@@ -396,6 +400,13 @@ mod tests {
     fn script_events_command_exists_in_the_palette() {
         let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageScripts));
+    }
+
+    #[test]
+    fn crypt_commands_exist_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::Encrypt));
+        assert!(known.contains(&CommandId::Decrypt));
     }
 
     #[test]

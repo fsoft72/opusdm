@@ -70,6 +70,23 @@ pub enum Op {
     /// Split the single source into `chunk_bytes` parts named `name.001`,
     /// `name.002`, ... in `dest_dir`.
     Split { chunk_bytes: u64 },
+    /// Encrypt `srcs` with `password` into `dest_dir` as `name.enc` (folders
+    /// keep their tree).
+    Encrypt { password: Secret },
+    /// Decrypt `srcs` (`name.enc`) with `password` into `dest_dir`.
+    Decrypt { password: Secret },
+}
+
+/// A password carried inside a job. It travels as a plain string but never
+/// shows up in `Debug` output, so logs and test failures cannot leak it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<hidden>)")
+    }
 }
 
 /// Modifiers for a job, carried next to its [`Op`]. Everything off (the
@@ -478,6 +495,15 @@ mod tests {
     use super::*;
     use crate::frame::{recv, send};
     use std::io::Cursor;
+
+    #[test]
+    fn secrets_round_trip_as_plain_strings_but_hide_in_debug() {
+        let op = Op::Encrypt { password: Secret("hunter2".into()) };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("hunter2"));
+        assert_eq!(serde_json::from_str::<Op>(&json).unwrap(), op);
+        assert!(!format!("{op:?}").contains("hunter2"));
+    }
 
     fn roundtrip_tohub(msg: ToHub) {
         let mut buf = Vec::new();
