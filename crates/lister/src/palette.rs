@@ -439,7 +439,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 crate::actions::flash(ui, "function not found (it may have been deleted)");
                 return;
             };
-            let _ = ui.hub.client.send(&ToHub::RunFunction { steps: function.steps });
+            ui.start_run(ToHub::RunFunction { steps: function.steps });
         }
     }
 }

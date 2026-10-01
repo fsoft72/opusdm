@@ -217,7 +217,7 @@ fn open_function_editor(ui: &Rc<Ui>, function: Function, all_functions: Rc<RefCe
             let f = state.function.borrow().clone();
             state.log_buffer.set_text("");
             *ui.function_log.borrow_mut() = Some(state.log_buffer.clone());
-            let _ = ui.hub.client.send(&opusdm_ipc::ToHub::RunFunction { steps: f.steps });
+            ui.start_run(opusdm_ipc::ToHub::RunFunction { steps: f.steps });
         });
     }
 

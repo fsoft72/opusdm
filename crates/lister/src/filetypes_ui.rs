@@ -30,7 +30,7 @@ pub fn type_for(path: &Path, row: &Row) -> Option<FileType> {
 pub fn run_on_row(ui: &Rc<Ui>, name: &str, function: &FunctionId) {
     ui.view.selection.unselect_all();
     ui.select_names(&[name.to_string()]);
-    let _ = ui.hub.client.send(&opusdm_ipc::ToHub::RunFunctionById { id: function.clone() });
+    ui.start_run(opusdm_ipc::ToHub::RunFunctionById { id: function.clone() });
 }
 
 /// The "Open With" entries of `file_type`: function id and label (the function

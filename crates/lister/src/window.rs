@@ -76,6 +76,10 @@ pub struct StatusBar {
     pub gauge: gtk::LevelBar,
     /// Counts gauge requests so a slow `statvfs` cannot overwrite a newer one.
     pub gauge_generation: Rc<Cell<u64>>,
+    /// Spinner shown while a function started here is running.
+    pub busy_spinner: gtk::Spinner,
+    /// Text next to the spinner.
+    pub busy_label: gtk::Label,
 }
 
 /// The file area: which representation is shown and the model/selection
@@ -180,6 +184,8 @@ pub struct Ui {
     pub temp_format: RefCell<Option<(PathBuf, opusdm_ipc::ListerFormat)>>,
     /// Recently read directory listings (raw rows, before the Show / Hide filter).
     pub dir_cache: RefCell<crate::dircache::DirCache>,
+    /// Functions this Lister started that are still running.
+    pub busy: crate::busy::Busy,
     /// Open FTP / SFTP connections (F-39).
     pub remote: crate::remote_ui::RemoteState,
     /// Back / forward history.
@@ -601,14 +607,40 @@ impl Ui {
                 self.append_function_log(&format!("[step {step_idx}] done (exit {exit_code:?})\n"));
             }
             ToLister::FunctionFailed { step_idx, error } => {
+                self.run_finished();
                 self.append_function_log(&format!("[step {step_idx}] FAILED: {error}\n"));
                 crate::actions::flash(self, &format!("function failed at step {step_idx}: {error}"));
             }
             ToLister::FunctionDone => {
+                self.run_finished();
                 self.append_function_log("function finished\n");
                 crate::actions::flash(self, "function finished");
             }
         }
+    }
+
+    /// Hand a function to the hub (`ToHub::RunFunction` or `RunFunctionById`)
+    /// and show the busy indicator until it reports Done or Failed.
+    pub fn start_run(&self, request: opusdm_ipc::ToHub) {
+        self.busy.start();
+        self.refresh_busy();
+        let _ = self.hub.client.send(&request);
+    }
+
+    /// A function finished or failed: update the indicator.
+    fn run_finished(&self) {
+        self.busy.finish();
+        self.refresh_busy();
+    }
+
+    /// Show or hide the spinner to match the running count.
+    fn refresh_busy(&self) {
+        let label = self.busy.label();
+        let running = label.is_some();
+        self.status_bar.busy_spinner.set_visible(running);
+        self.status_bar.busy_spinner.set_spinning(running);
+        self.status_bar.busy_label.set_visible(running);
+        self.status_bar.busy_label.set_text(label.as_deref().unwrap_or(""));
     }
 
     /// Carry out a binding resolved by [`crate::keys::resolve`].

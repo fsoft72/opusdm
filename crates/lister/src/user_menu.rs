@@ -79,7 +79,7 @@ pub fn install(ui: &Rc<Ui>) {
         let ui = Rc::downgrade(ui);
         run.connect_activate(move |_, parameter| {
             let (Some(ui), Some(id)) = (ui.upgrade(), parameter.and_then(|p| p.get::<String>())) else { return };
-            let _ = ui.hub.client.send(&opusdm_ipc::ToHub::RunFunctionById { id });
+            ui.start_run(opusdm_ipc::ToHub::RunFunctionById { id });
         });
     }
     ui.window.add_action(&run);

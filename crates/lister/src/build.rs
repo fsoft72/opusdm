@@ -325,7 +325,16 @@ fn build_window(
     let job_line = gtk::Label::new(None);
     job_line.set_xalign(0.0);
     job_line.set_vexpand(false);
-    root.append(&job_line);
+    let busy_spinner = gtk::Spinner::new();
+    busy_spinner.set_visible(false);
+    let busy_label = gtk::Label::new(None);
+    busy_label.set_visible(false);
+    let message_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    message_row.set_vexpand(false);
+    message_row.append(&busy_spinner);
+    message_row.append(&busy_label);
+    message_row.append(&job_line);
+    root.append(&message_row);
 
     // Bottom navigation: home, parent, path.
     let nav_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -424,6 +433,8 @@ fn build_window(
             totals: Cell::new((0, 0, 0)),
             gauge: gauge.clone(),
             gauge_generation: Rc::new(Cell::new(0)),
+            busy_spinner,
+            busy_label,
         },
         path_entry: path_entry.clone(),
         button_row: button_row.clone(),
@@ -438,6 +449,7 @@ fn build_window(
         format: RefCell::new(opusdm_ipc::ListerFormat::builtin()),
         temp_format: RefCell::new(None),
         dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
+        busy: crate::busy::Busy::default(),
         remote: crate::remote_ui::RemoteState::default(),
         history: RefCell::new(crate::history::History::new()),
         nav_history: crate::window::NavHistory {
@@ -618,7 +630,7 @@ fn build_window(
             // built-in binding.
             let user_function = ui_for_keys.hub.hotkeys.borrow().lookup(keyval, state, focus).cloned();
             if let Some(id) = user_function {
-                let _ = ui_for_keys.hub.client.send(&opusdm_ipc::ToHub::RunFunctionById { id });
+                ui_for_keys.start_run(opusdm_ipc::ToHub::RunFunctionById { id });
                 return glib::Propagation::Stop;
             }
             let Some(action) = crate::keys::resolve(keyval, ctrl, shift, focus) else {

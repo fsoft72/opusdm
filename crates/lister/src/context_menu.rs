@@ -194,7 +194,7 @@ pub fn show_context_menu(
                 cmd: opusdm_ipc::function::InternalCmd::SetBackground,
                 args: opusdm_ipc::function::InternalArgs(args),
             }];
-            let _ = ui.hub.client.send(&opusdm_ipc::ToHub::RunFunction { steps });
+            ui.start_run(opusdm_ipc::ToHub::RunFunction { steps });
         });
         menu_box.append(&btn);
     }
