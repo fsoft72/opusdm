@@ -14,6 +14,7 @@ use std::rc::Rc;
 mod apply;
 mod builder;
 mod draft;
+mod editor;
 mod exporter;
 mod importer;
 mod model;
@@ -124,6 +125,8 @@ fn build_window(app: &gtk::Application) {
     theme_buttons.append(&import_btn);
     theme_buttons.append(&save_btn);
     theme_buttons.append(&export_btn);
+    let edit_btn = gtk::Button::with_label("Edit theme...");
+    theme_buttons.append(&edit_btn);
     desktop_page.append(&theme_buttons);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -421,6 +424,11 @@ fn build_window(app: &gtk::Application) {
                 });
             });
         });
+    }
+    {
+        let window = window.clone();
+        let select_theme = select_theme.clone();
+        edit_btn.connect_clicked(move |_| editor::open(&window, select_theme.clone()));
     }
     {
         let window = window.clone();
