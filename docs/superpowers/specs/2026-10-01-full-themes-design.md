@@ -16,8 +16,9 @@ wipe the config, import it, colours and background are restored.
 ## Decisions taken with the user
 
 - **Sounds**: container only. `sounds/` is copied by Save, Export and
-  Import but nothing plays it until F-36. `theme.json` reserves an empty
-  `sounds` object.
+  Import but nothing plays it until F-36. No `sounds` key is written to
+  `theme.json` (the folder is copied as it is; an unknown `sounds` key in an
+  existing `theme.json` is ignored).
 - **Fonts**: family and size for the file list and for the UI, plus optional
   `.ttf` / `.otf` files shipped in the theme, registered at runtime for the
   OpusDM processes only (never installed system-wide).
@@ -40,7 +41,7 @@ wipe the config, import it, colours and background are restored.
   icons/            existing
   backgrounds/      existing, now also lister and requester images
   fonts/            new: .ttf / .otf
-  sounds/           new: opaque container
+  sounds/           new: opaque container (carried, never played)
 ```
 
 An exported theme is a `.zip` of that folder named `<slug>.zip`.
@@ -55,10 +56,9 @@ loading):
               "ui":   {"family": "...", "size": 10} },
 "surfaces": { "lister":    {"image": "lister.png",    "fit": "tile"},
               "requester": {"image": "requester.png", "fit": "center"} },
-"sounds":   {}
 ```
 
-- `CustomThemeData` gains `fonts`, `surfaces`, `sounds`.
+- `CustomThemeData` gains `fonts` and `surfaces`.
 - `Settings` gains `fonts` and `surfaces` with `#[serde(default)]`, so an old
   `settings.json` still parses (covered by a test, as for earlier fields).
 - Image file names are relative to the theme's `backgrounds/` and are
@@ -66,6 +66,9 @@ loading):
   `ThemeBackground`).
 - Applying a theme overwrites a settings field only where the theme sets it
   (existing `merge_custom_theme` behaviour, extended to the new sections).
+  The merge is per section: a `fonts` value replaces the whole `Fonts` value,
+  so a theme that sets only `list` resets `ui` to the default, like colours.
+  `surfaces` merge per surface (Lister, requester).
 
 ## 2. Save, Export, Import (`opusdm-theme-config`)
 
@@ -73,8 +76,9 @@ UI: `opusdm-settings` gets "Save theme..." and "Export..." next to the
 existing "Import theme...".
 
 **Save theme** (capture the current settings):
-1. Dialog asks for a name (label and slug, checked with `valid_slug`) and an
-   optional author. An existing slug asks for overwrite confirmation.
+1. Dialog asks for a name (label and slug, checked with `valid_slug`). There
+   is no author field: the author is set in the editor's General tab. An
+   existing slug asks for overwrite confirmation.
 2. Pure function `build_theme_dir(settings, desktop, dest)` builds the theme
    in a temporary directory:
    - writes `manifest.json` and `theme.json` from the current settings;
@@ -82,13 +86,16 @@ existing "Import theme...".
      `backgrounds/` and rewrites the references as relative file names;
    - copies the font files the active theme uses into `fonts/`;
    - copies the active icon set into `icons/` so the theme is standalone.
-3. On success the temporary directory is moved into `themes/<slug>/`. On any
-   failure nothing is left in `themes/` and the message names the failing
-   file. The new theme shows up in the picker immediately.
+3. On success the temporary directory is swapped into `themes/<slug>/`
+   (`writer::write_theme`, shared with the Theme Editor). An existing theme
+   is first renamed to `.<slug>.old` and restored if the second rename
+   fails, so a failed swap keeps the old theme. On any failure nothing is
+   left in `themes/` and the message names the failing file. The new theme shows up in the picker immediately.
 
 **Export (BuildTheme)**: pick an installed theme, write `<slug>.zip` to a
 chosen location. The packing code is the logic of `xtask package-themes`,
-extracted into one shared function so there is a single packager.
+extracted into the `opusdm-themepack` crate, shared with `xtask`, so there
+is a single packager.
 
 **Import**: `import_theme_archive` keeps its behaviour (all-or-nothing,
 zip-slip guard, overwrite on reimport). It additionally allows only
@@ -105,9 +112,14 @@ Hook points already in the code: the Lister regenerates its CSS with
 **Fonts**
 - New `fonts` module in `opusdm-ui`: `register_theme_fonts(slug)` registers
   each file in `themes/<slug>/fonts/` with fontconfig
-  (`FcConfigAppFontAddFile`) for the current process only. Hub, Lister and
-  requester processes call it when they receive settings, before building or
-  restyling the UI.
+  (`FcConfigAppFontAddFile`) for the current process only. A registry
+  remembers accepted and rejected files, so a file is added once and a bad
+  one is logged once. The Lister (when it receives settings) and the
+  Settings window (at startup, for the active theme) call it; the Hub renders
+  no themed text and does not. The Theme Editor's Fonts tab only edits the
+  family, size and files: it does not register fonts itself, so a font added
+  there reaches the Lister when the theme is applied and the Settings window
+  at its next start.
 - `generate_css` emits `font-family` / `font-size` for the file list from
   `settings.fonts.list`; `chrome_css` does the same for the UI from
   `settings.fonts.ui`. Empty fields emit nothing (system default).
@@ -121,10 +133,13 @@ Hook points already in the code: the Lister regenerates its CSS with
   requester windows. Requesters need a shared CSS class; the old
   `requester` class was removed as dead, so it is reintroduced at the single
   construction point of requesters (to be located during implementation).
-- Fit mapping: `tile` = `background-repeat: repeat`; `center` = `no-repeat`
-  plus `background-position: center`; `fill` / `fit` = `background-size:
-  cover` / `contain`; `stretch` = `background-size: 100% 100%`. It reuses the
-  desktop `ImageFit` enum.
+- Fit mapping reuses the desktop `ImageFit` enum, so the fits are the four
+  existing ones (`fill`, `fit`, `center`, `tile`; there is no `stretch`):
+  `tile` = `background-repeat: repeat`; `center` = `no-repeat` plus
+  `background-position: center`; `fill` / `fit` = `background-size: cover` /
+  `contain`.
+- With a Lister picture the file rows are drawn at 60 percent opacity
+  (`ROW_ALPHA_WITH_PICTURE`) so the picture shows through.
 - `file_bg` stays underneath as a fallback. A missing or unreadable image is
   logged and ignored.
 
@@ -134,13 +149,17 @@ new message; `Settings` just carries two more defaulted fields).
 ## 4. Theme Editor (`opusdm-theme-config`, new `editor/` module)
 
 A separate window opened by an "Edit theme..." button in `opusdm-settings`.
-It edits the folder of an installed theme, not the desktop settings.
+It edits the folder of an installed theme, not the desktop settings. The
+Settings window itself has no font or picture widgets: the editor is where
+they are edited.
 
 **Layout**: a list of installed themes on the left (New, Duplicate, Delete),
 tabs on the right:
 - **General**: label, author, version, `preview.png`.
 - **Colours**: the existing colour widgets and preset picker.
-- **Appearance**: monospace list, type indicators, `theme_window`, dark / light.
+- **Appearance** (in the same tab as Colours): monospace list, type
+  indicators, `theme_window`, dark / light. Behaviour and desktop metrics are
+  not edited; they are carried through unchanged.
 - **Fonts**: family and size for the list and the UI, plus the files in
   `fonts/` with Add and Remove.
 - **Pictures**: desktop, Lister and requester picture each with a file
