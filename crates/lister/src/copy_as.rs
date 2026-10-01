@@ -31,6 +31,20 @@ pub fn preview_text(pattern: &str, originals: &[String]) -> Result<String, Strin
     Ok(lines.join("\n"))
 }
 
+/// The new names out of the dialog's `(old, new)` pairs, checked like a
+/// pattern result: every name valid and no two sources landing on one name.
+pub fn names_from_mappings(mappings: &[(String, String)]) -> Result<Vec<String>, String> {
+    let names: Vec<String> = mappings.iter().map(|(_, new)| new.clone()).collect();
+    let mut seen = std::collections::HashSet::new();
+    for name in &names {
+        opusdm_ipc::glob::validate_new_name(name)?;
+        if !seen.insert(name.as_str()) {
+            return Err(format!("several sources would be named {name:?}"));
+        }
+    }
+    Ok(names)
+}
+
 /// Open the dialog for the current selection. `moving` picks `MoveAs` over
 /// `CopyAs`. The destination is the DEST Lister, resolved by the hub.
 pub fn open(ui: &Rc<Ui>, moving: bool) {
@@ -44,6 +58,19 @@ pub fn open(ui: &Rc<Ui>, moving: bool) {
         return;
     }
     let title = if moving { "Move As" } else { "Copy As" };
+    // Several items: the same rules dialog as the batch renamer.
+    if originals.len() > 1 {
+        let apply: crate::batch_rename::ApplyMappings = Rc::new(move |ui, mappings| {
+            let new_names = match names_from_mappings(&mappings) {
+                Ok(names) => names,
+                Err(msg) => return crate::actions::flash(ui, &msg),
+            };
+            let op = if moving { Op::MoveAs { new_names } } else { Op::CopyAs { new_names } };
+            crate::job_submit::submit_job(ui, op, ui.selected_paths(), None, JobOptions::default());
+        });
+        crate::batch_rename::open_rules_dialog(ui, title, if moving { "Move" } else { "Copy" }, apply);
+        return;
+    }
     let shell = opusdm_ui::DialogShell::new(&ui.window, title).size(460, 300);
 
     let entry = gtk::Entry::new();
@@ -104,6 +131,20 @@ mod tests {
         let text = preview_text("*", &orig).unwrap();
         assert!(text.ends_with("... and 4 more"));
         assert_eq!(text.lines().count(), PREVIEW_LINES + 1);
+    }
+
+    #[test]
+    fn mappings_become_new_names_in_order() {
+        let m = vec![("a".to_string(), "x".to_string()), ("b".to_string(), "y".to_string())];
+        assert_eq!(names_from_mappings(&m).unwrap(), vec!["x", "y"]);
+    }
+
+    #[test]
+    fn colliding_or_invalid_mappings_are_refused() {
+        let same = vec![("a".to_string(), "x".to_string()), ("b".to_string(), "x".to_string())];
+        assert!(names_from_mappings(&same).is_err());
+        let slash = vec![("a".to_string(), "d/x".to_string())];
+        assert!(names_from_mappings(&slash).is_err());
     }
 
     #[test]

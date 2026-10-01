@@ -187,19 +187,55 @@ fn to_kebab_case(s: &str) -> String {
     res
 }
 
+/// What the dialog's apply button does with the computed `(old, new)` names.
+pub type ApplyMappings = Rc<dyn Fn(&Rc<Ui>, Vec<(String, String)>)>;
+
 /// Open the Batch Rename dialog for the currently selected files.
 pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
-    let names = ui.selected_names();
-    if names.is_empty() {
+    if ui.selected_names().is_empty() {
         crate::actions::flash(ui, "no files selected for batch rename");
         return;
     }
+    open_rules_dialog(ui, "Batch Rename", "Apply Rename", Rc::new(rename_in_place));
+}
 
+/// Rename every changed entry inside the current directory.
+fn rename_in_place(ui: &Rc<Ui>, mappings: Vec<(String, String)>) {
     let cwd = ui.cwd_path();
+    let mut renamed_count = 0;
+    let mut errors = Vec::new();
+    for (orig, new) in mappings {
+        if orig == new {
+            continue;
+        }
+        match std::fs::rename(cwd.join(&orig), cwd.join(&new)) {
+            Ok(()) => renamed_count += 1,
+            Err(e) => errors.push(format!("{orig} -> {new}: {e}")),
+        }
+    }
+    ui.reload();
+    if errors.is_empty() {
+        crate::actions::flash(ui, &format!("Successfully renamed {renamed_count} item(s)"));
+    } else {
+        crate::actions::flash(
+            ui,
+            &format!("Renamed {renamed_count} item(s) with {} error(s)", errors.len()),
+        );
+    }
+}
+
+/// The rules dialog (find/replace, prefix, suffix, case, numbering) with a
+/// live preview over the selected names. `on_apply` receives the final
+/// `(old, new)` pairs when the apply button is pressed.
+pub fn open_rules_dialog(ui: &Rc<Ui>, title: &str, apply_label: &str, on_apply: ApplyMappings) {
+    let names = ui.selected_names();
+    if names.is_empty() {
+        return;
+    }
 
     let shell = opusdm_ui::DialogShell::new(
         &ui.window,
-        &format!("Batch Rename - {} items", names.len()),
+        &format!("{title} - {} items", names.len()),
     )
     .size(680, 520);
     let root = shell.content();
@@ -298,7 +334,7 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
 
     // Buttons
     shell.close_button("Cancel");
-    let apply_btn = shell.button("Apply Rename");
+    let apply_btn = shell.button(apply_label);
     apply_btn.add_css_class("suggested-action");
 
     let current_mappings = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
@@ -438,35 +474,8 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
         let current_mappings = current_mappings.clone();
         apply_btn.connect_clicked(move |_| {
             let mappings = current_mappings.borrow().clone();
-            let mut renamed_count = 0;
-            let mut errors = Vec::new();
-
-            for (orig, new) in mappings {
-                if orig == new {
-                    continue;
-                }
-                let old_p = cwd.join(&orig);
-                let new_p = cwd.join(&new);
-                match std::fs::rename(&old_p, &new_p) {
-                    Ok(()) => renamed_count += 1,
-                    Err(e) => errors.push(format!("{orig} -> {new}: {e}")),
-                }
-            }
-
             dlg.close();
-            ui_clone.reload();
-
-            if !errors.is_empty() {
-                crate::actions::flash(
-                    &ui_clone,
-                    &format!("Renamed {renamed_count} item(s) with {} error(s)", errors.len()),
-                );
-            } else {
-                crate::actions::flash(
-                    &ui_clone,
-                    &format!("Successfully renamed {renamed_count} item(s)"),
-                );
-            }
+            on_apply(&ui_clone, mappings);
         });
     }
 
