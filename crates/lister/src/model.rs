@@ -428,15 +428,13 @@ pub fn row_to_entry(row: &Row, dir: &Path) -> opusdm_iconview::IconEntry {
     }
 }
 
-/// Best-effort local timezone offset in seconds east of UTC. Falls back to 0.
-pub fn local_tz_offset_secs() -> i32 {
-    let now = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as libc::time_t)
-        .unwrap_or(0);
+/// Best-effort local timezone offset in seconds east of UTC at the moment
+/// `unix` (so a summer file keeps its summer offset in winter). Falls back to 0.
+pub fn local_tz_offset_secs_at(unix: i64) -> i32 {
+    let at = unix as libc::time_t;
     // SAFETY: `tm` is a valid out-pointer; localtime_r fills it or returns null.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let ok = unsafe { !libc::localtime_r(&now, &mut tm).is_null() };
+    let ok = unsafe { !libc::localtime_r(&at, &mut tm).is_null() };
     if ok {
         tm.tm_gmtoff as i32
     } else {
@@ -477,6 +475,27 @@ mod tests {
         assert_eq!(format_size_as(Gigabytes, false, 3 * 1024 * 1024 * 1024), "3.00 GB");
         assert_eq!(format_size_as(Auto, false, 1023), "1023 B");
         assert_eq!(format_size_as(Auto, false, 1024), "1.0K");
+    }
+
+    #[test]
+    fn tz_offset_follows_daylight_saving_of_the_timestamp() {
+        extern "C" {
+            fn tzset();
+        }
+        static TZ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = TZ_LOCK.lock().unwrap();
+        let old = std::env::var_os("TZ");
+        std::env::set_var("TZ", "Europe/Rome");
+        // SAFETY: tzset only re-reads the TZ variable.
+        unsafe { tzset() };
+        let winter = local_tz_offset_secs_at(1_705_312_800); // 2024-01-15
+        let summer = local_tz_offset_secs_at(1_721_037_600); // 2024-07-15
+        match old {
+            Some(v) => std::env::set_var("TZ", v),
+            None => std::env::remove_var("TZ"),
+        }
+        unsafe { tzset() };
+        assert_eq!((winter, summer), (3600, 7200));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use crate::model::{
     dir_first_cmp, format_access, format_group, format_mtime, format_size_as, format_user,
-    local_tz_offset_secs, Row, SortCol,
+    local_tz_offset_secs_at, Row, SortCol,
 };
 use gtk4 as gtk;
 use gtk::glib::BoxedAnyObject;
@@ -185,7 +185,6 @@ pub fn add_column(
             }
         });
     }
-    let tz = local_tz_offset_secs();
     let ui_getter_bind = ui_getter.clone();
     factory.connect_bind(move |_, list_item| {
         let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
@@ -239,7 +238,7 @@ pub fn add_column(
             }
             ColKind::Modified => {
                 label.set_xalign(0.0);
-                label.set_text(&format_mtime(row.modified_unix, tz));
+                label.set_text(&format_mtime(row.modified_unix, local_tz_offset_secs_at(row.modified_unix)));
             }
             ColKind::User => {
                 label.set_xalign(0.0);
