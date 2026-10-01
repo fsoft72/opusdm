@@ -159,7 +159,7 @@ pub fn attach(ui: &Rc<Ui>) {
                 .unwrap_or_default();
             let ui = ui.clone();
             let win = ui.window.clone();
-            prompt(&win, "Rename to", &old_name, move |new_name| {
+            prompt_rename(&win, &old_name, old.is_dir(), move |new_name| {
                 let new_path = ui.cwd_path().join(&new_name);
                 match std::fs::rename(&old, &new_path) {
                     Ok(()) => ui.reload(),
@@ -386,10 +386,56 @@ pub fn prompt(
     );
 }
 
+/// Character range of `name` a rename dialog preselects: the name without its
+/// extension. A directory, a name without a dot and a leading-dot name such as
+/// `.bashrc` are selected whole.
+pub fn rename_selection(name: &str, is_dir: bool) -> (i32, i32) {
+    let total = name.chars().count() as i32;
+    if is_dir {
+        return (0, total);
+    }
+    match name.rfind('.') {
+        Some(byte) if byte > 0 => (0, name[..byte].chars().count() as i32),
+        _ => (0, total),
+    }
+}
+
+/// The rename dialog: like [`prompt`], with only the name part selected.
+pub fn prompt_rename(
+    parent: &gtk::ApplicationWindow,
+    initial: &str,
+    is_dir: bool,
+    on_ok: impl Fn(String) + 'static,
+) {
+    opusdm_ui::requester_entry_selecting(
+        parent,
+        "Rename to",
+        initial,
+        rename_selection(initial, is_dir),
+        &[("OK", true), ("Cancel", false)],
+        move |accepted, text| {
+            if accepted && !text.is_empty() {
+                on_ok(text);
+            }
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::Roles;
+
+    #[test]
+    fn rename_preselects_the_name_without_its_extension() {
+        assert_eq!(rename_selection("report.final.txt", false), (0, 12));
+        assert_eq!(rename_selection("a.tar", false), (0, 1));
+        assert_eq!(rename_selection("Makefile", false), (0, 8));
+        assert_eq!(rename_selection(".bashrc", false), (0, 7));
+        assert_eq!(rename_selection("è.rs", false), (0, 1), "counts characters, not bytes");
+        assert_eq!(rename_selection("photos.2024", true), (0, 11), "a directory is selected whole");
+    }
+
     use opusdm_ipc::ListerId;
 
     #[test]

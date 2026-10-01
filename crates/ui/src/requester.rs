@@ -74,6 +74,40 @@ pub fn requester_entry<T: Clone + 'static>(
     );
 }
 
+/// Like [`requester_entry`], but the entry gets the keyboard focus with the
+/// characters `select.0..select.1` selected instead of the whole text.
+pub fn requester_entry_selecting<T: Clone + 'static>(
+    parent: &impl IsA<gtk::Window>,
+    title: &str,
+    initial: &str,
+    select: (i32, i32),
+    buttons: &[(&str, T)],
+    on_choice: impl Fn(T, String) + 'static,
+) {
+    let entry = gtk::Entry::new();
+    entry.set_text(initial);
+    entry.set_activates_default(true);
+    // Focusing selects everything, so the range is applied once the dialog
+    // is on screen and the focus has settled.
+    entry.connect_map(move |e| {
+        let e = e.clone();
+        gtk::glib::idle_add_local_once(move || {
+            e.grab_focus();
+            e.select_region(select.0, select.1);
+        });
+    });
+    let (labels, values) = _split(buttons);
+    build(
+        parent.upcast_ref(),
+        title,
+        Body::Text(""),
+        None,
+        Some(entry),
+        &labels,
+        _by_value(values, on_choice),
+    );
+}
+
 /// Like [`requester`], but the body is Pango markup, allowing rich text
 /// (bold titles, small print, links, ...).
 pub fn requester_rich<T: Clone + 'static>(

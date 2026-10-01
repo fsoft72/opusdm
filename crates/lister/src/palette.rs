@@ -306,7 +306,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
                 .unwrap_or_default();
             let ui_clone = ui.clone();
             let win = ui.window.clone();
-            crate::actions::prompt(&win, "Rename to", &old_name, move |new_name| {
+            crate::actions::prompt_rename(&win, &old_name, old.is_dir(), move |new_name| {
                 let new_path = ui_clone.cwd_path().join(&new_name);
                 match std::fs::rename(&old, &new_path) {
                     Ok(()) => ui_clone.reload(),
