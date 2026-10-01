@@ -545,7 +545,7 @@ pub fn load_functions() -> Vec<Function> {
 
 /// Save the full list of functions, replacing whatever was there.
 pub fn save_functions(functions: &[Function]) -> std::io::Result<()> {
-    crate::settings::save_json(&functions_path(), &functions.to_vec())
+    crate::settings::save_json(&functions_path(), functions)
 }
 
 #[cfg(test)]

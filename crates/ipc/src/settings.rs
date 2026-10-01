@@ -86,7 +86,7 @@ fn backup_malformed(path: &Path, app_tag: &str) {
 /// The write is atomic: the JSON goes to a sibling temporary file, is flushed
 /// to disk and then renamed over `path`, so a crash or a full disk never leaves
 /// a truncated file behind (the previous content stays intact).
-pub fn save_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+pub fn save_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
