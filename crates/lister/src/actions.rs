@@ -230,29 +230,7 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
             return;
         }
         if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
-            let names = ui.selected_names();
-            if names.is_empty() {
-                flash(&ui, "nothing selected");
-                return;
-            }
-            let temp_extract = std::env::temp_dir().join(format!("opusdm-extract-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&temp_extract);
-            let full_items: Vec<String> = names
-                .into_iter()
-                .map(|n| {
-                    if inner.is_empty() {
-                        n
-                    } else {
-                        format!("{}/{}", inner.trim_end_matches('/'), n)
-                    }
-                })
-                .collect();
-            match crate::archive::extract_items_to_dir(&arch, &full_items, &temp_extract) {
-                Ok(extracted) => {
-                    crate::job_submit::submit_job(&ui, op.clone(), extracted, None, opusdm_ipc::JobOptions::default());
-                }
-                Err(e) => flash(&ui, &format!("extraction failed: {e}")),
-            }
+            transfer_from_archive(&ui, op.clone(), arch, inner);
             return;
         }
 
@@ -262,6 +240,52 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
             return;
         }
         crate::job_submit::submit_job(&ui, op.clone(), srcs, None, opusdm_ipc::JobOptions::default());
+    });
+}
+
+/// Copy out of an archive: extract the selection into a private scratch folder
+/// on a worker thread (the archive tools can take a long time), then submit the
+/// job on the extracted copies. An archive is read-only, so a Move runs as a
+/// Copy and the user is told. The scratch folder is deleted when the job ends.
+fn transfer_from_archive(ui: &Rc<Ui>, op: Op, arch: PathBuf, inner: String) {
+    let names = ui.selected_names();
+    if names.is_empty() {
+        flash(ui, "nothing selected");
+        return;
+    }
+    let scratch = match tempfile::Builder::new().prefix("opusdm-extract-").tempdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            flash(ui, &format!("cannot create a temporary folder: {e}"));
+            return;
+        }
+    };
+    let (op, message) = match op {
+        Op::Move => (Op::Copy, "an archive is read-only: extracting and copying instead of moving"),
+        other => (other, "extracting from the archive..."),
+    };
+    flash(ui, message);
+    let items: Vec<String> = names
+        .into_iter()
+        .map(|n| if inner.is_empty() { n } else { format!("{}/{}", inner.trim_end_matches('/'), n) })
+        .collect();
+    let extract_dir = scratch.path().to_path_buf();
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking(crate::archive::extract_items_to_dir(&arch, &items, &extract_dir));
+    });
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        match rx.recv().await {
+            Ok(Ok(extracted)) => {
+                // One JobDone comes back per DEST Lister the job fans out to.
+                let dests = ui.hub.roles.borrow().dests.len();
+                crate::archive::keep_scratch(scratch, dests);
+                crate::job_submit::submit_job(&ui, op, extracted, None, opusdm_ipc::JobOptions::default());
+            }
+            Ok(Err(e)) => flash(&ui, &format!("extraction failed: {e}")),
+            Err(_) => flash(&ui, "extraction stopped unexpectedly"),
+        }
     });
 }
 
@@ -289,6 +313,7 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
         }
         _ => ui.status_bar.job_line.set_text(""),
     }
+    crate::archive::scratch_job_done();
     // A job changes sizes: forget the ones calculated before.
     ui.size_cache.borrow_mut().clear();
     ui.reload();

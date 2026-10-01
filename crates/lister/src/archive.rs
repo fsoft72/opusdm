@@ -1,7 +1,7 @@
 //! Virtual archive filesystem support for navigating and extracting Zip, Tar, 7z.
 
 use crate::model::Row;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -354,14 +354,22 @@ fn _check_inner_path(inner_file: &str) -> io::Result<()> {
 /// viewing, and return the path of the extracted file.
 ///
 /// The folder is unique per call (mode 0700, unpredictable name) and is kept
-/// so an external viewer can open the file; [`cleanup_previews`] removes every
+/// so an external viewer can open the file; [`cleanup_temp_dirs`] removes every
 /// folder created by this process.
 pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<PathBuf> {
     let kind = _archive_kind(arch)?;
     _check_inner_path(inner_file)?;
     let temp_dir = tempfile::Builder::new().prefix("opusdm-preview-").tempdir()?.keep();
     PREVIEW_DIRS.lock().unwrap().push(temp_dir.clone());
+    let extracted = _extract_one(kind, arch, inner_file, &temp_dir);
+    if extracted.is_err() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+    extracted
+}
 
+/// Extract `inner_file` of `arch` under `temp_dir` and return its path.
+fn _extract_one(kind: ArchiveKind, arch: &Path, inner_file: &str, temp_dir: &Path) -> io::Result<PathBuf> {
     match kind {
         ArchiveKind::Zip => {
             let name = Path::new(inner_file).file_name().unwrap_or_default();
@@ -377,7 +385,7 @@ pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<Pat
                 .arg(arch)
                 .arg("--no-wildcards")
                 .arg("-C")
-                .arg(&temp_dir)
+                .arg(temp_dir)
                 .arg("--")
                 .arg(inner_file)
                 .output()?;
@@ -405,11 +413,34 @@ pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<Pat
 /// Preview folders created by [`extract_single_file_temp`] in this process.
 static PREVIEW_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// Remove every preview folder this process created (call when the app quits).
-pub fn cleanup_previews() {
+/// Extraction folders still needed by jobs in flight, each with the number of
+/// `JobDone` replies it waits for (one per DEST Lister the job fans out to).
+static SCRATCH: Mutex<VecDeque<(tempfile::TempDir, usize)>> = Mutex::new(VecDeque::new());
+
+/// Keep `dir` alive until `jobs` jobs have finished (see [`scratch_job_done`]).
+pub fn keep_scratch(dir: tempfile::TempDir, jobs: usize) {
+    SCRATCH.lock().unwrap().push_back((dir, jobs.max(1)));
+}
+
+/// A job finished: the oldest extraction folder has one reply fewer to wait
+/// for, and is deleted when none is left. Jobs that were cancelled before they
+/// started leave their folder until [`cleanup_temp_dirs`] runs at exit.
+pub fn scratch_job_done() {
+    let mut scratch = SCRATCH.lock().unwrap();
+    let Some((_, waiting)) = scratch.front_mut() else { return };
+    *waiting -= 1;
+    if *waiting == 0 {
+        scratch.pop_front();
+    }
+}
+
+/// Remove every preview and extraction folder this process created (call when
+/// the app quits).
+pub fn cleanup_temp_dirs() {
     for dir in PREVIEW_DIRS.lock().unwrap().drain(..) {
         let _ = std::fs::remove_dir_all(dir);
     }
+    SCRATCH.lock().unwrap().clear();
 }
 
 /// Extract items from archive into `dest_dir`. Entry names are passed so they
@@ -481,6 +512,13 @@ mod tests {
         assert_eq!(inner, "");
     }
 
+    /// Delete the preview folder holding `file` (tests run in parallel, so they
+    /// must not call the global cleanup).
+    fn remove_preview_of(file: &Path) {
+        let dir = file.ancestors().find(|a| a.file_name().is_some_and(|n| n.to_string_lossy().starts_with("opusdm-preview-")));
+        let _ = std::fs::remove_dir_all(dir.expect("a preview folder"));
+    }
+
     /// Build `a.zip`, `a.tar` and `a.7z` holding a nested file plus names that
     /// look like options and wildcards. Returns `None` when a tool is missing.
     fn fixture(dir: &Path) -> Option<()> {
@@ -507,8 +545,8 @@ mod tests {
         for name in ["a.zip", "a.tar", "a.7z"] {
             let path = extract_single_file_temp(&td.path().join(name), "sub/a.txt").unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested", "{name}");
+            remove_preview_of(&path);
         }
-        cleanup_previews();
     }
 
     #[test]
@@ -520,7 +558,6 @@ mod tests {
         for name in ["a.zip", "a.tar", "a.7z"] {
             assert!(extract_single_file_temp(&td.path().join(name), "nope.txt").is_err(), "{name}");
         }
-        cleanup_previews();
     }
 
     #[test]
@@ -553,5 +590,20 @@ mod tests {
     fn unzip_pattern_escapes_wildcards_and_a_leading_dash() {
         assert_eq!(_unzip_pattern("-a[1]*?"), "\\-a\\[1\\]\\*\\?");
         assert_eq!(_unzip_pattern("dir/-a"), "dir/-a");
+    }
+
+    #[test]
+    fn scratch_folder_lives_until_every_job_reply_arrived() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("x");
+        std::fs::create_dir(&path).unwrap();
+        let dir = tempfile::Builder::new().tempdir_in(td.path()).unwrap();
+        let dir_path = dir.path().to_path_buf();
+        keep_scratch(dir, 2);
+        scratch_job_done();
+        assert!(dir_path.exists(), "one of two replies is not enough");
+        scratch_job_done();
+        assert!(!dir_path.exists(), "gone after the last reply");
+        scratch_job_done(); // no folder left: must not panic
     }
 }
