@@ -391,8 +391,6 @@ nome). Usa SOURCE `sorgente` e DEST `destinazione`.
    così via.
 
 
-=== FINO A QUI
-
 ### Step 7.3 - Copy (newer only)
 
 1. Modifica `documento_02.txt` dalla shell (`echo altro >> documento_02.txt`).
