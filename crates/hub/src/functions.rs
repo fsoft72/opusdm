@@ -23,8 +23,10 @@ pub enum FnEvent {
     StepDone { step_idx: usize, exit_code: Option<i32> },
     /// A step failed; the run stops here.
     Failed { step_idx: usize, error: String },
-    /// A `ChangeDir` step resolved `path`: the SOURCE Lister must go there.
-    ChangeDir { path: PathBuf },
+    /// A `ChangeDir` step resolved `path`: the SOURCE Lister must go there,
+    /// or a new Lister must open there (`new_lister`). `select` names an entry
+    /// to select, `mode` is `details` or `icons`.
+    ChangeDir { path: PathBuf, select: Option<String>, mode: Option<String>, new_lister: bool },
     /// A `SetBackground` step validated `path` (canonical): the hub must
     /// install it as the desktop background. `fit` is `None` to keep the
     /// current one.
@@ -159,12 +161,28 @@ fn run_change_dir(
     let target = source.cwd.join(expanded);
     let target = std::fs::canonicalize(&target)
         .map_err(|e| format!("Change Directory: cannot open {}: {e}", target.display()))?;
+    // With `container`, a file means "its folder, with the file selected".
+    let (target, select) = if args.flag("container") && !Path::new(&target).is_dir() {
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned());
+        let parent = target.parent().map(Path::to_path_buf);
+        match (parent, name) {
+            (Some(parent), Some(name)) => (parent, Some(name)),
+            _ => return Err(format!("Change Directory: {} has no folder", target.display())),
+        }
+    } else {
+        (target, None)
+    };
     if !Path::new(&target).is_dir() {
         return Err(format!("Change Directory: {} is not a directory", target.display()));
     }
+    let mode = match args.get("mode").map(|m| m.trim().to_ascii_lowercase()).filter(|m| !m.is_empty()) {
+        None => None,
+        Some(m) if m == "details" || m == "icons" => Some(m),
+        Some(other) => return Err(format!("Change Directory: the view must be details or icons, not {other:?}")),
+    };
     source.cwd = target.clone();
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("cd {}", target.display()) }));
-    let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target }));
+    let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target, select, mode, new_lister: args.flag("new") }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
 }
@@ -657,7 +675,7 @@ mod tests {
         drop(tx);
         let events = drain(rx);
         let want = std::fs::canonicalize(&sub).unwrap();
-        assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { path } if *path == want)));
+        assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { path, .. } if *path == want)));
         assert!(events.iter().any(|e| matches!(e, FnEvent::Output { line, .. } if *line == want.to_string_lossy())));
         assert!(matches!(events.last(), Some(FnEvent::AllDone)));
     }
@@ -1048,5 +1066,42 @@ mod tests {
         let (asked, events) = run_answering(&confirm_steps("  "), Some(true));
         assert!(asked.is_empty());
         assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
+    }
+
+    fn change_dir_events(args: &[(&str, &str)], cwd: &Path) -> Vec<FnEvent> {
+        let map: BTreeMap<String, String> = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let steps = vec![FnStep::Internal { cmd: InternalCmd::ChangeDir, args: InternalArgs(map) }];
+        let (tx, rx) = channel();
+        run_steps(1, &steps, &ctx(&[], cwd.to_str().unwrap()), None, &tx);
+        drop(tx);
+        drain(rx)
+    }
+
+    #[test]
+    fn changedir_container_opens_the_folder_and_selects_the_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("a.txt"), b"x").unwrap();
+        let events = change_dir_events(&[("path", "a.txt"), ("container", "true")], td.path());
+        let folder = std::fs::canonicalize(td.path()).unwrap();
+        assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { path, select: Some(s), .. } if *path == folder && s == "a.txt")), "{}", events.len());
+        // Without the flag a file is not a directory.
+        let events = change_dir_events(&[("path", "a.txt")], td.path());
+        assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
+        // A directory with the flag is just a directory.
+        std::fs::create_dir(td.path().join("d")).unwrap();
+        let events = change_dir_events(&[("path", "d"), ("container", "true")], td.path());
+        assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { select: None, .. })));
+    }
+
+    #[test]
+    fn changedir_carries_the_new_lister_flag_and_a_checked_view_mode() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("d")).unwrap();
+        let events = change_dir_events(&[("path", "d"), ("new", "true"), ("mode", " Icons ")], td.path());
+        assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { new_lister: true, mode: Some(m), .. } if m == "icons")));
+        let events = change_dir_events(&[("path", "d"), ("mode", "tiles")], td.path());
+        assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
+        let events = change_dir_events(&[("path", "d")], td.path());
+        assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { new_lister: false, mode: None, .. })));
     }
 }

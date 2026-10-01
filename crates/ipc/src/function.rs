@@ -279,12 +279,22 @@ pub mod schema {
                 required: true,
                 kind: ParamKind::PathTemplate,
             }],
-            InternalCmd::ChangeDir => &[ParamSpec {
-                key: "path",
-                label: "Directory (absolute, ~ or relative to the current one)",
-                required: true,
-                kind: ParamKind::PathTemplate,
-            }],
+            InternalCmd::ChangeDir => &[
+                ParamSpec {
+                    key: "path",
+                    label: "Directory (absolute, ~ or relative to the current one)",
+                    required: true,
+                    kind: ParamKind::PathTemplate,
+                },
+                ParamSpec { key: "new", label: "Open in a NEW Lister", required: false, kind: ParamKind::Bool },
+                ParamSpec {
+                    key: "container",
+                    label: "The path may be a file: open its folder and select it",
+                    required: false,
+                    kind: ParamKind::Bool,
+                },
+                ParamSpec { key: "mode", label: "View: details or icons (empty = keep)", required: false, kind: ParamKind::Text },
+            ],
             InternalCmd::LeaveOut
             | InternalCmd::PutAway
             | InternalCmd::Hide

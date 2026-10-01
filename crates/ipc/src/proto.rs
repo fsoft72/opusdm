@@ -497,6 +497,9 @@ pub enum ToLister {
     /// A Function's `Confirm` step asks the user; reply with
     /// `ToHub::ConfirmReply`.
     ConfirmPrompt { req_id: u64, message: String },
+    /// A function's `ChangeDir` step: go to `path`, switch to the `details`
+    /// or `icons` view when `mode` is given, and select the entry `select`.
+    ScanDir { path: PathBuf, select: Option<String>, mode: Option<String> },
     /// A job the requester submitted touches an ftp:// / ftps:// / sftp://
     /// location, which only the Lister (it holds the connections) can run.
     /// `dest_dir` is already resolved by the hub, one message per target.
@@ -675,6 +678,7 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
         roundtrip_tolister(ToLister::FunctionDone);
         roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
+        roundtrip_tolister(ToLister::ScanDir { path: "/p".into(), select: Some("f".into()), mode: Some("icons".into()) });
         roundtrip_tolister(ToLister::ConfirmPrompt { req_id: 3, message: "Sure?".into() });
         roundtrip_tolister(ToLister::RemoteTransfer { op: Op::Copy, srcs: vec!["sftp://h/a".into()], dest_dir: "/d".into() });
         roundtrip_tolister(ToLister::FormatsUpdate(crate::format::FormatStore::default()));

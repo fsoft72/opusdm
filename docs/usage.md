@@ -241,6 +241,13 @@ While a function started from a Lister (palette, hotkey, user menu, filetype act
 - The name of a saved function runs it.
 Errors (unknown command, missing or extra parameter) show in the prompt; the last line is offered again next time.
 
+### 3.10n Change Directory options
+The **Change Directory** command has three optional parameters:
+- **Open in a NEW Lister** opens a new Lister at the folder instead of moving the SOURCE one.
+- **The path may be a file** opens the file's folder and selects the file in the SOURCE Lister.
+- **View** (`details` or `icons`) switches the SOURCE Lister's view. These last two do not apply to a NEW Lister.
+Later steps of the function run from the folder either way.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

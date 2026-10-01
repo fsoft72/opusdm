@@ -87,6 +87,8 @@ pub struct StatusBar {
 pub struct ViewState {
     /// Which view is active.
     pub mode: Cell<ViewMode>,
+    /// The details / icons toggle button in the toolbar.
+    pub mode_toggle: gtk::ToggleButton,
     /// Stack holding the column-view scroller ("details") and the icon field
     /// ("icons").
     pub stack: gtk::Stack,
@@ -575,6 +577,22 @@ impl Ui {
             }
             ToLister::Pong => {}
             ToLister::FreeCaches => self.free_caches(),
+            ToLister::ScanDir { path, select, mode } => {
+                self.window.present();
+                // The toggle button drives the view, so its state follows.
+                match mode.as_deref() {
+                    Some("icons") => self.view.mode_toggle.set_active(true),
+                    Some("details") => self.view.mode_toggle.set_active(false),
+                    _ => {}
+                }
+                let ui = self.clone();
+                self.navigate(&path, true, move || {
+                    if let Some(name) = &select {
+                        ui.view.selection.unselect_all();
+                        ui.select_names(std::slice::from_ref(name));
+                    }
+                });
+            }
             ToLister::GoTo { path } => {
                 self.window.present();
                 self.navigate_to(&path);

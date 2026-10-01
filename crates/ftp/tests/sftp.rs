@@ -65,8 +65,16 @@ fn start() -> Option<Server> {
         .spawn()
         .ok()?;
     let mut server = Server { child, dir, port };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+    // Ready means the server answers with its SSH banner, not just accepts.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(mut probe) = TcpStream::connect(("127.0.0.1", port)) {
+            let _ = probe.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut banner = [0u8; 4];
+            if std::io::Read::read_exact(&mut probe, &mut banner).is_ok() && &banner == b"SSH-" {
+                break;
+            }
+        }
         if Instant::now() > deadline || server.child.try_wait().ok().flatten().is_some() {
             return None;
         }

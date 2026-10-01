@@ -410,6 +410,7 @@ fn build_window(
         cwd: RefCell::new(PathBuf::from("/")),
         view: ViewState {
             mode: Cell::new(ViewMode::Details),
+            mode_toggle: view_toggle.clone(),
             stack: view_stack.clone(),
             icon_field: icon_field.clone(),
             icon_size: Cell::new(opusdm_iconview::DEFAULT_ICON_SIZE),

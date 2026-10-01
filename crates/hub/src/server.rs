@@ -989,6 +989,10 @@ impl Hub {
             return;
         }
         match &ev {
+            crate::functions::FnEvent::ChangeDir { path, new_lister: true, .. } => {
+                self.spawn_lister(Some(path.clone()));
+                return;
+            }
             crate::functions::FnEvent::LeaveOut { paths } => {
                 self.leave_out(paths.clone());
                 return;
@@ -1028,7 +1032,7 @@ impl Hub {
             return;
         }
         let msg = match ev {
-            crate::functions::FnEvent::ChangeDir { path } => ToLister::GoTo { path },
+            crate::functions::FnEvent::ChangeDir { path, select, mode, .. } => ToLister::ScanDir { path, select, mode },
             // Applied above, before this match.
             crate::functions::FnEvent::SetBackground { .. }
             | crate::functions::FnEvent::Conflict { .. }
@@ -1999,6 +2003,10 @@ mod tests {
         send(&mut src, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
         recv_until(&mut src, |m| matches!(m, ToLister::RoleChanged { source: Some(_), .. }).then_some(()));
         send(&mut dst, &ToHub::PathChanged("sftp://me@host/in".into())).unwrap();
+        // The hub reads each connection in order, so once it answers this the
+        // path is recorded (the two Listers' streams race otherwise).
+        send(&mut dst, &ToHub::QueryCaches).unwrap();
+        recv_until(&mut dst, |m| matches!(m, ToLister::CacheList(_)).then_some(()));
 
         // Remote destination, local source: bounced with the DEST path.
         send(&mut src, &ToHub::RunJob { op: Op::Copy, srcs: vec!["/tmp/a".into()], dest_dir: None, options: Default::default() }).unwrap();
