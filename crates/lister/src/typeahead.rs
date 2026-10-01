@@ -36,13 +36,25 @@ where
     names.into_iter().position(|n| n.as_ref().to_lowercase().starts_with(&wanted))
 }
 
+/// True when Backspace must be swallowed by type-to-find instead of going to
+/// the parent folder: a buffer is open, or it was just emptied and the idle
+/// timer has not fired yet.
+pub fn backspace_is_swallowed(buffer_empty: bool, timer_armed: bool) -> bool {
+    !buffer_empty || timer_armed
+}
+
 impl Ui {
     /// Feed a key to an already open type-to-find buffer. Returns true when
     /// the key was consumed. Does nothing (false) while no buffer is open.
     pub fn typeahead_feed(self: &Rc<Self>, key: gdk::Key, modified: bool) -> bool {
-        if self.typeahead_buffer.borrow().is_empty() {
+        // An emptied buffer keeps a short grace period (the idle timer is
+        // still armed) so extra Backspaces do not walk up the folder tree.
+        let empty = self.typeahead_buffer.borrow().is_empty();
+        let armed = self.typeahead_timer.borrow().is_some();
+        if !backspace_is_swallowed(empty, armed) {
             return false;
         }
+        let in_grace = empty;
         if modified {
             self.typeahead_close();
             return false;
@@ -55,11 +67,18 @@ impl Ui {
             gdk::Key::BackSpace => {
                 self.typeahead_buffer.borrow_mut().pop();
                 if self.typeahead_buffer.borrow().is_empty() {
-                    self.typeahead_close();
+                    self.typeahead_clear_message();
+                    self.typeahead_restart_timer();
                 } else {
                     self.typeahead_search();
                 }
                 true
+            }
+            // Grace period: only Backspace is swallowed, any other key is
+            // handled normally.
+            _ if in_grace => {
+                self.typeahead_close();
+                false
             }
             _ => match key.to_unicode() {
                 Some(c) if is_buffer_char(c) => {
@@ -125,6 +144,11 @@ impl Ui {
         if let Some(id) = self.typeahead_timer.borrow_mut().take() {
             id.remove();
         }
+        self.typeahead_clear_message();
+    }
+
+    /// Remove the `Find: ...` message from the status line.
+    fn typeahead_clear_message(&self) {
         if self.status_bar.job_line.text().starts_with(MESSAGE_PREFIX) {
             self.status_bar.job_line.set_text("");
         }
@@ -148,6 +172,13 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backspace_never_leaves_the_folder_while_type_to_find_is_active() {
+        assert!(backspace_is_swallowed(false, true), "text in the buffer");
+        assert!(backspace_is_swallowed(true, true), "buffer just emptied");
+        assert!(!backspace_is_swallowed(true, false), "idle: Backspace goes to the parent");
+    }
 
     #[test]
     fn car_finds_cargo_toml() {
