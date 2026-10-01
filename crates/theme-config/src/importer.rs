@@ -79,6 +79,7 @@ pub fn import_theme_archive(archive_path: &Path) -> Result<String, ImportError> 
         return Err(ImportError::InvalidManifest("label is empty".to_string()));
     }
 
+    prune_theme_assets(staging.path());
     std::fs::create_dir_all(themes_dir())?;
     let dest = theme_dir(&manifest.name);
     if dest.exists() {
@@ -160,6 +161,34 @@ fn extract_tar_bz2(archive_path: &Path, dest: &Path) -> Result<(), ImportError> 
     let file = File::open(archive_path)?;
     let decoder = bzip2::read::BzDecoder::new(file);
     extract_tar_entries(tar::Archive::new(decoder), dest)
+}
+
+/// Remove from the staged theme every file that has no business in its
+/// `fonts/` (only `.ttf` / `.otf`) or `backgrounds/` (only picture types)
+/// folder. Skipped files are logged; the import itself still succeeds.
+fn prune_theme_assets(root: &Path) {
+    prune_dir(&root.join("fonts"), |p| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
+    });
+    prune_dir(&root.join("backgrounds"), opusdm_ipc::desktop::is_background_image);
+}
+
+/// Delete the files directly inside `dir` that `keep` rejects. A missing
+/// folder is fine.
+fn prune_dir(dir: &Path, keep: impl Fn(&Path) -> bool) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || keep(&path) {
+            continue;
+        }
+        opusdm_ipc::err_log!("theme-config", "import: dropping unexpected file {}", path.display());
+        if let Err(e) = std::fs::remove_file(&path) {
+            opusdm_ipc::err_log!("theme-config", "cannot remove {}: {e}", path.display());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -336,5 +365,30 @@ mod tests {
         }
         let slug = import_theme_archive(file.path()).unwrap();
         assert_eq!(slug, "bz2-theme");
+    }
+
+    #[test]
+    fn import_drops_files_that_are_not_fonts_or_pictures_from_those_folders() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        let mut entries = valid_theme_entries();
+        entries.extend([
+            ("fonts/ok.ttf", &b"f"[..]),
+            ("fonts/evil.sh", b"s"),
+            ("backgrounds/ok.png", b"p"),
+            ("backgrounds/readme.txt", b"t"),
+            ("sounds/a.wav", b"w"),
+        ]);
+        let zip = build_zip(&entries);
+
+        let slug = import_theme_archive(zip.path()).unwrap();
+
+        let dir = theme_dir(&slug);
+        assert!(dir.join("fonts/ok.ttf").is_file());
+        assert!(!dir.join("fonts/evil.sh").exists());
+        assert!(dir.join("backgrounds/ok.png").is_file());
+        assert!(!dir.join("backgrounds/readme.txt").exists());
+        assert!(dir.join("sounds/a.wav").is_file(), "sounds are an opaque container");
     }
 }

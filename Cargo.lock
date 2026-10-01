@@ -1590,6 +1590,7 @@ dependencies = [
  "opusdm-desktop-config",
  "opusdm-iconview",
  "opusdm-ipc",
+ "opusdm-themepack",
  "opusdm-ui",
  "serde",
  "serde_json",
