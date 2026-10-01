@@ -201,8 +201,12 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
         let ui = ui.clone();
         let gesture = gtk::GestureClick::new();
         gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
-        gesture.connect_pressed(move |g, _, _, _| {
+        gesture.connect_pressed(|g, _, _, _| {
             g.set_state(gtk::EventSequenceState::Claimed);
+        });
+        // Open the modal dialog on release, not on press: a dialog opened
+        // mid-press swallows the release and leaves the button stuck down.
+        gesture.connect_released(move |_, _, _, _| {
             crate::palette::execute_command(&ui, cmd.clone());
         });
         btn.add_controller(gesture);
