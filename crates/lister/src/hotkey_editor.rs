@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn a_built_in_key_is_reported_with_the_palette_title() {
-        match find_key(&[], &[], &combo("F7")) {
+        match find_key(&[], &[], &combo("Ctrl+n")) {
             KeyMeaning::Builtin { title } => assert!(title.contains("Make Directory"), "{title}"),
             other => panic!("{other:?}"),
         }
