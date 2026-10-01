@@ -24,6 +24,9 @@ wipe the config, import it, colours and background are restored.
 - **Backgrounds**: one image for the Lister file list, one for the
   requesters / dialogs, each with a fit mode. The desktop background already
   exists and is reused.
+- **Theme Editor**: a dedicated window that edits an installed theme's
+  folder (colours, appearance, fonts, pictures, icons, sounds, manifest).
+  Preview is "Save & Apply" to the live desktop, no mock preview.
 - **Format**: no new format. The existing theme folder grows; it stays a
   partial override merged over the user's current settings.
 
@@ -128,6 +131,46 @@ Hook points already in the code: the Lister regenerates its CSS with
 **Unchanged**: desktop background (`DesktopSettings`), the IPC protocol (no
 new message; `Settings` just carries two more defaulted fields).
 
+## 4. Theme Editor (`opusdm-theme-config`, new `editor/` module)
+
+A separate window opened by an "Edit theme..." button in `opusdm-settings`.
+It edits the folder of an installed theme, not the desktop settings.
+
+**Layout**: a list of installed themes on the left (New, Duplicate, Delete),
+tabs on the right:
+- **General**: label, author, version, `preview.png`.
+- **Colours**: the existing colour widgets and preset picker.
+- **Appearance**: monospace list, type indicators, `theme_window`, dark / light.
+- **Fonts**: family and size for the list and the UI, plus the files in
+  `fonts/` with Add and Remove.
+- **Pictures**: desktop, Lister and requester picture each with a file
+  chooser, fit and thumbnail.
+- **Icons**: the theme's icons with "Replace..." per icon.
+- **Sounds**: the files in `sounds/` with Add and Remove (container only).
+
+**Partial override**: every section has a "Set by this theme" checkbox. When
+off, that field is not written to `theme.json`, so applying the theme leaves
+the user's own value (the format already supports partial themes).
+
+**Data flow**:
+- Open loads a `ThemeDraft`: manifest, `CustomThemeData` and a list of pending
+  file operations (add / remove / replace for fonts, pictures, icons, sounds).
+- Widgets read and write the draft only. Nothing on disk changes until Save.
+- **Save** builds a staging copy of the theme folder, applies the pending file
+  operations, writes `manifest.json` and `theme.json`, then swaps it in (same
+  staging-and-swap as Save theme, shared code; the failure and
+  save-over-self rules of section 2 apply unchanged).
+- **Revert** reloads the draft from disk. Closing with unsaved changes asks
+  first.
+- **Save & Apply** saves, then applies the theme to the running desktop
+  through the existing `apply_full` path. This is the preview.
+- The default `breeze-dark` theme is editable; the editor offers "Save as
+  copy" for it. It is never rewritten behind the user's back
+  (`ensure_default_theme` only writes when the manifest is missing).
+- Validation before Save: label not empty, slug valid for New / Duplicate,
+  every referenced picture exists, font and icon replacements have the
+  allowed extensions (same rules as import).
+
 ## Testing
 
 - Unit: `generate_css` and `chrome_css` with and without `fonts` / `surfaces`,
@@ -138,18 +181,22 @@ new message; `Settings` just carries two more defaulted fields).
 - Round trip with a temporary `XDG_CONFIG_HOME`: set colours and a
   background image, Save, Export, wipe the config, Import, apply, compare
   colours and background (image included) with the original.
+- Unit: `ThemeDraft` load and save round trip, "Set by this theme" off
+  leaves the field out of `theme.json`, pending file operations
+  (add / remove / replace) end up in the saved folder, a failed Save leaves
+  the original theme untouched, Duplicate and New create valid themes.
 - Manual with `run-x11.sh`: real rendering of the Lister and requester
   backgrounds and of a shipped font. The GTK side cannot be claimed verified
   without this.
 
 ## Out of scope
 
-Sound playback and the sound-event map (F-18, F-36), random pick of a
+A mock preview inside the editor, sound playback and the sound-event map (F-18, F-36), random pick of a
 background from a pattern, converting foreign theme formats
 (`ConvertTheme`), per-widget font overrides beyond list and UI.
 
 ## Files touched
 
 `crates/ipc` (themes, proto, settings), `crates/ui` (fonts, chrome_css),
-`crates/lister` (theme.rs), `crates/theme-config` (apply, UI, importer),
+`crates/lister` (theme.rs), `crates/theme-config` (apply, UI, importer, new `editor/` and `draft.rs`),
 `xtask` (shared packager), `CHANGES.md`, `TODO.md`, `FEATURES.md`.
