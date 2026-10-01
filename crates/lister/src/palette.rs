@@ -598,6 +598,10 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     // Key handling for Enter, Esc, Up, Down in SearchEntry
     {
         let key_ctrl = gtk::EventControllerKey::new();
+        // Capture phase: the entry's inner text widget handles Enter itself
+        // (it emits `activate` and stops the event), so a bubble-phase
+        // controller on the entry never sees it.
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         let dlg = shell.window().clone();
         let list_box_clone = list_box.clone();
         let rows_clone = rows.clone();
