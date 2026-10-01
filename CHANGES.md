@@ -2,6 +2,7 @@
 
 ## 2026-10-01
 
+- Docs: new `OPTIMIZE.md`, a prioritised list of 19 optimisation and quality items (2 critical, 6 high, 6 medium, 5 low) found in a code review.
 - Fix: Enter in the Command Palette did not run the selected command. The entry's inner text widget consumed the key before the bubble-phase controller saw it; the controller now runs in the capture phase (`open_command_palette` in `lister/src/palette.rs`).
 - Feature: "Size Format..." command (View, no default key) sets how this Lister writes the Size column: Auto (default, binary `1.5K`), decimal units (`1.5kB`), exact bytes (`1,234,567 B`), or always KB / MB / GB with two decimals. Per Lister, session only. `model::SizeFormat` and `format_size_as` (`format_size` is unchanged, used by the viewer, preview and tools), `Ui.view.size_format`, new `size_format.rs` requester.
 - Fix: right clicking Copy / Move opened the "As..." dialog on button press, so the modal dialog swallowed the release and the button stayed pressed after Cancel. The dialog now opens on release (`wire_transfer` in `lister/src/actions.rs`).
