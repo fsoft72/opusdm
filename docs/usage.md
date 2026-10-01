@@ -251,6 +251,9 @@ Later steps of the function run from the folder either way.
 ### 3.10o Root and Parent variants
 Palette (Navigation): **Go to Root**, **Open Parent in NEW Lister** and **Open Root in NEW Lister**. The root is `/` for a local folder, the archive's top for a folder inside an archive, and the server's `/` for a remote folder. The parent button and Backspace now also step out of archive folders properly (inner folder, then the archive's top, then the folder that holds the archive).
 
+### 3.10p Directory sizes: reuse and force
+Calculating directory sizes (`Space` on a folder, the context menu, or **Calculate Directory Sizes**) now remembers each result. Asking again shows the remembered sizes at once and only calculates the folders not seen yet; the sizes also stay when the folder is reloaded. **Calculate Directory Sizes (force rescan)** drops the remembered sizes of the folders it works on and measures them again. The memory is cleared after any Copy / Move / Delete job and by **Free Caches**.
+
 ### 3.11 Theme Presets & File Icons
 Open **Settings** on the hub toolbar; the **THEME** section at the top drives the whole look.
 - **Preset dropdown**: one click fills every colour at once.

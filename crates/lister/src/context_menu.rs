@@ -227,7 +227,7 @@ pub fn show_context_menu(
         let btn = menu_button("Checksums & Dimensioni cartelle");
         btn.connect_clicked(move |_| {
             pop.popdown();
-            crate::tools::calculate_dir_sizes_async(&ui);
+            crate::tools::calculate_dir_sizes_async(&ui, false);
         });
         menu_box.append(&btn);
     }

@@ -51,6 +51,7 @@ mod preview;
 mod reselect;
 mod scripts_editor;
 mod select_criteria;
+mod sizecache;
 mod slideshow;
 mod status_format;
 mod terminal;

@@ -285,6 +285,8 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
         }
         _ => ui.status_bar.job_line.set_text(""),
     }
+    // A job changes sizes: forget the ones calculated before.
+    ui.size_cache.borrow_mut().clear();
     ui.reload();
 }
 

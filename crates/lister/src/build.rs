@@ -450,6 +450,7 @@ fn build_window(
         format: RefCell::new(opusdm_ipc::ListerFormat::builtin()),
         temp_format: RefCell::new(None),
         dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
+        size_cache: RefCell::new(crate::sizecache::SizeCache::default()),
         busy: crate::busy::Busy::default(),
         remote: crate::remote_ui::RemoteState::default(),
         history: RefCell::new(crate::history::History::new()),

@@ -28,8 +28,9 @@ pub fn compute_dir_size(dir: &Path) -> u64 {
 }
 
 /// Calculate sizes for selected directories (or all directories if none selected),
-/// updating the list store rows and the status bar asynchronously.
-pub fn calculate_dir_sizes_async(ui: &Rc<Ui>) {
+/// updating the list store rows and the status bar asynchronously. Sizes
+/// calculated before are reused; `force` recalculates them (GetSizes FORCE).
+pub fn calculate_dir_sizes_async(ui: &Rc<Ui>, force: bool) {
     let cwd = ui.cwd_path();
     let mut target_dirs = Vec::new();
 
@@ -59,42 +60,40 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>) {
         return;
     }
 
-    crate::actions::flash(
-        ui,
-        &format!("calculating sizes for {} director(ies)...", target_dirs.len()),
-    );
+    let (known, missing) = ui.size_cache.borrow_mut().split(target_dirs, force);
+    let mut total_calculated = 0u64;
+    let mut count = 0;
+    for (idx, name, size) in known {
+        apply_size(ui, idx, &name, size);
+        total_calculated += size;
+        count += 1;
+    }
+    if missing.is_empty() {
+        crate::actions::flash(
+            ui,
+            &format!("{count} directories already calculated: total {} (use the force variant to recalculate)", format_size(false, total_calculated)),
+        );
+        return;
+    }
+
+    crate::actions::flash(ui, &format!("calculating sizes for {} director(ies)...", missing.len()));
 
     let ui_clone = ui.clone();
-    let (tx, rx) = async_channel::unbounded::<(u32, String, u64)>();
+    let (tx, rx) = async_channel::unbounded::<(u32, String, PathBuf, u64)>();
 
     std::thread::spawn(move || {
-        for (idx, name, path) in target_dirs {
+        for (idx, name, path) in missing {
             let size = compute_dir_size(&path);
-            let _ = tx.send_blocking((idx, name, size));
+            let _ = tx.send_blocking((idx, name, path, size));
         }
     });
 
     glib::spawn_future_local(async move {
-        let mut total_calculated = 0u64;
-        let mut count = 0;
-        while let Ok((idx, name, size)) = rx.recv().await {
+        while let Ok((idx, name, path, size)) = rx.recv().await {
             total_calculated += size;
             count += 1;
-
-            // Splice directly at the original store index; only re-check the
-            // name to guard against the store having changed underneath us.
-            if let Some(item) = ui_clone.view.store.item(idx) {
-                if let Some(boxed) = item.downcast_ref::<BoxedAnyObject>() {
-                    let row = boxed.borrow::<Rc<Row>>();
-                    if row.name == name && row.is_dir {
-                        let mut updated = (**row).clone();
-                        updated.size = size;
-                        let new_item = BoxedAnyObject::new(Rc::new(updated));
-                        drop(row);
-                        ui_clone.view.store.splice(idx, 1, &[new_item]);
-                    }
-                }
-            }
+            ui_clone.size_cache.borrow_mut().put(path, size);
+            apply_size(&ui_clone, idx, &name, size);
         }
         crate::actions::flash(
             &ui_clone,
@@ -105,6 +104,21 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>) {
             ),
         );
     });
+}
+
+/// Show `size` on the directory row `name` at store index `idx`; the name is
+/// re-checked in case the store changed underneath.
+fn apply_size(ui: &Rc<Ui>, idx: u32, name: &str, size: u64) {
+    let Some(item) = ui.view.store.item(idx) else { return };
+    let Some(boxed) = item.downcast_ref::<BoxedAnyObject>() else { return };
+    let row = boxed.borrow::<Rc<Row>>();
+    if row.name == name && row.is_dir {
+        let mut updated = (**row).clone();
+        updated.size = size;
+        let new_item = BoxedAnyObject::new(Rc::new(updated));
+        drop(row);
+        ui.view.store.splice(idx, 1, &[new_item]);
+    }
 }
 
 /// Compute SHA-256 and MD5 hashes of a file by streaming it through both

@@ -62,6 +62,8 @@ pub enum CommandId {
     HomeDir,
     Terminal,
     CalcSizes,
+    /// Calculate directory sizes again, ignoring the ones already known.
+    CalcSizesForce,
     CalcChecksums,
     CompareDirs,
     SetSource,
@@ -416,6 +418,12 @@ mod tests {
         for id in [CommandId::RootDir, CommandId::ParentNew, CommandId::RootNew] {
             assert!(known.contains(&id));
         }
+    }
+
+    #[test]
+    fn force_size_command_exists_in_the_palette() {
+        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        assert!(known.contains(&CommandId::CalcSizesForce));
     }
 
     #[test]

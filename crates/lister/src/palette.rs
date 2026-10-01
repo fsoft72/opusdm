@@ -72,6 +72,7 @@ static COMMANDS: &[CommandItem] = &[
         CommandItem { id: CommandId::HomeDir, title: Cow::Borrowed("Go to Home Directory (~)"), category: Cow::Borrowed("Navigation"), shortcut: Some("~") },
         CommandItem { id: CommandId::Terminal, title: Cow::Borrowed("Toggle Terminal Drawer"), category: Cow::Borrowed("Tools"), shortcut: Some("F4 / `") },
         CommandItem { id: CommandId::CalcSizes, title: Cow::Borrowed("Calculate Directory Sizes"), category: Cow::Borrowed("Tools"), shortcut: Some("Space (on dir)") },
+        CommandItem { id: CommandId::CalcSizesForce, title: Cow::Borrowed("Calculate Directory Sizes (force rescan)"), category: Cow::Borrowed("Tools"), shortcut: None },
         CommandItem { id: CommandId::CalcChecksums, title: Cow::Borrowed("Calculate Checksums (SHA-256 / MD5)..."), category: Cow::Borrowed("Tools"), shortcut: None },
         CommandItem { id: CommandId::CompareDirs, title: Cow::Borrowed("Compare / Sync Directories (Visual Diff)..."), category: Cow::Borrowed("Tools"), shortcut: None },
         CommandItem { id: CommandId::SetSource, title: Cow::Borrowed("Set Role: SOURCE"), category: Cow::Borrowed("Roles"), shortcut: None },
@@ -372,7 +373,10 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             }
         }
         CommandId::CalcSizes => {
-            crate::tools::calculate_dir_sizes_async(ui);
+            crate::tools::calculate_dir_sizes_async(ui, false);
+        }
+        CommandId::CalcSizesForce => {
+            crate::tools::calculate_dir_sizes_async(ui, true);
         }
         CommandId::CalcChecksums => {
             crate::tools::open_checksum_dialog(ui);

@@ -152,6 +152,7 @@ impl Ui {
     /// Drop the whole cache and tell the hub.
     pub fn free_caches(&self) {
         self.dir_cache.borrow_mut().clear();
+        self.size_cache.borrow_mut().clear();
         self.report_cache();
     }
 

@@ -186,6 +186,8 @@ pub struct Ui {
     pub temp_format: RefCell<Option<(PathBuf, opusdm_ipc::ListerFormat)>>,
     /// Recently read directory listings (raw rows, before the Show / Hide filter).
     pub dir_cache: RefCell<crate::dircache::DirCache>,
+    /// Directory sizes already calculated.
+    pub size_cache: RefCell<crate::sizecache::SizeCache>,
     /// Functions this Lister started that are still running.
     pub busy: crate::busy::Busy,
     /// Open FTP / SFTP connections (F-39).
@@ -305,9 +307,15 @@ impl Ui {
         let mut total_files = 0u32;
         let mut total_bytes = 0u64;
         let mut new_items = Vec::new();
-        for row in rows {
+        let cwd_for_sizes = dir.to_path_buf();
+        for mut row in rows {
             if row.name == opusdm_iconview::scan::OPUSDM_DIR {
                 continue;
+            }
+            if row.is_dir {
+                if let Some(size) = self.size_cache.borrow().get(&cwd_for_sizes.join(&row.name)) {
+                    row.size = size;
+                }
             }
             if !show_hidden && row.name.starts_with('.') {
                 continue;
@@ -676,7 +684,7 @@ impl Ui {
                 // A directory selection means "how big is this?", anything else
                 // means "show me what is inside".
                 if self.selected_paths().iter().any(|p| p.is_dir()) {
-                    crate::tools::calculate_dir_sizes_async(self);
+                    crate::tools::calculate_dir_sizes_async(self, false);
                 } else {
                     self.toggle_preview();
                 }
