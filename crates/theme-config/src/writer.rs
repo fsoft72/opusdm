@@ -139,18 +139,45 @@ pub fn write_theme(slug: &str, draft: &ThemeDraft, source_slug: Option<&str>, op
     if staging.exists() {
         std::fs::remove_dir_all(&staging).map_err(io_err(&staging))?;
     }
-    if let Err(e) = stage(slug, draft, source_slug, ops, &staging) {
-        if let Err(clean) = std::fs::remove_dir_all(&staging) {
-            opusdm_ipc::err_log!("theme-config", "cannot remove {}: {clean}", staging.display());
+    let dest = theme_dir(slug);
+    if let Err(e) = stage(slug, draft, source_slug, ops, &staging).and_then(|()| swap_in(&staging, &dest)) {
+        if staging.exists() {
+            if let Err(clean) = std::fs::remove_dir_all(&staging) {
+                opusdm_ipc::err_log!("theme-config", "cannot remove {}: {clean}", staging.display());
+            }
         }
         return Err(e);
     }
-    let dest = theme_dir(slug);
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest).map_err(io_err(&dest))?;
-    }
-    std::fs::rename(&staging, &dest).map_err(io_err(&dest))?;
     Ok(dest)
+}
+
+/// Replace `dest` with `staging`. An existing `dest` is first moved to a
+/// sibling `.<name>.old` backup, which is restored if the final rename fails
+/// and removed once it succeeds, so the old folder is never lost.
+fn swap_in(staging: &Path, dest: &Path) -> Result<(), BuildError> {
+    let name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let backup = dest.with_file_name(format!(".{name}.old"));
+    if backup.exists() {
+        std::fs::remove_dir_all(&backup).map_err(io_err(&backup))?;
+    }
+    let had_old = dest.exists();
+    if had_old {
+        std::fs::rename(dest, &backup).map_err(io_err(dest))?;
+    }
+    if let Err(e) = std::fs::rename(staging, dest) {
+        if had_old {
+            if let Err(restore) = std::fs::rename(&backup, dest) {
+                opusdm_ipc::err_log!("theme-config", "cannot restore {}: {restore}", dest.display());
+            }
+        }
+        return Err(BuildError::Io { path: staging.to_path_buf(), source: e });
+    }
+    if had_old {
+        if let Err(clean) = std::fs::remove_dir_all(&backup) {
+            opusdm_ipc::err_log!("theme-config", "cannot remove {}: {clean}", backup.display());
+        }
+    }
+    Ok(())
 }
 
 /// Build the whole theme inside `dir`.
@@ -387,6 +414,33 @@ mod tests {
         d.requester = Some(SurfaceImage { image_path: Some("/no/such/r.png".into()), fit: ImageFit::Fill });
         assert!(write_theme("src", &d, Some("src"), &[]).is_err());
         assert!(theme_dir("src").join("icons/dir.png").is_file());
+        assert_eq!(folder_names(), ["src"], "no staging or backup folder is left");
+    }
+
+    #[test]
+    fn swap_in_replaces_an_existing_folder_and_leaves_no_backup() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _td = scratch_config();
+        let root = themes_dir();
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("dest/old.txt"), "old").unwrap();
+        std::fs::create_dir_all(root.join(".dest.tmp")).unwrap();
+        std::fs::write(root.join(".dest.tmp/new.txt"), "new").unwrap();
+        swap_in(&root.join(".dest.tmp"), &root.join("dest")).unwrap();
+        assert!(root.join("dest/new.txt").is_file() && !root.join("dest/old.txt").exists());
+        assert_eq!(folder_names(), ["dest"]);
+    }
+
+    #[test]
+    fn swap_in_failure_keeps_the_old_folder_and_leaves_no_backup() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _td = scratch_config();
+        let root = themes_dir();
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("dest/old.txt"), "old").unwrap();
+        assert!(swap_in(&root.join(".dest.tmp"), &root.join("dest")).is_err());
+        assert_eq!(std::fs::read(root.join("dest/old.txt")).unwrap(), b"old");
+        assert_eq!(folder_names(), ["dest"]);
     }
 
     #[test]
