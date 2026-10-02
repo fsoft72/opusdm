@@ -7,7 +7,7 @@ use crate::script_events::{EventGuard, ScriptEvent, SHUTDOWN_HOOK_TIMEOUT};
 use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
 use crate::settings;
 use crate::desktop_settings;
-use opusdm_fsops::Progress;
+use opusdm_fsops::{CancelToken, Progress};
 use opusdm_ipc::bindings::{self, Bindings};
 use opusdm_ipc::format::{self, FormatStore};
 use opusdm_ipc::frame::{recv, send};
@@ -288,6 +288,8 @@ struct JobMeta {
     totals: ProgressTotals,
     dest_dir: PathBuf,
     src_parents: Vec<PathBuf>,
+    /// A Function step waiting for this job: told the outcome on `Done`.
+    waiter: Option<Sender<crate::functions::JobResult>>,
 }
 
 /// All mutable hub state, owned by the owner loop. Splitting the loop's big
@@ -334,9 +336,9 @@ struct Hub {
     engine: JobEngine,
     jobs: HashMap<u64, JobMeta>,
     replies: HashMap<u64, Sender<Resolution>>,
-    /// Connection that must answer each Function conflict prompt in `replies`
-    /// (by request id), so a closed Lister releases the job waiting on it.
-    fn_conflict_owners: HashMap<u64, u64>,
+    /// Connection that must answer each conflict prompt in `replies` (by
+    /// request id), so a closed Lister releases the job waiting on it.
+    conflict_owners: HashMap<u64, u64>,
     /// Pending `Confirm` questions: request id to (answer channel, asked Lister).
     confirms: HashMap<u64, (Sender<bool>, u64)>,
     /// Which Lister shows each `Run` output window, by `(run id, step)`. It
@@ -354,6 +356,8 @@ struct Hub {
     /// Which connection to route a running Function's events back to, kept
     /// alive from the moment execution starts until `FunctionDone`/`Failed`.
     function_requesters: HashMap<u64, u64>,
+    /// Set when a run's requester goes away: the run stops at its next step.
+    function_cancels: HashMap<u64, CancelToken>,
     next_run_id: u64,
     function_events_tx: Sender<(u64, crate::functions::FnEvent)>,
 }
@@ -580,7 +584,7 @@ impl Hub {
             }
 
             ToHub::ConflictReply { req_id, resolution } => {
-                self.fn_conflict_owners.remove(&req_id);
+                self.conflict_owners.remove(&req_id);
                 if let Some(tx) = self.replies.remove(&req_id) {
                     let _ = tx.send(resolution);
                 }
@@ -658,7 +662,7 @@ impl Hub {
             self.next_run_id += 1;
             let (tx, rx) = channel();
             let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
-            crate::functions::spawn_executor(run_id, function.steps.clone(), empty, None, tx);
+            crate::functions::spawn_executor(run_id, function.steps.clone(), empty, None, tx, CancelToken::new());
             receivers.push(rx);
         }
         for rx in receivers {
@@ -673,8 +677,12 @@ impl Hub {
                         opusdm_ipc::err_log!("hub", "shutdown hook failed at step {step_idx}: {error}");
                         break;
                     }
-                    Ok((_, crate::functions::FnEvent::Conflict { reply, .. })) => {
-                        let _ = reply.send(Resolution::Skip);
+                    // No job engine here: run the job in place, skipping conflicts.
+                    Ok((_, crate::functions::FnEvent::Job { spec, done, .. })) => {
+                        let result = crate::functions::run_job_inline(spec, &CancelToken::new(), |_, _, _, reply| {
+                            let _ = reply.send(Resolution::Skip);
+                        });
+                        let _ = done.send(result);
                     }
                     Ok(_) => continue,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -906,6 +914,7 @@ impl Hub {
                     totals: ProgressTotals::default(),
                     dest_dir,
                     src_parents: src_parents.clone(),
+                    waiter: None,
                 },
             );
         }
@@ -942,6 +951,7 @@ impl Hub {
                         totals: ProgressTotals::default(),
                         dest_dir,
                         src_parents,
+                        waiter: None,
                     },
                 );
             }
@@ -996,14 +1006,17 @@ impl Hub {
 
         match prog {
             Progress::Conflict { path, src, dst, reply } => {
+                // Nobody to ask (hub-originated job, or the Lister is gone): skip the entry.
+                let Some(c) = self.conns.get_mut(&requester) else {
+                    opusdm_ipc::err_log!("hub", "job {job_id}: {} already exists, skipped (nobody to ask)", path.display());
+                    let _ = reply.send(Resolution::Skip);
+                    return;
+                };
                 let req_id = self.next_req;
                 self.next_req += 1;
                 self.replies.insert(req_id, reply);
-                if let Some(c) = self.conns.get_mut(&requester) {
-                    let _ = c.tx.send(
-                        ToLister::ConflictPrompt { req_id, job_id, path, src, dst }.into(),
-                    );
-                }
+                self.conflict_owners.insert(req_id, requester);
+                let _ = c.tx.send(ToLister::ConflictPrompt { req_id, job_id, path, src, dst }.into());
             }
             Progress::Done { copied, skipped, cancelled, errors } => {
                 let outcome = if cancelled {
@@ -1012,6 +1025,16 @@ impl Hub {
                     Outcome::Ok { copied, skipped }
                 };
                 let err_count = errors.len();
+                if let Some(waiter) = meta.waiter.take() {
+                    let result = if let Some((path, msg)) = errors.first() {
+                        Err(format!("{} ({msg})", path.display()))
+                    } else if cancelled {
+                        Err("cancelled".to_string())
+                    } else {
+                        Ok((copied, skipped))
+                    };
+                    let _ = waiter.send(result);
+                }
                 if let Some(c) = self.conns.get_mut(&requester) {
                     let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
                 }
@@ -1137,7 +1160,7 @@ fn owner_loop(
         engine: JobEngine::new(default_runner(), jp_tx),
         jobs: HashMap::new(),
         replies: HashMap::new(),
-        fn_conflict_owners: HashMap::new(),
+        conflict_owners: HashMap::new(),
         confirms: HashMap::new(),
         output_windows: HashMap::new(),
         next_req: 1,
@@ -1146,6 +1169,7 @@ fn owner_loop(
         pending_functions: HashMap::new(),
         selection_waiters: HashMap::new(),
         function_requesters: HashMap::new(),
+        function_cancels: HashMap::new(),
         next_run_id: 1,
         function_events_tx: fe_tx,
     };

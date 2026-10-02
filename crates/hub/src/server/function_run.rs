@@ -29,7 +29,9 @@ impl Hub {
         let Some(source_cid) = source else {
             self.function_requesters.insert(run_id, requester);
             let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
-            crate::functions::spawn_executor(run_id, steps, empty, None, self.function_events_tx.clone());
+            let cancel = CancelToken::new();
+            self.function_cancels.insert(run_id, cancel.clone());
+            crate::functions::spawn_executor(run_id, steps, empty, None, self.function_events_tx.clone(), cancel);
             return run_id;
         };
         // Exclude the source itself: a Lister that currently holds a DEST role
@@ -126,12 +128,15 @@ impl Hub {
         }
         let run = self.pending_functions.remove(&run_id).unwrap();
         self.function_requesters.insert(run_id, run.requester_cid);
+        let cancel = CancelToken::new();
+        self.function_cancels.insert(run_id, cancel.clone());
         crate::functions::spawn_executor(
             run_id,
             run.steps,
             run.source_sel.unwrap(),
             run.dest_sel,
             self.function_events_tx.clone(),
+            cancel,
         );
     }
 
@@ -140,8 +145,8 @@ impl Hub {
     /// asked for this run. A hub-originated run has no such connection: its
     /// failures are logged instead.
     pub(super) fn function_event(&mut self, run_id: u64, ev: crate::functions::FnEvent) {
-        if let crate::functions::FnEvent::Conflict { path, src, dst, reply, .. } = ev {
-            self.function_conflict(run_id, path, src, dst, reply);
+        if let crate::functions::FnEvent::Job { spec, done, .. } = ev {
+            self.function_job(run_id, spec, done);
             return;
         }
         if let crate::functions::FnEvent::Window { step_idx, msg, .. } = &ev {
@@ -156,6 +161,7 @@ impl Hub {
         let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
         if terminal {
             self.function_requesters.remove(&run_id);
+            self.function_cancels.remove(&run_id);
             self.event_guard.finish(run_id);
         }
         // A background change applies for every requester, hub-originated
@@ -212,7 +218,7 @@ impl Hub {
             crate::functions::FnEvent::ChangeDir { path, select, mode, .. } => ToLister::ScanDir { path, select, mode },
             // Applied above, before this match.
             crate::functions::FnEvent::SetBackground { .. }
-            | crate::functions::FnEvent::Conflict { .. }
+            | crate::functions::FnEvent::Job { .. }
             | crate::functions::FnEvent::Confirm { .. }
             | crate::functions::FnEvent::Window { .. } => return,
             crate::functions::FnEvent::LeaveOut { .. }
@@ -233,34 +239,20 @@ impl Hub {
         }
     }
 
-    /// A Copy/Move step of run `run_id` hit an existing destination: ask the
-    /// Lister that started the run. A run nobody watches (script event,
-    /// headless) or whose Lister is gone skips the entry instead.
-    pub(super) fn function_conflict(
-        &mut self,
-        run_id: u64,
-        path: PathBuf,
-        src: opusdm_ipc::FileMeta,
-        dst: opusdm_ipc::FileMeta,
-        reply: Sender<Resolution>,
-    ) {
-        let owner = self
-            .function_requesters
-            .get(&run_id)
-            .copied()
-            .filter(|cid| *cid != HUB_REQUESTER && self.conns.contains_key(cid));
-        let Some(cid) = owner else {
-            opusdm_ipc::err_log!("hub", "function run {run_id}: {} already exists, skipped (nobody to ask)", path.display());
-            let _ = reply.send(Resolution::Skip);
-            return;
-        };
-        let req_id = self.next_req;
-        self.next_req += 1;
-        self.replies.insert(req_id, reply);
-        self.fn_conflict_owners.insert(req_id, cid);
-        if let Some(c) = self.conns.get_mut(&cid) {
-            let _ = c.tx.send(ToLister::ConflictPrompt { req_id, job_id: run_id, path, src, dst }.into());
-        }
+    /// A file-operation step of run `run_id` wants `spec` run: submit it to
+    /// the job engine on behalf of the run's requester, so it gets a progress
+    /// window, conflict prompts and the Lister refresh like any other job, and
+    /// answer the step on `done` when the job ends. A run nobody owns any more
+    /// drops `done`, which fails the step.
+    pub(super) fn function_job(&mut self, run_id: u64, spec: opusdm_fsops::JobSpec, done: Sender<crate::functions::JobResult>) {
+        let Some(&requester) = self.function_requesters.get(&run_id) else { return };
+        let src_parents: Vec<PathBuf> = spec.srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
+        let (op, dest_dir) = (spec.op.clone(), spec.dest_dir.clone());
+        let out = self.engine.submit(ListerId(requester), spec);
+        self.jobs.insert(
+            out.job_id,
+            JobMeta { requester, op, totals: ProgressTotals::default(), dest_dir, src_parents, waiter: Some(done) },
+        );
     }
 
     /// Route one output-window event. `Open` records which Lister owns the
@@ -341,16 +333,34 @@ impl Hub {
         }
         self.selection_waiters.remove(&cid);
         self.selection_waiters.retain(|_, queue| !queue.is_empty());
+        // The runs of a closed Lister stop at their next step, and the jobs
+        // they started are cancelled.
+        for (run_id, requester) in &self.function_requesters {
+            if *requester == cid {
+                if let Some(cancel) = self.function_cancels.remove(run_id) {
+                    cancel.cancel();
+                }
+            }
+        }
         self.function_requesters.retain(|_, requester| *requester != cid);
+        let orphaned_jobs: Vec<u64> = self
+            .jobs
+            .iter()
+            .filter(|(_, meta)| meta.requester == cid && meta.waiter.is_some())
+            .map(|(job_id, _)| *job_id)
+            .collect();
+        for job_id in orphaned_jobs {
+            self.engine.cancel(job_id);
+        }
         // A question to a closed Lister is never answered: dropping the sender
         // fails the waiting step instead of hanging it.
         self.confirms.retain(|_, (_, owner)| *owner != cid);
         self.output_windows.retain(|_, owner| *owner != cid);
         // Dropping the reply senders releases the jobs waiting on this Lister.
         let orphaned: Vec<u64> =
-            self.fn_conflict_owners.iter().filter(|(_, owner)| **owner == cid).map(|(req, _)| *req).collect();
+            self.conflict_owners.iter().filter(|(_, owner)| **owner == cid).map(|(req, _)| *req).collect();
         for req_id in orphaned {
-            self.fn_conflict_owners.remove(&req_id);
+            self.conflict_owners.remove(&req_id);
             self.replies.remove(&req_id);
         }
     }

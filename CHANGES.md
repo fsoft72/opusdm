@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Fix (hub): Function steps Copy, Move, Delete, Copy As, Move As and Duplicate now run on the hub's `JobEngine` (new `FnEvent::Job`, `Hub::function_job`; `FnEvent::Conflict` and `function_conflict` are gone). They get the progress window and cancel button, the standard conflict prompt and the `InvalidatePath` refresh of the open Listers. Each run has a `CancelToken` (`function_cancels`): when its Lister closes, the run stops before its next step and its jobs are cancelled. A conflict nobody can answer is skipped (hub jobs included) and `conflict_owners` covers every prompt. A cancelled job fails its step. Shutdown hooks run such jobs in place with `functions::run_job_inline`.
 - Perf (lister): `select_names` matches rows against a `HashSet` and applies them with one `set_selection` call, so restoring a large selection after a reload fires `selection-changed` (status line, preview) once instead of once per row.
 - Fix (lister): auto-refresh no longer clears the filter being typed. `apply_navigation` resets the filter bar only when the folder changes, so `on_directory_changed` is a plain `reload()` (the save and restore of the filter text, which raced with the asynchronous listing, is gone).
 - Fix (lister): the rename dialogs (button, command, context menu) build the target from the renamed file's own folder (`actions::renamed_sibling`, `rename_and_reload`) instead of the Lister's current folder when OK is pressed, and reject empty names, `.`, `..` and names containing `/`.

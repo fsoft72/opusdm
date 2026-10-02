@@ -44,15 +44,10 @@ pub enum FnEvent {
     ToggleHide,
     /// A bank step: the hub must apply `action` to the bank called `bank`.
     Bank { action: opusdm_ipc::buttonbank::BankAction, bank: String },
-    /// A Copy/Move step found `path` already at the destination. The hub
-    /// must answer on `reply`; a dropped `reply` aborts the step's job.
-    Conflict {
-        step_idx: usize,
-        path: PathBuf,
-        src: opusdm_ipc::FileMeta,
-        dst: opusdm_ipc::FileMeta,
-        reply: Sender<Resolution>,
-    },
+    /// A Copy/Move/Delete/... step wants a file job run. The hub submits it to
+    /// its job engine (progress window, conflict prompts, Lister refresh) and
+    /// reports the outcome on `done`; a dropped `done` fails the step.
+    Job { step_idx: usize, spec: JobSpec, done: Sender<JobResult> },
     /// A `Confirm` step asks the user `message`; `reply` gets their answer. A
     /// dropped `reply` (nobody to ask) fails the step.
     Confirm { step_idx: usize, message: String, reply: Sender<bool> },
@@ -61,6 +56,45 @@ pub enum FnEvent {
     Window { step_idx: usize, title: String, msg: WindowMsg },
     /// Every step finished successfully.
     AllDone,
+}
+
+/// Outcome of a file job started by a step: `(copied, skipped)`, or why it
+/// failed or was cancelled.
+pub type JobResult = Result<(u64, u64), String>;
+
+/// Run `spec` to completion on the calling thread (plus one worker thread) and
+/// summarise it as a [`JobResult`]. `on_conflict` receives every
+/// "destination exists" question with the channel to answer on; dropping that
+/// channel without an answer ends the job. Used where there is no hub job
+/// engine to run the job: shutdown hooks and tests.
+pub fn run_job_inline(
+    spec: JobSpec,
+    cancel: &CancelToken,
+    mut on_conflict: impl FnMut(PathBuf, opusdm_ipc::FileMeta, opusdm_ipc::FileMeta, Sender<Resolution>),
+) -> JobResult {
+    let (tx, rx) = channel::<Progress>();
+    // `run_job` blocks until the job finishes, conflict replies included, so
+    // it needs its own thread while this one drains `rx`.
+    let cancel = cancel.clone();
+    let job_thread = std::thread::spawn(move || run_job(spec, tx, cancel));
+    let mut result = Err("job ended without a result".to_string());
+    for ev in rx {
+        match ev {
+            Progress::Conflict { path, src, dst, reply } => on_conflict(path, src, dst, reply),
+            Progress::Done { copied, skipped, cancelled, errors } => {
+                result = if let Some((path, msg)) = errors.first() {
+                    Err(format!("{} ({msg})", path.display()))
+                } else if cancelled {
+                    Err("cancelled".to_string())
+                } else {
+                    Ok((copied, skipped))
+                };
+            }
+            Progress::File { .. } | Progress::Scanning { .. } => {}
+        }
+    }
+    let _ = job_thread.join();
+    result
 }
 
 /// What a `Run` output window is told.
@@ -82,16 +116,18 @@ pub fn spawn_executor(
     source: SelectionCtx,
     dest: Option<SelectionCtx>,
     events_tx: Sender<(u64, FnEvent)>,
+    cancel: CancelToken,
 ) {
     std::thread::Builder::new()
         .name(format!("opusdm-function-{run_id}"))
-        .spawn(move || run_steps(run_id, &steps, &source, dest.as_ref(), &events_tx))
+        .spawn(move || run_steps_cancellable(run_id, &steps, &source, dest.as_ref(), &events_tx, &cancel))
         .expect("spawn function executor thread");
 }
 
 /// Run every step in order, stopping (and emitting `Failed`) at the first
 /// error; emits `AllDone` only if every step succeeded. Free function (not
 /// a method) so it is directly unit-testable without a running hub.
+#[cfg(test)]
 fn run_steps(
     run_id: u64,
     steps: &[FnStep],
@@ -99,9 +135,26 @@ fn run_steps(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) {
+    run_steps_cancellable(run_id, steps, source, dest, events_tx, &CancelToken::new());
+}
+
+/// [`run_steps`] that also stops, with a `Failed` event, before the first step
+/// started after `cancel` was set (the requesting Lister went away).
+fn run_steps_cancellable(
+    run_id: u64,
+    steps: &[FnStep],
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
+) {
     // A `ChangeDir` step moves the working directory of every later step.
     let mut source = source.clone();
     for (step_idx, step) in steps.iter().enumerate() {
+        if cancel.is_cancelled() {
+            let _ = events_tx.send((run_id, FnEvent::Failed { step_idx, error: "cancelled".to_string() }));
+            return;
+        }
         let result = match step {
             FnStep::Internal { cmd: InternalCmd::ChangeDir, args } => {
                 run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx)
@@ -443,43 +496,20 @@ fn run_internal(
             };
             crate::jobs::validate_op(&op, &source.paths, &dest_dir)?;
             let spec = JobSpec { op, srcs: source.paths.clone(), dest_dir, options: args.job_options() };
-            let (tx, rx) = channel::<Progress>();
-            // `run_job` blocks the calling thread until the job finishes,
-            // including waiting for a `Progress::Conflict` reply - so it
-            // must run on its own thread while this thread drains `rx`
-            // concurrently (same job-thread/relay-thread split as
-            // `JobEngine::start`, crates/hub/src/jobs.rs:125-150).
-            // Calling it inline here and draining `rx` only afterward
-            // deadlocks the very first conflict: nothing is listening on
-            // `rx` yet to send the `Resolution` the worker thread is
-            // blocked waiting for.
-            let job_thread = std::thread::spawn(move || {
-                run_job(spec, tx, CancelToken::new());
-            });
-            for ev in rx {
-                match ev {
-                    Progress::File { path, .. } => {
-                        let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("{}: {}", cmd.label(), path.display()) }));
-                    }
-                    // The hub asks the requesting Lister (or skips when there
-                    // is none) and answers on `reply`; this thread keeps
-                    // draining `rx` so the job thread is never starved.
-                    Progress::Conflict { reply, path, src, dst } => {
-                        let _ = events_tx.send((run_id, FnEvent::Conflict { step_idx, path, src, dst, reply }));
-                    }
-                    Progress::Done { copied, skipped, errors, .. } => {
-                        if let Some((path, msg)) = errors.first() {
-                            return Err(format!("{}: {} ({msg})", cmd.label(), path.display()));
-                        }
-                        let _ = events_tx.send((run_id, FnEvent::Output {
-                            step_idx,
-                            line: format!("{}: {copied} copied, {skipped} skipped", cmd.label()),
-                        }));
-                    }
-                    Progress::Scanning { .. } => {}
-                }
-            }
-            let _ = job_thread.join();
+            // The hub runs the job on its engine, so the step waits here for
+            // the outcome (conflict prompts and progress are the hub's job).
+            let (done_tx, done_rx) = channel::<JobResult>();
+            events_tx
+                .send((run_id, FnEvent::Job { step_idx, spec, done: done_tx }))
+                .map_err(|_| format!("{}: the hub is gone", cmd.label()))?;
+            let (copied, skipped) = done_rx
+                .recv()
+                .map_err(|_| format!("{}: the job was dropped", cmd.label()))?
+                .map_err(|e| format!("{}: {e}", cmd.label()))?;
+            let _ = events_tx.send((run_id, FnEvent::Output {
+                step_idx,
+                line: format!("{}: {copied} copied, {skipped} skipped", cmd.label()),
+            }));
             let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
             Ok(())
         }
@@ -836,17 +866,34 @@ mod tests {
             scope.spawn(move || run_steps(1, steps, src, Some(dst), &tx));
             for (_, ev) in rx {
                 match ev {
-                    FnEvent::Conflict { path, reply, .. } => {
-                        asked.push(path);
-                        if let Some(answer) = answer {
-                            let _ = reply.send(answer);
-                        }
+                    // Stand in for the hub's job engine.
+                    FnEvent::Job { spec, done, .. } => {
+                        let result = run_job_inline(spec, &CancelToken::new(), |path, _, _, reply| {
+                            asked.push(path);
+                            if let Some(answer) = answer {
+                                let _ = reply.send(answer);
+                            }
+                        });
+                        let _ = done.send(result);
                     }
                     other => others.push(other),
                 }
             }
         });
         (std::fs::read(dst_dir.path().join("a.txt")).unwrap(), asked, others)
+    }
+
+    #[test]
+    fn a_cancelled_run_stops_before_its_next_step() {
+        let (tx, rx) = channel();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let steps = vec![FnStep::External { argv: vec!["echo".into(), "never".into()], cwd_source: true }];
+        run_steps_cancellable(1, &steps, &ctx(&[], "/tmp"), None, &tx, &cancel);
+        drop(tx);
+        let events = drain(rx);
+        assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, .. })));
+        assert!(!events.iter().any(|e| matches!(e, FnEvent::Output { .. })));
     }
 
     #[test]
