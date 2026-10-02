@@ -1,86 +1,46 @@
-//! Pure merge logic for applying a custom theme: a theme's `theme.json`
-//! fields overwrite the corresponding current value only where the theme
-//! actually set them; everything else keeps the user's current setting.
-//! No GTK, no I/O beyond resolving a background image's absolute path -
-//! fully unit-testable.
+//! Pure resolution of a theme into the look: a theme fully determines the
+//! colours, appearance (except light / dark), fonts and Lister / requester
+//! pictures, with defaults for every part it does not set. User preferences
+//! (light / dark, behaviour, desktop background) are copied through. No GTK,
+//! no I/O beyond resolving picture paths - fully unit-testable.
 
-use opusdm_ipc::desktop::Background;
-use opusdm_ipc::look::{Fonts, SurfaceImage, Surfaces, ThemeSurface};
+use opusdm_ipc::look::{SurfaceImage, Surfaces, ThemeSurface};
 use opusdm_ipc::themes::CustomThemeData;
-use opusdm_ipc::{Appearance, Behavior, DesktopSettings, IconSetId, Settings, Theme};
+use opusdm_ipc::{IconSetId, Settings, Theme, CURRENT_LOOK_VERSION};
 
-/// Everything a successful "apply a custom theme" produces, ready to send
-/// as `SetSettings` + `SetDesktopSettings`.
-pub struct MergedTheme {
-    pub theme: Theme,
-    pub appearance: Appearance,
-    pub behavior: Behavior,
-    pub desktop: DesktopSettings,
-    pub fonts: Fonts,
-    pub surfaces: Surfaces,
-}
+/// `prefs` with every theme-owned field replaced by what theme `slug`
+/// (`data`) sets, or by the default when it sets nothing. The result is
+/// stamped with [`CURRENT_LOOK_VERSION`].
+pub fn resolve_look(slug: &str, data: &CustomThemeData, prefs: &Settings) -> Settings {
+    let mut appearance = data.appearance.clone().unwrap_or_default();
+    appearance.theme_mode = prefs.appearance.theme_mode;
 
-/// Merge `slug`'s `data` over `current`/`current_desktop`. Only fields
-/// `data` sets are changed; everything else is copied from `current`
-/// unmodified.
-pub fn merge_custom_theme(
-    slug: &str,
-    data: &CustomThemeData,
-    current: &Settings,
-    current_desktop: &DesktopSettings,
-) -> MergedTheme {
-    let mut colors = current.theme.colors.clone();
-    if let Some(c) = &data.colors {
-        colors = c.clone();
-    }
-
-    let mut background = current.theme.background.clone();
-    if let Some(b) = &data.background {
-        merge_background(&mut background, b, slug);
-    }
-
-    let mut appearance = current.appearance.clone();
-    if let Some(a) = &data.appearance {
-        appearance = a.clone();
-    }
-
-    let mut behavior = current.behavior.clone();
-    if let Some(b) = &data.behavior {
-        behavior = b.clone();
-    }
-
-    let mut desktop = current_desktop.clone();
-    if let Some(m) = &data.desktop {
-        if let Some(v) = m.icon_size {
-            desktop.icon_size = v;
-        }
-        if let Some(v) = m.grid_spacing {
-            desktop.grid_spacing = v;
-        }
-        if let Some(v) = m.grid_gap {
-            desktop.grid_gap = v;
-        }
-    }
-
-    let mut fonts = current.fonts.clone();
-    if let Some(f) = &data.fonts {
-        fonts = f.clone();
-    }
-
-    let mut surfaces = current.surfaces.clone();
+    let mut surfaces = Surfaces::default();
     if let Some(s) = &data.surfaces {
         merge_surface(&mut surfaces.lister, s.lister.as_ref(), slug);
         merge_surface(&mut surfaces.requester, s.requester.as_ref(), slug);
     }
 
-    MergedTheme {
-        theme: Theme { icon_set: IconSetId::Custom(slug.to_string()), colors, background },
+    Settings {
+        theme: Theme {
+            icon_set: IconSetId::Custom(slug.to_string()),
+            colors: data.colors.clone().unwrap_or_default(),
+            background: prefs.theme.background.clone(),
+        },
         appearance,
-        behavior,
-        desktop,
-        fonts,
+        behavior: prefs.behavior.clone(),
+        fonts: data.fonts.clone().unwrap_or_default(),
         surfaces,
+        look_version: CURRENT_LOOK_VERSION,
     }
+}
+
+/// Whether `a` and `b` look the same: equal colours, fonts, surfaces and
+/// appearance apart from light / dark (a preference).
+pub fn same_look(a: &Settings, b: &Settings) -> bool {
+    let mut b_appearance = b.appearance.clone();
+    b_appearance.theme_mode = a.appearance.theme_mode;
+    a.theme.colors == b.theme.colors && a.appearance == b_appearance && a.fonts == b.fonts && a.surfaces == b.surfaces
 }
 
 /// Overwrite the parts of `target` that `theme` sets. An image name that is
@@ -97,155 +57,51 @@ pub(crate) fn merge_surface(target: &mut SurfaceImage, theme: Option<&ThemeSurfa
     target.image_path = Some(opusdm_ipc::themes::background_image_path(slug, name));
 }
 
-pub(crate) fn merge_background(bg: &mut Background, theme_bg: &opusdm_ipc::themes::ThemeBackground, slug: &str) {
-    if let Some(mode) = theme_bg.mode {
-        bg.mode = mode;
-    }
-    if let Some(solid) = &theme_bg.solid {
-        bg.solid = solid.clone();
-    }
-    if let Some(start) = &theme_bg.gradient_start {
-        bg.gradient_start = start.clone();
-    }
-    if let Some(end) = &theme_bg.gradient_end {
-        bg.gradient_end = end.clone();
-    }
-    if let Some(angle) = theme_bg.gradient_angle {
-        bg.gradient_angle = angle;
-    }
-    if let Some(fit) = theme_bg.image_fit {
-        bg.image_fit = fit;
-    }
-    if let Some(filename) = theme_bg.image.as_deref().filter(|n| opusdm_ipc::themes::is_plain_file_name(n)) {
-        bg.image_path = Some(opusdm_ipc::themes::background_image_path(slug, filename));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::ENV_LOCK;
     use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
-    use opusdm_ipc::themes::{CustomThemeData, ThemeBackground, ThemeDesktopMetrics};
-    use opusdm_ipc::look::{FontSpec, Fonts, ThemeSurface, ThemeSurfaces};
-    use opusdm_ipc::{Appearance, ColorSettings, DesktopSettings, IconSetId, Settings};
+    use opusdm_ipc::look::{FontSpec, Fonts, ThemeSurfaces};
+    use opusdm_ipc::{Appearance, ColorSettings, ThemeMode};
 
-    fn base_settings() -> Settings {
+    /// Preferences with every field away from its default.
+    fn prefs() -> Settings {
         let mut s = Settings::default();
-        s.appearance.monospace_list = true;
-        s.behavior.auto_refresh = true;
+        s.theme.colors.file_fg = "#010203".into();
+        s.theme.background.mode = BackgroundMode::Gradient;
+        s.appearance = Appearance { type_indicators: true, monospace_list: true, theme_window: true, theme_mode: ThemeMode::Light };
+        s.behavior.auto_refresh = !s.behavior.auto_refresh;
+        s.fonts.ui.size = 9;
+        s.surfaces.requester.fit = ImageFit::Fit;
         s
     }
 
-    fn base_desktop() -> DesktopSettings {
-        let mut d = DesktopSettings::default();
-        d.icon_size = 64;
-        d.grid_spacing = 96;
-        d.grid_gap = 4;
-        d
+    #[test]
+    fn a_theme_that_sets_nothing_gives_the_default_look_and_keeps_the_preferences() {
+        let p = prefs();
+        let s = resolve_look("t", &CustomThemeData::default(), &p);
+        assert_eq!(s.theme.icon_set, IconSetId::Custom("t".to_string()));
+        assert_eq!(s.theme.colors, ColorSettings::default());
+        assert_eq!(s.appearance, Appearance { theme_mode: ThemeMode::Light, ..Appearance::default() });
+        assert_eq!(s.fonts, Fonts::default());
+        assert_eq!(s.surfaces, Surfaces::default());
+        assert_eq!(s.theme.background, p.theme.background);
+        assert_eq!(s.behavior, p.behavior);
+        assert_eq!(s.look_version, CURRENT_LOOK_VERSION);
     }
 
     #[test]
-    fn empty_theme_data_changes_nothing_but_the_icon_set() {
-        let data = CustomThemeData::default();
-        let settings = base_settings();
-        let desktop = base_desktop();
-        let merged = merge_custom_theme("mytheme", &data, &settings, &desktop);
-
-        assert_eq!(merged.theme.icon_set, IconSetId::Custom("mytheme".to_string()));
-        assert_eq!(merged.theme.colors, settings.theme.colors);
-        assert_eq!(merged.theme.background, settings.theme.background);
-        assert_eq!(merged.appearance, settings.appearance);
-        assert_eq!(merged.behavior, settings.behavior);
-        assert_eq!(merged.desktop, desktop);
-    }
-
-    #[test]
-    fn theme_supplied_colors_win_others_keep_current() {
+    fn theme_values_replace_the_look_but_never_light_or_dark() {
         let mut data = CustomThemeData::default();
         data.colors = Some(ColorSettings { file_fg: "#ff00ff".to_string(), ..ColorSettings::default() });
-        let settings = base_settings();
-        let desktop = base_desktop();
-        let merged = merge_custom_theme("t", &data, &settings, &desktop);
-
-        assert_eq!(merged.theme.colors.file_fg, "#ff00ff");
-        assert_eq!(merged.theme.colors.dir_fg, ColorSettings::default().dir_fg);
-        assert_eq!(merged.appearance, settings.appearance);
-    }
-
-    #[test]
-    fn theme_supplied_desktop_metrics_overwrite_only_the_fields_set() {
-        let mut data = CustomThemeData::default();
-        data.desktop = Some(ThemeDesktopMetrics { icon_size: Some(128), grid_spacing: None, grid_gap: None });
-        let desktop = base_desktop();
-        let merged = merge_custom_theme("t", &data, &Settings::default(), &desktop);
-
-        assert_eq!(merged.desktop.icon_size, 128);
-        assert_eq!(merged.desktop.grid_spacing, desktop.grid_spacing);
-        assert_eq!(merged.desktop.grid_gap, desktop.grid_gap);
-        assert_eq!(merged.desktop.desktop_dir, desktop.desktop_dir, "themes never touch desktop_dir");
-    }
-
-    #[test]
-    fn theme_supplied_appearance_and_behavior_fields_overwrite_only_what_is_set() {
-        let mut data = CustomThemeData::default();
-        data.appearance = Some(Appearance {
-            type_indicators: true,
-            monospace_list: false,
-            theme_window: false,
-            theme_mode: opusdm_ipc::ThemeMode::default(),
-        });
-        let settings = base_settings();
-        let merged = merge_custom_theme("t", &data, &settings, &base_desktop());
-
-        assert!(merged.appearance.type_indicators);
-        assert_eq!(merged.behavior, settings.behavior, "behavior untouched when theme omits it");
-    }
-
-    #[test]
-    fn image_background_resolves_the_filename_under_the_theme_dir() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let td = tempfile::tempdir().unwrap();
-        std::env::set_var("XDG_CONFIG_HOME", td.path());
-        let mut data = CustomThemeData::default();
-        data.background = Some(ThemeBackground {
-            mode: Some(BackgroundMode::Image),
-            image: Some("wall.jpg".to_string()),
-            image_fit: Some(ImageFit::Fit),
-            ..Default::default()
-        });
-        let merged = merge_custom_theme("t", &data, &Settings::default(), &base_desktop());
-
-        assert_eq!(merged.theme.background.mode, BackgroundMode::Image);
-        assert_eq!(merged.theme.background.image_fit, ImageFit::Fit);
-        let path = merged.theme.background.image_path.unwrap();
-        assert!(path.ends_with("themes/t/backgrounds/wall.jpg"));
-    }
-
-    #[test]
-    fn background_solid_and_gradient_fields_overwrite_independently() {
-        let mut data = CustomThemeData::default();
-        data.background = Some(ThemeBackground { solid: Some("#123456".to_string()), ..Default::default() });
-        let mut current = Settings::default();
-        current.theme.background.gradient_start = "#abcdef".to_string();
-        let merged = merge_custom_theme("t", &data, &current, &base_desktop());
-
-        assert_eq!(merged.theme.background.solid, "#123456");
-        assert_eq!(merged.theme.background.gradient_start, "#abcdef");
-    }
-
-    #[test]
-    fn theme_fonts_replace_the_current_fonts_and_absent_fonts_keep_them() {
-        let mut current = Settings::default();
-        current.fonts.ui.size = 9;
-        let kept = merge_custom_theme("t", &CustomThemeData::default(), &current, &base_desktop());
-        assert_eq!(kept.fonts, current.fonts);
-
-        let mut data = CustomThemeData::default();
+        data.appearance = Some(Appearance { monospace_list: true, theme_mode: ThemeMode::Dark, ..Appearance::default() });
         data.fonts = Some(Fonts { list: FontSpec { family: "Iosevka".into(), size: 12 }, ui: FontSpec::default() });
-        let merged = merge_custom_theme("t", &data, &current, &base_desktop());
-        assert_eq!(merged.fonts.list.family, "Iosevka");
-        assert_eq!(merged.fonts.ui.size, 0);
+        let s = resolve_look("t", &data, &prefs());
+        assert_eq!(s.theme.colors.file_fg, "#ff00ff");
+        assert!(s.appearance.monospace_list && !s.appearance.type_indicators);
+        assert_eq!(s.appearance.theme_mode, ThemeMode::Light);
+        assert_eq!(s.fonts.list.family, "Iosevka");
     }
 
     #[test]
@@ -258,12 +114,10 @@ mod tests {
             lister: Some(ThemeSurface { image: Some("l.png".into()), fit: Some(ImageFit::Tile) }),
             requester: None,
         });
-        let mut current = Settings::default();
-        current.surfaces.requester.fit = ImageFit::Fit;
-        let merged = merge_custom_theme("t", &data, &current, &base_desktop());
-        assert!(merged.surfaces.lister.image_path.unwrap().ends_with("themes/t/backgrounds/l.png"));
-        assert_eq!(merged.surfaces.lister.fit, ImageFit::Tile);
-        assert_eq!(merged.surfaces.requester.fit, ImageFit::Fit, "untouched surface keeps its value");
+        let s = resolve_look("t", &data, &prefs());
+        assert!(s.surfaces.lister.image_path.unwrap().ends_with("themes/t/backgrounds/l.png"));
+        assert_eq!(s.surfaces.lister.fit, ImageFit::Tile);
+        assert_eq!(s.surfaces.requester, SurfaceImage::default(), "a surface the theme omits is the default");
     }
 
     #[test]
@@ -273,9 +127,23 @@ mod tests {
             lister: Some(ThemeSurface { image: Some("../../x.png".into()), fit: None }),
             requester: None,
         });
-        data.background = Some(ThemeBackground { image: Some("a/b.png".into()), ..Default::default() });
-        let merged = merge_custom_theme("t", &data, &Settings::default(), &base_desktop());
-        assert_eq!(merged.surfaces.lister.image_path, None);
-        assert_eq!(merged.theme.background.image_path, None);
+        let s = resolve_look("t", &data, &Settings::default());
+        assert_eq!(s.surfaces.lister.image_path, None);
+    }
+
+    #[test]
+    fn same_look_ignores_preferences_but_not_look_values() {
+        let a = prefs();
+        let mut b = a.clone();
+        b.appearance.theme_mode = ThemeMode::Dark;
+        b.behavior.cache_size += 1;
+        b.theme.background.solid = "#000001".into();
+        b.look_version = 99;
+        assert!(same_look(&a, &b));
+        b.theme.colors.dir_bg = "#000002".into();
+        assert!(!same_look(&a, &b));
+        let mut c = a.clone();
+        c.appearance.monospace_list = false;
+        assert!(!same_look(&a, &c));
     }
 }

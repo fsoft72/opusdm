@@ -1,5 +1,16 @@
 # Changes
 
+## 2026-10-02
+
+- Feature: the theme is the single source of the look. Colours, appearance (type indicators, monospace list, themed window), fonts and the Lister / requester pictures are edited only in the Theme Editor; the Settings window keeps only preferences (active theme, light / dark, wallpaper, icon grid, desktop folder, panel, dock, menu, behaviour). Spec and plan: `docs/superpowers/specs/2026-10-02-theme-single-source-design.md`, `docs/superpowers/plans/2026-10-02-theme-single-source.md`.
+- Applying a theme is no longer a partial merge: `apply::resolve_look` (replaces `merge_custom_theme`) gives the theme's values and the defaults for the parts it does not set, and copies light / dark, behaviour and the desktop background from the preferences. `model::resolve_selected` replaces `apply_icon_set`; a theme never touches `DesktopSettings` any more. `settings.json` keeps the resolved look as the runtime cache (the hub is unchanged).
+- `theme.json` drops the `behavior`, `desktop` and `background` sections (old files still parse, the values are ignored); `appearance.theme_mode` in a theme is ignored. `ThemeDraft` loses the same fields; `ThemeDesktopMetrics` is gone.
+- Wallpapers in a theme: new `wallpapers/` folder (`themes::WALLPAPERS_DIR`), `themes::theme_wallpapers` (sorted pictures plus the picture a legacy `background.image` names, `themes::legacy_wallpaper`), `AssetOp::AddWallpaper` / `RemoveWallpaper`, `draft::queue_remove_wallpaper`. The writer carries `wallpapers/` and copies a legacy desktop picture into it; Import keeps only pictures in it. The Theme Editor Pictures tab shows a WALLPAPERS list instead of DESKTOP BACKGROUND.
+- Settings window: "From theme..." next to "Browse..." in BACKGROUND (`BackgroundSection::connect_theme_pictures`, a thumbnail chooser of the selected theme's wallpapers). The Lister tab keeps only BEHAVIOUR (PRESET, COLOURS and APPEARANCE moved to the Theme Editor); "Save theme..." is removed (Duplicate / Save as copy in the editor cover it); the picker is headed THEME and the light / dark selector LIGHT / DARK; "Edit theme..." is now "Edit themes...".
+- Theme Editor: the Colours tab no longer offers light / dark; the default theme (`breeze-dark`) is read only (`writer::is_read_only`, `write_theme` refuses it, the editor says to duplicate it).
+- Migration: `Settings.look_version` (`CURRENT_LOOK_VERSION` = 1, missing reads 0). On start `opusdm-settings` runs `migrate::migrate_look`: when the look in an older `settings.json` differs from the active theme it is saved as a new theme "My Theme" (`my-theme`, `my-theme-2`, ...; pictures that no longer exist are dropped) carrying the active theme's icons, fonts, sounds and wallpapers, and selected; the result is persisted through `apply_full` and reported in the note line.
+- Docs: `OpusDM-Features-Guide.md` section 19 and `FEATURES.md` (F-35) updated.
+
 ## 2026-10-01
 
 - Docs: new `OPTIMIZE.md`, a prioritised list of 19 optimisation and quality items (2 critical, 6 high, 6 medium, 5 low) found in a code review.

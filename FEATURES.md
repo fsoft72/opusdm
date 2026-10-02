@@ -476,6 +476,13 @@ distribution.
 Acceptance: export current settings as a theme zip, wipe config, import,
 colours+background restored.
 
+**Update 2026-10-02**: the theme is now the only source of the look (colours,
+appearance, fonts, Lister / requester pictures, icons, sounds, bundled
+wallpapers), edited only in the Theme Editor. The desktop background, light /
+dark, icon grid and behaviour are user preferences in the Settings window; a
+theme can bundle wallpapers in `wallpapers/`, offered by "From theme...". See
+`docs/superpowers/specs/2026-10-02-theme-single-source-design.md`.
+
 ### F-36 Sound Events
 **Original** (`Environment - Sound Events`): assign a sound file + volume to
 each script event (F-05), with test button and exclusive startup/shutdown

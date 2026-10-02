@@ -379,11 +379,21 @@ impl Behavior {
     }
 }
 
+/// The [`Settings::look_version`] written by this build. Version 1: the
+/// look (colours, appearance except light / dark, fonts, surfaces) comes only
+/// from the active theme; older files may hold values edited by hand in the
+/// Settings window, which `opusdm-settings` migrates into a theme once.
+pub const CURRENT_LOOK_VERSION: u32 = 1;
+
 /// Every user-configurable setting the hub owns, persists to
 /// settings.json, and distributes to every Lister. This one struct is the
 /// wire format (`Welcome`/`SettingsUpdate`), the on-disk JSON shape, and the
 /// hub's in-memory state - one place to extend when a new setting is added,
 /// instead of a new IPC field plus a new HubCmd variant each time.
+///
+/// The look fields (`theme.colors`, `appearance` except `theme_mode`,
+/// `fonts`, `surfaces`) are a cache of the active theme, written only by
+/// resolving that theme; everything else is a user preference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
@@ -394,6 +404,9 @@ pub struct Settings {
     pub fonts: crate::look::Fonts,
     /// Background pictures for the Lister file list and for requesters.
     pub surfaces: crate::look::Surfaces,
+    /// Which look model wrote this file: 0 (missing) for files older than
+    /// [`CURRENT_LOOK_VERSION`].
+    pub look_version: u32,
 }
 
 /// Reply to `Register`, sent once as its own frame before the connection
@@ -843,6 +856,7 @@ mod tests {
                 },
                 requester: crate::look::SurfaceImage::default(),
             },
+            look_version: CURRENT_LOOK_VERSION,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);

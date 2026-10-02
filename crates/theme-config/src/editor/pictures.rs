@@ -1,13 +1,16 @@
-//! Pictures tab: the desktop background and the Lister / requester pictures.
+//! Pictures tab: the wallpapers the theme bundles (the user picks one in the
+//! Settings window) and the Lister / requester pictures.
 
+use super::asset_list::AssetList;
 use super::optional::OptionalSection;
-use crate::writer::ThemeDraft;
+use crate::draft::queue_remove_wallpaper;
+use crate::writer::{AssetOp, ThemeDraft};
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_desktop_config::ui::BackgroundSection;
-use opusdm_ipc::desktop::{Background, ImageFit, BACKGROUND_IMAGE_EXTS};
+use opusdm_ipc::desktop::{ImageFit, BACKGROUND_IMAGE_EXTS};
 use opusdm_ipc::look::SurfaceImage;
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -101,13 +104,11 @@ impl SurfacePicker {
 }
 
 /// The values of the tab as written into the draft.
-type Values = (Option<Background>, Option<SurfaceImage>, Option<SurfaceImage>);
+type Values = (Option<SurfaceImage>, Option<SurfaceImage>);
 
 /// The Pictures tab.
 pub struct PicturesTab {
     pub root: gtk::ScrolledWindow,
-    desktop: Rc<BackgroundSection>,
-    desktop_opt: OptionalSection,
     lister: SurfacePicker,
     lister_opt: OptionalSection,
     requester: SurfacePicker,
@@ -116,10 +117,22 @@ pub struct PicturesTab {
 }
 
 impl PicturesTab {
-    /// Build the tab seeded from `draft`.
-    pub fn new(window: &gtk::ApplicationWindow, draft: &ThemeDraft) -> Self {
-        let desktop = Rc::new(BackgroundSection::new(window, &draft.background.clone().unwrap_or_default()));
-        let desktop_opt = OptionalSection::new("DESKTOP BACKGROUND", &desktop.root, draft.background.is_some());
+    /// Build the tab for theme `slug` seeded from `draft`. Added or removed
+    /// wallpapers are queued in `ops`.
+    pub fn new(window: &gtk::ApplicationWindow, slug: &str, draft: &ThemeDraft, ops: &Rc<RefCell<Vec<AssetOp>>>) -> Self {
+        let wallpaper_names = opusdm_ipc::themes::theme_wallpapers(slug)
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        let wallpapers = AssetList::new(
+            window,
+            "WALLPAPERS",
+            wallpaper_names,
+            &BACKGROUND_IMAGE_EXTS,
+            ops.clone(),
+            AssetOp::AddWallpaper,
+            queue_remove_wallpaper,
+        );
         let lister = SurfacePicker::new(window, &draft.lister.clone().unwrap_or_default());
         let lister_opt = OptionalSection::new("LISTER FILE LIST PICTURE", &lister.root, draft.lister.is_some());
         let requester = SurfacePicker::new(window, &draft.requester.clone().unwrap_or_default());
@@ -130,13 +143,13 @@ impl PicturesTab {
         page.set_margin_bottom(12);
         page.set_margin_start(12);
         page.set_margin_end(12);
-        for section in [&desktop_opt.root, &lister_opt.root, &requester_opt.root] {
+        for section in [&wallpapers.root, &lister_opt.root, &requester_opt.root] {
             page.append(section);
             page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         }
         let root = gtk::ScrolledWindow::builder().child(&page).build();
 
-        let mut tab = Self { root, desktop, desktop_opt, lister, lister_opt, requester, requester_opt, initial: (None, None, None) };
+        let mut tab = Self { root, lister, lister_opt, requester, requester_opt, initial: (None, None) };
         tab.initial = tab.read();
         tab
     }
@@ -144,7 +157,6 @@ impl PicturesTab {
     /// The values of the sections that are set.
     fn read(&self) -> Values {
         (
-            self.desktop_opt.is_set().then(|| self.desktop.read()),
             self.lister_opt.is_set().then(|| self.lister.read()),
             self.requester_opt.is_set().then(|| self.requester.read()),
         )
@@ -154,13 +166,10 @@ impl PicturesTab {
     pub fn collect_into(&self, draft: &mut ThemeDraft) {
         let now = self.read();
         if now.0 != self.initial.0 {
-            draft.background = now.0;
+            draft.lister = now.0;
         }
         if now.1 != self.initial.1 {
-            draft.lister = now.1;
-        }
-        if now.2 != self.initial.2 {
-            draft.requester = now.2;
+            draft.requester = now.1;
         }
     }
 }

@@ -15,8 +15,8 @@ mod pictures;
 mod sounds;
 
 use crate::draft;
-use crate::model::{apply_full, apply_icon_set, load_settings, ApplyOutcome};
-use crate::writer::{write_theme, AssetOp, ThemeDraft};
+use crate::model::{apply_full, load_settings, resolve_selected, ApplyOutcome};
+use crate::writer::{is_read_only, write_theme, AssetOp, ThemeDraft};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
@@ -45,7 +45,7 @@ impl Tabs {
         notebook.append_page(&colours.root, Some(&gtk::Label::new(Some("Colours"))));
         let fonts = fonts::FontsTab::new(window, slug, draft, ops);
         notebook.append_page(&fonts.root, Some(&gtk::Label::new(Some("Fonts"))));
-        let pictures = pictures::PicturesTab::new(window, draft);
+        let pictures = pictures::PicturesTab::new(window, slug, draft, ops);
         notebook.append_page(&pictures.root, Some(&gtk::Label::new(Some("Pictures"))));
         let icons = icons::IconsTab::new(window, slug, ops);
         notebook.append_page(&icons.root, Some(&gtk::Label::new(Some("Icons"))));
@@ -311,6 +311,8 @@ impl Editor {
         }
         self.right.append(&tabs.notebook);
         *self.current.borrow_mut() = Some(Current { slug: slug.to_string(), saved: draft, ops, tabs });
+        let note = if is_read_only(slug) { "The default theme cannot be changed: use Duplicate or Save as copy." } else { "" };
+        self.status.set_text(note);
         true
     }
 
@@ -490,13 +492,12 @@ impl Editor {
     }
 }
 
-/// Apply theme `slug` over the user's current settings and desktop, the same
-/// way the Settings window's Apply does. Returns the status message.
+/// Make theme `slug` the active one, keeping the user's preferences, the
+/// same way the Settings window's Apply does. Returns the status message.
 fn apply_theme(slug: &str) -> String {
-    let current = load_settings();
+    let settings = resolve_selected(&IconSetId::Custom(slug.to_string()), &load_settings());
     let desktop = opusdm_desktop_config::model::load();
-    let result = apply_icon_set(&IconSetId::Custom(slug.to_string()), &current, &desktop);
-    match apply_full(&result.settings, &result.desktop) {
+    match apply_full(&settings, &desktop) {
         ApplyOutcome::SentToHub => "Saved and applied to the running desktop.".to_string(),
         ApplyOutcome::WroteFile => "Saved. No hub running: effective on next login.".to_string(),
         ApplyOutcome::Failed(e) => format!("Saved, but could not apply: {e}"),

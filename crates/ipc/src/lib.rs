@@ -64,6 +64,6 @@ pub use buttonbank::{BankAction, BankView, Banks, Btn, ButtonBank, MouseButton, 
 pub use proto::{
     Appearance, Behavior, Secret, CacheEntry, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
     Settings, ThemeMode, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
-    CACHE_SIZE_RANGE, DEFAULT_CACHE_SIZE, DEFAULT_STATUS_FORMAT,
+    CACHE_SIZE_RANGE, CURRENT_LOOK_VERSION, DEFAULT_CACHE_SIZE, DEFAULT_STATUS_FORMAT,
 };
 pub use theme::{IconSetId, Theme};

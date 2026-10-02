@@ -286,6 +286,7 @@ mod tests {
                 surfaces.lister.image_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));
                 surfaces
             },
+            look_version: opusdm_ipc::CURRENT_LOOK_VERSION,
         };
         provider.load_from_data(&generate_css(&settings));
         assert!(errors.borrow().is_empty(), "dark: {:?}", errors.borrow());

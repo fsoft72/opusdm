@@ -4,12 +4,13 @@
 //! assets came from cannot lose them. Used by "Save theme" and the Theme
 //! Editor.
 
-use opusdm_ipc::desktop::{Background, BackgroundMode};
+use opusdm_ipc::desktop::BACKGROUND_IMAGE_EXTS;
 use opusdm_ipc::look::{Fonts, SurfaceImage, ThemeSurface, ThemeSurfaces};
+use opusdm_ipc::theme::DEFAULT_THEME_SLUG;
 use opusdm_ipc::themes::{
-    is_plain_file_name, theme_dir, themes_dir, valid_slug, CustomThemeData, ThemeBackground, ThemeDesktopMetrics, ThemeManifest,
+    is_plain_file_name, legacy_wallpaper, theme_dir, themes_dir, valid_slug, CustomThemeData, ThemeManifest, WALLPAPERS_DIR,
 };
-use opusdm_ipc::{Appearance, Behavior, ColorSettings};
+use opusdm_ipc::{Appearance, ColorSettings};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -30,8 +31,8 @@ pub const FONT_EXTS: [&str; 2] = ["ttf", "otf"];
 pub const AUDIO_EXTS: [&str; 6] = ["wav", "ogg", "oga", "mp3", "flac", "opus"];
 
 /// A theme as the editor and Save see it. `None` means the theme does not set
-/// that part, so applying it leaves the user's own value. Pictures are
-/// absolute paths; the writer copies them into the theme.
+/// that part, so applying it gives the default value. Pictures are absolute
+/// paths; the writer copies them into the theme.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ThemeDraft {
     pub label: String,
@@ -39,9 +40,6 @@ pub struct ThemeDraft {
     pub version: Option<String>,
     pub colors: Option<ColorSettings>,
     pub appearance: Option<Appearance>,
-    pub behavior: Option<Behavior>,
-    pub desktop: Option<ThemeDesktopMetrics>,
-    pub background: Option<Background>,
     pub fonts: Option<Fonts>,
     pub lister: Option<SurfaceImage>,
     pub requester: Option<SurfaceImage>,
@@ -55,6 +53,8 @@ pub enum AssetOp {
     RemoveFont(String),
     AddSound(PathBuf),
     RemoveSound(String),
+    AddWallpaper(PathBuf),
+    RemoveWallpaper(String),
     /// Overwrite `icons/<name>.png` with `src`.
     ReplaceIcon { name: String, src: PathBuf },
 }
@@ -103,13 +103,14 @@ pub fn validate_draft(draft: &ThemeDraft, ops: &[AssetOp]) -> Result<(), BuildEr
         let (src, exts): (Option<&PathBuf>, &[&str]) = match op {
             AssetOp::AddFont(p) => (Some(p), &FONT_EXTS),
             AssetOp::AddSound(p) => (Some(p), &AUDIO_EXTS),
+            AssetOp::AddWallpaper(p) => (Some(p), &BACKGROUND_IMAGE_EXTS),
             AssetOp::ReplaceIcon { name, src } => {
                 if !ICON_NAMES.contains(&name.as_str()) {
                     return Err(BuildError::Invalid(format!("{name:?} is not an icon name")));
                 }
                 (Some(src), &["png"])
             }
-            AssetOp::RemoveFont(n) | AssetOp::RemoveSound(n) => {
+            AssetOp::RemoveFont(n) | AssetOp::RemoveSound(n) | AssetOp::RemoveWallpaper(n) => {
                 if !is_plain_file_name(n) {
                     return Err(BuildError::Invalid(format!("{n:?} is not a file name")));
                 }
@@ -127,13 +128,23 @@ pub fn validate_draft(draft: &ThemeDraft, ops: &[AssetOp]) -> Result<(), BuildEr
     Ok(())
 }
 
+/// Whether theme `slug` must not be changed: the default theme, which ships
+/// with OpusDM and is the fallback for every other one.
+pub fn is_read_only(slug: &str) -> bool {
+    slug == DEFAULT_THEME_SLUG
+}
+
 /// Write `draft` as theme `slug`, replacing any theme with that slug.
-/// `source_slug` names an installed theme whose `icons/`, `fonts/`, `sounds/`
-/// and `preview.png` are carried over before `ops` are applied. Returns the
-/// installed folder.
+/// `source_slug` names an installed theme whose `icons/`, `fonts/`, `sounds/`,
+/// `wallpapers/` (plus a legacy desktop picture) and `preview.png` are carried
+/// over before `ops` are applied. The default theme is refused (see
+/// [`is_read_only`]). Returns the installed folder.
 pub fn write_theme(slug: &str, draft: &ThemeDraft, source_slug: Option<&str>, ops: &[AssetOp]) -> Result<PathBuf, BuildError> {
     if !valid_slug(slug) {
         return Err(BuildError::InvalidName(slug.to_string()));
+    }
+    if is_read_only(slug) {
+        return Err(BuildError::Invalid("the default theme cannot be changed: duplicate it first".to_string()));
     }
     if let Some(source) = source_slug {
         if !valid_slug(source) {
@@ -195,17 +206,16 @@ fn stage(slug: &str, draft: &ThemeDraft, source_slug: Option<&str>, ops: &[Asset
     let data = CustomThemeData {
         colors: draft.colors.clone(),
         appearance: draft.appearance.clone(),
-        behavior: draft.behavior.clone(),
-        desktop: draft.desktop.clone(),
-        background: draft.background.as_ref().map(|b| theme_background(b, &backgrounds)).transpose()?,
+        background: None,
         fonts: draft.fonts.clone(),
         surfaces: theme_surfaces(draft, &backgrounds)?,
     };
     if let Some(source) = source_slug {
-        for part in ["icons", "fonts", "sounds"] {
+        for part in ["icons", "fonts", "sounds", WALLPAPERS_DIR] {
             copy_dir_if_exists(&theme_dir(source).join(part), &dir.join(part))?;
         }
         copy_file_if_regular(&theme_dir(source).join(PREVIEW_FILE), &dir.join(PREVIEW_FILE))?;
+        carry_legacy_wallpaper(source, &dir.join(WALLPAPERS_DIR))?;
     }
     for op in ops {
         apply_op(op, dir)?;
@@ -226,23 +236,16 @@ fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), BuildEr
     std::fs::write(path, text + "\n").map_err(io_err(path))
 }
 
-/// The desktop background as a theme section. A picture is only carried when
-/// the mode uses it: the path is kept in other modes so switching back is
-/// lossless, but it may be stale.
-fn theme_background(bg: &Background, backgrounds: &Path) -> Result<ThemeBackground, BuildError> {
-    let image = match (bg.mode, &bg.image_path) {
-        (BackgroundMode::Image, Some(p)) => Some(copy_picture(p, backgrounds, "desktop")?),
-        _ => None,
-    };
-    Ok(ThemeBackground {
-        mode: Some(bg.mode),
-        solid: Some(bg.solid.clone()),
-        gradient_start: Some(bg.gradient_start.clone()),
-        gradient_end: Some(bg.gradient_end.clone()),
-        gradient_angle: Some(bg.gradient_angle),
-        image,
-        image_fit: Some(bg.image_fit),
-    })
+/// Copy the desktop picture a legacy `theme.json` of theme `source` names
+/// into `wallpapers` (the staged theme's folder), unless a wallpaper with that
+/// name is already there, so saving an old theme keeps its wallpaper.
+fn carry_legacy_wallpaper(source: &str, wallpapers: &Path) -> Result<(), BuildError> {
+    let Some(src) = legacy_wallpaper(source) else { return Ok(()) };
+    let name = file_name(&src)?;
+    if wallpapers.join(&name).exists() {
+        return Ok(());
+    }
+    copy_into(&src, wallpapers, &name)
 }
 
 /// The `surfaces` section, or `None` when neither surface is set.
@@ -283,9 +286,11 @@ fn apply_op(op: &AssetOp, dir: &Path) -> Result<(), BuildError> {
     match op {
         AssetOp::AddFont(src) => copy_into(src, &dir.join("fonts"), &file_name(src)?),
         AssetOp::AddSound(src) => copy_into(src, &dir.join("sounds"), &file_name(src)?),
+        AssetOp::AddWallpaper(src) => copy_into(src, &dir.join(WALLPAPERS_DIR), &file_name(src)?),
         AssetOp::ReplaceIcon { name, src } => copy_into(src, &dir.join("icons"), &format!("{name}.png")),
         AssetOp::RemoveFont(name) => remove_if_exists(&dir.join("fonts").join(name)),
         AssetOp::RemoveSound(name) => remove_if_exists(&dir.join("sounds").join(name)),
+        AssetOp::RemoveWallpaper(name) => remove_if_exists(&dir.join(WALLPAPERS_DIR).join(name)),
     }
 }
 
@@ -339,7 +344,7 @@ fn copy_dir_if_exists(src: &Path, dst: &Path) -> Result<(), BuildError> {
 mod tests {
     use super::*;
     use crate::test_support::{install_source, picture, scratch_config, ENV_LOCK};
-    use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
+    use opusdm_ipc::desktop::ImageFit;
     use opusdm_ipc::themes::{load_theme_data, theme_dir, themes_dir};
 
     fn draft(label: &str) -> ThemeDraft {
@@ -368,24 +373,50 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let td = scratch_config();
         let mut d = draft("Pics");
-        d.background = Some(Background { mode: BackgroundMode::Image, image_path: Some(picture(td.path(), "wall.jpg")), image_fit: ImageFit::Tile, ..Background::default() });
         d.lister = Some(SurfaceImage { image_path: Some(picture(td.path(), "l.png")), fit: ImageFit::Center });
         let dir = write_theme("pics", &d, None, &[]).unwrap();
         let data = load_theme_data("pics");
-        assert_eq!(data.background.unwrap().image.as_deref(), Some("desktop.jpg"));
-        assert_eq!(std::fs::read(dir.join("backgrounds/desktop.jpg")).unwrap(), b"wall.jpg");
+        assert_eq!(std::fs::read(dir.join("backgrounds/lister.png")).unwrap(), b"l.png");
         let lister = data.surfaces.unwrap().lister.unwrap();
         assert_eq!((lister.image.as_deref(), lister.fit), (Some("lister.png"), Some(ImageFit::Center)));
     }
 
     #[test]
-    fn a_desktop_picture_left_over_from_another_mode_is_not_copied() {
+    fn wallpapers_are_carried_and_edited_by_ops() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let td = scratch_config();
+        install_source("src");
+        let walls = theme_dir("src").join(WALLPAPERS_DIR);
+        std::fs::create_dir_all(&walls).unwrap();
+        std::fs::write(walls.join("old.png"), b"old").unwrap();
+        std::fs::write(walls.join("keep.jpg"), b"keep").unwrap();
+        let ops = [AssetOp::RemoveWallpaper("old.png".into()), AssetOp::AddWallpaper(picture(td.path(), "new.webp"))];
+        let dir = write_theme("out", &draft("Out"), Some("src"), &ops).unwrap();
+        assert!(!dir.join("wallpapers/old.png").exists());
+        assert!(dir.join("wallpapers/keep.jpg").is_file() && dir.join("wallpapers/new.webp").is_file());
+    }
+
+    #[test]
+    fn a_legacy_desktop_picture_becomes_a_wallpaper_and_the_section_is_dropped() {
         let _g = ENV_LOCK.lock().unwrap();
         let _td = scratch_config();
-        let mut d = draft("T");
-        d.background = Some(Background { mode: BackgroundMode::Solid, image_path: Some("/no/such/old.png".into()), ..Background::default() });
-        write_theme("t", &d, None, &[]).unwrap();
-        assert_eq!(load_theme_data("t").background.unwrap().image, None);
+        install_source("old");
+        let dir = theme_dir("old");
+        std::fs::create_dir_all(dir.join("backgrounds")).unwrap();
+        std::fs::write(dir.join("backgrounds/desktop.jpg"), b"wall").unwrap();
+        std::fs::write(dir.join("theme.json"), r#"{"background":{"mode":"image","image":"desktop.jpg"}}"#).unwrap();
+        let out = write_theme("old", &draft("Old"), Some("old"), &[]).unwrap();
+        assert_eq!(std::fs::read(out.join("wallpapers/desktop.jpg")).unwrap(), b"wall");
+        assert!(load_theme_data("old").background.is_none());
+    }
+
+    #[test]
+    fn the_default_theme_is_read_only() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _td = scratch_config();
+        assert!(is_read_only(DEFAULT_THEME_SLUG) && !is_read_only("mine"));
+        let r = write_theme(DEFAULT_THEME_SLUG, &draft("Breeze"), None, &[]);
+        assert!(matches!(r, Err(BuildError::Invalid(_))));
     }
 
     #[test]
@@ -519,6 +550,8 @@ mod tests {
             AssetOp::AddSound(picture(td.path(), "x.exe")),
             AssetOp::AddFont("/no/such/x.ttf".into()),
             AssetOp::RemoveSound("../x.wav".into()),
+            AssetOp::AddWallpaper(picture(td.path(), "w.svg")),
+            AssetOp::RemoveWallpaper("a/b.png".into()),
             AssetOp::ReplaceIcon { name: "nope".into(), src: picture(td.path(), "a.png") },
             AssetOp::ReplaceIcon { name: "dir".into(), src: picture(td.path(), "a.jpg") },
         ];

@@ -5,7 +5,7 @@
 
 use crate::desktop::{BackgroundMode, ImageFit};
 use crate::look::{Fonts, ThemeSurfaces};
-use crate::proto::{Appearance, Behavior, ColorSettings};
+use crate::proto::{Appearance, ColorSettings};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -60,6 +60,9 @@ pub fn ensure_default_theme() {
         }
     }
 }
+
+/// Folder inside a theme that holds the wallpaper pictures it bundles.
+pub const WALLPAPERS_DIR: &str = "wallpapers";
 
 /// A background image's path inside a theme's `backgrounds/` folder.
 pub fn background_image_path(slug: &str, filename: &str) -> PathBuf {
@@ -136,20 +139,10 @@ pub fn scan_themes() -> Vec<CustomThemeSummary> {
     found
 }
 
-/// `theme.json`'s `desktop` section: a subset of `DesktopSettings`,
-/// deliberately excluding `desktop_dir` (an environment fact, not a look).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ThemeDesktopMetrics {
-    pub icon_size: Option<i32>,
-    pub grid_spacing: Option<i32>,
-    pub grid_gap: Option<i32>,
-}
-
-/// `theme.json`'s `background` section: mirrors
-/// [`crate::desktop::Background`] but `image` is a filename relative to the
-/// theme's `backgrounds/` folder, resolved to an absolute path only when
-/// applying the theme.
+/// `theme.json`'s legacy `background` section, written by themes made before
+/// the wallpaper became a user preference. Only read: its `image` (a file name
+/// in the theme's `backgrounds/` folder) is offered as one of the theme's
+/// wallpapers by [`theme_wallpapers`]; the other fields are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeBackground {
@@ -163,14 +156,17 @@ pub struct ThemeBackground {
 }
 
 /// `theme.json`'s full shape. Every field optional - a theme can supply
-/// only icons and nothing else.
+/// only icons and nothing else. A theme owns the look only: the `behavior`
+/// and `desktop` sections older themes carry are ignored when parsing, and
+/// `appearance.theme_mode` is ignored when the theme is applied (light / dark
+/// is a user preference).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CustomThemeData {
     pub colors: Option<ColorSettings>,
     pub appearance: Option<Appearance>,
-    pub behavior: Option<Behavior>,
-    pub desktop: Option<ThemeDesktopMetrics>,
+    /// Legacy, read only: never written by OpusDM any more.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<ThemeBackground>,
     pub fonts: Option<Fonts>,
     pub surfaces: Option<ThemeSurfaces>,
@@ -192,6 +188,41 @@ pub fn load_theme_data(slug: &str) -> CustomThemeData {
         .ok()
         .and_then(|c| serde_json::from_str(&c).ok())
         .unwrap_or_default()
+}
+
+/// The wallpaper pictures theme `slug` bundles: every picture file in its
+/// `wallpapers/` folder, sorted by name, then the picture a legacy
+/// `theme.json` `background.image` names in `backgrounds/` when it exists.
+/// Links are skipped. An unknown theme yields an empty list.
+pub fn theme_wallpapers(slug: &str) -> Vec<PathBuf> {
+    if !valid_slug(slug) {
+        return Vec::new();
+    }
+    let mut found: Vec<PathBuf> = std::fs::read_dir(theme_dir(slug).join(WALLPAPERS_DIR))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .map(|e| e.path())
+                .filter(|p| crate::desktop::is_background_image(p))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if let Some(legacy) = legacy_wallpaper(slug) {
+        found.push(legacy);
+    }
+    found
+}
+
+/// The picture a legacy `theme.json` `background.image` names inside theme
+/// `slug`'s `backgrounds/` folder, when it is a plain file name and the file
+/// exists.
+pub fn legacy_wallpaper(slug: &str) -> Option<PathBuf> {
+    let background = load_theme_data(slug).background?;
+    let name = background.image.filter(|n| is_plain_file_name(n))?;
+    let path = background_image_path(slug, &name);
+    path.is_file().then_some(path)
 }
 
 #[cfg(test)]
@@ -296,11 +327,10 @@ mod tests {
             td.path(),
             "full",
             r#"{"name":"full","label":"Full"}"#,
-            Some(r##"{"colors":{"file_fg":"#abcdef"},"desktop":{"icon_size":80},"background":{"mode":"image","image":"bg.jpg"}}"##),
+            Some(r##"{"colors":{"file_fg":"#abcdef"},"behavior":{"auto_refresh":true},"desktop":{"icon_size":80},"background":{"mode":"image","image":"bg.jpg"}}"##),
         );
         let data = load_theme_data("full");
         assert_eq!(data.colors.unwrap().file_fg, "#abcdef");
-        assert_eq!(data.desktop.unwrap().icon_size, Some(80));
         assert_eq!(data.background.unwrap().image.as_deref(), Some("bg.jpg"));
     }
 
@@ -312,8 +342,6 @@ mod tests {
         let data = load_theme_data("icons-only");
         assert!(data.colors.is_none());
         assert!(data.appearance.is_none());
-        assert!(data.behavior.is_none());
-        assert!(data.desktop.is_none());
         assert!(data.background.is_none());
     }
 
@@ -333,6 +361,42 @@ mod tests {
         for name in EXPECTED {
             assert!(theme_dir.join("icons").join(name).is_file(), "missing icons/{name}");
         }
+    }
+
+    #[test]
+    fn theme_wallpapers_lists_sorted_pictures_then_the_legacy_one() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = with_config_home();
+        write_theme(td.path(), "walls", r#"{"name":"walls","label":"Walls"}"#, Some(r#"{"background":{"image":"desktop.jpg"}}"#));
+        let dir = theme_dir("walls");
+        std::fs::create_dir_all(dir.join(WALLPAPERS_DIR)).unwrap();
+        std::fs::create_dir_all(dir.join("backgrounds")).unwrap();
+        for name in ["b.png", "a.JPG", "notes.txt"] {
+            std::fs::write(dir.join(WALLPAPERS_DIR).join(name), b"x").unwrap();
+        }
+        std::fs::write(dir.join("backgrounds").join("desktop.jpg"), b"x").unwrap();
+        let names: Vec<String> = theme_wallpapers("walls")
+            .iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["wallpapers/a.JPG", "wallpapers/b.png", "backgrounds/desktop.jpg"]);
+    }
+
+    #[test]
+    fn theme_wallpapers_ignores_a_missing_or_unsafe_legacy_picture() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = with_config_home();
+        write_theme(td.path(), "gone", r#"{"name":"gone","label":"Gone"}"#, Some(r#"{"background":{"image":"desktop.jpg"}}"#));
+        write_theme(td.path(), "evil", r#"{"name":"evil","label":"Evil"}"#, Some(r#"{"background":{"image":"../gone/theme.json"}}"#));
+        assert!(theme_wallpapers("gone").is_empty());
+        assert!(theme_wallpapers("evil").is_empty());
+        assert!(theme_wallpapers("Not A Slug").is_empty());
+    }
+
+    #[test]
+    fn the_legacy_background_section_is_not_written_back_when_absent() {
+        let json = serde_json::to_string(&CustomThemeData::default()).unwrap();
+        assert!(!json.contains("background"));
     }
 
     #[test]

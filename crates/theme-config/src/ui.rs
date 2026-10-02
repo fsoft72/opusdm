@@ -1,13 +1,14 @@
-//! The ICON SET, COLOURS, APPEARANCE and BEHAVIOUR sections. Background
-//! editing reuses `opusdm_desktop_config::ui::BackgroundSection` directly
-//! from `main.rs`.
+//! The ICON SET, LIGHT / DARK and BEHAVIOUR sections of the Settings window,
+//! and the PRESET, COLOURS and APPEARANCE sections the Theme Editor's Colours
+//! tab uses. Background editing reuses
+//! `opusdm_desktop_config::ui::BackgroundSection` directly from `main.rs`.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_desktop_config::ui::ColorRow;
 use opusdm_ipc::{Appearance, Behavior, ColorSettings, IconSetId};
 
-/// The ICON SET section.
+/// The THEME section: the picker of the installed themes.
 pub struct IconSetSection {
     pub root: gtk::Box,
     dropdown: gtk::DropDown,
@@ -19,7 +20,7 @@ pub struct IconSetSection {
 impl IconSetSection {
     pub fn new(current: &IconSetId) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("ICON SET"));
+        let heading = gtk::Label::new(Some("THEME"));
         heading.set_xalign(0.0);
         heading.add_css_class("heading");
         root.append(&heading);
@@ -307,8 +308,8 @@ impl AppearanceSection {
         Self { root, type_indicators, monospace_list, theme_window }
     }
 
-    /// `theme_mode` comes from the separate `ThemeModeSection` (Desktop
-    /// tab), not from a checkbox here.
+    /// The appearance the checkboxes describe. `theme_mode` is supplied by the
+    /// caller: light / dark is a user preference, not edited here.
     pub fn read(&self, theme_mode: opusdm_ipc::ThemeMode) -> Appearance {
         Appearance {
             type_indicators: self.type_indicators.is_active(),
@@ -320,7 +321,7 @@ impl AppearanceSection {
 }
 
 /// The dark/light GTK theme preference drop-down, shown in the Desktop tab
-/// above the ICON SET section.
+/// above the THEME section.
 pub struct ThemeModeSection {
     pub root: gtk::Box,
     dropdown: gtk::DropDown,
@@ -329,7 +330,7 @@ pub struct ThemeModeSection {
 impl ThemeModeSection {
     pub fn new(initial: opusdm_ipc::ThemeMode) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("THEME"));
+        let heading = gtk::Label::new(Some("LIGHT / DARK"));
         heading.set_xalign(0.0);
         heading.add_css_class("heading");
         root.append(&heading);

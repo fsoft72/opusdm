@@ -1,10 +1,10 @@
-//! "Save theme": capture the current settings as an installed theme. A thin
-//! mapping from `Settings` to a [`ThemeDraft`]; the folder is written by
-//! `writer::write_theme`.
+//! Capture the look of the current settings as an installed theme (used by
+//! the one-time look migration). A thin mapping from `Settings` to a
+//! [`ThemeDraft`]; the folder is written by `writer::write_theme`.
 
 use crate::writer::{write_theme, BuildError, ThemeDraft};
-use opusdm_ipc::themes::{theme_dir, valid_slug, ThemeDesktopMetrics, ThemeManifest};
-use opusdm_ipc::{DesktopSettings, Settings};
+use opusdm_ipc::themes::{theme_dir, valid_slug, ThemeManifest};
+use opusdm_ipc::Settings;
 use std::path::PathBuf;
 
 /// Everything Save needs.
@@ -16,7 +16,6 @@ pub struct BuildRequest<'a> {
     /// Installed theme whose `icons/`, `fonts/` and `sounds/` are carried along.
     pub source_slug: &'a str,
     pub settings: &'a Settings,
-    pub desktop: &'a DesktopSettings,
 }
 
 /// Turn a display name into a theme slug: lower-case ASCII letters and
@@ -46,8 +45,9 @@ fn existing_credits(slug: &str) -> (Option<String>, Option<String>) {
     (manifest.author, manifest.version)
 }
 
-/// Install the current settings as theme `req.slug`, replacing any theme with
-/// that slug. Returns the installed folder.
+/// Install the look of the current settings (colours, appearance, fonts,
+/// Lister and requester pictures) as theme `req.slug`, replacing any theme
+/// with that slug. Returns the installed folder.
 pub fn save_theme(req: &BuildRequest) -> Result<PathBuf, BuildError> {
     let s = req.settings;
     let (author, version) = existing_credits(req.slug);
@@ -57,13 +57,6 @@ pub fn save_theme(req: &BuildRequest) -> Result<PathBuf, BuildError> {
         version,
         colors: Some(s.theme.colors.clone()),
         appearance: Some(s.appearance.clone()),
-        behavior: Some(s.behavior.clone()),
-        desktop: Some(ThemeDesktopMetrics {
-            icon_size: Some(req.desktop.icon_size),
-            grid_spacing: Some(req.desktop.grid_spacing),
-            grid_gap: Some(req.desktop.grid_gap),
-        }),
-        background: Some(s.theme.background.clone()),
         fonts: Some(s.fonts.clone()),
         lister: Some(s.surfaces.lister.clone()),
         requester: Some(s.surfaces.requester.clone()),
@@ -96,28 +89,28 @@ mod tests {
         settings.theme.colors.file_fg = "#abcdef".into();
         settings.theme.background.mode = BackgroundMode::Image;
         settings.theme.background.image_path = Some(picture(td.path(), "wall.jpg"));
-        settings.theme.background.image_fit = ImageFit::Tile;
         settings.surfaces.lister.image_path = Some(picture(td.path(), "l.png"));
         settings.fonts.list = FontSpec { family: "Iosevka".into(), size: 12 };
 
-        let dir = save_theme(&BuildRequest { label: "My Theme", slug: "my-theme", source_slug: "src", settings: &settings, desktop: &DesktopSettings::default() }).unwrap();
+        let dir = save_theme(&BuildRequest { label: "My Theme", slug: "my-theme", source_slug: "src", settings: &settings }).unwrap();
 
         assert_eq!(dir, theme_dir("my-theme"));
         let data = load_theme_data("my-theme");
         assert_eq!(data.colors.unwrap().file_fg, "#abcdef");
-        assert_eq!(data.background.unwrap().image.as_deref(), Some("desktop.jpg"));
+        assert!(data.background.is_none(), "the wallpaper is a preference, not part of the theme");
         assert_eq!(data.fonts.unwrap().list.family, "Iosevka");
-        assert!(data.desktop.is_some() && data.appearance.is_some() && data.behavior.is_some());
-        for rel in ["icons/dir.png", "fonts/f.ttf", "sounds/a.wav", "backgrounds/desktop.jpg", "backgrounds/lister.png"] {
+        assert!(data.appearance.is_some());
+        for rel in ["icons/dir.png", "fonts/f.ttf", "sounds/a.wav", "backgrounds/lister.png"] {
             assert!(dir.join(rel).is_file(), "{rel}");
         }
+        assert!(!dir.join("backgrounds/desktop.jpg").exists());
     }
 
     #[test]
     fn an_invalid_slug_is_rejected() {
         let _g = ENV_LOCK.lock().unwrap();
         let _td = scratch_config();
-        let r = save_theme(&BuildRequest { label: "T", slug: "Bad Slug", source_slug: "src", settings: &Settings::default(), desktop: &DesktopSettings::default() });
+        let r = save_theme(&BuildRequest { label: "T", slug: "Bad Slug", source_slug: "src", settings: &Settings::default() });
         assert!(matches!(r, Err(BuildError::InvalidName(_))));
     }
 
@@ -128,13 +121,13 @@ mod tests {
         let _td = scratch_config();
         install_source("src");
         std::fs::write(theme_dir("src").join("manifest.json"), br#"{"name":"src","label":"Src","author":"me","version":"3"}"#).unwrap();
-        let req = BuildRequest { label: "Src", slug: "src", source_slug: "src", settings: &Settings::default(), desktop: &DesktopSettings::default() };
+        let req = BuildRequest { label: "Src", slug: "src", source_slug: "src", settings: &Settings::default() };
         save_theme(&req).unwrap();
         let m: opusdm_ipc::themes::ThemeManifest = serde_json::from_str(&std::fs::read_to_string(theme_dir("src").join("manifest.json")).unwrap()).unwrap();
         assert_eq!((m.author.as_deref(), m.version.as_deref()), (Some("me"), Some("3")));
     }
 
-    /// Acceptance: a saved, exported, wiped and re-imported theme restores colours and pictures.
+    /// Acceptance: a saved, exported, wiped and re-imported theme restores its colours and pictures.
     #[test]
     fn save_export_wipe_import_apply_restores_colours_and_pictures() {
         let _g = ENV_LOCK.lock().unwrap();
@@ -142,21 +135,17 @@ mod tests {
         opusdm_ipc::themes::ensure_default_theme();
         let mut settings = Settings::default();
         settings.theme.colors.file_bg = "#102030".into();
-        settings.theme.background.mode = BackgroundMode::Image;
-        settings.theme.background.image_path = Some(picture(td.path(), "wall.png"));
         settings.surfaces.requester = SurfaceImage { image_path: Some(picture(td.path(), "req.png")), fit: ImageFit::Fit };
         settings.fonts.ui = FontSpec { family: "Cantarell".into(), size: 10 };
-        save_theme(&BuildRequest { label: "Round Trip", slug: "round-trip", source_slug: "breeze-dark", settings: &settings, desktop: &DesktopSettings::default() }).unwrap();
+        save_theme(&BuildRequest { label: "Round Trip", slug: "round-trip", source_slug: "breeze-dark", settings: &settings }).unwrap();
         let zip = td.path().join("round-trip.zip");
         crate::exporter::export_theme("round-trip", &zip).unwrap();
 
         std::fs::remove_dir_all(themes_dir()).unwrap();
         let slug = crate::importer::import_theme_archive(&zip).unwrap();
-        let merged = crate::apply::merge_custom_theme(&slug, &load_theme_data(&slug), &Settings::default(), &DesktopSettings::default());
+        let merged = crate::apply::resolve_look(&slug, &load_theme_data(&slug), &Settings::default());
 
         assert_eq!(merged.theme.colors.file_bg, "#102030");
-        assert_eq!(merged.theme.background.mode, BackgroundMode::Image);
-        assert_eq!(std::fs::read(merged.theme.background.image_path.unwrap()).unwrap(), b"wall.png");
         assert_eq!(std::fs::read(merged.surfaces.requester.image_path.unwrap()).unwrap(), b"req.png");
         assert_eq!(merged.surfaces.requester.fit, ImageFit::Fit);
         assert_eq!(merged.fonts.ui.family, "Cantarell");

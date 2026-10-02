@@ -167,8 +167,8 @@ fn extract_tar_bz2(archive_path: &Path, dest: &Path) -> Result<(), ImportError> 
 }
 
 /// Remove from the staged theme every file that has no business in its
-/// `fonts/` (only `.ttf` / `.otf`) or `backgrounds/` (only picture types)
-/// folder. Skipped files are logged; the import itself still succeeds.
+/// `fonts/` (only `.ttf` / `.otf`), `backgrounds/` or `wallpapers/` (only
+/// picture types) folder. Skipped files are logged; the import itself still succeeds.
 fn prune_theme_assets(root: &Path) {
     prune_dir(&root.join("fonts"), |p| {
         p.extension()
@@ -176,6 +176,7 @@ fn prune_theme_assets(root: &Path) {
             .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
     });
     prune_dir(&root.join("backgrounds"), opusdm_ipc::desktop::is_background_image);
+    prune_dir(&root.join(opusdm_ipc::themes::WALLPAPERS_DIR), opusdm_ipc::desktop::is_background_image);
 }
 
 /// Delete what is directly inside `dir` unless it is a regular file `keep`
@@ -430,7 +431,8 @@ mod tests {
         assert!(std::fs::symlink_metadata(theme_dir("linky").join("fonts/x.ttf")).is_err(), "no link may be installed");
     }
 
-    /// Pruning drops symlinks and subfolders from `fonts/` and `backgrounds/`.
+    /// Pruning drops symlinks and subfolders from `fonts/` and `backgrounds/`,
+    /// and anything but pictures from `wallpapers/`.
     #[test]
     fn prune_removes_symlinks_and_subfolders_from_fonts_and_backgrounds() {
         let td = tempfile::tempdir().unwrap();
@@ -443,7 +445,12 @@ mod tests {
         std::fs::write(&secret, b"s").unwrap();
         std::os::unix::fs::symlink(&secret, root.join("fonts/x.ttf")).unwrap();
         std::os::unix::fs::symlink(&secret, root.join("backgrounds/y.png")).unwrap();
+        std::fs::create_dir_all(root.join("wallpapers")).unwrap();
+        std::fs::write(root.join("wallpapers/w.jpg"), b"w").unwrap();
+        std::fs::write(root.join("wallpapers/run.sh"), b"x").unwrap();
         prune_theme_assets(root);
+        assert!(root.join("wallpapers/w.jpg").is_file());
+        assert!(!root.join("wallpapers/run.sh").exists());
         assert!(root.join("fonts/ok.ttf").is_file());
         assert!(std::fs::symlink_metadata(root.join("fonts/x.ttf")).is_err());
         assert!(std::fs::symlink_metadata(root.join("backgrounds/y.png")).is_err());

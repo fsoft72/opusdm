@@ -4,7 +4,6 @@
 
 use crate::builder::slugify;
 use crate::writer::{write_theme, AssetOp, BuildError, ThemeDraft};
-use opusdm_ipc::desktop::Background;
 use opusdm_ipc::look::{SurfaceImage, ThemeSurface};
 use opusdm_ipc::themes::{theme_dir, valid_slug, CustomThemeData, ThemeManifest};
 use std::path::{Path, PathBuf};
@@ -29,11 +28,6 @@ pub fn load_draft(slug: &str) -> Result<ThemeDraft, String> {
         Err(e) => return Err(format!("{}: {e}", theme_path.display())),
     };
 
-    let background = data.background.as_ref().map(|tb| {
-        let mut bg = Background::default();
-        crate::apply::merge_background(&mut bg, tb, slug);
-        bg
-    });
     let surface = |ts: Option<&ThemeSurface>| {
         ts.map(|t| {
             let mut s = SurfaceImage::default();
@@ -48,9 +42,6 @@ pub fn load_draft(slug: &str) -> Result<ThemeDraft, String> {
         version: manifest.version,
         colors: data.colors,
         appearance: data.appearance,
-        behavior: data.behavior,
-        desktop: data.desktop,
-        background,
         fonts: data.fonts,
         lister: surface(surfaces.lister.as_ref()),
         requester: surface(surfaces.requester.as_ref()),
@@ -139,6 +130,12 @@ pub fn queue_remove_sound(ops: &mut Vec<AssetOp>, name: &str, installed: bool) {
     queue_remove(ops, name, installed, is_add, AssetOp::RemoveSound);
 }
 
+/// Queue the removal of wallpaper `name`; same rules as `queue_remove_font`.
+pub fn queue_remove_wallpaper(ops: &mut Vec<AssetOp>, name: &str, installed: bool) {
+    let is_add = |op: &AssetOp, n: &str| matches!(op, AssetOp::AddWallpaper(p) if p.file_name().is_some_and(|f| f == n));
+    queue_remove(ops, name, installed, is_add, AssetOp::RemoveWallpaper);
+}
+
 /// Queue replacing icon `name` with `src`, superseding an earlier pending
 /// replacement of the same icon.
 pub fn queue_icon_replace(ops: &mut Vec<AssetOp>, name: &str, src: PathBuf) {
@@ -191,7 +188,7 @@ mod tests {
         let lister = back.lister.unwrap();
         assert!(lister.image_path.unwrap().ends_with("themes/rt/backgrounds/lister.png"));
         assert_eq!(lister.fit, ImageFit::Tile);
-        assert!(back.background.is_none() && back.requester.is_none() && back.appearance.is_none());
+        assert!(back.requester.is_none() && back.appearance.is_none());
     }
 
     #[test]

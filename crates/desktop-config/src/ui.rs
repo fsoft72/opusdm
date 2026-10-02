@@ -117,7 +117,12 @@ pub struct BackgroundSection {
     image_entry: gtk::Entry,
     image_fit: gtk::DropDown,
     image_warning: gtk::Label,
+    /// "From theme...": hidden until [`Self::connect_theme_pictures`].
+    from_theme: gtk::Button,
 }
+
+/// Thumbnail size, in pixels, of a picture in the "From theme" chooser.
+const THEME_PICTURE_THUMB: (i32, i32) = (160, 100);
 
 impl BackgroundSection {
     /// Build the section, seeded from `initial`. `window` is the parent for
@@ -167,6 +172,8 @@ impl BackgroundSection {
             image_entry.set_text(&p.to_string_lossy());
         }
         let browse = gtk::Button::with_label("Browse...");
+        let from_theme = gtk::Button::with_label("From theme...");
+        from_theme.set_visible(false);
         let image_fit = gtk::DropDown::from_strings(&["Fill", "Fit", "Center", "Tile"]);
         image_fit.set_selected(match initial.image_fit {
             ImageFit::Fill => 0,
@@ -183,6 +190,7 @@ impl BackgroundSection {
         let pick_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         pick_row.append(&image_entry);
         pick_row.append(&browse);
+        pick_row.append(&from_theme);
         image_page.append(&pick_row);
         let fit_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         fit_row.append(&gtk::Label::new(Some("Fit")));
@@ -259,9 +267,32 @@ impl BackgroundSection {
             image_entry,
             image_fit,
             image_warning,
+            from_theme,
         };
         section.select_mode(initial.mode);
         section
+    }
+
+    /// Show the "From theme..." button. `pictures` lists the pictures of the
+    /// theme currently selected (called each time the button is pressed);
+    /// choosing one switches to Image mode and uses it. `window` parents the
+    /// chooser.
+    pub fn connect_theme_pictures(&self, window: &gtk::ApplicationWindow, pictures: impl Fn() -> Vec<PathBuf> + 'static) {
+        self.from_theme.set_visible(true);
+        let window = window.clone();
+        let entry = self.image_entry.clone();
+        let warning = self.image_warning.clone();
+        let radio_image = self.radio_image.clone();
+        self.from_theme.connect_clicked(move |_| {
+            let entry = entry.clone();
+            let warning = warning.clone();
+            let radio_image = radio_image.clone();
+            choose_theme_picture(&window, pictures(), move |path| {
+                entry.set_text(&path.to_string_lossy());
+                warning.set_visible(!image_path_is_usable(Some(&path)));
+                radio_image.set_active(true);
+            });
+        });
     }
 
     fn select_mode(&self, mode: BackgroundMode) {
@@ -304,6 +335,63 @@ impl BackgroundSection {
             image_fit,
         }
     }
+}
+
+/// A modal chooser showing `pictures` as thumbnails; `on_chosen` gets the
+/// one the user clicks. An empty list shows a short note instead.
+fn choose_theme_picture(window: &gtk::ApplicationWindow, pictures: Vec<PathBuf>, on_chosen: impl Fn(PathBuf) + 'static) {
+    let dialog = gtk::Window::builder()
+        .title("Wallpapers of the Theme")
+        .transient_for(window)
+        .modal(true)
+        .default_width(560)
+        .default_height(420)
+        .build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    let close = gtk::Button::with_label("Close");
+    close.set_halign(gtk::Align::End);
+    {
+        let dialog = dialog.clone();
+        close.connect_clicked(move |_| dialog.close());
+    }
+    if pictures.is_empty() {
+        let note = gtk::Label::new(Some("This theme has no wallpapers."));
+        note.set_vexpand(true);
+        content.append(&note);
+        content.append(&close);
+        dialog.set_child(Some(&content));
+        dialog.present();
+        return;
+    }
+
+    let flow = gtk::FlowBox::new();
+    flow.set_selection_mode(gtk::SelectionMode::None);
+    flow.set_activate_on_single_click(true);
+    flow.set_valign(gtk::Align::Start);
+    for path in &pictures {
+        let thumb = gtk::Picture::for_filename(path);
+        thumb.set_size_request(THEME_PICTURE_THUMB.0, THEME_PICTURE_THUMB.1);
+        thumb.set_content_fit(gtk::ContentFit::Cover);
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        thumb.set_tooltip_text(Some(&name));
+        flow.append(&thumb);
+    }
+    {
+        let dialog = dialog.clone();
+        flow.connect_child_activated(move |_, child| {
+            let Some(path) = pictures.get(child.index() as usize) else { return };
+            on_chosen(path.clone());
+            dialog.close();
+        });
+    }
+    content.append(&gtk::ScrolledWindow::builder().child(&flow).vexpand(true).build());
+    content.append(&close);
+    dialog.set_child(Some(&content));
+    dialog.present();
 }
 
 const ICON_PRESETS: [(&str, i32); 3] = [("S", 48), ("M", 64), ("L", 96)];

@@ -1,5 +1,7 @@
-//! `opusdm-settings`: edit the OpusDM theme - icon set, desktop background,
-//! and Lister colours - and apply it live to the running desktop.
+//! `opusdm-settings`: pick the OpusDM theme and edit the user preferences
+//! (light / dark, wallpaper, icon grid, panel, dock, menu, Lister behaviour),
+//! and apply them live to the running desktop. The look itself (colours,
+//! fonts, pictures, icons) is edited only in the Theme Editor.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
@@ -17,6 +19,7 @@ mod draft;
 mod editor;
 mod exporter;
 mod importer;
+mod migrate;
 mod model;
 mod ui;
 mod writer;
@@ -62,13 +65,13 @@ fn main() -> gtk::glib::ExitCode {
 }
 
 fn build_window(app: &gtk::Application) {
-    let settings_data = model::load_settings();
+    let desktop_data = opusdm_desktop_config::model::load();
+    let (settings_data, migration_note) = migrated_settings(model::load_settings(), &desktop_data);
     let IconSetId::Custom(active_slug) = &settings_data.theme.icon_set;
     opusdm_ui::register_theme_fonts(active_slug);
     let look_css = opusdm_ui::ui_look_css(&settings_data);
     opusdm_ui::apply_theme_mode(settings_data.appearance.theme_mode);
     let theme = settings_data.theme.clone();
-    let desktop_data = opusdm_desktop_config::model::load();
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -119,18 +122,23 @@ fn build_window(app: &gtk::Application) {
     desktop_page.append(&icon_set.borrow().root);
 
     let theme_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let edit_btn = gtk::Button::with_label("Edit themes...");
     let import_btn = gtk::Button::with_label("Import theme...");
-    let save_btn = gtk::Button::with_label("Save theme...");
     let export_btn = gtk::Button::with_label("Export theme...");
-    theme_buttons.append(&import_btn);
-    theme_buttons.append(&save_btn);
-    theme_buttons.append(&export_btn);
-    let edit_btn = gtk::Button::with_label("Edit theme...");
     theme_buttons.append(&edit_btn);
+    theme_buttons.append(&import_btn);
+    theme_buttons.append(&export_btn);
     desktop_page.append(&theme_buttons);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let bg = Rc::new(BackgroundSection::new(&window, &theme.background));
+    {
+        let icon_set = icon_set.clone();
+        bg.connect_theme_pictures(&window, move || {
+            let IconSetId::Custom(slug) = icon_set.borrow().value();
+            opusdm_ipc::themes::theme_wallpapers(&slug)
+        });
+    }
     desktop_page.append(&bg.root);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -195,25 +203,13 @@ fn build_window(app: &gtk::Application) {
 
     notebook.append_page(&menu_page, Some(&gtk::Label::new(Some("Menu"))));
 
-    // --- Lister tab: preset picker + colours ---
+    // --- Lister tab: behaviour (the colours belong to the theme) ---
     let lister_page_outer = gtk::ScrolledWindow::new();
     let lister_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
     lister_page.set_margin_top(12);
     lister_page.set_margin_bottom(12);
     lister_page.set_margin_start(12);
     lister_page.set_margin_end(12);
-
-    let colors = Rc::new(ui::ColorsSection::new(&window, &theme.colors));
-    let preset = ui::PresetSection::new();
-    preset.connect_selected(colors.clone());
-    lister_page.append(&preset.root);
-    lister_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    lister_page.append(&colors.root);
-    lister_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    let appearance_section = Rc::new(ui::AppearanceSection::new(&settings_data.appearance));
-    lister_page.append(&appearance_section.root);
-    lister_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let behavior_section = Rc::new(ui::BehaviorSection::new(&settings_data.behavior));
     lister_page.append(&behavior_section.root);
@@ -228,6 +224,10 @@ fn build_window(app: &gtk::Application) {
     note.set_xalign(0.0);
     note.set_wrap(true);
     note.set_visible(false);
+    if let Some(text) = &migration_note {
+        note.set_text(text);
+        note.set_visible(true);
+    }
     outer.append(&note);
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -245,32 +245,22 @@ fn build_window(app: &gtk::Application) {
         let window = window.clone();
         cancel.connect_clicked(move |_| window.close());
     }
-    // Fonts and surfaces are not edited by this window, only carried.
-    let look = Rc::new(RefCell::new((settings_data.fonts.clone(), settings_data.surfaces.clone())));
-
-    // Reads every editable control back into settings, shared by Apply and Save theme.
+    // Reads the preferences back from the controls, shared by Apply. The look
+    // fields are left at their defaults: Apply resolves them from the theme.
     let read_ui: Rc<dyn Fn() -> (opusdm_ipc::Settings, opusdm_ipc::DesktopSettings)> = {
-        let colors = colors.clone();
         let bg = bg.clone();
         let grid = grid.clone();
         let folder = folder.clone();
         let panel = panel.clone();
         let dock_section = dock_section.clone();
-        let appearance_section = appearance_section.clone();
         let behavior_section = behavior_section.clone();
         let theme_mode_section = theme_mode_section.clone();
-        let look = look.clone();
         Rc::new(move || {
-            let settings = opusdm_ipc::Settings {
-                theme: opusdm_ipc::Theme {
-                    icon_set: opusdm_ipc::IconSetId::default(),
-                    colors: colors.read(),
-                    background: bg.read(),
-                },
-                appearance: appearance_section.read(theme_mode_section.value()),
+            let prefs = opusdm_ipc::Settings {
+                theme: opusdm_ipc::Theme { background: bg.read(), ..Default::default() },
+                appearance: opusdm_ipc::Appearance { theme_mode: theme_mode_section.value(), ..Default::default() },
                 behavior: behavior_section.read(),
-                fonts: look.borrow().0.clone(),
-                surfaces: look.borrow().1.clone(),
+                ..Default::default()
             };
             let desktop = opusdm_ipc::DesktopSettings {
                 icon_size: grid.icon_size(),
@@ -282,7 +272,7 @@ fn build_window(app: &gtk::Application) {
                 dock_icon_size: dock_section.icon_size(),
             }
             .sanitized();
-            (settings, desktop)
+            (prefs, desktop)
         })
     };
 
@@ -305,10 +295,9 @@ fn build_window(app: &gtk::Application) {
         let dock_apps_section = dock_apps_section.clone();
         let menu_section = menu_section.clone();
         let note = note.clone();
-        let look = look.clone();
         apply.connect_clicked(move |_| {
             let selected = icon_set.borrow().value();
-            let (ui_settings, ui_desktop) = read_ui();
+            let (prefs, desktop) = read_ui();
             if let Err(e) = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig {
                 apps: dock_apps_section.apps(),
             }) {
@@ -319,9 +308,8 @@ fn build_window(app: &gtk::Application) {
             }) {
                 opusdm_ipc::err_log!("theme-config", "cannot write menu.json: {e}");
             }
-            let result = model::apply_icon_set(&selected, &ui_settings, &ui_desktop);
-            *look.borrow_mut() = (result.settings.fonts.clone(), result.settings.surfaces.clone());
-            match model::apply_full(&result.settings, &result.desktop) {
+            let settings = model::resolve_selected(&selected, &prefs);
+            match model::apply_full(&settings, &desktop) {
                 model::ApplyOutcome::SentToHub => {
                     note.set_text("Applied to the running desktop.");
                     note.set_visible(true);
@@ -374,59 +362,6 @@ fn build_window(app: &gtk::Application) {
 
     {
         let window = window.clone();
-        let icon_set = icon_set.clone();
-        let read_ui = read_ui.clone();
-        let select_theme = select_theme.clone();
-        let note = note.clone();
-        save_btn.connect_clicked(move |_| {
-            let window2 = window.clone();
-            let icon_set = icon_set.clone();
-            let read_ui = read_ui.clone();
-            let select_theme = select_theme.clone();
-            let note = note.clone();
-            opusdm_ui::requester_entry(&window, "Save Theme", "", &[("Save", true), ("Cancel", false)], move |save, label| {
-                if !save {
-                    return;
-                }
-                let Some(slug) = builder::slugify(&label) else {
-                    note.set_text("Save failed: the name needs at least one letter or digit.");
-                    note.set_visible(true);
-                    return;
-                };
-                let do_save = {
-                    let icon_set = icon_set.clone();
-                    let read_ui = read_ui.clone();
-                    let select_theme = select_theme.clone();
-                    let note = note.clone();
-                    let slug = slug.clone();
-                    move || {
-                        let opusdm_ipc::IconSetId::Custom(source) = icon_set.borrow().value();
-                        let (settings, desktop) = read_ui();
-                        let req = builder::BuildRequest { label: &label, slug: &slug, source_slug: &source, settings: &settings, desktop: &desktop };
-                        match builder::save_theme(&req) {
-                            Ok(_) => {
-                                note.set_text(&format!("Saved theme \"{slug}\"."));
-                                select_theme(slug.clone());
-                            }
-                            Err(e) => note.set_text(&format!("Save failed: {e}")),
-                        }
-                        note.set_visible(true);
-                    }
-                };
-                if !opusdm_ipc::themes::theme_dir(&slug).exists() {
-                    do_save();
-                    return;
-                }
-                opusdm_ui::requester(&window2, "Replace Theme", &format!("A theme named \"{slug}\" already exists. Replace it?"), None, &[("Replace", true), ("Cancel", false)], move |replace| {
-                    if replace {
-                        do_save();
-                    }
-                });
-            });
-        });
-    }
-    {
-        let window = window.clone();
         let select_theme = select_theme.clone();
         edit_btn.connect_clicked(move |_| editor::open(&window, select_theme.clone()));
     }
@@ -454,4 +389,22 @@ fn build_window(app: &gtk::Application) {
     }
 
     window.present();
+}
+
+/// Run the one-time look migration on `settings` (see [`migrate::migrate_look`])
+/// and persist its result together with `desktop`. Returns the settings the
+/// window starts from and, when something happened, a line for the note.
+fn migrated_settings(settings: opusdm_ipc::Settings, desktop: &opusdm_ipc::DesktopSettings) -> (opusdm_ipc::Settings, Option<String>) {
+    let migrated = match migrate::migrate_look(&settings) {
+        Ok(Some(m)) => m,
+        Ok(None) => return (settings, None),
+        Err(e) => return (settings, Some(format!("Could not move your colours into a theme: {e}"))),
+    };
+    if let model::ApplyOutcome::Failed(e) = model::apply_full(&migrated.settings, desktop) {
+        return (settings, Some(format!("Could not save the settings: {e}")));
+    }
+    let note = migrated.created.map(|slug| {
+        format!("Your colours, fonts and pictures are now the theme \"{}\" ({slug}); edit them with Edit themes...", migrate::MIGRATION_LABEL)
+    });
+    (migrated.settings, note)
 }

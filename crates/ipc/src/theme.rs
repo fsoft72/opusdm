@@ -72,14 +72,18 @@ impl IconSetId {
     }
 }
 
-/// A theme bundle: icon set, Lister colours, and desktop background. What
-/// `opusdm-settings` edits, as part of `Settings` sent to the hub via
-/// `ToHub::SetSettings`.
+/// The active theme, its Lister colours and the desktop background, sent to
+/// the hub as part of `Settings` via `ToHub::SetSettings`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Theme {
+    /// The active theme (a user preference).
     pub icon_set: IconSetId,
+    /// Lister colours, resolved from the active theme.
     pub colors: ColorSettings,
+    /// The desktop wallpaper: a user preference, not part of the theme. It
+    /// may point at one of the theme's bundled pictures
+    /// (see [`crate::themes::theme_wallpapers`]).
     pub background: Background,
 }
 

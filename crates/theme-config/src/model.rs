@@ -15,35 +15,12 @@ pub fn load_settings_from(path: &std::path::Path) -> Settings {
     opusdm_ipc::settings::load_settings_from(path, "opusdm-settings")
 }
 
-/// What applying a selected icon set produces: the full `Settings` and
-/// `DesktopSettings` to apply: the theme's `theme.json` fields are merged
-/// over `ui`/`ui_desktop` (only the fields the theme actually sets are
-/// overwritten).
-pub struct IconSetApplication {
-    pub settings: Settings,
-    pub desktop: DesktopSettings,
-}
-
-/// Decide what a selected icon set needs applied. `ui`/`ui_desktop` are the
-/// window's current widget state (colours, background, appearance,
-/// behavior, desktop metrics) - everything a custom theme's `theme.json`
-/// doesn't explicitly override is taken from here, so an in-progress edit
-/// is never silently discarded by picking a theme.
-pub fn apply_icon_set(icon_set: &IconSetId, ui: &Settings, ui_desktop: &DesktopSettings) -> IconSetApplication {
-    match icon_set {
-        IconSetId::Custom(slug) => {
-            let data = opusdm_ipc::themes::load_theme_data(slug);
-            let merged = crate::apply::merge_custom_theme(slug, &data, ui, ui_desktop);
-            let settings = Settings {
-                theme: merged.theme,
-                appearance: merged.appearance,
-                behavior: merged.behavior,
-                fonts: merged.fonts,
-                surfaces: merged.surfaces,
-            };
-            IconSetApplication { settings, desktop: merged.desktop }
-        }
-    }
+/// The settings that applying theme `icon_set` produces: `prefs` (the user's
+/// preferences, usually the window's widget state) with the look resolved
+/// from the theme's `theme.json` (see [`crate::apply::resolve_look`]).
+pub fn resolve_selected(icon_set: &IconSetId, prefs: &Settings) -> Settings {
+    let IconSetId::Custom(slug) = icon_set;
+    crate::apply::resolve_look(slug, &opusdm_ipc::themes::load_theme_data(slug), prefs)
 }
 
 /// What [`apply_full`] did.
@@ -126,25 +103,24 @@ mod tests {
     }
 
     #[test]
-    fn apply_icon_set_custom_merges_theme_json_over_ui_state() {
+    fn resolve_selected_reads_the_installed_theme_json() {
         let _guard = ENV_LOCK.lock().unwrap();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         let dir = td.path().join("opusdm").join("themes").join("t");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), r#"{"name":"t","label":"T"}"#).unwrap();
-        std::fs::write(dir.join("theme.json"), r#"{"desktop":{"icon_size":100}}"#).unwrap();
+        std::fs::write(dir.join("theme.json"), r##"{"colors":{"file_fg":"#abcdef"},"desktop":{"icon_size":100}}"##).unwrap();
 
-        let mut ui = Settings::default();
-        ui.appearance.monospace_list = true;
-        let mut ui_desktop = DesktopSettings::default();
-        ui_desktop.icon_size = 64;
+        let mut prefs = Settings::default();
+        prefs.appearance.monospace_list = true;
+        prefs.behavior.recursive_filter = true;
 
-        let result = apply_icon_set(&opusdm_ipc::IconSetId::Custom("t".to_string()), &ui, &ui_desktop);
-        assert_eq!(result.settings.theme.icon_set, opusdm_ipc::IconSetId::Custom("t".to_string()));
-        assert_eq!(result.desktop.icon_size, 100);
-        // theme.json didn't touch appearance - the UI's live edit survives.
-        assert!(result.settings.appearance.monospace_list);
+        let s = resolve_selected(&opusdm_ipc::IconSetId::Custom("t".to_string()), &prefs);
+        assert_eq!(s.theme.icon_set, opusdm_ipc::IconSetId::Custom("t".to_string()));
+        assert_eq!(s.theme.colors.file_fg, "#abcdef");
+        assert!(!s.appearance.monospace_list, "the theme sets no appearance: default");
+        assert!(s.behavior.recursive_filter, "behaviour is a preference");
     }
 
     #[test]

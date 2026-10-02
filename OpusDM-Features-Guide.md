@@ -1071,16 +1071,24 @@ I cambiamenti si applicano subito a tutti i Lister aperti quando clicchi
 
 ### Step 19.2 - Scheda Desktop
 
-1. **BACKGROUND**: scegli **Solid colour**, **Gradient** (due colori e un angolo)
-   o **Image** (scegli un file e un fit: **Fill**, **Fit**, **Center**,
-   **Tile**).
-2. **ICON GRID**: dimensione icone, spaziatura e gap con i pulsanti `S` / `M` /
+Le Impostazioni contengono solo le tue preferenze. L'aspetto (colori, font,
+immagini dei Lister, icone) appartiene al tema e si modifica solo nel **Theme
+Editor** (step 19.6).
+
+1. **LIGHT / DARK**: la modalità chiara o scura. È una tua preferenza e resta
+   uguale quando cambi tema.
+2. **THEME**: scegli il tema attivo. Sotto ci sono **Edit themes...**,
+   **Import theme...** ed **Export theme...** (step 19.6).
+3. **BACKGROUND**: scegli **Solid colour**, **Gradient** (due colori e un angolo)
+   o **Image** (scegli un file con **Browse...** e un fit: **Fill**, **Fit**,
+   **Center**, **Tile**). **From theme...** mostra le immagini incluse nel tema
+   selezionato: clicca una miniatura per usarla. Lo sfondo resta uguale quando
+   cambi tema.
+4. **ICON GRID**: dimensione icone, spaziatura e gap con i pulsanti `S` / `M` /
    `L` o con il campo numerico.
-3. **DESKTOP FOLDER**: scegli una cartella diversa per le icone del desktop.
+5. **DESKTOP FOLDER**: scegli una cartella diversa per le icone del desktop.
    **Reset to default** torna a quella predefinita.
-4. **PANEL**: posizione del pannello (**Top** o **Bottom**).
-5. **Appearance**: la modalità del tema (chiaro/scuro).
-6. **Import theme...** importa un tema da file (poi lo selezioni e premi **Apply**).
+6. **PANEL**: posizione del pannello (**Top** o **Bottom**).
 7. Clicca **Apply** per vedere subito il risultato.
 
 ### Step 19.3 - Scheda Dock
@@ -1095,21 +1103,11 @@ Qui costruisci il menu applicazioni del pannello: aggiungi cartelle e
 applicazioni (**Add Application**), riordinale e rinominale. Il menu del pannello
 si aggiorna subito.
 
-### Step 19.5 - Scheda Lister (temi e comportamento)
+### Step 19.5 - Scheda Lister (comportamento)
 
-1. **ICON SET**: scegli il set di icone dei file.
-2. **COLOURS**: apri il menu a tendina dei preset e provali uno a uno:
-   `Default (light)`, `Amiga Workbench 1.3`, `Directory Opus 4/5 Classic`,
-   `Cyberpunk / Tokyo Night`, `Monochrome Phosphor (green)` e `(amber)`.
-   Clicca **Apply** e guarda i Lister cambiare colore.
-3. Modifica a mano un colore (SOURCE, DEST, DIRECTORY, FILE, SELECTION): il
-   preset passa a `Custom`.
-4. **APPEARANCE**: attiva **Type indicators after names (/ * @ = |)** per
-   vedere `/` sulle directory, `*` sugli eseguibili, `@` sui link simbolici.
-   Prova anche **Monospace file list** e l'opzione che estende i colori a tutta
-   la finestra.
-5. **BEHAVIOUR**: **auto-refresh (inotify)**, **Status bar format**,
-   **Directory cache size** e il **recursive filter** (step 7.9).
+**BEHAVIOUR**: **auto-refresh (inotify)**, **Status bar format**, **Directory
+cache size** e il **recursive filter** (step 7.9). I colori dei Lister sono nel
+tema: vedi lo step 19.6.
 
 ### Step 19.6 - Temi completi e Theme Editor
 
@@ -1117,31 +1115,43 @@ Un tema ora può portare con sé, oltre ai colori, anche **font** e **immagini**
 (sfondo del desktop, sfondo dei Lister e delle finestre di richiesta) e **icone**.
 Un tema è una cartella in `~/.config/opusdm/themes/<nome>/`.
 
-1. Nella scheda **Desktop** (o dove trovi **Import theme...**) ci sono anche
-   **Save theme...**, **Export theme...** ed **Edit theme...**.
-2. **Save theme...**: dai un nome e salvi come tema installato lo stato attuale
-   delle impostazioni. Salvando sopra un tema esistente ne mantieni autore e
-   versione.
-3. **Export theme...**: impacchetta un tema installato in un archivio che puoi
+Il tema è l'unica fonte dell'aspetto: colori dei Lister, appearance, font,
+immagini dei Lister e delle finestre di richiesta, icone, suoni e gli sfondi
+inclusi. Quando scegli un tema e premi **Apply** ottieni esattamente quel tema;
+le parti che il tema non imposta tornano ai valori predefiniti. Le tue
+preferenze (chiaro/scuro, sfondo, griglia icone, comportamento) non cambiano.
+
+Se prima di questa versione avevi modificato colori o appearance nelle
+Impostazioni, alla prima apertura delle Impostazioni questi valori diventano un
+nuovo tema **My Theme**, già selezionato: non perdi nulla.
+
+1. Nella scheda **Desktop**, sezione **THEME**, ci sono **Edit themes...**,
+   **Import theme...** ed **Export theme...**.
+2. **Export theme...**: impacchetta il tema selezionato in un archivio che puoi
    passare ad altri; **Import theme...** lo importa (i file che non sono font
-   `.ttf`/`.otf` in `fonts/` o immagini in `backgrounds/`, e i link simbolici,
-   vengono scartati).
-4. **Edit theme...** apre il **Theme Editor**:
+   `.ttf`/`.otf` in `fonts/` o immagini in `backgrounds/` e `wallpapers/`, e i
+   link simbolici, vengono scartati).
+3. **Edit themes...** apre il **Theme Editor**:
    - a sinistra l'elenco dei temi con **New**, **Duplicate**, **Delete**;
    - in basso **Save**, **Save as copy...**, **Revert** (torna alla versione
-     salvata) e **Save & Apply** (salva e applica subito);
-   - schede **General** (nome, autore, versione), **Colours** (con Appearance),
-     **Fonts** (font dell'interfaccia e dell'elenco file), **Pictures**
-     (desktop, Lister, finestre di richiesta), **Icons** e **Sounds**;
-   - ogni sezione ha la casella **Set by this theme**: se è spenta, il tema non
-     tocca quella parte e il campo resta com'è nelle tue impostazioni.
-5. Prova: duplica un tema, in **Fonts** imposta un font per l'elenco file, in
-   **Pictures** scegli un'immagine per il Lister, premi **Save & Apply** e
-   guarda i Lister cambiare. Quando un Lister ha un'immagine, le righe dei file
-   sono disegnate leggermente trasparenti per restare leggibili.
+     salvata) e **Save & Apply** (salva e lo rende il tema attivo);
+   - schede **General** (nome, autore, versione), **Colours** (preset, colori e
+     Appearance: **Type indicators**, **Monospace file list**, colori estesi a
+     tutta la finestra), **Fonts** (font dell'interfaccia e dell'elenco file),
+     **Pictures** (gli sfondi inclusi nel tema in **WALLPAPERS**, poi le immagini
+     del Lister e delle finestre di richiesta), **Icons** e **Sounds**;
+   - ogni sezione ha la casella **Set by this theme**: se è spenta, quella parte
+     usa il valore predefinito.
+4. Il tema predefinito **Breeze Dark** non si può modificare: usa **Duplicate**
+   o **Save as copy...** e modifica la copia.
+5. Prova: duplica un tema, in **Colours** scegli il preset `Amiga Workbench 1.3`,
+   in **Pictures** aggiungi un'immagine a **WALLPAPERS**, premi **Save & Apply**
+   e guarda i Lister cambiare. Poi, nelle Impostazioni, **BACKGROUND** >
+   **Image** > **From theme...** e scegli l'immagine appena aggiunta. Quando un
+   Lister ha un'immagine, le righe dei file sono disegnate leggermente
+   trasparenti per restare leggibili.
 
-Note: i suoni vengono salvati nel tema ma non ancora riprodotti. L'editor non
-modifica comportamento e metriche del desktop (restano invariati). Le immagini
+Note: i suoni vengono salvati nel tema ma non ancora riprodotti. Le immagini
 delle finestre di richiesta si vedono solo nelle richieste mostrate da Lister e
 Impostazioni, non in pannello, dock e Button Bank. Questa parte non è ancora
 stata verificata a mano in tutti i dettagli: se qualcosa non torna, è utile

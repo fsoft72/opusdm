@@ -1,12 +1,13 @@
-//! Colours and Appearance tab. Behaviour and desktop metrics are not edited
-//! here; they are carried through the draft untouched.
+//! Colours and Appearance tab. Light / dark is a user preference (Settings
+//! window), so it is not offered here: the value the theme file holds, if any,
+//! is carried through untouched and ignored when the theme is applied.
 
 use super::optional::OptionalSection;
-use crate::ui::{AppearanceSection, ColorsSection, PresetSection, ThemeModeSection};
+use crate::ui::{AppearanceSection, ColorsSection, PresetSection};
 use crate::writer::ThemeDraft;
 use gtk4 as gtk;
 use gtk::prelude::*;
-use opusdm_ipc::{Appearance, ColorSettings};
+use opusdm_ipc::{Appearance, ColorSettings, ThemeMode};
 use std::rc::Rc;
 
 /// The two optional sections of the tab.
@@ -14,7 +15,8 @@ pub struct ColoursTab {
     pub root: gtk::ScrolledWindow,
     colours: Rc<ColorsSection>,
     colours_opt: OptionalSection,
-    mode: ThemeModeSection,
+    /// The theme file's light / dark value, carried through unchanged.
+    mode: ThemeMode,
     appearance: AppearanceSection,
     appearance_opt: OptionalSection,
     initial: (Option<ColorSettings>, Option<Appearance>),
@@ -33,10 +35,9 @@ impl ColoursTab {
         let colours_opt = OptionalSection::new("COLOURS", &colours_box, draft.colors.is_some());
 
         let appearance_value = draft.appearance.clone().unwrap_or_default();
-        let mode = ThemeModeSection::new(appearance_value.theme_mode);
+        let mode = appearance_value.theme_mode;
         let appearance = AppearanceSection::new(&appearance_value);
         let appearance_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        appearance_box.append(&mode.root);
         appearance_box.append(&appearance.root);
         let appearance_opt = OptionalSection::new("APPEARANCE", &appearance_box, draft.appearance.is_some());
 
@@ -55,10 +56,11 @@ impl ColoursTab {
         tab
     }
 
+    /// The values of the sections that are set.
     fn read(&self) -> (Option<ColorSettings>, Option<Appearance>) {
         (
             self.colours_opt.is_set().then(|| self.colours.read()),
-            self.appearance_opt.is_set().then(|| self.appearance.read(self.mode.value())),
+            self.appearance_opt.is_set().then(|| self.appearance.read(self.mode)),
         )
     }
 
