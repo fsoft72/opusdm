@@ -82,7 +82,28 @@ struct State {
 /// Open the File Types editor. With `sample`, a new type derived from that
 /// file (the Filetype Creator) is added and selected.
 pub fn open_editor(ui: &Rc<Ui>, sample: Option<(String, std::path::PathBuf)>) {
-    let shell = opusdm_ui::DialogShell::new(&ui.window, "File Types").size(820, 520);
+    let shell = opusdm_ui::DialogShell::new(&ui.window, "File Types");
+    let functions = ui.hub.functions.borrow().clone();
+    let ui = ui.clone();
+    build_editor(shell, functions, sample, Rc::new(move |text| crate::actions::flash(&ui, text)));
+}
+
+/// Open the File Types editor on its own, without a Lister window. The
+/// functions come from disk and the save result is reported on stderr.
+pub fn open_standalone(app: &gtk::Application) {
+    let shell = opusdm_ui::DialogShell::standalone(app, "File Types");
+    build_editor(shell, opusdm_ipc::function::load_functions(), None, Rc::new(|text| eprintln!("opusdm-lister: {text}")));
+}
+
+/// Fill `shell` with the File Types editor. `report` receives the outcome of
+/// each Save.
+fn build_editor(
+    shell: opusdm_ui::DialogShell,
+    functions: Vec<opusdm_ipc::function::Function>,
+    sample: Option<(String, std::path::PathBuf)>,
+    report: Rc<dyn Fn(&str)>,
+) {
+    let shell = shell.size(820, 520);
     let root = shell.content();
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -123,7 +144,7 @@ pub fn open_editor(ui: &Rc<Ui>, sample: Option<(String, std::path::PathBuf)>) {
     let state = Rc::new(State {
         drafts: RefCell::new(filetypes::load_filetypes().types.iter().map(Draft::from_type).collect()),
         current: Cell::new(None),
-        functions: ui.hub.functions.borrow().clone(),
+        functions,
         list,
         form,
         status,
@@ -198,12 +219,12 @@ pub fn open_editor(ui: &Rc<Ui>, sample: Option<(String, std::path::PathBuf)>) {
         });
     }
     {
-        let ui = ui.clone();
+        let report = report.clone();
         let state = state.clone();
         save_btn.connect_clicked(move |_| match build_types(&state) {
             Ok(types) => match filetypes::save_filetypes(&types) {
-                Ok(()) => crate::actions::flash(&ui, "file types saved"),
-                Err(e) => crate::actions::flash(&ui, &format!("could not save file types: {e}")),
+                Ok(()) => report("file types saved"),
+                Err(e) => report(&format!("could not save file types: {e}")),
             },
             Err(messages) => state.status.set_text(&messages.join("; ")),
         });

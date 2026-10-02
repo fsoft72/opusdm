@@ -36,7 +36,11 @@ impl DialogShell {
             .modal(true)
             .build();
         window.add_css_class(crate::REQUESTER_CLASS);
+        Self::with_window(window)
+    }
 
+    /// Wrap `window` with the padded content area and the button row.
+    fn with_window(window: gtk::Window) -> Self {
         let content = gtk::Box::new(gtk::Orientation::Vertical, WIDGET_SPACING);
         content.set_margin_start(DIALOG_MARGIN);
         content.set_margin_end(DIALOG_MARGIN);
@@ -50,6 +54,14 @@ impl DialogShell {
         buttons.set_margin_top(BUTTON_ROW_MARGIN_TOP);
 
         Self { window, content, buttons, scrolled: false }
+    }
+
+    /// Create a dialog with no parent window, owned by `app`, for tools that
+    /// run on their own (the application exits when it is closed).
+    pub fn standalone(app: &impl IsA<gtk::Application>, title: &str) -> Self {
+        let window = gtk::Window::builder().title(title).application(app).build();
+        window.add_css_class(crate::REQUESTER_CLASS);
+        Self::with_window(window)
     }
 
     /// Make the dialog modal (the default) or not. A non-modal dialog leaves

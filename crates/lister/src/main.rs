@@ -79,7 +79,34 @@ macro_rules! dlog {
     ($($arg:tt)*) => { opusdm_ipc::debug_log!("lister", $($arg)*) };
 }
 
+/// Command line flag that makes the Lister open only the File Types editor.
+const EDIT_FILETYPES_FLAG: &str = "--edit-filetypes";
+
+/// Run only the File Types editor, with no hub connection and no file window.
+/// The application exits when the editor is closed.
+fn run_filetypes_editor() -> gtk4::glib::ExitCode {
+    use gtk4::prelude::*;
+    let app = gtk4::Application::builder().application_id("org.opusdm.FileTypes").build();
+    app.connect_activate(|app| {
+        let settings = opusdm_ipc::settings::load_settings("opusdm-lister");
+        opusdm_ui::apply_theme_mode(settings.appearance.theme_mode);
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_data(&theme::generate_css(&settings));
+        gtk4::style_context_add_provider_for_display(
+            &gtk4::gdk::Display::default().expect("no default GDK display: cannot run without one"),
+            &provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        filetypes_ui::open_standalone(app);
+    });
+    app.run_with_args::<&str>(&[])
+}
+
 fn main() {
+    if std::env::args().any(|a| a == EDIT_FILETYPES_FLAG) {
+        let code = run_filetypes_editor();
+        std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
+    }
     crate::dlog!("starting");
     let sock_path = match std::env::var_os(opusdm_ipc::sockpath::ENV_SOCK) {
         Some(p) if !p.is_empty() => PathBuf::from(p),

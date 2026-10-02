@@ -32,6 +32,18 @@ pub(crate) fn theme_config_bin() -> PathBuf {
     PathBuf::from("opusdm-settings")
 }
 
+/// Spawn the Lister binary (next to the hub executable, else on `PATH`) with
+/// only the File Types editor open.
+pub(crate) fn launch_filetypes_editor() {
+    let bin = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("opusdm-lister")))
+        .unwrap_or_else(|| PathBuf::from("opusdm-lister"));
+    if let Err(e) = std::process::Command::new(&bin).arg("--edit-filetypes").spawn() {
+        opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", bin.display());
+    }
+}
+
 /// Spawn the theme configuration app, detached.
 pub(crate) fn launch_theme_config() {
     spawn_theme_config(&[]);
@@ -466,6 +478,17 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
                 reload_desktop_field(&widgets);
+            });
+            sub.append(&btn);
+        }
+
+        // Edit File Types: open the File Types editor on its own.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Edit File Types");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                launch_filetypes_editor();
             });
             sub.append(&btn);
         }
