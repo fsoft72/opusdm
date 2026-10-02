@@ -97,64 +97,66 @@ struct StartState {
     inbox: Option<async_channel::Receiver<Inbound>>,
 }
 
-fn build_window(
-    app: &gtk::Application,
-    client: Rc<Client>,
-    id: ListerId,
-    roles: Roles,
-    settings: Settings,
-    bindings: opusdm_ipc::Bindings,
-    formats: opusdm_ipc::FormatStore,
-    functions: Vec<opusdm_ipc::function::Function>,
-) -> Rc<Ui> {
-    let window = gtk::ApplicationWindow::builder()
-        .application(app)
-        .title("OpusDM Lister")
-        .default_width(800)
-        .default_height(600)
-        .build();
+/// The top stat bar: D/F/B counts, gauge, "new Lister" star, role pin and the
+/// SOURCE / DEST badge.
+struct StatBarWidgets {
+    container: gtk::Box,
+    info: gtk::Label,
+    gauge: gtk::LevelBar,
+    star_btn: gtk::Button,
+    pin_btn: gtk::ToggleButton,
+    role_badge: gtk::Label,
+}
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-
-    // Top stat bar: D/F/B counts (left) + pin + SOURCE/DEST badge (right).
-    // Click the badge to cycle SOURCE -> DEST -> NONE.
-    let stat_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+/// Build the top stat bar: D/F/B counts (left) + pin + SOURCE/DEST badge
+/// (right). Click the badge to cycle SOURCE -> DEST -> NONE.
+fn build_stat_bar() -> StatBarWidgets {
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     // Constant padding regardless of role - the SOURCE/DEST classes only
     // recolour, so NONE must not sit tighter to the edge.
-    stat_bar.add_css_class("stat-bar");
-    let stat_info = gtk::Label::new(Some("D: [0/0] F: [0/0] B: [0/0]"));
-    stat_info.set_xalign(0.0);
-    stat_info.set_hexpand(true);
-    stat_bar.append(&stat_info);
+    container.add_css_class("stat-bar");
+    let info = gtk::Label::new(Some("D: [0/0] F: [0/0] B: [0/0]"));
+    info.set_xalign(0.0);
+    info.set_hexpand(true);
+    container.append(&info);
     let gauge = gtk::LevelBar::for_interval(0.0, 1.0);
     gauge.set_size_request(90, -1);
     gauge.set_valign(gtk::Align::Center);
     gauge.set_visible(false);
-    stat_bar.append(&gauge);
+    container.append(&gauge);
     let star_btn = crate::icons::icon_button(crate::icons::SVG_STAR, "Open New Lister Here", 14);
-    stat_bar.append(&star_btn);
+    container.append(&star_btn);
     let pin_btn = crate::icons::icon_toggle_button(crate::icons::SVG_PIN, "Pin / Lock Role", 14);
     pin_btn.add_css_class("pin-btn");
-    stat_bar.append(&pin_btn);
+    container.append(&pin_btn);
     let role_badge = gtk::Label::new(Some("NONE"));
     // Fixed pixel width so it never reflows between SOURCE/DEST/NONE -
     // width_chars is font-metric dependent and still shifted.
     role_badge.set_size_request(60, -1);
     role_badge.set_xalign(0.5); // center text within that fixed width
-    stat_bar.append(&role_badge);
-    root.append(&stat_bar);
+    container.append(&role_badge);
+    StatBarWidgets { container, info, gauge, star_btn, pin_btn, role_badge }
+}
 
-    // Button row (filled by actions::attach).
-    let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    button_row.set_margin_start(4);
-    button_row.set_margin_end(4);
-    let view_toggle = gtk::ToggleButton::new();
-    view_toggle.set_child(Some(&gtk::Label::new(Some("\u{25a6}"))));
-    view_toggle.set_tooltip_text(Some("Toggle icon view"));
-    view_toggle.add_css_class("flat");
-    root.append(&button_row);
+/// The file area: the details list and the icon view in a stack, with the
+/// models behind the details list.
+struct FileViewWidgets {
+    store: gio::ListStore,
+    filter_bar: Rc<crate::filter::FilterBar>,
+    filter_model: gtk::FilterListModel,
+    selection: gtk::MultiSelection,
+    column_view: gtk::ColumnView,
+    col_map: Rc<Vec<(gtk::ColumnViewColumn, opusdm_ipc::FormatColumn)>>,
+    separate: Rc<Cell<opusdm_ipc::Separate>>,
+    model_sorter: gtk::CustomSorter,
+    icon_field: opusdm_iconview::IconField,
+    stack: gtk::Stack,
+}
 
-    // Model + filter + sorter + selection + column view.
+/// Build the model chain (store, filter, sorter, selection), the column view
+/// with its six columns, and the icon view, and put both views in a stack.
+/// `ui_getter` gives the columns their `Ui` once it exists.
+fn build_file_view(settings: &Settings, ui_getter: impl Fn() -> Option<Rc<Ui>> + Clone + 'static) -> FileViewWidgets {
     let store = gio::ListStore::new::<BoxedAnyObject>();
     let filter_bar = Rc::new(crate::filter::FilterBar::new());
     let filter_model = gtk::FilterListModel::new(Some(store.clone()), Some(filter_bar.filter.clone()));
@@ -171,12 +173,6 @@ fn build_window(
     column_view.set_vexpand(true);
     // Compact rows: default theme pads cells 8px 6px, data-table cuts it to 2px.
     column_view.add_css_class("data-table");
-
-    let ui_slot: Rc<RefCell<Option<Rc<Ui>>>> = Rc::new(RefCell::new(None));
-    let ui_getter = {
-        let slot = ui_slot.clone();
-        move || slot.borrow().clone()
-    };
 
     let col_map: Rc<Vec<(gtk::ColumnViewColumn, opusdm_ipc::FormatColumn)>> = Rc::new(vec![
         (
@@ -241,8 +237,6 @@ fn build_window(
     }
     column_view.sort_by_column(Some(&name_col), gtk::SortType::Ascending);
 
-    root.append(&filter_bar.container);
-
     let scroller = gtk::ScrolledWindow::builder().child(&column_view).vexpand(true).build();
 
     let icon_field = opusdm_iconview::IconField::new();
@@ -250,19 +244,36 @@ fn build_window(
     icon_field.set_icon_size(opusdm_iconview::DEFAULT_ICON_SIZE);
     icon_field.set_icon_set(settings.theme.icon_set.clone());
 
-    let view_stack = gtk::Stack::new();
-    view_stack.add_named(&scroller, Some("details"));
-    view_stack.add_named(icon_field.widget(), Some("icons"));
-    view_stack.set_visible_child_name("details");
-    view_stack.set_vexpand(true);
-    view_stack.set_margin_start(4);
-    view_stack.set_margin_end(4);
+    let stack = gtk::Stack::new();
+    stack.add_named(&scroller, Some("details"));
+    stack.add_named(icon_field.widget(), Some("icons"));
+    stack.set_visible_child_name("details");
+    stack.set_vexpand(true);
+    stack.set_margin_start(4);
+    stack.set_margin_end(4);
 
-    // Filter entry interaction
+    FileViewWidgets {
+        store,
+        filter_bar,
+        filter_model,
+        selection,
+        column_view,
+        col_map,
+        separate,
+        model_sorter,
+        icon_field,
+        stack,
+    }
+}
+
+/// Wire the filter entry: typing narrows the list and shows the match count,
+/// Enter jumps to the first match, Escape dismisses the bar.
+fn wire_filter_bar(view: &FileViewWidgets) {
+    let filter_bar = &view.filter_bar;
     {
         let count_label = filter_bar.count_label.clone();
-        let filter_model_for_count = filter_model.clone();
-        let store_for_count = store.clone();
+        let filter_model_for_count = view.filter_model.clone();
+        let store_for_count = view.store.clone();
         let q = filter_bar.query.clone();
         let filt = filter_bar.filter.clone();
         filter_bar.entry.connect_search_changed(move |e| {
@@ -280,8 +291,8 @@ fn build_window(
         });
     }
     {
-        let selection_clone = selection.clone();
-        let column_view_clone = column_view.clone();
+        let selection_clone = view.selection.clone();
+        let column_view_clone = view.column_view.clone();
         filter_bar.entry.connect_activate(move |_| {
             if selection_clone.n_items() > 0 {
                 selection_clone.select_item(0, false);
@@ -291,25 +302,26 @@ fn build_window(
     }
     {
         let filter_bar_clone = filter_bar.clone();
-        let column_view_clone = column_view.clone();
+        let column_view_clone = view.column_view.clone();
         filter_bar.entry.connect_stop_search(move |_| {
             filter_bar_clone.dismiss();
             column_view_clone.grab_focus();
         });
     }
+}
 
-    // Quake-style dropdown terminal drawer, resized via the standard GTK
-    // vertical GtkPaned handle (not a hand-rolled drag gesture).
+/// Put the file area above the Quake-style dropdown terminal drawer, resized
+/// via the standard GtkPaned handle (not a hand-rolled drag gesture).
+fn build_terminal_pane(file_area: &gtk::Stack) -> (gtk::Paned, Rc<crate::terminal::TerminalDrawer>) {
     let terminal = crate::terminal::TerminalDrawer::new();
     let view_paned = gtk::Paned::new(gtk::Orientation::Vertical);
     view_paned.set_vexpand(true);
-    view_paned.set_start_child(Some(&view_stack));
+    view_paned.set_start_child(Some(file_area));
     view_paned.set_resize_start_child(true);
     view_paned.set_shrink_start_child(true);
     view_paned.set_end_child(Some(&terminal.container));
     view_paned.set_resize_end_child(false);
     view_paned.set_shrink_end_child(false);
-    root.append(&view_paned);
 
     // The drawer starts hidden; give the paned a sane split the first time
     // it becomes visible instead of GTK's default 50/50.
@@ -324,8 +336,19 @@ fn build_window(
             }
         });
     }
+    (view_paned, terminal)
+}
 
-    // Transient message line.
+/// The transient message line: spinner, busy label and job line.
+struct MessageRowWidgets {
+    container: gtk::Box,
+    job_line: gtk::Label,
+    busy_spinner: gtk::Spinner,
+    busy_label: gtk::Label,
+}
+
+/// Build the transient message line.
+fn build_message_row() -> MessageRowWidgets {
     let job_line = gtk::Label::new(None);
     job_line.set_xalign(0.0);
     job_line.set_vexpand(false);
@@ -333,19 +356,34 @@ fn build_window(
     busy_spinner.set_visible(false);
     let busy_label = gtk::Label::new(None);
     busy_label.set_visible(false);
-    let message_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    message_row.set_vexpand(false);
-    message_row.append(&busy_spinner);
-    message_row.append(&busy_label);
-    message_row.append(&job_line);
-    root.append(&message_row);
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    container.set_vexpand(false);
+    container.append(&busy_spinner);
+    container.append(&busy_label);
+    container.append(&job_line);
+    MessageRowWidgets { container, job_line, busy_spinner, busy_label }
+}
 
-    // Bottom navigation: home, parent, path.
-    let nav_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    nav_bar.set_vexpand(false);
-    nav_bar.set_margin_bottom(4);
-    nav_bar.set_margin_start(4);
-    nav_bar.set_margin_end(4);
+/// The bottom navigation bar: history, home, parent and the path entry.
+#[derive(Clone)]
+struct NavBarWidgets {
+    container: gtk::Box,
+    home_btn: gtk::Button,
+    parent_btn: gtk::Button,
+    path_entry: gtk::Entry,
+    back_btn: gtk::Button,
+    forward_btn: gtk::Button,
+    history_list: gtk::ListBox,
+    history_popover: gtk::Popover,
+}
+
+/// Build the bottom navigation bar.
+fn build_nav_bar() -> NavBarWidgets {
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    container.set_vexpand(false);
+    container.set_margin_bottom(4);
+    container.set_margin_start(4);
+    container.set_margin_end(4);
     let home_btn = crate::icons::icon_button(crate::icons::SVG_HOME, "Home Directory", 16);
     let parent_btn = crate::icons::icon_button(crate::icons::SVG_PARENT, "Parent Directory", 16);
     let path_entry = gtk::Entry::new();
@@ -362,16 +400,55 @@ fn build_window(
     history_btn.set_tooltip_text(Some("History"));
     history_btn.set_popover(Some(&history_popover));
     history_btn.add_css_class("opus-btn");
-    nav_bar.append(&back_btn);
-    nav_bar.append(&forward_btn);
-    nav_bar.append(&history_btn);
-    nav_bar.append(&home_btn);
-    nav_bar.append(&parent_btn);
-    nav_bar.append(&path_entry);
-    root.append(&nav_bar);
+    container.append(&back_btn);
+    container.append(&forward_btn);
+    container.append(&history_btn);
+    container.append(&home_btn);
+    container.append(&parent_btn);
+    container.append(&path_entry);
+    NavBarWidgets { container, home_btn, parent_btn, path_entry, back_btn, forward_btn, history_list, history_popover }
+}
 
-    window.set_child(Some(&root));
+/// Everything the `Ui` struct is made of besides the hub connection data.
+struct Parts {
+    window: gtk::ApplicationWindow,
+    stat: StatBarWidgets,
+    button_row: gtk::Box,
+    view_toggle: gtk::ToggleButton,
+    view: FileViewWidgets,
+    terminal: Rc<crate::terminal::TerminalDrawer>,
+    message: MessageRowWidgets,
+    nav: NavBarWidgets,
+}
 
+/// Start the inotify watcher: one instance per Lister, started even when
+/// auto-refresh is off so toggling the setting does not need a restart. A
+/// kernel refusal (watch limit) is not fatal: the Lister just loses live
+/// refresh.
+fn start_watcher(settings: &Settings) -> (Option<crate::watcher::DirWatcher>, Option<async_channel::Receiver<PathBuf>>) {
+    let debounce = std::time::Duration::from_millis(settings.behavior.debounce_ms());
+    match crate::watcher::DirWatcher::start(debounce) {
+        Ok((w, rx)) => (Some(w), Some(rx)),
+        Err(e) => {
+            eprintln!("opusdm-lister: auto-refresh unavailable: {e}");
+            (None, None)
+        }
+    }
+}
+
+/// Assemble the `Ui` from the built widgets and the hub handshake data.
+#[allow(clippy::too_many_arguments)]
+fn assemble_ui(
+    parts: Parts,
+    client: Rc<Client>,
+    id: ListerId,
+    roles: Roles,
+    settings: Settings,
+    bindings: opusdm_ipc::Bindings,
+    formats: opusdm_ipc::FormatStore,
+    functions: Vec<opusdm_ipc::function::Function>,
+    watcher: Option<crate::watcher::DirWatcher>,
+) -> Rc<Ui> {
     // Registered once; update_css_for_colors() reloads its content in place.
     let css_provider = gtk::CssProvider::new();
     gtk::style_context_add_provider_for_display(
@@ -380,26 +457,15 @@ fn build_window(
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    // One inotify instance per Lister, started even when auto-refresh is off so
-    // toggling the setting does not need a restart. A kernel refusal (watch
-    // limit) is not fatal: the Lister just loses live refresh.
-    let debounce = std::time::Duration::from_millis(settings.behavior.debounce_ms());
-    let (watcher, watch_rx) = match crate::watcher::DirWatcher::start(debounce) {
-        Ok((w, rx)) => (Some(w), Some(rx)),
-        Err(e) => {
-            eprintln!("opusdm-lister: auto-refresh unavailable: {e}");
-            (None, None)
-        }
-    };
-
     let user_menu_btn = gtk::MenuButton::new();
     user_menu_btn.set_label("Menu");
     user_menu_btn.set_tooltip_text(Some("User menu"));
     user_menu_btn.add_css_class("opus-btn");
 
+    let Parts { window, stat, button_row, view_toggle, view, terminal, message, nav } = parts;
     let cache_capacity = settings.behavior.cache_capacity();
-    let ui = Rc::new(Ui {
-        window: window.clone(),
+    Rc::new(Ui {
+        window,
         hidden_by_hub: Cell::new(false),
         hub: HubConnection {
             client,
@@ -415,38 +481,38 @@ fn build_window(
         cwd: RefCell::new(PathBuf::from("/")),
         view: ViewState {
             mode: Cell::new(ViewMode::Details),
-            mode_toggle: view_toggle.clone(),
-            stack: view_stack.clone(),
-            icon_field: icon_field.clone(),
+            mode_toggle: view_toggle,
+            stack: view.stack,
+            icon_field: view.icon_field,
             icon_size: Cell::new(opusdm_iconview::DEFAULT_ICON_SIZE),
-            column_view: column_view.clone(),
-            selection: selection.clone(),
-            store,
+            column_view: view.column_view,
+            selection: view.selection,
+            store: view.store,
             cursor: Cell::new(0),
-            filter_bar: filter_bar.clone(),
+            filter_bar: view.filter_bar,
             show_hidden: Cell::new(false),
             size_format: Cell::new(crate::model::SizeFormat::default()),
-            col_map: col_map.clone(),
-            separate: separate.clone(),
-            model_sorter: model_sorter.clone(),
+            col_map: view.col_map,
+            separate: view.separate,
+            model_sorter: view.model_sorter,
         },
         status_bar: StatusBar {
-            label: stat_info,
-            container: stat_bar.clone(),
-            role_badge,
-            role_lock_btn: pin_btn,
+            label: stat.info,
+            container: stat.container,
+            role_badge: stat.role_badge,
+            role_lock_btn: stat.pin_btn,
             role_guard: Cell::new(false),
-            job_line,
+            job_line: message.job_line,
             totals: Cell::new((0, 0, 0)),
-            gauge: gauge.clone(),
+            gauge: stat.gauge,
             gauge_generation: Rc::new(Cell::new(0)),
-            busy_spinner,
-            busy_label,
+            busy_spinner: message.busy_spinner,
+            busy_label: message.busy_label,
         },
-        path_entry: path_entry.clone(),
-        button_row: button_row.clone(),
+        path_entry: nav.path_entry,
+        button_row,
         preview_win: RefCell::new(None),
-        terminal: terminal.clone(),
+        terminal,
         css_provider,
         nav_generation: Cell::new(0),
         function_log: RefCell::new(None),
@@ -462,36 +528,24 @@ fn build_window(
         remote: crate::remote_ui::RemoteState::default(),
         history: RefCell::new(crate::history::History::new()),
         nav_history: crate::window::NavHistory {
-            back: back_btn.clone(),
-            forward: forward_btn.clone(),
-            list: history_list.clone(),
+            back: nav.back_btn,
+            forward: nav.forward_btn,
+            list: nav.history_list,
         },
         last_selection: RefCell::new(Vec::new()),
-        user_menu_btn: user_menu_btn.clone(),
-    });
+        user_menu_btn,
+    })
+}
 
-    // Drain coalesced watch notices on the GTK thread.
-    if let Some(watch_rx) = watch_rx {
-        let ui = ui.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(dir) = watch_rx.recv().await {
-                ui.on_directory_changed(&dir);
-            }
-        });
-    }
-    *ui_slot.borrow_mut() = Some(ui.clone());
-    terminal.attach(&ui);
-    ui.update_css_for_colors();
-
-    // Star button: open a new Lister at this Lister's current path.
+/// Star button (open a new Lister at this path) and the role badge (click to
+/// cycle the role; see `Roles::next_role`).
+fn wire_stat_bar(ui: &Rc<Ui>, star_btn: &gtk::Button) {
     {
         let ui = ui.clone();
         star_btn.connect_clicked(move |_| {
             let _ = ui.hub.client.send(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
         });
     }
-
-    // Click the role badge to cycle its role; see Roles::next_role.
     {
         let ui_for_click = ui.clone();
         let gesture = gtk::GestureClick::new();
@@ -501,11 +555,14 @@ fn build_window(
         });
         ui.status_bar.role_badge.add_controller(gesture);
     }
+}
 
-    // Navigation.
+/// Parent and home buttons, and the path entry (bookmarks, remote URLs,
+/// archives, plain folders).
+fn wire_navigation(ui: &Rc<Ui>, nav: &NavBarWidgets) {
     {
         let ui = ui.clone();
-        parent_btn.connect_clicked(move |_| {
+        nav.parent_btn.connect_clicked(move |_| {
             let parent = crate::navpath::parent(&ui.cwd.borrow());
             if let Some(p) = parent {
                 ui.navigate_to(&p);
@@ -514,7 +571,7 @@ fn build_window(
     }
     {
         let ui = ui.clone();
-        home_btn.connect_clicked(move |_| {
+        nav.home_btn.connect_clicked(move |_| {
             if let Ok(home) = std::env::var("HOME") {
                 ui.navigate_to(Path::new(&home));
             }
@@ -522,7 +579,7 @@ fn build_window(
     }
     {
         let ui = ui.clone();
-        path_entry.connect_activate(move |entry| {
+        nav.path_entry.connect_activate(move |entry| {
             let candidate = PathBuf::from(entry.text().to_string());
             // `name:` or `name:sub/dir` is a bookmark.
             if let Some(target) = crate::bookmarks_ui::resolve_text(entry.text().as_str()) {
@@ -562,104 +619,105 @@ fn build_window(
             }
         });
     }
+}
 
-    // Row activation: enter directory, open archive, or open file.
+/// Row activation (enter a directory, open an archive or a file) and the
+/// selection-changed handler (status line, active preview).
+fn wire_selection(ui: &Rc<Ui>) {
     {
         let ui = ui.clone();
-        column_view.connect_activate(move |_, position| ui.activate_row(position));
+        ui.view.column_view.clone().connect_activate(move |_, position| ui.activate_row(position));
     }
-
-    // Selection changes update the status line and active preview if open.
     {
         let ui = ui.clone();
-        selection.connect_selection_changed(move |_, _, _| {
+        ui.view.selection.clone().connect_selection_changed(move |_, _, _| {
             ui.sync_cursor_from_selection();
             ui.update_status();
             ui.update_preview_if_open();
         });
     }
+}
 
-    // Focus -> notify the hub.
+/// Window-level signals: focus notifies the hub, closing sends `Goodbye` so
+/// the process can exit.
+fn wire_window_signals(ui: &Rc<Ui>) {
     {
         let ui = ui.clone();
         let focus = gtk::EventControllerFocus::new();
+        let window = ui.window.clone();
         focus.connect_enter(move |_| {
             let _ = ui.hub.client.send(&ToHub::FocusGained);
         });
         window.add_controller(focus);
     }
-
-    // Window close -> Goodbye, let the process exit.
     {
         let ui = ui.clone();
-        window.connect_close_request(move |_| {
+        ui.window.clone().connect_close_request(move |_| {
             crate::dlog!("close request, sending Goodbye to hub");
             let _ = ui.hub.client.send(&ToHub::Goodbye);
             glib::Propagation::Proceed
         });
     }
+}
 
-    // Keyboard shortcuts. The binding table itself lives in `keys.rs`; this
-    // only turns the resolved action into a call.
-    {
-        let ui_for_keys = ui.clone();
-        let key_ctrl = gtk::EventControllerKey::new();
-        key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
-            let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
-            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
-            // Single-letter bindings must not steal characters from a text
-            // field, so where the focus sits decides how a key is read.
-            let focus = if crate::window::is_editing(&ui_for_keys.window) {
-                crate::keys::Focus::Editing
-            } else {
-                crate::keys::Focus::List
-            };
-            // An open type-to-find buffer takes every key first.
-            let modified = ctrl || state.contains(gdk::ModifierType::ALT_MASK);
-            if focus == crate::keys::Focus::List && ui_for_keys.typeahead_feed(keyval, modified) {
-                return glib::Propagation::Stop;
-            }
-            // Alt+Left / Alt+Right walk the history (resolve() has no Alt).
-            if focus == crate::keys::Focus::List && state.contains(gdk::ModifierType::ALT_MASK) {
-                match keyval {
-                    gdk::Key::Left => {
-                        ui_for_keys.history_back();
-                        return glib::Propagation::Stop;
-                    }
-                    gdk::Key::Right => {
-                        ui_for_keys.history_forward();
-                        return glib::Propagation::Stop;
-                    }
-                    _ => {}
+/// Keyboard shortcuts. The binding table itself lives in `keys.rs`; this
+/// only turns the resolved action into a call.
+fn wire_keys(ui: &Rc<Ui>) {
+    let ui_for_keys = ui.clone();
+    let key_ctrl = gtk::EventControllerKey::new();
+    key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+        let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+        let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+        // Single-letter bindings must not steal characters from a text
+        // field, so where the focus sits decides how a key is read.
+        let focus = if crate::window::is_editing(&ui_for_keys.window) {
+            crate::keys::Focus::Editing
+        } else {
+            crate::keys::Focus::List
+        };
+        // An open type-to-find buffer takes every key first.
+        let modified = ctrl || state.contains(gdk::ModifierType::ALT_MASK);
+        if focus == crate::keys::Focus::List && ui_for_keys.typeahead_feed(keyval, modified) {
+            return glib::Propagation::Stop;
+        }
+        // Alt+Left / Alt+Right walk the history (resolve() has no Alt).
+        if focus == crate::keys::Focus::List && state.contains(gdk::ModifierType::ALT_MASK) {
+            match keyval {
+                gdk::Key::Left => {
+                    ui_for_keys.history_back();
+                    return glib::Propagation::Stop;
                 }
+                gdk::Key::Right => {
+                    ui_for_keys.history_forward();
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
             }
-            // A user hotkey (F-03) is looked up next, so it wins over a
-            // built-in binding.
-            let user_function = ui_for_keys.hub.hotkeys.borrow().lookup(keyval, state, focus).cloned();
-            if let Some(id) = user_function {
-                ui_for_keys.start_run(opusdm_ipc::ToHub::RunFunctionById { id });
-                return glib::Propagation::Stop;
-            }
-            let Some(action) = crate::keys::resolve(keyval, ctrl, shift, focus) else {
-                // Nothing is bound to this key: a name-like character starts
-                // type-to-find.
-                let starts = focus == crate::keys::Focus::List
-                    && !modified
-                    && ui_for_keys.typeahead_begin(keyval);
-                return if starts { glib::Propagation::Stop } else { glib::Propagation::Proceed };
-            };
-            ui_for_keys.run_key_action(action);
-            glib::Propagation::Stop
-        });
-        window.add_controller(key_ctrl);
-    }
+        }
+        // A user hotkey (F-03) is looked up next, so it wins over a
+        // built-in binding.
+        let user_function = ui_for_keys.hub.hotkeys.borrow().lookup(keyval, state, focus).cloned();
+        if let Some(id) = user_function {
+            ui_for_keys.start_run(opusdm_ipc::ToHub::RunFunctionById { id });
+            return glib::Propagation::Stop;
+        }
+        let Some(action) = crate::keys::resolve(keyval, ctrl, shift, focus) else {
+            // Nothing is bound to this key: a name-like character starts
+            // type-to-find.
+            let starts = focus == crate::keys::Focus::List
+                && !modified
+                && ui_for_keys.typeahead_begin(keyval);
+            return if starts { glib::Propagation::Stop } else { glib::Propagation::Proceed };
+        };
+        ui_for_keys.run_key_action(action);
+        glib::Propagation::Stop
+    });
+    ui.window.add_controller(key_ctrl);
+}
 
-    crate::actions::attach(&ui);
-    crate::user_menu::install(&ui);
-    crate::nav_cache::install_history(&ui, &history_popover);
-    button_row.append(&view_toggle);
-    crate::dnd::attach(&ui, &column_view);
-
+/// The details / icons toggle and the icon view's callbacks, which reuse the
+/// column view's handlers where they exist.
+fn wire_icon_view(ui: &Rc<Ui>, view_toggle: &gtk::ToggleButton) {
     // Icon-view toggle: swap the stack child and rebuild entries on the way in.
     {
         let ui = ui.clone();
@@ -674,8 +732,7 @@ fn build_window(
         });
     }
 
-    // Icon-view callbacks: reuse the column view's handlers where they exist.
-    crate::dnd::attach_field(&ui, &ui.view.icon_field);
+    crate::dnd::attach_field(ui, &ui.view.icon_field);
     let icon_field = ui.view.icon_field.clone();
     {
         let ui = ui.clone();
@@ -730,7 +787,94 @@ fn build_window(
             field.set_icon_size(STEPS[next]);
         });
     }
+}
+
+/// Build the Lister window: lay out the widgets, create the `Ui` and wire
+/// every signal to it.
+#[allow(clippy::too_many_arguments)]
+fn build_window(
+    app: &gtk::Application,
+    client: Rc<Client>,
+    id: ListerId,
+    roles: Roles,
+    settings: Settings,
+    bindings: opusdm_ipc::Bindings,
+    formats: opusdm_ipc::FormatStore,
+    functions: Vec<opusdm_ipc::function::Function>,
+) -> Rc<Ui> {
+    let window = gtk::ApplicationWindow::builder()
+        .application(app)
+        .title("OpusDM Lister")
+        .default_width(800)
+        .default_height(600)
+        .build();
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+
+    let stat = build_stat_bar();
+    root.append(&stat.container);
+
+    // Button row (filled by actions::attach).
+    let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    button_row.set_margin_start(4);
+    button_row.set_margin_end(4);
+    let view_toggle = gtk::ToggleButton::new();
+    view_toggle.set_child(Some(&gtk::Label::new(Some("\u{25a6}"))));
+    view_toggle.set_tooltip_text(Some("Toggle icon view"));
+    view_toggle.add_css_class("flat");
+    root.append(&button_row);
+
+    // The columns need the `Ui`, which is built after them.
+    let ui_slot: Rc<RefCell<Option<Rc<Ui>>>> = Rc::new(RefCell::new(None));
+    let ui_getter = {
+        let slot = ui_slot.clone();
+        move || slot.borrow().clone()
+    };
+    let view = build_file_view(&settings, ui_getter);
+    wire_filter_bar(&view);
+    root.append(&view.filter_bar.container);
+    let (view_paned, terminal) = build_terminal_pane(&view.stack);
+    root.append(&view_paned);
+
+    let message = build_message_row();
+    root.append(&message.container);
+    let nav = build_nav_bar();
+    root.append(&nav.container);
+    window.set_child(Some(&root));
+
+    let (watcher, watch_rx) = start_watcher(&settings);
+    let star_btn = stat.star_btn.clone();
+    let history_popover = nav.history_popover.clone();
+    let column_view = view.column_view.clone();
+    let nav_for_wiring = nav.clone();
+    let parts = Parts { window, stat, button_row: button_row.clone(), view_toggle: view_toggle.clone(), view, terminal: terminal.clone(), message, nav };
+    let ui = assemble_ui(parts, client, id, roles, settings, bindings, formats, functions, watcher);
+
+    // Drain coalesced watch notices on the GTK thread.
+    if let Some(watch_rx) = watch_rx {
+        let ui = ui.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(dir) = watch_rx.recv().await {
+                ui.on_directory_changed(&dir);
+            }
+        });
+    }
+    *ui_slot.borrow_mut() = Some(ui.clone());
+    terminal.attach(&ui);
+    ui.update_css_for_colors();
+
+    wire_stat_bar(&ui, &star_btn);
+    wire_navigation(&ui, &nav_for_wiring);
+    wire_selection(&ui);
+    wire_window_signals(&ui);
+    wire_keys(&ui);
+
+    crate::actions::attach(&ui);
+    crate::user_menu::install(&ui);
+    crate::nav_cache::install_history(&ui, &history_popover);
+    button_row.append(&view_toggle);
+    crate::dnd::attach(&ui, &column_view);
+    wire_icon_view(&ui, &view_toggle);
+
     ui.update_status();
     ui
 }
-

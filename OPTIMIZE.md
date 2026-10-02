@@ -41,7 +41,7 @@
 
 ## Medium
 
-- [ ] **`build_window` is a ~630-line function** - It creates every widget and wires every signal of the Lister in one body, so it is hard to read and cannot be tested. Split it into `build_toolbar`, `build_file_view`, `wire_selection`, `wire_keys`, `wire_dnd` and so on, the way `actions::attach` already does for the button row.
+- [x] **`build_window` is a ~630-line function** - It creates every widget and wires every signal of the Lister in one body, so it is hard to read and cannot be tested. Split it into `build_toolbar`, `build_file_view`, `wire_selection`, `wire_keys`, `wire_dnd` and so on, the way `actions::attach` already does for the button row.
   - File(s): `crates/lister/src/build.rs:97`
 
 - [ ] **The `Ui` struct is still a god object** - About 30 fields: caches, format state, typeahead, output windows, remote sessions and history all sit next to each other, and every module reaches into `Ui` directly. Keep going with the split that `ViewState`/`StatusBar`/`NavHistory` started: a `FormatState` (`format`, `temp_format`), a `Caches` (`dir_cache`, `size_cache`), a `Typeahead`, with methods on each.
