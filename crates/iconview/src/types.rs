@@ -72,6 +72,9 @@ pub struct IconEntry {
     pub mode: u32,
     /// Lowercase final extension, if any.
     pub ext: Option<String>,
+    /// Modification time in whole seconds since the epoch, 0 when unknown. A
+    /// changed value drops the entry's cached thumbnail.
+    pub modified: i64,
     /// Whether this entry is a "left out" desktop icon (drawn with an arrow
     /// badge, position pinned by path).
     pub left_out: bool,

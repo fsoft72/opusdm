@@ -465,6 +465,7 @@ pub fn row_to_entry(row: &Row, dir: &Path) -> opusdm_iconview::IconEntry {
         kind,
         mode: row.mode,
         ext,
+        modified: row.modified_unix,
         left_out: false,
         group: false,
     }

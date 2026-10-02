@@ -260,12 +260,14 @@ impl IconField {
         self.apply_pinned();
 
         // Re-key cached thumbnails to the new indices; entries that kept
-        // their path keep their thumbnail.
+        // their path and modification time keep their thumbnail.
         {
             let mut cache = self.inner.layout.thumb_cache.borrow_mut();
             let prev: Vec<_> = cache.drain().collect();
             for (i, tex) in prev {
-                if let Some(ni) = remap(i) {
+                let Some(ni) = remap(i) else { continue };
+                // An edited file keeps its row but not its thumbnail.
+                if thumbnail_still_valid(&old[i], &entries[ni]) {
                     cache.insert(ni, tex);
                 }
             }
@@ -773,8 +775,30 @@ impl Default for IconField {
     }
 }
 
+/// Whether a thumbnail made for `old` still shows `new`: same file, not
+/// modified since.
+fn thumbnail_still_valid(old: &IconEntry, new: &IconEntry) -> bool {
+    old.path == new.path && old.modified == new.modified
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_edited_file_loses_its_thumbnail_but_an_untouched_one_keeps_it() {
+        let entry = |modified| IconEntry {
+            name: "a.png".into(),
+            path: "/d/a.png".into(),
+            kind: IconKind::File,
+            mode: 0o100_644,
+            ext: Some("png".into()),
+            modified,
+            left_out: false,
+            group: false,
+        };
+        assert!(thumbnail_still_valid(&entry(10), &entry(10)));
+        assert!(!thumbnail_still_valid(&entry(10), &entry(11)));
+    }
+
     use super::*;
     use crate::item::IconItem;
     use crate::types::IconKind;
@@ -802,6 +826,7 @@ mod tests {
                 kind: IconKind::File,
                 mode: 0o100_644,
                 ext: Some("txt".into()),
+                modified: 0,
                 left_out: false,
                 group: false,
             })
@@ -855,6 +880,7 @@ mod tests {
             kind: IconKind::File,
             mode: 0o100_644,
             ext: Some("jpg".into()),
+            modified: 0,
             left_out: false,
             group: false,
         };
@@ -1056,6 +1082,7 @@ mod tests {
             kind: IconKind::File,
             mode: 0o100_644,
             ext: Some("rs".into()),
+            modified: 0,
             left_out: false,
             group: false,
         }]);

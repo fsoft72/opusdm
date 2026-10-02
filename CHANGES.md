@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Fix (iconview): `IconEntry` carries `modified` (whole seconds since the epoch). `refresh_entries` keeps a cached thumbnail only when the entry's path and `modified` are unchanged (`thumbnail_still_valid`), so an overwritten image gets a new thumbnail on the next refresh instead of keeping the old one until the folder is reopened. The cache is still re-keyed by index; keying it by `(path, mtime)` outright was left for later.
 - Refactor (hub): Function step dispatch is one exhaustive `match` on `InternalCmd` in `run_steps_cancellable`; the seven `unreachable!` arms of `run_internal` are gone. `run_internal` is split into `run_rename`, `run_make_entry` and `run_file_job` (with a small `FileJob` enum), so adding an `InternalCmd` no longer compiles until it is dispatched.
 - Refactor (hub): `Hub::submit_job(requester, spec, waiter)` is the single place that submits to the job engine and records the `JobMeta`; `lister_run_job`, `HubCmd::RunJob` and `function_job` use it instead of three copies.
 - Refactor (hub): one `broadcast(conns, &msg)` / `Hub::broadcast(msg)` replaces the nine copies of the "send to every registered Lister" loop (settings, bindings, formats, functions, invalidate, free caches, hidden, shutdown, job done), and `roles_msg(roles)` builds the `RoleChanged` message once for the broadcast and the reject paths of `apply_role`. (Wrapping `Bindings` / `FormatStore` in `Arc` was left out: it changes the wire types.)

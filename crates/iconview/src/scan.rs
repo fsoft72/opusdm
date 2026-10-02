@@ -46,20 +46,20 @@ pub fn read_entries(dir: &Path, show_hidden: bool) -> io::Result<Vec<IconEntry>>
             Ok(ft) => ft,
             Err(_) => continue,
         };
-        let (kind, mode) = if file_type.is_symlink() {
+        let (kind, mode, modified) = if file_type.is_symlink() {
             match std::fs::metadata(entry.path()) {
-                Ok(m) => (IconKind::Symlink, m.mode()),
-                Err(_) => (IconKind::Broken, 0),
+                Ok(m) => (IconKind::Symlink, m.mode(), m.mtime()),
+                Err(_) => (IconKind::Broken, 0, 0),
             }
         } else {
             match entry.metadata() {
-                Ok(m) if m.is_dir() => (IconKind::Dir, m.mode()),
-                Ok(m) => (IconKind::File, m.mode()),
+                Ok(m) if m.is_dir() => (IconKind::Dir, m.mode(), m.mtime()),
+                Ok(m) => (IconKind::File, m.mode(), m.mtime()),
                 Err(_) => continue,
             }
         };
         let ext = if kind == IconKind::Dir { None } else { IconEntry::ext_of(&name) };
-        out.push(IconEntry { name, path: entry.path(), kind, mode, ext, left_out: false, group: false });
+        out.push(IconEntry { name, path: entry.path(), kind, mode, ext, modified, left_out: false, group: false });
     }
     sort_dirs_first(&mut out);
     Ok(out)
@@ -76,17 +76,17 @@ pub fn entry_for_path(path: &Path) -> IconEntry {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let (kind, mode) = match std::fs::symlink_metadata(path) {
-        Err(_) => (IconKind::Broken, 0),
+    let (kind, mode, modified) = match std::fs::symlink_metadata(path) {
+        Err(_) => (IconKind::Broken, 0, 0),
         Ok(m) if m.file_type().is_symlink() => match std::fs::metadata(path) {
-            Ok(target) => (IconKind::Symlink, target.mode()),
-            Err(_) => (IconKind::Broken, 0),
+            Ok(target) => (IconKind::Symlink, target.mode(), target.mtime()),
+            Err(_) => (IconKind::Broken, 0, 0),
         },
-        Ok(m) if m.is_dir() => (IconKind::Dir, m.mode()),
-        Ok(m) => (IconKind::File, m.mode()),
+        Ok(m) if m.is_dir() => (IconKind::Dir, m.mode(), m.mtime()),
+        Ok(m) => (IconKind::File, m.mode(), m.mtime()),
     };
     let ext = if kind == IconKind::Dir { None } else { IconEntry::ext_of(&name) };
-    IconEntry { name, path: path.to_path_buf(), kind, mode, ext, left_out: false, group: false }
+    IconEntry { name, path: path.to_path_buf(), kind, mode, ext, modified, left_out: false, group: false }
 }
 
 /// Sort entries for a tidy grid: directories first, then files, each block by
@@ -174,6 +174,7 @@ mod tests {
             kind,
             mode: 0,
             ext: None,
+            modified: 0,
             left_out: false,
             group: false,
         };

@@ -100,6 +100,7 @@ impl IconField {
             kind: IconKind::File,
             mode: 0,
             ext: None,
+            modified: 0,
             left_out: false,
             group: false,
         };

@@ -51,6 +51,7 @@ pub fn group_entry(group: &Group) -> IconEntry {
         kind: IconKind::Dir,
         mode: 0o040_755,
         ext: None,
+        modified: 0,
         left_out: false,
         group: true,
     }
