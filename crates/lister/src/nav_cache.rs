@@ -132,15 +132,24 @@ impl Ui {
     }
 
     /// Select the rows called `names`, adding to the current selection.
+    /// One `set_selection` call, so `selection-changed` fires once however
+    /// many rows match.
     pub fn select_names(&self, names: &[String]) {
         if names.is_empty() {
             return;
         }
+        let wanted: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+        let matches = gtk::Bitset::new_empty();
         for i in 0..self.view.selection.n_items() {
-            if self.row_at(i).is_some_and(|row| names.contains(&row.name)) {
-                self.view.selection.select_item(i, false);
+            if self.row_at(i).is_some_and(|row| wanted.contains(row.name.as_str())) {
+                matches.add(i);
             }
         }
+        if matches.is_empty() {
+            return;
+        }
+        // The mask is the same set: only these rows change, the others keep their state.
+        self.view.selection.set_selection(&matches, &matches);
     }
 
     /// Tell the hub which directories this Lister has cached.
