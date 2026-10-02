@@ -60,7 +60,7 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>, force: bool) {
         return;
     }
 
-    let (known, missing) = ui.size_cache.borrow_mut().split(target_dirs, force);
+    let (known, missing) = ui.caches.sizes.borrow_mut().split(target_dirs, force);
     let mut total_calculated = 0u64;
     let mut count = 0;
     for (idx, name, size) in known {
@@ -92,7 +92,7 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>, force: bool) {
         while let Ok((idx, name, path, size)) = rx.recv().await {
             total_calculated += size;
             count += 1;
-            ui_clone.size_cache.borrow_mut().put(path, size);
+            ui_clone.caches.sizes.borrow_mut().put(path, size);
             apply_size(&ui_clone, idx, &name, size);
         }
         crate::actions::flash(

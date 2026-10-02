@@ -46,7 +46,7 @@ impl Ui {
         self.nav_generation.set(gen);
 
         let is_archive = crate::archive::parse_archive_path(dir).is_some() || remote_url.is_some();
-        let cached = if use_cache && !is_archive { self.dir_cache.borrow_mut().get(dir) } else { None };
+        let cached = if use_cache && !is_archive { self.caches.dirs.borrow_mut().get(dir) } else { None };
         if let Some(rows) = &cached {
             self.apply_navigation(dir, Ok((**rows).clone()));
         }
@@ -103,7 +103,7 @@ impl Ui {
                     self.drop_remote_session(url);
                 }
                 // The directory is gone or unreadable: forget any copy of it.
-                if !is_archive && self.dir_cache.borrow_mut().remove(dir) {
+                if !is_archive && self.caches.dirs.borrow_mut().remove(dir) {
                     self.report_cache();
                 }
                 self.apply_navigation(dir, Err(e));
@@ -123,7 +123,7 @@ impl Ui {
         // Keep the user's selection when the fresh listing replaces a cached one.
         let selected = if cached.is_some() { self.selected_names() } else { Vec::new() };
         if !is_archive {
-            self.dir_cache.borrow_mut().put(dir.to_path_buf(), rows.clone());
+            self.caches.dirs.borrow_mut().put(dir.to_path_buf(), rows.clone());
             self.report_cache();
         }
         self.apply_navigation(dir, Ok(rows));
@@ -154,14 +154,13 @@ impl Ui {
 
     /// Tell the hub which directories this Lister has cached.
     pub fn report_cache(&self) {
-        let paths = self.dir_cache.borrow().paths();
+        let paths = self.caches.dirs.borrow().paths();
         let _ = self.hub.client.send(&ToHub::CacheReport(paths));
     }
 
     /// Drop the whole cache and tell the hub.
     pub fn free_caches(&self) {
-        self.dir_cache.borrow_mut().clear();
-        self.size_cache.borrow_mut().clear();
+        self.caches.clear();
         self.report_cache();
     }
 

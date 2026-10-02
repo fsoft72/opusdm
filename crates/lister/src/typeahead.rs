@@ -49,8 +49,8 @@ impl Ui {
     pub fn typeahead_feed(self: &Rc<Self>, key: gdk::Key, modified: bool) -> bool {
         // An emptied buffer keeps a short grace period (the idle timer is
         // still armed) so extra Backspaces do not walk up the folder tree.
-        let empty = self.typeahead_buffer.borrow().is_empty();
-        let armed = self.typeahead_timer.borrow().is_some();
+        let empty = self.typeahead.buffer.borrow().is_empty();
+        let armed = self.typeahead.timer.borrow().is_some();
         if !backspace_is_swallowed(empty, armed) {
             return false;
         }
@@ -65,8 +65,8 @@ impl Ui {
                 true
             }
             gdk::Key::BackSpace => {
-                self.typeahead_buffer.borrow_mut().pop();
-                if self.typeahead_buffer.borrow().is_empty() {
+                self.typeahead.buffer.borrow_mut().pop();
+                if self.typeahead.buffer.borrow().is_empty() {
                     self.typeahead_clear_message();
                     self.typeahead_restart_timer();
                 } else {
@@ -109,13 +109,13 @@ impl Ui {
 
     /// Append `c` to the buffer if some name still matches, then move there.
     fn typeahead_push(self: &Rc<Self>, c: char) {
-        self.typeahead_buffer.borrow_mut().push(c);
+        self.typeahead.buffer.borrow_mut().push(c);
         if self.typeahead_search() {
             return;
         }
         // No name starts with that: take the character back out.
         let typed = {
-            let mut buf = self.typeahead_buffer.borrow_mut();
+            let mut buf = self.typeahead.buffer.borrow_mut();
             buf.pop();
             buf.clone()
         };
@@ -128,7 +128,7 @@ impl Ui {
 
     /// Jump to the first row matching the buffer. False when none does.
     fn typeahead_search(self: &Rc<Self>) -> bool {
-        let typed = self.typeahead_buffer.borrow().clone();
+        let typed = self.typeahead.buffer.borrow().clone();
         let n = self.view.selection.n_items();
         let names = (0..n).map(|i| self.row_at(i).map(|r| r.name.clone()).unwrap_or_default());
         let Some(pos) = find_prefix(names, &typed) else { return false };
@@ -140,8 +140,8 @@ impl Ui {
 
     /// Forget the typed text and clear its message.
     pub fn typeahead_close(&self) {
-        self.typeahead_buffer.borrow_mut().clear();
-        if let Some(id) = self.typeahead_timer.borrow_mut().take() {
+        self.typeahead.buffer.borrow_mut().clear();
+        if let Some(id) = self.typeahead.timer.borrow_mut().take() {
             id.remove();
         }
         self.typeahead_clear_message();
@@ -156,16 +156,16 @@ impl Ui {
 
     /// Re-arm the idle timeout.
     fn typeahead_restart_timer(self: &Rc<Self>) {
-        if let Some(id) = self.typeahead_timer.borrow_mut().take() {
+        if let Some(id) = self.typeahead.timer.borrow_mut().take() {
             id.remove();
         }
         let ui = self.clone();
         let id = glib::timeout_add_local_once(IDLE_TIMEOUT, move || {
             // The source is gone once it fires; drop the stale id first.
-            ui.typeahead_timer.borrow_mut().take();
+            ui.typeahead.timer.borrow_mut().take();
             ui.typeahead_close();
         });
-        *self.typeahead_timer.borrow_mut() = Some(id);
+        *self.typeahead.timer.borrow_mut() = Some(id);
     }
 }
 

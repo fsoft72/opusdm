@@ -134,6 +134,39 @@ pub struct NavHistory {
     pub list: gtk::ListBox,
 }
 
+/// Type-to-find: the text typed so far and the idle timeout that closes it.
+pub struct Typeahead {
+    /// Text typed so far; empty when no search is open.
+    pub buffer: RefCell<String>,
+    /// Idle timeout that closes type-to-find.
+    pub timer: RefCell<Option<glib::SourceId>>,
+}
+
+/// The format of the folder on screen.
+pub struct FormatState {
+    /// The format applied to the current directory.
+    pub current: RefCell<opusdm_ipc::ListerFormat>,
+    /// A format applied with "Use": valid only for the directory it was
+    /// applied in.
+    pub temp: RefCell<Option<(PathBuf, opusdm_ipc::ListerFormat)>>,
+}
+
+/// What a Lister remembers about folders it already read.
+pub struct Caches {
+    /// Recently read directory listings (raw rows, before the Show / Hide filter).
+    pub dirs: RefCell<crate::dircache::DirCache>,
+    /// Directory sizes already calculated.
+    pub sizes: RefCell<crate::sizecache::SizeCache>,
+}
+
+impl Caches {
+    /// Forget every cached listing and size.
+    pub fn clear(&self) {
+        self.dirs.borrow_mut().clear();
+        self.sizes.borrow_mut().clear();
+    }
+}
+
 /// Everything the window's callbacks need. Shared by `Rc` across Tasks 13-15.
 pub struct Ui {
     /// The top-level window.
@@ -177,22 +210,15 @@ pub struct Ui {
     /// The "Menu" drop-down of the button row; its popup is built lazily by
     /// `user_menu::install`.
     pub user_menu_btn: gtk::MenuButton,
-    /// Text typed so far for type-to-find; empty when no search is open.
-    pub typeahead_buffer: RefCell<String>,
+    /// Type-to-find state.
+    pub typeahead: Typeahead,
     /// The toolbar's show-hidden toggle, so keyboard and palette changes can
     /// keep its state and icon in step.
     pub hidden_btn: RefCell<Option<gtk::ToggleButton>>,
-    /// Idle timeout that closes type-to-find.
-    pub typeahead_timer: RefCell<Option<glib::SourceId>>,
     /// The format applied to the current directory.
-    pub format: RefCell<opusdm_ipc::ListerFormat>,
-    /// A format applied with "Use": valid only for the directory it was
-    /// applied in.
-    pub temp_format: RefCell<Option<(PathBuf, opusdm_ipc::ListerFormat)>>,
-    /// Recently read directory listings (raw rows, before the Show / Hide filter).
-    pub dir_cache: RefCell<crate::dircache::DirCache>,
-    /// Directory sizes already calculated.
-    pub size_cache: RefCell<crate::sizecache::SizeCache>,
+    pub format_state: FormatState,
+    /// Directory listings and directory sizes already read.
+    pub caches: Caches,
     /// Open `Run` output windows by id.
     pub output_windows: RefCell<std::collections::HashMap<u64, gtk::TextBuffer>>,
     /// Functions this Lister started that are still running.
@@ -305,17 +331,17 @@ impl Ui {
         self.history.borrow_mut().push(dir.to_path_buf());
         self.refresh_history_ui();
         // A "Use" format only lives in the directory it was applied in.
-        if self.temp_format.borrow().as_ref().is_some_and(|(p, _)| p != dir) {
-            *self.temp_format.borrow_mut() = None;
+        if self.format_state.temp.borrow().as_ref().is_some_and(|(p, _)| p != dir) {
+            *self.format_state.temp.borrow_mut() = None;
         }
         let format = self.effective_format(dir);
-        if format != *self.format.borrow() {
+        if format != *self.format_state.current.borrow() {
             self.apply_format(&format);
         }
         let name_filter = opusdm_ipc::NameFilter::new(&format.show_glob, &format.hide_glob);
         let show_hidden = self.view.show_hidden.get();
         let visible = crate::model::visible_rows(rows, show_hidden, &name_filter, |name| {
-            self.size_cache.borrow().get(&dir.join(name))
+            self.caches.sizes.borrow().get(&dir.join(name))
         });
         let new_items: Vec<BoxedAnyObject> =
             visible.rows.into_iter().map(|row| BoxedAnyObject::new(Rc::new(row))).collect();
@@ -523,7 +549,7 @@ impl Ui {
                 crate::actions::sync_role_buttons(self);
             }
             ToLister::InvalidatePath(p) => {
-                if self.dir_cache.borrow_mut().remove(&p) {
+                if self.caches.dirs.borrow_mut().remove(&p) {
                     self.report_cache();
                 }
                 if p == *self.cwd.borrow() {
@@ -556,7 +582,7 @@ impl Ui {
                 };
                 *self.hub.settings.borrow_mut() = new_settings;
                 let capacity = self.hub.settings.borrow().behavior.cache_capacity();
-                self.dir_cache.borrow_mut().set_capacity(capacity);
+                self.caches.dirs.borrow_mut().set_capacity(capacity);
                 self.report_cache();
                 self.update_status();
                 opusdm_ui::apply_theme_mode(self.hub.settings.borrow().appearance.theme_mode);

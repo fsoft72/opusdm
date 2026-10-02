@@ -59,7 +59,7 @@ impl Ui {
         let generation = self.status_bar.gauge_generation.clone();
         let this_request = generation.get() + 1;
         generation.set(this_request);
-        let wanted = self.format.borrow().gauge && crate::archive::parse_archive_path(dir).is_none() && crate::remote::url_of(dir).is_none();
+        let wanted = self.format_state.current.borrow().gauge && crate::archive::parse_archive_path(dir).is_none() && crate::remote::url_of(dir).is_none();
         if !wanted {
             bar.set_visible(false);
             return;

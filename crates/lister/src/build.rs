@@ -3,7 +3,7 @@
 
 use crate::client::{Client, Inbound, Roles};
 use crate::model::{dir_first_cmp, Row, SortCol};
-use crate::window::{HubConnection, StatusBar, Ui, ViewMode, ViewState};
+use crate::window::{Caches, FormatState, HubConnection, StatusBar, Typeahead, Ui, ViewMode, ViewState};
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
@@ -516,13 +516,13 @@ fn assemble_ui(
         css_provider,
         nav_generation: Cell::new(0),
         function_log: RefCell::new(None),
-        typeahead_buffer: RefCell::new(String::new()),
-        typeahead_timer: RefCell::new(None),
+        typeahead: Typeahead { buffer: RefCell::new(String::new()), timer: RefCell::new(None) },
         hidden_btn: RefCell::new(None),
-        format: RefCell::new(opusdm_ipc::ListerFormat::builtin()),
-        temp_format: RefCell::new(None),
-        dir_cache: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
-        size_cache: RefCell::new(crate::sizecache::SizeCache::default()),
+        format_state: FormatState { current: RefCell::new(opusdm_ipc::ListerFormat::builtin()), temp: RefCell::new(None) },
+        caches: Caches {
+            dirs: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
+            sizes: RefCell::new(crate::sizecache::SizeCache::default()),
+        },
         output_windows: RefCell::new(std::collections::HashMap::new()),
         busy: crate::busy::Busy::default(),
         remote: crate::remote_ui::RemoteState::default(),

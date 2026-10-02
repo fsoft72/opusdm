@@ -302,7 +302,7 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
     }
     crate::archive::scratch_job_done();
     // A job changes sizes: forget the ones calculated before.
-    ui.size_cache.borrow_mut().clear();
+    ui.caches.sizes.borrow_mut().clear();
     ui.reload();
 }
 

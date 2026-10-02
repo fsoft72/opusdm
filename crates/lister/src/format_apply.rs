@@ -12,7 +12,7 @@ impl Ui {
     /// else the saved one. Archive paths use the default, since no saved path
     /// can name them.
     pub fn effective_format(&self, dir: &Path) -> ListerFormat {
-        if let Some((path, format)) = self.temp_format.borrow().as_ref() {
+        if let Some((path, format)) = self.format_state.temp.borrow().as_ref() {
             if path == dir {
                 return format.clone();
             }
@@ -57,20 +57,20 @@ impl Ui {
         view.column_view.sort_by_column(column_for(format.sort).as_ref(), order);
         // The separation can change without the header state changing.
         view.model_sorter.changed(gtk::SorterChange::Different);
-        *self.format.borrow_mut() = format.clone();
+        *self.format_state.current.borrow_mut() = format.clone();
         self.update_gauge(&self.cwd_path());
     }
 
     /// Forget what is on screen so the next listing reapplies the format,
     /// even when it equals the previous one.
     pub fn invalidate_format(&self) {
-        *self.format.borrow_mut() = ListerFormat::stale();
+        *self.format_state.current.borrow_mut() = ListerFormat::stale();
     }
 
     /// Apply `format` to the current directory only ("Use").
     pub fn use_format(self: &Rc<Self>, format: ListerFormat) {
         self.invalidate_format();
-        *self.temp_format.borrow_mut() = Some((self.cwd_path(), format));
+        *self.format_state.temp.borrow_mut() = Some((self.cwd_path(), format));
         self.reload();
     }
 
@@ -79,7 +79,7 @@ impl Ui {
     pub fn on_formats_changed(self: &Rc<Self>) {
         let cwd = self.cwd_path();
         // Reloading reapplies the format, so an invalidated one always does.
-        if self.effective_format(&cwd) != *self.format.borrow() {
+        if self.effective_format(&cwd) != *self.format_state.current.borrow() {
             self.reload();
         }
     }
