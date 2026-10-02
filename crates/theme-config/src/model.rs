@@ -42,7 +42,7 @@ pub fn apply_full(settings: &Settings, desktop: &DesktopSettings) -> ApplyOutcom
     if opusdm_ipc::sockpath::probe_live_hub(&sock) {
         match send_to_hub(&sock, settings, desktop) {
             Ok(()) => return ApplyOutcome::SentToHub,
-            Err(e) => eprintln!("opusdm-settings: hub send failed, writing files: {e}"),
+            Err(e) => opusdm_ipc::err_log!("opusdm-settings", "hub send failed, writing files: {e}"),
         }
     }
     match write_files(settings, desktop) {

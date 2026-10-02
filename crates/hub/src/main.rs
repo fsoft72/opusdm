@@ -20,11 +20,11 @@ fn main() {
     let listener = match children::acquire_socket(&sock_path) {
         AcquireOutcome::Bound(l) => l,
         AcquireOutcome::HandedOff => {
-            eprintln!("opusdm-hub already running; asked it to raise its toolbar");
+            opusdm_ipc::err_log!("opusdm-hub", "already running; asked it to raise its toolbar");
             std::process::exit(0);
         }
         AcquireOutcome::Failed(msg) => {
-            eprintln!("opusdm-hub: {msg}");
+            opusdm_ipc::err_log!("opusdm-hub", "{msg}");
             std::process::exit(1);
         }
     };
@@ -34,7 +34,7 @@ fn main() {
         listener,
         Box::new(move |start: Option<std::path::PathBuf>| {
             if let Err(e) = children::spawn_lister(&sock_for_spawn, start.as_deref()) {
-                eprintln!("opusdm-hub: cannot spawn lister: {e}");
+                opusdm_ipc::err_log!("opusdm-hub", "cannot spawn lister: {e}");
             }
         }),
         server::ServerOptions::production(),
@@ -47,7 +47,7 @@ fn main() {
     // Open the first Lister at $HOME.
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     if let Err(e) = children::spawn_lister(&sock_path, home.as_deref()) {
-        eprintln!("opusdm-hub: cannot spawn initial lister: {e}");
+        opusdm_ipc::err_log!("opusdm-hub", "cannot spawn initial lister: {e}");
     }
 
     let code = toolbar::run(handle, sock_path);

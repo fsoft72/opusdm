@@ -54,7 +54,7 @@ pub fn spawn() -> (mpsc::Sender<SniCmd>, async_channel::Receiver<SniEvent>) {
         .name("opusdm-panel-sni".into())
         .spawn(move || {
             if let Err(e) = run(cmd_rx, evt_tx) {
-                eprintln!("opusdm-panel: SNI tray stopped: {e}");
+                opusdm_ipc::err_log!("opusdm-panel", "SNI tray stopped: {e}");
             }
         })
         .expect("spawn sni thread");
@@ -116,7 +116,7 @@ impl Watcher {
                 let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
                 watch_item(service, path, self.tx.clone());
             }
-            Err(e) => eprintln!("opusdm-panel: cannot fetch SNI item {service} at {path}: {e}"),
+            Err(e) => opusdm_ipc::err_log!("opusdm-panel", "cannot fetch SNI item {service} at {path}: {e}"),
         }
     }
 
@@ -235,7 +235,7 @@ fn run(
     let conn = match conn {
         Ok(conn) => conn,
         Err(_) => {
-            eprintln!("opusdm-panel: SNI watcher already running, connecting as host only");
+            opusdm_ipc::err_log!("opusdm-panel", "SNI watcher already running, connecting as host only");
             return run_as_host_client(cmd_rx, tx);
         }
     };
@@ -285,7 +285,7 @@ fn run_as_host_client(
                     let _ = tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
                     watch_item(service, path, tx.clone());
                 }
-                Err(e) => eprintln!("opusdm-panel: cannot fetch existing SNI item {service} at {path}: {e}"),
+                Err(e) => opusdm_ipc::err_log!("opusdm-panel", "cannot fetch existing SNI item {service} at {path}: {e}"),
             }
         }
     }
@@ -315,7 +315,7 @@ fn watch_host_registrations(watcher: zbus::blocking::Proxy<'static>, tx: async_c
                             watch_item(service, path, tx.clone());
                         }
                         Err(e) => {
-                            eprintln!("opusdm-panel: cannot fetch newly-registered SNI item {service} at {path}: {e}")
+                            opusdm_ipc::err_log!("opusdm-panel", "cannot fetch newly-registered SNI item {service} at {path}: {e}")
                         }
                     }
                 }
@@ -363,7 +363,7 @@ fn send_activate(conn: &zbus::blocking::Connection, service: &str, path: &str, x
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("opusdm-panel: SNI Activate failed for {service}: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "SNI Activate failed for {service}: {e}");
     }
 }
 
@@ -374,6 +374,6 @@ fn send_context_menu(conn: &zbus::blocking::Connection, service: &str, path: &st
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("opusdm-panel: SNI ContextMenu failed for {service}: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "SNI ContextMenu failed for {service}: {e}");
     }
 }

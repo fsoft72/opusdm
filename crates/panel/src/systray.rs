@@ -142,7 +142,7 @@ pub fn spawn(panel_height: i32) -> (TraySender, async_channel::Receiver<TrayEven
         .name("opusdm-panel-systray".into())
         .spawn(move || {
             if let Err(e) = run(panel_height, cmd_rx, &thread_wake, evt_tx) {
-                eprintln!("opusdm-panel: system tray stopped: {e}");
+                opusdm_ipc::err_log!("opusdm-panel", "system tray stopped: {e}");
             }
         })
         .expect("spawn systray thread");
@@ -164,7 +164,7 @@ fn run(
 
     let owner = conn.get_selection_owner(selection_atom)?.reply()?.owner;
     if owner != 0 {
-        eprintln!("opusdm-panel: system tray already running, tray disabled");
+        opusdm_ipc::err_log!("opusdm-panel", "system tray already running, tray disabled");
         return Ok(());
     }
 
@@ -316,7 +316,7 @@ fn dock_icon(
             containers.insert(icon_xid, container);
             let _ = tx.send_blocking(TrayEvent::IconDocked(icon_xid));
         }
-        Err(e) => eprintln!("opusdm-panel: cannot dock tray icon {icon_xid}: {e}"),
+        Err(e) => opusdm_ipc::err_log!("opusdm-panel", "cannot dock tray icon {icon_xid}: {e}"),
     }
 }
 

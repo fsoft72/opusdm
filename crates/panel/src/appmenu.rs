@@ -191,7 +191,7 @@ pub fn set_direction(button: &gtk::MenuButton, position: PanelPosition) {
 /// Spawn a detached command; a missing binary is logged, not fatal.
 fn run_detached(bin: &str, args: &[&str]) {
     if let Err(e) = Command::new(bin).args(args).spawn() {
-        eprintln!("opusdm-panel: cannot run {bin}: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "cannot run {bin}: {e}");
     }
 }
 

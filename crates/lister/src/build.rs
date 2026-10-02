@@ -430,7 +430,7 @@ fn start_watcher(settings: &Settings) -> (Option<crate::watcher::DirWatcher>, Op
     match crate::watcher::DirWatcher::start(debounce) {
         Ok((w, rx)) => (Some(w), Some(rx)),
         Err(e) => {
-            eprintln!("opusdm-lister: auto-refresh unavailable: {e}");
+            opusdm_ipc::err_log!("opusdm-lister", "auto-refresh unavailable: {e}");
             (None, None)
         }
     }

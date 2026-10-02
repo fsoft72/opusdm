@@ -17,11 +17,11 @@ use x11rb::wrapper::ConnectionExt as _;
 /// hints, it just may not sit flush or stay below other windows.
 pub fn make_desktop_window(window: &gtk::ApplicationWindow, x: i32, y: i32, width: i32, height: i32) {
     let Some(xid) = x11_window_id(window) else {
-        eprintln!("opusdm-hub: window is not on X11; skipping desktop setup");
+        opusdm_ipc::err_log!("opusdm-hub", "window is not on X11; skipping desktop setup");
         return;
     };
     if let Err(e) = apply(xid, x, y, width, height) {
-        eprintln!("opusdm-hub: cannot set desktop window hints: {e}");
+        opusdm_ipc::err_log!("opusdm-hub", "cannot set desktop window hints: {e}");
     }
 }
 
@@ -37,7 +37,7 @@ pub fn make_desktop_window(window: &gtk::ApplicationWindow, x: i32, y: i32, widt
 pub fn pin_geometry(window: &gtk::ApplicationWindow, x: i32, y: i32, width: i32, height: i32) {
     let Some(xid) = x11_window_id(window) else { return };
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.pin_geometry(xid, x, y, width.max(1) as u32, height.max(1) as u32)) {
-        eprintln!("opusdm-hub: cannot pin desktop geometry: {e}");
+        opusdm_ipc::err_log!("opusdm-hub", "cannot pin desktop geometry: {e}");
     }
 }
 

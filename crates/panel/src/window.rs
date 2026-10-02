@@ -64,11 +64,11 @@ pub fn strut_partial(position: PanelPosition, height: i32, mon_x: i32, mon_w: i3
 /// Errors are logged and swallowed.
 pub fn make_panel_window(window: &gtk::ApplicationWindow, place: Placement) {
     let Some(xid) = x11_window_id(window) else {
-        eprintln!("opusdm-panel: window is not on X11; skipping dock setup");
+        opusdm_ipc::err_log!("opusdm-panel", "window is not on X11; skipping dock setup");
         return;
     };
     if let Err(e) = apply(xid, place) {
-        eprintln!("opusdm-panel: cannot set dock window hints: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "cannot set dock window hints: {e}");
     }
 }
 
@@ -78,7 +78,7 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement) {
     let Some(xid) = x11_window_id(window) else { return };
     let (x, y, w, h) = (place.mon_x, place.bar_y(), place.mon_w.max(1) as u32, PANEL_HEIGHT.max(1) as u32);
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.configure(xid, x, y, w, h)) {
-        eprintln!("opusdm-panel: cannot pin panel geometry: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "cannot pin panel geometry: {e}");
     }
 }
 
@@ -90,7 +90,7 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement) {
 pub fn raise_above(window: &gtk::ApplicationWindow) {
     let Some(xid) = x11_window_id(window) else { return };
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.raise_above(xid)) {
-        eprintln!("opusdm-panel: cannot raise panel: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "cannot raise panel: {e}");
     }
 }
 

@@ -40,7 +40,7 @@ where
 
     std::thread::spawn(move || {
         if let Err(e) = pump(&tx) {
-            eprintln!("opusdm: screen size watcher stopped: {e}");
+            opusdm_ipc::err_log!("opusdm", "screen size watcher stopped: {e}");
         }
     });
 

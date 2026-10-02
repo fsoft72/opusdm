@@ -144,7 +144,7 @@ pub fn spawn() -> async_channel::Receiver<EwmhEvent> {
         .name("opusdm-panel-ewmh".into())
         .spawn(move || {
             if let Err(e) = observe(&tx) {
-                eprintln!("opusdm-panel: EWMH observer stopped: {e}");
+                opusdm_ipc::err_log!("opusdm-panel", "EWMH observer stopped: {e}");
             }
         })
         .expect("spawn ewmh thread");
@@ -332,7 +332,7 @@ fn get_string(conn: &RustConnection, win: Window, prop: u32) -> Option<String> {
 /// Run `f` on the shared connection; a failure is logged, never raised.
 fn with_root(f: impl FnOnce(&opusdm_ui::X11) -> Result<(), opusdm_ui::X11Error>) {
     if let Err(e) = opusdm_ui::with_x11(f) {
-        eprintln!("opusdm-panel: X action failed: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "X action failed: {e}");
     }
 }
 

@@ -85,7 +85,7 @@ pub fn send_event_clicked(
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("opusdm-panel: dbusmenu Event failed for {service}: {e}");
+        opusdm_ipc::err_log!("opusdm-panel", "dbusmenu Event failed for {service}: {e}");
     }
 }
 

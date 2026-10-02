@@ -84,7 +84,7 @@ fn main() {
     let sock_path = match std::env::var_os(opusdm_ipc::sockpath::ENV_SOCK) {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => {
-            eprintln!("opusdm-lister: run opusdm-hub (this process is launched by the hub)");
+            opusdm_ipc::err_log!("opusdm-lister", "run opusdm-hub (this process is launched by the hub)");
             std::process::exit(1);
         }
     };
@@ -101,7 +101,7 @@ fn main() {
         match client::Client::connect(&sock_path, pid, &start_path) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("opusdm-lister: cannot reach hub: {e}");
+                opusdm_ipc::err_log!("opusdm-lister", "cannot reach hub: {e}");
                 std::process::exit(1);
             }
         };

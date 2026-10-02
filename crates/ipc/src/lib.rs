@@ -6,7 +6,7 @@
 /// every debug trace in the workspace shares one gate and one format.
 #[macro_export]
 macro_rules! debug_log {
-    ($tag:literal, $($arg:tt)*) => {
+    ($tag:expr, $($arg:tt)*) => {
         if std::env::var_os("OPUSDM_DEBUG").is_some() {
             eprintln!("[{}:{}] {}", $tag, std::process::id(), format_args!($($arg)*));
         }
@@ -19,8 +19,8 @@ macro_rules! debug_log {
 /// so there is one place that controls the format.
 #[macro_export]
 macro_rules! err_log {
-    ($tag:literal, $($arg:tt)*) => {
-        eprintln!("[{}:{}] {}", $tag, std::process::id(), format_args!($($arg)*));
+    ($tag:expr, $($arg:tt)*) => {
+        eprintln!("[{}:{}] {}", $tag, std::process::id(), format_args!($($arg)*))
     };
 }
 

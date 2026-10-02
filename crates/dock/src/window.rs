@@ -19,11 +19,11 @@ use x11rb::wrapper::ConnectionExt as _;
 /// swallowed.
 pub fn make_dock_window(window: &gtk::ApplicationWindow, place: Placement, count: usize) {
     let Some(xid) = x11_window_id(window) else {
-        eprintln!("opusdm-dock: window is not on X11; skipping dock setup");
+        opusdm_ipc::err_log!("opusdm-dock", "window is not on X11; skipping dock setup");
         return;
     };
     if let Err(e) = apply(xid, place, count) {
-        eprintln!("opusdm-dock: cannot set dock window hints: {e}");
+        opusdm_ipc::err_log!("opusdm-dock", "cannot set dock window hints: {e}");
     }
 }
 
@@ -40,7 +40,7 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement, count: us
     let Some(xid) = x11_window_id(window) else { return };
     let (x, y, w, h) = place.rect(count);
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.pin_geometry(xid, x, y, w.max(1) as u32, h.max(1) as u32)) {
-        eprintln!("opusdm-dock: cannot pin dock geometry: {e}");
+        opusdm_ipc::err_log!("opusdm-dock", "cannot pin dock geometry: {e}");
     }
 }
 
@@ -53,7 +53,7 @@ pub fn set_below(window: &gtk::ApplicationWindow) {
     let Some(xid) = x11_window_id(window) else { return };
     let states = ["_NET_WM_STATE_BELOW", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"];
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.add_wm_states(xid, &states)) {
-        eprintln!("opusdm-dock: cannot lower dock: {e}");
+        opusdm_ipc::err_log!("opusdm-dock", "cannot lower dock: {e}");
     }
 }
 

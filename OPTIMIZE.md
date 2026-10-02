@@ -64,7 +64,7 @@
 
 ## Low / Nice to have
 
-- [ ] **Two logging styles** - 46 `eprintln!` calls sit next to the `err_log!`/`debug_log!` macros (for example `settings::read_json`), so some errors skip the log file and its formatting. Use the macros everywhere outside tests.
+- [x] **Two logging styles** - 46 `eprintln!` calls sit next to the `err_log!`/`debug_log!` macros (for example `settings::read_json`), so some errors skip the log file and its formatting. Use the macros everywhere outside tests.
   - File(s): `crates/ipc/src/settings.rs` and others (`grep -rn eprintln! crates`)
 
 - [ ] **The same metadata-to-row code appears three times in `read_dir_rows`** - The mtime/uid/gid/mode extraction is written out for the symlink target, the broken link and the plain entry. Use one `row_fields(&Metadata)` helper.

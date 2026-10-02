@@ -58,14 +58,14 @@ pub fn read_json<T: DeserializeOwned>(path: &Path, app_tag: &str, entity_name: &
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{app_tag}: cannot read {entity_name} from {}: {e}", path.display());
+            crate::err_log!(app_tag, "cannot read {entity_name} from {}: {e}", path.display());
             return None;
         }
     };
     match serde_json::from_str(&content) {
         Ok(val) => Some(val),
         Err(e) => {
-            eprintln!("{app_tag}: malformed {entity_name} in {}: {e}", path.display());
+            crate::err_log!(app_tag, "malformed {entity_name} in {}: {e}", path.display());
             backup_malformed(path, app_tag);
             None
         }
@@ -82,8 +82,8 @@ fn backup_malformed(path: &Path, app_tag: &str) {
         return;
     }
     match fs::copy(path, &backup) {
-        Ok(_) => eprintln!("{app_tag}: a copy of the malformed file was kept in {}", backup.display()),
-        Err(e) => eprintln!("{app_tag}: could not back up {}: {e}", path.display()),
+        Ok(_) => crate::err_log!(app_tag, "a copy of the malformed file was kept in {}", backup.display()),
+        Err(e) => crate::err_log!(app_tag, "could not back up {}: {e}", path.display()),
     }
 }
 

@@ -55,7 +55,7 @@ pub fn ensure_default_theme() {
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| std::fs::write(&path, bytes));
         if let Err(e) = result {
-            eprintln!("opusdm: cannot install default theme file {}: {e}", path.display());
+            crate::err_log!("opusdm", "cannot install default theme file {}: {e}", path.display());
             return;
         }
     }
@@ -121,11 +121,11 @@ pub fn scan_themes() -> Vec<CustomThemeSummary> {
             continue;
         };
         let Ok(manifest) = serde_json::from_str::<ThemeManifest>(&content) else {
-            eprintln!("opusdm: {} has an unparseable manifest.json", path.display());
+            crate::err_log!("opusdm", "{} has an unparseable manifest.json", path.display());
             continue;
         };
         if !manifest.is_valid() {
-            eprintln!("opusdm: {} has an invalid manifest.json (name/label)", path.display());
+            crate::err_log!("opusdm", "{} has an invalid manifest.json (name/label)", path.display());
             continue;
         }
         let preview = path.join("preview.png");
