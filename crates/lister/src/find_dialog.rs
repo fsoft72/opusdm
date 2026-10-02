@@ -140,11 +140,13 @@ pub fn open(ui: &Rc<Ui>, focus_contains: bool) {
         });
     }
     {
-        let d = weak(&dialog);
+        // The one strong reference: the window owns it through this handler,
+        // so the Dialog lives exactly as long as the window and the weak
+        // handlers above can upgrade. The Dialog does not own the window, so
+        // there is no cycle.
+        let d = dialog.clone();
         window.connect_close_request(move |_| {
-            if let Some(d) = d.upgrade() {
-                d.stop();
-            }
+            d.stop();
             glib::Propagation::Proceed
         });
     }

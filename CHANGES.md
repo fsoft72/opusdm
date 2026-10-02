@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Fix (lister): the Find / Search in Files dialog did nothing when Search, Stop, View or Enter were used. Every handler held only a weak reference to the `Dialog` and nothing owned it once `find_dialog::open` returned, so `upgrade()` always failed. The window's close handler now holds the strong reference, tying the Dialog's life to the window.
 - Feature (hub, theme-config): the desktop context menu has "Edit Theme" before "Settings" in the Desktop submenu. It launches `opusdm-settings --edit-theme`, which opens only the Theme Editor, without the Settings window (`build_editor_only`; `editor::open` takes the application and an optional parent; the flag is read in `main`, arguments are not passed to GApplication).
 - Fix (lister): the SOURCE / DEST stat bar text now uses the theme's text colour. `chrome_css` sets `label { color }` directly, which beat the colour inherited from `.stat-source` / `.stat-dest`; the rules now also target `> label`.
 - Fix (ui): DropDown (Select) labels no longer sit on a darker patch. `chrome_css` only reset `button > *`, so the nested `stack` inside `dropdown > button > box` still got the window colour; all boxes/grids/stacks/frames inside a `button` or `dropdown` are now transparent.
