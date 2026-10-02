@@ -18,7 +18,7 @@
 
 ## High
 
-- [ ] **Rename dialogs read the folder when the user confirms, not when they opened** - The callbacks build the new path with `ui.cwd_path().join(&new_name)` when OK is pressed. If the Lister moved to another folder while the dialog was open (watcher, hub `GoTo`, a keyboard shortcut), the file is *moved* into that folder. Build the target from `old.parent()`, and reject names that contain `/` or are empty.
+- [x] **Rename dialogs read the folder when the user confirms, not when they opened** - The callbacks build the new path with `ui.cwd_path().join(&new_name)` when OK is pressed. If the Lister moved to another folder while the dialog was open (watcher, hub `GoTo`, a keyboard shortcut), the file is *moved* into that folder. Build the target from `old.parent()`, and reject names that contain `/` or are empty.
   - File(s): `crates/lister/src/actions.rs:161`, `crates/lister/src/commands.rs:145`, `crates/lister/src/context_menu.rs:76`
 
 - [ ] **Auto-refresh still clears the filter the user is typing** - `on_directory_changed` puts the filter text back right after `reload()`, but `reload` is asynchronous: `apply_navigation` runs later, when the listing arrives, and calls `dismiss_filter()`, which wipes the restored text. Pass a "keep filter" flag through `navigate` (or skip `dismiss_filter` when the folder did not change) instead of restoring it after the call.

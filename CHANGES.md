@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Fix (lister): the rename dialogs (button, command, context menu) build the target from the renamed file's own folder (`actions::renamed_sibling`, `rename_and_reload`) instead of the Lister's current folder when OK is pressed, and reject empty names, `.`, `..` and names containing `/`.
 - Fix (rename): new `opusdm_fsops::rename_noreplace` (`renameat2(RENAME_NOREPLACE)`, with a check-then-rename fallback) replaces `std::fs::rename` at all 7 call sites (Lister rename dialog, command, context menu, icon view, batch rename, Function Rename step, desktop rename), so a rename never overwrites an existing file. Batch rename (`rename_all`) goes through temporary names, so chains such as `a -> b, b -> c` are order independent and a clashing entry is restored and reported.
 - Fix (fsops): an overwriting `copy_file` writes a hidden temp file next to the destination and renames it over the target only after success. A cancel, a full disk or a read error now keeps the old file and removes the temp file.
 - Fix (fsops, hub): `copy_file` compares `(dev, ino)` of source and destination before opening for overwrite and refuses with `InvalidInput`, so a DEST reached through a symlink or bind mount can no longer truncate the source. Function steps (Copy, Move, Delete, ...) now run `validate_op` like the job engine does.

@@ -157,13 +157,7 @@ pub fn attach(ui: &Rc<Ui>) {
                 .unwrap_or_default();
             let ui = ui.clone();
             let win = ui.window.clone();
-            prompt_rename(&win, &old_name, old.is_dir(), move |new_name| {
-                let new_path = ui.cwd_path().join(&new_name);
-                match opusdm_fsops::rename_noreplace(&old, &new_path) {
-                    Ok(()) => ui.reload(),
-                    Err(e) => flash(&ui, &format!("rename failed: {e}")),
-                }
-            });
+            prompt_rename(&win, &old_name, old.is_dir(), move |new_name| rename_and_reload(&ui, &old, &new_name));
         });
     }
 
@@ -458,6 +452,29 @@ pub fn rename_selection(name: &str, is_dir: bool) -> (i32, i32) {
 }
 
 /// The rename dialog: like [`prompt`], with only the name part selected.
+/// Path `new_name` would have next to `old`: built from `old`'s own folder,
+/// not the Lister's current one, so a Lister that navigated away while the
+/// dialog was open cannot move the file. Rejects empty names, names with a
+/// `/` and `.` / `..`.
+pub fn renamed_sibling(old: &std::path::Path, new_name: &str) -> Result<std::path::PathBuf, String> {
+    if new_name.is_empty() || new_name == "." || new_name == ".." {
+        return Err(format!("invalid name: {new_name:?}"));
+    }
+    if new_name.contains('/') {
+        return Err("a name cannot contain '/'".into());
+    }
+    let parent = old.parent().ok_or_else(|| "cannot rename the root".to_string())?;
+    Ok(parent.join(new_name))
+}
+
+/// Rename `old` to `new_name` in its own folder, then reload or flash the error.
+pub fn rename_and_reload(ui: &Rc<Ui>, old: &std::path::Path, new_name: &str) {
+    match renamed_sibling(old, new_name).and_then(|to| opusdm_fsops::rename_noreplace(old, &to).map_err(|e| e.to_string())) {
+        Ok(()) => ui.reload(),
+        Err(e) => flash(ui, &format!("rename failed: {e}")),
+    }
+}
+
 pub fn prompt_rename(
     parent: &gtk::ApplicationWindow,
     initial: &str,
@@ -482,6 +499,15 @@ pub fn prompt_rename(
 mod tests {
     use super::*;
     use crate::client::Roles;
+
+    #[test]
+    fn renamed_sibling_stays_in_the_old_folder_and_rejects_bad_names() {
+        let old = std::path::Path::new("/a/b/file.txt");
+        assert_eq!(renamed_sibling(old, "x.txt").unwrap(), std::path::PathBuf::from("/a/b/x.txt"));
+        for bad in ["", ".", "..", "c/x", "/etc/x"] {
+            assert!(renamed_sibling(old, bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
 
     #[test]
     fn right_click_on_copy_and_move_runs_the_as_variants() {

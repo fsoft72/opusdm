@@ -142,11 +142,7 @@ pub fn rename_selection(ui: &Rc<Ui>) {
     let ui_clone = ui.clone();
     let win = ui.window.clone();
     crate::actions::prompt_rename(&win, &old_name, old.is_dir(), move |new_name| {
-        let new_path = ui_clone.cwd_path().join(&new_name);
-        match opusdm_fsops::rename_noreplace(&old, &new_path) {
-            Ok(()) => ui_clone.reload(),
-            Err(e) => crate::actions::flash(&ui_clone, &format!("rename failed: {e}")),
-        }
+        crate::actions::rename_and_reload(&ui_clone, &old, &new_name)
     });
 }
 
