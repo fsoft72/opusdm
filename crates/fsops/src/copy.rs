@@ -45,8 +45,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// If `overwrite` is false, atomically attempts to create the file without
 /// replacing an existing destination (`ErrorKind::AlreadyExists`).
 ///
+/// With `overwrite` the data goes to a temp file that replaces the destination
+/// only when the copy succeeds; an existing destination survives any failure.
+///
 /// Calls `on_bytes` with the size of each chunk written. On cancel it removes
-/// the partial destination and returns `ErrorKind::Interrupted`.
+/// the partial output and returns `ErrorKind::Interrupted`.
 pub fn copy_file(
     src: &Path,
     dst: &Path,
@@ -63,51 +66,44 @@ pub fn copy_file(
             format!("source and destination are the same file: {}", dst.display()),
         ));
     }
-    let mut writer = if overwrite {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(dst)?
-    } else {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(dst)?
-    };
+    // Overwriting writes a temp file next to the destination and renames it
+    // over the target only once the copy succeeded, so a cancel, a full disk
+    // or a read error leaves the old file untouched.
+    let out = if overwrite { temp_sibling(dst) } else { dst.to_path_buf() };
+    let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).open(&out)?;
 
-    let copy_res = copy_file_kernel(&mut reader, &mut writer, cancel, on_bytes);
-    match copy_res {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::Interrupted => {
-            drop(writer);
-            let _ = std::fs::remove_file(dst);
+    let copy_res = copy_file_kernel(&mut reader, &mut writer, cancel, on_bytes).or_else(|e| {
+        if !should_fallback_userspace(&e) {
             return Err(e);
         }
-        Err(e) if should_fallback_userspace(&e) => {
-            // Seek or reopen reader/writer at current positions for userspace fallback
-            let fallback_res = copy_file_userspace(&mut reader, &mut writer, cancel, on_bytes);
-            if let Err(fe) = fallback_res {
-                if fe.kind() == io::ErrorKind::Interrupted {
-                    drop(writer);
-                    let _ = std::fs::remove_file(dst);
-                }
-                return Err(fe);
-            }
+        // Seek or reopen reader/writer at current positions for userspace fallback
+        copy_file_userspace(&mut reader, &mut writer, cancel, on_bytes)
+    });
+    let finish = copy_res.and_then(|()| {
+        writer.flush()?;
+        let meta = std::fs::metadata(src)?;
+        std::fs::set_permissions(&out, meta.permissions())?;
+        let mtime = filetime::FileTime::from_last_modification_time(&meta);
+        filetime::set_file_mtime(&out, mtime)?;
+        if overwrite {
+            std::fs::rename(&out, dst)?;
         }
-        Err(e) => {
-            drop(writer);
-            let _ = std::fs::remove_file(dst);
-            return Err(e);
-        }
+        Ok(())
+    });
+    if finish.is_err() {
+        drop(writer);
+        let _ = std::fs::remove_file(&out);
     }
+    finish
+}
 
-    writer.flush()?;
-    let meta = std::fs::metadata(src)?;
-    std::fs::set_permissions(dst, meta.permissions())?;
-    let mtime = filetime::FileTime::from_last_modification_time(&meta);
-    filetime::set_file_mtime(dst, mtime)?;
-    Ok(())
+/// A hidden, unused path in the same folder as `dst` (same filesystem, so the
+/// final `rename` is atomic).
+fn temp_sibling(dst: &Path) -> PathBuf {
+    let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    dst.with_file_name(format!(".{name}.opusdm-tmp-{}-{seq}", std::process::id()))
 }
 
 /// Whether `path` exists and is the same inode (device + inode number) as the
@@ -685,6 +681,33 @@ mod tests {
         let err = copy_file(&src, &link, true, &CancelToken::new(), &mut |_| {}).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(fs::read(&src).unwrap(), b"precious");
+    }
+
+    /// A cancelled overwrite keeps the old destination and leaves no temp file.
+    #[test]
+    fn cancelled_overwrite_keeps_the_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("src.txt"), dir.path().join("dst.txt"));
+        fs::write(&src, b"new").unwrap();
+        fs::write(&dst, b"old").unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = copy_file(&src, &dst, true, &cancel, &mut |_| {}).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(fs::read(&dst).unwrap(), b"old");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    /// A successful overwrite replaces the content and leaves no temp file.
+    #[test]
+    fn overwrite_replaces_the_destination_without_leftovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("src.txt"), dir.path().join("dst.txt"));
+        fs::write(&src, b"new").unwrap();
+        fs::write(&dst, b"old").unwrap();
+        copy_file(&src, &dst, true, &CancelToken::new(), &mut |_| {}).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"new");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     /// Worker counts covering both the inline path and the pooled path, so

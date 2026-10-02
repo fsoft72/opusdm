@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Fix (fsops): an overwriting `copy_file` writes a hidden temp file next to the destination and renames it over the target only after success. A cancel, a full disk or a read error now keeps the old file and removes the temp file.
 - Fix (fsops, hub): `copy_file` compares `(dev, ino)` of source and destination before opening for overwrite and refuses with `InvalidInput`, so a DEST reached through a symlink or bind mount can no longer truncate the source. Function steps (Copy, Move, Delete, ...) now run `validate_op` like the job engine does.
 - Fix (hub): connection ids only ever grow (`free_conns` is gone), so a stale `ListerEof` / `FromLister` from a dead reader thread can no longer hit a Lister that connected later.
 - Docs: new `OPTIMIZE.md`, a prioritised list of 22 code review findings (connection id reuse in the hub, copy / rename data-loss risks, Lister refresh issues, duplicated X11 helpers, and so on).
