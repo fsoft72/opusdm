@@ -75,6 +75,10 @@ pub fn chrome_css(mode: ThemeMode) -> String {
          list, list > row {{ background-color: {sbg}; background-image: none; color: {fg}; outline: none; }} \
          list > row:hover {{ background-color: {hover}; }} \
          list > row:selected {{ background-color: {sbg}; box-shadow: inset 0 0 0 1px {accent}; }} \
+         listview, listview > row {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
+         listview > row:hover {{ background-color: {hover}; }} \
+         listview > row:selected {{ background-color: {hover}; color: {fg}; }} \
+         popover scrolledwindow, popover viewport {{ background-color: transparent; }} \
          popover, popover.background, popover contents {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
          scrolledwindow, viewport {{ background-color: {wbg}; background-image: none; }} \
          box, grid, stack, frame {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
@@ -86,6 +90,13 @@ pub fn chrome_css(mode: ThemeMode) -> String {
          popover box, popover grid, popover stack, popover frame {{ background-color: transparent; }} \
          label {{ color: {fg}; }} \
          checkbutton, radiobutton {{ color: {fg}; }} \
+         checkbutton > radio, checkbutton > check {{ \
+             background-color: {sbg}; background-image: none; color: {fg}; \
+             border: 1px solid {border}; box-shadow: none; \
+         }} \
+         checkbutton > radio:checked, checkbutton > check:checked {{ \
+             background-color: {accent}; border-color: {accent}; color: #ffffff; \
+         }} \
          headerbar {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
          notebook > header {{ background-color: {wbg}; background-image: none; }} \
          notebook > header tab {{ background-color: {sbg}; background-image: none; color: {fg}; border: 1px solid {border}; }} \
@@ -211,6 +222,20 @@ mod tests {
             let css = chrome_css(mode);
             assert!(css.contains(&format!("label {{ color: {text}")), "{mode:?} label color");
             assert!(css.contains(&format!("notebook")), "{mode:?} notebook rule");
+        }
+    }
+
+    #[test]
+    fn dropdown_popups_and_toggle_indicators_follow_the_selected_palette() {
+        // Regression: a gtk::DropDown's popup is a `listview` (not `list`)
+        // and a radio/check button draws its indicator on a `radio`/`check`
+        // child node - both kept the base Adwaita (dark) colours in Light
+        // mode, showing dark rows and dark radio circles on a light window.
+        for (mode, p) in [(ThemeMode::Dark, &DARK), (ThemeMode::Light, &LIGHT)] {
+            let css = chrome_css(mode);
+            assert!(css.contains(&format!("listview, listview > row {{ background-color: {}", p.surface_bg)), "{mode:?} listview");
+            assert!(css.contains(&format!("checkbutton > radio, checkbutton > check {{ background-color: {}", p.surface_bg)), "{mode:?} radio/check");
+            assert!(css.contains("checkbutton > radio:checked"), "{mode:?} checked radio");
         }
     }
 
