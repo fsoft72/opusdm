@@ -66,12 +66,10 @@ pub(crate) fn reposition_desktop_windows(widgets: &Rc<Widgets>, rects: &[(i32, i
         // The window manager reacts to the new screen size on its own - it
         // shifts the desktop down by the panel's strut - so re-assert the
         // geometry once it has settled, as the startup path does.
-        for delay in RESOLUTION_CHANGE_SETTLE_DELAYS_MS {
-            let window = dw.window.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
-                crate::desktop::pin_geometry(&window, x, y, w, h);
-            });
-        }
+        let window = dw.window.clone();
+        opusdm_ui::retry_after_map(&RESOLUTION_CHANGE_SETTLE_DELAYS_MS, move || {
+            crate::desktop::pin_geometry(&window, x, y, w, h);
+        });
     }
 }
 

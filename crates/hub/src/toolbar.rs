@@ -232,14 +232,12 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     // The panel reserves a top strut, which shrinks the work area and makes
     // GTK clamp the desktop windows a strip short. Re-assert the full-monitor
     // geometry a couple of times once the panel's struts have landed.
-    for delay in PANEL_STRUT_SETTLE_DELAYS_MS {
-        let widgets = widgets.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
-            for dw in widgets.windows.borrow().iter() {
-                crate::desktop::pin_geometry(&dw.window, dw.x, dw.y, dw.w, dw.h);
-            }
-        });
-    }
+    let widgets = widgets.clone();
+    opusdm_ui::retry_after_map(&PANEL_STRUT_SETTLE_DELAYS_MS, move || {
+        for dw in widgets.windows.borrow().iter() {
+            crate::desktop::pin_geometry(&dw.window, dw.x, dw.y, dw.w, dw.h);
+        }
+    });
 }
 
 /// Always confirm before shutting everything down, whether the request comes

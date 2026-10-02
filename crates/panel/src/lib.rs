@@ -10,7 +10,6 @@ use gtk::prelude::*;
 use opusdm_ipc::PanelPosition;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
 
 mod appmenu;
 mod dbusmenu;
@@ -119,18 +118,16 @@ fn build_bar_window(
             // just-mapped dock. A tray reposition rides along, since a
             // rebuilt primary bar's placeholders haven't been laid out yet
             // when this closure is first scheduled.
-            for delay in [80_u64, 400, 1000] {
-                let w = w.clone();
-                let tray = tray_for_map.clone();
-                let place = place.clone();
-                gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                    window::pin_geometry(&w, place.get());
-                    window::raise_above(&w);
-                    if let Some(tray) = &tray {
-                        tray.reposition_now();
-                    }
-                });
-            }
+            let w = w.clone();
+            let tray = tray_for_map.clone();
+            let place = place.clone();
+            opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {
+                window::pin_geometry(&w, place.get());
+                window::raise_above(&w);
+                if let Some(tray) = &tray {
+                    tray.reposition_now();
+                }
+            });
         });
     }
 
@@ -334,17 +331,15 @@ fn redock_bar(bw: &BarWindow, position: PanelPosition) {
     window::make_panel_window(&bw.window, place);
     window::pin_geometry(&bw.window, place);
     window::raise_above(&bw.window);
-    for delay in [80_u64, 400, 1000] {
-        let win = bw.window.clone();
-        let cell = bw.place.clone();
-        let tray = bw.tray.clone();
-        gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-            window::pin_geometry(&win, cell.get());
-            if let Some(tray) = &tray {
-                tray.reposition_now();
-            }
-        });
-    }
+    let win = bw.window.clone();
+    let cell = bw.place.clone();
+    let tray = bw.tray.clone();
+    opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {
+        window::pin_geometry(&win, cell.get());
+        if let Some(tray) = &tray {
+            tray.reposition_now();
+        }
+    });
 }
 
 /// Fold one observer snapshot into `state` and repaint every bar it touched.

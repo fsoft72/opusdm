@@ -70,7 +70,7 @@
 - [x] **The same metadata-to-row code appears three times in `read_dir_rows`** - The mtime/uid/gid/mode extraction is written out for the symlink target, the broken link and the plain entry. Use one `row_fields(&Metadata)` helper.
   - File(s): `crates/lister/src/model.rs:93`
 
-- [ ] **Window placement retry delays are spread out** - The `[80, 400, 1000]` retry lists are written inline in the panel and the dock, while the hub uses named constants for the same idea. Share one constant and a `retry_after_map(delays, f)` helper (ideally next to the shared X11 helper above).
+- [x] **Window placement retry delays are spread out** - The `[80, 400, 1000]` retry lists are written inline in the panel and the dock, while the hub uses named constants for the same idea. Share one constant and a `retry_after_map(delays, f)` helper (ideally next to the shared X11 helper above).
   - File(s): `crates/panel/src/lib.rs:122`, `crates/dock/src/lib.rs:104`, `crates/hub/src/toolbar.rs:232`, `crates/hub/src/desktop_windows.rs:70`
 
 - [ ] **A sentinel requester id** - `HUB_REQUESTER = u64::MAX` stands for "no Lister" in `JobMeta.requester`, so each routing site has to remember to treat it specially. Use `Option<u64>`.

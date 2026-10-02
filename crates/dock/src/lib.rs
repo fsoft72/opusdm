@@ -101,13 +101,11 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
             // policy shortly after map, and drops state messages sent before
             // it has adopted it: re-pin the geometry and re-send the states a
             // few times over the first second.
-            for delay in [80_u64, 400, 1000] {
-                let dock = dock.clone();
-                gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                    dock.pin();
-                    window::set_below(&dock.window);
-                });
-            }
+            let dock = dock.clone();
+            opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {
+                dock.pin();
+                window::set_below(&dock.window);
+            });
         });
     }
 

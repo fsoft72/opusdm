@@ -24,6 +24,23 @@ const NET_WM_STATE_ADD: u32 = 1;
 /// width and height are supplied, and the request comes from the application.
 const MOVERESIZE_ALL: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
 
+/// Delays, in milliseconds, at which a window is placed again after it was
+/// mapped: the window manager runs its own placement policy after the map and
+/// may move the window, or drop state messages sent before it adopted the
+/// window, so the geometry and states are asserted again a few times.
+pub const PLACEMENT_RETRY_MS: [u64; 3] = [80, 400, 1000];
+
+/// Run `f` once after each of `delays_ms` milliseconds, on the GTK main loop.
+/// Used to re-assert a window's placement once the window manager has
+/// settled (see [`PLACEMENT_RETRY_MS`]).
+pub fn retry_after_map(delays_ms: &[u64], f: impl Fn() + 'static) {
+    let f = std::rc::Rc::new(f);
+    for &delay in delays_ms {
+        let f = f.clone();
+        gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || f());
+    }
+}
+
 /// Flush `conn` and wait until the X server has processed everything sent on
 /// it. Needed before dropping a connection, and after sending requests the
 /// caller wants the window manager to have seen.
