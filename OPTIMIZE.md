@@ -59,7 +59,7 @@
 - [x] **Icon thumbnails go stale after a file is edited** - The in-memory `thumb_cache` is keyed by index and carried over by path in `refresh_entries`. `IconEntry` has no mtime or size, so an image that was overwritten keeps its old thumbnail until the folder is reopened. Add `modified` to `IconEntry` and key the cache by `(path, mtime)`. That also removes the index re-keying of four maps on every refresh.
   - File(s): `crates/iconview/src/field.rs:227`, `crates/iconview/src/types.rs:64`
 
-- [ ] **Every auto-refresh replaces the whole list** - `apply_navigation` always does `store.splice(0, old_len, ..)` and sets the cursor back to row 0, even when only one file changed. So each inotify event rebinds every row, loses the scroll position and moves the keyboard cursor. When the folder is the same, compare by name and splice only the rows that changed, keeping the cursor on its row.
+- [x] **Every auto-refresh replaces the whole list** - `apply_navigation` always does `store.splice(0, old_len, ..)` and sets the cursor back to row 0, even when only one file changed. So each inotify event rebinds every row, loses the scroll position and moves the keyboard cursor. When the folder is the same, compare by name and splice only the rows that changed, keeping the cursor on its row.
   - File(s): `crates/lister/src/window.rs` (`apply_navigation`), `crates/lister/src/nav_cache.rs` (`finish_listing`)
 
 ## Low / Nice to have

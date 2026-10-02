@@ -316,8 +316,10 @@ impl Ui {
             }
         };
         // A refresh of the folder already shown (watcher, reload) keeps the
-        // filter the user is typing; only a move to another folder resets it.
-        if *self.cwd.borrow() != dir {
+        // filter the user is typing, the cursor and the scroll position; only
+        // a move to another folder resets them.
+        let same_dir = *self.cwd.borrow() == dir;
+        if !same_dir {
             self.dismiss_filter();
         }
         if let Some((arch, _)) = crate::archive::parse_archive_path(dir) {
@@ -343,21 +345,49 @@ impl Ui {
         let visible = crate::model::visible_rows(rows, show_hidden, &name_filter, |name| {
             self.caches.sizes.borrow().get(&dir.join(name))
         });
-        let new_items: Vec<BoxedAnyObject> =
-            visible.rows.into_iter().map(|row| BoxedAnyObject::new(Rc::new(row))).collect();
+        // The store keeps name order, whatever order `read_dir` returned, so
+        // two reads of an unchanged folder compare equal row by row.
+        let mut rows = visible.rows;
+        rows.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        let new_rows: Vec<Rc<Row>> = rows.into_iter().map(Rc::new).collect();
         self.sync_watch(dir);
         self.status_bar.totals.set((visible.dirs, visible.files, visible.bytes));
-        // A new listing invalidates the old cursor row.
-        self.view.cursor.set(0);
-        let old_len = self.view.store.n_items();
-        self.view.store.splice(0, old_len, &new_items);
+        if same_dir {
+            self.replace_changed_rows(&new_rows);
+            // Keep the cursor where it was unless its row is gone.
+            let last = new_rows.len().saturating_sub(1) as u32;
+            self.view.cursor.set(self.view.cursor.get().min(last));
+        } else {
+            // A new listing invalidates the old cursor row.
+            self.view.cursor.set(0);
+            let items: Vec<BoxedAnyObject> = new_rows.iter().map(|r| BoxedAnyObject::new(r.clone())).collect();
+            self.view.store.splice(0, self.view.store.n_items(), &items);
+        }
         self.window.set_title(Some(&dir.to_string_lossy()));
-        crate::dlog!("navigate_to {} done: {} items", dir.display(), new_items.len());
+        crate::dlog!("navigate_to {} done: {} items", dir.display(), new_rows.len());
         self.refresh_path_entry();
         self.update_status();
         self.update_gauge(dir);
         self.refresh_icon_view();
         let _ = self.hub.client.send(&ToHub::PathChanged(dir.to_path_buf()));
+    }
+
+    /// Bring the store in line with `new_rows` (name order) by replacing only
+    /// the span of rows that changed, so a refresh after one file changed
+    /// does not rebind every row or reset the scroll position.
+    fn replace_changed_rows(&self, new_rows: &[Rc<Row>]) {
+        let store = &self.view.store;
+        let old_rows: Vec<Rc<Row>> = (0..store.n_items())
+            .filter_map(|i| store.item(i).and_downcast::<BoxedAnyObject>())
+            .map(|o| o.borrow::<Rc<Row>>().clone())
+            .collect();
+        let (start, old_end, new_end) = crate::model::changed_range(&old_rows, new_rows);
+        if start == old_end && start == new_end {
+            return;
+        }
+        let items: Vec<BoxedAnyObject> =
+            new_rows[start..new_end].iter().map(|r| BoxedAnyObject::new(r.clone())).collect();
+        store.splice(start as u32, (old_end - start) as u32, &items);
     }
 
     /// Reconcile the icon view's entries with the current sorted model. A

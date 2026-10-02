@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 /// One row in a Lister's file view.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Row {
     /// File name (no directory part).
     pub name: String,
@@ -379,6 +379,18 @@ pub fn visible_rows(
     out
 }
 
+/// The part of `old` that differs from `new`, as `(start, old_end, new_end)`:
+/// `old[..start]` equals `new[..start]` and `old[old_end..]` equals
+/// `new[new_end..]`, so replacing `old[start..old_end]` with `new[start..new_end]`
+/// turns `old` into `new` while touching only what changed.
+pub fn changed_range<T: PartialEq>(old: &[T], new: &[T]) -> (usize, usize, usize) {
+    let max_prefix = old.len().min(new.len());
+    let start = (0..max_prefix).take_while(|&i| old[i] == new[i]).count();
+    let max_suffix = max_prefix - start;
+    let suffix = (0..max_suffix).take_while(|&i| old[old.len() - 1 - i] == new[new.len() - 1 - i]).count();
+    (start, old.len() - suffix, new.len() - suffix)
+}
+
 /// Look `id` up in `cache`, calling `resolve` (and remembering the answer) on a
 /// miss. A poisoned lock just skips the cache.
 fn cached_name(cache: &Mutex<Option<HashMap<u32, String>>>, id: u32, resolve: fn(u32) -> String) -> String {
@@ -487,6 +499,17 @@ pub fn local_tz_offset_secs_at(unix: i64) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changed_range_isolates_the_rows_that_differ() {
+        assert_eq!(changed_range(&[1, 2, 3], &[1, 2, 3]), (3, 3, 3), "nothing changed");
+        assert_eq!(changed_range(&[1, 2, 3, 4], &[1, 9, 3, 4]), (1, 2, 2), "one row replaced");
+        assert_eq!(changed_range(&[1, 2, 4], &[1, 2, 3, 4]), (2, 2, 3), "one row added");
+        assert_eq!(changed_range(&[1, 2, 3, 4], &[1, 4]), (1, 3, 1), "two rows removed");
+        assert_eq!(changed_range::<i32>(&[], &[1, 2]), (0, 0, 2), "from empty");
+        assert_eq!(changed_range(&[1, 2], &[]), (0, 2, 0), "to empty");
+        assert_eq!(changed_range(&[1, 1], &[1, 1, 1]), (2, 2, 3), "repeated values never overlap");
+    }
+
     use super::*;
     use opusdm_ipc::{FormatColumn, Separate};
     use std::cmp::Ordering;
