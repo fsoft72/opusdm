@@ -141,12 +141,26 @@ impl Watcher {
     }
 }
 
-/// Build a blocking proxy to `service`'s `org.kde.StatusNotifierItem`
-/// interface and read the properties the widget needs. A fresh short-lived
-/// connection per call, same throwaway style as `ewmh.rs`'s click actions -
-/// this only runs once per (un)registration, not per frame.
-fn fetch_item(service: &str, path: &str) -> Result<SniItem, Box<dyn std::error::Error>> {
+/// Process-wide session bus connection used by every item fetch and watch.
+/// Opening a fresh connection per call makes the bus emit `NameOwnerChanged`
+/// for the new unique name, which is what used to wake every item watcher and
+/// kept the CPU pinned at 100%.
+static SESSION_CONN: std::sync::OnceLock<zbus::blocking::Connection> = std::sync::OnceLock::new();
+
+/// Return a clone of the shared session bus connection, opening it on first use.
+fn session_conn() -> Result<zbus::blocking::Connection, zbus::Error> {
+    if let Some(conn) = SESSION_CONN.get() {
+        return Ok(conn.clone());
+    }
     let conn = zbus::blocking::Connection::session()?;
+    Ok(SESSION_CONN.get_or_init(|| conn).clone())
+}
+
+/// Build a blocking proxy to `service`'s `org.kde.StatusNotifierItem`
+/// interface and read the properties the widget needs, over the shared
+/// session connection.
+fn fetch_item(service: &str, path: &str) -> Result<SniItem, Box<dyn std::error::Error>> {
+    let conn = session_conn()?;
     let proxy = zbus::blocking::Proxy::new(&conn, service, path, "org.kde.StatusNotifierItem")?;
 
     let title: String = proxy.get_property("Title").unwrap_or_default();
@@ -179,43 +193,51 @@ fn pick_sni_icon(pixmaps: &[(i32, i32, Vec<u8>)], target: i32) -> Option<IconRgb
     Some(IconRgba { width: *w, height: *h, rgba })
 }
 
-/// Watch one item's DBus name for loss (app exit) and its properties for
-/// changes, for as long as the item stays registered. Runs on its own
-/// thread since each needs an independent blocking signal stream; sends
-/// `ItemChanged`/`ItemRemoved` back through `tx`.
+/// Watch one item for as long as it stays registered, on two threads (each
+/// needs an independent blocking signal stream): one re-reads the item on
+/// its `PropertiesChanged` signals, the other reports `ItemRemoved` when the
+/// item's bus name loses its owner (app exit). The name watch is filtered to
+/// this item's `service` on the bus side - an unfiltered `NameOwnerChanged`
+/// fires for every client on the bus, which woke each watcher on every
+/// unrelated event.
 fn watch_item(service: String, path: String, tx: async_channel::Sender<SniEvent>) {
-    std::thread::spawn(move || {
-        let Ok(conn) = zbus::blocking::Connection::session() else { return };
-        let Ok(dbus_proxy) = zbus::blocking::fdo::DBusProxy::new(&conn) else { return };
-        let Ok(mut owner_changes) = dbus_proxy.receive_name_owner_changed() else { return };
+    {
+        let (service, path, tx) = (service.clone(), path.clone(), tx.clone());
+        std::thread::spawn(move || {
+            let Ok(conn) = session_conn() else { return };
+            let Ok(props_proxy) = zbus::blocking::Proxy::new(
+                &conn,
+                service.as_str(),
+                path.as_str(),
+                "org.freedesktop.DBus.Properties",
+            ) else {
+                return;
+            };
+            let Ok(mut changes) = props_proxy.receive_signal("PropertiesChanged") else { return };
 
-        let Ok(props_proxy) = zbus::blocking::Proxy::new(
-            &conn,
-            service.as_str(),
-            path.as_str(),
-            "org.freedesktop.DBus.Properties",
-        ) else {
+            while changes.next().is_some() {
+                match fetch_item(&service, &path) {
+                    Ok(item) => {
+                        let _ = tx.send_blocking(SniEvent::ItemChanged { service: service.clone(), item });
+                    }
+                    Err(_) => {
+                        let _ = tx.send_blocking(SniEvent::ItemRemoved { service: service.clone() });
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    std::thread::spawn(move || {
+        let Ok(conn) = session_conn() else { return };
+        let Ok(dbus_proxy) = zbus::blocking::fdo::DBusProxy::new(&conn) else { return };
+        // Arg 0 = the watched name, arg 2 = new owner: empty means the name is gone.
+        let Ok(mut owner_lost) = dbus_proxy.receive_name_owner_changed_with_args(&[(0, service.as_str()), (2, "")]) else {
             return;
         };
-        let Ok(mut changes) = props_proxy.receive_signal("PropertiesChanged") else { return };
-
-        loop {
-            // Either signal stream waking up means "re-check this item":
-            // a real removal will fail `fetch_item` on the next iteration
-            // once the name is fully gone, which is simpler than parsing
-            // the NameOwnerChanged/PropertiesChanged payloads themselves.
-            if owner_changes.next().is_none() && changes.next().is_none() {
-                break;
-            }
-            match fetch_item(&service, &path) {
-                Ok(item) => {
-                    let _ = tx.send_blocking(SniEvent::ItemChanged { service: service.clone(), item });
-                }
-                Err(_) => {
-                    let _ = tx.send_blocking(SniEvent::ItemRemoved { service: service.clone() });
-                    break;
-                }
-            }
+        if owner_lost.next().is_some() {
+            let _ = tx.send_blocking(SniEvent::ItemRemoved { service });
         }
     });
 }
