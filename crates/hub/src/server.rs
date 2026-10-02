@@ -13,7 +13,7 @@ use opusdm_ipc::format::{self, FormatStore};
 use opusdm_ipc::frame::{recv, send};
 use opusdm_ipc::function::{FnStep, FunctionId, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -297,7 +297,9 @@ struct JobMeta {
 /// handler, where its invariants are easier to follow and test.
 struct Hub {
     conns: HashMap<u64, Conn>,
-    free_conns: BTreeSet<u64>,
+    /// Connection ids only ever grow: a recycled id would let the stale
+    /// `ListerEof` / `FromLister` messages of a dead reader thread hit a
+    /// new Lister.
     next_conn: u64,
     roles: RoleState,
     /// Loaded once at startup; kept in memory and updated in place by
@@ -360,16 +362,9 @@ impl Hub {
     /// A new peer connected: allocate a connection id, spawn its writer and
     /// reader threads. A spawn failure drops just this connection.
     fn accepted(&mut self, stream: UnixStream, owner_tx: &Sender<OwnerMsg>) {
-        let cid = if let Some(&first) = self.free_conns.iter().next() {
-            self.free_conns.remove(&first);
-            first
-        } else {
-            let id = self.next_conn;
-            self.next_conn += 1;
-            id
-        };
+        let cid = self.next_conn;
+        self.next_conn += 1;
         let (Ok(write_stream), Ok(shutdown)) = (stream.try_clone(), stream.try_clone()) else {
-            self.free_conns.insert(cid);
             return;
         };
         let (tx, writer_rx) = channel::<OutMsg>();
@@ -378,7 +373,6 @@ impl Hub {
             .spawn(move || writer_loop(write_stream, writer_rx));
         if let Err(e) = writer_spawned {
             opusdm_ipc::err_log!("hub", "cannot spawn writer thread for conn {cid}: {e}");
-            self.free_conns.insert(cid);
             return;
         }
         self.conns.insert(
@@ -395,7 +389,6 @@ impl Hub {
         if let Err(e) = spawned {
             opusdm_ipc::err_log!("hub", "cannot spawn reader thread for conn {cid}: {e}");
             self.conns.remove(&cid);
-            self.free_conns.insert(cid);
         }
     }
 
@@ -604,7 +597,7 @@ impl Hub {
     /// `ListerClosed`.
     fn drop_lister(&mut self, cid: u64) {
         self.drop_function_state(cid);
-        let was_registered = drop_conn(cid, &mut self.conns, &mut self.free_conns, &mut self.roles, &self.evt_tx);
+        let was_registered = drop_conn(cid, &mut self.conns, &mut self.roles, &self.evt_tx);
         if was_registered {
             self.emit_script_event(ScriptEvent::ListerClosed);
         }
@@ -1121,7 +1114,6 @@ fn owner_loop(
     );
     let mut hub = Hub {
         conns: HashMap::new(),
-        free_conns: BTreeSet::new(),
         next_conn: 1,
         roles: RoleState::default(),
         current_settings: settings::load_settings(),
@@ -1209,12 +1201,10 @@ fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
 fn drop_conn(
     cid: u64,
     conns: &mut HashMap<u64, Conn>,
-    free_conns: &mut BTreeSet<u64>,
     roles: &mut RoleState,
     evt_tx: &Sender<HubEvent>,
 ) -> bool {
     let Some(c) = conns.remove(&cid) else { return false };
-    free_conns.insert(cid);
     let _ = c.shutdown.shutdown(std::net::Shutdown::Both);
     if !c.registered {
         return false;
