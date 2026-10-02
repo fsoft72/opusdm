@@ -52,11 +52,11 @@ fn count_in(hay: &[char], needle: &[char]) -> usize {
     count
 }
 
-/// Look for `needle` in `bytes`. A buffer with a NUL in its first
-/// [`BINARY_SNIFF`] bytes is binary and gives `None`; so does an empty needle
-/// or no occurrence. Invalid UTF-8 is decoded lossily.
-pub fn scan_text(bytes: &[u8], needle: &str, case_sensitive: bool) -> Option<TextHit> {
-    if needle.is_empty() || bytes[..bytes.len().min(BINARY_SNIFF)].contains(&0) {
+/// Look for `needle` in `bytes`. Unless `include_binary`, a buffer with a NUL
+/// in its first [`BINARY_SNIFF`] bytes is binary and gives `None`; so does an
+/// empty needle or no occurrence. Invalid UTF-8 is decoded lossily.
+pub fn scan_text(bytes: &[u8], needle: &str, case_sensitive: bool, include_binary: bool) -> Option<TextHit> {
+    if needle.is_empty() || (!include_binary && bytes[..bytes.len().min(BINARY_SNIFF)].contains(&0)) {
         return None;
     }
     let text = String::from_utf8_lossy(bytes);
@@ -162,6 +162,8 @@ pub struct FindQuery {
     pub case_sensitive: bool,
     /// Also look at names starting with `.`.
     pub include_hidden: bool,
+    /// Also search files that look binary (a NUL in their first 8 KiB).
+    pub include_binary: bool,
     /// The folder to search below.
     pub root: PathBuf,
 }
@@ -180,11 +182,12 @@ pub enum SearchEvent {
 /// Read up to `cap` bytes of a file for a content search. Only the first
 /// [`BINARY_SNIFF`] bytes are read to start with: a NUL among them marks the
 /// file binary and gives `None` without reading the rest, so a tree of videos
-/// or disk images costs 8 KiB per file instead of the whole cap.
-fn read_for_search<R: Read>(mut reader: R, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
+/// or disk images costs 8 KiB per file instead of the whole cap. With
+/// `include_binary` the sniff is skipped and binary files are read up to `cap`.
+fn read_for_search<R: Read>(mut reader: R, cap: u64, include_binary: bool) -> std::io::Result<Option<Vec<u8>>> {
     let mut buf = Vec::new();
     reader.by_ref().take((BINARY_SNIFF as u64).min(cap)).read_to_end(&mut buf)?;
-    if buf.contains(&0) {
+    if !include_binary && buf.contains(&0) {
         return Ok(None);
     }
     let rest = cap.saturating_sub(buf.len() as u64);
@@ -240,9 +243,9 @@ fn run_search_capped(query: &FindQuery, cancel: &AtomicBool, max_results: usize,
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                match File::open(&path).and_then(|f| read_for_search(f, SEARCH_FILE_MAX)) {
+                match File::open(&path).and_then(|f| read_for_search(f, SEARCH_FILE_MAX, query.include_binary)) {
                     Ok(Some(bytes)) => {
-                        if let Some(hit) = scan_text(&bytes, needle, query.case_sensitive) {
+                        if let Some(hit) = scan_text(&bytes, needle, query.case_sensitive, query.include_binary) {
                             emit(SearchEvent::Found(Found { path, is_dir: false, hit: Some(hit) }));
                             found += 1;
                         }
@@ -266,7 +269,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn hit(bytes: &[u8], needle: &str) -> Option<TextHit> {
-        scan_text(bytes, needle, false)
+        scan_text(bytes, needle, false, false)
     }
 
     #[test]
@@ -279,9 +282,9 @@ mod tests {
 
     #[test]
     fn matching_can_be_case_sensitive() {
-        assert!(scan_text(b"todo\n", "TODO", true).is_none());
-        assert!(scan_text(b"TODO\n", "TODO", true).is_some());
-        assert!(scan_text(b"todo\n", "TODO", false).is_some());
+        assert!(scan_text(b"todo\n", "TODO", true, false).is_none());
+        assert!(scan_text(b"TODO\n", "TODO", true, false).is_some());
+        assert!(scan_text(b"todo\n", "TODO", false, false).is_some());
     }
 
     #[test]
@@ -402,6 +405,7 @@ mod tests {
             contains: contains.map(String::from),
             case_sensitive: false,
             include_hidden: false,
+            include_binary: false,
             root: root.to_path_buf(),
         }
     }
@@ -589,7 +593,7 @@ mod tests {
         let mut data = vec![0u8; 1_000_000];
         data[0] = 0;
         let mut counting = Counting { inner: std::io::Cursor::new(data), read: 0 };
-        let got = read_for_search(&mut counting, SEARCH_FILE_MAX).unwrap();
+        let got = read_for_search(&mut counting, SEARCH_FILE_MAX, false).unwrap();
         assert!(got.is_none());
         assert!(counting.read <= 8192, "read {} bytes before giving up", counting.read);
     }
@@ -597,9 +601,9 @@ mod tests {
     #[test]
     fn a_text_file_is_read_up_to_the_cap() {
         let data = vec![b'a'; 20_000];
-        let got = read_for_search(std::io::Cursor::new(data.clone()), SEARCH_FILE_MAX).unwrap().unwrap();
+        let got = read_for_search(std::io::Cursor::new(data.clone()), SEARCH_FILE_MAX, false).unwrap().unwrap();
         assert_eq!(got, data);
-        let got = read_for_search(std::io::Cursor::new(data), 10_000).unwrap().unwrap();
+        let got = read_for_search(std::io::Cursor::new(data), 10_000, false).unwrap().unwrap();
         assert_eq!(got.len(), 10_000);
     }
 
@@ -608,7 +612,31 @@ mod tests {
         let mut data = vec![b'a'; 9000];
         data.push(0);
         data.extend_from_slice(b" tail");
-        let got = read_for_search(std::io::Cursor::new(data.clone()), SEARCH_FILE_MAX).unwrap().unwrap();
+        let got = read_for_search(std::io::Cursor::new(data.clone()), SEARCH_FILE_MAX, false).unwrap().unwrap();
         assert_eq!(got, data);
+    }
+
+    #[test]
+    fn binary_text_is_found_when_binary_files_are_included() {
+        assert!(scan_text(b"%PDF-1.4\n\x00\x01 data", "pdf", false, false).is_none());
+        let h = scan_text(b"%PDF-1.4\n\x00\x01 data", "pdf", false, true).unwrap();
+        assert_eq!((h.line, h.count), (1, 1));
+    }
+
+    #[test]
+    fn a_binary_file_is_read_whole_when_binary_files_are_included() {
+        let mut data = vec![0u8; 20_000];
+        data[0] = 0;
+        let got = read_for_search(std::io::Cursor::new(data.clone()), SEARCH_FILE_MAX, true).unwrap().unwrap();
+        assert_eq!(got, data);
+    }
+
+    #[test]
+    fn a_content_search_can_include_binary_files() {
+        let td = tree();
+        let mut q = query(td.path(), "", Some("todo"));
+        q.include_binary = true;
+        let (names, _) = run(&q);
+        assert_eq!(names, vec!["a/one.log", "b/three.log", "bin.log"]);
     }
 }

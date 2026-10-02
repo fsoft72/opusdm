@@ -23,6 +23,7 @@ struct Dialog {
     folder: gtk::Entry,
     case_sensitive: gtk::CheckButton,
     include_hidden: gtk::CheckButton,
+    include_binary: gtk::CheckButton,
     list: gtk::ListBox,
     status: gtk::Label,
     /// Results of the current search, in the order of the list rows.
@@ -51,6 +52,8 @@ pub fn open(ui: &Rc<Ui>, focus_contains: bool) {
     let include_hidden = gtk::CheckButton::with_label("Include hidden files and folders");
     content.append(&case_sensitive);
     content.append(&include_hidden);
+    let include_binary = gtk::CheckButton::with_label("Include binary files (slower)");
+    content.append(&include_binary);
     let status = gtk::Label::new(None);
     status.set_xalign(0.0);
     content.append(&status);
@@ -75,6 +78,7 @@ pub fn open(ui: &Rc<Ui>, focus_contains: bool) {
         folder: folder.clone(),
         case_sensitive,
         include_hidden,
+        include_binary,
         list: list.clone(),
         status,
         results: RefCell::new(Vec::new()),
@@ -181,6 +185,7 @@ impl Dialog {
             contains: contains.clone(),
             case_sensitive: self.case_sensitive.is_active(),
             include_hidden: self.include_hidden.is_active(),
+            include_binary: self.include_binary.is_active(),
             root: root.clone(),
         };
 

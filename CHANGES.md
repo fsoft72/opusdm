@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Feature (lister): the Find dialog has an **Include binary files (slower)** check button. Off (default) keeps the old behaviour: a file with a NUL in its first 8 KiB is skipped after reading only that head. On, `FindQuery.include_binary` makes `read_for_search` and `scan_text` skip that sniff, so PDFs and other binaries are searched as lossy text (up to 16 MiB each).
 - Fix (lister): the Find / Search in Files dialog did nothing when Search, Stop, View or Enter were used. Every handler held only a weak reference to the `Dialog` and nothing owned it once `find_dialog::open` returned, so `upgrade()` always failed. The window's close handler now holds the strong reference, tying the Dialog's life to the window.
 - Feature (hub, theme-config): the desktop context menu has "Edit Theme" before "Settings" in the Desktop submenu. It launches `opusdm-settings --edit-theme`, which opens only the Theme Editor, without the Settings window (`build_editor_only`; `editor::open` takes the application and an optional parent; the flag is read in `main`, arguments are not passed to GApplication).
 - Fix (lister): the SOURCE / DEST stat bar text now uses the theme's text colour. `chrome_css` sets `label { color }` directly, which beat the colour inherited from `.stat-source` / `.stat-dest`; the rules now also target `> label`.
