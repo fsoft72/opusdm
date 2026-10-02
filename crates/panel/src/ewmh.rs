@@ -338,7 +338,7 @@ where
         let root = conn.setup().roots[screen_num].root;
         let atoms = Atoms::new(&conn)?.reply()?;
         f(&conn, root, &atoms)?;
-        conn.flush()?;
+        opusdm_ui::x11_sync(&conn)?;
         Ok(())
     };
     if let Err(e) = run() {

@@ -68,7 +68,9 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, x: i32, y: i32, width: i32,
         );
     }
 
-    let _ = conn.flush();
+    if let Err(e) = opusdm_ui::x11_sync(&conn) {
+        eprintln!("opusdm-hub: cannot pin desktop geometry: {e}");
+    }
 }
 
 /// Fetch the X11 window id backing a GTK window, if running under X11.
@@ -112,6 +114,6 @@ fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), Box<dy
         &xproto::ConfigureWindowAux::new().x(x).y(y).width(width).height(height),
     )?;
 
-    conn.flush()?;
+    opusdm_ui::x11_sync(&conn)?;
     Ok(())
 }

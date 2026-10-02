@@ -68,17 +68,9 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement, count: us
             ev,
         );
     }
-    if let Err(e) = sync(&conn) {
+    if let Err(e) = opusdm_ui::x11_sync(&conn) {
         eprintln!("opusdm-dock: cannot pin dock geometry: {e}");
     }
-}
-
-/// Flush `conn` and wait for the server to process everything sent on it.
-/// Dropping the connection right after a plain flush loses the requests
-/// still queued in the server, so the window manager never sees them.
-fn sync(conn: &impl Connection) -> Result<(), Box<dyn std::error::Error>> {
-    conn.get_input_focus()?.reply()?;
-    Ok(())
 }
 
 /// Ask the window manager to put the dock in the BELOW layer, and hide it
@@ -104,7 +96,7 @@ pub fn set_below(window: &gtk::ApplicationWindow) {
                 ev,
             )?;
         }
-        sync(&conn)?;
+        opusdm_ui::x11_sync(&conn)?;
         Ok(())
     };
     if let Err(e) = run() {
@@ -155,6 +147,6 @@ fn apply(xid: u32, place: Placement, count: usize) -> Result<(), Box<dyn std::er
         xid,
         &xproto::ConfigureWindowAux::new().x(x).y(y).width(w as u32).height(h as u32),
     )?;
-    sync(&conn)?;
+    opusdm_ui::x11_sync(&conn)?;
     Ok(())
 }

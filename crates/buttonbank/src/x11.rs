@@ -32,7 +32,7 @@ pub fn set_skip_taskbar(window: &gtk::Window) {
             let ev = ClientMessageEvent::new(32, xid, wm_state, [NET_WM_STATE_ADD, state, 0, 0, 0]);
             conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)?;
         }
-        conn.flush()?;
+        opusdm_ui::x11_sync(&conn)?;
         Ok(())
     };
     if let Err(e) = run() {
@@ -55,7 +55,7 @@ pub fn move_to(window: &gtk::Window, x: i32, y: i32) {
         let atom = conn.intern_atom(false, b"_NET_MOVERESIZE_WINDOW")?.reply()?.atom;
         let ev = ClientMessageEvent::new(32, xid, atom, [MOVE_FLAGS, x as u32, y as u32, 0, 0]);
         conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)?;
-        conn.flush()?;
+        opusdm_ui::x11_sync(&conn)?;
         Ok(())
     };
     if let Err(e) = run() {

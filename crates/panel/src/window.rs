@@ -91,7 +91,9 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement) {
                 .width(place.mon_w.max(1) as u32)
                 .height(PANEL_HEIGHT.max(1) as u32),
         );
-        let _ = conn.flush();
+        if let Err(e) = opusdm_ui::x11_sync(&conn) {
+            eprintln!("opusdm-panel: cannot pin panel geometry: {e}");
+        }
     }
 }
 
@@ -118,7 +120,7 @@ pub fn raise_above(window: &gtk::ApplicationWindow) {
             xid,
             &xproto::ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
         )?;
-        conn.flush()?;
+        opusdm_ui::x11_sync(&conn)?;
         Ok(())
     };
     if let Err(e) = run() {
@@ -176,7 +178,7 @@ fn apply(xid: u32, place: Placement) -> Result<(), Box<dyn std::error::Error>> {
         &xproto::ConfigureWindowAux::new().x(mon_x).y(mon_y).width(width).height(height),
     )?;
 
-    conn.flush()?;
+    opusdm_ui::x11_sync(&conn)?;
     Ok(())
 }
 
