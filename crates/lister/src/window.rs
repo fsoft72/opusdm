@@ -286,7 +286,11 @@ impl Ui {
                 return;
             }
         };
-        self.dismiss_filter();
+        // A refresh of the folder already shown (watcher, reload) keeps the
+        // filter the user is typing; only a move to another folder resets it.
+        if *self.cwd.borrow() != dir {
+            self.dismiss_filter();
+        }
         if let Some((arch, _)) = crate::archive::parse_archive_path(dir) {
             if let Some(parent) = arch.parent() {
                 self.terminal.sync_cwd(parent);
@@ -828,32 +832,14 @@ impl Ui {
     }
 
     /// A watched directory changed on disk. Reloads only if it is still the one
-    /// on screen.
-    ///
-    /// `reload` goes through `navigate_to`, which resets the filter bar, so an
-    /// auto-refresh would otherwise wipe a filter the user is halfway through
-    /// typing. Save it across the reload and put it back.
+    /// on screen. `apply_navigation` leaves the filter bar alone when the
+    /// folder does not change, so a filter being typed survives the refresh.
     pub fn on_directory_changed(self: &Rc<Self>, dir: &Path) {
         crate::dlog!("watch event: {}", dir.display());
         if *self.cwd.borrow() != dir {
             return;
         }
-        let filtering = self.view.filter_bar.container.is_visible();
-        let query = filtering.then(|| self.view.filter_bar.entry.text().to_string());
-        let had_focus = filtering && self.view.filter_bar.entry.has_focus();
-
         self.reload();
-
-        let Some(query) = query else { return };
-        self.view.filter_bar.container.set_visible(true);
-        // set_text re-fires "changed", which re-applies the filter.
-        self.view.filter_bar.entry.set_text(&query);
-        self.view.filter_bar.entry.set_position(-1);
-        if had_focus {
-            // Hiding the entry during the reload took the focus with it.
-            self.view.filter_bar.entry.grab_focus();
-            self.view.filter_bar.entry.set_position(-1);
-        }
     }
 
     /// Reload the settings-driven stylesheet in place (same provider, new
