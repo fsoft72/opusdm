@@ -17,7 +17,7 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
     let root = shell.content();
 
     let list_box = gtk::ListBox::new();
-    let functions: Rc<RefCell<Vec<Function>>> = Rc::new(RefCell::new(function::load_functions()));
+    let functions: Rc<RefCell<Vec<Function>>> = Rc::new(RefCell::new(ui.hub.functions.borrow().clone()));
 
     fn rebuild(list_box: &gtk::ListBox, functions: &[Function]) {
         while let Some(row) = list_box.first_child() {
@@ -97,6 +97,7 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
         });
     }
     {
+        let ui = ui.clone();
         let list_box = list_box.clone();
         let functions = functions.clone();
         let window = shell.window().clone();
@@ -107,16 +108,16 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
             if idx < 0 {
                 return;
             }
-            let functions = functions.clone();
-            let refresh = refresh.clone();
+            let (ui, functions, refresh) = (ui.clone(), functions.clone(), refresh.clone());
+            let Some(id) = functions.borrow().get(idx as usize).map(|f| f.id.clone()) else { return };
             opusdm_ui::requester(&window, "Delete Function", "Delete this function?", None, &[("Delete", true), ("Cancel", false)], move |ok| {
                 if !ok {
                     return;
                 }
-                functions.borrow_mut().remove(idx as usize);
-                if let Err(e) = function::save_functions(&functions.borrow()) {
-                    opusdm_ipc::err_log!("opusdm-lister", "could not save functions.json: {e}");
+                if let Err(e) = delete_function(&ui, &id) {
+                    crate::actions::flash(&ui, &format!("could not delete function: {e}"));
                 }
+                *functions.borrow_mut() = ui.hub.functions.borrow().clone();
                 refresh();
             });
         });
@@ -132,6 +133,31 @@ struct EditorState {
     save_btn: gtk::Button,
     test_btn: gtk::Button,
     window: gtk::Window,
+}
+
+/// Replace the saved Functions: tell the hub (which owns `functions.json`)
+/// and update this Lister's copy at once, without waiting for the echo.
+fn publish_functions(ui: &Rc<Ui>, list: Vec<Function>) -> std::io::Result<()> {
+    *ui.hub.functions.borrow_mut() = list.clone();
+    ui.hub.client.send(&opusdm_ipc::ToHub::SetFunctions(list))
+}
+
+/// Add `f`, or replace the saved function with the same id, on top of the
+/// hub's latest list (so a save never reverts what another Lister saved).
+fn upsert_function(ui: &Rc<Ui>, f: Function) -> std::io::Result<()> {
+    let mut all = ui.hub.functions.borrow().clone();
+    match all.iter_mut().find(|existing| existing.id == f.id) {
+        Some(slot) => *slot = f,
+        None => all.push(f),
+    }
+    publish_functions(ui, all)
+}
+
+/// Remove the saved function `id` from the hub's latest list.
+fn delete_function(ui: &Rc<Ui>, id: &str) -> std::io::Result<()> {
+    let mut all = ui.hub.functions.borrow().clone();
+    all.retain(|f| f.id != id);
+    publish_functions(ui, all)
 }
 
 /// Open the editor for one function. `all_functions` is the manager's shared
@@ -196,16 +222,12 @@ fn open_function_editor(ui: &Rc<Ui>, function: Function, all_functions: Rc<RefCe
         let all_functions = all_functions.clone();
         save_btn.connect_clicked(move |_| {
             let f = state.function.borrow().clone();
-            let saved = {
-                let mut all = all_functions.borrow_mut();
-                match all.iter_mut().find(|existing| existing.id == f.id) {
-                    Some(slot) => *slot = f,
-                    None => all.push(f),
+            match upsert_function(&ui, f) {
+                Ok(()) => {
+                    // Show the manager the list as the hub now has it.
+                    *all_functions.borrow_mut() = ui.hub.functions.borrow().clone();
+                    on_saved();
                 }
-                function::save_functions(&all)
-            };
-            match saved {
-                Ok(()) => on_saved(),
                 Err(e) => crate::actions::flash(&ui, &format!("could not save function: {e}")),
             }
         });

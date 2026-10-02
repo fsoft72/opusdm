@@ -61,6 +61,7 @@ pub(crate) fn bank_hooks(widgets: &Rc<Widgets>) -> opusdm_buttonbank::editor::Ho
     let for_changed = widgets.clone();
     let for_open = widgets.clone();
     let for_close = widgets.clone();
+    let for_functions = widgets.clone();
     Hooks {
         changed: Rc::new(move |change| match change {
             BankChange::Saved(id) | BankChange::Deleted(id) => for_changed.bank_windows.refresh(&id),
@@ -71,6 +72,7 @@ pub(crate) fn bank_hooks(widgets: &Rc<Widgets>) -> opusdm_buttonbank::editor::Ho
             }
         }),
         close: Rc::new(move |id| for_close.bank_windows.close_id(id)),
+        functions: Rc::new(move || for_functions.functions.borrow().clone()),
     }
 }
 

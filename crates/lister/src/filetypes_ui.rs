@@ -7,7 +7,7 @@ use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::filetypes::{self, FileFacts, FileType, FileTypes};
-use opusdm_ipc::function::{self, Function, FunctionId};
+use opusdm_ipc::function::{Function, FunctionId};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
@@ -123,7 +123,7 @@ pub fn open_editor(ui: &Rc<Ui>, sample: Option<(String, std::path::PathBuf)>) {
     let state = Rc::new(State {
         drafts: RefCell::new(filetypes::load_filetypes().types.iter().map(Draft::from_type).collect()),
         current: Cell::new(None),
-        functions: function::load_functions(),
+        functions: ui.hub.functions.borrow().clone(),
         list,
         form,
         status,

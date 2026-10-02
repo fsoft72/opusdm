@@ -9,7 +9,7 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::bindings::{self, format_key, parse_key, BindingError, Hotkey, KeyCombo};
-use opusdm_ipc::function::{self, Function, FunctionId};
+use opusdm_ipc::function::{Function, FunctionId};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -112,7 +112,7 @@ pub fn open_hotkey_editor(ui: &Rc<Ui>) {
 
     let state = Rc::new(State {
         hotkeys: RefCell::new(ui.hub.bindings.borrow().hotkeys.clone()),
-        functions: function::load_functions(),
+        functions: ui.hub.functions.borrow().clone(),
         rows_box,
         save_btn: save_btn.clone(),
         window: shell.window().clone(),
@@ -292,7 +292,7 @@ pub fn open_find_key(ui: &Rc<Ui>) {
                 return glib::Propagation::Stop;
             };
             prompt.set_text(&format_key(&combo));
-            let meaning = find_key(&ui.hub.bindings.borrow().hotkeys, &function::load_functions(), &combo);
+            let meaning = find_key(&ui.hub.bindings.borrow().hotkeys, &ui.hub.functions.borrow(), &combo);
             result.set_text(&match meaning {
                 KeyMeaning::UserFunction { name, global } => {
                     format!("Runs the function \"{name}\"{}", if global { " (global hotkey)" } else { "" })

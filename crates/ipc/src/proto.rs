@@ -214,6 +214,9 @@ pub enum ToHub {
     /// Replace the saved Lister formats. The hub sanitizes them, persists
     /// `formats.json` and broadcasts `ToLister::FormatsUpdate`. No reply.
     SetFormats(crate::format::FormatStore),
+    /// Replace the saved Functions. The hub persists `functions.json` and
+    /// broadcasts `ToLister::FunctionsUpdate`. No reply.
+    SetFunctions(Vec<crate::function::Function>),
     /// The directories this Lister has cached, most recent first. Replaces the
     /// previous report. No reply.
     CacheReport(Vec<PathBuf>),
@@ -426,6 +429,9 @@ pub struct Welcome {
     /// The saved Lister formats.
     #[serde(default)]
     pub formats: crate::format::FormatStore,
+    /// The saved Functions (the hub owns `functions.json`).
+    #[serde(default)]
+    pub functions: Vec<crate::function::Function>,
 }
 
 /// Messages the hub sends to a Lister once it is registered.
@@ -505,6 +511,8 @@ pub enum ToLister {
     BindingsUpdate(crate::bindings::Bindings),
     /// The saved Lister formats changed: the full new store.
     FormatsUpdate(crate::format::FormatStore),
+    /// The saved Functions changed: the full new list.
+    FunctionsUpdate(Vec<crate::function::Function>),
     /// Snapshot of every Lister's cached directories, in Lister id order.
     CacheList(Vec<CacheEntry>),
     /// Drop the directory cache.
@@ -612,6 +620,7 @@ mod tests {
         });
         roundtrip_tohub(ToHub::SelectionReply { paths: vec!["/a".into()], cwd: "/home/x".into() });
         roundtrip_tohub(ToHub::RunFunctionById { id: "fn-1".into() });
+        roundtrip_tohub(ToHub::SetFunctions(vec![crate::function::Function::new("f")]));
         roundtrip_tohub(ToHub::SetBindings(crate::bindings::Bindings {
             hotkeys: vec![crate::bindings::Hotkey { key: "Ctrl+u".into(), function: "f".into(), global: true }],
             ..crate::bindings::Bindings::default()
@@ -646,6 +655,7 @@ mod tests {
             settings: Settings::default(),
             bindings: crate::bindings::Bindings::default(),
             formats: crate::format::FormatStore::default(),
+            functions: vec![crate::function::Function::new("Copy and notify")],
         };
         let mut buf = Vec::new();
         send(&mut buf, &msg).unwrap();
@@ -709,6 +719,7 @@ mod tests {
         roundtrip_tolister(ToLister::ConfirmPrompt { req_id: 3, message: "Sure?".into() });
         roundtrip_tolister(ToLister::RemoteTransfer { op: Op::Copy, srcs: vec!["sftp://h/a".into()], dest_dir: "/d".into() });
         roundtrip_tolister(ToLister::FormatsUpdate(crate::format::FormatStore::default()));
+        roundtrip_tolister(ToLister::FunctionsUpdate(vec![crate::function::Function::new("f")]));
         roundtrip_tolister(ToLister::CacheList(vec![CacheEntry { lister: ListerId(1), path: "/p".into() }]));
         roundtrip_tolister(ToLister::FreeCaches);
         roundtrip_tolister(ToLister::GoTo { path: "/p".into() });

@@ -8,7 +8,7 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::bindings::{self, MenuNode};
-use opusdm_ipc::function::{self, FunctionId};
+use opusdm_ipc::function::FunctionId;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -66,8 +66,8 @@ pub fn build_root_menu(nodes: &[MenuNode]) -> gio::Menu {
 }
 
 /// The set of saved function ids.
-fn known_ids() -> HashSet<FunctionId> {
-    function::load_functions().into_iter().map(|f| f.id).collect()
+fn known_ids(ui: &Ui) -> HashSet<FunctionId> {
+    ui.hub.functions.borrow().iter().map(|f| f.id.clone()).collect()
 }
 
 /// Register the two window actions and make the "Menu" button build its
@@ -97,7 +97,7 @@ pub fn install(ui: &Rc<Ui>) {
     let weak = Rc::downgrade(ui);
     ui.user_menu_btn.set_create_popup_func(move |button| {
         let Some(ui) = weak.upgrade() else { return };
-        let tree = bindings::prune(&ui.hub.bindings.borrow().menu, &known_ids());
+        let tree = bindings::prune(&ui.hub.bindings.borrow().menu, &known_ids(&ui));
         button.set_menu_model(Some(&build_root_menu(&tree)));
     });
 }

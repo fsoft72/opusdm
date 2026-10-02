@@ -117,7 +117,7 @@ pub fn show_context_menu(
     // File type "Open With" entries: one button per function of the type
     // the file matches.
     if let Some(file_type) = crate::filetypes_ui::type_for(&target_path, row) {
-        let entries = crate::filetypes_ui::menu_entries(&file_type, &opusdm_ipc::function::load_functions());
+        let entries = crate::filetypes_ui::menu_entries(&file_type, &ui.hub.functions.borrow());
         if !entries.is_empty() {
             menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         }

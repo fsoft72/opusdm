@@ -12,11 +12,12 @@ pub(super) enum PersistMsg {
     Desktop(DesktopSettings),
     Bindings(Bindings),
     Formats(FormatStore),
+    Functions(Vec<opusdm_ipc::function::Function>),
 }
 
 /// Start the persistence thread and return the channel that feeds it.
 ///
-/// Settings, desktop settings, bindings and formats are written to disk on a
+/// Settings, desktop settings, bindings, formats and functions are written to disk on a
 /// thread of their own, so a slow filesystem cannot stall the owner loop; the
 /// owner keeps the authoritative in-memory copy and only hands off the bytes.
 pub(super) fn spawn_persist_thread() -> Sender<PersistMsg> {
@@ -39,6 +40,11 @@ pub(super) fn spawn_persist_thread() -> Sender<PersistMsg> {
                     PersistMsg::Bindings(b) => {
                         if let Err(e) = bindings::save_bindings(&b) {
                             opusdm_ipc::err_log!("hub", "cannot save bindings: {e}");
+                        }
+                    }
+                    PersistMsg::Functions(f) => {
+                        if let Err(e) = opusdm_ipc::function::save_functions(&f) {
+                            opusdm_ipc::err_log!("hub", "cannot save functions.json: {e}");
                         }
                     }
                     PersistMsg::Formats(f) => {

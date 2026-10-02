@@ -52,7 +52,7 @@ pub fn open_command_line(ui: &Rc<Ui>) {
     let ui = ui.clone();
     run_btn.connect_clicked(move |_| {
         let line = entry.text().to_string();
-        match request_for(&line, &function::load_functions()) {
+        match request_for(&line, &ui.hub.functions.borrow()) {
             Ok(request) => {
                 LAST_LINE.with(|l| *l.borrow_mut() = line);
                 ui.start_run(request);

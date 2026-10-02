@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn every_command_id_the_map_emits_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         // Sweep the whole keyval space we bind from, in both focus modes.
         let keys = [
             gdk::Key::asciitilde, gdk::Key::Insert, gdk::Key::asterisk,
@@ -428,45 +428,45 @@ mod tests {
 
     #[test]
     fn manage_functions_command_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageFunctions));
         assert!(known.contains(&CommandId::ManageBanks));
     }
 
     #[test]
     fn hotkey_commands_exist_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageHotkeys));
         assert!(known.contains(&CommandId::FindKey));
     }
 
     #[test]
     fn user_menu_command_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageUserMenu));
     }
 
     #[test]
     fn script_events_command_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageScripts));
     }
 
     #[test]
     fn view_font_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ViewFont));
     }
 
     #[test]
     fn bookmark_commands_exist_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::Bookmarks) && known.contains(&CommandId::AddBookmark));
     }
 
     #[test]
     fn root_and_parent_variants_exist_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         for id in [CommandId::RootDir, CommandId::ParentNew, CommandId::RootNew] {
             assert!(known.contains(&id));
         }
@@ -474,33 +474,33 @@ mod tests {
 
     #[test]
     fn force_size_command_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::CalcSizesForce));
     }
 
     #[test]
     fn command_line_exists_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::CommandLine));
     }
 
     #[test]
     fn crypt_commands_exist_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::Encrypt));
         assert!(known.contains(&CommandId::Decrypt));
     }
 
     #[test]
     fn ftp_commands_exist_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::FtpBook));
         assert!(known.contains(&CommandId::FtpQuit));
     }
 
     #[test]
     fn filetype_commands_exist_in_the_palette() {
-        let known: Vec<CommandId> = crate::palette::get_commands().iter().map(|c| c.id.clone()).collect();
+        let known: Vec<CommandId> = crate::palette::get_commands(&[]).iter().map(|c| c.id.clone()).collect();
         assert!(known.contains(&CommandId::ManageFiletypes));
         assert!(known.contains(&CommandId::CreateFiletype));
     }

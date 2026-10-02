@@ -5,7 +5,7 @@ use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::bindings::{self, BindingError, ScriptBinding, ScriptEvent};
-use opusdm_ipc::function::{self, Function, FunctionId};
+use opusdm_ipc::function::{Function, FunctionId};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -37,7 +37,7 @@ pub fn open_scripts_editor(ui: &Rc<Ui>) {
 
     let state = Rc::new(State {
         scripts: RefCell::new(ui.hub.bindings.borrow().scripts.clone()),
-        functions: function::load_functions(),
+        functions: ui.hub.functions.borrow().clone(),
         events: ScriptEvent::emitted(),
         rows_box,
         save_btn: save_btn.clone(),

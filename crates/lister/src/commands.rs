@@ -240,7 +240,7 @@ pub fn create_filetype(ui: &Rc<Ui>) {
 
 /// Run the saved Function `id` through the hub.
 pub fn run_function(ui: &Rc<Ui>, id: opusdm_ipc::function::FunctionId) {
-    let Some(function) = opusdm_ipc::function::load_functions().into_iter().find(|f| f.id == id) else {
+    let Some(function) = ui.hub.functions.borrow().iter().find(|f| f.id == id).cloned() else {
         crate::actions::flash(ui, "function not found (it may have been deleted)");
         return;
     };

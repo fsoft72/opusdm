@@ -50,6 +50,9 @@ pub struct HubConnection {
     /// Latest saved formats. Updated wholesale from `Welcome` and
     /// `FormatsUpdate`.
     pub formats: RefCell<opusdm_ipc::FormatStore>,
+    /// Latest saved Functions. Updated wholesale from `Welcome` and
+    /// `FunctionsUpdate`.
+    pub functions: RefCell<Vec<opusdm_ipc::function::Function>>,
     /// Lookup table of the local user hotkeys, rebuilt whenever `bindings`
     /// changes.
     pub hotkeys: RefCell<crate::hotkeys::HotkeyMap>,
@@ -597,6 +600,9 @@ impl Ui {
             ToLister::FormatsUpdate(new_formats) => {
                 *self.hub.formats.borrow_mut() = new_formats;
                 self.on_formats_changed();
+            }
+            ToLister::FunctionsUpdate(new_functions) => {
+                *self.hub.functions.borrow_mut() = new_functions;
             }
             ToLister::BindingsUpdate(new_bindings) => {
                 *self.hub.hotkeys.borrow_mut() = crate::hotkeys::HotkeyMap::from_hotkeys(&new_bindings.hotkeys);

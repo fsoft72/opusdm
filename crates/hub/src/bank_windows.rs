@@ -7,7 +7,7 @@ use crate::server::HubCmd;
 use gtk4 as gtk;
 use opusdm_buttonbank::window::{BankWindow, WindowHooks};
 use opusdm_ipc::buttonbank::{BankAction, BankView};
-use opusdm_ipc::function::load_functions;
+use opusdm_ipc::function::Function;
 use opusdm_ipc::Banks;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -35,11 +35,11 @@ pub struct BankWindows {
 impl BankWindows {
     /// New, with no window open. A button click sends
     /// `HubCmd::RunFunctionHeadless` on `cmd_tx`.
-    pub fn new(banks: Rc<RefCell<Banks>>, cmd_tx: Sender<HubCmd>) -> BankWindows {
+    pub fn new(banks: Rc<RefCell<Banks>>, functions: Rc<RefCell<Vec<Function>>>, cmd_tx: Sender<HubCmd>) -> BankWindows {
         let run: Rc<dyn Fn(&str)> = Rc::new(move |id| {
             let _ = cmd_tx.send(HubCmd::RunFunctionHeadless(id.to_string()));
         });
-        let function_exists: Rc<dyn Fn(&str) -> bool> = Rc::new(|id| load_functions().iter().any(|f| f.id == id));
+        let function_exists: Rc<dyn Fn(&str) -> bool> = Rc::new(move |id| functions.borrow().iter().any(|f| f.id == id));
         BankWindows {
             banks,
             open: Rc::new(RefCell::new(HashMap::new())),

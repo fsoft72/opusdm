@@ -38,12 +38,11 @@ static COMMANDS: std::sync::LazyLock<Vec<CommandItem>> = std::sync::LazyLock::ne
 
 /// Borrow the command palette's entries.
 /// Every palette entry: the static commands, plus one dynamic "Function"
-/// entry per saved function (re-read from `functions.json` on every call,
-/// so a function created/renamed/deleted since the palette last opened is
-/// always current).
-pub fn get_commands() -> Vec<CommandItem> {
+/// entry per saved function in `functions` (the Lister's copy, which the hub
+/// keeps current).
+pub fn get_commands(functions: &[opusdm_ipc::function::Function]) -> Vec<CommandItem> {
     let mut items: Vec<CommandItem> = COMMANDS.clone();
-    for f in opusdm_ipc::function::load_functions() {
+    for f in functions.iter().cloned() {
         items.push(CommandItem {
             id: CommandId::RunFunction(f.id),
             title: Cow::Owned(f.name),
@@ -190,7 +189,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     list_box.set_selection_mode(gtk::SelectionMode::Single);
     list_box.add_css_class("palette-list");
 
-    let commands = get_commands();
+    let commands = get_commands(&ui.hub.functions.borrow());
     let mut rows: Vec<(gtk::ListBoxRow, CommandItem)> = Vec::new();
 
     for cmd in &commands {

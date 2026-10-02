@@ -71,7 +71,7 @@ impl Hub {
     /// (see [`Self::start_function_run`]). A missing or invalid function is
     /// reported through [`Self::function_failed`]. Returns the run id.
     pub(super) fn run_function_by_id(&mut self, requester: u64, source: Option<u64>, id: &str) -> Option<u64> {
-        let Some(function) = opusdm_ipc::function::load_functions().into_iter().find(|f| f.id == id) else {
+        let Some(function) = self.current_functions.iter().find(|f| f.id == id).cloned() else {
             self.function_failed(requester, format!("function '{id}' not found (it may have been deleted)"));
             return None;
         };

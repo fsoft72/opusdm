@@ -137,6 +137,8 @@ pub(crate) struct Widgets {
     /// The button banks (`buttons/<id>.json`), owned by the GTK side.
     pub(crate) banks: Rc<RefCell<opusdm_ipc::Banks>>,
     /// The open bank windows.
+    /// The saved Functions, kept in step with the hub by `HubEvent::FunctionsChanged`.
+    pub(crate) functions: Rc<RefCell<Vec<opusdm_ipc::function::Function>>>,
     pub(crate) bank_windows: crate::bank_windows::BankWindows,
 }
 
@@ -160,7 +162,8 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     );
 
     let banks = Rc::new(RefCell::new(opusdm_ipc::Banks::load()));
-    let bank_windows = crate::bank_windows::BankWindows::new(banks.clone(), cmd_tx.clone());
+    let functions = Rc::new(RefCell::new(opusdm_ipc::function::load_functions()));
+    let bank_windows = crate::bank_windows::BankWindows::new(banks.clone(), functions.clone(), cmd_tx.clone());
 
     let widgets = Rc::new(Widgets {
         windows: RefCell::new(Vec::new()),
@@ -176,6 +179,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         },
         progress_window: crate::progress_window::ProgressWindow::new(app, cmd_tx.clone()),
         banks,
+        functions,
         bank_windows,
         set_panel_position: RefCell::new(None),
         set_dock_layout: RefCell::new(None),
@@ -303,6 +307,14 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             }
         }
         HubEvent::HiddenChanged(hidden) => apply_hidden(widgets, hidden),
+        HubEvent::FunctionsChanged(functions) => {
+            *widgets.functions.borrow_mut() = functions;
+            // Buttons bound to a deleted Function show insensitive.
+            let ids: Vec<String> = widgets.banks.borrow().banks.iter().map(|b| b.id.clone()).collect();
+            for id in ids {
+                widgets.bank_windows.refresh(&id);
+            }
+        }
         HubEvent::Bank { action, bank } => {
             if let Some(app) = widgets.primary_window().application() {
                 widgets.bank_windows.apply(&app, action, &bank);

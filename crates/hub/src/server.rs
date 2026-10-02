@@ -66,6 +66,9 @@ pub enum HubEvent {
     AllListersGone,
     /// A redundant hub invocation asked us to raise the toolbar.
     RaiseToolbar,
+    /// The saved Functions changed (a Lister saved them): the full new list,
+    /// for the GTK side's bank buttons and bank editor.
+    FunctionsChanged(Vec<opusdm_ipc::function::Function>),
     /// Desktop settings changed (from `opus-desktop-config`). Carries the
     /// sanitised value; the GTK side repaints and re-lays the desktop.
     DesktopSettingsChanged(DesktopSettings),
@@ -144,6 +147,8 @@ pub struct ServerOptions {
     /// (production). The default is an empty store so a test never reads a
     /// developer's real formats.
     pub initial_formats: Option<FormatStore>,
+    /// Functions to start with. `None` loads `functions.json` from disk.
+    pub initial_functions: Option<Vec<opusdm_ipc::function::Function>>,
 }
 
 impl Default for ServerOptions {
@@ -153,6 +158,7 @@ impl Default for ServerOptions {
             global_keys: false,
             initial_bindings: Some(Bindings::default()),
             initial_formats: Some(FormatStore::default()),
+            initial_functions: None,
         }
     }
 }
@@ -160,7 +166,7 @@ impl Default for ServerOptions {
 impl ServerOptions {
     /// Options for the real hub: load the bindings from disk.
     pub fn production() -> Self {
-        Self { global_keys: true, initial_bindings: None, initial_formats: None }
+        Self { global_keys: true, initial_bindings: None, initial_formats: None, initial_functions: None }
     }
 }
 
@@ -322,6 +328,9 @@ struct Hub {
     current_bindings: Bindings,
     /// Loaded once at startup; updated in place by `ToHub::SetFormats`.
     current_formats: FormatStore,
+    /// The saved Functions. Loaded once at startup; updated in place by
+    /// `ToHub::SetFunctions`, which is the only writer of `functions.json`.
+    current_functions: Vec<opusdm_ipc::function::Function>,
     /// Loop protection for script events.
     event_guard: EventGuard,
     /// Whether global hotkeys may be grabbed (off in tests).
@@ -436,6 +445,15 @@ impl Hub {
                 }
             }
 
+            ToHub::SetFunctions(new_functions) => {
+                self.current_functions = new_functions;
+                let _ = self.persist_tx.send(PersistMsg::Functions(self.current_functions.clone()));
+                for c in self.conns.values_mut().filter(|c| c.registered) {
+                    let _ = c.tx.send(ToLister::FunctionsUpdate(self.current_functions.clone()).into());
+                }
+                let _ = self.evt_tx.send(HubEvent::FunctionsChanged(self.current_functions.clone()));
+            }
+
             ToHub::CacheReport(paths) => {
                 if let Some(c) = self.conns.get_mut(&cid) {
                     c.cache_paths = paths;
@@ -495,6 +513,7 @@ impl Hub {
                             settings: self.current_settings.clone(),
                             bindings: self.current_bindings.clone(),
                             formats: self.current_formats.clone(),
+                            functions: self.current_functions.clone(),
                         }
                         .into(),
                     );
@@ -646,7 +665,7 @@ impl Hub {
         if ids.is_empty() {
             return;
         }
-        let saved = opusdm_ipc::function::load_functions();
+        let saved = self.current_functions.clone();
         let deadline = Instant::now() + SHUTDOWN_HOOK_TIMEOUT;
         let mut receivers = Vec::new();
         for id in ids {
@@ -1155,6 +1174,10 @@ fn owner_loop(
         current_formats: match opts.initial_formats {
             Some(f) => f,
             None => format::load_formats(),
+        },
+        current_functions: match opts.initial_functions {
+            Some(f) => f,
+            None => opusdm_ipc::function::load_functions(),
         },
         persist_tx,
         engine: JobEngine::new(default_runner(), jp_tx),
@@ -1942,6 +1965,40 @@ mod tests {
         let written = wait_for_file(&cfg.path().join("opusdm").join("hotkeys.json"));
         let back: Vec<opusdm_ipc::bindings::Hotkey> = serde_json::from_str(&written).unwrap();
         assert_eq!(back.len(), 1);
+    }
+
+    #[test]
+    fn set_functions_persists_and_broadcasts_to_every_lister() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+        assert!(welcome.functions.is_empty());
+        let mut b = connect(&path);
+        send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
+        let _: Welcome = recv(&mut b).unwrap().unwrap();
+
+        let f = opusdm_ipc::function::Function::new("Backup");
+        send(&mut a, &ToHub::SetFunctions(vec![f.clone()])).unwrap();
+
+        for conn in [&mut a, &mut b] {
+            loop {
+                let got: ToLister = recv(conn).unwrap().unwrap();
+                if let ToLister::FunctionsUpdate(list) = got {
+                    assert_eq!(list, vec![f.clone()]);
+                    break;
+                }
+            }
+        }
+        let written = wait_for_file(&cfg.path().join("opusdm").join("functions.json"));
+        let back: Vec<opusdm_ipc::function::Function> = serde_json::from_str(&written).unwrap();
+        assert_eq!(back, vec![f]);
     }
 
     #[test]

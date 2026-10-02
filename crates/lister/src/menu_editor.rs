@@ -6,7 +6,7 @@ use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::bindings::{self, BindingError, MenuNode};
-use opusdm_ipc::function::{self, Function, FunctionId};
+use opusdm_ipc::function::{Function, FunctionId};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -36,7 +36,7 @@ pub fn open_menu_editor(ui: &Rc<Ui>) {
 
     let state = Rc::new(State {
         tree: RefCell::new(ui.hub.bindings.borrow().menu.clone()),
-        functions: function::load_functions(),
+        functions: ui.hub.functions.borrow().clone(),
         body,
         save_btn: save_btn.clone(),
         window: shell.window().clone(),

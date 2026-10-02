@@ -5,7 +5,7 @@
 use crate::grid;
 use gtk4 as gtk;
 use gtk::prelude::*;
-use opusdm_ipc::function::{load_functions, Function};
+use opusdm_ipc::function::Function;
 use opusdm_ipc::{Banks, Btn, ButtonBank, MouseButton, Orientation};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -27,6 +27,8 @@ pub struct Hooks {
     pub open: Rc<dyn Fn(&str)>,
     /// Close the window of bank `id`.
     pub close: Rc<dyn Fn(&str)>,
+    /// The saved Functions the buttons can be bound to.
+    pub functions: Rc<dyn Fn() -> Vec<Function>>,
 }
 
 /// Text of the "no Function" entry of the Function drop-downs.
@@ -218,7 +220,7 @@ struct State {
 /// save (the manager refreshes its list with it).
 pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id: &str, hooks: Hooks, after_save: Rc<dyn Fn()>) {
     let Some(bank) = banks.borrow().get(id).cloned() else { return };
-    let functions = load_functions();
+    let functions = (hooks.functions)();
     let shell = opusdm_ui::DialogShell::new(parent, &format!("Edit bank: {}", bank.name)).size(640, 460);
 
     let preview = gtk::Box::new(gtk::Orientation::Vertical, 0);
