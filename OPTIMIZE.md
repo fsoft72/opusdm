@@ -50,7 +50,7 @@
 - [x] **The "send to every registered Lister" loop is repeated ~9 times** - `for c in self.conns.values_mut().filter(|c| c.registered) { let _ = c.tx.send(..) }` appears in the settings, bindings, formats, invalidate, free-caches, hidden and shutdown handlers. `apply_role` also builds the same `RoleChanged` message in two places. Add `Hub::broadcast(msg)` and a `roles_msg()` helper. Wrapping `Bindings`/`FormatStore` in `Arc` would also stop them being deep-cloned once per Lister.
   - File(s): `crates/hub/src/server.rs`
 
-- [ ] **Job submission is written twice** - `HubCmd::RunJob` and `Hub::lister_run_job` both validate, compute `src_parents`, build a `JobSpec`, call `engine.submit` and insert a `JobMeta`. The hub path uses the `u64::MAX` sentinel as its requester. Pull this into one `submit_job(requester: Option<u64>, ..)`.
+- [x] **Job submission is written twice** - `HubCmd::RunJob` and `Hub::lister_run_job` both validate, compute `src_parents`, build a `JobSpec`, call `engine.submit` and insert a `JobMeta`. The hub path uses the `u64::MAX` sentinel as its requester. Pull this into one `submit_job(requester: Option<u64>, ..)`.
   - File(s): `crates/hub/src/server.rs` (`gtk_cmd`, `lister_run_job`)
 
 - [ ] **`run_internal` has seven `unreachable!` arms** - The function step commands are dispatched partly in `run_steps` and partly in `run_internal`, so adding a new `InternalCmd` can panic at runtime instead of failing to compile. Do all the dispatch in one exhaustive `match` in `run_steps` and give `run_internal` only the file-operation commands.

@@ -892,10 +892,6 @@ impl Hub {
                 dirs
             }
         };
-        let src_parents: Vec<PathBuf> = srcs
-            .iter()
-            .filter_map(|s| s.parent().map(PathBuf::from))
-            .collect();
         for dest_dir in dest_dirs {
             // Remote locations are the Lister's business: hand the job back
             // with the destination resolved.
@@ -912,22 +908,24 @@ impl Hub {
             let spec = opusdm_fsops::JobSpec {
                 op: op.clone(),
                 srcs: srcs.clone(),
-                dest_dir: dest_dir.clone(),
+                dest_dir,
                 options: options.clone(),
             };
-            let out = self.engine.submit(ListerId(cid), spec);
-            self.jobs.insert(
-                out.job_id,
-                JobMeta {
-                    requester: cid,
-                    op: op.clone(),
-                    totals: ProgressTotals::default(),
-                    dest_dir,
-                    src_parents: src_parents.clone(),
-                    waiter: None,
-                },
-            );
+            self.submit_job(cid, spec, None);
         }
+    }
+
+    /// Hand `spec` to the job engine on behalf of `requester` (a connection
+    /// id, or `HUB_REQUESTER` for a hub-originated job) and start tracking it.
+    /// `waiter`, when set, is told the outcome on `Done` (a Function step).
+    fn submit_job(&mut self, requester: u64, spec: opusdm_fsops::JobSpec, waiter: Option<Sender<crate::functions::JobResult>>) {
+        let src_parents: Vec<PathBuf> = spec.srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
+        let (op, dest_dir) = (spec.op.clone(), spec.dest_dir.clone());
+        let out = self.engine.submit(ListerId(requester), spec);
+        self.jobs.insert(
+            out.job_id,
+            JobMeta { requester, op, totals: ProgressTotals::default(), dest_dir, src_parents, waiter },
+        );
     }
 
     /// A command arrived from the GTK toolbar (or the SIGCHLD reaper).
@@ -944,26 +942,8 @@ impl Hub {
                     opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
                     return true;
                 }
-                let src_parents: Vec<PathBuf> =
-                    srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
-                let spec = opusdm_fsops::JobSpec {
-                    op: op.clone(),
-                    srcs: srcs.clone(),
-                    dest_dir: dest_dir.clone(),
-                    options: Default::default(),
-                };
-                let out = self.engine.submit(ListerId(HUB_REQUESTER), spec);
-                self.jobs.insert(
-                    out.job_id,
-                    JobMeta {
-                        requester: HUB_REQUESTER,
-                        op,
-                        totals: ProgressTotals::default(),
-                        dest_dir,
-                        src_parents,
-                        waiter: None,
-                    },
-                );
+                let spec = opusdm_fsops::JobSpec { op, srcs, dest_dir, options: Default::default() };
+                self.submit_job(HUB_REQUESTER, spec, None);
             }
 
             HubCmd::CancelJob(id) => self.engine.cancel(id),

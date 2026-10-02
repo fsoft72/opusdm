@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Refactor (hub): `Hub::submit_job(requester, spec, waiter)` is the single place that submits to the job engine and records the `JobMeta`; `lister_run_job`, `HubCmd::RunJob` and `function_job` use it instead of three copies.
 - Refactor (hub): one `broadcast(conns, &msg)` / `Hub::broadcast(msg)` replaces the nine copies of the "send to every registered Lister" loop (settings, bindings, formats, functions, invalidate, free caches, hidden, shutdown, job done), and `roles_msg(roles)` builds the `RoleChanged` message once for the broadcast and the reject paths of `apply_role`. (Wrapping `Bindings` / `FormatStore` in `Arc` was left out: it changes the wire types.)
 - Refactor (lister): three more groups leave the `Ui` struct, like `ViewState` / `StatusBar` / `NavHistory` before them: `FormatState` (`format_state.current`, `format_state.temp`), `Caches` (`caches.dirs`, `caches.sizes`, `Caches::clear`) and `Typeahead` (`typeahead.buffer`, `typeahead.timer`). `Ui` loses six fields; no behaviour change.
 - Refactor (lister): `build::build_window` (~630 lines) is split into `build_stat_bar`, `build_file_view`, `wire_filter_bar`, `build_terminal_pane`, `build_message_row`, `build_nav_bar`, `start_watcher`, `assemble_ui` and the `wire_*` functions (`wire_stat_bar`, `wire_navigation`, `wire_selection`, `wire_window_signals`, `wire_keys`, `wire_icon_view`). `build_window` itself is a ~70-line sequence of those steps. No behaviour change; smoke tested by running the hub with its first Lister, panel and dock in Xephyr.

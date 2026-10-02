@@ -246,13 +246,7 @@ impl Hub {
     /// drops `done`, which fails the step.
     pub(super) fn function_job(&mut self, run_id: u64, spec: opusdm_fsops::JobSpec, done: Sender<crate::functions::JobResult>) {
         let Some(&requester) = self.function_requesters.get(&run_id) else { return };
-        let src_parents: Vec<PathBuf> = spec.srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
-        let (op, dest_dir) = (spec.op.clone(), spec.dest_dir.clone());
-        let out = self.engine.submit(ListerId(requester), spec);
-        self.jobs.insert(
-            out.job_id,
-            JobMeta { requester, op, totals: ProgressTotals::default(), dest_dir, src_parents, waiter: Some(done) },
-        );
+        self.submit_job(requester, spec, Some(done));
     }
 
     /// Route one output-window event. `Open` records which Lister owns the
