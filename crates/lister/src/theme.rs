@@ -40,8 +40,10 @@ pub fn generate_css(settings: &Settings) -> String {
         ""
     };
     let base = format!(
-        ".stat-source {{ background-color: {}; color: {}; }} \
-         .stat-dest {{ background-color: {}; color: {}; }} \
+        /* `> label` too: chrome_css sets `label { color }` directly, which
+           beats the colour the labels would inherit from the bar. */
+        ".stat-source, .stat-source > label {{ background-color: {}; color: {}; }} \
+         .stat-dest, .stat-dest > label {{ background-color: {}; color: {}; }} \
          .stat-bar {{ padding: 0 4px; }} \
          .row-dir {{ background-color: {}; color: {}; }} \
          .row-file {{ background-color: {}; color: {}; }} \
@@ -165,6 +167,15 @@ mod tests {
         let mono = css.find("font-family: monospace;").unwrap();
         let theme_font = css.find("font-family: \"Iosevka\"").unwrap();
         assert!(theme_font > mono, "later rule wins");
+    }
+
+    #[test]
+    fn stat_bar_text_colour_reaches_its_labels() {
+        // chrome_css colours every `label` directly, so the stat bar's
+        // colour has to target its labels, not only the bar itself.
+        let css = generate_css(&Settings::default());
+        assert!(css.contains(".stat-source > label"));
+        assert!(css.contains(".stat-dest > label"));
     }
 
     #[test]
