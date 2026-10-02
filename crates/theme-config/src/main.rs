@@ -59,12 +59,18 @@ pub(crate) mod test_support {
 }
 
 fn main() -> gtk::glib::ExitCode {
+    // `--edit-theme` opens the Theme Editor right away. The arguments are
+    // handled here and not by GApplication, which would reject the unknown flag.
+    let edit_theme = std::env::args().any(|a| a == EDIT_THEME_FLAG);
     let app = gtk::Application::builder().application_id("org.opusdm.Settings").build();
-    app.connect_activate(build_window);
-    app.run()
+    app.connect_activate(move |app| build_window(app, edit_theme));
+    app.run_with_args::<&str>(&[])
 }
 
-fn build_window(app: &gtk::Application) {
+/// Command line flag that makes the settings app open the Theme Editor on start.
+const EDIT_THEME_FLAG: &str = "--edit-theme";
+
+fn build_window(app: &gtk::Application, edit_theme: bool) {
     let desktop_data = opusdm_desktop_config::model::load();
     let (settings_data, migration_note) = migrated_settings(model::load_settings(), &desktop_data);
     let IconSetId::Custom(active_slug) = &settings_data.theme.icon_set;
@@ -389,6 +395,9 @@ fn build_window(app: &gtk::Application) {
     }
 
     window.present();
+    if edit_theme {
+        editor::open(&window, select_theme.clone());
+    }
 }
 
 /// Run the one-time look migration on `settings` (see [`migrate::migrate_look`])

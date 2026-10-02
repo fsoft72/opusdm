@@ -100,8 +100,8 @@ Il desktop mostra le icone della cartella Desktop dell'utente
    Contiene, tra le altre, le voci **New Lister**, **Paste**, **New Folder...**,
    **New File...**, **New Group...**, **Button Banks...**, **Hide All**,
    **Open Terminal Here**, **Settings**, **About**, **Quit** e un sottomenu
-   **Desktop** (espandilo con un click) che contiene **Rearrange icons** e
-   **Settings**.
+   **Desktop** (espandilo con un click) che contiene **Rearrange icons**,
+   **Edit Theme** (apre direttamente il Theme Editor) e **Settings**.
 3. Scegli **New Folder...**, scrivi `prova` e conferma con **OK**: appare una
    nuova cartella sul desktop. Poi **click destro** sulla sua icona: il menu
    dell'icona offre **Open**, **Cut**, **Copy**, **Rename...**, **Delete...**.

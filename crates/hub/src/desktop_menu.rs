@@ -34,8 +34,18 @@ pub(crate) fn theme_config_bin() -> PathBuf {
 
 /// Spawn the theme configuration app, detached.
 pub(crate) fn launch_theme_config() {
+    spawn_theme_config(&[]);
+}
+
+/// Spawn the theme configuration app with the Theme Editor open on top.
+pub(crate) fn launch_theme_editor() {
+    spawn_theme_config(&["--edit-theme"]);
+}
+
+/// Spawn the theme configuration app with `args`, detached.
+fn spawn_theme_config(args: &[&str]) {
     let bin = theme_config_bin();
-    if let Err(e) = std::process::Command::new(&bin).spawn() {
+    if let Err(e) = std::process::Command::new(&bin).args(args).spawn() {
         opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", bin.display());
     }
 }
@@ -456,6 +466,17 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
                 reload_desktop_field(&widgets);
+            });
+            sub.append(&btn);
+        }
+
+        // Edit Theme: open the Theme Editor straight away.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Edit Theme");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                launch_theme_editor();
             });
             sub.append(&btn);
         }
