@@ -83,6 +83,7 @@ pub fn generate_css(settings: &Settings) -> String {
          .filter-bar {{ background: alpha(@theme_bg_color, 0.8); border-bottom: 1px solid rgba(0, 0, 0, 0.2); padding: 2px 4px; }} \
          .dim-label {{ opacity: 0.7; font-size: 0.85em; }} \
          .palette-search {{ font-size: 1.1em; padding: 4px; }} \
+         .palette-list > row {{ padding: 0; min-height: 0; }} \
          .palette-cat {{ font-size: 0.8em; font-weight: bold; opacity: 0.6; }} \
          .palette-title {{ font-weight: 500; }} \
          .palette-shortcut {{ font-size: 0.8em; opacity: 0.7; background: rgba(0, 0, 0, 0.15); border-radius: 3px; padding: 1px 4px; }} \

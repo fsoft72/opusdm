@@ -31,6 +31,7 @@ struct Palette {
     surface_hover: &'static str,
     surface_border: &'static str,
     text: &'static str,
+    accent: &'static str,
 }
 
 const DARK: Palette = Palette {
@@ -39,6 +40,7 @@ const DARK: Palette = Palette {
     surface_hover: "#35373c",
     surface_border: "#3f4147",
     text: "#e3e3e3",
+    accent: "#3584e4",
 };
 
 const LIGHT: Palette = Palette {
@@ -47,10 +49,11 @@ const LIGHT: Palette = Palette {
     surface_hover: "#ececec",
     surface_border: "#d0d0d0",
     text: "#1a1a1a",
+    accent: "#3584e4",
 };
 
 /// CSS for the generic widgets OpusDM never hand-paints itself (window
-/// background, entries, drop-downs, buttons, list-box rows, popovers) -
+/// background, entries, drop-downs, buttons, list-box rows (CSS node `list`), popovers) -
 /// applied on top of (and instead of relying on) whatever GTK theme happens
 /// to be installed, so every OpusDM window looks the same dark/light way
 /// everywhere. Element selectors only (no OpusDM-specific classes), so the
@@ -69,13 +72,15 @@ pub fn chrome_css(mode: ThemeMode) -> String {
              box-shadow: none; \
          }} \
          button:hover, dropdown:hover, dropdown > button:hover {{ background-color: {hover}; }} \
-         list-box, list-box row {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
+         list, list > row {{ background-color: {sbg}; background-image: none; color: {fg}; outline: none; }} \
+         list > row:hover {{ background-color: {hover}; }} \
+         list > row:selected {{ background-color: {sbg}; box-shadow: inset 0 0 0 1px {accent}; }} \
          popover, popover.background, popover contents {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
          scrolledwindow, viewport {{ background-color: {wbg}; background-image: none; }} \
          box, grid, stack, frame {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
          button > *, dropdown > *, headerbar > * {{ background-color: transparent; }} \
          columnview box, columnview grid, columnview stack, columnview frame, \
-         list-box box, list-box grid, list-box stack, list-box frame, \
+         list box, list grid, list stack, list frame, \
          popover box, popover grid, popover stack, popover frame {{ background-color: transparent; }} \
          label {{ color: {fg}; }} \
          checkbutton, radiobutton {{ color: {fg}; }} \
@@ -88,6 +93,7 @@ pub fn chrome_css(mode: ThemeMode) -> String {
         hover = p.surface_hover,
         border = p.surface_border,
         fg = p.text,
+        accent = p.accent,
     )
 }
 
@@ -109,7 +115,7 @@ mod tests {
     fn chrome_css_covers_the_generic_widgets_opusdm_does_not_hand_paint() {
         let css = chrome_css(ThemeMode::Dark);
         for selector in [
-            "window {", "entry,", "button", "list-box", "popover", "dropdown", "label", "notebook",
+            "window {", "entry,", "button", "list,", "popover", "dropdown", "label", "notebook",
         ] {
             assert!(css.contains(selector), "missing rule for {selector}");
         }
@@ -138,6 +144,16 @@ mod tests {
     }
 
     #[test]
+    fn list_box_rules_target_the_real_gtk4_css_node_name() {
+        // GTK4's ListBox CSS node is `list` (rows are `row`), not
+        // `list-box`: a `list-box` selector matches nothing, which left each
+        // row theme-coloured while its inner box got the window colour.
+        let css = chrome_css(ThemeMode::Dark);
+        assert!(!css.contains("list-box"));
+        assert!(css.contains("list > row:selected"));
+    }
+
+    #[test]
     fn columnview_rows_are_not_covered_by_the_generic_container_paint() {
         // Same failure shape as the button/dropdown case above, one level
         // deeper: a ColumnView cell's icon+label layout is itself a box, so
@@ -145,7 +161,7 @@ mod tests {
         // window-coloured, hiding `.row-dir`/`.row-file`/`.cell-selected`
         // (OpusDM's own, more specific per-row colouring) underneath it.
         let css = chrome_css(ThemeMode::Dark);
-        for selector in ["columnview box", "list-box box", "popover box"] {
+        for selector in ["columnview box", "list box", "popover box"] {
             assert!(css.contains(selector), "missing reset for {selector}");
         }
     }

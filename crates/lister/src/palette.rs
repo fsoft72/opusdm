@@ -197,8 +197,8 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
         let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         hbox.set_margin_start(8);
         hbox.set_margin_end(8);
-        hbox.set_margin_top(6);
-        hbox.set_margin_bottom(6);
+        hbox.set_margin_top(3);
+        hbox.set_margin_bottom(3);
 
         let cat_label = gtk::Label::new(Some(cmd.category.as_ref()));
         cat_label.add_css_class("palette-cat");
