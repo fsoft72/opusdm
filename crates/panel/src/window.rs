@@ -6,15 +6,9 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::PanelPosition;
-use x11rb::connection::Connection;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
-use x11rb::protocol::xproto::{
-    self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode, StackMode,
-};
+use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
-
-/// `_NET_WM_STATE` action: add the listed property.
-const NET_WM_STATE_ADD: u32 = 1;
 
 /// Height of the panel strip, in pixels.
 pub const PANEL_HEIGHT: i32 = 40;
@@ -82,18 +76,9 @@ pub fn make_panel_window(window: &gtk::ApplicationWindow, place: Placement) {
 /// manager has run its placement policy.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement) {
     let Some(xid) = x11_window_id(window) else { return };
-    if let Ok((conn, _)) = x11rb::connect(None) {
-        let _ = conn.configure_window(
-            xid,
-            &xproto::ConfigureWindowAux::new()
-                .x(place.mon_x)
-                .y(place.bar_y())
-                .width(place.mon_w.max(1) as u32)
-                .height(PANEL_HEIGHT.max(1) as u32),
-        );
-        if let Err(e) = opusdm_ui::x11_sync(&conn) {
-            eprintln!("opusdm-panel: cannot pin panel geometry: {e}");
-        }
+    let (x, y, w, h) = (place.mon_x, place.bar_y(), place.mon_w.max(1) as u32, PANEL_HEIGHT.max(1) as u32);
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.configure(xid, x, y, w, h)) {
+        eprintln!("opusdm-panel: cannot pin panel geometry: {e}");
     }
 }
 
@@ -104,26 +89,7 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement) {
 /// window has finished asserting its own geometry.
 pub fn raise_above(window: &gtk::ApplicationWindow) {
     let Some(xid) = x11_window_id(window) else { return };
-    let run = || -> Result<(), Box<dyn std::error::Error>> {
-        let (conn, screen_num) = x11rb::connect(None)?;
-        let root = conn.setup().roots[screen_num].root;
-        let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
-        let above = conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
-        let ev = ClientMessageEvent::new(32, xid, wm_state, [NET_WM_STATE_ADD, above, 0, 0, 0]);
-        conn.send_event(
-            false,
-            root,
-            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-            ev,
-        )?;
-        conn.configure_window(
-            xid,
-            &xproto::ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-        )?;
-        opusdm_ui::x11_sync(&conn)?;
-        Ok(())
-    };
-    if let Err(e) = run() {
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.raise_above(xid)) {
         eprintln!("opusdm-panel: cannot raise panel: {e}");
     }
 }
@@ -135,51 +101,39 @@ fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
     Some(x11_surface.xid() as u32)
 }
 
-fn apply(xid: u32, place: Placement) -> Result<(), Box<dyn std::error::Error>> {
-    let (conn, screen_num) = x11rb::connect(None)?;
-    let screen_h = conn.setup().roots[screen_num].height_in_pixels as i32;
-    let bottom_gap = screen_h - (place.mon_y + place.mon_h);
+fn apply(xid: u32, place: Placement) -> Result<(), opusdm_ui::X11Error> {
     let (mon_x, mon_y) = (place.mon_x, place.bar_y());
     let width = place.mon_w.max(1) as u32;
     let height = PANEL_HEIGHT.max(1) as u32;
+    opusdm_ui::with_x11(|x11| {
+        let conn = x11.conn();
+        let bottom_gap = x11.screen_height() - (place.mon_y + place.mon_h);
+        let dock_type = x11.atom("_NET_WM_WINDOW_TYPE_DOCK")?;
+        let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
+        let wm_state = x11.atom("_NET_WM_STATE")?;
+        let state_above = x11.atom("_NET_WM_STATE_ABOVE")?;
+        let strut = x11.atom("_NET_WM_STRUT")?;
+        let strut_partial = x11.atom("_NET_WM_STRUT_PARTIAL")?;
 
-    let dock_type = conn
-        .intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK")?
-        .reply()?
-        .atom;
-    let win_type = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE")?.reply()?.atom;
-    let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
-    let state_above = conn.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
-    let strut = conn.intern_atom(false, b"_NET_WM_STRUT")?.reply()?.atom;
-    let strut_partial = conn
-        .intern_atom(false, b"_NET_WM_STRUT_PARTIAL")?
-        .reply()?
-        .atom;
+        conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[dock_type])?;
+        conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_above])?;
 
-    conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[dock_type])?;
-    conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_above])?;
+        // Reserve the docked strip. `_NET_WM_STRUT` is the legacy 4-tuple
+        // (left, right, top, bottom); `_NET_WM_STRUT_PARTIAL` the modern 12-tuple.
+        let partial = self::strut_partial(place.position, height as i32, mon_x, width as i32, bottom_gap);
+        conn.change_property32(PropMode::REPLACE, xid, strut, AtomEnum::CARDINAL, &partial[..4])?;
+        conn.change_property32(PropMode::REPLACE, xid, strut_partial, AtomEnum::CARDINAL, &partial)?;
 
-    // Reserve the docked strip. `_NET_WM_STRUT` is the legacy 4-tuple
-    // (left, right, top, bottom); `_NET_WM_STRUT_PARTIAL` the modern 12-tuple.
-    let partial = self::strut_partial(place.position, height as i32, mon_x, width as i32, bottom_gap);
-    conn.change_property32(PropMode::REPLACE, xid, strut, AtomEnum::CARDINAL, &partial[..4])?;
-    conn.change_property32(PropMode::REPLACE, xid, strut_partial, AtomEnum::CARDINAL, &partial)?;
+        // Position is user-specified so openbox does not re-center us.
+        let mut hints = WmSizeHints::new();
+        hints.position = Some((WmSizeHintsSpecification::UserSpecified, mon_x, mon_y));
+        hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, height as i32));
+        hints.min_size = Some((width as i32, height as i32));
+        hints.max_size = Some((width as i32, height as i32));
+        hints.set_normal_hints(conn, xid)?.check()?;
 
-    // Position is user-specified so openbox does not re-center us.
-    let mut hints = WmSizeHints::new();
-    hints.position = Some((WmSizeHintsSpecification::UserSpecified, mon_x, mon_y));
-    hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, height as i32));
-    hints.min_size = Some((width as i32, height as i32));
-    hints.max_size = Some((width as i32, height as i32));
-    hints.set_normal_hints(&conn, xid)?.check()?;
-
-    conn.configure_window(
-        xid,
-        &xproto::ConfigureWindowAux::new().x(mon_x).y(mon_y).width(width).height(height),
-    )?;
-
-    opusdm_ui::x11_sync(&conn)?;
-    Ok(())
+        x11.configure(xid, mon_x, mon_y, width, height)
+    })
 }
 
 #[cfg(test)]

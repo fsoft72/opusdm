@@ -10,18 +10,9 @@
 use crate::placement::Placement;
 use gtk4 as gtk;
 use gtk::prelude::*;
-use x11rb::connection::Connection;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
-use x11rb::protocol::xproto::{
-    self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode,
-};
+use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
-
-/// `_NET_WM_STATE` action: add the listed property.
-const NET_WM_STATE_ADD: u32 = 1;
-/// `_NET_MOVERESIZE_WINDOW` flags: keep the window gravity, all four of x, y,
-/// width and height are supplied, and the request comes from the application.
-const MOVERESIZE_FLAGS: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
 
 /// Apply the DOCK window type and a fixed geometry to the realized `window`.
 /// Safe to call more than once (realize and map). Errors are logged and
@@ -47,28 +38,8 @@ pub fn make_dock_window(window: &gtk::ApplicationWindow, place: Placement, count
 /// message moves the frame itself.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement, count: usize) {
     let Some(xid) = x11_window_id(window) else { return };
-    let Ok((conn, screen_num)) = x11rb::connect(None) else { return };
     let (x, y, w, h) = place.rect(count);
-    let (w, h) = (w.max(1) as u32, h.max(1) as u32);
-
-    let _ = conn.configure_window(xid, &xproto::ConfigureWindowAux::new().x(x).y(y).width(w).height(h));
-
-    let moveresize = conn
-        .intern_atom(false, b"_NET_MOVERESIZE_WINDOW")
-        .ok()
-        .and_then(|cookie| cookie.reply().ok())
-        .map(|reply| reply.atom);
-    if let Some(atom) = moveresize {
-        let root = conn.setup().roots[screen_num].root;
-        let ev = ClientMessageEvent::new(32, xid, atom, [MOVERESIZE_FLAGS, x as u32, y as u32, w, h]);
-        let _ = conn.send_event(
-            false,
-            root,
-            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-            ev,
-        );
-    }
-    if let Err(e) = opusdm_ui::x11_sync(&conn) {
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.pin_geometry(xid, x, y, w.max(1) as u32, h.max(1) as u32)) {
         eprintln!("opusdm-dock: cannot pin dock geometry: {e}");
     }
 }
@@ -80,26 +51,8 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement, count: us
 /// `ClientMessage` per state (each message carries at most two atoms).
 pub fn set_below(window: &gtk::ApplicationWindow) {
     let Some(xid) = x11_window_id(window) else { return };
-    let run = || -> Result<(), Box<dyn std::error::Error>> {
-        let (conn, screen_num) = x11rb::connect(None)?;
-        let root = conn.setup().roots[screen_num].root;
-        let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
-        let below = conn.intern_atom(false, b"_NET_WM_STATE_BELOW")?.reply()?.atom;
-        let skip_taskbar = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?.reply()?.atom;
-        let skip_pager = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_PAGER")?.reply()?.atom;
-        for state in [below, skip_taskbar, skip_pager] {
-            let ev = ClientMessageEvent::new(32, xid, wm_state, [NET_WM_STATE_ADD, state, 0, 0, 0]);
-            conn.send_event(
-                false,
-                root,
-                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-                ev,
-            )?;
-        }
-        opusdm_ui::x11_sync(&conn)?;
-        Ok(())
-    };
-    if let Err(e) = run() {
+    let states = ["_NET_WM_STATE_BELOW", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"];
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.add_wm_states(xid, &states)) {
         eprintln!("opusdm-dock: cannot lower dock: {e}");
     }
 }
@@ -111,42 +64,38 @@ fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
     Some(x11_surface.xid() as u32)
 }
 
-fn apply(xid: u32, place: Placement, count: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let (conn, _) = x11rb::connect(None)?;
+fn apply(xid: u32, place: Placement, count: usize) -> Result<(), opusdm_ui::X11Error> {
     let (x, y, w, h) = place.rect(count);
+    opusdm_ui::with_x11(|x11| {
+        let conn = x11.conn();
+        // NORMAL, not DOCK: see the module doc for why. `_NET_WM_STATE` is set
+        // here as a property before mapping, which some window managers honour
+        // for BELOW/SKIP_* (unlike ABOVE); `set_below` in `connect_map` covers
+        // openbox, which does not.
+        let normal_type = x11.atom("_NET_WM_WINDOW_TYPE_NORMAL")?;
+        let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
+        let wm_state = x11.atom("_NET_WM_STATE")?;
+        let state_below = x11.atom("_NET_WM_STATE_BELOW")?;
+        let skip_taskbar = x11.atom("_NET_WM_STATE_SKIP_TASKBAR")?;
+        let skip_pager = x11.atom("_NET_WM_STATE_SKIP_PAGER")?;
 
-    // NORMAL, not DOCK: see the module doc for why. `_NET_WM_STATE` is set
-    // here as a property before mapping, which some window managers honour
-    // for BELOW/SKIP_* (unlike ABOVE); `set_below` in `connect_map` covers
-    // openbox, which does not.
-    let normal_type = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE_NORMAL")?.reply()?.atom;
-    let win_type = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE")?.reply()?.atom;
-    let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
-    let state_below = conn.intern_atom(false, b"_NET_WM_STATE_BELOW")?.reply()?.atom;
-    let skip_taskbar = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?.reply()?.atom;
-    let skip_pager = conn.intern_atom(false, b"_NET_WM_STATE_SKIP_PAGER")?.reply()?.atom;
+        conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[normal_type])?;
+        conn.change_property32(
+            PropMode::REPLACE,
+            xid,
+            wm_state,
+            AtomEnum::ATOM,
+            &[state_below, skip_taskbar, skip_pager],
+        )?;
 
-    conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[normal_type])?;
-    conn.change_property32(
-        PropMode::REPLACE,
-        xid,
-        wm_state,
-        AtomEnum::ATOM,
-        &[state_below, skip_taskbar, skip_pager],
-    )?;
+        // Position is user-specified so openbox does not re-center us.
+        let mut hints = WmSizeHints::new();
+        hints.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
+        hints.size = Some((WmSizeHintsSpecification::UserSpecified, w, h));
+        hints.min_size = Some((w, h));
+        hints.max_size = Some((w, h));
+        hints.set_normal_hints(conn, xid)?.check()?;
 
-    // Position is user-specified so openbox does not re-center us.
-    let mut hints = WmSizeHints::new();
-    hints.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
-    hints.size = Some((WmSizeHintsSpecification::UserSpecified, w, h));
-    hints.min_size = Some((w, h));
-    hints.max_size = Some((w, h));
-    hints.set_normal_hints(&conn, xid)?.check()?;
-
-    conn.configure_window(
-        xid,
-        &xproto::ConfigureWindowAux::new().x(x).y(y).width(w as u32).height(h as u32),
-    )?;
-    opusdm_ui::x11_sync(&conn)?;
-    Ok(())
+        x11.configure(xid, x, y, w as u32, h as u32)
+    })
 }

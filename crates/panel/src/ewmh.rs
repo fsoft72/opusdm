@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, Window,
+    AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, Window,
 };
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
@@ -329,65 +329,26 @@ fn get_string(conn: &RustConnection, win: Window, prop: u32) -> Option<String> {
 // Click actions (short-lived connection each)
 // --------------------------------------------------------------------------
 
-fn with_root<F>(f: F)
-where
-    F: FnOnce(&RustConnection, Window, &Atoms) -> Result<(), Box<dyn std::error::Error>>,
-{
-    let run = || -> Result<(), Box<dyn std::error::Error>> {
-        let (conn, screen_num) = x11rb::connect(None)?;
-        let root = conn.setup().roots[screen_num].root;
-        let atoms = Atoms::new(&conn)?.reply()?;
-        f(&conn, root, &atoms)?;
-        opusdm_ui::x11_sync(&conn)?;
-        Ok(())
-    };
-    if let Err(e) = run() {
+/// Run `f` on the shared connection; a failure is logged, never raised.
+fn with_root(f: impl FnOnce(&opusdm_ui::X11) -> Result<(), opusdm_ui::X11Error>) {
+    if let Err(e) = opusdm_ui::with_x11(f) {
         eprintln!("opusdm-panel: X action failed: {e}");
     }
 }
 
-fn send_root(
-    conn: &RustConnection,
-    root: Window,
-    type_: u32,
-    window: Window,
-    data: [u32; 5],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let ev = ClientMessageEvent::new(32, window, type_, data);
-    conn.send_event(
-        false,
-        root,
-        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-        ev,
-    )?;
-    Ok(())
-}
-
 /// Switch to virtual desktop `index`.
 pub fn switch_desktop(index: u32) {
-    with_root(|conn, root, atoms| {
-        send_root(
-            conn,
-            root,
-            atoms._NET_CURRENT_DESKTOP,
-            root,
-            [index, CURRENT_TIME, 0, 0, 0],
-        )
-    });
+    with_root(|x11| x11.send_to_root(x11.root(), "_NET_CURRENT_DESKTOP", [index, CURRENT_TIME, 0, 0, 0]));
 }
 
 /// Raise and focus `xid` (pager source indication).
 pub fn activate_window(xid: u32) {
-    with_root(|conn, root, atoms| {
-        send_root(conn, root, atoms._NET_ACTIVE_WINDOW, xid, [2, CURRENT_TIME, 0, 0, 0])
-    });
+    with_root(|x11| x11.send_to_root(xid, "_NET_ACTIVE_WINDOW", [2, CURRENT_TIME, 0, 0, 0]));
 }
 
 /// Minimise `xid` via ICCCM `WM_CHANGE_STATE`.
 pub fn iconify_window(xid: u32) {
-    with_root(|conn, root, atoms| {
-        send_root(conn, root, atoms.WM_CHANGE_STATE, xid, [ICONIC_STATE, 0, 0, 0, 0])
-    });
+    with_root(|x11| x11.send_to_root(xid, "WM_CHANGE_STATE", [ICONIC_STATE, 0, 0, 0, 0]));
 }
 
 #[cfg(test)]

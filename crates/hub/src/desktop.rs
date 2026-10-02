@@ -5,16 +5,9 @@
 
 use gtk4 as gtk;
 use gtk::prelude::*;
-use x11rb::connection::Connection;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
-use x11rb::protocol::xproto::{
-    self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode,
-};
+use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
-
-/// `_NET_MOVERESIZE_WINDOW` flags: keep the window gravity, all four of x, y,
-/// width and height are supplied, and the request comes from the application.
-const MOVERESIZE_FLAGS: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
 
 /// Apply the desktop window type, the keep-below state, and a fixed
 /// full-monitor geometry - placed at `(x, y)`, `width` x `height` - to the
@@ -43,32 +36,7 @@ pub fn make_desktop_window(window: &gtk::ApplicationWindow, x: i32, y: i32, widt
 /// which sits below the panel's strut.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, x: i32, y: i32, width: i32, height: i32) {
     let Some(xid) = x11_window_id(window) else { return };
-    let Ok((conn, screen_num)) = x11rb::connect(None) else { return };
-    let width = width.max(1) as u32;
-    let height = height.max(1) as u32;
-
-    let _ = conn.configure_window(
-        xid,
-        &xproto::ConfigureWindowAux::new().x(x).y(y).width(width).height(height),
-    );
-
-    let moveresize = conn
-        .intern_atom(false, b"_NET_MOVERESIZE_WINDOW")
-        .ok()
-        .and_then(|cookie| cookie.reply().ok())
-        .map(|reply| reply.atom);
-    if let Some(atom) = moveresize {
-        let root = conn.setup().roots[screen_num].root;
-        let ev = ClientMessageEvent::new(32, xid, atom, [MOVERESIZE_FLAGS, x as u32, y as u32, width, height]);
-        let _ = conn.send_event(
-            false,
-            root,
-            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-            ev,
-        );
-    }
-
-    if let Err(e) = opusdm_ui::x11_sync(&conn) {
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.pin_geometry(xid, x, y, width.max(1) as u32, height.max(1) as u32)) {
         eprintln!("opusdm-hub: cannot pin desktop geometry: {e}");
     }
 }
@@ -80,40 +48,32 @@ fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
     Some(x11_surface.xid() as u32)
 }
 
-fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), Box<dyn std::error::Error>> {
-    let (conn, _screen) = x11rb::connect(None)?;
+fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), opusdm_ui::X11Error> {
     let width = width.max(1) as u32;
     let height = height.max(1) as u32;
+    opusdm_ui::with_x11(|x11| {
+        let conn = x11.conn();
+        let desktop_type = x11.atom("_NET_WM_WINDOW_TYPE_DESKTOP")?;
+        let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
+        let wm_state = x11.atom("_NET_WM_STATE")?;
+        let state_below = x11.atom("_NET_WM_STATE_BELOW")?;
 
-    let desktop_type = conn
-        .intern_atom(false, b"_NET_WM_WINDOW_TYPE_DESKTOP")?
-        .reply()?
-        .atom;
-    let win_type = conn.intern_atom(false, b"_NET_WM_WINDOW_TYPE")?.reply()?.atom;
-    let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
-    let state_below = conn.intern_atom(false, b"_NET_WM_STATE_BELOW")?.reply()?.atom;
+        // Window type = DESKTOP.
+        conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[desktop_type])?;
 
-    // Window type = DESKTOP.
-    conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[desktop_type])?;
+        // Keep it below every other window.
+        conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_below])?;
 
-    // Keep it below every other window.
-    conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_below])?;
+        // Tell the WM the position is user-specified so it does not re-center the
+        // window (openbox centers windows that carry no position hint).
+        let mut hints = WmSizeHints::new();
+        hints.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
+        hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, height as i32));
+        hints.min_size = Some((width as i32, height as i32));
+        hints.max_size = Some((width as i32, height as i32));
+        hints.set_normal_hints(conn, xid)?.check()?;
 
-    // Tell the WM the position is user-specified so it does not re-center the
-    // window (openbox centers windows that carry no position hint).
-    let mut hints = WmSizeHints::new();
-    hints.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
-    hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, height as i32));
-    hints.min_size = Some((width as i32, height as i32));
-    hints.max_size = Some((width as i32, height as i32));
-    hints.set_normal_hints(&conn, xid)?.check()?;
-
-    // Pin geometry to this monitor's origin at its full size.
-    conn.configure_window(
-        xid,
-        &xproto::ConfigureWindowAux::new().x(x).y(y).width(width).height(height),
-    )?;
-
-    opusdm_ui::x11_sync(&conn)?;
-    Ok(())
+        // Pin geometry to this monitor's origin at its full size.
+        x11.configure(xid, x, y, width, height)
+    })
 }

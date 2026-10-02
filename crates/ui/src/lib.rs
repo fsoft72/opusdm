@@ -17,4 +17,4 @@ pub use screen::{list_monitors, watch_monitors, watch_screen_size};
 pub use shell::DialogShell;
 pub use theme_mode::{apply_theme_mode, chrome_css};
 pub use version::VERSION;
-pub use x11::x11_sync;
+pub use x11::{with_x11, x11_sync, X11Error, X11};
