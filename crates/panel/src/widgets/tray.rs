@@ -9,14 +9,12 @@ use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
-
-use crate::systray::TrayCmd;
+use crate::systray::{TrayCmd, TraySender};
 
 pub struct Tray {
     root: gtk::Box,
     icon_size: i32,
-    cmd_tx: Sender<TrayCmd>,
+    cmd_tx: TraySender,
     /// Dock order, mirrors what `update` was last called with.
     order: RefCell<Vec<u32>>,
     /// One placeholder square per docked xid, keyed the same way.
@@ -31,7 +29,7 @@ impl Tray {
     /// Build an empty tray strip. `icon_size` is `systray::icon_square_size`
     /// applied to the panel height; `cmd_tx` is the sender half returned by
     /// `systray::spawn`.
-    pub fn new(icon_size: i32, cmd_tx: Sender<TrayCmd>) -> Rc<Self> {
+    pub fn new(icon_size: i32, cmd_tx: TraySender) -> Rc<Self> {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         root.set_valign(gtk::Align::Center);
         Rc::new(Tray {

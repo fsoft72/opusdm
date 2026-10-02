@@ -1571,6 +1571,7 @@ dependencies = [
  "dirs",
  "gdk4-x11",
  "gtk4",
+ "libc",
  "opusdm-dock",
  "opusdm-ipc",
  "opusdm-ui",

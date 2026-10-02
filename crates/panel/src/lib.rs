@@ -68,7 +68,7 @@ fn build_bar_window(
     place: Placement,
     state: &Rc<RefCell<PanelState>>,
     is_primary: bool,
-    tray_cmd_tx: std::sync::mpsc::Sender<systray::TrayCmd>,
+    tray_cmd_tx: systray::TraySender,
     sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
     sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
 ) -> BarWindow {

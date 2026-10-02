@@ -48,7 +48,8 @@ pub fn parse_dock_request(data: [u32; 5]) -> Option<u32> {
 
 use std::collections::HashMap;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::Arc;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
@@ -85,31 +86,73 @@ pub enum TrayCmd {
     PlaceIcon { xid: u32, x: i32, y: i32, w: i32, h: i32 },
 }
 
-/// Poll interval when there is no pending X event: fast enough that a
-/// `TrayCmd::PlaceIcon` lands within one frame, cheap enough to idle at.
-const POLL_INTERVAL: Duration = Duration::from_millis(16);
+/// Sender half of the command channel. Sending also wakes the tray thread,
+/// which sleeps in `poll(2)` on the X connection and this eventfd instead of
+/// waking up on a timer.
+#[derive(Clone)]
+pub struct TraySender {
+    tx: mpsc::Sender<TrayCmd>,
+    wake: Arc<OwnedFd>,
+}
+
+impl TraySender {
+    /// Queue `cmd` and wake the tray thread. Fails only when the thread has
+    /// ended (the command channel is closed).
+    pub fn send(&self, cmd: TrayCmd) -> Result<(), mpsc::SendError<TrayCmd>> {
+        self.tx.send(cmd)?;
+        let one: u64 = 1;
+        // A failed write only means a wake-up is already pending (counter full).
+        let _ = unsafe { libc::write(self.wake.as_raw_fd(), (&one as *const u64).cast(), 8) };
+        Ok(())
+    }
+}
+
+/// A non-blocking eventfd the tray thread can `poll(2)` on.
+fn new_wake_fd() -> std::io::Result<OwnedFd> {
+    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Block until `x_fd` has data to read or `wake` was signalled, then clear
+/// the wake signal.
+fn wait_for_work(x_fd: RawFd, wake: &OwnedFd) {
+    let mut fds = [
+        libc::pollfd { fd: x_fd, events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+    ];
+    // EINTR just means "look again", which the caller's loop does anyway.
+    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+    let mut counter: u64 = 0;
+    let _ = unsafe { libc::read(wake.as_raw_fd(), (&mut counter as *mut u64).cast(), 8) };
+}
 
 /// Start the tray thread. Returns a command sender and event receiver; if no
 /// X11 connection is available, or the tray selection is already owned by
 /// another process, the thread logs once and exits - the channels stay
 /// open but nothing is ever sent or received.
-pub fn spawn(panel_height: i32) -> (mpsc::Sender<TrayCmd>, async_channel::Receiver<TrayEvent>) {
+pub fn spawn(panel_height: i32) -> (TraySender, async_channel::Receiver<TrayEvent>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<TrayCmd>();
     let (evt_tx, evt_rx) = async_channel::unbounded::<TrayEvent>();
+    let wake = Arc::new(new_wake_fd().expect("create tray wake eventfd"));
+    let thread_wake = wake.clone();
     std::thread::Builder::new()
         .name("opusdm-panel-systray".into())
         .spawn(move || {
-            if let Err(e) = run(panel_height, cmd_rx, evt_tx) {
+            if let Err(e) = run(panel_height, cmd_rx, &thread_wake, evt_tx) {
                 eprintln!("opusdm-panel: system tray stopped: {e}");
             }
         })
         .expect("spawn systray thread");
-    (cmd_tx, evt_rx)
+    (TraySender { tx: cmd_tx, wake }, evt_rx)
 }
 
 fn run(
     panel_height: i32,
     cmd_rx: mpsc::Receiver<TrayCmd>,
+    wake: &OwnedFd,
     tx: async_channel::Sender<TrayEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (conn, screen_num) = x11rb::connect(None)?;
@@ -163,7 +206,7 @@ fn run(
     let icon_size = icon_square_size(panel_height);
     let mut containers: HashMap<u32, u32> = HashMap::new();
 
-    event_loop(&conn, root, &atoms, manager, icon_size, &mut containers, &cmd_rx, &tx)
+    event_loop(&conn, root, &atoms, manager, icon_size, &mut containers, &cmd_rx, wake, &tx)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -175,8 +218,10 @@ fn event_loop(
     icon_size: i32,
     containers: &mut HashMap<u32, u32>,
     cmd_rx: &mpsc::Receiver<TrayCmd>,
+    wake: &OwnedFd,
     tx: &async_channel::Sender<TrayEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let x_fd = conn.stream().as_raw_fd();
     loop {
         while let Some(event) = conn.poll_for_event()? {
             match event {
@@ -201,13 +246,17 @@ fn event_loop(
                 _ => {}
             }
         }
-        match cmd_rx.try_recv() {
-            Ok(TrayCmd::PlaceIcon { xid, x, y, w, h }) => {
-                place_icon(conn, containers, xid, x, y, w, h)?
+        loop {
+            match cmd_rx.try_recv() {
+                Ok(TrayCmd::PlaceIcon { xid, x, y, w, h }) => place_icon(conn, containers, xid, x, y, w, h)?,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
-            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(POLL_INTERVAL),
-            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
         }
+        // Everything pending was handled above, so sleep until the X server
+        // or a sender has something new (no timer: an idle desktop wakes
+        // this thread zero times).
+        wait_for_work(x_fd, wake);
     }
 }
 
@@ -308,6 +357,31 @@ fn place_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command sent from another thread wakes a thread sleeping in
+    /// `wait_for_work`, and the wake signal is cleared afterwards.
+    #[test]
+    fn sending_a_command_wakes_the_sleeping_tray_thread() {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<TrayCmd>();
+        let wake = Arc::new(new_wake_fd().unwrap());
+        let sender = TraySender { tx: cmd_tx, wake: wake.clone() };
+        // A socket nobody writes to stands in for the quiet X connection.
+        let (quiet, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let thread_wake = wake.clone();
+        std::thread::spawn(move || {
+            wait_for_work(quiet.as_raw_fd(), &thread_wake);
+            let _ = done_tx.send(cmd_rx.try_recv());
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(done_rx.try_recv().is_err(), "must still be asleep with nothing to do");
+        sender.send(TrayCmd::PlaceIcon { xid: 1, x: 2, y: 3, w: 4, h: 5 }).unwrap();
+        let got = done_rx.recv_timeout(std::time::Duration::from_secs(2)).expect("tray thread woke up");
+        assert_eq!(got, Ok(TrayCmd::PlaceIcon { xid: 1, x: 2, y: 3, w: 4, h: 5 }));
+        let mut counter: u64 = 0;
+        let read = unsafe { libc::read(wake.as_raw_fd(), (&mut counter as *mut u64).cast(), 8) };
+        assert_eq!(read, -1, "the wake signal was consumed");
+    }
 
     #[test]
     fn icon_square_size_subtracts_margin_on_both_sides() {

@@ -36,7 +36,7 @@
 - [x] **A new X11 connection for every window-manager call** - About 20 helpers each call `x11rb::connect(None)`, intern atoms, sync and close again. Placement is also retried at 80/400/1000 ms, so one map costs several connections. The last commit (`x11_sync`) worked around the side effects of these short-lived connections. Keep one lazily opened connection per process in `opusdm-ui` (atoms interned once), with shared `pin_geometry` / `set_below` / `raise_above` helpers.
   - File(s): `crates/ui/src/x11.rs`, `crates/panel/src/window.rs`, `crates/panel/src/ewmh.rs`, `crates/dock/src/window.rs`, `crates/hub/src/desktop.rs`, `crates/buttonbank/src/x11.rs`
 
-- [ ] **The system tray thread wakes up 60 times a second forever** - The event loop polls `cmd_rx.try_recv()` and sleeps 16 ms when nothing is there, which keeps a CPU core waking up even when the desktop is idle. Wait on the X connection fd with `poll(2)` and wake the loop for commands with a pipe/eventfd, or send them as an X `ClientMessage` to the tray window.
+- [x] **The system tray thread wakes up 60 times a second forever** - The event loop polls `cmd_rx.try_recv()` and sleeps 16 ms when nothing is there, which keeps a CPU core waking up even when the desktop is idle. Wait on the X connection fd with `poll(2)` and wake the loop for commands with a pipe/eventfd, or send them as an X `ClientMessage` to the tray window.
   - File(s): `crates/panel/src/systray.rs:208`
 
 ## Medium
