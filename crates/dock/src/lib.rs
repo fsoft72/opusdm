@@ -97,12 +97,15 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
         win.connect_map(move |w| {
             dock.apply_geometry();
             window::set_below(w);
-            // The window manager runs its placement policy around map time,
-            // so re-pin the geometry a few times over the first second.
+            // The window manager adopts the window and runs its placement
+            // policy shortly after map, and drops state messages sent before
+            // it has adopted it: re-pin the geometry and re-send the states a
+            // few times over the first second.
             for delay in [80_u64, 400, 1000] {
                 let dock = dock.clone();
                 gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
                     dock.pin();
+                    window::set_below(&dock.window);
                 });
             }
         });
@@ -517,10 +520,11 @@ fn set_margins(widget: &impl IsA<gtk::Widget>, margin: i32) {
 fn install_css() {
     let Some(display) = gtk::gdk::Display::default() else { return };
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(
-        "window { background-color: #2e3436; border: 1px solid #555753; }\n\
-         .opusdm-dock-item:hover { background-color: #3c4043; border-radius: 6px; }",
-    );
+    provider.load_from_data(&format!(
+        "window {{ background-color: #2e3436; border: {border}px solid #555753; }}\n\
+         .opusdm-dock-item:hover {{ background-color: #3c4043; border-radius: 6px; }}",
+        border = placement::BORDER,
+    ));
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,

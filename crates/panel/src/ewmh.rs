@@ -33,6 +33,7 @@ x11rb::atom_manager! {
         _NET_WM_DESKTOP,
         _NET_WM_STATE,
         _NET_WM_STATE_HIDDEN,
+        _NET_WM_STATE_SKIP_TASKBAR,
         _NET_WM_WINDOW_TYPE,
         _NET_WM_WINDOW_TYPE_DOCK,
         _NET_WM_WINDOW_TYPE_DESKTOP,
@@ -245,7 +246,8 @@ fn emit_clients(
 }
 
 /// Read the panel-relevant properties of one client window. Returns `None`
-/// for windows we never show (docks, the desktop) or that vanished.
+/// for windows we never show (docks, the desktop, windows that ask to be
+/// left out of the taskbar) or that vanished.
 fn read_client(conn: &RustConnection, xid: Window, atoms: &Atoms) -> Option<ClientWin> {
     // Skip docks and the desktop.
     if let Some(types) = get_atoms(conn, xid, atoms._NET_WM_WINDOW_TYPE) {
@@ -267,9 +269,11 @@ fn read_client(conn: &RustConnection, xid: Window, atoms: &Atoms) -> Option<Clie
         None => -1,
     };
 
-    let minimized = get_atoms(conn, xid, atoms._NET_WM_STATE)
-        .map(|s| s.contains(&atoms._NET_WM_STATE_HIDDEN))
-        .unwrap_or(false);
+    let states = get_atoms(conn, xid, atoms._NET_WM_STATE).unwrap_or_default();
+    if states.contains(&atoms._NET_WM_STATE_SKIP_TASKBAR) {
+        return None;
+    }
+    let minimized = states.contains(&atoms._NET_WM_STATE_HIDDEN);
 
     let icon = get_card_array(conn, xid, atoms._NET_WM_ICON)
         .and_then(|words| pick_icon(&words, 24));

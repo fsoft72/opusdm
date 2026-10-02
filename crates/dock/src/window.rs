@@ -19,6 +19,9 @@ use x11rb::wrapper::ConnectionExt as _;
 
 /// `_NET_WM_STATE` action: add the listed property.
 const NET_WM_STATE_ADD: u32 = 1;
+/// `_NET_MOVERESIZE_WINDOW` flags: keep the window gravity, all four of x, y,
+/// width and height are supplied, and the request comes from the application.
+const MOVERESIZE_FLAGS: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
 
 /// Apply the DOCK window type and a fixed geometry to the realized `window`.
 /// Safe to call more than once (realize and map). Errors are logged and
@@ -35,16 +38,47 @@ pub fn make_dock_window(window: &gtk::ApplicationWindow, place: Placement, count
 
 /// Re-assert position and size only. Cheap; used on `map` after the window
 /// manager has run its placement policy.
+///
+/// The geometry goes out twice, as in the hub desktop window: a plain
+/// `ConfigureWindow`, and a `_NET_MOVERESIZE_WINDOW` message. Once openbox
+/// has adopted the window it ignores the position of a `ConfigureWindow` and
+/// leaves the dock where its placement policy put it (top left with `Smart`,
+/// the middle of the screen with `<center>yes</center>`); only the EWMH
+/// message moves the frame itself.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement, count: usize) {
     let Some(xid) = x11_window_id(window) else { return };
+    let Ok((conn, screen_num)) = x11rb::connect(None) else { return };
     let (x, y, w, h) = place.rect(count);
-    if let Ok((conn, _)) = x11rb::connect(None) {
-        let _ = conn.configure_window(
-            xid,
-            &xproto::ConfigureWindowAux::new().x(x).y(y).width(w as u32).height(h as u32),
+    let (w, h) = (w.max(1) as u32, h.max(1) as u32);
+
+    let _ = conn.configure_window(xid, &xproto::ConfigureWindowAux::new().x(x).y(y).width(w).height(h));
+
+    let moveresize = conn
+        .intern_atom(false, b"_NET_MOVERESIZE_WINDOW")
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| reply.atom);
+    if let Some(atom) = moveresize {
+        let root = conn.setup().roots[screen_num].root;
+        let ev = ClientMessageEvent::new(32, xid, atom, [MOVERESIZE_FLAGS, x as u32, y as u32, w, h]);
+        let _ = conn.send_event(
+            false,
+            root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            ev,
         );
-        let _ = conn.flush();
     }
+    if let Err(e) = sync(&conn) {
+        eprintln!("opusdm-dock: cannot pin dock geometry: {e}");
+    }
+}
+
+/// Flush `conn` and wait for the server to process everything sent on it.
+/// Dropping the connection right after a plain flush loses the requests
+/// still queued in the server, so the window manager never sees them.
+fn sync(conn: &impl Connection) -> Result<(), Box<dyn std::error::Error>> {
+    conn.get_input_focus()?.reply()?;
+    Ok(())
 }
 
 /// Ask the window manager to put the dock in the BELOW layer, and hide it
@@ -70,7 +104,7 @@ pub fn set_below(window: &gtk::ApplicationWindow) {
                 ev,
             )?;
         }
-        conn.flush()?;
+        sync(&conn)?;
         Ok(())
     };
     if let Err(e) = run() {
@@ -121,6 +155,6 @@ fn apply(xid: u32, place: Placement, count: usize) -> Result<(), Box<dyn std::er
         xid,
         &xproto::ConfigureWindowAux::new().x(x).y(y).width(w as u32).height(h as u32),
     )?;
-    conn.flush()?;
+    sync(&conn)?;
     Ok(())
 }

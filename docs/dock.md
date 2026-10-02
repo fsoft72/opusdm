@@ -26,6 +26,7 @@ Out of scope: zoom, transparency, window list, running-app indicators, previews,
 - **No strut**: the dock does NOT reserve screen space. Maximized windows cover it; it is visible only over the desktop.
 - Opaque background with a thin border and square corners: rounded corners would need transparency or an X shape mask, so they are left out. No compositor required.
 - Centered along its edge inside the monitor work area.
+- The geometry is pinned with `_NET_MOVERESIZE_WINDOW` (openbox ignores the position of a plain `ConfigureWindow` once it has adopted the window), and the states are re-sent a few times over the first second after map, since openbox drops state messages for windows it has not adopted yet.
 
 ## Position
 

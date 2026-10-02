@@ -9,6 +9,9 @@ pub const ITEM_PAD: i32 = 6;
 pub const DOCK_PAD: i32 = 6;
 /// Gap between the dock and the monitor edge it is docked to, in pixels.
 pub const EDGE_MARGIN: i32 = 8;
+/// Width of the dock window border drawn by the stylesheet, in pixels. It is
+/// part of the window size GTK insists on, so the geometry must count it.
+pub const BORDER: i32 = 1;
 
 /// Where the dock sits: the requested edge, the icon size, the panel it must
 /// keep clear of, and the monitor rect it belongs to.
@@ -39,8 +42,8 @@ pub fn slot_size(icon_size: i32) -> i32 {
 /// keeps one slot of room so it can still be right-clicked and dropped on.
 pub fn dock_size(position: DockPosition, count: usize, icon_size: i32) -> (i32, i32) {
     let slot = slot_size(icon_size);
-    let length = count.max(1) as i32 * slot + 2 * DOCK_PAD;
-    let thickness = slot + 2 * DOCK_PAD;
+    let length = count.max(1) as i32 * slot + 2 * (DOCK_PAD + BORDER);
+    let thickness = slot + 2 * (DOCK_PAD + BORDER);
     if is_horizontal(position) {
         (length, thickness)
     } else {
@@ -79,7 +82,7 @@ impl Placement {
     pub fn insert_index(&self, count: usize, x: f64, y: f64) -> usize {
         let pos = if is_horizontal(self.position()) { x } else { y };
         let slot = slot_size(self.icon_size) as f64;
-        let idx = ((pos - DOCK_PAD as f64) / slot + 0.5).floor();
+        let idx = ((pos - (DOCK_PAD + BORDER) as f64) / slot + 0.5).floor();
         idx.clamp(0.0, count as f64) as usize
     }
 }
@@ -105,7 +108,7 @@ mod tests {
     fn size_swaps_axes_for_vertical_edges() {
         let (w, h) = dock_size(DockPosition::Bottom, 3, 48);
         assert_eq!(dock_size(DockPosition::Left, 3, 48), (h, w));
-        assert_eq!((w, h), (3 * 60 + 12, 60 + 12));
+        assert_eq!((w, h), (3 * 60 + 14, 60 + 14));
     }
 
     #[test]
@@ -147,10 +150,10 @@ mod tests {
     fn insert_index_snaps_to_the_nearest_boundary() {
         let p = place(DockPosition::Bottom, PanelPosition::Top);
         assert_eq!(p.insert_index(3, 0.0, 0.0), 0);
-        assert_eq!(p.insert_index(3, (DOCK_PAD + 20) as f64, 0.0), 0);
-        assert_eq!(p.insert_index(3, (DOCK_PAD + 40) as f64, 0.0), 1);
+        assert_eq!(p.insert_index(3, (DOCK_PAD + BORDER + 20) as f64, 0.0), 0);
+        assert_eq!(p.insert_index(3, (DOCK_PAD + BORDER + 40) as f64, 0.0), 1);
         assert_eq!(p.insert_index(3, 5000.0, 0.0), 3);
         let v = place(DockPosition::Left, PanelPosition::Top);
-        assert_eq!(v.insert_index(3, 5000.0, (DOCK_PAD + 70) as f64), 1);
+        assert_eq!(v.insert_index(3, 5000.0, (DOCK_PAD + BORDER + 70) as f64), 1);
     }
 }
