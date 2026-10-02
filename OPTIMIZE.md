@@ -53,7 +53,7 @@
 - [x] **Job submission is written twice** - `HubCmd::RunJob` and `Hub::lister_run_job` both validate, compute `src_parents`, build a `JobSpec`, call `engine.submit` and insert a `JobMeta`. The hub path uses the `u64::MAX` sentinel as its requester. Pull this into one `submit_job(requester: Option<u64>, ..)`.
   - File(s): `crates/hub/src/server.rs` (`gtk_cmd`, `lister_run_job`)
 
-- [ ] **`run_internal` has seven `unreachable!` arms** - The function step commands are dispatched partly in `run_steps` and partly in `run_internal`, so adding a new `InternalCmd` can panic at runtime instead of failing to compile. Do all the dispatch in one exhaustive `match` in `run_steps` and give `run_internal` only the file-operation commands.
+- [x] **`run_internal` has seven `unreachable!` arms** - The function step commands are dispatched partly in `run_steps` and partly in `run_internal`, so adding a new `InternalCmd` can panic at runtime instead of failing to compile. Do all the dispatch in one exhaustive `match` in `run_steps` and give `run_internal` only the file-operation commands.
   - File(s): `crates/hub/src/functions.rs:346`
 
 - [ ] **Icon thumbnails go stale after a file is edited** - The in-memory `thumb_cache` is keyed by index and carried over by path in `refresh_entries`. `IconEntry` has no mtime or size, so an image that was overwritten keeps its old thumbnail until the folder is reopened. Add `modified` to `IconEntry` and key the cache by `(path, mtime)`. That also removes the index re-keying of four maps on every refresh.

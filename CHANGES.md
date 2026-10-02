@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Refactor (hub): Function step dispatch is one exhaustive `match` on `InternalCmd` in `run_steps_cancellable`; the seven `unreachable!` arms of `run_internal` are gone. `run_internal` is split into `run_rename`, `run_make_entry` and `run_file_job` (with a small `FileJob` enum), so adding an `InternalCmd` no longer compiles until it is dispatched.
 - Refactor (hub): `Hub::submit_job(requester, spec, waiter)` is the single place that submits to the job engine and records the `JobMeta`; `lister_run_job`, `HubCmd::RunJob` and `function_job` use it instead of three copies.
 - Refactor (hub): one `broadcast(conns, &msg)` / `Hub::broadcast(msg)` replaces the nine copies of the "send to every registered Lister" loop (settings, bindings, formats, functions, invalidate, free caches, hidden, shutdown, job done), and `roles_msg(roles)` builds the `RoleChanged` message once for the broadcast and the reject paths of `apply_role`. (Wrapping `Bindings` / `FormatStore` in `Arc` was left out: it changes the wire types.)
 - Refactor (lister): three more groups leave the `Ui` struct, like `ViewState` / `StatusBar` / `NavHistory` before them: `FormatState` (`format_state.current`, `format_state.temp`), `Caches` (`caches.dirs`, `caches.sizes`, `Caches::clear`) and `Typeahead` (`typeahead.buffer`, `typeahead.timer`). `Ui` loses six fields; no behaviour change.

@@ -7,6 +7,7 @@
 use opusdm_fsops::{run_job, CancelToken, JobSpec, Progress};
 use opusdm_ipc::function::{expand_argv_element, expand_text, ExpandError, ExpandedArg, FnStep, InternalArgs, InternalCmd, SelectionCtx};
 use opusdm_ipc::glob::expand_new_name;
+use opusdm_ipc::buttonbank::BankAction;
 use opusdm_ipc::{Op, Resolution};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -156,27 +157,32 @@ fn run_steps_cancellable(
             return;
         }
         let result = match step {
-            FnStep::Internal { cmd: InternalCmd::ChangeDir, args } => {
-                run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx)
-            }
-            FnStep::Internal { cmd: InternalCmd::Run, args } => run_run(run_id, step_idx, args, &source, dest, events_tx),
-            FnStep::Internal { cmd: InternalCmd::Confirm, args } => {
-                run_confirm(run_id, step_idx, args, &source, dest, events_tx)
-            }
-            FnStep::Internal { cmd: InternalCmd::SetBackground, args } => {
-                run_set_background(run_id, step_idx, args, &source, dest, events_tx)
-            }
-            FnStep::Internal { cmd: cmd @ (InternalCmd::LeaveOut | InternalCmd::PutAway), .. } => {
-                run_leave_out(run_id, step_idx, *cmd == InternalCmd::PutAway, &source, events_tx)
-            }
-            FnStep::Internal { cmd: cmd @ (InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide), .. } => {
-                run_hide(run_id, step_idx, *cmd, events_tx)
-            }
-            FnStep::Internal { cmd, args } if cmd.bank_action().is_some() => {
-                let action = cmd.bank_action().expect("guarded by is_some");
-                run_bank(run_id, step_idx, action, args, bank_exists, events_tx)
-            }
-            FnStep::Internal { cmd, args } => run_internal(run_id, step_idx, *cmd, args, &source, dest, events_tx),
+            // One exhaustive match: a new `InternalCmd` does not compile until
+            // it is dispatched here.
+            FnStep::Internal { cmd, args } => match *cmd {
+                InternalCmd::ChangeDir => run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx),
+                InternalCmd::Run => run_run(run_id, step_idx, args, &source, dest, events_tx),
+                InternalCmd::Confirm => run_confirm(run_id, step_idx, args, &source, dest, events_tx),
+                InternalCmd::SetBackground => run_set_background(run_id, step_idx, args, &source, dest, events_tx),
+                InternalCmd::LeaveOut => run_leave_out(run_id, step_idx, false, &source, events_tx),
+                InternalCmd::PutAway => run_leave_out(run_id, step_idx, true, &source, events_tx),
+                InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide => {
+                    run_hide(run_id, step_idx, *cmd, events_tx)
+                }
+                InternalCmd::OpenBank => run_bank(run_id, step_idx, BankAction::Open, args, bank_exists, events_tx),
+                InternalCmd::CloseBank => run_bank(run_id, step_idx, BankAction::Close, args, bank_exists, events_tx),
+                InternalCmd::ToggleBank => run_bank(run_id, step_idx, BankAction::Toggle, args, bank_exists, events_tx),
+                InternalCmd::HideBank => run_bank(run_id, step_idx, BankAction::Hide, args, bank_exists, events_tx),
+                InternalCmd::Rename => run_rename(run_id, step_idx, args, &source, dest, events_tx),
+                InternalCmd::MakeDir => run_make_entry(run_id, step_idx, false, args, &source, dest, events_tx),
+                InternalCmd::NewFile => run_make_entry(run_id, step_idx, true, args, &source, dest, events_tx),
+                InternalCmd::Copy => run_file_job(run_id, step_idx, FileJob::Copy, args, &source, dest, events_tx),
+                InternalCmd::Move => run_file_job(run_id, step_idx, FileJob::Move, args, &source, dest, events_tx),
+                InternalCmd::Delete => run_file_job(run_id, step_idx, FileJob::Delete, args, &source, dest, events_tx),
+                InternalCmd::CopyAs => run_file_job(run_id, step_idx, FileJob::CopyAs, args, &source, dest, events_tx),
+                InternalCmd::MoveAs => run_file_job(run_id, step_idx, FileJob::MoveAs, args, &source, dest, events_tx),
+                InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, &source, dest, events_tx),
+            },
             FnStep::External { argv, cwd_source } => {
                 run_external(run_id, step_idx, argv, *cwd_source, &source, dest, events_tx)
             }
@@ -392,128 +398,150 @@ fn run_bank(
     Ok(())
 }
 
-/// Run one `Internal` step. `Copy`/`Move`/`Delete` reuse the same
-/// `opusdm_fsops::run_job` the hub's own `JobEngine` calls; `MakeDir`/
-/// `NewFile` create directly (no scan/progress needed for one entry);
-/// `Rename` is a direct `std::fs::rename`.
-fn run_internal(
+/// Run a `Rename` step: rename the first selected path inside its own folder,
+/// never replacing an existing entry.
+fn run_rename(
     run_id: u64,
     step_idx: usize,
-    cmd: InternalCmd,
     args: &InternalArgs,
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    match cmd {
-        InternalCmd::Confirm => unreachable!("Confirm is handled by run_confirm"),
-        InternalCmd::Run => unreachable!("Run is handled by run_run"),
-        InternalCmd::ChangeDir => unreachable!("ChangeDir is handled by run_change_dir"),
-        InternalCmd::SetBackground => unreachable!("SetBackground is handled by run_set_background"),
-        InternalCmd::LeaveOut | InternalCmd::PutAway => {
-            unreachable!("LeaveOut and PutAway are handled by run_leave_out")
-        }
-        InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide => {
-            unreachable!("Hide, Reveal and ToggleHide are handled by run_hide")
-        }
-        InternalCmd::OpenBank | InternalCmd::CloseBank | InternalCmd::ToggleBank | InternalCmd::HideBank => {
-            unreachable!("bank commands are handled by run_bank")
-        }
-        InternalCmd::Rename => {
-            let template = args.get("new_name").unwrap_or("");
-            let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;
-            let old = source.paths.first().ok_or_else(|| "Rename: nothing selected".to_string())?;
-            let new_path = old.with_file_name(new_name.trim());
-            opusdm_fsops::rename_noreplace(old, &new_path).map_err(|e| format!("rename failed: {e}"))?;
-            let _ = events_tx.send((
-                run_id,
-                FnEvent::Output { step_idx, line: format!("renamed {} -> {}", old.display(), new_path.display()) },
-            ));
-            let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
-            Ok(())
-        }
-        InternalCmd::MakeDir | InternalCmd::NewFile => {
-            // Both commands use the same schema key ("name", see Task 1).
-            // Always create in the SOURCE Lister's own directory, matching
-            // `palette.rs`'s existing Mkdir/NewFile commands (which create
-            // in the invoking Lister's cwd, never the DEST pane) - a DEST
-            // being open must not redirect where the new entry lands.
-            let template = args.get("name").unwrap_or("");
-            let name = expand_text(template, source, dest).map_err(expand_err_msg)?;
-            // Reuses `opusdm_fsops::delete::make_entry` (the same call the
-            // hub's own MakeDir/NewFile jobs use) rather than a bare
-            // `std::fs::File::create`, which truncates a same-named file
-            // that already exists instead of failing.
-            let outcome = opusdm_fsops::delete::make_entry(&source.cwd, name.trim(), cmd == InternalCmd::NewFile);
-            let target = source.cwd.join(name.trim());
-            match outcome {
-                Progress::Done { errors, .. } if !errors.is_empty() => {
-                    return Err(format!("{}: {}", cmd.label(), errors[0].1));
-                }
-                _ => {}
-            }
-            let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("created {}", target.display()) }));
-            let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
-            Ok(())
-        }
-        InternalCmd::Copy
-        | InternalCmd::Move
-        | InternalCmd::Delete
-        | InternalCmd::CopyAs
-        | InternalCmd::MoveAs
-        | InternalCmd::Duplicate => {
-            let op = match cmd {
-                InternalCmd::Copy => Op::Copy,
-                InternalCmd::Move => Op::Move,
-                InternalCmd::Delete => Op::Delete,
-                InternalCmd::Duplicate => Op::Duplicate,
-                InternalCmd::CopyAs | InternalCmd::MoveAs => {
-                    let pattern = expand_text(args.get("new_name").unwrap_or(""), source, dest)
-                        .map_err(expand_err_msg)?;
-                    let new_names = source
-                        .paths
-                        .iter()
-                        .map(|p| {
-                            let own = p.file_name().map(|n| n.to_string_lossy().into_owned());
-                            expand_new_name(pattern.trim(), &own.unwrap_or_default())
-                        })
-                        .collect();
-                    if cmd == InternalCmd::CopyAs {
-                        Op::CopyAs { new_names }
-                    } else {
-                        Op::MoveAs { new_names }
-                    }
-                }
-                _ => unreachable!("Rename/MakeDir/NewFile/ChangeDir handled above"),
-            };
-            // Delete, Duplicate and the "As" commands work in place, so a
-            // missing DEST falls back to the SOURCE directory.
-            let needs_dest = matches!(cmd, InternalCmd::Copy | InternalCmd::Move);
-            let dest_dir = match dest {
-                Some(d) => d.cwd.clone(),
-                None if !needs_dest => source.cwd.clone(),
-                None => return Err(format!("{}: no DEST Lister open", cmd.label())),
-            };
-            crate::jobs::validate_op(&op, &source.paths, &dest_dir)?;
-            let spec = JobSpec { op, srcs: source.paths.clone(), dest_dir, options: args.job_options() };
-            // The hub runs the job on its engine, so the step waits here for
-            // the outcome (conflict prompts and progress are the hub's job).
-            let (done_tx, done_rx) = channel::<JobResult>();
-            events_tx
-                .send((run_id, FnEvent::Job { step_idx, spec, done: done_tx }))
-                .map_err(|_| format!("{}: the hub is gone", cmd.label()))?;
-            let (copied, skipped) = done_rx
-                .recv()
-                .map_err(|_| format!("{}: the job was dropped", cmd.label()))?
-                .map_err(|e| format!("{}: {e}", cmd.label()))?;
-            let _ = events_tx.send((run_id, FnEvent::Output {
-                step_idx,
-                line: format!("{}: {copied} copied, {skipped} skipped", cmd.label()),
-            }));
-            let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
-            Ok(())
+    let template = args.get("new_name").unwrap_or("");
+    let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;
+    let old = source.paths.first().ok_or_else(|| "Rename: nothing selected".to_string())?;
+    let new_path = old.with_file_name(new_name.trim());
+    opusdm_fsops::rename_noreplace(old, &new_path).map_err(|e| format!("rename failed: {e}"))?;
+    let _ = events_tx.send((
+        run_id,
+        FnEvent::Output { step_idx, line: format!("renamed {} -> {}", old.display(), new_path.display()) },
+    ));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
+/// Run a `MakeDir` (`is_file == false`) or `NewFile` step: create one entry
+/// directly (no scan or progress needed).
+fn run_make_entry(
+    run_id: u64,
+    step_idx: usize,
+    is_file: bool,
+    args: &InternalArgs,
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let label = if is_file { InternalCmd::NewFile.label() } else { InternalCmd::MakeDir.label() };
+    // Both commands use the same schema key ("name", see Task 1).
+    // Always create in the SOURCE Lister's own directory, matching
+    // `palette.rs`'s existing Mkdir/NewFile commands (which create
+    // in the invoking Lister's cwd, never the DEST pane) - a DEST
+    // being open must not redirect where the new entry lands.
+    let template = args.get("name").unwrap_or("");
+    let name = expand_text(template, source, dest).map_err(expand_err_msg)?;
+    // Reuses `opusdm_fsops::delete::make_entry` (the same call the
+    // hub's own MakeDir/NewFile jobs use) rather than a bare
+    // `std::fs::File::create`, which truncates a same-named file
+    // that already exists instead of failing.
+    let outcome = opusdm_fsops::delete::make_entry(&source.cwd, name.trim(), is_file);
+    let target = source.cwd.join(name.trim());
+    if let Progress::Done { errors, .. } = outcome {
+        if let Some((_, msg)) = errors.first() {
+            return Err(format!("{label}: {msg}"));
         }
     }
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("created {}", target.display()) }));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
+/// The step commands that run as a file job on the hub's engine.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileJob {
+    Copy,
+    Move,
+    Delete,
+    CopyAs,
+    MoveAs,
+    Duplicate,
+}
+
+impl FileJob {
+    /// The step command this job belongs to.
+    fn cmd(self) -> InternalCmd {
+        match self {
+            FileJob::Copy => InternalCmd::Copy,
+            FileJob::Move => InternalCmd::Move,
+            FileJob::Delete => InternalCmd::Delete,
+            FileJob::CopyAs => InternalCmd::CopyAs,
+            FileJob::MoveAs => InternalCmd::MoveAs,
+            FileJob::Duplicate => InternalCmd::Duplicate,
+        }
+    }
+
+    /// Whether the job needs a DEST Lister. Delete, Duplicate and the "As"
+    /// commands work in place, so a missing DEST falls back to the SOURCE
+    /// directory.
+    fn needs_dest(self) -> bool {
+        matches!(self, FileJob::Copy | FileJob::Move)
+    }
+}
+
+/// Run a Copy/Move/Delete/Copy As/Move As/Duplicate step: describe the job
+/// and wait for the hub's job engine to finish it.
+fn run_file_job(
+    run_id: u64,
+    step_idx: usize,
+    job: FileJob,
+    args: &InternalArgs,
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let label = job.cmd().label();
+    let op = match job {
+        FileJob::Copy => Op::Copy,
+        FileJob::Move => Op::Move,
+        FileJob::Delete => Op::Delete,
+        FileJob::Duplicate => Op::Duplicate,
+        FileJob::CopyAs | FileJob::MoveAs => {
+            let pattern = expand_text(args.get("new_name").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+            let new_names = source
+                .paths
+                .iter()
+                .map(|p| {
+                    let own = p.file_name().map(|n| n.to_string_lossy().into_owned());
+                    expand_new_name(pattern.trim(), &own.unwrap_or_default())
+                })
+                .collect();
+            if job == FileJob::CopyAs {
+                Op::CopyAs { new_names }
+            } else {
+                Op::MoveAs { new_names }
+            }
+        }
+    };
+    let dest_dir = match dest {
+        Some(d) => d.cwd.clone(),
+        None if !job.needs_dest() => source.cwd.clone(),
+        None => return Err(format!("{label}: no DEST Lister open")),
+    };
+    crate::jobs::validate_op(&op, &source.paths, &dest_dir)?;
+    let spec = JobSpec { op, srcs: source.paths.clone(), dest_dir, options: args.job_options() };
+    // The hub runs the job on its engine, so the step waits here for
+    // the outcome (conflict prompts and progress are the hub's job).
+    let (done_tx, done_rx) = channel::<JobResult>();
+    events_tx
+        .send((run_id, FnEvent::Job { step_idx, spec, done: done_tx }))
+        .map_err(|_| format!("{label}: the hub is gone"))?;
+    let (copied, skipped) = done_rx
+        .recv()
+        .map_err(|_| format!("{label}: the job was dropped"))?
+        .map_err(|e| format!("{label}: {e}"))?;
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("{label}: {copied} copied, {skipped} skipped") }));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
 }
 
 /// Expand every argv element: each one on its own, and an element that is
