@@ -75,9 +75,9 @@ pub fn chrome_css(mode: ThemeMode) -> String {
          list, list > row {{ background-color: {sbg}; background-image: none; color: {fg}; outline: none; }} \
          list > row:hover {{ background-color: {hover}; }} \
          list > row:selected {{ background-color: {sbg}; box-shadow: inset 0 0 0 1px {accent}; }} \
-         listview, listview > row {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
-         listview > row:hover {{ background-color: {hover}; }} \
-         listview > row:selected {{ background-color: {hover}; color: {fg}; }} \
+         popover listview, popover listview > row {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
+         popover listview > row:hover {{ background-color: {hover}; }} \
+         popover listview > row:selected {{ background-color: {hover}; color: {fg}; }} \
          popover scrolledwindow, popover viewport {{ background-color: transparent; }} \
          popover, popover.background, popover contents {{ background-color: {sbg}; background-image: none; color: {fg}; }} \
          scrolledwindow, viewport {{ background-color: {wbg}; background-image: none; }} \
@@ -233,9 +233,21 @@ mod tests {
         // mode, showing dark rows and dark radio circles on a light window.
         for (mode, p) in [(ThemeMode::Dark, &DARK), (ThemeMode::Light, &LIGHT)] {
             let css = chrome_css(mode);
-            assert!(css.contains(&format!("listview, listview > row {{ background-color: {}", p.surface_bg)), "{mode:?} listview");
+            assert!(css.contains(&format!("popover listview, popover listview > row {{ background-color: {}", p.surface_bg)), "{mode:?} listview");
             assert!(css.contains(&format!("checkbutton > radio, checkbutton > check {{ background-color: {}", p.surface_bg)), "{mode:?} radio/check");
             assert!(css.contains("checkbutton > radio:checked"), "{mode:?} checked radio");
+        }
+    }
+
+    #[test]
+    fn listview_rules_are_scoped_to_popovers() {
+        // Regression: an unscoped `listview > row` rule also matched the
+        // Lister's file list (`columnview > listview > row`), painting every
+        // row with the surface colour over the theme's `file_bg` ground.
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let css = chrome_css(mode);
+            assert!(!css.contains(" listview, listview"), "{mode:?}: unscoped listview rule");
+            assert!(!css.contains("} listview"), "{mode:?}: unscoped listview rule");
         }
     }
 
