@@ -34,13 +34,13 @@ impl ColKind {
 }
 
 /// Toggle the CSS class that shows selection. Needed because row-dir/row-file
-/// paint an opaque background on every cell label, which otherwise sits on
-/// top of (and hides) GTK's normal selection highlight.
-pub fn apply_selected_class(label: &gtk::Label, selected: bool) {
+/// paint an opaque background on every cell, which otherwise sits on top of
+/// (and hides) GTK's normal selection highlight.
+pub fn apply_selected_class(cell: &impl IsA<gtk::Widget>, selected: bool) {
     if selected {
-        label.add_css_class("cell-selected");
+        cell.add_css_class("cell-selected");
     } else {
-        label.remove_css_class("cell-selected");
+        cell.remove_css_class("cell-selected");
     }
 }
 
@@ -64,10 +64,14 @@ pub fn add_column(
             }
             // Selection can change without a rebind (no row.item() change), so
             // this has to be tracked on its own signal, not just in bind.
-            {
-                let label = label.clone();
-                item.connect_selected_notify(move |li| apply_selected_class(&label, li.is_selected()));
-            }
+            // The painted widget is the whole cell (the Name column's
+            // icon+label box, or the bare label elsewhere), read at notify
+            // time since the child is only set at the end of setup.
+            item.connect_selected_notify(|li| {
+                if let Some(cell) = li.child() {
+                    apply_selected_class(&cell, li.is_selected());
+                }
+            });
 
             // Right-click context menu gesture on cell
             {
@@ -177,6 +181,9 @@ pub fn add_column(
                 let icon = gtk::Image::new();
                 icon.set_pixel_size(16);
                 icon.set_visible(false);
+                // Fill the rest of the cell so right-click and drag work on the
+                // whole width, as they do in the other columns.
+                label.set_hexpand(true);
                 cell.append(&icon);
                 cell.append(&label);
                 item.set_child(Some(&cell));
@@ -200,13 +207,17 @@ pub fn add_column(
             item.child().and_downcast::<gtk::Label>().unwrap()
         };
         // Every cell in the row gets the same dir/file background+text CSS
-        // class, so the whole row reads as one colored line.
-        label.remove_css_class("row-dir");
-        label.remove_css_class("row-file");
-        label.add_css_class(if row.is_dir { "row-dir" } else { "row-file" });
+        // class, so the whole row reads as one colored line. The class goes
+        // on the whole cell, not the label: in the Name column the label only
+        // spans its text, so painting it alone left the icon and the space
+        // after the name in the list's ground colour.
+        let Some(cell) = item.child() else { return };
+        cell.remove_css_class("row-dir");
+        cell.remove_css_class("row-file");
+        cell.add_css_class(if row.is_dir { "row-dir" } else { "row-file" });
         // A rebind reuses this widget for a possibly different row; resync
         // the selection highlight to the row now bound, not the old one.
-        apply_selected_class(&label, item.is_selected());
+        apply_selected_class(&cell, item.is_selected());
         match kind {
             ColKind::Name => {
                 let (icon_set, indicators) = ui_getter_bind()

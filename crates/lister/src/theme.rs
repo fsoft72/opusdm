@@ -45,8 +45,10 @@ pub fn generate_css(settings: &Settings) -> String {
         ".stat-source, .stat-source > label {{ background-color: {}; color: {}; }} \
          .stat-dest, .stat-dest > label {{ background-color: {}; color: {}; }} \
          .stat-bar {{ padding: 0 4px; }} \
-         .row-dir {{ background-color: {}; color: {}; }} \
-         .row-file {{ background-color: {}; color: {}; }} \
+         .row-dir {{ background-color: {dir_bg}; color: {dir_fg}; }} \
+         .row-file {{ background-color: {file_bg}; color: {file_fg}; }} \
+         .row-dir > label {{ color: {dir_fg}; }} \
+         .row-file > label {{ color: {file_fg}; }} \
          .pin-btn {{ min-height: 0; min-width: 0; padding: 2px 6px; }} \
          button.opus-btn {{ \
              min-height: 30px; \
@@ -81,7 +83,8 @@ pub fn generate_css(settings: &Settings) -> String {
          /* Transparent border: without it the theme leaves a 1-2px dark gap
             between rows; with it the labels stack flush. */
          .row-dir, .row-file {{ padding: 0 4px; border: 1px solid transparent; }} \
-         .cell-selected {{ background-color: {}; color: {}; }} \
+         .cell-selected {{ background-color: {sel_bg}; color: {sel_fg}; }} \
+         .cell-selected > label {{ color: {sel_fg}; }} \
          .filter-bar {{ background: alpha(@theme_bg_color, 0.8); border-bottom: 1px solid rgba(0, 0, 0, 0.2); padding: 2px 4px; }} \
          .dim-label {{ opacity: 0.7; font-size: 0.85em; }} \
          .palette-search {{ font-size: 1.1em; padding: 4px; }} \
@@ -102,9 +105,9 @@ pub fn generate_css(settings: &Settings) -> String {
          .error-text {{ color: #da3633; font-weight: bold; }}",
         c.source_bg, c.source_fg,
         c.dest_bg, c.dest_fg,
-        c.dir_bg, c.dir_fg,
-        c.file_bg, c.file_fg,
-        c.selected_bg, c.selected_fg,
+        dir_bg = c.dir_bg, dir_fg = c.dir_fg,
+        file_bg = c.file_bg, file_fg = c.file_fg,
+        sel_bg = c.selected_bg, sel_fg = c.selected_fg,
     );
     // `chrome_css` (the opt-in `theme_window` block) must stay first when
     // present: its `@define-color` statements have to precede any use of
@@ -149,6 +152,20 @@ mod tests {
         assert!(css.contains("window { font-family: \"Cantarell\"; font-size: 10pt; }"));
         assert!(css.contains("columnview > listview { background-image: url(\"file://"));
         assert!(css.contains(".row-file { background-color: alpha("));
+    }
+
+    #[test]
+    fn row_colours_reach_the_labels_inside_a_painted_cell() {
+        // The Name column paints its whole icon+label box; `chrome_css`'s
+        // `label { color }` would otherwise beat the inherited row colour.
+        let s = Settings::default();
+        let c = &s.theme.colors;
+        let css = generate_css(&s);
+        assert!(css.contains(&format!(".row-dir > label {{ color: {}; }}", c.dir_fg)));
+        assert!(css.contains(&format!(".row-file > label {{ color: {}; }}", c.file_fg)));
+        let row_label = css.find(".row-dir > label").unwrap();
+        let sel_label = css.find(".cell-selected > label").unwrap();
+        assert!(sel_label > row_label, "selection must win over the row colour");
     }
 
     #[test]
