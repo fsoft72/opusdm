@@ -77,7 +77,7 @@ pub fn rename(parent: &gtk::ApplicationWindow, old: PathBuf, old_name: &str) {
                 return;
             }
             let new_path = dir.join(&text);
-            if let Err(e) = std::fs::rename(&old, &new_path) {
+            if let Err(e) = opusdm_fsops::rename_noreplace(&old, &new_path) {
                 opusdm_ipc::err_log!("hub", "desktop rename failed: {e}");
             }
         },

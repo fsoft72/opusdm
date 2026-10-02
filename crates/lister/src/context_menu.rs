@@ -74,7 +74,7 @@ pub fn show_context_menu(
             let old = target_path.clone();
             crate::actions::prompt(&win, "Rename to", &old_name, move |new_name| {
                 let new_path = ui_clone.cwd_path().join(&new_name);
-                match std::fs::rename(&old, &new_path) {
+                match opusdm_fsops::rename_noreplace(&old, &new_path) {
                     Ok(()) => ui_clone.reload(),
                     Err(e) => crate::actions::flash(&ui_clone, &format!("rename failed: {e}")),
                 }

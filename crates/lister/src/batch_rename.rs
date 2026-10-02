@@ -6,6 +6,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::path::Path;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,18 +202,7 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
 
 /// Rename every changed entry inside the current directory.
 fn rename_in_place(ui: &Rc<Ui>, mappings: Vec<(String, String)>) {
-    let cwd = ui.cwd_path();
-    let mut renamed_count = 0;
-    let mut errors = Vec::new();
-    for (orig, new) in mappings {
-        if orig == new {
-            continue;
-        }
-        match std::fs::rename(cwd.join(&orig), cwd.join(&new)) {
-            Ok(()) => renamed_count += 1,
-            Err(e) => errors.push(format!("{orig} -> {new}: {e}")),
-        }
-    }
+    let (renamed_count, errors) = rename_all(&ui.cwd_path(), &mappings);
     ui.reload();
     if errors.is_empty() {
         crate::actions::flash(ui, &format!("Successfully renamed {renamed_count} item(s)"));
@@ -222,6 +212,41 @@ fn rename_in_place(ui: &Rc<Ui>, mappings: Vec<(String, String)>) {
             &format!("Renamed {renamed_count} item(s) with {} error(s)", errors.len()),
         );
     }
+}
+
+/// Apply `(old, new)` renames inside `dir` without ever replacing a file.
+///
+/// Every changed entry is first moved to a temporary name, then to its final
+/// name, so chains such as `a -> b, b -> c` do not depend on the order. An
+/// entry whose final name is taken (by a file outside the batch, or by another
+/// entry of it) is put back under its old name and reported. Returns the
+/// number of renamed entries and one message per failure.
+fn rename_all(dir: &Path, mappings: &[(String, String)]) -> (usize, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut staged = Vec::new();
+    for (i, (orig, new)) in mappings.iter().enumerate() {
+        if orig == new {
+            continue;
+        }
+        let tmp = dir.join(format!(".opusdm-rename-{}-{i}", std::process::id()));
+        match opusdm_fsops::rename_noreplace(&dir.join(orig), &tmp) {
+            Ok(()) => staged.push((orig, new, tmp)),
+            Err(e) => errors.push(format!("{orig} -> {new}: {e}")),
+        }
+    }
+    let mut renamed = 0;
+    for (orig, new, tmp) in staged {
+        match opusdm_fsops::rename_noreplace(&tmp, &dir.join(new)) {
+            Ok(()) => renamed += 1,
+            Err(e) => {
+                errors.push(format!("{orig} -> {new}: {e}"));
+                if let Err(e) = opusdm_fsops::rename_noreplace(&tmp, &dir.join(orig)) {
+                    errors.push(format!("{orig}: cannot restore, left as {}: {e}", tmp.display()));
+                }
+            }
+        }
+    }
+    (renamed, errors)
 }
 
 /// The rules dialog (find/replace, prefix, suffix, case, numbering) with a
@@ -486,6 +511,46 @@ pub fn open_rules_dialog(ui: &Rc<Ui>, title: &str, apply_label: &str, on_apply: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    /// A chain `a -> b, b -> c` keeps all three contents, in any order.
+    #[test]
+    fn rename_all_handles_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "A").unwrap();
+        std::fs::write(dir.path().join("b"), "B").unwrap();
+        let (n, errs) = rename_all(dir.path(), &pairs(&[("a", "b"), ("b", "c")]));
+        assert_eq!((n, errs.len()), (2, 0));
+        assert_eq!(std::fs::read_to_string(dir.path().join("b")).unwrap(), "A");
+        assert_eq!(std::fs::read_to_string(dir.path().join("c")).unwrap(), "B");
+    }
+
+    /// A target held by a file outside the batch is refused and the source stays.
+    #[test]
+    fn rename_all_never_replaces_an_outside_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "A").unwrap();
+        std::fs::write(dir.path().join("keep"), "K").unwrap();
+        let (n, errs) = rename_all(dir.path(), &pairs(&[("a", "keep")]));
+        assert_eq!((n, errs.len()), (0, 1));
+        assert_eq!(std::fs::read_to_string(dir.path().join("a")).unwrap(), "A");
+        assert_eq!(std::fs::read_to_string(dir.path().join("keep")).unwrap(), "K");
+    }
+
+    /// Two entries mapped to the same name: one wins, the other is restored.
+    #[test]
+    fn rename_all_restores_the_loser_of_a_name_clash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "A").unwrap();
+        std::fs::write(dir.path().join("b"), "B").unwrap();
+        let (n, errs) = rename_all(dir.path(), &pairs(&[("a", "x"), ("b", "x")]));
+        assert_eq!((n, errs.len()), (1, 1));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert!(dir.path().join("x").exists() && dir.path().join("b").exists());
+    }
 
     #[test]
     fn test_compute_batch_rename_simple() {

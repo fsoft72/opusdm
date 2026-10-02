@@ -371,7 +371,7 @@ fn run_internal(
             let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;
             let old = source.paths.first().ok_or_else(|| "Rename: nothing selected".to_string())?;
             let new_path = old.with_file_name(new_name.trim());
-            std::fs::rename(old, &new_path).map_err(|e| format!("rename failed: {e}"))?;
+            opusdm_fsops::rename_noreplace(old, &new_path).map_err(|e| format!("rename failed: {e}"))?;
             let _ = events_tx.send((
                 run_id,
                 FnEvent::Output { step_idx, line: format!("renamed {} -> {}", old.display(), new_path.display()) },

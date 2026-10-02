@@ -682,7 +682,7 @@ fn build_window(
         icon_field.connect_rename_requested(move |i, new_name| {
             let Some(entry) = field.entry(i) else { return };
             let new_path = ui.cwd_path().join(&new_name);
-            if let Err(e) = std::fs::rename(&entry.path, &new_path) {
+            if let Err(e) = opusdm_fsops::rename_noreplace(&entry.path, &new_path) {
                 ui.status_bar.job_line.set_text(&format!("rename failed: {e}"));
             } else {
                 ui.rename_row(&entry.name, &new_name);

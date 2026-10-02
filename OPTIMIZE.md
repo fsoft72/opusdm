@@ -13,7 +13,7 @@
 - [x] **Overwrite destroys the existing file when the copy fails or is cancelled** - With `overwrite == true` the destination is truncated in place before any byte is copied. A cancel, a full disk or a read error then removes it (`remove_file(dst)`), so the user loses both the old version and the new one. Copy into a temp file in the same folder and `rename` it over the target only after it succeeds.
   - File(s): `crates/fsops/src/copy.rs` (`copy_file`)
 
-- [ ] **Every rename silently overwrites an existing file** - `std::fs::rename` replaces the target on POSIX, and none of the 7 call sites checks for it. Renaming `a.txt` to `b.txt` deletes the old `b.txt` without asking. Batch rename makes it worse: chains such as `a->b, b->c` depend on the order and can lose files. Add one `fsops::rename_noreplace` helper (`renameat2(RENAME_NOREPLACE)`) and use it everywhere, and plan batch renames through temporary names.
+- [x] **Every rename silently overwrites an existing file** - `std::fs::rename` replaces the target on POSIX, and none of the 7 call sites checks for it. Renaming `a.txt` to `b.txt` deletes the old `b.txt` without asking. Batch rename makes it worse: chains such as `a->b, b->c` depend on the order and can lose files. Add one `fsops::rename_noreplace` helper (`renameat2(RENAME_NOREPLACE)`) and use it everywhere, and plan batch renames through temporary names.
   - File(s): `crates/lister/src/actions.rs:162`, `crates/lister/src/commands.rs:146`, `crates/lister/src/context_menu.rs:77`, `crates/lister/src/batch_rename.rs:211`, `crates/lister/src/build.rs:685`, `crates/hub/src/functions.rs:374`, `crates/hub/src/desktop_ops.rs:80`
 
 ## High

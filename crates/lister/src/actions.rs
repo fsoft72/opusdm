@@ -159,7 +159,7 @@ pub fn attach(ui: &Rc<Ui>) {
             let win = ui.window.clone();
             prompt_rename(&win, &old_name, old.is_dir(), move |new_name| {
                 let new_path = ui.cwd_path().join(&new_name);
-                match std::fs::rename(&old, &new_path) {
+                match opusdm_fsops::rename_noreplace(&old, &new_path) {
                     Ok(()) => ui.reload(),
                     Err(e) => flash(&ui, &format!("rename failed: {e}")),
                 }

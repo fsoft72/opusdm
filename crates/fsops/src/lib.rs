@@ -13,11 +13,13 @@ pub mod joinsplit;
 pub mod links;
 pub mod moveop;
 pub mod pool;
+pub mod rename;
 pub mod scan;
 pub mod types;
 
 pub use cancel::CancelToken;
 pub use errors::FsError;
+pub use rename::rename_noreplace;
 pub use types::{JobSpec, Progress, TransferOpts};
 
 use opusdm_ipc::{FileMeta, Op};
