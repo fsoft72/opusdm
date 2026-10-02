@@ -90,18 +90,18 @@ struct Editor {
     on_saved: Rc<dyn Fn(String)>,
 }
 
-/// Open the Theme Editor over `parent`. `on_saved` is called with the slug of
+/// Open the Theme Editor of `app`, over `parent` when there is one (it is
+/// standalone otherwise). `on_saved` is called with the slug of
 /// every theme that was saved or created, so the caller can refresh its theme
 /// picker.
-pub fn open(parent: &gtk::ApplicationWindow, on_saved: Rc<dyn Fn(String)>) {
-    let app = parent.application().expect("the settings window belongs to an application");
+pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_saved: Rc<dyn Fn(String)>) {
     let window = gtk::ApplicationWindow::builder()
-        .application(&app)
-        .transient_for(parent)
+        .application(app)
         .title("OpusDM Theme Editor")
         .default_width(980)
         .default_height(720)
         .build();
+    window.set_transient_for(parent);
 
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::Single);

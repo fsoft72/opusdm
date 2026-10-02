@@ -63,14 +63,31 @@ fn main() -> gtk::glib::ExitCode {
     // handled here and not by GApplication, which would reject the unknown flag.
     let edit_theme = std::env::args().any(|a| a == EDIT_THEME_FLAG);
     let app = gtk::Application::builder().application_id("org.opusdm.Settings").build();
-    app.connect_activate(move |app| build_window(app, edit_theme));
+    app.connect_activate(move |app| if edit_theme { build_editor_only(app) } else { build_window(app) });
     app.run_with_args::<&str>(&[])
 }
 
-/// Command line flag that makes the settings app open the Theme Editor on start.
+/// Command line flag that makes the settings app open only the Theme Editor.
 const EDIT_THEME_FLAG: &str = "--edit-theme";
 
-fn build_window(app: &gtk::Application, edit_theme: bool) {
+/// Open only the Theme Editor, without the Settings window. The application
+/// exits when the editor is closed.
+fn build_editor_only(app: &gtk::Application) {
+    let settings = model::load_settings();
+    let IconSetId::Custom(active_slug) = &settings.theme.icon_set;
+    opusdm_ui::register_theme_fonts(active_slug);
+    opusdm_ui::apply_theme_mode(settings.appearance.theme_mode);
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(&format!("{}{}", opusdm_ui::chrome_css(settings.appearance.theme_mode), opusdm_ui::ui_look_css(&settings)));
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().expect("no default GDK display: cannot run without one"),
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    editor::open(app, None, Rc::new(|_| {}));
+}
+
+fn build_window(app: &gtk::Application) {
     let desktop_data = opusdm_desktop_config::model::load();
     let (settings_data, migration_note) = migrated_settings(model::load_settings(), &desktop_data);
     let IconSetId::Custom(active_slug) = &settings_data.theme.icon_set;
@@ -369,7 +386,10 @@ fn build_window(app: &gtk::Application, edit_theme: bool) {
     {
         let window = window.clone();
         let select_theme = select_theme.clone();
-        edit_btn.connect_clicked(move |_| editor::open(&window, select_theme.clone()));
+        edit_btn.connect_clicked(move |_| {
+            let Some(app) = window.application() else { return };
+            editor::open(&app, Some(&window), select_theme.clone());
+        });
     }
     {
         let window = window.clone();
@@ -395,9 +415,6 @@ fn build_window(app: &gtk::Application, edit_theme: bool) {
     }
 
     window.present();
-    if edit_theme {
-        editor::open(&window, select_theme.clone());
-    }
 }
 
 /// Run the one-time look migration on `settings` (see [`migrate::migrate_look`])

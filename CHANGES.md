@@ -2,7 +2,7 @@
 
 ## 2026-10-02
 
-- Feature (hub, theme-config): the desktop context menu has "Edit Theme" before "Settings" in the Desktop submenu. It launches `opusdm-settings --edit-theme`, which opens the Theme Editor on start (the flag is read in `main`, arguments are not passed to GApplication).
+- Feature (hub, theme-config): the desktop context menu has "Edit Theme" before "Settings" in the Desktop submenu. It launches `opusdm-settings --edit-theme`, which opens only the Theme Editor, without the Settings window (`build_editor_only`; `editor::open` takes the application and an optional parent; the flag is read in `main`, arguments are not passed to GApplication).
 - Fix (lister): the SOURCE / DEST stat bar text now uses the theme's text colour. `chrome_css` sets `label { color }` directly, which beat the colour inherited from `.stat-source` / `.stat-dest`; the rules now also target `> label`.
 - Fix (ui): DropDown (Select) labels no longer sit on a darker patch. `chrome_css` only reset `button > *`, so the nested `stack` inside `dropdown > button > box` still got the window colour; all boxes/grids/stacks/frames inside a `button` or `dropdown` are now transparent.
 - Fix (lister): Command Palette arrow-key navigation scrolls the selected row into view (`select_and_reveal`). Focus stays in the search entry, so the ListBox never scrolled on its own and the selection could move off-screen.
