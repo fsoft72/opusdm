@@ -372,6 +372,11 @@ struct Hub {
 }
 
 impl Hub {
+    /// Send `msg` to every registered Lister.
+    fn broadcast(&mut self, msg: ToLister) {
+        broadcast(&mut self.conns, &msg);
+    }
+
     /// A new peer connected: allocate a connection id, spawn its writer and
     /// reader threads. A spawn failure drops just this connection.
     fn accepted(&mut self, stream: UnixStream, owner_tx: &Sender<OwnerMsg>) {
@@ -431,26 +436,20 @@ impl Hub {
             ToHub::SetBindings(new_bindings) => {
                 self.current_bindings = bindings::sanitize(new_bindings);
                 let _ = self.persist_tx.send(PersistMsg::Bindings(self.current_bindings.clone()));
-                for c in self.conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::BindingsUpdate(self.current_bindings.clone()).into());
-                }
+                self.broadcast(ToLister::BindingsUpdate(self.current_bindings.clone()));
                 self.apply_global_keys();
             }
 
             ToHub::SetFormats(new_formats) => {
                 self.current_formats = new_formats.sanitized();
                 let _ = self.persist_tx.send(PersistMsg::Formats(self.current_formats.clone()));
-                for c in self.conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::FormatsUpdate(self.current_formats.clone()).into());
-                }
+                self.broadcast(ToLister::FormatsUpdate(self.current_formats.clone()));
             }
 
             ToHub::SetFunctions(new_functions) => {
                 self.current_functions = new_functions;
                 let _ = self.persist_tx.send(PersistMsg::Functions(self.current_functions.clone()));
-                for c in self.conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::FunctionsUpdate(self.current_functions.clone()).into());
-                }
+                self.broadcast(ToLister::FunctionsUpdate(self.current_functions.clone()));
                 let _ = self.evt_tx.send(HubEvent::FunctionsChanged(self.current_functions.clone()));
             }
 
@@ -482,15 +481,11 @@ impl Hub {
             }
 
             ToHub::FreeAllCaches => {
-                for c in self.conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::FreeCaches.into());
-                }
+                self.broadcast(ToLister::FreeCaches);
             }
 
             ToHub::Invalidate(path) => {
-                for c in self.conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::InvalidatePath(path.clone()).into());
-                }
+                self.broadcast(ToLister::InvalidatePath(path));
             }
 
             ToHub::JumpTo { lister, path } => {
@@ -782,9 +777,7 @@ impl Hub {
         new_settings.theme.background = new_settings.theme.background.sanitized();
         self.current_settings = new_settings;
         let _ = self.persist_tx.send(PersistMsg::Settings(self.current_settings.clone()));
-        for c in self.conns.values_mut().filter(|c| c.registered) {
-            let _ = c.tx.send(ToLister::SettingsUpdate(self.current_settings.clone()).into());
-        }
+        self.broadcast(ToLister::SettingsUpdate(self.current_settings.clone()));
         let _ = self.evt_tx.send(HubEvent::ThemeChanged(self.current_settings.theme.clone()));
         let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
     }
@@ -807,9 +800,7 @@ impl Hub {
             return;
         }
         self.hidden = hidden;
-        for c in self.conns.values_mut().filter(|c| c.registered) {
-            let _ = c.tx.send(ToLister::SetHidden(hidden).into());
-        }
+        self.broadcast(ToLister::SetHidden(hidden));
         let _ = self.evt_tx.send(HubEvent::HiddenChanged(hidden));
         if hidden || !present_source {
             return;
@@ -1001,9 +992,7 @@ impl Hub {
 
             HubCmd::Shutdown => {
                 self.run_shutdown_hooks();
-                for c in self.conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::Shutdown.into());
-                }
+                self.broadcast(ToLister::Shutdown);
                 return false;
             }
 
@@ -1069,9 +1058,7 @@ impl Hub {
                 let mut affected = vec![meta.dest_dir.clone()];
                 affected.extend(meta.src_parents.iter().cloned());
                 for dir in affected {
-                    for c in self.conns.values_mut().filter(|c| c.registered) {
-                        let _ = c.tx.send(ToLister::InvalidatePath(dir.clone()).into());
-                    }
+                    self.broadcast(ToLister::InvalidatePath(dir));
                 }
                 self.engine.on_done(job_id);
                 self.jobs.remove(&job_id);
@@ -1275,31 +1262,27 @@ fn apply_role(
     for effect in effects {
         match effect {
             RoleEffect::Broadcast => {
-                for c in conns.values_mut().filter(|c| c.registered) {
-                    let _ = c.tx.send(
-                        ToLister::RoleChanged {
-                            source: roles.source(),
-                            dests: roles.dests(),
-                            source_locked: roles.source_locked(),
-                        }
-                        .into(),
-                    );
-                }
+                broadcast(conns, &roles_msg(roles));
                 emit_roles(roles, conns, evt_tx);
             }
             RoleEffect::Reject(id) => {
                 if let Some(c) = conns.get_mut(&id.0) {
-                    let _ = c.tx.send(
-                        ToLister::RoleChanged {
-                            source: roles.source(),
-                            dests: roles.dests(),
-                            source_locked: roles.source_locked(),
-                        }
-                        .into(),
-                    );
+                    let _ = c.tx.send(roles_msg(roles).into());
                 }
             }
         }
+    }
+}
+
+/// The `RoleChanged` message describing `roles`.
+fn roles_msg(roles: &RoleState) -> ToLister {
+    ToLister::RoleChanged { source: roles.source(), dests: roles.dests(), source_locked: roles.source_locked() }
+}
+
+/// Send `msg` to every registered Lister.
+fn broadcast(conns: &mut HashMap<u64, Conn>, msg: &ToLister) {
+    for c in conns.values_mut().filter(|c| c.registered) {
+        let _ = c.tx.send(msg.clone().into());
     }
 }
 
