@@ -9,7 +9,7 @@ use super::*;
 /// tracked between `ToHub::RunFunction` and the point every slot it needs
 /// has been filled.
 pub(super) struct PendingFunctionRun {
-    pub(super) requester_cid: u64,
+    pub(super) requester_cid: Option<u64>,
     pub(super) steps: Vec<FnStep>,
     pub(super) source_cid: u64,
     pub(super) dest_cid: Option<u64>,
@@ -23,7 +23,7 @@ impl Hub {
     /// than `cid` for their selection first. With `None` there is no Lister to
     /// ask: the run starts at once with an empty selection in `$HOME`.
     /// Returns the run id.
-    pub(super) fn start_function_run(&mut self, requester: u64, source: Option<u64>, steps: Vec<FnStep>) -> u64 {
+    pub(super) fn start_function_run(&mut self, requester: Option<u64>, source: Option<u64>, steps: Vec<FnStep>) -> u64 {
         let run_id = self.next_run_id;
         self.next_run_id += 1;
         let Some(source_cid) = source else {
@@ -70,7 +70,7 @@ impl Hub {
     /// Load the saved function `id`, validate it and start it for `requester`
     /// (see [`Self::start_function_run`]). A missing or invalid function is
     /// reported through [`Self::function_failed`]. Returns the run id.
-    pub(super) fn run_function_by_id(&mut self, requester: u64, source: Option<u64>, id: &str) -> Option<u64> {
+    pub(super) fn run_function_by_id(&mut self, requester: Option<u64>, source: Option<u64>, id: &str) -> Option<u64> {
         let Some(function) = self.current_functions.iter().find(|f| f.id == id).cloned() else {
             self.function_failed(requester, format!("function '{id}' not found (it may have been deleted)"));
             return None;
@@ -91,16 +91,16 @@ impl Hub {
             .source()
             .map(|l| l.0)
             .filter(|cid| self.conns.get(cid).is_some_and(|c| c.registered));
-        self.run_function_by_id(HUB_REQUESTER, source, id)
+        self.run_function_by_id(None, source, id)
     }
 
     /// Tell `requester` a run could not start. A hub-originated run has no
     /// Lister to tell, so the failure goes to the log.
-    pub(super) fn function_failed(&mut self, requester: u64, error: String) {
-        if requester == HUB_REQUESTER {
+    pub(super) fn function_failed(&mut self, requester: Option<u64>, error: String) {
+        let Some(requester) = requester else {
             opusdm_ipc::err_log!("hub", "function run failed: {error}");
             return;
-        }
+        };
         if let Some(c) = self.conns.get_mut(&requester) {
             let _ = c.tx.send(ToLister::FunctionFailed { step_idx: 0, error }.into());
         }
@@ -202,7 +202,7 @@ impl Hub {
             }
             _ => {}
         }
-        if requester == HUB_REQUESTER {
+        let Some(requester) = requester else {
             match ev {
                 crate::functions::FnEvent::Failed { step_idx, error } => {
                     opusdm_ipc::err_log!("hub", "function run {run_id} failed at step {step_idx}: {error}");
@@ -213,7 +213,7 @@ impl Hub {
                 _ => {}
             }
             return;
-        }
+        };
         let msg = match ev {
             crate::functions::FnEvent::ChangeDir { path, select, mode, .. } => ToLister::ScanDir { path, select, mode },
             // Applied above, before this match.
@@ -257,7 +257,7 @@ impl Hub {
         let key = (run_id, step_idx);
         let id = run_id * 1000 + step_idx as u64;
         if msg == WindowMsg::Open {
-            match self.function_requesters.get(&run_id).copied().filter(|c| *c != HUB_REQUESTER) {
+            match self.function_requesters.get(&run_id).copied().flatten() {
                 Some(cid) => {
                     self.output_windows.insert(key, cid);
                 }
@@ -293,7 +293,8 @@ impl Hub {
             .function_requesters
             .get(&run_id)
             .copied()
-            .filter(|cid| *cid != HUB_REQUESTER && self.conns.contains_key(cid));
+            .flatten()
+            .filter(|cid| self.conns.contains_key(cid));
         let Some(cid) = owner else {
             opusdm_ipc::err_log!("hub", "function run {run_id}: Confirm has nobody to ask, the step fails");
             return;
@@ -330,17 +331,17 @@ impl Hub {
         // The runs of a closed Lister stop at their next step, and the jobs
         // they started are cancelled.
         for (run_id, requester) in &self.function_requesters {
-            if *requester == cid {
+            if *requester == Some(cid) {
                 if let Some(cancel) = self.function_cancels.remove(run_id) {
                     cancel.cancel();
                 }
             }
         }
-        self.function_requesters.retain(|_, requester| *requester != cid);
+        self.function_requesters.retain(|_, requester| *requester != Some(cid));
         let orphaned_jobs: Vec<u64> = self
             .jobs
             .iter()
-            .filter(|(_, meta)| meta.requester == cid && meta.waiter.is_some())
+            .filter(|(_, meta)| meta.requester == Some(cid) && meta.waiter.is_some())
             .map(|(job_id, _)| *job_id)
             .collect();
         for job_id in orphaned_jobs {

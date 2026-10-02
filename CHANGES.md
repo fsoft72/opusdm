@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Refactor (hub): the `HUB_REQUESTER = u64::MAX` sentinel is gone. `JobMeta.requester`, `function_requesters`, `PendingFunctionRun.requester_cid`, `Hub::submit_job`, `start_function_run`, `function_failed` and `JobEngine::submit` take an `Option` (`None` = the hub itself), so every routing site must handle the no-Lister case to compile.
 - Refactor (ui, panel, dock, hub): the `[80, 400, 1000]` re-placement delays live in `opusdm_ui::PLACEMENT_RETRY_MS`, and `opusdm_ui::retry_after_map(delays, f)` schedules `f` after each delay; the dock, the panel (map and re-dock) and the hub (panel strut settle, resolution change settle) use it instead of five hand-written timeout loops.
 - Refactor (lister): `read_dir_rows` extracts the mtime / uid / gid / mode / size fields once, in `row_fields(&Metadata)`, instead of three copies (live symlink, broken link, plain entry).
 - Refactor (logging): the remaining 40 non-test `eprintln!` calls (hub, lister, panel, dock, ui, ipc settings and themes, theme-config) now use `err_log!`, so they carry the same `[tag:pid]` prefix as the rest. `err_log!` takes an expression as its tag (`settings::read_json` passes its `app_tag`) and can be used in expression position. Test-only `eprintln!` (skipped-test notes) stay.

@@ -28,10 +28,6 @@ use persist::PersistMsg;
 /// Called when a Lister or the toolbar asks for a new Lister window.
 pub type SpawnFn = Box<dyn Fn(Option<PathBuf>) + Send>;
 
-/// Requester id of a Function run the hub started itself (no Lister asked
-/// for it). Same sentinel value as the desktop-originated job requester.
-const HUB_REQUESTER: u64 = u64::MAX;
-
 /// The home directory, or `/` when `HOME` is unset: the working directory of
 /// a run that has no SOURCE Lister.
 fn home_dir() -> PathBuf {
@@ -289,7 +285,8 @@ fn writer_loop(mut stream: UnixStream, rx: Receiver<OutMsg>) {
 
 /// Per-job bookkeeping the owner keeps until `Done`.
 struct JobMeta {
-    requester: u64,
+    /// The Lister that asked for the job; `None` for a hub-originated one.
+    requester: Option<u64>,
     op: Op,
     totals: ProgressTotals,
     dest_dir: PathBuf,
@@ -364,7 +361,7 @@ struct Hub {
     selection_waiters: HashMap<u64, VecDeque<u64>>,
     /// Which connection to route a running Function's events back to, kept
     /// alive from the moment execution starts until `FunctionDone`/`Failed`.
-    function_requesters: HashMap<u64, u64>,
+    function_requesters: HashMap<u64, Option<u64>>,
     /// Set when a run's requester goes away: the run stops at its next step.
     function_cancels: HashMap<u64, CancelToken>,
     next_run_id: u64,
@@ -567,11 +564,11 @@ impl Hub {
             }
 
             ToHub::RunFunction { steps } => {
-                self.start_function_run(cid, Some(cid), steps);
+                self.start_function_run(Some(cid), Some(cid), steps);
             }
 
             ToHub::RunFunctionById { id } => {
-                self.run_function_by_id(cid, Some(cid), &id);
+                self.run_function_by_id(Some(cid), Some(cid), &id);
             }
 
             ToHub::LeaveOut { paths } => self.leave_out(paths),
@@ -911,17 +908,17 @@ impl Hub {
                 dest_dir,
                 options: options.clone(),
             };
-            self.submit_job(cid, spec, None);
+            self.submit_job(Some(cid), spec, None);
         }
     }
 
     /// Hand `spec` to the job engine on behalf of `requester` (a connection
-    /// id, or `HUB_REQUESTER` for a hub-originated job) and start tracking it.
+    /// id, or `None` for a hub-originated job) and start tracking it.
     /// `waiter`, when set, is told the outcome on `Done` (a Function step).
-    fn submit_job(&mut self, requester: u64, spec: opusdm_fsops::JobSpec, waiter: Option<Sender<crate::functions::JobResult>>) {
+    fn submit_job(&mut self, requester: Option<u64>, spec: opusdm_fsops::JobSpec, waiter: Option<Sender<crate::functions::JobResult>>) {
         let src_parents: Vec<PathBuf> = spec.srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
         let (op, dest_dir) = (spec.op.clone(), spec.dest_dir.clone());
-        let out = self.engine.submit(ListerId(requester), spec);
+        let out = self.engine.submit(requester.map(ListerId), spec);
         self.jobs.insert(
             out.job_id,
             JobMeta { requester, op, totals: ProgressTotals::default(), dest_dir, src_parents, waiter },
@@ -937,13 +934,13 @@ impl Hub {
             HubCmd::RunJob { op, srcs, dest_dir } => {
                 // A hub-originated job has no requesting Lister, so progress and
                 // completion just do not route back to one; the hub's own job
-                // box still tracks it. `u64::MAX` is the sentinel requester.
+                // box still tracks it.
                 if let Err(msg) = validate_op(&op, &srcs, &dest_dir) {
                     opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
                     return true;
                 }
                 let spec = opusdm_fsops::JobSpec { op, srcs, dest_dir, options: Default::default() };
-                self.submit_job(HUB_REQUESTER, spec, None);
+                self.submit_job(None, spec, None);
             }
 
             HubCmd::CancelJob(id) => self.engine.cancel(id),
@@ -995,7 +992,7 @@ impl Hub {
         match prog {
             Progress::Conflict { path, src, dst, reply } => {
                 // Nobody to ask (hub-originated job, or the Lister is gone): skip the entry.
-                let Some(c) = self.conns.get_mut(&requester) else {
+                let Some((cid, c)) = requester.and_then(|r| self.conns.get_mut(&r).map(|c| (r, c))) else {
                     opusdm_ipc::err_log!("hub", "job {job_id}: {} already exists, skipped (nobody to ask)", path.display());
                     let _ = reply.send(Resolution::Skip);
                     return;
@@ -1003,7 +1000,7 @@ impl Hub {
                 let req_id = self.next_req;
                 self.next_req += 1;
                 self.replies.insert(req_id, reply);
-                self.conflict_owners.insert(req_id, requester);
+                self.conflict_owners.insert(req_id, cid);
                 let _ = c.tx.send(ToLister::ConflictPrompt { req_id, job_id, path, src, dst }.into());
             }
             Progress::Done { copied, skipped, cancelled, errors } => {
@@ -1023,7 +1020,7 @@ impl Hub {
                     };
                     let _ = waiter.send(result);
                 }
-                if let Some(c) = self.conns.get_mut(&requester) {
+                if let Some(c) = requester.and_then(|r| self.conns.get_mut(&r)) {
                     let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
                 }
                 let _ = self.evt_tx.send(HubEvent::JobFinished {
@@ -1064,7 +1061,7 @@ impl Hub {
                             file_bytes_total: *file_bytes_total,
                         });
                     }
-                    if let Some(c) = self.conns.get_mut(&requester) {
+                    if let Some(c) = requester.and_then(|r| self.conns.get_mut(&r)) {
                         let _ = c.tx.send(msg.into());
                     }
                 }

@@ -82,13 +82,13 @@ pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), Str
 }
 
 struct RunningJob {
-    requester: ListerId,
+    requester: Option<ListerId>,
     cancel: CancelToken,
 }
 
 struct QueuedJob {
     job_id: u64,
-    requester: ListerId,
+    requester: Option<ListerId>,
     spec: JobSpec,
 }
 
@@ -118,16 +118,18 @@ impl JobEngine {
         self.running.len()
     }
 
-    /// Which Lister asked for `job_id`, if the engine still knows.
+    /// Which Lister asked for `job_id`; `None` when the hub itself did, or the
+    /// engine no longer knows the job.
     pub fn requester_of(&self, job_id: u64) -> Option<ListerId> {
         self.running
             .get(&job_id)
             .map(|r| r.requester)
             .or_else(|| self.queue.iter().find(|q| q.job_id == job_id).map(|q| q.requester))
+            .flatten()
     }
 
     /// Accept a job. Starts it if under the cap, else queues it.
-    pub fn submit(&mut self, requester: ListerId, spec: JobSpec) -> SubmitOutcomeStarted {
+    pub fn submit(&mut self, requester: Option<ListerId>, spec: JobSpec) -> SubmitOutcomeStarted {
         let job_id = self.next_id;
         self.next_id += 1;
         if self.running.len() < MAX_CONCURRENT {
@@ -157,7 +159,7 @@ impl JobEngine {
         self.queue.retain(|q| q.job_id != job_id);
     }
 
-    fn start(&mut self, job_id: u64, requester: ListerId, spec: JobSpec) {
+    fn start(&mut self, job_id: u64, requester: Option<ListerId>, spec: JobSpec) {
         let cancel = CancelToken::new();
         self.running.insert(job_id, RunningJob { requester, cancel: cancel.clone() });
         let runner = Arc::clone(&self.runner);
@@ -320,7 +322,7 @@ mod tests {
 
         let mut ids = Vec::new();
         for _ in 0..6 {
-            ids.push(eng.submit(ListerId(1), spec()));
+            ids.push(eng.submit(Some(ListerId(1)), spec()));
         }
         let started = ids.iter().filter(|r| r.started).count();
         assert_eq!(started, MAX_CONCURRENT);
@@ -339,7 +341,7 @@ mod tests {
         let runner: Runner = Arc::new(|_s, _tx, _c| {});
         let (ptx, _prx) = channel::<(u64, Progress)>();
         let mut eng = JobEngine::new(runner, ptx);
-        let r = eng.submit(ListerId(7), spec());
+        let r = eng.submit(Some(ListerId(7)), spec());
         assert_eq!(eng.requester_of(r.job_id), Some(ListerId(7)));
     }
 
