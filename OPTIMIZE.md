@@ -67,7 +67,7 @@
 - [x] **Two logging styles** - 46 `eprintln!` calls sit next to the `err_log!`/`debug_log!` macros (for example `settings::read_json`), so some errors skip the log file and its formatting. Use the macros everywhere outside tests.
   - File(s): `crates/ipc/src/settings.rs` and others (`grep -rn eprintln! crates`)
 
-- [ ] **The same metadata-to-row code appears three times in `read_dir_rows`** - The mtime/uid/gid/mode extraction is written out for the symlink target, the broken link and the plain entry. Use one `row_fields(&Metadata)` helper.
+- [x] **The same metadata-to-row code appears three times in `read_dir_rows`** - The mtime/uid/gid/mode extraction is written out for the symlink target, the broken link and the plain entry. Use one `row_fields(&Metadata)` helper.
   - File(s): `crates/lister/src/model.rs:93`
 
 - [ ] **Window placement retry delays are spread out** - The `[80, 400, 1000]` retry lists are written inline in the panel and the dock, while the hub uses named constants for the same idea. Share one constant and a `retry_after_map(delays, f)` helper (ideally next to the shared X11 helper above).

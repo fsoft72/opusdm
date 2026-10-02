@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Refactor (lister): `read_dir_rows` extracts the mtime / uid / gid / mode / size fields once, in `row_fields(&Metadata)`, instead of three copies (live symlink, broken link, plain entry).
 - Refactor (logging): the remaining 40 non-test `eprintln!` calls (hub, lister, panel, dock, ui, ipc settings and themes, theme-config) now use `err_log!`, so they carry the same `[tag:pid]` prefix as the rest. `err_log!` takes an expression as its tag (`settings::read_json` passes its `app_tag`) and can be used in expression position. Test-only `eprintln!` (skipped-test notes) stay.
 - Perf (lister): an auto-refresh of the folder already on screen no longer replaces the whole list. `apply_navigation` keeps the store in name order and `replace_changed_rows` splices only the span that differs (`model::changed_range`), so unchanged rows are not rebound, the scroll position stays and the keyboard cursor keeps its row (clamped to the new length). Opening another folder still replaces everything and resets the cursor. `Row` derives `PartialEq`.
 - Fix (iconview): `IconEntry` carries `modified` (whole seconds since the epoch). `refresh_entries` keeps a cached thumbnail only when the entry's path and `modified` are unchanged (`thumbnail_still_valid`), so an overwritten image gets a new thumbnail on the next refresh instead of keeping the old one until the folder is reopened. The cache is still re-keyed by index; keying it by `(path, mtime)` outright was left for later.

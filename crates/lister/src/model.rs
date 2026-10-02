@@ -105,59 +105,53 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
             Err(_) => continue,
         };
         let is_symlink = ft.is_symlink();
-        let (is_dir, size, broken_link, modified_unix, uid, gid, mode) = if is_symlink {
+        let (fields, broken_link) = if is_symlink {
             // The common case (a live target) needs only one metadata call:
             // size, mtime and permissions all come from the target, same as
             // a plain file. The `lstat` on the link itself is only needed as
             // a fallback when the target doesn't resolve.
             match std::fs::metadata(entry.path()) {
-                Ok(m) => {
-                    let is_dir = m.is_dir();
-                    let size = if is_dir { 0 } else { m.len() };
-                    let modified_unix = m
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let (uid, gid, mode) = metadata_perms(&m);
-                    (is_dir, size, false, modified_unix, uid, gid, mode)
-                }
-                Err(_) => {
-                    let link_meta = match std::fs::symlink_metadata(entry.path()) {
-                        Ok(m) => m,
-                        Err(_) => continue,
-                    };
-                    let modified_unix = link_meta
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let (uid, gid, mode) = metadata_perms(&link_meta);
-                    (false, 0, true, modified_unix, uid, gid, mode)
-                }
+                Ok(m) => (row_fields(&m), false),
+                Err(_) => match std::fs::symlink_metadata(entry.path()) {
+                    Ok(m) => (RowFields { is_dir: false, size: 0, ..row_fields(&m) }, true),
+                    Err(_) => continue,
+                },
             }
         } else {
             // Direct entry (not a symlink) - single metadata call needed!
-            let meta = match entry.metadata() {
-                Ok(m) => m,
+            match entry.metadata() {
+                Ok(m) => (row_fields(&m), false),
                 Err(_) => continue,
-            };
-            let is_dir = meta.is_dir();
-            let size = if is_dir { 0 } else { meta.len() };
-            let modified_unix = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let (uid, gid, mode) = metadata_perms(&meta);
-            (is_dir, size, false, modified_unix, uid, gid, mode)
+            }
         };
+        let RowFields { is_dir, size, modified_unix, uid, gid, mode } = fields;
         rows.push(Row::new(name, is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode));
     }
     Ok(rows)
+}
+
+/// The columns of a `Row` that come from file metadata.
+struct RowFields {
+    is_dir: bool,
+    /// 0 for directories.
+    size: u64,
+    modified_unix: i64,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+}
+
+/// Read the metadata-derived fields of one entry.
+fn row_fields(m: &std::fs::Metadata) -> RowFields {
+    let is_dir = m.is_dir();
+    let modified_unix = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (uid, gid, mode) = metadata_perms(m);
+    RowFields { is_dir, size: if is_dir { 0 } else { m.len() }, modified_unix, uid, gid, mode }
 }
 
 #[cfg(unix)]
