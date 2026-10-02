@@ -441,6 +441,7 @@ fn run_internal(
                 None if !needs_dest => source.cwd.clone(),
                 None => return Err(format!("{}: no DEST Lister open", cmd.label())),
             };
+            crate::jobs::validate_op(&op, &source.paths, &dest_dir)?;
             let spec = JobSpec { op, srcs: source.paths.clone(), dest_dir, options: args.job_options() };
             let (tx, rx) = channel::<Progress>();
             // `run_job` blocks the calling thread until the job finishes,

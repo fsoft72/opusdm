@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Fix (fsops, hub): `copy_file` compares `(dev, ino)` of source and destination before opening for overwrite and refuses with `InvalidInput`, so a DEST reached through a symlink or bind mount can no longer truncate the source. Function steps (Copy, Move, Delete, ...) now run `validate_op` like the job engine does.
 - Fix (hub): connection ids only ever grow (`free_conns` is gone), so a stale `ListerEof` / `FromLister` from a dead reader thread can no longer hit a Lister that connected later.
 - Docs: new `OPTIMIZE.md`, a prioritised list of 22 code review findings (connection id reuse in the hub, copy / rename data-loss risks, Lister refresh issues, duplicated X11 helpers, and so on).
 - Fix (dock): the dock now sits on the configured edge. openbox ignored the position of the plain `ConfigureWindow` the dock sent, so the dock stayed where the `Smart` placement put it (top left, or the middle of the screen with `<center>yes</center>`); `window::pin_geometry` now also sends `_NET_MOVERESIZE_WINDOW`, like the hub desktop window. The X connections used for the dock hints now wait for a round trip (`window::sync`) before closing: closing right after a flush lost the `_NET_WM_STATE` messages, so the dock was never BELOW, SKIP_TASKBAR or SKIP_PAGER. The states are re-sent with the delayed pins after map, once openbox has adopted the window. The dock size counts the stylesheet border (`placement::BORDER`), so the geometry matches the size GTK insists on.

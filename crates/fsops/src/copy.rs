@@ -55,6 +55,14 @@ pub fn copy_file(
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
     let mut reader = std::fs::File::open(src)?;
+    // A symlink, bind mount or alternate spelling can make DEST the very
+    // inode we are reading; truncating it would destroy the source.
+    if overwrite && is_same_file(&reader, dst) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source and destination are the same file: {}", dst.display()),
+        ));
+    }
     let mut writer = if overwrite {
         std::fs::OpenOptions::new()
             .write(true)
@@ -100,6 +108,14 @@ pub fn copy_file(
     let mtime = filetime::FileTime::from_last_modification_time(&meta);
     filetime::set_file_mtime(dst, mtime)?;
     Ok(())
+}
+
+/// Whether `path` exists and is the same inode (device + inode number) as the
+/// open file `f`.
+fn is_same_file(f: &std::fs::File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(a), Ok(b)) = (f.metadata(), std::fs::metadata(path)) else { return false };
+    a.dev() == b.dev() && a.ino() == b.ino()
 }
 
 fn should_fallback_userspace(e: &io::Error) -> bool {
@@ -656,6 +672,20 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc::channel;
     use std::thread;
+
+    /// Overwriting a file through a symlink that points at the source must
+    /// refuse instead of truncating the source.
+    #[test]
+    fn copy_file_refuses_to_overwrite_the_source_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let link = dir.path().join("link.txt");
+        fs::write(&src, b"precious").unwrap();
+        std::os::unix::fs::symlink(&src, &link).unwrap();
+        let err = copy_file(&src, &link, true, &CancelToken::new(), &mut |_| {}).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read(&src).unwrap(), b"precious");
+    }
 
     /// Worker counts covering both the inline path and the pooled path, so
     /// every behavioural test runs against each.
