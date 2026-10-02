@@ -79,6 +79,8 @@ pub fn chrome_css(mode: ThemeMode) -> String {
          scrolledwindow, viewport {{ background-color: {wbg}; background-image: none; }} \
          box, grid, stack, frame {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
          button > *, dropdown > *, headerbar > * {{ background-color: transparent; }} \
+         button box, button grid, button stack, button frame, \
+         dropdown box, dropdown grid, dropdown stack, dropdown frame, \
          columnview box, columnview grid, columnview stack, columnview frame, \
          list box, list grid, list stack, list frame, \
          popover box, popover grid, popover stack, popover frame {{ background-color: transparent; }} \
@@ -141,6 +143,17 @@ mod tests {
         let css = chrome_css(ThemeMode::Dark);
         assert!(css.contains("button > *") || css.contains("button>*"));
         assert!(css.contains("transparent"));
+    }
+
+    #[test]
+    fn nested_dropdown_and_button_containers_stay_transparent() {
+        // A DropDown is `dropdown > button > box > stack > ...`: `button > *`
+        // only resets the first box, so the inner stack still got the
+        // window colour and showed as a dark patch behind the label.
+        let css = chrome_css(ThemeMode::Dark);
+        for selector in ["dropdown stack", "dropdown box", "button stack", "button box"] {
+            assert!(css.contains(selector), "missing reset for {selector}");
+        }
     }
 
     #[test]

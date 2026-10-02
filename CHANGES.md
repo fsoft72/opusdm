@@ -2,6 +2,7 @@
 
 ## 2026-10-02
 
+- Fix (ui): DropDown (Select) labels no longer sit on a darker patch. `chrome_css` only reset `button > *`, so the nested `stack` inside `dropdown > button > box` still got the window colour; all boxes/grids/stacks/frames inside a `button` or `dropdown` are now transparent.
 - Fix (lister): Command Palette arrow-key navigation scrolls the selected row into view (`select_and_reveal`). Focus stays in the search entry, so the ListBox never scrolled on its own and the selection could move off-screen.
 - Fix (ui): `chrome_css` targeted ListBoxes with `list-box`, which is not a GTK4 CSS node (it is `list`), so every ListBox row kept the theme colour while its inner box got the window colour - a two-tone row (very visible in the Command Palette). Rules now use `list` / `list > row`; a selected row keeps the surface colour with a 1px blue (`#3584e4`) inset border, and the Command Palette rows are more compact (no row padding, 3px vertical margins).
 - Refactor (hub): the `HUB_REQUESTER = u64::MAX` sentinel is gone. `JobMeta.requester`, `function_requesters`, `PendingFunctionRun.requester_cid`, `Hub::submit_job`, `start_function_run`, `function_failed` and `JobEngine::submit` take an `Option` (`None` = the hub itself), so every routing site must handle the no-Lister case to compile.
