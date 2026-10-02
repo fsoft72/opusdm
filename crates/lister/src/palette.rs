@@ -172,6 +172,28 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
     }
 }
 
+/// New scroll offset that brings the `[top, bottom]` span fully into a
+/// viewport currently showing `[value, value + page]`, or `None` when it is
+/// already fully visible.
+fn reveal_offset(value: f64, page: f64, top: f64, bottom: f64) -> Option<f64> {
+    if top < value { return Some(top); }
+    if bottom > value + page { return Some(bottom - page); }
+    None
+}
+
+/// Select `row` and scroll `scroller` so it is visible. Keyboard focus
+/// stays in the search entry, so the ListBox never scrolls on its own.
+fn select_and_reveal(list_box: &gtk::ListBox, scroller: &gtk::ScrolledWindow, row: &gtk::ListBoxRow) {
+    list_box.select_row(Some(row));
+    let Some(bounds) = row.compute_bounds(list_box) else { return };
+    let adj = scroller.vadjustment();
+    let top = f64::from(bounds.y());
+    let bottom = top + f64::from(bounds.height());
+    if let Some(v) = reveal_offset(adj.value(), adj.page_size(), top, bottom) {
+        adj.set_value(v);
+    }
+}
+
 /// Open the Command Palette modal HUD.
 pub fn open_command_palette(ui: &Rc<Ui>) {
     let shell = opusdm_ui::DialogShell::new(&ui.window, "OpusDM Command Palette")
@@ -240,6 +262,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     {
         let rows_ref = rows.clone();
         let list_box_clone = list_box.clone();
+        let scroller_clone = scroller.clone();
         entry.connect_search_changed(move |e| {
             let q = e.text().to_string();
             let mut first_visible: Option<&gtk::ListBoxRow> = None;
@@ -252,7 +275,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
                 }
             }
             if let Some(r) = first_visible {
-                list_box_clone.select_row(Some(r));
+                select_and_reveal(&list_box_clone, &scroller_clone, r);
             }
         });
     }
@@ -293,6 +316,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         let dlg = shell.window().clone();
         let list_box_clone = list_box.clone();
+        let scroller_clone = scroller.clone();
         let rows_clone = rows.clone();
         let exec = execute_selected.clone();
 
@@ -316,7 +340,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
                     if let Some(sel) = list_box_clone.selected_row() {
                         if let Some(pos) = visible_rows.iter().position(|r| **r == sel) {
                             if pos + 1 < visible_rows.len() {
-                                list_box_clone.select_row(Some(visible_rows[pos + 1]));
+                                select_and_reveal(&list_box_clone, &scroller_clone, visible_rows[pos + 1]);
                             }
                         }
                     }
@@ -332,7 +356,7 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
                     if let Some(sel) = list_box_clone.selected_row() {
                         if let Some(pos) = visible_rows.iter().position(|r| **r == sel) {
                             if pos > 0 {
-                                list_box_clone.select_row(Some(visible_rows[pos - 1]));
+                                select_and_reveal(&list_box_clone, &scroller_clone, visible_rows[pos - 1]);
                             }
                         }
                     }
@@ -346,4 +370,24 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
 
     shell.present();
     entry.grab_focus();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reveal_offset_leaves_a_fully_visible_row_alone() {
+        assert_eq!(reveal_offset(100.0, 300.0, 150.0, 180.0), None);
+    }
+
+    #[test]
+    fn reveal_offset_scrolls_down_to_a_row_below_the_viewport() {
+        assert_eq!(reveal_offset(0.0, 300.0, 290.0, 320.0), Some(20.0));
+    }
+
+    #[test]
+    fn reveal_offset_scrolls_up_to_a_row_above_the_viewport() {
+        assert_eq!(reveal_offset(100.0, 300.0, 60.0, 90.0), Some(60.0));
+    }
 }
