@@ -515,7 +515,6 @@ fn assemble_ui(
         terminal,
         css_provider,
         nav_generation: Cell::new(0),
-        function_log: RefCell::new(None),
         typeahead: Typeahead { buffer: RefCell::new(String::new()), timer: RefCell::new(None) },
         hidden_btn: RefCell::new(None),
         format_state: FormatState { current: RefCell::new(opusdm_ipc::ListerFormat::builtin()), temp: RefCell::new(None) },

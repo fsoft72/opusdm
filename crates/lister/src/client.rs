@@ -90,6 +90,15 @@ impl Client {
         ))
     }
 
+    /// Connect without registering, for a tool window (Manage Functions)
+    /// that is not a Lister: the hub serves its requests and replies to it,
+    /// but never counts it as a Lister nor gives it a role.
+    pub fn connect_tool(sock_path: &Path) -> io::Result<Client> {
+        let stream = UnixStream::connect(sock_path)?;
+        let inbox = start_reader(stream.try_clone()?);
+        Ok(Client { write: Mutex::new(stream), inbox: Some(inbox) })
+    }
+
     /// Frame and send one message to the hub.
     pub fn send(&self, msg: &ToHub) -> io::Result<()> {
         let mut guard = self.write.lock().unwrap();

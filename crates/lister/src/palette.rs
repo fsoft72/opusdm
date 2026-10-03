@@ -153,7 +153,11 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         CommandId::TogglePin => c::toggle_pin(ui),
 
         // Functions
-        CommandId::ManageFunctions => crate::function_editor::open_functions_manager(ui),
+        CommandId::ManageFunctions => {
+            if let Err(e) = crate::function_editor::launch_manager() {
+                crate::actions::flash(ui, &format!("cannot open Manage Functions: {e}"));
+            }
+        }
         CommandId::ManageBanks => {
             let _ = ui.hub.client.send(&ToHub::OpenBankManager);
         }

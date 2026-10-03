@@ -198,12 +198,6 @@ pub struct Ui {
     /// generation no longer matches was superseded by a later navigation and
     /// its result is dropped instead of applied.
     pub nav_generation: Cell<u64>,
-    /// The log buffer of the currently-open Function Editor's per-function
-    /// window, if one is open - Function run events are appended here while
-    /// set, so the Test button shows real-time output. `None` when no
-    /// editor window is open (a palette-triggered run then only flashes a
-    /// summary).
-    pub function_log: RefCell<Option<gtk::TextBuffer>>,
     /// Names selected when a job last started or the selection was last
     /// cleared, for Reselect.
     pub last_selection: RefCell<Vec<String>>,
@@ -240,14 +234,6 @@ impl Ui {
     /// Dismiss and reset the filter bar.
     pub fn dismiss_filter(&self) {
         self.view.filter_bar.dismiss();
-    }
-
-    /// Append `text` to the open Function Editor's log, if one is open.
-    fn append_function_log(self: &Rc<Self>, text: &str) {
-        if let Some(buf) = self.function_log.borrow().as_ref() {
-            let mut end = buf.end_iter();
-            buf.insert(&mut end, text);
-        }
     }
 
     /// Toggle or open Quick Look preview for the currently selected item.
@@ -676,20 +662,15 @@ impl Ui {
             ToLister::CheckFitFailed { message } => {
                 crate::actions::flash(self, &format!("check fit failed: {message}"));
             }
-            ToLister::FunctionOutput { step_idx, line } => {
-                self.append_function_log(&format!("[step {step_idx}] {line}\n"));
-            }
-            ToLister::FunctionStepDone { step_idx, exit_code } => {
-                self.append_function_log(&format!("[step {step_idx}] done (exit {exit_code:?})\n"));
-            }
+            // Step output is shown by the Manage Functions window's Test;
+            // a run from here only reports how it ended.
+            ToLister::FunctionOutput { .. } | ToLister::FunctionStepDone { .. } => {}
             ToLister::FunctionFailed { step_idx, error } => {
                 self.run_finished();
-                self.append_function_log(&format!("[step {step_idx}] FAILED: {error}\n"));
                 crate::actions::flash(self, &format!("function failed at step {step_idx}: {error}"));
             }
             ToLister::FunctionDone => {
                 self.run_finished();
-                self.append_function_log("function finished\n");
                 crate::actions::flash(self, "function finished");
             }
         }

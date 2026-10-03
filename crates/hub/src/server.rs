@@ -564,7 +564,8 @@ impl Hub {
             }
 
             ToHub::RunFunction { steps } => {
-                self.start_function_run(Some(cid), Some(cid), steps);
+                let source = self.run_source_for(cid);
+                self.start_function_run(Some(cid), source, steps);
             }
 
             ToHub::RunFunctionById { id } => {
@@ -1715,6 +1716,30 @@ mod tests {
     fn a_confirm_step_waits_for_the_users_answer() {
         assert!(confirm_round_trip(true), "a yes lets the function finish");
         assert!(!confirm_round_trip(false), "a no stops it");
+    }
+
+    #[test]
+    fn a_run_from_a_tool_window_uses_the_source_lister_and_reports_to_the_tool() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
+        // The Manage Functions window talks to the hub without registering.
+        let mut tool = connect(&path);
+        let mut args = std::collections::BTreeMap::new();
+        args.insert("message".to_string(), "Go on?".to_string());
+        let steps = vec![FnStep::Internal { cmd: opusdm_ipc::function::InternalCmd::Confirm, args: opusdm_ipc::function::InternalArgs(args) }];
+        send(&mut tool, &ToHub::RunFunction { steps }).unwrap();
+        recv_until(&mut a, |m| matches!(m, ToLister::QuerySelection).then_some(()));
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+        let req_id = recv_until(&mut tool, |m| match m {
+            ToLister::ConfirmPrompt { req_id, .. } => Some(req_id),
+            _ => None,
+        });
+        send(&mut tool, &ToHub::ConfirmReply { req_id, ok: true }).unwrap();
+        recv_until(&mut tool, |m| matches!(m, ToLister::FunctionDone).then_some(()));
     }
 
     #[test]

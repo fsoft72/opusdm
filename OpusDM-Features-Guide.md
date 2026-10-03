@@ -101,6 +101,7 @@ Il desktop mostra le icone della cartella Desktop dell'utente
    **New File...**, **New Group...**, **Button Banks...**, **Hide All**,
    **Open Terminal Here**, **Settings**, **About**, **Quit** e un sottomenu
    **Desktop** (espandilo con un click) che contiene **Rearrange icons**,
+   **Manage Functions** (apre direttamente l'elenco delle function),
    **Edit File Types** (apre direttamente l'editor dei tipi di file), **Edit Theme** (apre direttamente il Theme Editor) e **Settings**.
 3. Scegli **New Folder...**, scrivi `prova` e conferma con **OK**: appare una
    nuova cartella sul desktop. Poi **click destro** sulla sua icona: il menu
@@ -760,7 +761,10 @@ Button Bank o da un evento.
 
 ### Step 15.1 - Crea una Function
 
-1. `Ctrl+P` > **Manage Functions...**: si apre l'elenco delle function.
+1. `Ctrl+P` > **Manage Functions...** (oppure, dal menu del desktop,
+   **Desktop > Manage Functions**): si apre l'elenco delle function, in una
+   finestra indipendente dal Lister. Il pulsante **Test** dell'editor usa
+   come SOURCE il Lister che ha il ruolo SOURCE in quel momento.
 2. Clicca **New Function...**: si apre l'editor.
 3. Nel campo in alto scrivi il nome `Copia e notifica`.
 4. Clicca **Add Internal Step...**, scegli **Copy** dal menu a tendina e conferma.

@@ -94,6 +94,16 @@ impl Hub {
         self.run_function_by_id(None, source, id)
     }
 
+    /// The SOURCE for a run requested by `cid`: `cid` itself when it is a
+    /// registered Lister, else (a tool window such as Manage Functions) the
+    /// registered Lister holding the SOURCE role, if any.
+    pub(super) fn run_source_for(&self, cid: u64) -> Option<u64> {
+        if self.conns.get(&cid).is_some_and(|c| c.registered) {
+            return Some(cid);
+        }
+        self.roles.source().map(|l| l.0).filter(|id| self.conns.get(id).is_some_and(|c| c.registered))
+    }
+
     /// Tell `requester` a run could not start. A hub-originated run has no
     /// Lister to tell, so the failure goes to the log.
     pub(super) fn function_failed(&mut self, requester: Option<u64>, error: String) {

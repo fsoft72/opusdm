@@ -232,7 +232,7 @@ Type `sftp://user@host[:port]/path`, `ftp://...` or `ftps://...` in the path bar
 The **Confirm** command asks a yes / no question inside a function; the function stops there unless the user confirms. The question may use the usual codes (`{o}`, `{f}`, ...). A function started with no Lister to ask (script events) stops at a Confirm step.
 
 ### 3.10l Busy indicator
-While a function started from a Lister (palette, hotkey, user menu, filetype action, Function Editor Test) is running, a spinner with "Running a function..." (or "Running N functions...") appears next to the message line at the bottom of that Lister. It goes away when the function finishes or fails. Functions started elsewhere (button banks, script events) do not show it.
+While a function started from a Lister (palette, hotkey, user menu, filetype action) is running, a spinner with "Running a function..." (or "Running N functions...") appears next to the message line at the bottom of that Lister. It goes away when the function finishes or fails. Functions started elsewhere (button banks, script events, the Test button of Manage Functions) do not show it.
 
 ### 3.10m Command Line
 **Command Line...** (command palette) runs one line:

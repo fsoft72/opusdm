@@ -1,23 +1,157 @@
 //! The Function Editor: a manager window listing saved functions (New/
 //! Edit/Delete), and a per-function editor window (step list, parameter
-//! forms, Test, Save). See
-//! `docs/superpowers/specs/2026-09-28-function-editor-design.md`.
+//! forms, Test, Save). The manager runs as its own process
+//! (`opusdm-lister --manage-functions`), linked to the hub without being a
+//! Lister. See `docs/superpowers/specs/2026-09-28-function-editor-design.md`.
 
-use crate::window::Ui;
+use crate::client::{Client, Inbound};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::function::{self, schema, Function, FnStep, InternalArgs, InternalCmd};
+use opusdm_ipc::{Resolution, ToHub, ToLister};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Open the "Manage Functions" window: every saved function, with New/Edit/
-/// Delete buttons.
-pub fn open_functions_manager(ui: &Rc<Ui>) {
-    let shell = opusdm_ui::DialogShell::new(&ui.window, "Manage Functions").size(420, 360);
+/// Command line flag that makes the Lister open only the Manage Functions
+/// window.
+pub const MANAGE_FUNCTIONS_FLAG: &str = "--manage-functions";
+
+/// Start the Manage Functions window as its own process (this binary run
+/// with [`MANAGE_FUNCTIONS_FLAG`]), so it lives on its own instead of over
+/// the Lister that asked for it. A thread reaps it when it exits.
+pub fn launch_manager() -> std::io::Result<()> {
+    let bin = std::env::current_exe()?;
+    let mut child = std::process::Command::new(bin).arg(MANAGE_FUNCTIONS_FLAG).spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// What the Manage Functions window shares with its editors: the hub link,
+/// the hub's latest list of functions and the log of the editor whose Test
+/// is running.
+struct Host {
+    client: Client,
+    functions: RefCell<Vec<Function>>,
+    log: RefCell<Option<gtk::TextBuffer>>,
+    window: gtk::Window,
+}
+
+impl Host {
+    /// Tell the user `text` went wrong, over the manager window.
+    fn report(&self, text: &str) {
+        opusdm_ui::requester(&self.window, "Manage Functions", text, None, &[("OK", ())], |_| {});
+    }
+
+    /// Append `text` to the log of the editor running Test, if one is open.
+    fn append_log(&self, text: &str) {
+        let Some(buf) = self.log.borrow().clone() else { return };
+        let mut end = buf.end_iter();
+        buf.insert(&mut end, text);
+    }
+
+    /// Handle one message from the hub: Test output, and the questions a
+    /// running Test asks (confirm steps and copy conflicts).
+    fn handle(self: &Rc<Self>, msg: ToLister) {
+        match msg {
+            ToLister::FunctionOutput { step_idx, line } => self.append_log(&format!("[step {step_idx}] {line}\n")),
+            ToLister::FunctionStepDone { step_idx, exit_code } => {
+                self.append_log(&format!("[step {step_idx}] done (exit {exit_code:?})\n"))
+            }
+            ToLister::FunctionFailed { step_idx, error } => self.append_log(&format!("[step {step_idx}] FAILED: {error}\n")),
+            ToLister::FunctionDone => self.append_log("function finished\n"),
+            ToLister::OutputLine { line, .. } => self.append_log(&format!("{line}\n")),
+            ToLister::ConfirmPrompt { req_id, message } => {
+                let host = self.clone();
+                opusdm_ui::requester(&self.window, "Confirm", &message, None, &[("OK", true), ("Cancel", false)], move |ok| {
+                    host.send(&ToHub::ConfirmReply { req_id, ok });
+                });
+            }
+            ToLister::ConflictPrompt { req_id, path, src, dst, .. } => {
+                let host = self.clone();
+                let detail = format!("source: {} bytes\ndestination: {} bytes", src.size, dst.size);
+                opusdm_ui::requester(
+                    &self.window,
+                    "Request",
+                    &format!("{} already exists", path.display()),
+                    Some(&detail),
+                    &[
+                        ("Overwrite", Resolution::Overwrite),
+                        ("Skip", Resolution::Skip),
+                        ("Overwrite All", Resolution::OverwriteAll),
+                        ("Skip All", Resolution::SkipAll),
+                        ("Cancel", Resolution::Cancel),
+                    ],
+                    move |resolution| host.send(&ToHub::ConflictReply { req_id, resolution }),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Send `msg` to the hub, reporting a failure to the user.
+    fn send(&self, msg: &ToHub) {
+        if let Err(e) = self.client.send(msg) {
+            self.report(&format!("lost the connection to the hub: {e}"));
+        }
+    }
+}
+
+/// Open the "Manage Functions" window on its own, owned by `app` (which
+/// exits when it is closed): every saved function, with New/Edit/Delete
+/// buttons. It talks to the hub without registering as a Lister; a running
+/// hub is required, since the hub is the only writer of `functions.json`.
+/// A second launch only raises the window already open.
+pub fn open_standalone(app: &gtk::Application) {
+    if let Some(window) = app.windows().first() {
+        window.present();
+        return;
+    }
+    let shell = opusdm_ui::DialogShell::standalone(app, "Manage Functions").size(420, 360);
+    let mut client = match Client::connect_tool(&opusdm_ipc::sockpath::hub_sock_path()) {
+        Ok(client) => client,
+        Err(e) => {
+            let window = shell.window().clone();
+            shell.present();
+            let to_close = window.clone();
+            opusdm_ui::requester(&window, "Manage Functions", &format!("cannot reach the OpusDM hub: {e}"), None, &[("OK", ())], move |_| {
+                to_close.destroy();
+            });
+            return;
+        }
+    };
+    let inbox = client.take_inbox();
+    let host = Rc::new(Host {
+        client,
+        functions: RefCell::new(function::load_functions()),
+        log: RefCell::new(None),
+        window: shell.window().clone(),
+    });
+    {
+        let host = host.clone();
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(inbound) = inbox.recv().await {
+                match inbound {
+                    Inbound::Msg(msg) => host.handle(msg),
+                    Inbound::HubGone => {
+                        // The hub quit: nothing could be saved any more.
+                        host.window.destroy();
+                        return;
+                    }
+                }
+            }
+        });
+    }
+    build_manager(&host, shell);
+}
+
+/// Fill `shell` with the function list and its New/Edit/Delete buttons.
+fn build_manager(host: &Rc<Host>, shell: opusdm_ui::DialogShell) {
     let root = shell.content();
 
     let list_box = gtk::ListBox::new();
-    let functions: Rc<RefCell<Vec<Function>>> = Rc::new(RefCell::new(ui.hub.functions.borrow().clone()));
+    let functions: Rc<RefCell<Vec<Function>>> = Rc::new(RefCell::new(host.functions.borrow().clone()));
 
     fn rebuild(list_box: &gtk::ListBox, functions: &[Function]) {
         while let Some(row) = list_box.first_child() {
@@ -63,12 +197,12 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
     };
 
     {
-        let ui = ui.clone();
+        let host = host.clone();
         let functions = functions.clone();
         let window = shell.window().clone();
         let refresh = refresh.clone();
         new_btn.connect_clicked(move |_| {
-            let ui = ui.clone();
+            let host = host.clone();
             let functions = functions.clone();
             let window = window.clone();
             let refresh = refresh.clone();
@@ -77,12 +211,12 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
                     return;
                 }
                 let f = Function::new(name.trim());
-                open_function_editor(&ui, f, functions.clone(), refresh.clone());
+                open_function_editor(&host, f, functions.clone(), refresh.clone());
             });
         });
     }
     {
-        let ui = ui.clone();
+        let host = host.clone();
         let functions = functions.clone();
         let list_box = list_box.clone();
         let refresh = refresh.clone();
@@ -93,11 +227,11 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
                 return;
             }
             let Some(f) = functions.borrow().get(idx as usize).cloned() else { return };
-            open_function_editor(&ui, f, functions.clone(), refresh.clone());
+            open_function_editor(&host, f, functions.clone(), refresh.clone());
         });
     }
     {
-        let ui = ui.clone();
+        let host = host.clone();
         let list_box = list_box.clone();
         let functions = functions.clone();
         let window = shell.window().clone();
@@ -108,16 +242,16 @@ pub fn open_functions_manager(ui: &Rc<Ui>) {
             if idx < 0 {
                 return;
             }
-            let (ui, functions, refresh) = (ui.clone(), functions.clone(), refresh.clone());
+            let (host, functions, refresh) = (host.clone(), functions.clone(), refresh.clone());
             let Some(id) = functions.borrow().get(idx as usize).map(|f| f.id.clone()) else { return };
             opusdm_ui::requester(&window, "Delete Function", "Delete this function?", None, &[("Delete", true), ("Cancel", false)], move |ok| {
                 if !ok {
                     return;
                 }
-                if let Err(e) = delete_function(&ui, &id) {
-                    crate::actions::flash(&ui, &format!("could not delete function: {e}"));
+                if let Err(e) = delete_function(&host, &id) {
+                    host.report(&format!("could not delete function: {e}"));
                 }
-                *functions.borrow_mut() = ui.hub.functions.borrow().clone();
+                *functions.borrow_mut() = host.functions.borrow().clone();
                 refresh();
             });
         });
@@ -136,35 +270,36 @@ struct EditorState {
 }
 
 /// Replace the saved Functions: tell the hub (which owns `functions.json`)
-/// and update this Lister's copy at once, without waiting for the echo.
-fn publish_functions(ui: &Rc<Ui>, list: Vec<Function>) -> std::io::Result<()> {
-    *ui.hub.functions.borrow_mut() = list.clone();
-    ui.hub.client.send(&opusdm_ipc::ToHub::SetFunctions(list))
+/// and update the manager's copy at once.
+fn publish_functions(host: &Host, list: Vec<Function>) -> std::io::Result<()> {
+    host.client.send(&ToHub::SetFunctions(list.clone()))?;
+    *host.functions.borrow_mut() = list;
+    Ok(())
 }
 
 /// Add `f`, or replace the saved function with the same id, on top of the
-/// hub's latest list (so a save never reverts what another Lister saved).
-fn upsert_function(ui: &Rc<Ui>, f: Function) -> std::io::Result<()> {
-    let mut all = ui.hub.functions.borrow().clone();
+/// latest list.
+fn upsert_function(host: &Host, f: Function) -> std::io::Result<()> {
+    let mut all = host.functions.borrow().clone();
     match all.iter_mut().find(|existing| existing.id == f.id) {
         Some(slot) => *slot = f,
         None => all.push(f),
     }
-    publish_functions(ui, all)
+    publish_functions(host, all)
 }
 
-/// Remove the saved function `id` from the hub's latest list.
-fn delete_function(ui: &Rc<Ui>, id: &str) -> std::io::Result<()> {
-    let mut all = ui.hub.functions.borrow().clone();
+/// Remove the saved function `id` from the latest list.
+fn delete_function(host: &Host, id: &str) -> std::io::Result<()> {
+    let mut all = host.functions.borrow().clone();
     all.retain(|f| f.id != id);
-    publish_functions(ui, all)
+    publish_functions(host, all)
 }
 
 /// Open the editor for one function. `all_functions` is the manager's shared
 /// list; Save replaces this function's entry (by id) in place, persists the
 /// whole list, and calls `on_saved` so the manager window's list repaints.
-fn open_function_editor(ui: &Rc<Ui>, function: Function, all_functions: Rc<RefCell<Vec<Function>>>, on_saved: Rc<dyn Fn()>) {
-    let shell = opusdm_ui::DialogShell::new(&ui.window, "Edit Function").size(520, 480).scrolled();
+fn open_function_editor(host: &Rc<Host>, function: Function, all_functions: Rc<RefCell<Vec<Function>>>, on_saved: Rc<dyn Fn()>) {
+    let shell = opusdm_ui::DialogShell::new(&host.window, "Edit Function").size(520, 480).scrolled();
     let root = shell.content();
 
     let name_entry = gtk::Entry::new();
@@ -217,29 +352,29 @@ fn open_function_editor(ui: &Rc<Ui>, function: Function, all_functions: Rc<RefCe
         add_external.connect_clicked(move |_| prompt_add_external(&state));
     }
     {
-        let ui = ui.clone();
+        let host = host.clone();
         let state = state.clone();
         let all_functions = all_functions.clone();
         save_btn.connect_clicked(move |_| {
             let f = state.function.borrow().clone();
-            match upsert_function(&ui, f) {
+            match upsert_function(&host, f) {
                 Ok(()) => {
                     // Show the manager the list as the hub now has it.
-                    *all_functions.borrow_mut() = ui.hub.functions.borrow().clone();
+                    *all_functions.borrow_mut() = host.functions.borrow().clone();
                     on_saved();
                 }
-                Err(e) => crate::actions::flash(&ui, &format!("could not save function: {e}")),
+                Err(e) => host.report(&format!("could not save function: {e}")),
             }
         });
     }
     {
-        let ui = ui.clone();
+        let host = host.clone();
         let state = state.clone();
         test_btn.connect_clicked(move |_| {
             let f = state.function.borrow().clone();
             state.log_buffer.set_text("");
-            *ui.function_log.borrow_mut() = Some(state.log_buffer.clone());
-            ui.start_run(opusdm_ipc::ToHub::RunFunction { steps: f.steps });
+            *host.log.borrow_mut() = Some(state.log_buffer.clone());
+            host.send(&ToHub::RunFunction { steps: f.steps });
         });
     }
 

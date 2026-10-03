@@ -35,11 +35,22 @@ pub(crate) fn theme_config_bin() -> PathBuf {
 /// Spawn the Lister binary (next to the hub executable, else on `PATH`) with
 /// only the File Types editor open.
 pub(crate) fn launch_filetypes_editor() {
+    spawn_lister_tool("--edit-filetypes");
+}
+
+/// Spawn the Lister binary with only the Manage Functions window open.
+pub(crate) fn launch_functions_manager() {
+    spawn_lister_tool("--manage-functions");
+}
+
+/// Spawn the Lister binary (next to the hub executable, else on `PATH`) with
+/// `flag`, which makes it open one tool window instead of a file window.
+fn spawn_lister_tool(flag: &str) {
     let bin = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("opusdm-lister")))
         .unwrap_or_else(|| PathBuf::from("opusdm-lister"));
-    if let Err(e) = std::process::Command::new(&bin).arg("--edit-filetypes").spawn() {
+    if let Err(e) = std::process::Command::new(&bin).arg(flag).spawn() {
         opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", bin.display());
     }
 }
@@ -478,6 +489,17 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
                 reload_desktop_field(&widgets);
+            });
+            sub.append(&btn);
+        }
+
+        // Manage Functions: open the function manager on its own.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Manage Functions");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                launch_functions_manager();
             });
             sub.append(&btn);
         }
