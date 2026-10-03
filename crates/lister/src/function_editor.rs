@@ -52,14 +52,18 @@ impl Host {
     }
 
     /// Handle one message from the hub: Test output, and the questions a
-    /// running Test asks (confirm steps and copy conflicts).
+    /// running Test asks (confirm steps and copy conflicts). A failure (for
+    /// instance no SOURCE Lister to run on) is also shown in a requester.
     fn handle(self: &Rc<Self>, msg: ToLister) {
         match msg {
             ToLister::FunctionOutput { step_idx, line } => self.append_log(&format!("[step {step_idx}] {line}\n")),
             ToLister::FunctionStepDone { step_idx, exit_code } => {
                 self.append_log(&format!("[step {step_idx}] done (exit {exit_code:?})\n"))
             }
-            ToLister::FunctionFailed { step_idx, error } => self.append_log(&format!("[step {step_idx}] FAILED: {error}\n")),
+            ToLister::FunctionFailed { step_idx, error } => {
+                self.append_log(&format!("[step {step_idx}] FAILED: {error}\n"));
+                self.report(&error);
+            }
             ToLister::FunctionDone => self.append_log("function finished\n"),
             ToLister::OutputLine { line, .. } => self.append_log(&format!("{line}\n")),
             ToLister::ConfirmPrompt { req_id, message } => {

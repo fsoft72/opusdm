@@ -22,7 +22,7 @@ use std::time::Instant;
 mod function_run;
 mod persist;
 
-use function_run::PendingFunctionRun;
+use function_run::{PendingFunctionRun, NO_SOURCE_ERROR};
 use persist::PersistMsg;
 
 /// Called when a Lister or the toolbar asks for a new Lister window.
@@ -563,10 +563,12 @@ impl Hub {
                 self.lister_run_job(cid, op, srcs, dest_dir, options);
             }
 
-            ToHub::RunFunction { steps } => {
-                let source = self.run_source_for(cid);
-                self.start_function_run(Some(cid), source, steps);
-            }
+            ToHub::RunFunction { steps } => match self.run_source_for(cid) {
+                Some(source) => {
+                    self.start_function_run(Some(cid), Some(source), steps);
+                }
+                None => self.function_failed(Some(cid), NO_SOURCE_ERROR.to_string()),
+            },
 
             ToHub::RunFunctionById { id } => {
                 self.run_function_by_id(Some(cid), Some(cid), &id);
@@ -1740,6 +1742,21 @@ mod tests {
         });
         send(&mut tool, &ToHub::ConfirmReply { req_id, ok: true }).unwrap();
         recv_until(&mut tool, |m| matches!(m, ToLister::FunctionDone).then_some(()));
+    }
+
+    #[test]
+    fn a_run_from_a_tool_window_without_a_source_lister_fails() {
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut tool = connect(&path);
+        let steps = vec![FnStep::External { argv: vec!["true".into()], cwd_source: true }];
+        send(&mut tool, &ToHub::RunFunction { steps }).unwrap();
+        let error = recv_until(&mut tool, |m| match m {
+            ToLister::FunctionFailed { error, .. } => Some(error),
+            ToLister::FunctionDone => panic!("the run must not start without a SOURCE"),
+            _ => None,
+        });
+        assert_eq!(error, function_run::NO_SOURCE_ERROR);
     }
 
     #[test]

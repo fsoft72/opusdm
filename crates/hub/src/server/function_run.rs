@@ -5,6 +5,9 @@
 
 use super::*;
 
+/// Why a run from a tool window (Manage Functions' Test) did not start.
+pub(super) const NO_SOURCE_ERROR: &str = "There is no SOURCE Lister: select a Lister as SOURCE, then try again.";
+
 /// A Function run waiting on `SelectionReply` from SOURCE and/or DEST,
 /// tracked between `ToHub::RunFunction` and the point every slot it needs
 /// has been filled.
@@ -96,7 +99,8 @@ impl Hub {
 
     /// The SOURCE for a run requested by `cid`: `cid` itself when it is a
     /// registered Lister, else (a tool window such as Manage Functions) the
-    /// registered Lister holding the SOURCE role, if any.
+    /// registered Lister holding the SOURCE role. `None` when there is no
+    /// such Lister: the run must not start.
     pub(super) fn run_source_for(&self, cid: u64) -> Option<u64> {
         if self.conns.get(&cid).is_some_and(|c| c.registered) {
             return Some(cid);

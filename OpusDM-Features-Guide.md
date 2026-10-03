@@ -764,7 +764,8 @@ Button Bank o da un evento.
 1. `Ctrl+P` > **Manage Functions...** (oppure, dal menu del desktop,
    **Desktop > Manage Functions**): si apre l'elenco delle function, in una
    finestra indipendente dal Lister. Il pulsante **Test** dell'editor usa
-   come SOURCE il Lister che ha il ruolo SOURCE in quel momento.
+   come SOURCE il Lister che ha il ruolo SOURCE in quel momento; se nessun
+   Lister è SOURCE, il test non parte e un avviso chiede di selezionarne uno.
 2. Clicca **New Function...**: si apre l'editor.
 3. Nel campo in alto scrivi il nome `Copia e notifica`.
 4. Clicca **Add Internal Step...**, scegli **Copy** dal menu a tendina e conferma.
