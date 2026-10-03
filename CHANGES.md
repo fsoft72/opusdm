@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-03
+
+- Fix (hub): the desktop windows (one per monitor) now stay visible on every virtual desktop. `make_desktop_window` sets `_NET_WM_DESKTOP` to all desktops (`0xFFFFFFFF`) and adds `_NET_WM_STATE_STICKY` next to `_NET_WM_STATE_BELOW`, both as properties (read when the WM adopts the window) and as EWMH client messages (honoured once it is mapped).
+
 ## 2026-10-02
 
 - Fix (lister): in the Name column only the text of a directory / file name was painted with the row colour; the icon and the space after the name showed the list ground (`file_bg`), so directories looked striped on a light theme. The `row-dir` / `row-file` / `cell-selected` classes now go on the whole cell (the icon+label box in the Name column) and the label takes the text colour through `.row-dir > label` and friends. The Name label also fills the cell, so right-click and drag work on its whole width.
