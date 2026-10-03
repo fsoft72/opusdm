@@ -2,7 +2,7 @@
 
 ## 2026-10-03
 
-- Fix (hub): the desktop windows (one per monitor) now stay visible on every virtual desktop. `make_desktop_window` sets `_NET_WM_DESKTOP` to all desktops (`0xFFFFFFFF`) and adds `_NET_WM_STATE_STICKY` next to `_NET_WM_STATE_BELOW`, both as properties (read when the WM adopts the window) and as EWMH client messages (honoured once it is mapped).
+- Fix (hub, panel, dock): the panel bar, the dock and the desktop windows disappeared on every virtual desktop but the first, because openbox put them on the desktop current at map time. New `X11::stick_to_all_desktops` (opusdm-ui) sets `_NET_WM_DESKTOP` to all desktops (`0xFFFFFFFF`) as a property and as an EWMH client message, and sends `_NET_WM_STATE_STICKY`; the panel, dock and desktop windows call it when realized and mapped, and list STICKY in their initial `_NET_WM_STATE`. Verified in the Xephyr sandbox: after `wmctrl -s 2` all three stay viewable.
 
 ## 2026-10-02
 

@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
-use x11rb::protocol::xproto::{self, ClientMessageEvent, ConnectionExt, EventMask, StackMode};
+use x11rb::protocol::xproto::{self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode, StackMode};
+use x11rb::wrapper::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
 /// Error type of the X11 helpers.
@@ -19,6 +20,12 @@ pub type X11Error = Box<dyn std::error::Error>;
 
 /// `_NET_WM_STATE` action: add the listed property.
 const NET_WM_STATE_ADD: u32 = 1;
+
+/// `_NET_WM_DESKTOP` value meaning "on all virtual desktops".
+const ALL_DESKTOPS: u32 = 0xFFFF_FFFF;
+
+/// EWMH source indication for client messages sent by a normal application.
+const SOURCE_APPLICATION: u32 = 1;
 
 /// `_NET_MOVERESIZE_WINDOW` flags: keep the window gravity, all four of x, y,
 /// width and height are supplied, and the request comes from the application.
@@ -138,6 +145,19 @@ impl X11 {
             self.send_to_root(window, "_NET_WM_STATE", [NET_WM_STATE_ADD, state, 0, 0, 0])?;
         }
         Ok(())
+    }
+
+    /// Put `window` on every virtual desktop: `_NET_WM_DESKTOP` set to all
+    /// desktops, as a property (read when the window manager adopts the
+    /// window) and as an EWMH client message (the only form honoured once the
+    /// window is mapped), plus a `_NET_WM_STATE_STICKY` message. Callers that
+    /// write `_NET_WM_STATE` before mapping should list STICKY there too.
+    /// Safe to call both before and after mapping.
+    pub fn stick_to_all_desktops(&self, window: u32) -> Result<(), X11Error> {
+        let wm_desktop = self.atom("_NET_WM_DESKTOP")?;
+        self.conn.change_property32(PropMode::REPLACE, window, wm_desktop, AtomEnum::CARDINAL, &[ALL_DESKTOPS])?;
+        self.send_to_root(window, "_NET_WM_DESKTOP", [ALL_DESKTOPS, SOURCE_APPLICATION, 0, 0, 0])?;
+        self.add_wm_states(window, &["_NET_WM_STATE_STICKY"])
     }
 
     /// A plain `ConfigureWindow` of `window` to the given geometry.

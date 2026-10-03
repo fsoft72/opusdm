@@ -10,9 +10,6 @@ use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
 
-/// The `_NET_WM_DESKTOP` value meaning "on all virtual desktops".
-const ALL_DESKTOPS: u32 = 0xFFFF_FFFF;
-
 /// Apply the desktop window type, the keep-below and sticky states, the
 /// all-desktops membership, and a fixed full-monitor geometry - placed at `(x, y)`, `width` x `height` - to the
 /// realized `window`. Safe to call more than once (realize and map).
@@ -62,7 +59,6 @@ fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), opusdm
         let wm_state = x11.atom("_NET_WM_STATE")?;
         let state_below = x11.atom("_NET_WM_STATE_BELOW")?;
         let state_sticky = x11.atom("_NET_WM_STATE_STICKY")?;
-        let wm_desktop = x11.atom("_NET_WM_DESKTOP")?;
 
         // Window type = DESKTOP.
         conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[desktop_type])?;
@@ -70,12 +66,11 @@ fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), opusdm
         // Keep it below every other window, and sticky across virtual desktops.
         conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_below, state_sticky])?;
 
-        // Show it on every virtual desktop. The properties above are read by the
-        // WM when it adopts the window; once mapped, the WM only honours the
-        // EWMH client messages, so send those too (ignored before mapping).
-        conn.change_property32(PropMode::REPLACE, xid, wm_desktop, AtomEnum::CARDINAL, &[ALL_DESKTOPS])?;
-        x11.send_to_root(xid, "_NET_WM_DESKTOP", [ALL_DESKTOPS, 1, 0, 0, 0])?;
-        x11.add_wm_states(xid, &["_NET_WM_STATE_BELOW", "_NET_WM_STATE_STICKY"])?;
+        // Show it on every virtual desktop. The state property above is read
+        // by the WM only when it adopts the window; once mapped, it honours
+        // only the EWMH client messages, so re-send BELOW that way too.
+        x11.stick_to_all_desktops(xid)?;
+        x11.add_wm_states(xid, &["_NET_WM_STATE_BELOW"])?;
 
         // Tell the WM the position is user-specified so it does not re-center the
         // window (openbox centers windows that carry no position hint).

@@ -5,7 +5,8 @@
 //! uses, which wants exactly that), which no `_NET_WM_STATE_BELOW` on top of
 //! it can override. A plain `NORMAL` window honours `BELOW` instead, so
 //! maximised windows cover the dock as intended. It reserves NO screen space
-//! (no strut), so it stays visible only over the desktop.
+//! (no strut), so it stays visible only over the desktop. It is sticky, shown
+//! on every virtual desktop.
 
 use crate::placement::Placement;
 use gtk4 as gtk;
@@ -78,6 +79,7 @@ fn apply(xid: u32, place: Placement, count: usize) -> Result<(), opusdm_ui::X11E
         let state_below = x11.atom("_NET_WM_STATE_BELOW")?;
         let skip_taskbar = x11.atom("_NET_WM_STATE_SKIP_TASKBAR")?;
         let skip_pager = x11.atom("_NET_WM_STATE_SKIP_PAGER")?;
+        let state_sticky = x11.atom("_NET_WM_STATE_STICKY")?;
 
         conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[normal_type])?;
         conn.change_property32(
@@ -85,8 +87,12 @@ fn apply(xid: u32, place: Placement, count: usize) -> Result<(), opusdm_ui::X11E
             xid,
             wm_state,
             AtomEnum::ATOM,
-            &[state_below, skip_taskbar, skip_pager],
+            &[state_below, skip_taskbar, skip_pager, state_sticky],
         )?;
+
+        // Keep the dock on every virtual desktop (property for adoption,
+        // client messages once mapped).
+        x11.stick_to_all_desktops(xid)?;
 
         // Position is user-specified so openbox does not re-center us.
         let mut hints = WmSizeHints::new();

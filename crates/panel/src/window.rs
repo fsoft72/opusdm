@@ -1,6 +1,6 @@
 //! Turn a GTK window into a top- or bottom-docked panel: an undecorated,
 //! monitor-wide strip marked `_NET_WM_WINDOW_TYPE_DOCK`, kept above other
-//! windows, and reserving screen space through `_NET_WM_STRUT_PARTIAL` so
+//! windows, shown on every virtual desktop, and reserving screen space through `_NET_WM_STRUT_PARTIAL` so
 //! maximised windows do not draw under it. Mirrors `opusdm-hub`'s `desktop.rs`.
 
 use gtk4 as gtk;
@@ -58,7 +58,8 @@ pub fn strut_partial(position: PanelPosition, height: i32, mon_x: i32, mon_w: i3
     }
 }
 
-/// Apply the DOCK window type, the keep-above state, the struts and a fixed
+/// Apply the DOCK window type, the keep-above and sticky states, the
+/// all-desktops membership, the struts and a fixed
 /// full-width geometry to the realized `window`, placed on the edge and
 /// monitor `place` describes. Safe to call more than once (realize and map).
 /// Errors are logged and swallowed.
@@ -112,11 +113,16 @@ fn apply(xid: u32, place: Placement) -> Result<(), opusdm_ui::X11Error> {
         let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
         let wm_state = x11.atom("_NET_WM_STATE")?;
         let state_above = x11.atom("_NET_WM_STATE_ABOVE")?;
+        let state_sticky = x11.atom("_NET_WM_STATE_STICKY")?;
         let strut = x11.atom("_NET_WM_STRUT")?;
         let strut_partial = x11.atom("_NET_WM_STRUT_PARTIAL")?;
 
         conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[dock_type])?;
-        conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_above])?;
+        conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_above, state_sticky])?;
+
+        // Keep the bar on every virtual desktop, not only the one it was
+        // mapped on (property for adoption, client messages once mapped).
+        x11.stick_to_all_desktops(xid)?;
 
         // Reserve the docked strip. `_NET_WM_STRUT` is the legacy 4-tuple
         // (left, right, top, bottom); `_NET_WM_STRUT_PARTIAL` the modern 12-tuple.
