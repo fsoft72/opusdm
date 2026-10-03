@@ -194,6 +194,7 @@ struct Form {
     name: gtk::Entry,
     orientation: gtk::DropDown,
     borderless: gtk::CheckButton,
+    all_desktops: gtk::CheckButton,
     columns: gtk::SpinButton,
 }
 
@@ -233,6 +234,7 @@ pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id
         name: gtk::Entry::new(),
         orientation: gtk::DropDown::from_strings(&["Horizontal", "Vertical"]),
         borderless: gtk::CheckButton::with_label("Borderless"),
+        all_desktops: gtk::CheckButton::with_label("Visible on all desktops"),
         columns: gtk::SpinButton::with_range(f64::from(opusdm_ipc::buttonbank::MIN_COLUMNS), f64::from(opusdm_ipc::buttonbank::MAX_COLUMNS), 1.0),
     };
     let error = gtk::Label::new(None);
@@ -263,6 +265,7 @@ pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id
     row("Orientation", form.orientation.upcast_ref());
     row("Columns", form.columns.upcast_ref());
     form_box.append(&form.borderless);
+    form_box.append(&form.all_desktops);
     form_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     row("Label", form.label.upcast_ref());
     row("Icon file", form.icon.upcast_ref());
@@ -346,6 +349,7 @@ fn load_form(state: &Rc<State>) {
     form.orientation.set_selected(u32::from(bank.orientation == Orientation::Vertical));
     form.columns.set_value(f64::from(bank.columns));
     form.borderless.set_active(bank.borderless);
+    form.all_desktops.set_active(bank.all_desktops);
     let btn = state.selected.get().and_then(|i| bank.buttons.get(i));
     form.label.set_text(btn.map(|b| b.label.as_str()).unwrap_or(""));
     form.icon.set_text(&btn.and_then(|b| b.icon.as_ref()).map(|p| p.display().to_string()).unwrap_or_default());
@@ -422,6 +426,13 @@ fn wire_form(state: &Rc<State>) {
         form.borderless.connect_toggled(move |c| {
             let on = c.is_active();
             apply(&state, &|b, _| b.borderless = on);
+        });
+    }
+    {
+        let state = state.clone();
+        form.all_desktops.connect_toggled(move |c| {
+            let on = c.is_active();
+            apply(&state, &|b, _| b.all_desktops = on);
         });
     }
     {

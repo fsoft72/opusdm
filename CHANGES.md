@@ -2,6 +2,7 @@
 
 ## 2026-10-03
 
+- Feature (buttonbank): the bank editor has a **Visible on all desktops** check button. It is saved as `all_desktops` in the bank file (default off, older files still load). When on, the bank window is put on every virtual desktop once mapped (`x11::set_all_desktops`, using `X11::stick_to_all_desktops`); toggling it on an open bank applies at once, and turning it off moves the window to the current desktop only (new `X11::unstick_to_current_desktop`). Verified in the Xephyr sandbox: a bank with the option on stays viewable after `wmctrl -s 2`.
 - Fix (hub, panel, dock): the panel bar, the dock and the desktop windows disappeared on every virtual desktop but the first, because openbox put them on the desktop current at map time. New `X11::stick_to_all_desktops` (opusdm-ui) sets `_NET_WM_DESKTOP` to all desktops (`0xFFFFFFFF`) as a property and as an EWMH client message, and sends `_NET_WM_STATE_STICKY`; the panel, dock and desktop windows call it when realized and mapped, and list STICKY in their initial `_NET_WM_STATE`. Verified in the Xephyr sandbox: after `wmctrl -s 2` all three stay viewable.
 
 ## 2026-10-02

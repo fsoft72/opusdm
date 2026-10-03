@@ -18,6 +18,9 @@ use x11rb::rust_connection::RustConnection;
 /// Error type of the X11 helpers.
 pub type X11Error = Box<dyn std::error::Error>;
 
+/// `_NET_WM_STATE` action: remove the listed property.
+const NET_WM_STATE_REMOVE: u32 = 0;
+
 /// `_NET_WM_STATE` action: add the listed property.
 const NET_WM_STATE_ADD: u32 = 1;
 
@@ -158,6 +161,17 @@ impl X11 {
         self.conn.change_property32(PropMode::REPLACE, window, wm_desktop, AtomEnum::CARDINAL, &[ALL_DESKTOPS])?;
         self.send_to_root(window, "_NET_WM_DESKTOP", [ALL_DESKTOPS, SOURCE_APPLICATION, 0, 0, 0])?;
         self.add_wm_states(window, &["_NET_WM_STATE_STICKY"])
+    }
+
+    /// Undo [`X11::stick_to_all_desktops`] on a mapped `window`: move it to
+    /// the current virtual desktop only and drop `_NET_WM_STATE_STICKY`.
+    pub fn unstick_to_current_desktop(&self, window: u32) -> Result<(), X11Error> {
+        let current = self.atom("_NET_CURRENT_DESKTOP")?;
+        let reply = self.conn.get_property(false, self.root, current, AtomEnum::CARDINAL, 0, 1)?.reply()?;
+        let desktop = reply.value32().and_then(|mut v| v.next()).unwrap_or(0);
+        self.send_to_root(window, "_NET_WM_DESKTOP", [desktop, SOURCE_APPLICATION, 0, 0, 0])?;
+        let sticky = self.atom("_NET_WM_STATE_STICKY")?;
+        self.send_to_root(window, "_NET_WM_STATE", [NET_WM_STATE_REMOVE, sticky, 0, 0, 0])
     }
 
     /// A plain `ConfigureWindow` of `window` to the given geometry.

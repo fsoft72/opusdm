@@ -71,7 +71,7 @@ The lister toolbar itself is a button bank and is editable
   functions: { left, right, middle } -> function ids from F-01 }`).
 - Commands: open/close/hide/toggle bank by name, open-under-mouse.
 - Editor: add/insert/delete/copy/paste buttons, drag-reorder, edit button
-  (opens F-01 editor), bank appearance (borderless, orientation).
+  (opens F-01 editor), bank appearance (borderless, orientation, visible on all desktops).
 - Hub owns bank windows (like it owns panel/dock) so they survive lister
   restarts; IPC messages `OpenBank/CloseBank/ToggleBank`.
 - Acceptance: create a bank with 3 buttons bound to functions, save, restart

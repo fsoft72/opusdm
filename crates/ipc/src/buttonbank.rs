@@ -128,6 +128,9 @@ pub struct ButtonBank {
     pub name: String,
     pub orientation: Orientation,
     pub borderless: bool,
+    /// Show the bank window on every virtual desktop, not only on the one it
+    /// was opened on.
+    pub all_desktops: bool,
     /// Buttons per row (Horizontal) or per column (Vertical).
     pub columns: u32,
     /// Whether the window was open when the hub last ran.
@@ -146,6 +149,7 @@ impl Default for ButtonBank {
             name: String::new(),
             orientation: Orientation::Horizontal,
             borderless: false,
+            all_desktops: false,
             columns: DEFAULT_COLUMNS,
             open: false,
             x: None,
@@ -395,7 +399,7 @@ mod tests {
         let b = ButtonBank::default();
         assert_eq!(b.columns, DEFAULT_COLUMNS);
         assert_eq!(b.orientation, Orientation::Horizontal);
-        assert!(!b.open && !b.borderless);
+        assert!(!b.open && !b.borderless && !b.all_desktops);
     }
 
     #[test]
@@ -403,6 +407,7 @@ mod tests {
         let b: ButtonBank = serde_json::from_str(r#"{"name":"Old"}"#).unwrap();
         assert_eq!(b.name, "Old");
         assert_eq!(b.columns, DEFAULT_COLUMNS);
+        assert!(!b.all_desktops);
         assert!(b.buttons.is_empty());
     }
 
@@ -411,6 +416,7 @@ mod tests {
         let mut b = bank_with(2);
         b.id = "tools".to_string();
         b.orientation = Orientation::Vertical;
+        b.all_desktops = true;
         b.buttons[0].left = Some("f1".to_string());
         b.buttons[0].icon = Some(PathBuf::from("/a/b.png"));
         b.x = Some(10);

@@ -23,6 +23,16 @@ pub fn set_skip_taskbar(window: &gtk::Window) {
     }
 }
 
+/// Ask the window manager to show `window` on every virtual desktop when
+/// `on`, or only on the current one when not.
+pub fn set_all_desktops(window: &gtk::Window, on: bool) {
+    let Some(xid) = xid(window) else { return };
+    let result = opusdm_ui::with_x11(|x11| if on { x11.stick_to_all_desktops(xid) } else { x11.unstick_to_current_desktop(xid) });
+    if let Err(e) = result {
+        opusdm_ipc::err_log!("buttonbank", "cannot change the desktops of a bank window: {e}");
+    }
+}
+
 /// `_NET_MOVERESIZE_WINDOW` flags: gravity NorthWest (the position is the
 /// top-left of the window frame), x and y are set, source is an application.
 const MOVE_FLAGS: u32 = 1 | (1 << 8) | (1 << 9) | (1 << 12);

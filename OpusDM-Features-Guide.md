@@ -1029,7 +1029,9 @@ per il destro e una per il centrale.
    pulsante selezionato.
 6. Nelle impostazioni della bank scegli il **nome**, l'**orientamento**
    (Horizontal riempie per righe, Vertical per colonne), il numero di
-   **colonne** e **Borderless**.
+   **colonne**, **Borderless** e **Visible on all desktops** (la bank resta
+   visibile su tutti i desktop virtuali, invece che solo su quello dove è
+   stata aperta).
 7. **Save** è disabilitato finché qualcosa non è valido: il motivo è mostrato
    sotto il modulo.
 

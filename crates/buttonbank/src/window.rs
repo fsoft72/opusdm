@@ -10,8 +10,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-/// How often, and at most how many times, the taskbar hint and the saved
-/// position are (re)applied after the window is mapped.
+/// How often, and at most how many times, the taskbar and desktop hints and
+/// the saved position are (re)applied after the window is mapped.
 const MAP_RETRY_MS: u64 = 250;
 const MAP_RETRY_LIMIT: u32 = 60;
 /// Tries when there is no position to restore (only the taskbar hint).
@@ -64,13 +64,15 @@ fn fill(window: &gtk::Window, shared: &Rc<RefCell<ButtonBank>>, bank: &ButtonBan
 
 impl BankWindow {
     /// Create (but do not show) the window of `bank`. Once mapped it is kept
-    /// out of the taskbar and pager and moved to the bank's saved position.
+    /// out of the taskbar and pager, put on every virtual desktop when the
+    /// bank asks for it, and moved to the bank's saved position.
     pub fn new(app: &gtk::Application, bank: &ButtonBank, hooks: &WindowHooks) -> BankWindow {
         let window = gtk::Window::builder().application(app).resizable(false).build();
         let shared = Rc::new(RefCell::new(ButtonBank::default()));
         fill(&window, &shared, bank, hooks);
         let place = Rc::new(Cell::new(bank.x.zip(bank.y)));
         let place_for_map = place.clone();
+        let bank_for_map = shared.clone();
         window.connect_map(move |w| {
             // The window manager ignores state and position requests made
             // while it is still adopting the window, and how long that takes
@@ -79,10 +81,16 @@ impl BankWindow {
             // gives up after MAP_RETRY_LIMIT tries).
             let window = w.clone();
             let place = place_for_map.clone();
+            let bank = bank_for_map.clone();
             let tries = Cell::new(0_u32);
             glib::timeout_add_local(Duration::from_millis(MAP_RETRY_MS), move || {
                 tries.set(tries.get() + 1);
                 x11::set_skip_taskbar(&window);
+                // A new window already sits on the current desktop only, so
+                // only the all-desktops case needs asking for.
+                if bank.borrow().all_desktops {
+                    x11::set_all_desktops(&window, true);
+                }
                 let target = place.get().and_then(|p| position_on_screen(p, &current_monitors()));
                 // Without a saved position only the taskbar hint is retried,
                 // for a shorter while.
@@ -99,9 +107,14 @@ impl BankWindow {
         BankWindow { window, bank: shared, place }
     }
 
-    /// Rebuild the grid, title and decoration from `bank`.
+    /// Rebuild the grid, title and decoration from `bank`. A change of the
+    /// all-desktops setting applies at once to a mapped window.
     pub fn update(&self, bank: &ButtonBank, hooks: &WindowHooks) {
+        let was_all = self.bank.borrow().all_desktops;
         fill(&self.window, &self.bank, bank, hooks);
+        if self.window.is_mapped() && was_all != bank.all_desktops {
+            x11::set_all_desktops(&self.window, bank.all_desktops);
+        }
     }
 
     /// Show or hide the window without destroying it.
