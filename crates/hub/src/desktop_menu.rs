@@ -85,13 +85,27 @@ pub(crate) const ICON_MENU_W: i32 = 160;
 pub(crate) const ICON_MENU_H: i32 = 140;
 
 /// Place `menu` at `(x, y)` inside `overlay`, clamped so it never runs past
-/// the overlay's edge, and show it.
+/// the overlay's edge, and show it. `w`/`h` are fallbacks, used only when the
+/// menu cannot report its own natural size.
 pub(crate) fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, w: i32, h: i32) {
-    let max_x = (overlay.width() - w).max(0);
-    let max_y = (overlay.height() - h).max(0);
+    let (_, natural) = menu.preferred_size();
+    let (mw, mh) = (natural.width().max(w), natural.height().max(h));
+    let max_x = (overlay.width() - mw).max(0);
+    let max_y = (overlay.height() - mh).max(0);
     menu.set_margin_start((x as i32).clamp(0, max_x));
     menu.set_margin_top((y as i32).clamp(0, max_y));
     menu.set_visible(true);
+}
+
+/// Re-clamp an already placed `menu` so it fits inside `overlay` using its
+/// current natural size. Called after the menu grows (e.g. the Desktop
+/// expander opens) so it never runs off the bottom/right edge of the screen.
+pub(crate) fn keep_menu_on_screen(menu: &gtk::Box, overlay: &gtk::Overlay) {
+    let (_, natural) = menu.preferred_size();
+    let max_x = (overlay.width() - natural.width()).max(0);
+    let max_y = (overlay.height() - natural.height()).max(0);
+    menu.set_margin_start(menu.margin_start().clamp(0, max_x));
+    menu.set_margin_top(menu.margin_top().clamp(0, max_y));
 }
 
 /// Emit `DesktopMiddleDoubleClick` and `DesktopRightDoubleClick` for double
@@ -556,6 +570,17 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
 
         let expander = gtk::Expander::new(Some("Desktop"));
         expander.set_child(Some(&sub));
+        // Opening the expander grows the menu: pull it back on screen.
+        {
+            let menu_ref = menu.clone();
+            expander.connect_expanded_notify(move |_| {
+                let menu = menu_ref.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    let Some(overlay) = menu.parent().and_then(|p| p.downcast::<gtk::Overlay>().ok()) else { return };
+                    keep_menu_on_screen(&menu, &overlay);
+                });
+            });
+        }
         menu.append(&expander);
     }
 
