@@ -15,6 +15,9 @@ pub enum Action {
     SeekBack,
     SeekForward,
     TogglePlay,
+    VolumeUp,
+    VolumeDown,
+    Mute,
     RotateCw,
     RotateCcw,
     Slideshow,
@@ -38,6 +41,9 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
         Key::Left | Key::KP_Left => if video { Action::SeekBack } else { Action::Prev },
         Key::Right | Key::KP_Right => if video { Action::SeekForward } else { Action::Next },
         Key::space => if video { Action::TogglePlay } else { Action::Next },
+        Key::Up | Key::KP_Up if video => Action::VolumeUp,
+        Key::Down | Key::KP_Down if video => Action::VolumeDown,
+        Key::m | Key::M if video => Action::Mute,
         Key::n | Key::N => Action::Next,
         Key::p | Key::P => Action::Prev,
         Key::s | Key::S => Action::Slideshow,
@@ -90,6 +96,16 @@ mod tests {
         assert_eq!(map(Key::R, Image), Some(Action::RotateCcw));
         for key in [Key::plus, Key::minus, Key::_0, Key::_1, Key::r, Key::R] {
             assert_eq!(map(key, Video), None);
+        }
+    }
+
+    #[test]
+    fn volume_and_mute_are_for_videos_only() {
+        assert_eq!(map(Key::Up, Video), Some(Action::VolumeUp));
+        assert_eq!(map(Key::Down, Video), Some(Action::VolumeDown));
+        assert_eq!(map(Key::m, Video), Some(Action::Mute));
+        for key in [Key::Up, Key::Down, Key::m] {
+            assert_eq!(map(key, Image), None);
         }
     }
 

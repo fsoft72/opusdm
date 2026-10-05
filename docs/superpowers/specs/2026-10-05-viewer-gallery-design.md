@@ -39,7 +39,6 @@ Pure modules (unit tested, no display needed):
 | `keys` | `Action` and `map(key, kind)`: the same key means different things for a picture and a video |
 | `slideshow` | on / off state and when it advances |
 | `delete` | `FileRemover` trait and the trash, then permanent delete, sequence |
-| `timefmt` | time text and the slider mapping of the video bar |
 
 GTK modules:
 
@@ -47,7 +46,7 @@ GTK modules:
 |---|---|
 | `loader` | decodes a picture on a worker thread into `RawImage` (plain bytes, so it crosses threads); builds the `gdk::Texture` for a rotation on the main thread |
 | `image_view` | `ScrolledWindow` with a `gtk::Picture`, wheel zoom, drag pan |
-| `video_view` | the `Engine` paintable and a bar with play / pause, slider and time |
+| `video_view` | the `Engine` paintable and the shared control bar (`opusdm-media-ui`: play / pause, slider, time, volume, mute) |
 | `strip` | the thumbnail strip, one worker thread making thumbnails |
 | `window` | owns the state, wires keys, full screen, slideshow, delete |
 | `main` | arguments, theme, `gtk::Application` (one process per window, like the player) |
@@ -76,6 +75,7 @@ takes the arrows or the space bar.
 | `0` / `1` | fit / 100% | - |
 | `Left` / `Right` | previous / next | seek -5 s / +5 s |
 | `Space` | next | play / pause |
+| `Up` / `Down`, `m` | - | volume, mute |
 | `n` / `p` | next / previous | next / previous |
 | `r` / `R` | rotate right / left | - |
 | `s` | slideshow on / off | slideshow on / off |
@@ -157,3 +157,12 @@ and slider maths, and a check that every extension of the default *Video file*
 type is a video for the viewer. `RawImage` conversion is tested with a generated
 PNG. The windows are checked by hand under Xephyr (large picture, damaged file,
 mixed folder, delete, full screen, slideshow); that check is not automated.
+
+## Shared code with the player
+
+`timefmt` (time text, slider mapping, seek offset) lives in `opusdm-media`. The
+control bar (`Controls`, `Handlers`, the cairo `icons`) lives in the new library
+crate `crates/media-ui` (`opusdm-media-ui`), used by `opusdm-player` and
+`opusdm-viewer`. The Loop button is shown only when the handlers have a loop
+callback (`Handlers::looping` is an `Option`): the player has one, the viewer
+does not.

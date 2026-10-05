@@ -1,0 +1,9 @@
+[package]
+name = "opusdm-media-ui"
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+opusdm-media = { path = "../media" }
+gtk4.workspace = true

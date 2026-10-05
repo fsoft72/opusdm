@@ -602,8 +602,8 @@ Shows one picture or video and lets you move through the others in the same fold
 - **Moving:** **Left** / **Right**, **Space** or **n** go to the next file, **p** or **Left**
   to the previous one; the gallery wraps around. Click a thumbnail in the strip to jump to it.
 - **Videos:** the video starts playing. **Space** plays / pauses and **Left** / **Right** seek
-  5 seconds back / forward; **n** and **p** still move through the gallery. The bar has a
-  play button, a seek slider and the time.
+  5 seconds back / forward; **Up** / **Down** change the volume, **m** mutes, and **n** and **p** still move through the
+  gallery. The bar is the one of the player (play, seek slider, time, mute, volume), without Loop.
 - **Slideshow:** **s** starts and stops it. Pictures stay 4 seconds; a video plays to its
   end first.
 - **Full screen:** **f** or a double click. The strip, the info bar and the video bar are

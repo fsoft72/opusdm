@@ -272,6 +272,9 @@ impl State {
             Action::SeekBack => self.video.skip(-SKIP_SECS),
             Action::SeekForward => self.video.skip(SKIP_SECS),
             Action::TogglePlay => self.video.toggle_play(),
+            Action::VolumeUp => self.video.change_volume(true),
+            Action::VolumeDown => self.video.change_volume(false),
+            Action::Mute => self.video.toggle_mute(),
             Action::Slideshow => {
                 self.slideshow.borrow_mut().toggle();
                 self._schedule_slideshow();
