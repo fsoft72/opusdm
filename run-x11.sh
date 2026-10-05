@@ -33,6 +33,8 @@ RESOLUTION="${2:-${XEPHYR_RES:-1920x1080}}"
 TERMINAL="${XEPHYR_TERM:-xterm}"
 START_WM="${XEPHYR_WM:-openbox}"   # WM providing decorations; set empty to disable
 OPENBOX_CONFIG="${XEPHYR_OB_CONFIG:-$(pwd)/openbox-rc.xml}"  # rc.xml for openbox
+COMPOSITOR="${XEPHYR_COMPOSITOR:-picom}"   # compositor for shadows and transparency; set empty to disable
+PICOM_CONFIG="${XEPHYR_PICOM_CONFIG:-$(pwd)/picom.conf}"  # picom.conf (GL backend)
 READY_TIMEOUT_TENTHS=50            # 50 * 0.1s = 5s max wait for the server
 
 # Exit conditions up front
@@ -91,6 +93,23 @@ if [ -n "$START_WM" ]; then
         CHILD_PIDS+=("$!")
     else
         echo "Window manager '$START_WM' not found, skipping"
+    fi
+fi
+
+# Optional compositor (shadows, transparency, GL acceleration)
+if [ -n "$COMPOSITOR" ]; then
+    if command -v "$COMPOSITOR" >/dev/null 2>&1; then
+        echo "Starting compositor: $COMPOSITOR"
+        COMP_ARGS=()
+        # Use the sandbox picom config when present
+        if [ "$COMPOSITOR" = "picom" ] && [ -f "$PICOM_CONFIG" ]; then
+            COMP_ARGS=(--config "$PICOM_CONFIG")
+            echo "  using config: $PICOM_CONFIG"
+        fi
+        DISPLAY="$DISPLAY_NUM" "$COMPOSITOR" ${COMP_ARGS[@]+"${COMP_ARGS[@]}"} &
+        CHILD_PIDS+=("$!")
+    else
+        echo "Compositor '$COMPOSITOR' not found (package: picom), skipping"
     fi
 fi
 
