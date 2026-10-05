@@ -2,7 +2,7 @@
 # Build OpusDM in release mode and stage everything needed to deploy it in ./dist.
 #
 # Layout of dist/:
-#   bin/      opusdm-hub, opusdm-lister, opusdm-settings, opusdm-dock
+#   bin/      opusdm-hub, opusdm-lister, opusdm-settings, opusdm-dock, opusdm-run
 #             (the hub finds opusdm-lister next to itself, keep them together)
 #   config/   openbox-rc.xml, picom.conf
 #   themes/   <slug>.zip theme packages
@@ -13,7 +13,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DIST="$REPO_ROOT/dist"
-BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock"
+BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run"
 
 cd "$REPO_ROOT"
 
@@ -44,6 +44,9 @@ cat > "$DIST/opusdm-session" <<'SESSION'
 #!/bin/sh
 # OpusDM X11 session: compositor, hub and Openbox as the window manager.
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
+export PATH="$HERE/bin:$PATH"
 
 if command -v picom >/dev/null 2>&1; then
     picom --config "$HERE/config/picom.conf" &

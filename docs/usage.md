@@ -495,6 +495,27 @@ list or the pager.
 - **Files:** one JSON file per bank in `~/.config/opusdm/buttons/`. A file that
   cannot be read is copied to `<name>.json.bak` and left alone.
 
+### 3.25 Run Window (`opusdm-run`)
+
+A small "Run..." window that opens at the top of the screen, right under the
+hub bar, to start a program by typing its name.
+
+- **Open it:** bind a hotkey to the program `opusdm-run`. In Edit Hotkeys press
+  the key, choose **Exec** and type `opusdm-run`; tick **Global** (with Ctrl,
+  Alt or Super) to open it from anywhere. Pressing the key again closes it. In
+  an OpusDM session the binaries are on `PATH`; otherwise type the full path.
+- **Suggestions:** as you type, a list shows up to eight matches. *Applications*
+  are the apps of the OpusDM menu (the custom menu when you built one, else
+  every installed app); *Commands* are the programs found on `PATH`. The best
+  match comes first: exact name, name start, start of a word, anywhere in the
+  name, then the generic name, keywords and program name.
+- **Run:** **Up / Down** move through the list, **Enter** (or a click) runs the
+  selected row. With no suggestion, **Enter** runs what you typed as a command
+  (`bash`, `kitty --class x`): quotes group words, there is no shell, so use
+  `bash -c "a | b"` for pipes. Text after a command name is passed as its
+  arguments. A program that cannot start is reported in red under the input.
+- **Close:** **Esc**, a click outside the window, or running something.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

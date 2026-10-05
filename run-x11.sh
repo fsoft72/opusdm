@@ -126,6 +126,8 @@ fi
 echo "Starting opusdm-hub"
 # Give the hub its own runtime dir so a stale socket never blocks the sandbox
 export XDG_RUNTIME_DIR="$(mktemp -d /tmp/opusdm-xephyr-XXXXXX)"
+# Hotkeys such as exec:opusdm-run find the OpusDM binaries by name
+export PATH="$(pwd)/target/release:$PATH"
 # Draw a red box around every icon-view item (hub desktop and every Lister)
 if [ "$GRID_DEBUG" = "1" ]; then
     echo "Grid debug overlay: on"
