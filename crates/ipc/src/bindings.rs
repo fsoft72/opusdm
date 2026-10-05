@@ -7,6 +7,7 @@
 //! `docs/superpowers/specs/2026-09-29-hotkeys-usermenu-scripts-design.md`.
 
 use crate::function::FunctionId;
+use crate::funcref::{self, FuncRef};
 use crate::settings::{config_dir, load_json, save_json};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -246,6 +247,12 @@ pub enum BindingError {
     ScriptEventNotEmitted { index: usize },
     /// The same (event, function) pair as the earlier binding `first`.
     ScriptDuplicate { index: usize, first: usize },
+    /// An inline `bash:` or `exec:` command in a hotkey that cannot run.
+    HotkeyInvalidCommand { index: usize, reason: String },
+    /// An inline command in a menu entry that cannot run.
+    MenuInvalidCommand { path: Vec<usize>, reason: String },
+    /// An inline command in a script binding that cannot run.
+    ScriptInvalidCommand { index: usize, reason: String },
 }
 
 impl BindingError {
@@ -255,7 +262,8 @@ impl BindingError {
             BindingError::HotkeyKeyInvalid { index, .. }
             | BindingError::HotkeyDuplicate { index, .. }
             | BindingError::HotkeyUnknownFunction { index }
-            | BindingError::HotkeyGlobalNeedsModifier { index } => Some(*index),
+            | BindingError::HotkeyGlobalNeedsModifier { index }
+            | BindingError::HotkeyInvalidCommand { index, .. } => Some(*index),
             _ => None,
         }
     }
@@ -265,7 +273,8 @@ impl BindingError {
         match self {
             BindingError::ScriptUnknownFunction { index }
             | BindingError::ScriptEventNotEmitted { index }
-            | BindingError::ScriptDuplicate { index, .. } => Some(*index),
+            | BindingError::ScriptDuplicate { index, .. }
+            | BindingError::ScriptInvalidCommand { index, .. } => Some(*index),
             _ => None,
         }
     }
@@ -273,7 +282,9 @@ impl BindingError {
     /// The menu node path this error belongs to, if it is a menu error.
     pub fn menu_path(&self) -> Option<&[usize]> {
         match self {
-            BindingError::MenuEmptyLabel { path } | BindingError::MenuUnknownFunction { path } => Some(path),
+            BindingError::MenuEmptyLabel { path }
+            | BindingError::MenuUnknownFunction { path }
+            | BindingError::MenuInvalidCommand { path, .. } => Some(path),
             _ => None,
         }
     }
@@ -298,7 +309,28 @@ impl fmt::Display for BindingError {
             BindingError::ScriptDuplicate { first, .. } => {
                 write!(f, "already bound in row {}", first + 1)
             }
+            BindingError::HotkeyInvalidCommand { reason, .. }
+            | BindingError::MenuInvalidCommand { reason, .. }
+            | BindingError::ScriptInvalidCommand { reason, .. } => write!(f, "invalid command: {reason}"),
         }
+    }
+}
+
+/// Why a function reference cannot be used: it names a saved function that
+/// does not exist, or an inline command that cannot run.
+enum RefIssue {
+    /// A saved id that is not in the function list.
+    Missing,
+    /// An inline command with this problem.
+    Invalid(String),
+}
+
+/// The issue with `reference`, if any. A saved id is checked against
+/// `known`; an inline command by [`funcref::problem`].
+fn check_reference(reference: &str, known: &HashSet<FunctionId>) -> Option<RefIssue> {
+    match funcref::parse(reference) {
+        FuncRef::Saved(id) => (!known.contains(&id)).then_some(RefIssue::Missing),
+        inline => funcref::problem(&inline).map(RefIssue::Invalid),
     }
 }
 
@@ -321,8 +353,10 @@ pub fn validate_hotkeys(hotkeys: &[Hotkey], known: &HashSet<FunctionId>) -> Vec<
                 }
             }
         }
-        if !known.contains(&hotkey.function) {
-            errors.push(BindingError::HotkeyUnknownFunction { index });
+        match check_reference(&hotkey.function, known) {
+            Some(RefIssue::Missing) => errors.push(BindingError::HotkeyUnknownFunction { index }),
+            Some(RefIssue::Invalid(reason)) => errors.push(BindingError::HotkeyInvalidCommand { index, reason }),
+            None => {}
         }
     }
     errors
@@ -344,8 +378,10 @@ fn walk_menu(nodes: &[MenuNode], path: &mut Vec<usize>, known: &HashSet<Function
                 if label.trim().is_empty() {
                     errors.push(BindingError::MenuEmptyLabel { path: path.clone() });
                 }
-                if !known.contains(function) {
-                    errors.push(BindingError::MenuUnknownFunction { path: path.clone() });
+                match check_reference(function, known) {
+                    Some(RefIssue::Missing) => errors.push(BindingError::MenuUnknownFunction { path: path.clone() }),
+                    Some(RefIssue::Invalid(reason)) => errors.push(BindingError::MenuInvalidCommand { path: path.clone(), reason }),
+                    None => {}
                 }
             }
             MenuNode::Submenu { label, children } => {
@@ -374,8 +410,10 @@ pub fn validate_scripts(scripts: &[ScriptBinding], known: &HashSet<FunctionId>) 
         if !binding.event.is_emitted() {
             errors.push(BindingError::ScriptEventNotEmitted { index });
         }
-        if !known.contains(&binding.function) {
-            errors.push(BindingError::ScriptUnknownFunction { index });
+        match check_reference(&binding.function, known) {
+            Some(RefIssue::Missing) => errors.push(BindingError::ScriptUnknownFunction { index }),
+            Some(RefIssue::Invalid(reason)) => errors.push(BindingError::ScriptInvalidCommand { index, reason }),
+            None => {}
         }
     }
     errors
@@ -473,12 +511,13 @@ pub fn sanitize(bindings: Bindings) -> Bindings {
     Bindings { hotkeys, menu: bindings.menu, scripts }
 }
 
-/// `menu` without entries whose function is not in `known` and without the
-/// submenus that end up empty. Separators are kept.
+/// `menu` without entries whose function is neither a saved function in
+/// `known` nor a runnable inline command, and without the submenus that end
+/// up empty. Separators are kept.
 pub fn prune(menu: &[MenuNode], known: &HashSet<FunctionId>) -> Vec<MenuNode> {
     menu.iter()
         .filter_map(|node| match node {
-            MenuNode::Entry { function, .. } => known.contains(function).then(|| node.clone()),
+            MenuNode::Entry { function, .. } => check_reference(function, known).is_none().then(|| node.clone()),
             MenuNode::Submenu { label, children } => {
                 let kept = prune(children, known);
                 (!kept.is_empty()).then(|| MenuNode::Submenu { label: label.clone(), children: kept })
@@ -549,6 +588,69 @@ mod tests {
 
     fn hk(key: &str, function: &str, global: bool) -> Hotkey {
         Hotkey { key: key.into(), function: function.into(), global }
+    }
+
+    #[test]
+    fn validate_hotkeys_accepts_a_good_inline_command_and_reports_a_bad_one() {
+        let list = [hk("Ctrl+u", "bash:ls", false), hk("Ctrl+j", "exec:sh -c true", true), hk("Ctrl+k", "bash:  ", false), hk("Ctrl+l", "exec:opusdm-nope-xyz", false)];
+        let errors = validate_hotkeys(&list, &known(&[]));
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(matches!(&errors[0], BindingError::HotkeyInvalidCommand { index: 2, .. }));
+        assert!(matches!(&errors[1], BindingError::HotkeyInvalidCommand { index: 3, reason } if reason.contains("was not found")));
+        assert_eq!(errors[0].hotkey_index(), Some(2));
+    }
+
+    #[test]
+    fn validate_menu_and_scripts_accept_inline_commands() {
+        let menu = vec![
+            MenuNode::Entry { label: "ok".into(), function: "bash:ls".into() },
+            MenuNode::Entry { label: "bad".into(), function: "exec:".into() },
+        ];
+        let errors = validate_menu(&menu, &known(&[]));
+        assert!(matches!(errors.as_slice(), [BindingError::MenuInvalidCommand { path, .. }] if path == &vec![1]));
+        let scripts = [
+            ScriptBinding { event: ScriptEvent::Startup, function: "bash:ls".into() },
+            ScriptBinding { event: ScriptEvent::Shutdown, function: "bash:".into() },
+        ];
+        let errors = validate_scripts(&scripts, &known(&[]));
+        assert!(matches!(errors.as_slice(), [BindingError::ScriptInvalidCommand { index: 1, .. }]));
+        assert_eq!(errors[0].script_index(), Some(1));
+    }
+
+    #[test]
+    fn a_saved_id_that_is_missing_is_still_the_old_error() {
+        let errors = validate_hotkeys(&[hk("Ctrl+u", "gone", false)], &known(&["a"]));
+        assert_eq!(errors, vec![BindingError::HotkeyUnknownFunction { index: 0 }]);
+    }
+
+    #[test]
+    fn prune_keeps_valid_inline_entries_and_drops_broken_ones() {
+        let menu = vec![
+            MenuNode::Entry { label: "keep".into(), function: "bash:ls".into() },
+            MenuNode::Entry { label: "drop".into(), function: "exec:".into() },
+        ];
+        let pruned = prune(&menu, &known(&[]));
+        assert_eq!(pruned.len(), 1);
+        assert!(matches!(&pruned[0], MenuNode::Entry { label, .. } if label == "keep"));
+    }
+
+    #[test]
+    fn sanitize_keeps_inline_hotkeys_even_when_the_program_is_missing() {
+        let dirty = Bindings { hotkeys: vec![hk("ctrl+U", "exec:opusdm-nope-xyz", true)], ..Bindings::default() };
+        let clean = sanitize(dirty);
+        assert_eq!(clean.hotkeys, vec![hk("Ctrl+u", "exec:opusdm-nope-xyz", true)]);
+    }
+
+    #[test]
+    fn inline_references_round_trip_through_the_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let bindings = Bindings {
+            hotkeys: vec![hk("Ctrl+Alt+t", "exec:kitty --class \"my term\"", true)],
+            menu: vec![MenuNode::Entry { label: "L".into(), function: "bash+out:echo 'a b' && ls".into() }],
+            scripts: vec![ScriptBinding { event: ScriptEvent::Startup, function: "bash:notify-send hi".into() }],
+        };
+        save_bindings_to(dir.path(), &bindings).unwrap();
+        assert_eq!(load_bindings_from(dir.path()), bindings);
     }
 
     #[test]
