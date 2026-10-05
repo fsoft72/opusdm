@@ -32,6 +32,16 @@ pub struct BankWindows {
     shutting_down: Rc<Cell<bool>>,
 }
 
+/// Whether a button can run `id`: a saved function that still exists, or an
+/// inline bash or exec command that can run. Buttons with nothing usable
+/// bound are shown insensitive.
+fn function_usable(id: &str, saved: &[Function]) -> bool {
+    match opusdm_ipc::funcref::parse(id) {
+        opusdm_ipc::funcref::FuncRef::Saved(_) => saved.iter().any(|f| f.id == id),
+        inline => opusdm_ipc::funcref::problem(&inline).is_none(),
+    }
+}
+
 impl BankWindows {
     /// New, with no window open. A button click sends
     /// `HubCmd::RunFunctionHeadless` on `cmd_tx`.
@@ -39,7 +49,7 @@ impl BankWindows {
         let run: Rc<dyn Fn(&str)> = Rc::new(move |id| {
             let _ = cmd_tx.send(HubCmd::RunFunctionHeadless(id.to_string()));
         });
-        let function_exists: Rc<dyn Fn(&str) -> bool> = Rc::new(move |id| functions.borrow().iter().any(|f| f.id == id));
+        let function_exists: Rc<dyn Fn(&str) -> bool> = Rc::new(move |id| function_usable(id, &functions.borrow()));
         BankWindows {
             banks,
             open: Rc::new(RefCell::new(HashMap::new())),
@@ -170,5 +180,27 @@ impl BankWindows {
         if let Err(e) = self.banks.borrow().save_bank(id) {
             opusdm_ipc::err_log!("hub", "cannot save bank {id}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(id: &str) -> Function {
+        let mut f = Function::new("f");
+        f.id = id.to_string();
+        f
+    }
+
+    #[test]
+    fn a_button_target_is_usable_when_saved_or_a_runnable_inline_command() {
+        let functions = [saved("fn-1")];
+        assert!(function_usable("fn-1", &functions));
+        assert!(!function_usable("fn-gone", &functions), "a missing saved function stays disabled");
+        assert!(function_usable("bash:ls", &functions));
+        assert!(function_usable("exec:sh -c true", &functions));
+        assert!(!function_usable("bash:", &functions));
+        assert!(!function_usable("exec:opusdm-no-such-program-xyz", &functions));
     }
 }

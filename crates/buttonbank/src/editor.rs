@@ -6,6 +6,7 @@ use crate::grid;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::function::Function;
+use opusdm_ui::RefPicker;
 use opusdm_ipc::{Banks, Btn, ButtonBank, MouseButton, Orientation};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -31,7 +32,11 @@ pub struct Hooks {
     pub functions: Rc<dyn Fn() -> Vec<Function>>,
 }
 
-/// Text of the "no Function" entry of the Function drop-downs.
+/// Where the form's pickers report an edit: the button slot (0 left, 1 right,
+/// 2 middle) and the new reference, empty for none.
+type PickerSink = Rc<RefCell<Option<Rc<dyn Fn(usize, String)>>>>;
+
+/// Text of the "no Function" entry of the pickers.
 const NO_FUNCTION: &str = "(none)";
 
 /// Show a modal error message over `parent`.
@@ -189,8 +194,9 @@ pub fn open_manager(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, h
 struct Form {
     label: gtk::Entry,
     icon: gtk::Entry,
-    /// Left, right and middle Function drop-downs.
-    functions: [gtk::DropDown; 3],
+    /// Left, right and middle pickers: a saved Function, a bash command, a
+    /// program, or nothing.
+    functions: [RefPicker; 3],
     name: gtk::Entry,
     orientation: gtk::DropDown,
     borderless: gtk::CheckButton,
@@ -207,7 +213,6 @@ struct State {
     bank: RefCell<ButtonBank>,
     selected: Cell<Option<usize>>,
     clipboard: RefCell<Option<Btn>>,
-    functions: Vec<Function>,
     preview: gtk::Box,
     form: Form,
     error: gtk::Label,
@@ -225,12 +230,22 @@ pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id
     let shell = opusdm_ui::DialogShell::new(parent, &format!("Edit bank: {}", bank.name)).size(640, 460);
 
     let preview = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let names: Vec<&str> = std::iter::once(NO_FUNCTION).chain(functions.iter().map(|f| f.name.as_str())).collect();
-    let function_dropdown = || gtk::DropDown::from_strings(&names);
+    // The pickers are built before the state they report to: they call
+    // through this slot, filled in by `wire_form` once the state exists.
+    let sink: PickerSink = Rc::new(RefCell::new(None));
+    let picker = |slot: usize| {
+        let sink = sink.clone();
+        RefPicker::new(&functions, "", shell.window(), Some(NO_FUNCTION), move |reference| {
+            let report = sink.borrow().clone();
+            if let Some(report) = report {
+                report(slot, reference);
+            }
+        })
+    };
     let form = Form {
         label: gtk::Entry::new(),
         icon: gtk::Entry::new(),
-        functions: [function_dropdown(), function_dropdown(), function_dropdown()],
+        functions: [picker(0), picker(1), picker(2)],
         name: gtk::Entry::new(),
         orientation: gtk::DropDown::from_strings(&["Horizontal", "Vertical"]),
         borderless: gtk::CheckButton::with_label("Borderless"),
@@ -269,9 +284,9 @@ pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id
     form_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     row("Label", form.label.upcast_ref());
     row("Icon file", form.icon.upcast_ref());
-    row("Left click", form.functions[0].upcast_ref());
-    row("Right click", form.functions[1].upcast_ref());
-    row("Middle click", form.functions[2].upcast_ref());
+    row("Left click", form.functions[0].widget().upcast_ref());
+    row("Right click", form.functions[1].widget().upcast_ref());
+    row("Middle click", form.functions[2].widget().upcast_ref());
 
     let left = gtk::Box::new(gtk::Orientation::Vertical, 6);
     left.append(&toolbar);
@@ -292,7 +307,6 @@ pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id
         bank: RefCell::new(bank),
         selected: Cell::new(None),
         clipboard: RefCell::new(None),
-        functions,
         preview,
         form,
         error,
@@ -301,7 +315,7 @@ pub fn open_editor(parent: &impl IsA<gtk::Window>, banks: Rc<RefCell<Banks>>, id
     });
 
     wire_toolbar(&state, [&add_btn, &insert_btn, &delete_btn, &copy_btn, &paste_btn, &up_btn, &down_btn]);
-    wire_form(&state);
+    wire_form(&state, &sink);
     {
         let (state, hooks, after_save) = (state.clone(), hooks, after_save);
         save_btn.connect_clicked(move |_| {
@@ -354,10 +368,9 @@ fn load_form(state: &Rc<State>) {
     form.label.set_text(btn.map(|b| b.label.as_str()).unwrap_or(""));
     form.icon.set_text(&btn.and_then(|b| b.icon.as_ref()).map(|p| p.display().to_string()).unwrap_or_default());
     let bound = [btn.and_then(|b| b.left.as_ref()), btn.and_then(|b| b.right.as_ref()), btn.and_then(|b| b.middle.as_ref())];
-    for (dropdown, id) in form.functions.iter().zip(bound) {
-        let position = id.and_then(|id| state.functions.iter().position(|f| &f.id == id)).map_or(0, |p| p + 1);
-        dropdown.set_selected(position as u32);
-        dropdown.set_sensitive(btn.is_some());
+    for (picker, id) in form.functions.iter().zip(bound) {
+        picker.set_reference(id.map(String::as_str).unwrap_or(""));
+        picker.set_sensitive(btn.is_some());
     }
     form.label.set_sensitive(btn.is_some());
     form.icon.set_sensitive(btn.is_some());
@@ -390,7 +403,7 @@ fn validate(state: &Rc<State>) {
 }
 
 /// Write the form widgets back into the working copy.
-fn wire_form(state: &Rc<State>) {
+fn wire_form(state: &Rc<State>, sink: &PickerSink) {
     let form = &state.form;
     let apply = |state: &Rc<State>, edit: &dyn Fn(&mut ButtonBank, Option<usize>)| {
         if state.loading.get() {
@@ -457,11 +470,10 @@ fn wire_form(state: &Rc<State>) {
             });
         });
     }
-    for (slot, dropdown) in form.functions.iter().enumerate() {
+    {
         let state = state.clone();
-        dropdown.connect_selected_notify(move |d| {
-            let choice = d.selected() as usize;
-            let id = choice.checked_sub(1).and_then(|p| state.functions.get(p)).map(|f| f.id.clone());
+        *sink.borrow_mut() = Some(Rc::new(move |slot, reference| {
+            let id = if reference.is_empty() { None } else { Some(reference) };
             apply(&state, &|b, i| {
                 let Some(btn) = i.and_then(|i| b.buttons.get_mut(i)) else { return };
                 match slot {
@@ -470,7 +482,7 @@ fn wire_form(state: &Rc<State>) {
                     _ => btn.middle = id.clone(),
                 }
             });
-        });
+        }));
     }
 }
 
