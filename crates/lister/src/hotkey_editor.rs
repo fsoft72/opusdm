@@ -1,4 +1,5 @@
-//! The hotkey editor (F-03): one row per binding (key, function, Global),
+//! The hotkey editor (F-03): one row per binding (key, function or inline
+//! bash/exec command, Global),
 //! key capture, live validation, and the "Find Key" requester. See
 //! `docs/superpowers/specs/2026-09-29-hotkeys-usermenu-scripts-design.md`.
 
@@ -20,6 +21,8 @@ use std::rc::Rc;
 pub enum KeyMeaning {
     /// A user hotkey runs a function.
     UserFunction { name: String, global: bool },
+    /// A user hotkey runs an inline bash or exec command.
+    UserCommand { command: String, global: bool },
     /// A built-in binding, named by its palette title or a short description.
     Builtin { title: String },
     /// Nothing is bound.
@@ -34,6 +37,10 @@ pub fn find_key(hotkeys: &[Hotkey], functions: &[Function], combo: &KeyCombo) ->
         let Ok(bound) = parse_key(&hotkey.key) else { continue };
         if bound.identity() != identity {
             continue;
+        }
+        let reference = opusdm_ipc::funcref::parse(&hotkey.function);
+        if let Some(command) = opusdm_ipc::funcref::describe(&reference) {
+            return KeyMeaning::UserCommand { command, global: hotkey.global };
         }
         let name = functions
             .iter()
@@ -91,6 +98,9 @@ struct State {
     hotkeys: RefCell<Vec<Hotkey>>,
     functions: Vec<Function>,
     rows_box: gtk::Box,
+    /// One box per row, holding that row's error and built-in notes, so they
+    /// can be repainted without rebuilding the row.
+    notes: RefCell<Vec<gtk::Box>>,
     save_btn: gtk::Button,
     window: gtk::Window,
 }
@@ -173,6 +183,7 @@ fn build_editor(shell: opusdm_ui::DialogShell, hotkeys: Vec<Hotkey>, functions: 
         hotkeys: RefCell::new(hotkeys),
         functions,
         rows_box,
+        notes: RefCell::new(Vec::new()),
         save_btn: save_btn.clone(),
         window: shell.window().clone(),
     });
@@ -199,17 +210,47 @@ fn rebuild(state: &Rc<State>) {
     while let Some(child) = state.rows_box.first_child() {
         state.rows_box.remove(&child);
     }
+    state.notes.borrow_mut().clear();
+    let hotkeys = state.hotkeys.borrow().clone();
+    for (index, hotkey) in hotkeys.iter().enumerate() {
+        state.rows_box.append(&build_row(state, index, hotkey));
+    }
+    revalidate(state);
+}
+
+/// Re-run the validation and repaint every row's notes in place, without
+/// touching the widgets that have the keyboard focus. Save is enabled only
+/// when nothing is wrong.
+fn revalidate(state: &Rc<State>) {
     let hotkeys = state.hotkeys.borrow().clone();
     let errors = bindings::validate_hotkeys(&hotkeys, &known_ids(&state.functions));
-    for (index, hotkey) in hotkeys.iter().enumerate() {
-        state.rows_box.append(&build_row(state, index, hotkey, &errors));
+    for (index, notes) in state.notes.borrow().iter().enumerate() {
+        let Some(hotkey) = hotkeys.get(index) else { continue };
+        fill_notes(notes, index, hotkey, &errors);
     }
     state.save_btn.set_sensitive(errors.is_empty());
 }
 
-/// One editable row: key button, function drop-down, Global check box,
-/// remove button, then this row's errors and built-in note underneath.
-fn build_row(state: &Rc<State>, index: usize, hotkey: &Hotkey, errors: &[BindingError]) -> gtk::Box {
+/// Replace the content of a row's `notes` box with that row's errors and its
+/// built-in override note.
+fn fill_notes(notes: &gtk::Box, index: usize, hotkey: &Hotkey, errors: &[BindingError]) {
+    while let Some(child) = notes.first_child() {
+        notes.remove(&child);
+    }
+    for error in errors.iter().filter(|e| e.hotkey_index() == Some(index)) {
+        notes.append(&note_label(&error.to_string(), true));
+    }
+    if let Ok(combo) = parse_key(&hotkey.key) {
+        if let KeyMeaning::Builtin { title } = find_key(&[], &[], &combo) {
+            notes.append(&note_label(&format!("Overrides the built-in binding: {title}"), false));
+        }
+    }
+}
+
+/// One editable row: key button, function picker (saved function, bash
+/// command or program), Global check box, remove button, then this row's
+/// notes underneath.
+fn build_row(state: &Rc<State>, index: usize, hotkey: &Hotkey) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
@@ -222,22 +263,20 @@ fn build_row(state: &Rc<State>, index: usize, hotkey: &Hotkey, errors: &[Binding
     }
     line.append(&key_btn);
 
-    let dropdown = crate::binding_ui::function_dropdown(&state.functions, &hotkey.function);
-    dropdown.set_hexpand(true);
-    {
-        let state = state.clone();
-        dropdown.connect_selected_notify(move |d| {
-            let Some(id) = crate::binding_ui::selected_function(d, &state.functions) else { return };
-            if let Some(h) = state.hotkeys.borrow_mut().get_mut(index) {
-                if h.function == id {
+    let picker = {
+        let on_change_state = state.clone();
+        crate::binding_ui::reference_picker(&state.functions, &hotkey.function, &state.window, move |reference| {
+            if let Some(h) = on_change_state.hotkeys.borrow_mut().get_mut(index) {
+                if h.function == reference {
                     return;
                 }
-                h.function = id;
+                h.function = reference;
             }
-            rebuild(&state);
-        });
-    }
-    line.append(&dropdown);
+            revalidate(&on_change_state);
+        })
+    };
+    picker.set_hexpand(true);
+    line.append(&picker);
 
     let global = gtk::CheckButton::with_label("Global");
     global.set_active(hotkey.global);
@@ -247,7 +286,7 @@ fn build_row(state: &Rc<State>, index: usize, hotkey: &Hotkey, errors: &[Binding
             if let Some(h) = state.hotkeys.borrow_mut().get_mut(index) {
                 h.global = c.is_active();
             }
-            rebuild(&state);
+            revalidate(&state);
         });
     }
     line.append(&global);
@@ -268,14 +307,9 @@ fn build_row(state: &Rc<State>, index: usize, hotkey: &Hotkey, errors: &[Binding
     line.append(&remove);
     row.append(&line);
 
-    for error in errors.iter().filter(|e| e.hotkey_index() == Some(index)) {
-        row.append(&note_label(&error.to_string(), true));
-    }
-    if let Ok(combo) = parse_key(&hotkey.key) {
-        if let KeyMeaning::Builtin { title } = find_key(&[], &[], &combo) {
-            row.append(&note_label(&format!("Overrides the built-in binding: {title}"), false));
-        }
-    }
+    let notes = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    row.append(&notes);
+    state.notes.borrow_mut().push(notes);
     row
 }
 
@@ -350,6 +384,9 @@ pub fn open_find_key(ui: &Rc<Ui>) {
                 KeyMeaning::UserFunction { name, global } => {
                     format!("Runs the function \"{name}\"{}", if global { " (global hotkey)" } else { "" })
                 }
+                KeyMeaning::UserCommand { command, global } => {
+                    format!("Runs the command \"{command}\"{}", if global { " (global hotkey)" } else { "" })
+                }
                 KeyMeaning::Builtin { title } => format!("Built-in: {title}"),
                 KeyMeaning::Unassigned => "Not assigned".to_string(),
             });
@@ -383,6 +420,20 @@ mod tests {
         assert_eq!(
             find_key(&hotkeys, &functions, &combo("ctrl+alt+U")),
             KeyMeaning::UserFunction { name: "Copy and notify".into(), global: true }
+        );
+    }
+
+    #[test]
+    fn an_inline_hotkey_is_reported_as_a_command_not_a_function() {
+        let hotkeys = [Hotkey { key: "Ctrl+Alt+t".into(), function: "exec:kitty --class x".into(), global: true }];
+        assert_eq!(
+            find_key(&hotkeys, &[], &combo("Ctrl+Alt+t")),
+            KeyMeaning::UserCommand { command: "exec: kitty --class x".into(), global: true }
+        );
+        let hotkeys = [Hotkey { key: "F9".into(), function: "bash+out:ls -l".into(), global: false }];
+        assert_eq!(
+            find_key(&hotkeys, &[], &combo("F9")),
+            KeyMeaning::UserCommand { command: "bash: ls -l".into(), global: false }
         );
     }
 

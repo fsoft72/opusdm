@@ -90,6 +90,8 @@ is focused. KeyFinder locates which function owns a key combination.
   (project already runs on X11, see `run-x11.sh`); document that Wayland is
   unsupported for global grabs.
 - KeyFinder: small requester "press a key combo" -> shows matching binding.
+- A hotkey may also run an inline `bash` command or an `exec` program instead of a
+  saved function (see `docs/superpowers/specs/2026-10-05-inline-commands-design.md`).
 - Acceptance: global hotkey opens a new lister while a non-OpusDM window has
   focus.
 

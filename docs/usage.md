@@ -310,7 +310,8 @@ Desktop folder are not saved; only left-out icons (see 3.21) remember where they
 
 Any saved function (see Manage Functions) can be bound to a key. Open the
 Command Palette and choose **Edit Hotkeys...** (or **Desktop > Edit Hotkeys** in the desktop menu; it opens in its own window). Each row has a key (click it,
-then press the combination; Escape cancels), the function to run and a
+then press the combination; Escape cancels), what to run (a saved **Function**,
+a **Bash** command or an **Exec** program, see below) and a
 **Global** check box. Rules:
 
 - A user hotkey wins over a built-in binding; the editor notes when it does.
@@ -325,8 +326,16 @@ then press the combination; Escape cancels), the function to run and a
 - A global hotkey runs the function on the current SOURCE lister's selection;
   with no lister open the selection is empty.
 
+**What a hotkey can run.** Each row has a kind selector:
+
+- **Function**: a saved function, as before.
+- **Bash**: a command line run by `bash -c`, so pipes, `&&` and variables work. Tick **Show output** to see its output in a window. `{f}`, `{o}` and the other placeholders of Manage Functions work in it; any other `{...}` (`{a,b}`, `${HOME}`) is left to bash.
+- **Exec**: a program and its arguments, started directly with no shell (quotes group words, a backslash escapes the next character). **Browse...** picks the program. It is meant for graphical programs, for example a global `Ctrl+Alt+t` that opens a terminal.
+
+A Bash or Exec hotkey runs in the SOURCE lister's folder, or in your home folder when no lister is open. A command that cannot run (empty, unbalanced quotes, a program that is not installed) is flagged on its row and Save stays disabled. The same two kinds will be offered in the user menu, script events, button banks and file types in a later change.
+
 **Find Key...** (Command Palette) asks for a key combination and tells you
-what it does: a function, a built-in command, or nothing.
+what it does: a function, an inline command, a built-in command, or nothing.
 
 Bindings are stored in `~/.config/opusdm/hotkeys.json`.
 
