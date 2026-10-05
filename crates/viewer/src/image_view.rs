@@ -1,9 +1,10 @@
 //! The picture area: a scrolled `gtk::Picture` with wheel zoom and drag pan.
 
 use crate::loader::RawImage;
+use crate::nearest::NearestPaintable;
 use crate::zoom::{fit_scale, rotated_size, Mode, Zoom};
 use gtk4 as gtk;
-use gtk::glib;
+use gtk::{gdk, glib};
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -16,6 +17,10 @@ pub struct ImageView {
     zoom: Cell<Zoom>,
     /// Rotation of the texture now in the picture, to rebuild it only when it changes.
     shown_rotation: Cell<Option<u16>>,
+    /// The texture now in the picture, kept to rewrap it when the filter changes.
+    texture: RefCell<Option<gdk::Texture>>,
+    /// Interpolated (smooth) scaling; off shows sharp pixels.
+    smooth: Cell<bool>,
 }
 
 impl ImageView {
@@ -28,7 +33,7 @@ impl ImageView {
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.add_css_class("viewer-stage");
-        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None) });
+        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true) });
         this._wire_wheel();
         this._wire_drag();
         this
@@ -116,6 +121,17 @@ impl ImageView {
         self._set_zoom(z);
     }
 
+    /// Switch between smooth and sharp pixels; the choice stays for the next pictures.
+    pub fn toggle_smooth(&self) {
+        self.smooth.set(!self.smooth.get());
+        self._show_texture();
+    }
+
+    /// True while scaling is interpolated.
+    pub fn is_smooth(&self) -> bool {
+        self.smooth.get()
+    }
+
     /// Zoom text for the info bar.
     pub fn zoom_label(&self) -> String {
         self.zoom.get().label(self._fit())
@@ -134,14 +150,26 @@ impl ImageView {
         fit_scale(size, view, self.zoom.get().rotation)
     }
 
+    /// Give the picture the current texture, smooth or with sharp pixels.
+    fn _show_texture(&self) {
+        let texture = self.texture.borrow();
+        let Some(texture) = texture.as_ref() else { return };
+        if self.smooth.get() {
+            self.picture.set_paintable(Some(texture));
+        } else {
+            self.picture.set_paintable(Some(&NearestPaintable::new(texture)));
+        }
+    }
+
     /// Put texture, size and scroll policy in line with the zoom state.
     fn _apply(&self) {
         let raw = self.raw.borrow();
         let Some(raw) = raw.as_ref() else { return };
         let zoom = self.zoom.get();
         if self.shown_rotation.get() != Some(zoom.rotation) {
-            self.picture.set_paintable(Some(&raw.texture(zoom.rotation)));
+            *self.texture.borrow_mut() = Some(raw.texture(zoom.rotation));
             self.shown_rotation.set(Some(zoom.rotation));
+            self._show_texture();
         }
         match zoom.mode {
             Mode::Fit => {

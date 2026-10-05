@@ -20,6 +20,8 @@ pub enum Action {
     Mute,
     RotateCw,
     RotateCcw,
+    /// Smooth (interpolated) or sharp pixels when zoomed.
+    Interpolation,
     Slideshow,
     Fullscreen,
     Delete,
@@ -38,6 +40,7 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
         Key::_1 | Key::KP_1 if !video => Action::Actual,
         Key::r if !video => Action::RotateCw,
         Key::R if !video => Action::RotateCcw,
+        Key::period | Key::KP_Decimal if !video => Action::Interpolation,
         Key::Left | Key::KP_Left => if video { Action::SeekBack } else { Action::Prev },
         Key::Right | Key::KP_Right => if video { Action::SeekForward } else { Action::Next },
         Key::space => if video { Action::TogglePlay } else { Action::Next },
@@ -94,7 +97,8 @@ mod tests {
         assert_eq!(map(Key::_1, Image), Some(Action::Actual));
         assert_eq!(map(Key::r, Image), Some(Action::RotateCw));
         assert_eq!(map(Key::R, Image), Some(Action::RotateCcw));
-        for key in [Key::plus, Key::minus, Key::_0, Key::_1, Key::r, Key::R] {
+        assert_eq!(map(Key::period, Image), Some(Action::Interpolation));
+        for key in [Key::plus, Key::minus, Key::_0, Key::_1, Key::r, Key::R, Key::period] {
             assert_eq!(map(key, Video), None);
         }
     }

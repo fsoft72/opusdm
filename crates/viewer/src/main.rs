@@ -8,6 +8,7 @@ mod image_view;
 mod keys;
 mod kind;
 mod loader;
+mod nearest;
 mod slideshow;
 mod strip;
 mod video_view;

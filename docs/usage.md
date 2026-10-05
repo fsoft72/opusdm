@@ -599,6 +599,9 @@ Shows one picture or video and lets you move through the others in the same fold
 - **Pictures:** the picture starts fitted to the window (never enlarged). **+** / **-** or the
   mouse wheel zoom (5% to 1600%), dragging moves a zoomed picture, **0** fits the window,
   **1** shows it at 100%, **r** / **R** rotate it right / left (the file is not changed).
+  **.** switches between smooth scaling (the default) and sharp pixels, handy when zoomed in
+  on pixel art; the info bar says `pixels` while it is on, and the choice stays for the
+  next pictures.
 - **Moving:** **Left** / **Right**, **Space** or **n** go to the next file, **p** or **Left**
   to the previous one; the gallery wraps around. Click a thumbnail in the strip to jump to it.
 - **Videos:** the video starts playing. **Space** plays / pauses and **Left** / **Right** seek

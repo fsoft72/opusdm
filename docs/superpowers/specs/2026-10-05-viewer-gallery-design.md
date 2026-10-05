@@ -45,6 +45,7 @@ GTK modules:
 | Module | Responsibility |
 |---|---|
 | `loader` | decodes a picture on a worker thread into `RawImage` (plain bytes, so it crosses threads); builds the `gdk::Texture` for a rotation on the main thread |
+| `nearest` | `NearestPaintable`: a `gdk::Paintable` that draws a texture with the nearest neighbour filter (`gtk::Picture` has no switch for it and ignores the CSS `image-rendering`) |
 | `image_view` | `ScrolledWindow` with a `gtk::Picture`, wheel zoom, drag pan |
 | `video_view` | the `Engine` paintable and the shared control bar (`opusdm-media-ui`: play / pause, slider, time, volume, mute) |
 | `strip` | the thumbnail strip, one worker thread making thumbnails |
@@ -78,6 +79,7 @@ takes the arrows or the space bar.
 | `Up` / `Down`, `m` | - | volume, mute |
 | `n` / `p` | next / previous | next / previous |
 | `r` / `R` | rotate right / left | - |
+| `.` | smooth / sharp pixels | - |
 | `s` | slideshow on / off | slideshow on / off |
 | `f`, double click | full screen | full screen |
 | `Delete` | delete the file | delete the file |

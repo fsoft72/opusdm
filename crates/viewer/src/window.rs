@@ -216,7 +216,7 @@ impl State {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
             (MediaKind::Image, _) => match self.image.size() {
-                Some((w, h)) => format!("{w}x{h}  -  {}", self.image.zoom_label()),
+                Some((w, h)) => format!("{w}x{h}  -  {}{}", self.image.zoom_label(), if self.image.is_smooth() { "" } else { "  -  pixels" }),
                 None => "loading".to_string(),
             },
         };
@@ -267,6 +267,7 @@ impl State {
             Action::Actual => self.image.actual(),
             Action::RotateCw => self.image.rotate_cw(),
             Action::RotateCcw => self.image.rotate_ccw(),
+            Action::Interpolation => self.image.toggle_smooth(),
             Action::Next => return self._step(true),
             Action::Prev => return self._step(false),
             Action::SeekBack => self.video.skip(-SKIP_SECS),
