@@ -351,6 +351,7 @@ per-lister PathHistory menu jumps back; FreeCaches frees memory.
 - Lister keeps an LRU cache of recent dir listings (N configurable, default
   20) to make back/forward instant.
 - Path history drop-down on the path bar (back/forward buttons).
+- Path look-ahead on the path bar: the folder that completes the typed local path is suggested inline, `Tab` accepts it.
 - Hub-wide CacheList dialog listing every lister's cached paths -> focus that
   lister/path. "Free caches" command clears them.
 Acceptance: revisit a 10k-file dir instantly from history; CacheList jump

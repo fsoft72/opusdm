@@ -556,9 +556,79 @@ fn wire_stat_bar(ui: &Rc<Ui>, star_btn: &gtk::Button) {
     }
 }
 
+/// True when the last `ghost_len` characters of the entry are selected, that
+/// is, the look-ahead suggestion is still on screen and untouched.
+fn ghost_is_active(entry: &gtk::Entry, ghost_len: i32) -> bool {
+    if ghost_len <= 0 { return false; }
+    let Some((start, end)) = entry.selection_bounds() else { return false };
+    end - start == ghost_len && end == entry.text().chars().count() as i32
+}
+
+/// Look-ahead for the path bar. While the user types, the folder name that
+/// completes the last component (see `pathcomplete::suggest`) is appended as
+/// selected text. TAB accepts it, typing on replaces it, Backspace removes it
+/// and Enter ignores it.
+fn wire_path_completion(entry: &gtk::Entry) {
+    let ghost_len = Rc::new(Cell::new(0_i32));
+    let typing = Rc::new(Cell::new(false));
+    let applying = Rc::new(Cell::new(false));
+    let key_ctrl = gtk::EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let (entry, ghost_len, typing) = (entry.clone(), ghost_len.clone(), typing.clone());
+        key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+            let plain = !state.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK);
+            if keyval == gdk::Key::Tab && plain && ghost_is_active(&entry, ghost_len.get()) {
+                ghost_len.set(0);
+                entry.set_position(-1);
+                return glib::Propagation::Stop;
+            }
+            typing.set(plain && keyval.to_unicode().is_some_and(|c| !c.is_control()));
+            glib::Propagation::Proceed
+        });
+    }
+    {
+        let typing = typing.clone();
+        key_ctrl.connect_key_released(move |_, _, _, _| typing.set(false));
+    }
+    entry.add_controller(key_ctrl);
+    {
+        let ghost_len = ghost_len.clone();
+        entry.connect_changed(move |entry| {
+            if applying.get() { return; }
+            ghost_len.set(0);
+            if !typing.get() { return; }
+            let typed = entry.text().to_string();
+            // Changing the text from inside `changed` would re-enter the signal.
+            let (entry, ghost_len, applying) = (entry.clone(), ghost_len.clone(), applying.clone());
+            glib::idle_add_local_once(move || {
+                let end = typed.chars().count() as i32;
+                if entry.text() != typed || entry.position() != end { return; }
+                let Some(suffix) = crate::pathcomplete::suggest(&typed) else { return };
+                let mut pos = end;
+                applying.set(true);
+                entry.insert_text(&suffix, &mut pos);
+                applying.set(false);
+                entry.select_region(end, -1);
+                ghost_len.set(suffix.chars().count() as i32);
+            });
+        });
+    }
+    // Registered before the navigation handler, so the suggestion is gone
+    // from the text by the time Enter reads it.
+    let entry_for_enter = entry.clone();
+    entry.connect_activate(move |_| {
+        if ghost_is_active(&entry_for_enter, ghost_len.get()) {
+            entry_for_enter.delete_selection();
+        }
+        ghost_len.set(0);
+    });
+}
+
 /// Parent and home buttons, and the path entry (bookmarks, remote URLs,
 /// archives, plain folders).
 fn wire_navigation(ui: &Rc<Ui>, nav: &NavBarWidgets) {
+    wire_path_completion(&nav.path_entry);
     {
         let ui = ui.clone();
         nav.parent_btn.connect_clicked(move |_| {
