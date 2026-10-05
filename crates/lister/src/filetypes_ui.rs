@@ -50,6 +50,27 @@ pub fn menu_entries(file_type: &FileType, functions: &[Function]) -> Vec<(Functi
         .collect()
 }
 
+/// Problems in the actions of one file type: an inline bash or exec command
+/// that cannot run, and an Open With entry nobody chose. A saved function id
+/// is not checked (a deleted one is just left out of the menu).
+fn action_problems(actions: &filetypes::Actions) -> Vec<String> {
+    let issue = |reference: &str| opusdm_ipc::funcref::problem(&opusdm_ipc::funcref::parse(reference));
+    let mut problems = Vec::new();
+    for (caption, reference) in [("Double click", &actions.dblclick), ("Drop", &actions.drop)] {
+        if let Some(reason) = reference.as_deref().and_then(issue) {
+            problems.push(format!("{caption}: {reason}"));
+        }
+    }
+    for (i, reference) in actions.menu.iter().enumerate() {
+        if reference.is_empty() {
+            problems.push(format!("Open With entry {}: choose what it runs", i + 1));
+        } else if let Some(reason) = issue(reference) {
+            problems.push(format!("Open With entry {}: {reason}", i + 1));
+        }
+    }
+    problems
+}
+
 /// Everything the editor's callbacks share.
 struct State {
     drafts: RefCell<Vec<Draft>>,
@@ -238,6 +259,9 @@ fn build_types(state: &State) -> Result<FileTypes, Vec<String>> {
     }
     let list = FileTypes { types };
     errors.extend(list.problems());
+    for t in &list.types {
+        errors.extend(action_problems(&t.actions).into_iter().map(|e| format!("{}: {e}", t.name)));
+    }
     if errors.is_empty() {
         Ok(list)
     } else {
@@ -562,6 +586,22 @@ mod tests {
             menu_entries(&t, &functions),
             vec![("a".to_string(), "Alpha".to_string()), ("b".to_string(), "Beta".to_string())]
         );
+    }
+
+    #[test]
+    fn action_problems_flag_broken_inline_commands_and_empty_open_with_entries() {
+        let actions = Actions {
+            dblclick: Some("bash:".into()),
+            drop: Some("bash:ls".into()),
+            menu: vec!["a".into(), String::new(), "exec:opusdm-no-such-program-xyz".into()],
+        };
+        let problems = action_problems(&actions);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].starts_with("Double click:"));
+        assert!(problems[1].starts_with("Open With entry 2:") && problems[1].contains("choose"));
+        assert!(problems[2].starts_with("Open With entry 3:") && problems[2].contains("was not found"));
+        let clean = Actions { dblclick: None, drop: None, menu: vec!["a".into(), "bash:ls".into()] };
+        assert!(action_problems(&clean).is_empty(), "a saved id (even a deleted one) is not flagged here");
     }
 
     #[test]

@@ -379,6 +379,19 @@ fn load_form(state: &Rc<State>) {
     validate(state);
 }
 
+/// The first inline bash or exec command on a button that cannot run, as
+/// "Button N: reason". A saved function id is not checked here: a deleted one
+/// only greys the button out, and selecting it is how it gets fixed.
+fn inline_command_problem(bank: &ButtonBank) -> Option<String> {
+    bank.buttons.iter().enumerate().find_map(|(i, b)| {
+        [&b.left, &b.right, &b.middle]
+            .into_iter()
+            .flatten()
+            .find_map(|id| opusdm_ipc::funcref::problem(&opusdm_ipc::funcref::parse(id)))
+            .map(|reason| format!("Button {}: {reason}", i + 1))
+    })
+}
+
 /// Show why the bank cannot be saved, and enable Save only when it can.
 fn validate(state: &Rc<State>) {
     let bank = state.bank.borrow();
@@ -390,6 +403,7 @@ fn validate(state: &Rc<State>) {
         .any(|b| b.id != state.id && b.name.to_lowercase() == bank.name.trim().to_lowercase());
     let problem = match bank.validate() {
         Err(message) => Some(message),
+        Ok(()) if inline_command_problem(&bank).is_some() => inline_command_problem(&bank),
         Ok(()) if clash => Some(format!("A bank named \"{}\" already exists", bank.name.trim())),
         Ok(()) if bank.buttons.iter().any(|b| b.label.is_empty() && b.icon.is_none()) => {
             state.error.set_text("Warning: a button has neither a label nor an icon");
@@ -561,6 +575,26 @@ fn wire_toolbar(state: &Rc<State>, buttons: [&gtk::Button; 7]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_inline_command_on_a_button_is_reported_with_its_number() {
+        let mut bank = ButtonBank::default();
+        bank.buttons = vec![
+            Btn { label: "ok".into(), left: Some("bash:ls".into()), ..Btn::default() },
+            Btn { label: "bad".into(), right: Some("exec:opusdm-no-such-program-xyz".into()), ..Btn::default() },
+        ];
+        let problem = inline_command_problem(&bank).unwrap();
+        assert!(problem.starts_with("Button 2:") && problem.contains("was not found"), "{problem}");
+        bank.buttons.remove(1);
+        assert_eq!(inline_command_problem(&bank), None);
+    }
+
+    #[test]
+    fn a_saved_function_id_is_never_an_inline_problem() {
+        let mut bank = ButtonBank::default();
+        bank.buttons = vec![Btn { label: "x".into(), left: Some("fn-gone".into()), ..Btn::default() }];
+        assert_eq!(inline_command_problem(&bank), None, "a deleted function only greys the button");
+    }
 
     /// A store with one saved bank called "Tools", and its directory.
     fn store() -> (tempfile::TempDir, RefCell<Banks>, String) {

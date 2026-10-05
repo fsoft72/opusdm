@@ -15,7 +15,7 @@ const MIN_BUTTON_HEIGHT: i32 = 32;
 const GRID_SPACING: u32 = 4;
 const GRID_MARGIN: i32 = 4;
 /// Tooltip of a button whose Functions were all deleted.
-pub const MISSING_TOOLTIP: &str = "Function not found (it may have been deleted)";
+pub const MISSING_TOOLTIP: &str = "Nothing to run (the function was deleted or the command cannot run)";
 
 /// Whether `btn` has at least one bound Function and none of them exists
 /// (`exists` says whether a Function id is still saved). Such a button is
