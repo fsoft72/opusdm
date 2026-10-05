@@ -1,0 +1,19 @@
+[package]
+name = "opusdm-viewer"
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-viewer"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-media = { path = "../media" }
+opusdm-ui = { path = "../ui" }
+opusdm-ipc = { path = "../ipc" }
+gtk4.workspace = true
+async-channel.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

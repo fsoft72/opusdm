@@ -1,0 +1,143 @@
+//! Picture decoding. The decoding runs on a worker thread and hands back plain
+//! bytes (`RawImage`), which cross threads; the pixbuf and the texture are built
+//! on the main thread.
+
+use gtk4::gdk;
+use gtk4::gdk_pixbuf::{Colorspace, Pixbuf, PixbufRotation};
+use gtk4::glib;
+use std::path::Path;
+
+/// Decoded pixels of one picture.
+#[derive(Debug)]
+pub struct RawImage {
+    pub width: u32,
+    pub height: u32,
+    pub rowstride: i32,
+    pub has_alpha: bool,
+    pub bytes: Vec<u8>,
+}
+
+/// Decode the whole picture. Safe to call from any thread.
+pub fn load_raw(path: &Path) -> Result<RawImage, String> {
+    let pixbuf = Pixbuf::from_file(path).map_err(|e| e.message().to_string())?;
+    Ok(RawImage::from_pixbuf(&pixbuf))
+}
+
+/// Decode the picture scaled to fit a `px` x `px` box. Safe to call from any thread.
+pub fn load_thumb(path: &Path, px: i32) -> Result<RawImage, String> {
+    let pixbuf = Pixbuf::from_file_at_scale(path, px, px, true).map_err(|e| e.message().to_string())?;
+    Ok(RawImage::from_pixbuf(&pixbuf))
+}
+
+impl RawImage {
+    /// Copy the pixels out of a pixbuf.
+    pub fn from_pixbuf(pixbuf: &Pixbuf) -> RawImage {
+        RawImage {
+            width: pixbuf.width().max(0) as u32,
+            height: pixbuf.height().max(0) as u32,
+            rowstride: pixbuf.rowstride(),
+            has_alpha: pixbuf.has_alpha(),
+            bytes: pixbuf.read_pixel_bytes().to_vec(),
+        }
+    }
+
+    /// Build a pixbuf over a copy of the pixels (main thread).
+    pub fn to_pixbuf(&self) -> Pixbuf {
+        let bytes = glib::Bytes::from(&self.bytes[..]);
+        Pixbuf::from_bytes(&bytes, Colorspace::Rgb, self.has_alpha, 8, self.width as i32, self.height as i32, self.rowstride)
+    }
+
+    /// The pixbuf turned clockwise by `rotation` degrees (0, 90, 180 or 270).
+    pub fn rotated_pixbuf(&self, rotation: u16) -> Pixbuf {
+        let pixbuf = self.to_pixbuf();
+        let turn = match rotation % 360 {
+            90 => PixbufRotation::Clockwise,
+            180 => PixbufRotation::Upsidedown,
+            270 => PixbufRotation::Counterclockwise,
+            _ => return pixbuf,
+        };
+        pixbuf.rotate_simple(turn).unwrap_or(pixbuf)
+    }
+
+    /// The texture to show for `rotation`.
+    pub fn texture(&self, rotation: u16) -> gdk::Texture {
+        gdk::Texture::for_pixbuf(&self.rotated_pixbuf(rotation))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write a `w` x `h` PNG whose top-left pixel is red and the rest blue.
+    fn write_png(path: &Path, w: i32, h: i32) {
+        let pixbuf = Pixbuf::new(Colorspace::Rgb, false, 8, w, h).unwrap();
+        pixbuf.fill(0x0000ffff);
+        pixbuf.put_pixel(0, 0, 255, 0, 0, 255);
+        pixbuf.savev(path, "png", &[]).unwrap();
+    }
+
+    #[test]
+    fn loads_a_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        write_png(&file, 4, 2);
+        let raw = load_raw(&file).unwrap();
+        assert_eq!((raw.width, raw.height), (4, 2));
+        assert!(!raw.has_alpha);
+        assert!(raw.bytes.len() >= (raw.rowstride * 2) as usize - raw.rowstride as usize + 12);
+    }
+
+    #[test]
+    fn thumbnail_keeps_the_aspect_ratio() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        write_png(&file, 40, 20);
+        let thumb = load_thumb(&file, 10).unwrap();
+        assert_eq!((thumb.width, thumb.height), (10, 5));
+    }
+
+    #[test]
+    fn rotation_swaps_the_sides_and_moves_the_red_pixel() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        write_png(&file, 4, 2);
+        let raw = load_raw(&file).unwrap();
+        let cw = raw.rotated_pixbuf(90);
+        assert_eq!((cw.width(), cw.height()), (2, 4));
+        // Clockwise: the top-left pixel ends in the top-right corner.
+        assert_eq!(cw.pixel_bytes_at(1, 0), [255, 0, 0]);
+        let ccw = raw.rotated_pixbuf(270);
+        assert_eq!((ccw.width(), ccw.height()), (2, 4));
+        assert_eq!(ccw.pixel_bytes_at(0, 3), [255, 0, 0]);
+        let half = raw.rotated_pixbuf(180);
+        assert_eq!((half.width(), half.height()), (4, 2));
+        assert_eq!(half.pixel_bytes_at(3, 1), [255, 0, 0]);
+        let none = raw.rotated_pixbuf(0);
+        assert_eq!(none.pixel_bytes_at(0, 0), [255, 0, 0]);
+    }
+
+    #[test]
+    fn a_damaged_file_is_an_error_with_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bad.png");
+        std::fs::write(&file, b"not a picture").unwrap();
+        let err = load_raw(&file).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(load_raw(&dir.path().join("missing.png")).is_err());
+    }
+
+    /// Test helper: the RGB bytes of one pixel.
+    trait PixelAt {
+        fn pixel_bytes_at(&self, x: i32, y: i32) -> [u8; 3];
+    }
+
+    impl PixelAt for Pixbuf {
+        fn pixel_bytes_at(&self, x: i32, y: i32) -> [u8; 3] {
+            let channels = self.n_channels();
+            let offset = (y * self.rowstride() + x * channels) as usize;
+            let bytes = self.read_pixel_bytes();
+            [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
+        }
+    }
+}

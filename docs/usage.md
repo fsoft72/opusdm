@@ -202,7 +202,7 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 - **Show in folder** takes the Lister to the folder that holds the selected result and selects it. **View** opens the file in the Viewer, on the first match of the text. Double click does View for content results and Show in folder for name results.
 
 ### 3.10h File Types
-On the first start (when `filetypes.json` does not exist) OpusDM creates it with two types, **Audio file** (mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, mka) and **Video file** (mp4, mkv, webm, avi, mov, m4v, mpg, mpeg, wmv, flv, ogv). A double click runs `opusdm-player` on the file and Open With adds the same player in a loop. After that the file is yours: nothing is added back, so a type you delete stays deleted (delete `filetypes.json` to get the defaults again).
+On the first start (when `filetypes.json` does not exist) OpusDM creates it with two types, **Audio file** (mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, mka) and **Video file** (mp4, mkv, webm, avi, mov, m4v, mpg, mpeg, wmv, flv, ogv). A double click runs `opusdm-player` on the file and Open With adds the same player in a loop. A third type, **Image file**, opens pictures with `opusdm-viewer`. After that the file is yours: nothing is added back, so a type you delete stays deleted (delete `filetypes.json` to get the defaults again).
 
 **Edit File Types...** (command palette) edits the list kept in `~/.config/opusdm/filetypes.json`. The first type (top to bottom) whose rule matches a file wins; use the arrows to reorder.
 - **Match**: one or more conditions combined with "all of" or "any of": file name patterns, bytes at an offset (hex, e.g. `89 50 4E 47`), text in the first N bytes, size range (`10K`, `4M`) and modified-time range (`7d`, `2026-01-01`). Content is read from the first 64 KiB of the file.
@@ -587,6 +587,33 @@ Plays one audio or video file in a small window.
   `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad` and
   `gstreamer1.0-libav` for the codecs. To build, also `libgstreamer1.0-dev` and
   `libgstreamer-plugins-base1.0-dev`.
+
+### 3.28 Image and Video Viewer (`opusdm-viewer`)
+
+Shows one picture or video and lets you move through the others in the same folder.
+
+- **Open it:** run `opusdm-viewer <file>`. In a Lister a double click on a picture opens it:
+  the first time OpusDM starts it creates the file type **Image file** for that (see 3.10h).
+  The **gallery** is every picture and video of the folder of that file, in natural order
+  (`img2` before `img10`), built when the window opens.
+- **Pictures:** the picture starts fitted to the window (never enlarged). **+** / **-** or the
+  mouse wheel zoom (5% to 1600%), dragging moves a zoomed picture, **0** fits the window,
+  **1** shows it at 100%, **r** / **R** rotate it right / left (the file is not changed).
+- **Moving:** **Left** / **Right**, **Space** or **n** go to the next file, **p** or **Left**
+  to the previous one; the gallery wraps around. Click a thumbnail in the strip to jump to it.
+- **Videos:** the video starts playing. **Space** plays / pauses and **Left** / **Right** seek
+  5 seconds back / forward; **n** and **p** still move through the gallery. The bar has a
+  play button, a seek slider and the time.
+- **Slideshow:** **s** starts and stops it. Pictures stay 4 seconds; a video plays to its
+  end first.
+- **Full screen:** **f** or a double click. The strip, the info bar and the video bar are
+  hidden; **Esc** leaves it. **Esc** or **q** otherwise close the window.
+- **Delete:** **Del** asks and moves the file to the trash. When there is no trash for that
+  file system a second question offers to delete it permanently.
+- **Info bar:** file name, position in the gallery, size and zoom.
+- **Errors:** a picture or video that cannot be loaded shows the reason in the window and the
+  keys keep working; a bad command line exits with status 1. GIFs show their first frame.
+- **Requires** the GStreamer packages of 3.27 for videos.
 
 ## 4. Keyboard Shortcuts Reference
 

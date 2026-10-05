@@ -1837,6 +1837,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-viewer"
+version = "0.5.0"
+dependencies = [
+ "async-channel",
+ "gtk4",
+ "opusdm-ipc",
+ "opusdm-media",
+ "opusdm-ui",
+ "tempfile",
+]
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
