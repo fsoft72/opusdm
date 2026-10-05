@@ -2,6 +2,7 @@
 
 ## 2026-10-05
 
+- Docs: `docs/superpowers/specs/2026-10-05-inline-commands-design.md` specifies bash and exec inline commands wherever a Function can be referenced (hotkeys first). Nothing is implemented.
 - Feature (scripts): `scripts/build-release.sh` builds the workspace in release mode and stages the deploy files in `dist/` (git-ignored): `bin/` with the four binaries, `config/` (openbox-rc.xml, picom.conf), `themes/` zips, an `opusdm-session` X11 session script, an `opusdm.desktop` template and `install.sh` (copies dist to a prefix, default `/opt/opusdm`, and registers the xsession).
 
 - Feature (hub, lister): the Hotkey Editor is now a global window like Manage Functions. The Desktop submenu of the desktop context menu has "Edit Hotkeys" right before "Manage Functions"; it launches `opusdm-lister --edit-hotkeys` (`hotkey_editor::open_standalone`), which connects to the hub as a tool client (no Lister registration), reads hotkeys and functions from disk and sends `SetBindings` on Save. The palette's "Edit Hotkeys..." launches the same process (`launch_editor`, built on the new `function_editor::launch_tool`), so the editor no longer lives over a Lister.
