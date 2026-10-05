@@ -679,7 +679,7 @@ fn run_external(
     }
     let _ = out_thread.join();
 
-    let status = child.wait().map_err(|e| format!("wait failed: {e}"))?;
+    let status = opusdm_ipc::reaped::wait(&mut child).map_err(|e| format!("wait failed: {e}"))?;
     let exit_code = status.code();
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code }));
     if !status.success() {
