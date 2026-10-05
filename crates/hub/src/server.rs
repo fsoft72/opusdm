@@ -2265,6 +2265,89 @@ mod tests {
     }
 
     #[test]
+    fn run_function_by_id_runs_an_inline_bash_command() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        // `{a,b}` is bash brace expansion, not a placeholder: it must reach bash untouched.
+        let id = format!("bash:echo {{a,b}} \"$((1+1))\" >> {}", marker.display());
+        send(&mut a, &ToHub::RunFunctionById { id }).unwrap();
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection));
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+
+        wait_for_lines(&marker, 1);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "a b 2\n");
+    }
+
+    #[test]
+    fn run_function_by_id_runs_an_inline_exec_line() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        let id = format!("exec:sh -c 'echo x >> {}'", marker.display());
+        send(&mut a, &ToHub::RunFunctionById { id }).unwrap();
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection));
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+
+        wait_for_lines(&marker, 1);
+    }
+
+    #[test]
+    fn an_inline_command_that_cannot_run_reports_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        send(&mut a, &ToHub::RunFunctionById { id: "exec:opusdm-no-such-program-xyz".into() }).unwrap();
+        let got: ToLister = recv(&mut a).unwrap().unwrap();
+        match got {
+            ToLister::FunctionFailed { error, .. } => assert!(error.contains("was not found"), "{error}"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn headless_run_of_an_inline_command_works_with_no_lister_open() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+
+        let (_td, listener, _path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let id = format!("bash:echo x >> {}", marker.display());
+        handle.cmd_tx.send(HubCmd::RunFunctionHeadless(id)).unwrap();
+
+        wait_for_lines(&marker, 1);
+    }
+
+    #[test]
     fn headless_run_without_listers_executes_immediately() {
         let _guard = ENV_LOCK.lock().unwrap();
         let cfg = tempfile::tempdir().unwrap();

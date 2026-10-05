@@ -70,10 +70,28 @@ impl Hub {
         }
     }
 
-    /// Load the saved function `id`, validate it and start it for `requester`
+    /// Start the inline command `reference` (`bash:`, `bash+out:` or
+    /// `exec:`) as a one-step run for `requester`. A command that cannot run
+    /// is reported through [`Self::function_failed`]. Returns the run id.
+    fn run_inline(&mut self, requester: Option<u64>, source: Option<u64>, reference: &opusdm_ipc::funcref::FuncRef) -> Option<u64> {
+        match opusdm_ipc::funcref::to_steps(reference) {
+            Ok(steps) => Some(self.start_function_run(requester, source, steps)),
+            Err(e) => {
+                self.function_failed(requester, e);
+                None
+            }
+        }
+    }
+
+    /// Run the inline command `id` names (`bash:`, `exec:`), else load the
+    /// saved function `id`, validate it and start it for `requester`
     /// (see [`Self::start_function_run`]). A missing or invalid function is
     /// reported through [`Self::function_failed`]. Returns the run id.
     pub(super) fn run_function_by_id(&mut self, requester: Option<u64>, source: Option<u64>, id: &str) -> Option<u64> {
+        let reference = opusdm_ipc::funcref::parse(id);
+        if !matches!(reference, opusdm_ipc::funcref::FuncRef::Saved(_)) {
+            return self.run_inline(requester, source, &reference);
+        }
         let Some(function) = self.current_functions.iter().find(|f| f.id == id).cloned() else {
             self.function_failed(requester, format!("function '{id}' not found (it may have been deleted)"));
             return None;
