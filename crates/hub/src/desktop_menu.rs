@@ -84,12 +84,22 @@ pub(crate) const ICON_MENU_W: i32 = 160;
 
 pub(crate) const ICON_MENU_H: i32 = 140;
 
+/// Natural size of `menu` without its margins. GTK4 measures a widget
+/// including its margins, and here the margins carry the click position, so
+/// they must be taken out or the menu would be pushed too far up and left.
+fn content_size(menu: &gtk::Box) -> (i32, i32) {
+    let (_, natural) = menu.preferred_size();
+    let w = natural.width() - menu.margin_start() - menu.margin_end();
+    let h = natural.height() - menu.margin_top() - menu.margin_bottom();
+    (w.max(0), h.max(0))
+}
+
 /// Place `menu` at `(x, y)` inside `overlay`, clamped so it never runs past
 /// the overlay's edge, and show it. `w`/`h` are fallbacks, used only when the
 /// menu cannot report its own natural size.
 pub(crate) fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, w: i32, h: i32) {
-    let (_, natural) = menu.preferred_size();
-    let (mw, mh) = (natural.width().max(w), natural.height().max(h));
+    let (mw, mh) = content_size(menu);
+    let (mw, mh) = (mw.max(w), mh.max(h));
     let max_x = (overlay.width() - mw).max(0);
     let max_y = (overlay.height() - mh).max(0);
     menu.set_margin_start((x as i32).clamp(0, max_x));
@@ -101,9 +111,9 @@ pub(crate) fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, 
 /// current natural size. Called after the menu grows (e.g. the Desktop
 /// expander opens) so it never runs off the bottom/right edge of the screen.
 pub(crate) fn keep_menu_on_screen(menu: &gtk::Box, overlay: &gtk::Overlay) {
-    let (_, natural) = menu.preferred_size();
-    let max_x = (overlay.width() - natural.width()).max(0);
-    let max_y = (overlay.height() - natural.height()).max(0);
+    let (mw, mh) = content_size(menu);
+    let max_x = (overlay.width() - mw).max(0);
+    let max_y = (overlay.height() - mh).max(0);
     menu.set_margin_start(menu.margin_start().clamp(0, max_x));
     menu.set_margin_top(menu.margin_top().clamp(0, max_y));
 }
