@@ -229,7 +229,7 @@ fn prompt_add_entry(state: &Rc<State>, parent: Vec<usize>) {
         return;
     }
     let shell = opusdm_ui::DialogShell::new(&state.window, "Add Menu Entry");
-    let dropdown = crate::binding_ui::function_dropdown(&state.functions, &state.functions[0].id);
+    let dropdown = opusdm_ui::function_dropdown(&state.functions, &state.functions[0].id);
     let label_entry = gtk::Entry::new();
     label_entry.set_text(&state.functions[0].name);
     shell.content().append(&dropdown);
@@ -249,7 +249,7 @@ fn prompt_add_entry(state: &Rc<State>, parent: Vec<usize>) {
     let state = state.clone();
     add_btn.connect_clicked(move |_| {
         let label = label_entry.text().trim().to_string();
-        let Some(function) = crate::binding_ui::selected_function(&dropdown, &state.functions) else { return };
+        let Some(function) = opusdm_ui::selected_function(&dropdown, &state.functions) else { return };
         if label.is_empty() {
             return;
         }

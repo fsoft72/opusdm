@@ -265,7 +265,7 @@ fn build_row(state: &Rc<State>, index: usize, hotkey: &Hotkey) -> gtk::Box {
 
     let picker = {
         let on_change_state = state.clone();
-        crate::binding_ui::reference_picker(&state.functions, &hotkey.function, &state.window, move |reference| {
+        opusdm_ui::RefPicker::new(&state.functions, &hotkey.function, &state.window, None, move |reference| {
             if let Some(h) = on_change_state.hotkeys.borrow_mut().get_mut(index) {
                 if h.function == reference {
                     return;
@@ -275,8 +275,8 @@ fn build_row(state: &Rc<State>, index: usize, hotkey: &Hotkey) -> gtk::Box {
             revalidate(&on_change_state);
         })
     };
-    picker.set_hexpand(true);
-    line.append(&picker);
+    picker.widget().set_hexpand(true);
+    line.append(picker.widget());
 
     let global = gtk::CheckButton::with_label("Global");
     global.set_active(hotkey.global);

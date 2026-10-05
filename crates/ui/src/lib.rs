@@ -3,6 +3,7 @@
 
 mod fonts;
 mod look_css;
+mod reference_picker;
 mod requester;
 mod screen;
 mod shell;
@@ -12,6 +13,7 @@ mod x11;
 
 pub use fonts::{font_files, register_theme_fonts};
 pub use look_css::{font_rule, surface_rule, ui_look_css, REQUESTER_CLASS, ROW_ALPHA_WITH_PICTURE};
+pub use reference_picker::{browsed_line, function_dropdown, selected_function, RefKind, RefPicker};
 pub use requester::{requester, requester_entry, requester_entry_selecting, requester_rich};
 pub use screen::{list_monitors, watch_monitors, watch_screen_size};
 pub use shell::DialogShell;

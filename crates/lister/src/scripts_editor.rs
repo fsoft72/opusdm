@@ -109,12 +109,12 @@ fn build_row(state: &Rc<State>, index: usize, binding: &ScriptBinding, errors: &
     }
     line.append(&event_dropdown);
 
-    let function_dropdown = crate::binding_ui::function_dropdown(&state.functions, &binding.function);
+    let function_dropdown = opusdm_ui::function_dropdown(&state.functions, &binding.function);
     function_dropdown.set_hexpand(true);
     {
         let state = state.clone();
         function_dropdown.connect_selected_notify(move |d| {
-            let Some(id) = crate::binding_ui::selected_function(d, &state.functions) else { return };
+            let Some(id) = opusdm_ui::selected_function(d, &state.functions) else { return };
             if let Some(b) = state.scripts.borrow_mut().get_mut(index) {
                 if b.function == id {
                     return;
