@@ -24,6 +24,15 @@ pub const GRID_GAP_RANGE: (i32, i32) = (0, 64);
 /// Largest accepted gradient angle, in degrees.
 pub const GRADIENT_ANGLE_MAX: u16 = 360;
 
+/// Accepted range for [`Background::interval_secs`], in seconds.
+pub const INTERVAL_SECS_RANGE: (u32, u32) = (5, 86_400);
+
+/// Accepted range for [`Background::fade_ms`], in milliseconds.
+pub const FADE_MS_RANGE: (u32, u32) = (0, 10_000);
+
+/// Default colour of a solid background.
+pub const DEFAULT_SOLID: &str = "#2e3436";
+
 /// Which screen edge the panel (`opusdm-hub`'s dock bar) is docked to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,7 +72,9 @@ impl DockPosition {
     }
 }
 
-/// Which kind of background the desktop window paints.
+/// Which kind of background the legacy single-background shape selected.
+/// Only read when migrating an old settings file (see [`Background`]) and by
+/// the legacy `theme.json` section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackgroundMode {
@@ -117,39 +128,168 @@ pub fn is_background_image(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The desktop background. Only the field selected by [`Background::mode`] is
-/// painted; the others keep their last value so switching modes back and forth
-/// is lossless.
+/// File extensions (lower case) accepted as a desktop background video.
+pub const BACKGROUND_VIDEO_EXTS: [&str; 7] = ["mp4", "mkv", "webm", "avi", "mov", "m4v", "ogv"];
+
+/// Whether `path` has one of the [`BACKGROUND_VIDEO_EXTS`] extensions,
+/// ignoring case. Looks at the name only, never at the file content.
+pub fn is_background_video(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| BACKGROUND_VIDEO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// Whether `path` is a picture or a video the desktop background can show.
+pub fn is_background_media(path: &Path) -> bool {
+    is_background_image(path) || is_background_video(path)
+}
+
+/// One item of the desktop background rotation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BackgroundEntry {
+    /// A flat colour, hex `#rrggbb`.
+    Solid { color: String },
+    /// A two-stop linear gradient. The angle is in degrees,
+    /// `0..=GRADIENT_ANGLE_MAX`: 0 points up, 90 points right (CSS
+    /// `linear-gradient` convention).
+    Gradient { start: String, end: String, angle: u16 },
+    /// A picture file.
+    Image { path: PathBuf, fit: ImageFit },
+    /// A silent, looping video file. `Center` and `Tile` behave as `Fill`.
+    Video { path: PathBuf, fit: ImageFit },
+}
+
+impl BackgroundEntry {
+    /// The default solid entry.
+    pub fn default_solid() -> Self {
+        BackgroundEntry::Solid { color: DEFAULT_SOLID.to_string() }
+    }
+
+    /// The default gradient entry.
+    pub fn default_gradient() -> Self {
+        BackgroundEntry::Gradient { start: DEFAULT_SOLID.to_string(), end: "#555753".to_string(), angle: 180 }
+    }
+
+    /// A picture or video entry for `path`, chosen by its extension, with the
+    /// default fit. `None` when `path` is neither.
+    pub fn from_path(path: PathBuf) -> Option<Self> {
+        let fit = ImageFit::default();
+        if is_background_video(&path) {
+            Some(BackgroundEntry::Video { path, fit })
+        } else if is_background_image(&path) {
+            Some(BackgroundEntry::Image { path, fit })
+        } else {
+            None
+        }
+    }
+
+    /// The file this entry shows, for picture and video entries.
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            BackgroundEntry::Image { path, .. } | BackgroundEntry::Video { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Whether the entry plays a video.
+    pub fn is_video(&self) -> bool {
+        matches!(self, BackgroundEntry::Video { .. })
+    }
+
+    /// Whether the entry can be shown right now: colours and gradients
+    /// always, pictures and videos when their file exists.
+    pub fn is_usable(&self) -> bool {
+        self.path().map(Path::is_file).unwrap_or(true)
+    }
+}
+
+/// The desktop background: a list of entries shown in turn, `interval_secs`
+/// each, with a `fade_ms` cross-fade between them. A list of one entry never
+/// rotates.
+///
+/// Deserialisation also accepts the legacy single-background shape (`mode`,
+/// `solid`, `gradient_start`, `gradient_end`, `gradient_angle`, `image_path`,
+/// `image_fit`), which becomes a list of one entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "BackgroundWire")]
 pub struct Background {
-    pub mode: BackgroundMode,
-    /// Hex `#rrggbb`. Also the fallback colour behind an image while it loads
-    /// or when its path is unreadable.
-    pub solid: String,
-    /// Gradient start colour, hex `#rrggbb`.
-    pub gradient_start: String,
-    /// Gradient end colour, hex `#rrggbb`.
-    pub gradient_end: String,
-    /// Gradient direction in degrees, `0..=GRADIENT_ANGLE_MAX`. 0 points up,
-    /// 90 points right (CSS `linear-gradient` convention).
-    pub gradient_angle: u16,
-    /// Absolute path to the background image, or `None`.
-    pub image_path: Option<PathBuf>,
-    pub image_fit: ImageFit,
+    pub entries: Vec<BackgroundEntry>,
+    /// Seconds each entry stays on screen, `INTERVAL_SECS_RANGE`.
+    pub interval_secs: u32,
+    /// Cross-fade duration in milliseconds, `FADE_MS_RANGE`.
+    pub fade_ms: u32,
+    /// Walk the entries in a random order instead of the list order.
+    pub shuffle: bool,
 }
 
 impl Default for Background {
     fn default() -> Self {
         Self {
+            entries: vec![BackgroundEntry::default_solid()],
+            interval_secs: 300,
+            fade_ms: 1000,
+            shuffle: false,
+        }
+    }
+}
+
+/// Every field either shape of a stored background can carry. Private: the
+/// serde bridge behind `Background`'s `Deserialize`.
+#[derive(Deserialize)]
+#[serde(default)]
+struct BackgroundWire {
+    entries: Option<Vec<BackgroundEntry>>,
+    interval_secs: u32,
+    fade_ms: u32,
+    shuffle: bool,
+    mode: BackgroundMode,
+    solid: String,
+    gradient_start: String,
+    gradient_end: String,
+    gradient_angle: u16,
+    image_path: Option<PathBuf>,
+    image_fit: ImageFit,
+}
+
+impl Default for BackgroundWire {
+    fn default() -> Self {
+        let defaults = Background::default();
+        let BackgroundEntry::Gradient { start, end, angle } = BackgroundEntry::default_gradient() else {
+            unreachable!("default_gradient builds a gradient")
+        };
+        Self {
+            entries: None,
+            interval_secs: defaults.interval_secs,
+            fade_ms: defaults.fade_ms,
+            shuffle: defaults.shuffle,
             mode: BackgroundMode::Solid,
-            solid: "#2e3436".to_string(),
-            gradient_start: "#2e3436".to_string(),
-            gradient_end: "#555753".to_string(),
-            gradient_angle: 180,
+            solid: DEFAULT_SOLID.to_string(),
+            gradient_start: start,
+            gradient_end: end,
+            gradient_angle: angle,
             image_path: None,
             image_fit: ImageFit::Fill,
         }
+    }
+}
+
+impl From<BackgroundWire> for Background {
+    fn from(w: BackgroundWire) -> Self {
+        let entries = w.entries.unwrap_or_else(|| {
+            let entry = match (w.mode, w.image_path) {
+                (BackgroundMode::Image, Some(path)) => BackgroundEntry::Image { path, fit: w.image_fit },
+                (BackgroundMode::Gradient, _) => BackgroundEntry::Gradient {
+                    start: w.gradient_start,
+                    end: w.gradient_end,
+                    angle: w.gradient_angle,
+                },
+                _ => BackgroundEntry::Solid { color: w.solid },
+            };
+            vec![entry]
+        });
+        Background { entries, interval_secs: w.interval_secs, fade_ms: w.fade_ms, shuffle: w.shuffle }
     }
 }
 
@@ -210,11 +350,42 @@ impl DesktopSettings {
 }
 
 impl Background {
-    /// Clamp the gradient angle into its accepted range. Call right after
-    /// loading from disk and right after receiving a value over IPC.
+    /// Clamp the interval, the fade and every gradient angle into their
+    /// accepted ranges. Call right after loading from disk and right after
+    /// receiving a value over IPC.
     pub fn sanitized(mut self) -> Background {
-        self.gradient_angle = self.gradient_angle.min(GRADIENT_ANGLE_MAX);
+        let (lo, hi) = INTERVAL_SECS_RANGE;
+        self.interval_secs = self.interval_secs.clamp(lo, hi);
+        let (lo, hi) = FADE_MS_RANGE;
+        self.fade_ms = self.fade_ms.clamp(lo, hi);
+        for entry in &mut self.entries {
+            if let BackgroundEntry::Gradient { angle, .. } = entry {
+                *angle = (*angle).min(GRADIENT_ANGLE_MAX);
+            }
+        }
         self
+    }
+
+    /// The entries to rotate through: the list itself, or the default solid
+    /// colour when the list is empty so the desktop is never left bare.
+    pub fn effective_entries(&self) -> Vec<BackgroundEntry> {
+        if self.entries.is_empty() {
+            vec![BackgroundEntry::default_solid()]
+        } else {
+            self.entries.clone()
+        }
+    }
+
+    /// Replace the list with the single picture or video at `path`. `fit`
+    /// overrides the default fit when `Some`. The interval, fade and shuffle
+    /// values are kept. Does nothing when `path` is neither a picture nor a
+    /// video.
+    pub fn set_single(&mut self, path: PathBuf, fit: Option<ImageFit>) {
+        let Some(mut entry) = BackgroundEntry::from_path(path) else { return };
+        if let (Some(new_fit), BackgroundEntry::Image { fit, .. } | BackgroundEntry::Video { fit, .. }) = (fit, &mut entry) {
+            *fit = new_fit;
+        }
+        self.entries = vec![entry];
     }
 }
 
@@ -242,38 +413,33 @@ pub fn path_to_file_url(path: &Path) -> String {
     out
 }
 
-/// Build the declaration body of the `.opusdm-desktop` CSS rule from `bg`.
-/// Returns declarations only - no selector, no braces - so the caller can
-/// drop it straight into `".opusdm-desktop {{ {} }}"`.
+/// Build the declaration body of the CSS rule that paints `entry`. Returns
+/// declarations only - no selector, no braces - so the caller can drop it
+/// straight into `".some-class {{ {} }}"`.
 ///
-/// `Image` mode with no path falls back to the `Solid` branch here so the
-/// desktop is never left transparent; an unreadable-but-set path is the
-/// caller's concern.
-pub fn background_css(bg: &Background) -> String {
-    match bg.mode {
-        BackgroundMode::Solid => format!("background: {};", bg.solid),
-        BackgroundMode::Gradient => format!(
-            "background: linear-gradient({}deg, {}, {});",
-            bg.gradient_angle, bg.gradient_start, bg.gradient_end
-        ),
-        BackgroundMode::Image => {
-            let Some(path) = bg.image_path.as_deref() else {
-                return format!("background: {};", bg.solid);
-            };
+/// A video entry yields a black backdrop: the picture that plays it covers
+/// it, and it shows around a `Fit` video.
+pub fn background_css(entry: &BackgroundEntry) -> String {
+    match entry {
+        BackgroundEntry::Solid { color } => format!("background: {color};"),
+        BackgroundEntry::Gradient { start, end, angle } => {
+            format!("background: linear-gradient({angle}deg, {start}, {end});")
+        }
+        BackgroundEntry::Image { path, fit } => {
             let url = path_to_file_url(path);
-            let (size, repeat) = match bg.image_fit {
+            let (size, repeat) = match fit {
                 ImageFit::Fill => ("cover", "no-repeat"),
                 ImageFit::Fit => ("contain", "no-repeat"),
                 ImageFit::Center => ("auto", "no-repeat"),
                 ImageFit::Tile => ("auto", "repeat"),
             };
             format!(
-                "background-color: {}; background-image: url(\"{}\"); \
-                 background-position: center; background-size: {}; \
-                 background-repeat: {};",
-                bg.solid, url, size, repeat
+                "background-color: {DEFAULT_SOLID}; background-image: url(\"{url}\"); \
+                 background-position: center; background-size: {size}; \
+                 background-repeat: {repeat};"
             )
         }
+        BackgroundEntry::Video { .. } => "background: #000000;".to_string(),
     }
 }
 
@@ -290,18 +456,16 @@ mod tests {
         assert_eq!(d.desktop_dir, None);
 
         let bg = Background::default();
-        assert_eq!(bg.mode, BackgroundMode::Solid);
-        assert_eq!(bg.solid, "#2e3436");
-        assert_eq!(bg.image_fit, ImageFit::Fill);
+        assert_eq!(bg.entries, vec![BackgroundEntry::default_solid()]);
+        assert_eq!((bg.interval_secs, bg.fade_ms, bg.shuffle), (300, 1000, false));
     }
 
     #[test]
     fn missing_fields_deserialize_to_defaults() {
         let d: DesktopSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(d, DesktopSettings::default());
-        let bg: Background = serde_json::from_str(r#"{"mode":"gradient"}"#).unwrap();
-        assert_eq!(bg.mode, BackgroundMode::Gradient);
-        assert_eq!(bg.solid, Background::default().solid);
+        let bg: Background = serde_json::from_str("{}").unwrap();
+        assert_eq!(bg, Background::default());
     }
 
     #[test]
@@ -312,11 +476,19 @@ mod tests {
         let s = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<DesktopSettings>(&s).unwrap(), d);
 
-        let mut bg = Background::default();
-        bg.mode = BackgroundMode::Image;
-        bg.image_path = Some(PathBuf::from("/home/u/pic.png"));
-        bg.image_fit = ImageFit::Tile;
+        let bg = Background {
+            entries: vec![
+                BackgroundEntry::Image { path: PathBuf::from("/home/u/pic.png"), fit: ImageFit::Tile },
+                BackgroundEntry::Video { path: PathBuf::from("/home/u/clip.mp4"), fit: ImageFit::Fit },
+                BackgroundEntry::default_gradient(),
+                BackgroundEntry::default_solid(),
+            ],
+            interval_secs: 60,
+            fade_ms: 250,
+            shuffle: true,
+        };
         let s = serde_json::to_string(&bg).unwrap();
+        assert!(s.contains("\"kind\":\"image\"") && s.contains("\"kind\":\"video\""));
         assert_eq!(serde_json::from_str::<Background>(&s).unwrap(), bg);
     }
 
@@ -339,9 +511,17 @@ mod tests {
         assert_eq!(d.grid_spacing, GRID_SPACING_RANGE.1);
         assert_eq!(d.grid_gap, GRID_GAP_RANGE.1);
 
-        let mut bg = Background::default();
-        bg.gradient_angle = 900;
-        assert_eq!(bg.sanitized().gradient_angle, GRADIENT_ANGLE_MAX);
+        let bg = Background {
+            entries: vec![BackgroundEntry::Gradient { start: "#000000".into(), end: "#ffffff".into(), angle: 900 }],
+            interval_secs: 1,
+            fade_ms: 999_999,
+            shuffle: false,
+        }
+        .sanitized();
+        assert!(matches!(bg.entries[0], BackgroundEntry::Gradient { angle: GRADIENT_ANGLE_MAX, .. }));
+        assert_eq!((bg.interval_secs, bg.fade_ms), (INTERVAL_SECS_RANGE.0, FADE_MS_RANGE.1));
+        let bg = Background { interval_secs: 999_999, ..Background::default() }.sanitized();
+        assert_eq!(bg.interval_secs, INTERVAL_SECS_RANGE.1);
 
         let mut d = DesktopSettings::default();
         d.icon_size = 999;
@@ -355,10 +535,8 @@ mod tests {
 
     #[test]
     fn solid_css_is_one_background_declaration() {
-        let mut bg = Background::default();
-        bg.mode = BackgroundMode::Solid;
-        bg.solid = "#123456".into();
-        assert_eq!(background_css(&bg), "background: #123456;");
+        let entry = BackgroundEntry::Solid { color: "#123456".into() };
+        assert_eq!(background_css(&entry), "background: #123456;");
     }
 
     #[test]
@@ -407,30 +585,16 @@ mod tests {
 
     #[test]
     fn gradient_css_renders_angle_and_stops() {
-        let mut bg = Background::default();
-        bg.mode = BackgroundMode::Gradient;
-        bg.gradient_start = "#000000".into();
-        bg.gradient_end = "#ffffff".into();
-        bg.gradient_angle = 45;
-        assert_eq!(
-            background_css(&bg),
-            "background: linear-gradient(45deg, #000000, #ffffff);"
-        );
+        let entry = BackgroundEntry::Gradient { start: "#000000".into(), end: "#ffffff".into(), angle: 45 };
+        assert_eq!(background_css(&entry), "background: linear-gradient(45deg, #000000, #ffffff);");
     }
 
     #[test]
     fn image_css_maps_each_fit_mode() {
-        let base = |fit| {
-            let mut bg = Background::default();
-            bg.mode = BackgroundMode::Image;
-            bg.image_path = Some(PathBuf::from("/x/y.png"));
-            bg.solid = "#111111".into();
-            bg.image_fit = fit;
-            background_css(&bg)
-        };
+        let base = |fit| background_css(&BackgroundEntry::Image { path: PathBuf::from("/x/y.png"), fit });
         let fill = base(ImageFit::Fill);
         assert!(fill.contains("background-image: url(\"file:///x/y.png\");"));
-        assert!(fill.contains("background-color: #111111;"));
+        assert!(fill.contains("background-color: #2e3436;"));
         assert!(fill.contains("background-size: cover;"));
         assert!(fill.contains("background-repeat: no-repeat;"));
 
@@ -444,12 +608,9 @@ mod tests {
     }
 
     #[test]
-    fn image_mode_without_a_path_falls_back_to_solid() {
-        let mut bg = Background::default();
-        bg.mode = BackgroundMode::Image;
-        bg.image_path = None;
-        bg.solid = "#abcdef".into();
-        assert_eq!(background_css(&bg), "background: #abcdef;");
+    fn video_css_is_a_black_backdrop() {
+        let entry = BackgroundEntry::Video { path: PathBuf::from("/x/y.mp4"), fit: ImageFit::Fill };
+        assert_eq!(background_css(&entry), "background: #000000;");
     }
 
     #[test]
@@ -487,11 +648,83 @@ mod tests {
 
     #[test]
     fn background_css_percent_encodes_spaces_in_the_image_path() {
-        let bg = Background {
-            mode: BackgroundMode::Image,
-            image_path: Some(PathBuf::from("/tmp/my wall.png")),
-            ..Background::default()
-        };
-        assert!(background_css(&bg).contains("my%20wall.png"));
+        let entry = BackgroundEntry::Image { path: PathBuf::from("/tmp/my wall.png"), fit: ImageFit::Fill };
+        assert!(background_css(&entry).contains("my%20wall.png"));
+    }
+
+    #[test]
+    fn legacy_single_background_becomes_one_entry() {
+        let solid: Background = serde_json::from_str(r##"{"mode":"solid","solid":"#112233"}"##).unwrap();
+        assert_eq!(solid.entries, vec![BackgroundEntry::Solid { color: "#112233".into() }]);
+
+        let gradient: Background = serde_json::from_str(
+            r##"{"mode":"gradient","gradient_start":"#000000","gradient_end":"#ffffff","gradient_angle":45}"##,
+        )
+        .unwrap();
+        assert_eq!(
+            gradient.entries,
+            vec![BackgroundEntry::Gradient { start: "#000000".into(), end: "#ffffff".into(), angle: 45 }]
+        );
+
+        let image: Background =
+            serde_json::from_str(r#"{"mode":"image","image_path":"/a/b.png","image_fit":"tile"}"#).unwrap();
+        assert_eq!(image.entries, vec![BackgroundEntry::Image { path: "/a/b.png".into(), fit: ImageFit::Tile }]);
+        assert_eq!((image.interval_secs, image.fade_ms, image.shuffle), (300, 1000, false));
+
+        // Image mode with no path used to fall back to the solid colour.
+        let bare: Background = serde_json::from_str(r##"{"mode":"image","solid":"#abcdef"}"##).unwrap();
+        assert_eq!(bare.entries, vec![BackgroundEntry::Solid { color: "#abcdef".into() }]);
+
+        // A gradient-only legacy file keeps the default stops.
+        let only_mode: Background = serde_json::from_str(r#"{"mode":"gradient"}"#).unwrap();
+        assert_eq!(only_mode.entries, vec![BackgroundEntry::default_gradient()]);
+    }
+
+    #[test]
+    fn video_extensions_are_matched_case_insensitively() {
+        assert!(is_background_video(Path::new("a.MP4")));
+        assert!(is_background_video(Path::new("a.webm")));
+        assert!(!is_background_video(Path::new("a.png")));
+        assert!(is_background_media(Path::new("a.png")));
+        assert!(is_background_media(Path::new("a.mkv")));
+        assert!(!is_background_media(Path::new("a.txt")));
+    }
+
+    #[test]
+    fn from_path_picks_the_entry_kind_by_extension() {
+        assert!(matches!(BackgroundEntry::from_path("/a/b.jpg".into()), Some(BackgroundEntry::Image { .. })));
+        assert!(matches!(BackgroundEntry::from_path("/a/b.mp4".into()), Some(BackgroundEntry::Video { .. })));
+        assert_eq!(BackgroundEntry::from_path("/a/b.txt".into()), None);
+    }
+
+    #[test]
+    fn set_single_replaces_the_list_and_keeps_the_timing() {
+        let mut bg = Background { interval_secs: 42, fade_ms: 7, shuffle: true, ..Background::default() };
+        bg.entries.push(BackgroundEntry::default_gradient());
+        bg.set_single("/a/b.png".into(), Some(ImageFit::Tile));
+        assert_eq!(bg.entries, vec![BackgroundEntry::Image { path: "/a/b.png".into(), fit: ImageFit::Tile }]);
+        assert_eq!((bg.interval_secs, bg.fade_ms, bg.shuffle), (42, 7, true));
+
+        bg.set_single("/a/c.mp4".into(), None);
+        assert_eq!(bg.entries, vec![BackgroundEntry::Video { path: "/a/c.mp4".into(), fit: ImageFit::Fill }]);
+
+        bg.set_single("/a/d.txt".into(), None);
+        assert_eq!(bg.entries.len(), 1, "an unsupported file leaves the list alone");
+    }
+
+    #[test]
+    fn effective_entries_never_comes_back_empty() {
+        let bg = Background { entries: vec![], ..Background::default() };
+        assert_eq!(bg.effective_entries(), vec![BackgroundEntry::default_solid()]);
+    }
+
+    #[test]
+    fn usable_entries_need_their_file() {
+        assert!(BackgroundEntry::default_solid().is_usable());
+        assert!(BackgroundEntry::default_gradient().is_usable());
+        let missing = BackgroundEntry::Image { path: "/no/such/file.png".into(), fit: ImageFit::Fill };
+        assert!(!missing.is_usable());
+        let here = BackgroundEntry::Image { path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"), fit: ImageFit::Fill };
+        assert!(here.is_usable());
     }
 }

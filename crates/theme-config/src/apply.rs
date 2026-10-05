@@ -61,7 +61,7 @@ pub(crate) fn merge_surface(target: &mut SurfaceImage, theme: Option<&ThemeSurfa
 mod tests {
     use super::*;
     use crate::test_support::ENV_LOCK;
-    use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
+    use opusdm_ipc::desktop::ImageFit;
     use opusdm_ipc::look::{FontSpec, Fonts, ThemeSurfaces};
     use opusdm_ipc::{Appearance, ColorSettings, ThemeMode};
 
@@ -69,7 +69,7 @@ mod tests {
     fn prefs() -> Settings {
         let mut s = Settings::default();
         s.theme.colors.file_fg = "#010203".into();
-        s.theme.background.mode = BackgroundMode::Gradient;
+        s.theme.background.entries = vec![opusdm_ipc::BackgroundEntry::default_gradient()];
         s.appearance = Appearance { type_indicators: true, monospace_list: true, theme_window: true, theme_mode: ThemeMode::Light };
         s.behavior.auto_refresh = !s.behavior.auto_refresh;
         s.fonts.ui.size = 9;
@@ -137,7 +137,7 @@ mod tests {
         let mut b = a.clone();
         b.appearance.theme_mode = ThemeMode::Dark;
         b.behavior.cache_size += 1;
-        b.theme.background.solid = "#000001".into();
+        b.theme.background.entries = vec![opusdm_ipc::BackgroundEntry::Solid { color: "#000001".into() }];
         b.look_version = 99;
         assert!(same_look(&a, &b));
         b.theme.colors.dir_bg = "#000002".into();

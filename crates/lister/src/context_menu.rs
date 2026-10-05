@@ -183,10 +183,10 @@ pub fn show_context_menu(
         menu_box.append(&btn);
     }
 
-    // Set as Desktop Background (image files only). The path goes in as a
+    // Set as Desktop Background (image and video files only). The path goes in as a
     // literal template, so a name holding a `{...}` placeholder is refused
     // instead of being expanded.
-    if !row.is_dir && opusdm_ipc::is_background_image(&target_path) {
+    if !row.is_dir && opusdm_ipc::is_background_media(&target_path) {
         let ui = ui.clone();
         let pop = popover.clone();
         let target_path = target_path.clone();

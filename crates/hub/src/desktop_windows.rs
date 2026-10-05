@@ -159,6 +159,7 @@ pub(crate) fn build_one_desktop_window(
         icon_set,
         desktop_extras(widgets),
         panel_position,
+        opusdm_hub::fullscreen::Rect { x, y, w, h },
     );
     window.set_child(Some(&desktop_area));
 
@@ -274,15 +275,22 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
     }
 }
 
-/// The full desktop stylesheet: the `.opusdm-desktop` background rule built
-/// from `bg`, plus the fixed context-menu rules.
-pub(crate) fn desktop_rule_css(bg: &opusdm_ipc::Background) -> String {
+/// The full desktop stylesheet: one rule per background entry (the page
+/// class from `background::page_class`), the fallback page rule, plus the
+/// fixed context-menu rules.
+pub(crate) fn desktop_rule_css(entries: &[opusdm_ipc::BackgroundEntry]) -> String {
+    let pages: String = entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| format!(".{} {{ {} }}\n", crate::background::page_class(i), opusdm_ipc::background_css(entry)))
+        .collect();
     format!(
-        ".opusdm-desktop {{ {bgdecl} }}\n\
+        "{pages}.{fallback} {{ {fallback_decl} }}\n\
          .opusdm-desktop-menu {{ background-color: {DESKTOP_MENU_BG}; color: {DESKTOP_FG}; \
              border: 1px solid {DESKTOP_MENU_BORDER}; border-radius: 4px; padding: 4px; }}\n\
          .opusdm-desktop-menu button {{ padding: 4px 12px; }}",
-        bgdecl = opusdm_ipc::background_css(bg),
+        fallback = crate::background::FALLBACK_CLASS,
+        fallback_decl = opusdm_ipc::background_css(&opusdm_ipc::BackgroundEntry::default_solid()),
     )
 }
 
@@ -304,11 +312,11 @@ thread_local! {
     };
 }
 
-/// Install (or replace) the desktop stylesheet for `bg`. Safe to call
+/// Install (or replace) the desktop stylesheet for `entries`. Safe to call
 /// repeatedly - it reloads the single shared provider's content rather than
 /// registering a new one each time.
-pub(crate) fn install_desktop_css(bg: &opusdm_ipc::Background) {
-    DESKTOP_CSS_PROVIDER.with(|p| p.load_from_data(&desktop_rule_css(bg)));
+pub(crate) fn install_desktop_css(entries: &[opusdm_ipc::BackgroundEntry]) {
+    DESKTOP_CSS_PROVIDER.with(|p| p.load_from_data(&desktop_rule_css(entries)));
 }
 
 /// Read `dir` into desktop entries, merged with the left-out icons in `left`,
@@ -504,12 +512,14 @@ pub(crate) fn spawn_desktop_watch(
 /// Build the desktop area that fills the window below the toolbar, wrapped in
 /// an overlay so the context menu can be laid on top of it. When `desktop_dir`
 /// is `Some`, an icon field in `Free` mode fills it and its initial entries
-/// are read. Otherwise the background stays plain.
+/// are read. Otherwise the background stays plain. `monitor` is the screen
+/// area the desktop window covers.
 pub(crate) fn build_desktop_area(
     desktop_dir: Option<&Path>,
     icon_set: opusdm_ipc::IconSetId,
     extras: opusdm_hub::leftout::DesktopExtras,
     panel_position: opusdm_ipc::PanelPosition,
+    monitor: opusdm_hub::fullscreen::Rect,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
     overlay.set_hexpand(true);
@@ -543,7 +553,9 @@ pub(crate) fn build_desktop_area(
         None => None,
     };
 
-    overlay.set_child(Some(&bg));
+    // The rotating background sits underneath; the icon area floats over it.
+    overlay.set_child(Some(&crate::background::new_view(monitor)));
+    overlay.add_overlay(&bg);
     (overlay, field)
 }
 
@@ -576,18 +588,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desktop_rule_css_embeds_the_background_declarations() {
-        let mut bg = opusdm_ipc::Background::default();
-        bg.mode = opusdm_ipc::BackgroundMode::Gradient;
-        bg.gradient_angle = 30;
-        let css = desktop_rule_css(&bg);
-        assert!(css.contains(".opusdm-desktop {"));
-        assert!(css.contains("linear-gradient(30deg,"));
+    fn desktop_rule_css_has_a_rule_per_entry() {
+        let entries = vec![
+            opusdm_ipc::BackgroundEntry::default_gradient(),
+            opusdm_ipc::BackgroundEntry::Video { path: "/x/y.mp4".into(), fit: opusdm_ipc::ImageFit::Fill },
+        ];
+        let css = desktop_rule_css(&entries);
+        assert!(css.contains(".opusdm-bg-0 { background: linear-gradient(180deg,"));
+        assert!(css.contains(".opusdm-bg-1 { background: #000000; }"));
+        assert!(css.contains(".opusdm-bg-fallback {"));
         assert!(css.contains(".opusdm-desktop-menu {")); // other rules kept
     }
 
     /// Parse the generated desktop stylesheet with the real GTK CSS parser for
-    /// every background mode. Self-skips when no display is available.
+    /// every entry kind. Self-skips when no display is available.
     #[test]
     fn desktop_rule_css_parses_without_error() {
         if gtk::init().is_err() {
@@ -601,16 +615,14 @@ mod tests {
                 errors.borrow_mut().push(format!("{section}: {err}"));
             });
         }
-        for mode in [
-            opusdm_ipc::BackgroundMode::Solid,
-            opusdm_ipc::BackgroundMode::Gradient,
-            opusdm_ipc::BackgroundMode::Image,
-        ] {
-            let mut bg = opusdm_ipc::Background::default();
-            bg.mode = mode;
-            bg.image_path = Some(std::path::PathBuf::from("/tmp/opusdm-test bg.png"));
-            provider.load_from_data(&desktop_rule_css(&bg));
-            assert!(errors.borrow().is_empty(), "{mode:?}: {:?}", errors.borrow());
-        }
+        let path = std::path::PathBuf::from("/tmp/opusdm-test bg.png");
+        let entries = vec![
+            opusdm_ipc::BackgroundEntry::default_solid(),
+            opusdm_ipc::BackgroundEntry::default_gradient(),
+            opusdm_ipc::BackgroundEntry::Image { path: path.clone(), fit: opusdm_ipc::ImageFit::Tile },
+            opusdm_ipc::BackgroundEntry::Video { path, fit: opusdm_ipc::ImageFit::Fit },
+        ];
+        provider.load_from_data(&desktop_rule_css(&entries));
+        assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
     }
 }

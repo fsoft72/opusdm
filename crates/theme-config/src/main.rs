@@ -9,7 +9,8 @@ use gtk::gio;
 use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_desktop_config::menu_ui::MenuSection;
 use opusdm_ipc::IconSetId;
-use opusdm_desktop_config::ui::{BackgroundSection, FolderSection, GridSection, PanelSection};
+use opusdm_desktop_config::background_ui::BackgroundSection;
+use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -123,7 +124,7 @@ fn build_window(app: &gtk::Application) {
     let notebook = gtk::Notebook::new();
     notebook.set_vexpand(true);
 
-    // --- Desktop tab: icon set + background ---
+    // --- Desktop tab: icon set, grid, folder, panel ---
     let desktop_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
     desktop_page.set_margin_top(12);
     desktop_page.set_margin_bottom(12);
@@ -154,17 +155,6 @@ fn build_window(app: &gtk::Application) {
     desktop_page.append(&theme_buttons);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    let bg = Rc::new(BackgroundSection::new(&window, &theme.background));
-    {
-        let icon_set = icon_set.clone();
-        bg.connect_theme_pictures(&window, move || {
-            let IconSetId::Custom(slug) = icon_set.borrow().value();
-            opusdm_ipc::themes::theme_wallpapers(&slug)
-        });
-    }
-    desktop_page.append(&bg.root);
-    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
     let grid = Rc::new(GridSection::new(
         desktop_data.icon_size,
         desktop_data.grid_spacing,
@@ -181,6 +171,24 @@ fn build_window(app: &gtk::Application) {
     desktop_page.append(&panel.root);
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
+
+    // --- Desktop Background tab: the rotating list of backgrounds ---
+    let background_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    background_page.set_margin_top(12);
+    background_page.set_margin_bottom(12);
+    background_page.set_margin_start(12);
+    background_page.set_margin_end(12);
+
+    let bg = Rc::new(BackgroundSection::new(&window, &theme.background));
+    {
+        let icon_set = icon_set.clone();
+        bg.connect_theme_pictures(&window, move || {
+            let IconSetId::Custom(slug) = icon_set.borrow().value();
+            opusdm_ipc::themes::theme_wallpapers(&slug)
+        });
+    }
+    background_page.append(&bg.root);
+    notebook.append_page(&background_page, Some(&gtk::Label::new(Some("Desktop Background"))));
 
     // --- Dock tab: edge, icon size, pinned apps ---
     let dock_page_outer = gtk::ScrolledWindow::new();
