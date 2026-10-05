@@ -112,6 +112,16 @@ pub fn describe(r: &FuncRef) -> Option<String> {
     }
 }
 
+/// The text a list shows for `reference`: a saved Function's name (or
+/// `(missing function)`), or the [`describe`] text of an inline command.
+pub fn title(reference: &str, functions: &[crate::function::Function]) -> String {
+    let parsed = parse(reference);
+    if let Some(text) = describe(&parsed) {
+        return text;
+    }
+    functions.iter().find(|f| f.id == reference).map(|f| f.name.clone()).unwrap_or_else(|| "(missing function)".to_string())
+}
+
 /// The steps that run an inline reference: one `Run` step. A bash command
 /// gets the SOURCE selection as `"$@"` and no placeholder expansion inside
 /// the script. Fails with the
@@ -253,5 +263,16 @@ mod tests {
         assert_eq!(describe(&parse("bash+out:ls")), Some("bash: ls".to_string()));
         assert_eq!(describe(&parse("exec:kitty")), Some("exec: kitty".to_string()));
         assert_eq!(describe(&parse("fn-1")), None);
+    }
+
+    #[test]
+    fn title_names_a_saved_function_or_describes_an_inline_command() {
+        let mut f = crate::function::Function::new("Copy it");
+        f.id = "fn-1".to_string();
+        let functions = [f];
+        assert_eq!(title("fn-1", &functions), "Copy it");
+        assert_eq!(title("fn-gone", &functions), "(missing function)");
+        assert_eq!(title("bash:ls -l", &functions), "bash: ls -l");
+        assert_eq!(title("exec:kitty", &functions), "exec: kitty");
     }
 }

@@ -96,15 +96,7 @@ fn build_row(state: &Rc<State>, node: &MenuNode, path: &[usize], errors: &[Bindi
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
     let text = match node {
-        MenuNode::Entry { label, function } => {
-            let target = state
-                .functions
-                .iter()
-                .find(|f| &f.id == function)
-                .map(|f| f.name.as_str())
-                .unwrap_or("(missing function)");
-            format!("{label}  ->  {target}")
-        }
+        MenuNode::Entry { label, function } => format!("{label}  ->  {}", opusdm_ipc::funcref::title(function, &state.functions)),
         MenuNode::Submenu { label, .. } => format!("{label}  (submenu)"),
         MenuNode::Separator => "--------".to_string(),
     };
@@ -220,37 +212,40 @@ fn add_buttons(state: &Rc<State>, parent: Vec<usize>) -> gtk::Box {
     bar
 }
 
-/// Ask for a function and a label, then add an entry to the list at
-/// `parent`. The label starts as the chosen function's name and follows the
-/// drop-down until the user edits it.
+/// Ask for what to run (a saved function, a bash command or a program) and a
+/// label, then add an entry to the list at `parent`. The label follows the
+/// chosen target until the user edits it.
 fn prompt_add_entry(state: &Rc<State>, parent: Vec<usize>) {
-    if state.functions.is_empty() {
-        crate::actions::flash(&state.ui, "create a function first (Manage Functions...)");
-        return;
-    }
     let shell = opusdm_ui::DialogShell::new(&state.window, "Add Menu Entry");
-    let dropdown = opusdm_ui::function_dropdown(&state.functions, &state.functions[0].id);
+    let first = state.functions.first().map(|f| f.id.clone()).unwrap_or_default();
+    let reference = Rc::new(RefCell::new(first.clone()));
     let label_entry = gtk::Entry::new();
-    label_entry.set_text(&state.functions[0].name);
-    shell.content().append(&dropdown);
-    shell.content().append(&label_entry);
-    {
-        let functions = state.functions.clone();
-        let label_entry = label_entry.clone();
-        dropdown.connect_selected_notify(move |d| {
-            if let Some(f) = functions.get(d.selected() as usize) {
-                label_entry.set_text(&f.name);
+    label_entry.set_text(&opusdm_ipc::funcref::title(&first, &state.functions));
+    // The last text the label got from the target: while the label still
+    // holds it (or is empty), a new target replaces it.
+    let last_auto = Rc::new(RefCell::new(label_entry.text().to_string()));
+    let picker = {
+        let (state, reference, label_entry, last_auto) = (state.clone(), reference.clone(), label_entry.clone(), last_auto.clone());
+        opusdm_ui::RefPicker::new(&state.functions.clone(), &first, &state.window.clone(), None, move |chosen| {
+            let text = opusdm_ipc::funcref::title(&chosen, &state.functions);
+            let current = label_entry.text().to_string();
+            if current.is_empty() || current == *last_auto.borrow() {
+                label_entry.set_text(&text);
+                *last_auto.borrow_mut() = text;
             }
-        });
-    }
+            *reference.borrow_mut() = chosen;
+        })
+    };
+    shell.content().append(picker.widget());
+    shell.content().append(&label_entry);
     let add_btn = shell.button("Add");
     shell.close_button("Cancel");
     let window = shell.window().clone();
     let state = state.clone();
     add_btn.connect_clicked(move |_| {
         let label = label_entry.text().trim().to_string();
-        let Some(function) = opusdm_ui::selected_function(&dropdown, &state.functions) else { return };
-        if label.is_empty() {
+        let function = reference.borrow().clone();
+        if label.is_empty() || function.is_empty() {
             return;
         }
         bindings::add_node(&mut state.tree.borrow_mut(), &parent, MenuNode::Entry { label, function });

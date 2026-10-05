@@ -1,10 +1,11 @@
 //! The script events editor (F-05): one row per binding, an event
-//! drop-down and a function drop-down, with live validation.
+//! drop-down and a function picker (saved function, bash command or
+//! program), with live validation.
 
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::prelude::*;
-use opusdm_ipc::bindings::{self, BindingError, ScriptBinding, ScriptEvent};
+use opusdm_ipc::bindings::{self, ScriptBinding, ScriptEvent};
 use opusdm_ipc::function::{Function, FunctionId};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -16,7 +17,11 @@ struct State {
     functions: Vec<Function>,
     events: Vec<ScriptEvent>,
     rows_box: gtk::Box,
+    /// One box per row for its error notes, repainted in place so typing in a
+    /// command field keeps the focus.
+    notes: RefCell<Vec<gtk::Box>>,
     save_btn: gtk::Button,
+    window: gtk::Window,
 }
 
 /// Open the "Edit Script Events" window, working on a copy of the Lister's
@@ -40,14 +45,16 @@ pub fn open_scripts_editor(ui: &Rc<Ui>) {
         functions: ui.hub.functions.borrow().clone(),
         events: ScriptEvent::emitted(),
         rows_box,
+        notes: RefCell::new(Vec::new()),
         save_btn: save_btn.clone(),
+        window: shell.window().clone(),
     });
 
     {
         let state = state.clone();
         add_btn.connect_clicked(move |_| {
-            let Some(first) = state.functions.first() else { return };
-            state.scripts.borrow_mut().push(ScriptBinding { event: state.events[0], function: first.id.clone() });
+            let first = state.functions.first().map(|f| f.id.clone()).unwrap_or_default();
+            state.scripts.borrow_mut().push(ScriptBinding { event: state.events[0], function: first });
             rebuild(&state);
         });
     }
@@ -76,16 +83,37 @@ fn rebuild(state: &Rc<State>) {
     while let Some(child) = state.rows_box.first_child() {
         state.rows_box.remove(&child);
     }
+    state.notes.borrow_mut().clear();
+    let scripts = state.scripts.borrow().clone();
+    for (index, binding) in scripts.iter().enumerate() {
+        state.rows_box.append(&build_row(state, index, binding));
+    }
+    revalidate(state);
+}
+
+/// Re-run the validation and repaint every row's notes in place, without
+/// touching the widgets that have the keyboard focus. Save is enabled only
+/// when nothing is wrong.
+fn revalidate(state: &Rc<State>) {
     let scripts = state.scripts.borrow().clone();
     let errors = bindings::validate_scripts(&scripts, &known_ids(&state.functions));
-    for (index, binding) in scripts.iter().enumerate() {
-        state.rows_box.append(&build_row(state, index, binding, &errors));
+    for (index, notes) in state.notes.borrow().iter().enumerate() {
+        while let Some(child) = notes.first_child() {
+            notes.remove(&child);
+        }
+        for error in errors.iter().filter(|e| e.script_index() == Some(index)) {
+            let note = gtk::Label::new(Some(&error.to_string()));
+            note.set_xalign(0.0);
+            note.set_margin_start(6);
+            note.add_css_class("error");
+            notes.append(&note);
+        }
     }
     state.save_btn.set_sensitive(errors.is_empty());
 }
 
-/// One row: event drop-down, function drop-down, remove button, errors below.
-fn build_row(state: &Rc<State>, index: usize, binding: &ScriptBinding, errors: &[BindingError]) -> gtk::Box {
+/// One row: event drop-down, function picker, remove button, errors below.
+fn build_row(state: &Rc<State>, index: usize, binding: &ScriptBinding) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
@@ -109,22 +137,20 @@ fn build_row(state: &Rc<State>, index: usize, binding: &ScriptBinding, errors: &
     }
     line.append(&event_dropdown);
 
-    let function_dropdown = opusdm_ui::function_dropdown(&state.functions, &binding.function);
-    function_dropdown.set_hexpand(true);
-    {
-        let state = state.clone();
-        function_dropdown.connect_selected_notify(move |d| {
-            let Some(id) = opusdm_ui::selected_function(d, &state.functions) else { return };
-            if let Some(b) = state.scripts.borrow_mut().get_mut(index) {
-                if b.function == id {
+    let picker = {
+        let on_change_state = state.clone();
+        opusdm_ui::RefPicker::new(&state.functions, &binding.function, &state.window, None, move |reference| {
+            if let Some(b) = on_change_state.scripts.borrow_mut().get_mut(index) {
+                if b.function == reference {
                     return;
                 }
-                b.function = id;
+                b.function = reference;
             }
-            rebuild(&state);
-        });
-    }
-    line.append(&function_dropdown);
+            revalidate(&on_change_state);
+        })
+    };
+    picker.widget().set_hexpand(true);
+    line.append(picker.widget());
 
     let remove = gtk::Button::from_icon_name("list-remove-symbolic");
     remove.add_css_class("flat");
@@ -142,12 +168,8 @@ fn build_row(state: &Rc<State>, index: usize, binding: &ScriptBinding, errors: &
     line.append(&remove);
     row.append(&line);
 
-    for error in errors.iter().filter(|e| e.script_index() == Some(index)) {
-        let note = gtk::Label::new(Some(&error.to_string()));
-        note.set_xalign(0.0);
-        note.set_margin_start(6);
-        note.add_css_class("error");
-        row.append(&note);
-    }
+    let notes = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    row.append(&notes);
+    state.notes.borrow_mut().push(notes);
     row
 }
