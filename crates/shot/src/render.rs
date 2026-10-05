@@ -56,7 +56,7 @@ fn draw_text(cr: &cairo::Context, at: (f64, f64), text: &str, font_size: f64) ->
 }
 
 /// A cairo surface holding `base` (cairo wants premultiplied BGRA).
-fn surface_from(base: &RgbaImage) -> Result<cairo::ImageSurface, String> {
+pub fn surface_from(base: &RgbaImage) -> Result<cairo::ImageSurface, String> {
     let (w, h) = (base.width() as i32, base.height() as i32);
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h)
         .map_err(|e| format!("cannot create a {w}x{h} surface: {e}"))?;

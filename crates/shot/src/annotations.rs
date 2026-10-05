@@ -38,9 +38,6 @@ pub enum Size {
 pub const DEFAULT_SIZE: Size = Size::Medium;
 
 impl Size {
-    /// Every size, in tool bar order.
-    pub const ALL: [Size; 3] = [Size::Small, Size::Medium, Size::Large];
-
     /// Stroke width of a line or arrow, in pixels.
     pub fn line_width(self) -> f64 {
         match self {
@@ -99,6 +96,7 @@ pub struct Annotation {
 
 impl Annotation {
     /// A new annotation with the default colour and size.
+    #[cfg(test)]
     pub fn new(shape: Shape) -> Self {
         Annotation { shape, color: DEFAULT_COLOR, size: DEFAULT_SIZE }
     }
@@ -112,6 +110,21 @@ impl Annotation {
             Shape::Text { at, text } => {
                 let (w, h) = text_extent(text, self.size.font_size());
                 p.0 >= at.0 && p.0 <= at.0 + w && p.1 >= at.1 && p.1 <= at.1 + h
+            }
+        }
+    }
+
+    /// The box around the annotation as (left, top, right, bottom), stroke
+    /// width included.
+    pub fn bounds(&self) -> (f64, f64, f64, f64) {
+        match &self.shape {
+            Shape::Line { from, to } | Shape::Arrow { from, to } => {
+                let pad = self.size.line_width() / 2.0;
+                (from.0.min(to.0) - pad, from.1.min(to.1) - pad, from.0.max(to.0) + pad, from.1.max(to.1) + pad)
+            }
+            Shape::Text { at, text } => {
+                let (w, h) = text_extent(text, self.size.font_size());
+                (at.0, at.1, at.0 + w, at.1 + h)
             }
         }
     }
@@ -274,6 +287,16 @@ mod tests {
         let two = text_extent("ab\ncd", 20.0);
         assert_eq!(two.0, one.0);
         assert_eq!(two.1, one.1 * 2.0);
+    }
+
+    #[test]
+    fn bounds_include_the_stroke() {
+        let a = line((10.0, 20.0), (50.0, 5.0));
+        assert_eq!(a.bounds(), (8.0, 3.0, 52.0, 22.0));
+        let t = text((1.0, 2.0), "ab");
+        let (l, top, r, b) = t.bounds();
+        assert_eq!((l, top), (1.0, 2.0));
+        assert!(r > l && b > top);
     }
 
     #[test]

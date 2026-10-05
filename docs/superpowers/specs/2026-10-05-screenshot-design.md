@@ -11,7 +11,7 @@ Target: X11 (Wayland is out of scope, see `docs/WAYLAND-PORT.md`).
 
 ## Flow
 
-hotkey -> `capture` (root window to RGBA) -> `overlay` (full-screen selection)
+hotkey -> `capture` (primary monitor of the root window to RGBA) -> `overlay` (full-screen selection)
 -> crop -> `editor` -> Save dialog / Copy / Quick save.
 
 Esc in the overlay quits with no output. A selection under 4x4 px is ignored.
@@ -20,7 +20,7 @@ Esc in the overlay quits with no output. A selection under 4x4 px is ignored.
 
 | Module | Responsibility |
 |---|---|
-| `capture.rs` | `x11rb` `GetImage` of the root window into an RGBA image |
+| `capture.rs` | `x11rb` `GetImage` of the primary monitor area into an RGBA image |
 | `selection.rs` | Rectangle geometry: normalise, clamp, minimum size |
 | `annotations.rs` | Model of lines, arrows and texts, styles, hit-test, undo/redo |
 | `render.rs` | Draws the annotations on an image (preview and export share it) |
@@ -48,13 +48,15 @@ Everything but `overlay.rs` and `editor.rs` is GUI free and unit tested.
 - PNG lossless. JPG quality 1-100 (default 90), alpha flattened on white. WebP
   quality 1-100 (default 90), lossy through libwebp, with a lossless switch.
 - Save dialog: `gtk::FileDialog` with a format filter; the extension picks the
-  format, PNG when missing or unknown. A small quality row appears for JPG and
-  WebP.
+  format. The format, quality slider (JPG and WebP) and lossless switch (WebP)
+  live in the bottom bar of the editor, since a file dialog cannot hold them; a
+  missing or unknown extension gets the one of the bar format appended.
 - Quick save: `~/Pictures/Screenshots/shot-YYYYMMDD-HHMMSS.png`; the folder is
   created, an existing name gets a numeric suffix, never overwritten.
-- Copy: the rendered image goes to the clipboard as a texture.
-- After a successful save or copy the window closes; after an error it stays
-  open with the error (path and cause) in a bar.
+- Copy: the rendered image goes to the clipboard as a texture. The window stays
+  open: without a clipboard manager the content would vanish with the process.
+- After a successful save the window closes; after an error it stays open with
+  the error (path and cause) in a bar.
 
 ## Errors
 
@@ -71,9 +73,9 @@ Unit tests for `selection`, `annotations`, `render` (known pixels) and `export`
 ## Integration
 
 Binary added to `scripts/build-release.sh`; usage section in `docs/usage.md`;
-entries in `CHANGES.md` and `FEATURES.md`.
+entry in `CHANGES.md`.
 
 ## Out of scope
 
-Wayland, GIF and video, blur and pixelate, rectangles and ellipses, upload,
+Wayland, other monitors than the primary one, GIF and video, blur and pixelate, rectangles and ellipses, upload,
 single window capture, config file for the styles.

@@ -2,7 +2,8 @@
 # Build OpusDM in release mode and stage everything needed to deploy it in ./dist.
 #
 # Layout of dist/:
-#   bin/      opusdm-hub, opusdm-lister, opusdm-settings, opusdm-dock, opusdm-run
+#   bin/      opusdm-hub, opusdm-lister, opusdm-settings, opusdm-dock, opusdm-run,
+#             opusdm-shot
 #             (the hub finds opusdm-lister next to itself, keep them together)
 #   config/   openbox-rc.xml, picom.conf
 #   themes/   <slug>.zip theme packages
@@ -13,7 +14,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DIST="$REPO_ROOT/dist"
-BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run"
+BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot"
 
 cd "$REPO_ROOT"
 
