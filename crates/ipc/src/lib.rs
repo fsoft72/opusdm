@@ -34,6 +34,7 @@ pub mod filetypes;
 pub mod format;
 pub mod frame;
 pub mod function;
+pub mod funcref;
 pub mod glob;
 pub mod groups;
 pub mod inotify;

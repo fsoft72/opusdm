@@ -60,20 +60,20 @@ pub fn problem(r: &FuncRef) -> Option<String>; // why it cannot run, if so
   existing `command` and `window` params, so the hub runs it with the code
   that already runs a Function's Run step (no new executor).
   - `Bash`: `command` is `bash -c <quoted cmd>`, quoted with
-    `shlex::try_quote`. `window` is `show_output`. A bash command that
+    `funcref::quote` (single quotes, `\` and `'` escaped). `window` is `show_output`. A bash command that
     contains `{` is left alone by placeholder expansion unless it is a
     placeholder (`{f}`, `{o}`, ...), which therefore also work in bash
     commands.
   - `Exec`: `command` is `line` as typed (the Run step already splits it with
-    quote handling), `window` is off. The argv is split with `shlex::split`;
+    quote handling), `window` is off. The argv is split with the same `cli::tokenize` the Run step uses;
     the first element is the program.
 - `problem`:
   - `Bash`: empty or blank command.
-  - `Exec`: blank line, unbalanced quotes (`shlex::split` returns `None`), or
+  - `Exec`: blank line, unbalanced quotes (`cli::tokenize` fails), or
     a program that is neither an absolute path to an executable file nor found
     in `PATH`.
   - `Saved`: never (existence is checked against the function list, as now).
-- New dependency: `shlex` in `crates/ipc` (small, no dependencies of its own).
+- No new dependency: the `Run` step already splits its command with `cli::tokenize`, and validation must split exactly as execution does.
 
 ### Hub
 
