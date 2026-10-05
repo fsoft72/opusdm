@@ -845,16 +845,12 @@ impl Hub {
         let _ = self.evt_tx.send(HubEvent::LeftOutAdd(paths));
     }
 
-    /// Install `path` as the desktop background image. `fit` overrides the
-    /// current fit when `Some`; `None` keeps it.
+    /// Make `path` (a picture or a video) the one desktop background,
+    /// replacing the whole list. `fit` overrides the default fit when `Some`.
+    /// The interval, fade and shuffle settings are kept.
     fn apply_background_image(&mut self, path: PathBuf, fit: Option<opusdm_ipc::ImageFit>) {
         let mut settings = self.current_settings.clone();
-        let background = &mut settings.theme.background;
-        background.mode = opusdm_ipc::BackgroundMode::Image;
-        background.image_path = Some(path);
-        if let Some(fit) = fit {
-            background.image_fit = fit;
-        }
+        settings.theme.background.set_single(path, fit);
         self.apply_settings(settings);
     }
 
@@ -1457,9 +1453,13 @@ mod tests {
             }
         }
         let theme = got.expect("ThemeChanged not emitted");
-        assert_eq!(theme.background.mode, opusdm_ipc::BackgroundMode::Image);
-        assert_eq!(theme.background.image_path, Some(std::fs::canonicalize(&img).unwrap()));
-        assert_eq!(theme.background.image_fit, opusdm_ipc::ImageFit::Tile);
+        assert_eq!(
+            theme.background.entries,
+            vec![opusdm_ipc::BackgroundEntry::Image {
+                path: std::fs::canonicalize(&img).unwrap(),
+                fit: opusdm_ipc::ImageFit::Tile,
+            }]
+        );
         wait_for_file(&cfg.path().join("opusdm").join("settings.json"));
     }
 
@@ -1549,7 +1549,11 @@ mod tests {
         let mut c = connect(&path);
         let mut settings = opusdm_ipc::Settings::default();
         settings.theme.icon_set = opusdm_ipc::IconSetId::Custom("breeze-dark".to_string());
-        settings.theme.background.gradient_angle = 900; // above GRADIENT_ANGLE_MAX, hub must clamp
+        settings.theme.background.entries = vec![opusdm_ipc::BackgroundEntry::Gradient {
+            start: "#000000".into(),
+            end: "#ffffff".into(),
+            angle: 900, // above GRADIENT_ANGLE_MAX, hub must clamp
+        }];
         settings.appearance.monospace_list = true;
         send(&mut c, &ToHub::SetSettings(settings.clone())).unwrap();
 
@@ -1562,7 +1566,10 @@ mod tests {
         }
         let got = got.expect("ThemeChanged not emitted");
         assert_eq!(got.icon_set, opusdm_ipc::IconSetId::Custom("breeze-dark".to_string()));
-        assert_eq!(got.background.gradient_angle, opusdm_ipc::GRADIENT_ANGLE_MAX);
+        assert!(matches!(
+            got.background.entries[0],
+            opusdm_ipc::BackgroundEntry::Gradient { angle: opusdm_ipc::GRADIENT_ANGLE_MAX, .. }
+        ));
 
         // settings.json landed under the temp config dir and carries appearance too.
         let written = wait_for_file(&cfg.path().join("opusdm").join("settings.json"));

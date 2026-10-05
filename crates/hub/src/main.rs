@@ -1,5 +1,6 @@
 //! opusdm-hub: the always-on controller.
 
+mod background;
 mod desktop;
 mod desktop_ops;
 mod bank_windows;

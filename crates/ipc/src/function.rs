@@ -330,7 +330,7 @@ pub mod schema {
             InternalCmd::SetBackground => &[
                 ParamSpec {
                     key: "path",
-                    label: "Image file (png, jpg, jpeg, webp, bmp, gif)",
+                    label: "Image or video file (png, jpg, webp, gif, mp4, mkv, webm, ...)",
                     required: true,
                     kind: ParamKind::PathTemplate,
                 },

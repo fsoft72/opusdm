@@ -1680,6 +1680,7 @@ dependencies = [
  "opusdm-fsops",
  "opusdm-iconview",
  "opusdm-ipc",
+ "opusdm-media",
  "opusdm-panel",
  "opusdm-ui",
  "serde",

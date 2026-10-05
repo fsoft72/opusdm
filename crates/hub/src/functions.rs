@@ -263,9 +263,9 @@ fn run_change_dir(
 
 /// Run a `SetBackground` step: expand the path template, resolve `~` and
 /// relative paths against the SOURCE cwd, require an existing regular file
-/// with an image extension (checked on the name the user picked, so a
-/// symlink `wall.png` is fine), parse the optional `fit`, and ask the hub to
-/// install the image. Nothing is emitted when any check fails.
+/// with a picture or video extension (checked on the name the user picked, so
+/// a symlink `wall.png` is fine), parse the optional `fit`, and ask the hub to
+/// make it the one desktop background. Nothing is emitted when any check fails.
 fn run_set_background(
     run_id: u64,
     step_idx: usize,
@@ -280,9 +280,9 @@ fn run_set_background(
         return Err("Set Background: path is empty".to_string());
     }
     let picked = source.cwd.join(expand_home(text, "Set Background")?);
-    if !opusdm_ipc::is_background_image(&picked) {
+    if !opusdm_ipc::is_background_media(&picked) {
         return Err(format!(
-            "Set Background: \"{}\" is not a supported image (png, jpg, jpeg, webp, bmp, gif)",
+            "Set Background: \"{}\" is not a supported image or video (png, jpg, jpeg, webp, bmp, gif, mp4, mkv, webm, avi, mov, m4v, ogv)",
             picked.display()
         ));
     }

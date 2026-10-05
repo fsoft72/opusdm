@@ -292,10 +292,19 @@ their defaults.
 
 ### 3.12 Desktop Configuration
 Right-click the desktop and pick **Desktop -> Settings** to open **opus-desktop-config**, a small
-standalone window with three sections:
-- **Background**: choose **Solid colour**, **Gradient** (two colours plus an angle in degrees), or
-  **Image** (pick a file, then a fit mode - `Fill`, `Fit`, `Center`, `Tile`). An image that cannot
-  be read falls back to the solid colour and the window shows a warning.
+standalone window. The background has its own **Desktop Background** tab in Settings:
+- **Desktop Background**: a list of backgrounds the desktop shows in turn. **Add file...** adds
+  pictures and videos (several at once), **Add color** adds a flat colour, **Add gradient** adds a
+  two colour gradient with an angle in degrees, and **Add from theme...** adds one of the
+  wallpapers of the active theme. Each row has move up, move down and remove buttons; pictures and
+  videos have a fit mode (`Fill`, `Fit`, `Center`, `Tile`; a video only `Fill` and `Fit`). Pictures
+  and videos can be mixed freely. **Interval (s)** is how long each entry stays on screen (5 to
+  86400, default 300), **Fade (ms)** is the cross-fade between two entries (0 to 10000, default
+  1000, never more than half the interval) and **Shuffle** picks a random order instead of the
+  list order. A video shorter than the interval plays again and again until the interval ends, a
+  longer one is cut; videos are always silent. With one entry nothing rotates. An entry that
+  cannot be shown (file removed, video that does not play) is skipped, and with none left the
+  desktop shows the default colour. An older single background becomes a list of one entry.
 - **Icon grid**: the icon size and the grid spacing, each with `S` / `M` / `L` preset buttons and a
   free spin box.
 - **Desktop folder**: override which directory the desktop shows. Empty means the default
@@ -439,14 +448,16 @@ Two internal commands of the Function Editor act on the desktop instead of on fi
   function stops. It also moves the working directory of every later step: after
   `Change Directory  ~/Projects`, a `Make Directory` step creates its folder in `~/Projects` and an
   external program with "run in the SOURCE folder" starts there.
-- **Set Background** installs a picture as the desktop background. **Image file** takes the same
-  kind of path (`png`, `jpg`, `jpeg`, `webp`, `bmp` or `gif`); the optional **Fit** is `fill`, `fit`,
+- **Set Background** makes a picture or a video the one desktop background, replacing the whole
+  list (the interval, fade and shuffle settings stay). **Image or video file** takes the same
+  kind of path (`png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `mp4`, `mkv`, `webm`, `avi`, `mov`,
+  `m4v` or `ogv`); the optional **Fit** is `fill`, `fit`,
   `center` or `tile` (case does not matter), and empty keeps the fit already set in Settings. The
   change is applied at once and saved in `settings.json`. A wrong extension, a missing file or an
   unknown fit stops the step and leaves the background as it was.
 
 To run either from the Command Palette, save a function that contains the step, for example
-`Set Background` with `{f}` as the image. Right-clicking an image file in a lister also offers
+`Set Background` with `{f}` as the image. Right-clicking an image or video file in a lister also offers
 **Set as Desktop Background** directly (not for names that contain a `{`).
 
 ### 3.21 Leave Out (icons on the desktop)

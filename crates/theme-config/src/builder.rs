@@ -68,7 +68,7 @@ pub fn save_theme(req: &BuildRequest) -> Result<PathBuf, BuildError> {
 mod tests {
     use super::*;
     use crate::test_support::{install_source, picture, scratch_config, ENV_LOCK};
-    use opusdm_ipc::desktop::{BackgroundMode, ImageFit};
+    use opusdm_ipc::desktop::{BackgroundEntry, ImageFit};
     use opusdm_ipc::look::{FontSpec, SurfaceImage};
     use opusdm_ipc::themes::{load_theme_data, themes_dir};
 
@@ -87,8 +87,8 @@ mod tests {
         install_source("src");
         let mut settings = Settings::default();
         settings.theme.colors.file_fg = "#abcdef".into();
-        settings.theme.background.mode = BackgroundMode::Image;
-        settings.theme.background.image_path = Some(picture(td.path(), "wall.jpg"));
+        settings.theme.background.entries =
+            vec![BackgroundEntry::Image { path: picture(td.path(), "wall.jpg"), fit: ImageFit::Fill }];
         settings.surfaces.lister.image_path = Some(picture(td.path(), "l.png"));
         settings.fonts.list = FontSpec { family: "Iosevka".into(), size: 12 };
 

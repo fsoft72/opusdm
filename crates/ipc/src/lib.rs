@@ -50,7 +50,7 @@ pub mod themes;
 pub mod timefmt;
 
 pub use desktop::{
-    background_css, is_background_image, path_to_file_url, BACKGROUND_IMAGE_EXTS, Background, BackgroundMode, DesktopSettings, ImageFit,
+    background_css, is_background_image, is_background_media, is_background_video, path_to_file_url, BACKGROUND_IMAGE_EXTS, BACKGROUND_VIDEO_EXTS, Background, BackgroundEntry, BackgroundMode, DesktopSettings, ImageFit, FADE_MS_RANGE, INTERVAL_SECS_RANGE,
     DockPosition, PanelPosition, DOCK_ICON_SIZE_RANGE,
     GRADIENT_ANGLE_MAX, GRID_GAP_RANGE, GRID_SPACING_RANGE, ICON_SIZE_RANGE,
 };
