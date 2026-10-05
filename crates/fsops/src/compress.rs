@@ -10,6 +10,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+/// Tag of the debug lines written to the console.
+const LOG_TAG: &str = "compress";
+
+/// How long to wait for the status of a child someone else reaped.
+const REAP_GRACE: Duration = Duration::from_secs(2);
+
 /// How often the running tool is polled for exit, cancel and progress.
 const POLL_GAP: Duration = Duration::from_millis(50);
 
@@ -260,7 +266,32 @@ fn spawn_tool(format: CompressFormat, plan: &Plan, out_path: &Path, out: File) -
         }
     }
     cmd.current_dir(&plan.parent).stdin(Stdio::null()).stderr(Stdio::piped());
-    cmd.spawn()
+    opusdm_ipc::err_log!(LOG_TAG, "run {:?} {:?} in {}", cmd.get_program(), cmd.get_args().collect::<Vec<_>>(), plan.parent.display());
+    let child = cmd.spawn()?;
+    opusdm_ipc::err_log!(LOG_TAG, "started pid {} -> {}", child.id(), out_path.display());
+    Ok(child)
+}
+
+/// Non-blocking exit check of `child`. The hub's SIGCHLD reaper may collect
+/// the child first, which makes the wait fail with `ECHILD`; the status it
+/// recorded is used then.
+/// `lost_since` is when the child was first found gone; the status must show
+/// up within [`REAP_GRACE`] or the wait fails.
+fn poll_exit(child: &mut Child, lost_since: &mut Option<Instant>) -> io::Result<Option<std::process::ExitStatus>> {
+    use std::os::unix::process::ExitStatusExt;
+    match child.try_wait() {
+        Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
+            if let Some(raw) = opusdm_ipc::reaped::take(child.id()) {
+                opusdm_ipc::err_log!(LOG_TAG, "pid {} was reaped elsewhere, recorded status {raw}", child.id());
+                return Ok(Some(std::process::ExitStatus::from_raw(raw)));
+            }
+            if lost_since.get_or_insert_with(Instant::now).elapsed() > REAP_GRACE {
+                return Err(e);
+            }
+            Ok(None)
+        }
+        other => other,
+    }
 }
 
 /// Why waiting for the tool did not end well.
@@ -280,24 +311,34 @@ fn wait_for(
     cancel: &CancelToken,
 ) -> Result<(), WaitError> {
     let mut last = Instant::now();
+    let mut lost_since = None;
     loop {
         if cancel.is_cancelled() {
+            opusdm_ipc::err_log!(LOG_TAG, "cancelled, killing pid {}", child.id());
             let _ = child.kill();
             let _ = child.wait();
             return Err(WaitError::Cancelled);
         }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
+        match poll_exit(&mut child, &mut lost_since) {
+            Ok(Some(status)) if status.success() => {
+                opusdm_ipc::err_log!(LOG_TAG, "pid {} finished: {status}", child.id());
+                return Ok(());
+            }
             Ok(Some(status)) => {
+                opusdm_ipc::err_log!(LOG_TAG, "pid {} failed: {status}", child.id());
                 let mut text = String::new();
                 if let Some(mut err) = child.stderr.take() {
                     let _ = io::Read::read_to_string(&mut err, &mut text);
                 }
                 let text = text.trim();
+                opusdm_ipc::err_log!(LOG_TAG, "stderr: {text:?}");
                 return Err(WaitError::Failed(if text.is_empty() { format!("compressor failed: {status}") } else { text.to_string() }));
             }
             Ok(None) => {}
-            Err(e) => return Err(WaitError::Failed(e.to_string())),
+            Err(e) => {
+                opusdm_ipc::err_log!(LOG_TAG, "wait on pid {} failed: {e}", child.id());
+                return Err(WaitError::Failed(e.to_string()));
+            }
         }
         if last.elapsed() >= POLL_GAP {
             last = Instant::now();
@@ -331,6 +372,18 @@ mod tests {
             Progress::Done { errors, .. } => errors.iter().map(|(_, m)| m.clone()).collect(),
             _ => panic!("not a Done"),
         }
+    }
+
+    #[test]
+    fn a_child_reaped_by_someone_else_still_reports_its_status() {
+        let mut child = Command::new("false").spawn().unwrap();
+        let pid = child.id();
+        let mut raw: libc::c_int = 0;
+        // SAFETY: waits for our own child; `raw` is a valid out-pointer.
+        assert_eq!(unsafe { libc::waitpid(pid as libc::pid_t, &mut raw, 0) }, pid as libc::pid_t);
+        opusdm_ipc::reaped::record(pid, raw);
+        let status = poll_exit(&mut child, &mut None).unwrap().expect("status recovered");
+        assert!(!status.success());
     }
 
     #[test]

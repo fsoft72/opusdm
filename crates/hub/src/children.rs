@@ -91,6 +91,7 @@ pub fn install_sigchld(cmd_tx: Sender<HubCmd>) {
                     if pid <= 0 {
                         break;
                     }
+                    opusdm_ipc::reaped::record(pid as u32, status);
                     if cmd_tx.send(HubCmd::ChildExited(pid as u32)).is_err() {
                         return;
                     }

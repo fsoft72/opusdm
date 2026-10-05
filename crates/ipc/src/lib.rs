@@ -41,6 +41,7 @@ pub mod leftout;
 pub mod look;
 pub mod menu;
 pub mod proto;
+pub mod reaped;
 pub mod settings;
 pub mod sockpath;
 pub mod theme;
