@@ -547,6 +547,31 @@ little and save it.
 - **Copy:** puts the image on the clipboard. The window stays open, because
   without a clipboard manager the image would vanish with the process.
 
+### 3.27 Media Player (`opusdm-player`)
+
+Plays one audio or video file in a small window.
+
+- **Open it:** run `opusdm-player <file or URL>` (add `--loop` to start again at
+  the end). To open files from a Lister, add a type in **Edit File Types...** whose
+  rule matches the media files (for example `*.mp3;*.flac;*.mp4;*.mkv`) and whose
+  double click action is **Exec** with the program `opusdm-player` and `{f}`.
+- **Video:** the frames fill the window. A double click (or **F**) toggles full
+  screen; in full screen the control bar shows again for two seconds when the
+  pointer moves, and **Esc** leaves it.
+- **Audio only:** the window shows the cover (or an icon), the title, artist and
+  album found in the file tags.
+- **Control bar:** play / pause, the seek slider with the current and total time,
+  a mute button with the volume slider, and a loop button. Dragging the slider
+  seeks to the nearest key frame while you drag and exactly where you release.
+- **Keys:** **Space** play / pause, **Left** / **Right** go back / forward 5
+  seconds, **Up** / **Down** change the volume, **M** mute, **F** full screen.
+- **Errors:** a file that cannot be played (missing codec, damaged file) is
+  shown in a requester and the program exits with status 1.
+- **Requires** GStreamer: `gstreamer1.0-gtk4` (the video sink),
+  `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad` and
+  `gstreamer1.0-libav` for the codecs. To build, also `libgstreamer1.0-dev` and
+  `libgstreamer-plugins-base1.0-dev`.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

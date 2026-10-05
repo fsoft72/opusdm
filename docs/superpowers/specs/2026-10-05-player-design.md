@@ -44,9 +44,14 @@ Build time: `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`. Run time:
 | `tags.rs` | `TagInfo` (title, artist, album, cover as encoded bytes), built from a `gst::TagList` |
 | `uri.rs` | Path or `file://` / `http(s)://` argument to a URI |
 
-`EngineOptions { audio: bool, looping: bool }`. `audio: false` plays video
-only (no audio decode); both are for the desktop background and the player uses
-the defaults (`audio: true`, `looping: false`).
+`EngineOptions { audio: bool, looping: bool, video_sink: VideoSink }`. `audio:
+false` plays video only (no audio decode); both are for the desktop background
+and the player uses the defaults (`audio: true`, `looping` from `--loop`).
+`VideoSink::Discard` throws frames and audio away, so the tests run with no
+display and no sound card; `paintable()` is then `None`.
+
+`Engine::open` fails only for an invalid path or URL. A file that cannot be
+opened or played arrives as `Event::Error` (one channel for those).
 
 Rules:
 
@@ -68,7 +73,8 @@ Rules:
 | `view.rs` | Picks the video view or the audio view from the stream (`ViewKind`) |
 | `timefmt.rs` | `mm:ss` / `h:mm:ss`, slider position to nanoseconds and back |
 | `window.rs` | GTK window: video area, controls, full screen, Space / Left / Right / F / M keys |
-| `controls.rs` | Play / pause button, seek slider, times, volume, mute |
+| `controls.rs` | Play / pause button, seek slider, times, volume, mute, loop |
+| `icons.rs` | Play, pause, volume, muted and loop icons drawn with cairo (they follow the theme text colour, like the `opusdm-shot` ones) |
 | `audio_view.rs` | Cover or icon, title, artist, album for audio only files |
 
 Everything but `window.rs`, `controls.rs` and `audio_view.rs` is GUI free and
@@ -84,12 +90,15 @@ is dragged.
 
 - `Engine::open` returns `Result<(), MediaError>`.
 - The player shows an error in an OpusDM requester and logs it to the console
-  with the `[player]` prefix. A file that cannot be opened exits with code 1.
+  with the `[player]` prefix. Only the first error is shown, because GStreamer
+  follows it with a second, more technical one. A file that cannot be played exits
+  with code 1.
 
 ## Integration
 
-- File types: audio and video types open with `opusdm-player` (default File
-  Types entries).
+- File types: OpusDM has no built-in File Types entries (the user creates them),
+  so `docs/usage.md` explains how to make audio and video files open with
+  `opusdm-player`.
 - `scripts/build-release.sh` ships the binary; `opusdm-session` and `run-x11.sh`
   put the binaries on `PATH`.
 - Usage documented in `docs/usage.md`.
