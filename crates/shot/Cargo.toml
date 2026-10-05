@@ -1,0 +1,20 @@
+[package]
+name = "opusdm-shot"
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-shot"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ui = { path = "../ui" }
+opusdm-ipc = { path = "../ipc" }
+gtk4.workspace = true
+x11rb.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+webp = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true
