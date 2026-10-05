@@ -151,10 +151,14 @@ pub fn open_standalone(app: &gtk::Application) {
     });
     let window = shell.window().clone();
     let save: Rc<dyn Fn(Vec<Hotkey>)> = Rc::new(move |hotkeys| {
+        opusdm_ipc::debug_log!("lister", "Edit Hotkeys: saving {} hotkeys", hotkeys.len());
         let mut updated = bindings::load_bindings();
         updated.hotkeys = hotkeys;
         match client.send(&opusdm_ipc::ToHub::SetBindings(updated)) {
-            Ok(()) => eprintln!("opusdm-lister: hotkeys saved"),
+            Ok(()) => {
+                eprintln!("opusdm-lister: hotkeys saved");
+                window.close();
+            }
             Err(e) => {
                 opusdm_ui::requester(&window, "Edit Hotkeys", &format!("lost the connection to the hub: {e}"), None, &[("OK", ())], |_| {});
             }
@@ -164,7 +168,7 @@ pub fn open_standalone(app: &gtk::Application) {
 }
 
 /// Fill `shell` with the hotkey editor. `save` receives the hotkeys when
-/// Save is pressed.
+/// Save is pressed; the caller decides what happens to the window.
 fn build_editor(shell: opusdm_ui::DialogShell, hotkeys: Vec<Hotkey>, functions: Vec<Function>, save: Rc<dyn Fn(Vec<Hotkey>)>) {
     let shell = shell.size(640, 420).scrolled();
     let root = shell.content();

@@ -431,6 +431,7 @@ impl Hub {
             ToHub::SetSettings(new_settings) => self.apply_settings(new_settings),
 
             ToHub::SetBindings(new_bindings) => {
+                opusdm_ipc::debug_log!("hub", "SetBindings from conn {cid}: {} hotkeys", new_bindings.hotkeys.len());
                 self.current_bindings = bindings::sanitize(new_bindings);
                 let _ = self.persist_tx.send(PersistMsg::Bindings(self.current_bindings.clone()));
                 self.broadcast(ToLister::BindingsUpdate(self.current_bindings.clone()));
@@ -1975,6 +1976,24 @@ mod tests {
         assert_eq!(b.hotkeys.len(), 1, "the duplicate must be dropped, first wins");
         assert_eq!(b.hotkeys[0].key, "Ctrl+u");
         assert_eq!(b.hotkeys[0].function, "f1");
+
+        let written = wait_for_file(&cfg.path().join("opusdm").join("hotkeys.json"));
+        let back: Vec<opusdm_ipc::bindings::Hotkey> = serde_json::from_str(&written).unwrap();
+        assert_eq!(back.len(), 1);
+    }
+
+    #[test]
+    fn set_bindings_from_an_unregistered_tool_connection_is_persisted() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+
+        let mut tool = connect(&path);
+        let hotkeys = vec![opusdm_ipc::bindings::Hotkey { key: "Ctrl+Alt+u".into(), function: "bash:ls".into(), global: false }];
+        send(&mut tool, &ToHub::SetBindings(opusdm_ipc::Bindings { hotkeys, ..opusdm_ipc::Bindings::default() })).unwrap();
 
         let written = wait_for_file(&cfg.path().join("opusdm").join("hotkeys.json"));
         let back: Vec<opusdm_ipc::bindings::Hotkey> = serde_json::from_str(&written).unwrap();
