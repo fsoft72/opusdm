@@ -34,7 +34,8 @@ pub fn run_on_row(ui: &Rc<Ui>, name: &str, function: &FunctionId) {
 }
 
 /// The "Open With" entries of `file_type`: reference and label (the
-/// function name, or the command for an inline bash or exec one). Saved
+/// function name, or the command for an inline bash or exec one, the latter
+/// with no `exec:` prefix). Saved
 /// functions that no longer exist and inline commands that cannot run are
 /// left out.
 pub fn menu_entries(file_type: &FileType, functions: &[Function]) -> Vec<(FunctionId, String)> {
@@ -46,8 +47,17 @@ pub fn menu_entries(file_type: &FileType, functions: &[Function]) -> Vec<(Functi
             opusdm_ipc::funcref::FuncRef::Saved(_) => functions.iter().any(|f| &f.id == *id),
             inline => opusdm_ipc::funcref::problem(&inline).is_none(),
         })
-        .map(|id| (id.clone(), opusdm_ipc::funcref::title(id, functions)))
+        .map(|id| (id.clone(), menu_label(id, functions)))
         .collect()
+}
+
+/// The label of an Open With entry. Like [`opusdm_ipc::funcref::title`], but an
+/// exec command shows its command line with no `exec:` prefix.
+fn menu_label(reference: &str, functions: &[Function]) -> String {
+    match opusdm_ipc::funcref::parse(reference) {
+        opusdm_ipc::funcref::FuncRef::Exec { line } => line,
+        _ => opusdm_ipc::funcref::title(reference, functions),
+    }
 }
 
 /// Problems in the actions of one file type: an inline bash or exec command
@@ -620,5 +630,15 @@ mod tests {
             menu_entries(&t, &functions),
             vec![("bash:ls".to_string(), "bash: ls".to_string()), ("a".to_string(), "Alpha".to_string())]
         );
+    }
+
+    #[test]
+    fn an_exec_entry_is_labelled_with_its_command_line_and_no_prefix() {
+        let t = FileType {
+            name: "T".into(),
+            rule: MatchRule::Glob { pattern: "*".into() },
+            actions: Actions { dblclick: None, drop: None, menu: vec!["exec:ls -l {f}".into()] },
+        };
+        assert_eq!(menu_entries(&t, &[]), vec![("exec:ls -l {f}".to_string(), "ls -l {f}".to_string())]);
     }
 }
