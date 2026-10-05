@@ -33,37 +33,21 @@ pub fn run_on_row(ui: &Rc<Ui>, name: &str, function: &FunctionId) {
     ui.start_run(opusdm_ipc::ToHub::RunFunctionById { id: function.clone() });
 }
 
-/// The "Open With" entries of `file_type`: function id and label (the function
-/// name). Functions that no longer exist are left out.
+/// The "Open With" entries of `file_type`: reference and label (the
+/// function name, or the command for an inline bash or exec one). Saved
+/// functions that no longer exist and inline commands that cannot run are
+/// left out.
 pub fn menu_entries(file_type: &FileType, functions: &[Function]) -> Vec<(FunctionId, String)> {
     file_type
         .actions
         .menu
         .iter()
-        .filter_map(|id| functions.iter().find(|f| &f.id == id).map(|f| (id.clone(), f.name.clone())))
+        .filter(|id| match opusdm_ipc::funcref::parse(id) {
+            opusdm_ipc::funcref::FuncRef::Saved(_) => functions.iter().any(|f| &f.id == *id),
+            inline => opusdm_ipc::funcref::problem(&inline).is_none(),
+        })
+        .map(|id| (id.clone(), opusdm_ipc::funcref::title(id, functions)))
         .collect()
-}
-
-/// Whether the dropdown index `selected` of a list with a leading "(none)"
-/// entry names a function, and which one.
-fn function_at(functions: &[Function], selected: u32) -> Option<FunctionId> {
-    (selected as usize).checked_sub(1).and_then(|i| functions.get(i)).map(|f| f.id.clone())
-}
-
-/// Dropdown strings: "(none)" then every function name.
-fn names_with_none(functions: &[Function], none: &str) -> Vec<String> {
-    std::iter::once(none.to_string()).chain(functions.iter().map(|f| f.name.clone())).collect()
-}
-
-/// A dropdown over the functions with a leading "(none)" entry, `current`
-/// pre-selected.
-fn function_picker(functions: &[Function], none: &str, current: Option<&FunctionId>) -> gtk::DropDown {
-    let names = names_with_none(functions, none);
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let dropdown = gtk::DropDown::from_strings(&refs);
-    let position = current.and_then(|id| functions.iter().position(|f| &f.id == id)).map(|p| p as u32 + 1).unwrap_or(0);
-    dropdown.set_selected(position);
-    dropdown
 }
 
 /// Everything the editor's callbacks share.
@@ -71,6 +55,7 @@ struct State {
     drafts: RefCell<Vec<Draft>>,
     current: Cell<Option<usize>>,
     functions: Vec<Function>,
+    window: gtk::Window,
     list: gtk::ListBox,
     form: gtk::Box,
     status: gtk::Label,
@@ -145,6 +130,7 @@ fn build_editor(
         drafts: RefCell::new(filetypes::load_filetypes().types.iter().map(Draft::from_type).collect()),
         current: Cell::new(None),
         functions,
+        window: shell.window().clone(),
         list,
         form,
         status,
@@ -475,45 +461,26 @@ fn actions_section(state: &Rc<State>, draft: &Draft) -> gtk::Box {
     title.set_xalign(0.0);
     section.append(&title);
 
-    let dbl = function_picker(&state.functions, "(default application)", draft.dblclick.as_ref());
-    {
-        let state = state.clone();
-        dbl.connect_selected_notify(move |d| {
-            let chosen = function_at(&state.functions, d.selected());
-            edit_current(&state, |draft| draft.dblclick = chosen);
-        });
-    }
-    section.append(&labelled("Double click", &dbl));
-
-    let drop_pick = function_picker(&state.functions, "(nothing)", draft.drop.as_ref());
-    {
-        let state = state.clone();
-        drop_pick.connect_selected_notify(move |d| {
-            let chosen = function_at(&state.functions, d.selected());
-            edit_current(&state, |draft| draft.drop = chosen);
-        });
-    }
-    section.append(&labelled("Drop (stored, not wired yet)", &drop_pick));
+    section.append(&labelled("Double click", &optional_picker(state, "(default application)", draft.dblclick.as_deref(), |d, chosen| d.dblclick = chosen)));
+    section.append(&labelled("Drop (stored, not wired yet)", &optional_picker(state, "(nothing)", draft.drop.as_deref(), |d, chosen| d.drop = chosen)));
 
     let menu_title = gtk::Label::new(Some("Open With menu"));
     menu_title.set_xalign(0.0);
     section.append(&menu_title);
     for (index, id) in draft.menu.iter().enumerate() {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let picker = function_picker(&state.functions, "(none)", Some(id));
-        picker.set_hexpand(true);
-        {
+        let picker = {
             let state = state.clone();
-            picker.connect_selected_notify(move |d| {
-                let Some(chosen) = function_at(&state.functions, d.selected()) else { return };
+            opusdm_ui::RefPicker::new(&state.functions.clone(), id, &state.window.clone(), None, move |chosen| {
                 edit_current(&state, |draft| {
                     if let Some(slot) = draft.menu.get_mut(index) {
                         *slot = chosen;
                     }
                 });
-            });
-        }
-        line.append(&picker);
+            })
+        };
+        picker.widget().set_hexpand(true);
+        line.append(picker.widget());
         let remove = gtk::Button::from_icon_name("list-remove-symbolic");
         remove.add_css_class("flat");
         {
@@ -532,17 +499,32 @@ fn actions_section(state: &Rc<State>, draft: &Draft) -> gtk::Box {
     }
     let add = gtk::Button::with_label("Add Menu Entry");
     add.set_halign(gtk::Align::Start);
-    add.set_sensitive(!state.functions.is_empty());
     {
         let state = state.clone();
         add.connect_clicked(move |_| {
-            let Some(first) = state.functions.first().map(|f| f.id.clone()) else { return };
+            // A new entry starts on the first saved function (or empty, which the
+            // picker shows as nothing chosen); the user picks what it runs.
+            let first = state.functions.first().map(|f| f.id.clone()).unwrap_or_default();
             edit_current(&state, |d| d.menu.push(first));
             show_form(&state);
         });
     }
     section.append(&add);
     section
+}
+
+/// A picker for an optional action: `none` names the "nothing" choice, `current`
+/// is the stored reference, and `set` stores the new one (`None` for nothing)
+/// in the draft being edited.
+fn optional_picker(state: &Rc<State>, none: &str, current: Option<&str>, set: impl Fn(&mut Draft, Option<FunctionId>) + 'static) -> gtk::Box {
+    let picker = {
+        let state = state.clone();
+        opusdm_ui::RefPicker::new(&state.functions.clone(), current.unwrap_or(""), &state.window.clone(), Some(none), move |chosen| {
+            let chosen = if chosen.is_empty() { None } else { Some(chosen) };
+            edit_current(&state, |draft| set(draft, chosen));
+        })
+    };
+    picker.widget().clone()
 }
 
 /// `caption` on the left, `widget` stretching on the right.
@@ -583,11 +565,20 @@ mod tests {
     }
 
     #[test]
-    fn function_at_skips_the_none_entry() {
-        let functions = vec![func("a", "Alpha"), func("b", "Beta")];
-        assert_eq!(function_at(&functions, 0), None);
-        assert_eq!(function_at(&functions, 2), Some("b".to_string()));
-        assert_eq!(function_at(&functions, 3), None);
-        assert_eq!(names_with_none(&functions, "(none)"), vec!["(none)", "Alpha", "Beta"]);
+    fn menu_entries_keep_runnable_inline_commands_and_drop_broken_ones() {
+        let t = FileType {
+            name: "T".into(),
+            rule: MatchRule::Glob { pattern: "*".into() },
+            actions: Actions {
+                dblclick: None,
+                drop: None,
+                menu: vec!["bash:ls".into(), "a".into(), "exec:opusdm-no-such-program-xyz".into(), "bash:".into(), "gone".into()],
+            },
+        };
+        let functions = vec![func("a", "Alpha")];
+        assert_eq!(
+            menu_entries(&t, &functions),
+            vec![("bash:ls".to_string(), "bash: ls".to_string()), ("a".to_string(), "Alpha".to_string())]
+        );
     }
 }
