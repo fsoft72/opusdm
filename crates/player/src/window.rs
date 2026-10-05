@@ -94,7 +94,7 @@ fn _toggle_play(engine: &Engine) {
     if let Err(e) = result { opusdm_ipc::err_log!("player", "{e}"); }
 }
 
-/// Space, arrows, F, M and Esc.
+/// Space, arrows, F, M, Q and Esc.
 fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Rc<Engine>, controls: &Rc<Controls>) {
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -115,6 +115,7 @@ fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Rc<Engine>, controls: &R
             gdk::Key::f | gdk::Key::F => w.set_fullscreened(!w.is_fullscreen()),
             gdk::Key::m | gdk::Key::M => controls.toggle_mute(),
             gdk::Key::Escape if w.is_fullscreen() => w.set_fullscreened(false),
+            gdk::Key::q | gdk::Key::Q => w.close(),
             _ => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop

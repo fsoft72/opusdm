@@ -580,7 +580,7 @@ Plays one audio or video file in a small window.
   a mute button with the volume slider, and a loop button. Dragging the slider
   seeks to the nearest key frame while you drag and exactly where you release.
 - **Keys:** **Space** play / pause, **Left** / **Right** go back / forward 5
-  seconds, **Up** / **Down** change the volume, **M** mute, **F** full screen.
+  seconds, **Up** / **Down** change the volume, **M** mute, **F** full screen, **Q** quit.
 - **Errors:** a file that cannot be played (missing codec, damaged file) is
   shown in a requester and the program exits with status 1.
 - **Requires** GStreamer: `gstreamer1.0-gtk4` (the video sink),
