@@ -23,6 +23,8 @@ pub enum Icon {
     Line,
     Arrow,
     Text,
+    Undo,
+    Redo,
     /// A stroke as thick as the size it stands for.
     Width(Size),
 }
@@ -85,6 +87,13 @@ pub fn paint(cr: &cairo::Context, icon: Icon, rgba: (f64, f64, f64, f64), size: 
             cr.line_to(12.0, 19.0);
             cr.stroke()
         }
+        Icon::Undo => undo_arrow(cr),
+        Icon::Redo => {
+            // The mirror image of undo.
+            cr.translate(side, 0.0);
+            cr.scale(-1.0, 1.0);
+            undo_arrow(cr)
+        }
         Icon::Width(s) => {
             cr.set_line_width(s.line_width());
             cr.move_to(4.0, side / 2.0);
@@ -92,6 +101,32 @@ pub fn paint(cr: &cairo::Context, icon: Icon, rgba: (f64, f64, f64, f64), size: 
             cr.stroke()
         }
     }
+}
+
+/// Centre and radius of the undo arc, in design pixels.
+const UNDO_CENTER: (f64, f64) = (12.0, 13.0);
+const UNDO_RADIUS: f64 = 6.5;
+
+/// Half width and length of the head of the undo arrow.
+const UNDO_HEAD_HALF: f64 = 3.5;
+const UNDO_HEAD_LEN: f64 = 5.0;
+
+/// A counter-clockwise arc from the lower right over the top to the left, with
+/// the head pointing down at its end.
+fn undo_arrow(cr: &cairo::Context) -> Result<(), cairo::Error> {
+    let (cx, cy) = UNDO_CENTER;
+    let (start, end) = (30.0_f64.to_radians(), 190.0_f64.to_radians());
+    cr.arc_negative(cx, cy, UNDO_RADIUS, start, end);
+    cr.stroke()?;
+    let e = (cx + UNDO_RADIUS * end.cos(), cy + UNDO_RADIUS * end.sin());
+    // Direction of travel at the end of a counter-clockwise arc.
+    let dir = (end.sin(), -end.cos());
+    let perp = (-dir.1, dir.0);
+    cr.move_to(e.0 + dir.0 * UNDO_HEAD_LEN, e.1 + dir.1 * UNDO_HEAD_LEN);
+    cr.line_to(e.0 + perp.0 * UNDO_HEAD_HALF, e.1 + perp.1 * UNDO_HEAD_HALF);
+    cr.line_to(e.0 - perp.0 * UNDO_HEAD_HALF, e.1 - perp.1 * UNDO_HEAD_HALF);
+    cr.close_path();
+    cr.fill()
 }
 
 #[cfg(test)]
@@ -112,7 +147,7 @@ mod tests {
 
     #[test]
     fn every_icon_paints_something() {
-        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Width(Size::Small)] {
+        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Undo, Icon::Redo, Icon::Width(Size::Small)] {
             assert!(painted(icon) > 0, "{icon:?} is blank");
         }
     }

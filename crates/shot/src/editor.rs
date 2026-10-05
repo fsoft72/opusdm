@@ -243,16 +243,18 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
     }
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-    let undo = gtk::Button::with_label("Undo");
+    let undo = gtk::Button::new();
+    undo.set_child(Some(&icons::widget(Icon::Undo)));
     undo.set_focus_on_click(false);
-    undo.set_tooltip_text(Some("Ctrl+Z"));
+    undo.set_tooltip_text(Some("Undo (Ctrl+Z)"));
     {
         let ui = ui.clone();
         undo.connect_clicked(move |_| undo_step(&ui));
     }
-    let redo = gtk::Button::with_label("Redo");
+    let redo = gtk::Button::new();
+    redo.set_child(Some(&icons::widget(Icon::Redo)));
     redo.set_focus_on_click(false);
-    redo.set_tooltip_text(Some("Ctrl+Shift+Z"));
+    redo.set_tooltip_text(Some("Redo (Ctrl+Shift+Z)"));
     {
         let ui = ui.clone();
         redo.connect_clicked(move |_| redo_step(&ui));
