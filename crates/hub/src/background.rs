@@ -270,6 +270,7 @@ fn _advance(c: &mut Controller, fade: bool) {
         _retire(c, old);
     }
     c.current = picked;
+    opusdm_ipc::debug_log!("opusdm-hub", "desktop background play: {}, entry {picked:?}", _play_state(c));
     let name = _current_page(picked);
     for view in &c.views {
         view.show(&name, fade && c.fade_ms > 0);
@@ -306,6 +307,12 @@ fn _arm_timer(c: &mut Controller, delay: Duration) {
     }));
 }
 
+/// `ACTIVE` while the background plays, `SUSPENDED` while full screen windows
+/// hide it. The word the debug trace (`OPUSDM_DEBUG=1`) prints.
+fn _play_state(c: &Controller) -> &'static str {
+    if c.covered { "SUSPENDED (hidden by full screen windows)" } else { "ACTIVE" }
+}
+
 /// Look for full screen windows. When they hide every monitor the video
 /// pauses and the rotation timer stops, keeping the time the entry has left;
 /// when the desktop shows again both go on from where they were.
@@ -322,7 +329,7 @@ fn _check_cover(c: &mut Controller) {
         return;
     }
     c.covered = covered;
-    opusdm_ipc::debug_log!("opusdm-hub", "desktop background {}", if covered { "paused: hidden by full screen windows" } else { "resumed" });
+    opusdm_ipc::debug_log!("opusdm-hub", "desktop background play: {}", _play_state(c));
     if covered {
         if let Some(id) = c.timer.take() {
             id.remove();
