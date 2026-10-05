@@ -101,9 +101,43 @@ pub fn install_sigchld(cmd_tx: Sender<HubCmd>) {
         .expect("spawn sigchld thread");
 }
 
+/// `path` (a `PATH` value) with `dir` in front, unchanged when `dir` is
+/// already one of its entries.
+pub fn path_with_dir(path: Option<std::ffi::OsString>, dir: &Path) -> std::ffi::OsString {
+    let path = path.unwrap_or_default();
+    // An empty PATH has no entries: splitting it would yield one empty entry,
+    // which means "the current directory".
+    if path.is_empty() {
+        return dir.as_os_str().to_os_string();
+    }
+    if std::env::split_paths(&path).any(|entry| entry == dir) {
+        return path;
+    }
+    let entries = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&path));
+    std::env::join_paths(entries).unwrap_or(path)
+}
+
+/// Put the directory of this executable on `PATH`, so the OpusDM binaries
+/// resolve by name (`exec:opusdm-run` in a hotkey) for the hub, for the
+/// Listers and editors it starts and for the commands they run, whatever
+/// the session script did. Call it once, before any thread starts.
+pub fn add_own_dir_to_path() {
+    let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) else { return };
+    std::env::set_var("PATH", path_with_dir(std::env::var_os("PATH"), &dir));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn path_with_dir_puts_the_directory_first_once() {
+        let dir = Path::new("/opt/opusdm/bin");
+        let added = path_with_dir(Some("/usr/bin:/bin".into()), dir);
+        assert_eq!(added, std::ffi::OsString::from("/opt/opusdm/bin:/usr/bin:/bin"));
+        assert_eq!(path_with_dir(Some(added.clone()), dir), added, "already there: unchanged");
+        assert_eq!(path_with_dir(None, dir), std::ffi::OsString::from("/opt/opusdm/bin"));
+    }
+
 
     #[test]
     fn acquire_binds_when_no_hub_present() {

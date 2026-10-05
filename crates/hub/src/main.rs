@@ -16,6 +16,7 @@ use children::AcquireOutcome;
 use opusdm_ipc::sockpath::hub_sock_path;
 
 fn main() {
+    children::add_own_dir_to_path();
     let sock_path = hub_sock_path();
     let listener = match children::acquire_socket(&sock_path) {
         AcquireOutcome::Bound(l) => l,
