@@ -266,6 +266,47 @@ pub fn save_filetypes_to(path: &Path, types: &FileTypes) -> io::Result<()> {
     save_json(path, types)
 }
 
+/// Extensions of the audio files the default types play with `opusdm-player`.
+const AUDIO_PATTERN: &str = "*.mp3;*.flac;*.ogg;*.oga;*.opus;*.wav;*.m4a;*.aac;*.wma;*.mka";
+/// Extensions of the video files the default types play with `opusdm-player`.
+const VIDEO_PATTERN: &str = "*.mp4;*.mkv;*.webm;*.avi;*.mov;*.m4v;*.mpg;*.mpeg;*.wmv;*.flv;*.ogv";
+/// Double click: play the file.
+const PLAYER_OPEN: &str = "exec:opusdm-player {f}";
+/// Open With: play the file again and again.
+const PLAYER_LOOP: &str = "exec:opusdm-player --loop {f}";
+
+/// The types a new installation starts with: audio and video files open with
+/// `opusdm-player`. They use inline `exec:` references, so no saved Function is
+/// needed.
+pub fn default_filetypes() -> FileTypes {
+    let player_type = |name: &str, pattern: &str| FileType {
+        name: name.to_string(),
+        rule: MatchRule::Glob { pattern: pattern.to_string() },
+        actions: Actions { dblclick: Some(PLAYER_OPEN.to_string()), drop: None, menu: vec![PLAYER_LOOP.to_string()] },
+    };
+    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN)] }
+}
+
+/// Write [`default_filetypes`] to the standard path when `filetypes.json` does
+/// not exist yet. An existing file (even an empty or malformed one) is never
+/// touched, so what the user edited or deleted stays that way. Returns whether
+/// the file was written.
+pub fn seed_default_filetypes() -> bool {
+    seed_default_filetypes_at(&filetypes_path())
+}
+
+/// Testable core of [`seed_default_filetypes`]. A failure is logged, never fatal.
+pub fn seed_default_filetypes_at(path: &Path) -> bool {
+    if path.exists() { return false; }
+    match save_filetypes_to(path, &default_filetypes()) {
+        Ok(()) => true,
+        Err(e) => {
+            crate::err_log!("opusdm", "cannot write the default file types to {}: {e}", path.display());
+            false
+        }
+    }
+}
+
 /// Read the leading bytes of the file at `path`, at most `wanted` (capped at
 /// [`HEAD_BYTES`]). An unreadable file gives an empty head.
 pub fn read_head(path: &Path, wanted: usize) -> Vec<u8> {
@@ -445,5 +486,54 @@ mod tests {
         assert_eq!(read_head(&path, 100), b"0123456789");
         assert!(read_head(&path, 0).is_empty());
         assert!(read_head(&dir.path().join("none"), 4).is_empty());
+    }
+
+    #[test]
+    fn default_types_are_valid_and_match_media_files() {
+        let list = default_filetypes();
+        assert!(list.problems().is_empty(), "{:?}", list.problems());
+        assert_eq!(list.find(&facts("Song.MP3", 1, b"")).unwrap().name, "Audio file");
+        assert_eq!(list.find(&facts("film.mkv", 1, b"")).unwrap().name, "Video file");
+        assert!(list.find(&facts("notes.txt", 1, b"")).is_none());
+        assert!(list.find(&facts("photo.png", 1, b"")).is_none());
+    }
+
+    #[test]
+    fn default_actions_start_the_player_with_the_file() {
+        use crate::funcref::{parse, FuncRef};
+        for t in default_filetypes().types {
+            let refs = std::iter::once(t.actions.dblclick.clone().unwrap()).chain(t.actions.menu.clone());
+            for r in refs {
+                let FuncRef::Exec { line } = parse(&r) else { panic!("{}: {r} is not an exec reference", t.name) };
+                let words = crate::cli::tokenize(&line).unwrap();
+                assert_eq!(words.first().map(String::as_str), Some("opusdm-player"), "{r}");
+                assert_eq!(words.last().map(String::as_str), Some("{f}"), "{r}");
+            }
+        }
+    }
+
+    #[test]
+    fn seed_writes_the_defaults_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub").join("filetypes.json");
+        assert!(seed_default_filetypes_at(&path));
+        assert_eq!(load_filetypes_from(&path), default_filetypes());
+        // The user deletes a type: the next start does not bring it back.
+        let mut list = load_filetypes_from(&path);
+        list.types.pop();
+        save_filetypes_to(&path, &list).unwrap();
+        assert!(!seed_default_filetypes_at(&path));
+        assert_eq!(load_filetypes_from(&path).types.len(), 1);
+    }
+
+    #[test]
+    fn seed_never_touches_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for content in ["{\"types\": []}", "not json at all", ""] {
+            let path = dir.path().join("filetypes.json");
+            std::fs::write(&path, content).unwrap();
+            assert!(!seed_default_filetypes_at(&path));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
     }
 }

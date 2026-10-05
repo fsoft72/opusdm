@@ -202,6 +202,8 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 - **Show in folder** takes the Lister to the folder that holds the selected result and selects it. **View** opens the file in the Viewer, on the first match of the text. Double click does View for content results and Show in folder for name results.
 
 ### 3.10h File Types
+On the first start (when `filetypes.json` does not exist) OpusDM creates it with two types, **Audio file** (mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, mka) and **Video file** (mp4, mkv, webm, avi, mov, m4v, mpg, mpeg, wmv, flv, ogv). A double click runs `opusdm-player` on the file and Open With adds the same player in a loop. After that the file is yours: nothing is added back, so a type you delete stays deleted (delete `filetypes.json` to get the defaults again).
+
 **Edit File Types...** (command palette) edits the list kept in `~/.config/opusdm/filetypes.json`. The first type (top to bottom) whose rule matches a file wins; use the arrows to reorder.
 - **Match**: one or more conditions combined with "all of" or "any of": file name patterns, bytes at an offset (hex, e.g. `89 50 4E 47`), text in the first N bytes, size range (`10K`, `4M`) and modified-time range (`7d`, `2026-01-01`). Content is read from the first 64 KiB of the file.
 - **Actions**: what runs on a **double click** (instead of the default application: a saved function, a bash command or a program, see 3.13) and the entries listed in **Open With** in the right-click menu of matching files. The function works on the double clicked or right-clicked file, which becomes the only selected row. Folders and archives keep their usual behaviour; a file with no matching type opens with the default application as before.
@@ -552,9 +554,10 @@ little and save it.
 Plays one audio or video file in a small window.
 
 - **Open it:** run `opusdm-player <file or URL>` (add `--loop` to start again at
-  the end). To open files from a Lister, add a type in **Edit File Types...** whose
-  rule matches the media files (for example `*.mp3;*.flac;*.mp4;*.mkv`) and whose
-  double click action is **Exec** with the program `opusdm-player` and `{f}`.
+  the end). In a Lister a double click on an audio or video file opens it, and
+  **Open With** offers it in a loop: the first time OpusDM starts it creates the
+  file types **Audio file** and **Video file** for that (see 3.10h). They are
+  ordinary types: edit or delete them in **Edit File Types...**.
 - **Video:** the frames fill the window. A double click (or **F**) toggles full
   screen; in full screen the control bar shows again for two seconds when the
   pointer moves, and **Esc** leaves it.

@@ -41,6 +41,11 @@ fn main() {
         server::ServerOptions::production(),
     );
 
+    // First run: start with the default file types (never overwrites a file).
+    if opusdm_ipc::filetypes::seed_default_filetypes() {
+        opusdm_ipc::debug_log!("opusdm-hub", "wrote the default file types");
+    }
+
     let _ = handle.cmd_tx.send(server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup));
 
     children::install_sigchld(handle.cmd_tx.clone());
