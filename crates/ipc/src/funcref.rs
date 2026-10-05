@@ -112,9 +112,18 @@ pub fn describe(r: &FuncRef) -> Option<String> {
     }
 }
 
-/// The steps that run an inline reference: one `Run` step. Fails with the
+/// The steps that run an inline reference: one `Run` step. A bash command
+/// gets the SOURCE selection as `"$@"` and no placeholder expansion inside
+/// the script. Fails with the
 /// [`problem`] text, and for a saved Function (it has its own steps).
 pub fn to_steps(r: &FuncRef) -> Result<Vec<FnStep>, String> {
+    to_steps_with(r, false)
+}
+
+/// [`to_steps`], and with `wait` the step ends only when the program has
+/// (a failure fails the function). The hub uses it for hooks it must finish
+/// before it quits.
+pub fn to_steps_with(r: &FuncRef, wait: bool) -> Result<Vec<FnStep>, String> {
     if let FuncRef::Saved(id) = r {
         return Err(format!("'{id}' is a saved function, not an inline command"));
     }
@@ -125,7 +134,12 @@ pub fn to_steps(r: &FuncRef) -> Result<Vec<FnStep>, String> {
     match r {
         FuncRef::Saved(_) => {}
         FuncRef::Bash { cmd, show_output } => {
-            args.0.insert("command".to_string(), format!("bash -c {}", quote(cmd)));
+            // The script is the third word and is never expanded (the hub's
+            // `Run` step honours the `script` flag): file names pasted into
+            // it would be run as shell code. The selection is passed as the
+            // positional parameters instead, so the script reads `"$@"`.
+            args.0.insert("command".to_string(), format!("bash -c {} opusdm {{f}}", quote(cmd)));
+            args.0.insert("script".to_string(), BOOL_TRUE.to_string());
             if *show_output {
                 args.0.insert("window".to_string(), BOOL_TRUE.to_string());
             }
@@ -133,6 +147,9 @@ pub fn to_steps(r: &FuncRef) -> Result<Vec<FnStep>, String> {
         FuncRef::Exec { line } => {
             args.0.insert("command".to_string(), line.trim().to_string());
         }
+    }
+    if wait {
+        args.0.insert("wait".to_string(), BOOL_TRUE.to_string());
     }
     Ok(vec![FnStep::Internal { cmd: InternalCmd::Run, args }])
 }
@@ -174,7 +191,9 @@ mod tests {
     fn a_bash_command_becomes_one_quoted_argument_of_bash_c() {
         let r = parse("bash:echo 'x' | wc -l");
         let command = run_args(&r).get("command").unwrap().to_string();
-        assert_eq!(tokenize(&command).unwrap(), vec!["bash", "-c", "echo 'x' | wc -l"]);
+        // The selection follows as "$@"; the script itself is never expanded.
+        assert_eq!(tokenize(&command).unwrap(), vec!["bash", "-c", "echo 'x' | wc -l", "opusdm", "{f}"]);
+        assert!(run_args(&r).flag("script"));
         assert!(!run_args(&r).flag("window"));
     }
 

@@ -329,7 +329,7 @@ a **Bash** command or an **Exec** program, see below) and a
 **What a hotkey can run.** Each row has a kind selector:
 
 - **Function**: a saved function, as before.
-- **Bash**: a command line run by `bash -c`, so pipes, `&&` and variables work. Tick **Show output** to see its output in a window. `{f}`, `{o}` and the other placeholders of Manage Functions work in it; any other `{...}` (`{a,b}`, `${HOME}`) is left to bash.
+- **Bash**: a command line run by `bash -c`, so pipes, `&&` and variables work. Tick **Show output** to see its output in a window. The files selected in the SOURCE lister arrive as the positional parameters, so use `"$@"` (for example `bash:xdg-open "$@"`). The `{f}`-style placeholders of Manage Functions are not substituted inside a bash command: a file name pasted into a script would be run as shell code. Output windows of a global hotkey open on the SOURCE lister.
 - **Exec**: a program and its arguments, started directly with no shell (quotes group words, a backslash escapes the next character). **Browse...** picks the program. It is meant for graphical programs, for example a global `Ctrl+Alt+t` that opens a terminal.
 
 A Bash or Exec hotkey runs in the SOURCE lister's folder, or in your home folder when no lister is open. A command that cannot run (empty, unbalanced quotes, a program that is not installed) is flagged on its row and Save stays disabled. The same two kinds will be offered in the user menu, script events, button banks and file types in a later change.

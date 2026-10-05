@@ -664,19 +664,31 @@ impl Hub {
         let deadline = Instant::now() + SHUTDOWN_HOOK_TIMEOUT;
         let mut receivers = Vec::new();
         for id in ids {
-            let Some(function) = saved.iter().find(|f| f.id == id) else {
-                opusdm_ipc::err_log!("hub", "shutdown hook: function '{id}' not found");
-                continue;
+            let reference = opusdm_ipc::funcref::parse(&id);
+            let steps = if let opusdm_ipc::funcref::FuncRef::Saved(_) = reference {
+                let Some(function) = saved.iter().find(|f| f.id == id) else {
+                    opusdm_ipc::err_log!("hub", "shutdown hook: function '{id}' not found");
+                    continue;
+                };
+                if !opusdm_ipc::function::validate(function).is_empty() {
+                    opusdm_ipc::err_log!("hub", "shutdown hook: function '{}' is invalid", function.name);
+                    continue;
+                }
+                function.steps.clone()
+            } else {
+                match opusdm_ipc::funcref::to_steps_with(&reference, true) {
+                    Ok(steps) => steps,
+                    Err(e) => {
+                        opusdm_ipc::err_log!("hub", "shutdown hook '{id}' cannot run: {e}");
+                        continue;
+                    }
+                }
             };
-            if !opusdm_ipc::function::validate(function).is_empty() {
-                opusdm_ipc::err_log!("hub", "shutdown hook: function '{}' is invalid", function.name);
-                continue;
-            }
             let run_id = self.next_run_id;
             self.next_run_id += 1;
             let (tx, rx) = channel();
             let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
-            crate::functions::spawn_executor(run_id, function.steps.clone(), empty, None, tx, CancelToken::new());
+            crate::functions::spawn_executor(run_id, steps, empty, None, tx, CancelToken::new());
             receivers.push(rx);
         }
         for rx in receivers {
@@ -2348,6 +2360,77 @@ mod tests {
     }
 
     #[test]
+    fn a_bash_command_receives_the_selection_as_positional_parameters() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+
+        let (_td, listener, path) = bind_temp();
+        let _handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        // A file name that would run a command if it were pasted into the script.
+        let hostile = out.path().join("a b;touch evil");
+        let id = format!("bash:printf '%s\\n' \"$@\" >> {}", marker.display());
+        send(&mut a, &ToHub::RunFunctionById { id }).unwrap();
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection));
+        send(&mut a, &ToHub::SelectionReply { paths: vec![hostile.clone()], cwd: out.path().to_path_buf() }).unwrap();
+
+        wait_for_lines(&marker, 1);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), format!("{}\n", hostile.display()));
+        assert!(!out.path().join("evil").exists(), "the file name must not be run as a command");
+    }
+
+    #[test]
+    fn placeholders_are_not_expanded_inside_a_bash_script() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+
+        let (_td, listener, _path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let id = format!("bash:echo '{{o}} ${{f}}' >> {}", marker.display());
+        handle.cmd_tx.send(HubCmd::RunFunctionHeadless(id)).unwrap();
+
+        wait_for_lines(&marker, 1);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "{o} ${f}\n");
+    }
+
+    #[test]
+    fn a_headless_bash_run_with_output_opens_its_window_on_the_source_lister() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let (_td, listener, path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+        send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
+        let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
+
+        handle.cmd_tx.send(HubCmd::RunFunctionHeadless("bash+out:echo hi".into())).unwrap();
+        let q: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(q, ToLister::QuerySelection), "got {q:?}");
+        send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+
+        for _ in 0..10 {
+            let got: ToLister = recv(&mut a).unwrap().unwrap();
+            if matches!(got, ToLister::OutputOpen { .. }) {
+                return;
+            }
+        }
+        panic!("no output window was opened on the SOURCE lister");
+    }
+
+    #[test]
     fn headless_run_without_listers_executes_immediately() {
         let _guard = ENV_LOCK.lock().unwrap();
         let cfg = tempfile::tempdir().unwrap();
@@ -2557,6 +2640,32 @@ mod tests {
         assert!(matches!(got, ToLister::Shutdown), "got {got:?}");
         let lines = std::fs::read_to_string(&marker).map(|s| s.lines().count()).unwrap_or(0);
         assert_eq!(lines, 1, "the Shutdown hook must have finished before the Shutdown message");
+    }
+
+    #[test]
+    fn a_shutdown_hook_can_be_an_inline_command() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+
+        let (_td, listener, path) = bind_temp();
+        let id = format!("bash:echo x >> {}", marker.display());
+        let bindings = opusdm_ipc::Bindings {
+            scripts: vec![script(opusdm_ipc::bindings::ScriptEvent::Shutdown, &id)],
+            ..opusdm_ipc::Bindings::default()
+        };
+        let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
+        let mut a = connect(&path);
+        send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+        let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+        handle.cmd_tx.send(HubCmd::Shutdown).unwrap();
+        let got: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(matches!(got, ToLister::Shutdown), "got {got:?}");
+        let lines = std::fs::read_to_string(&marker).map(|s| s.lines().count()).unwrap_or(0);
+        assert_eq!(lines, 1, "the inline Shutdown hook must have run before the Shutdown message");
     }
 
     #[test]

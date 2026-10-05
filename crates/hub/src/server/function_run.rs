@@ -289,7 +289,12 @@ impl Hub {
         let key = (run_id, step_idx);
         let id = run_id * 1000 + step_idx as u64;
         if msg == WindowMsg::Open {
-            match self.function_requesters.get(&run_id).copied().flatten() {
+            // A run the hub started on its own (global hotkey, script event)
+            // has no requester: its window goes to the SOURCE Lister, if any.
+            let owner = self.function_requesters.get(&run_id).copied().flatten().or_else(|| {
+                self.roles.source().map(|l| l.0).filter(|cid| self.conns.get(cid).is_some_and(|c| c.registered))
+            });
+            match owner {
                 Some(cid) => {
                     self.output_windows.insert(key, cid);
                 }

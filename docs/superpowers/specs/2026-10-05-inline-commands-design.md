@@ -60,10 +60,13 @@ pub fn problem(r: &FuncRef) -> Option<String>; // why it cannot run, if so
   existing `command` and `window` params, so the hub runs it with the code
   that already runs a Function's Run step (no new executor).
   - `Bash`: `command` is `bash -c <quoted cmd>`, quoted with
-    `funcref::quote` (single quotes, `\` and `'` escaped). `window` is `show_output`. A bash command that
-    contains `{` is left alone by placeholder expansion unless it is a
-    placeholder (`{f}`, `{o}`, ...), which therefore also work in bash
-    commands.
+    `funcref::quote` (single quotes, `\` and `'` escaped). `window` is `show_output`. The command line is
+    `bash -c <script> opusdm {f}`, with the `Run` arg `script` set: the hub
+    keeps the script (third word) unexpanded and the SOURCE selection
+    arrives as `"$@"`. Placeholders are therefore not substituted inside a
+    bash script (found in review: pasting file names into a script is code
+    injection, and an empty `{o}` silently changes what the script does).
+    `to_steps_with(r, wait)` adds `wait` for hooks the hub must finish.
   - `Exec`: `command` is `line` as typed (the Run step already splits it with
     quote handling), `window` is off. The argv is split with the same `cli::tokenize` the Run step uses;
     the first element is the program.
@@ -137,8 +140,8 @@ dangling saved ids.
 ### Security
 
 An inline command is a user-authored string from the user's own config, the
-same trust level as a saved Function with a Run step. Nothing is run from
-data that a remote party controls. `bash -c` receives the command as a single
+same trust level as a saved Function with a Run step. File names are never
+pasted into a script: they reach it only as `"$@"`. `bash -c` receives the command as a single
 quoted argument (no second interpretation by the hub), and `exec` never
 invokes a shell.
 

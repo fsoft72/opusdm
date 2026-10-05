@@ -184,7 +184,7 @@ fn run_steps_cancellable(
                 InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, &source, dest, events_tx),
             },
             FnStep::External { argv, cwd_source } => {
-                run_external(run_id, step_idx, argv, *cwd_source, &source, dest, events_tx)
+                run_external(run_id, step_idx, argv, None, *cwd_source, &source, dest, events_tx)
             }
         };
         if let Err(error) = result {
@@ -578,11 +578,16 @@ fn run_run(
         return Err("Run: no program given".to_string());
     }
     let (wait, window) = (args.flag("wait"), args.flag("window"));
+    // A `bash -c <script> ...` command (flag `script`, set for inline bash
+    // commands): the script, the third word, is passed as typed. Expanding
+    // placeholders in it would paste file names into shell code and turn an
+    // empty selection into an empty string inside it.
+    let script = if args.flag("script") && templates.len() > 2 { Some(templates[2].as_str()) } else { None };
     // Waiting without a window is the plain External step.
     if wait && !window {
-        return run_external(run_id, step_idx, &templates, true, source, dest, events_tx);
+        return run_external(run_id, step_idx, &templates, script, true, source, dest, events_tx);
     }
-    let argv = expand_argv(&templates, source, dest).map_err(|e| format!("Run: {e}"))?;
+    let argv = expand_run_argv(&templates, script, source, dest).map_err(|e| format!("Run: {e}"))?;
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]).current_dir(&source.cwd).stdin(Stdio::null());
     if window {
@@ -639,13 +644,26 @@ fn run_run(
     Ok(())
 }
 
-/// Run one `External` step: expand every argv element, spawn it with piped
-/// stdout/stderr, stream every line as it arrives, and report the exit
-/// status.
+/// [`expand_argv`], except that `script` (the third word of a
+/// `bash -c <script> ...` command) is kept as it is, unexpanded. `bash` and
+/// `-c` come first and expand to themselves, so the script keeps its
+/// position.
+fn expand_run_argv(argv: &[String], script: Option<&str>, source: &SelectionCtx, dest: Option<&SelectionCtx>) -> Result<Vec<String>, String> {
+    let Some(script) = script else { return expand_argv(argv, source, dest) };
+    let masked: Vec<String> = argv.iter().enumerate().map(|(i, a)| if i == 2 { "script".to_string() } else { a.clone() }).collect();
+    let mut expanded = expand_argv(&masked, source, dest)?;
+    expanded[2] = script.to_string();
+    Ok(expanded)
+}
+
+/// Run one `External` step: expand every argv element (keeping `script`,
+/// see [`expand_run_argv`]), spawn it with piped stdout/stderr, stream every
+/// line as it arrives, and report the exit status.
 fn run_external(
     run_id: u64,
     step_idx: usize,
     argv: &[String],
+    script: Option<&str>,
     cwd_source: bool,
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
@@ -654,7 +672,7 @@ fn run_external(
     if argv.is_empty() {
         return Err("External step: command is required".to_string());
     }
-    let expanded = expand_argv(argv, source, dest)?;
+    let expanded = expand_run_argv(argv, script, source, dest)?;
     let cwd = if cwd_source { &source.cwd } else { dest.map(|d| &d.cwd).unwrap_or(&source.cwd) };
 
     let mut child = Command::new(&expanded[0])
