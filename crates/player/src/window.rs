@@ -2,8 +2,8 @@
 
 use crate::args::Args;
 use crate::audio_view::AudioView;
-use crate::controls::{Controls, Handlers};
-use crate::timefmt::offset;
+use opusdm_media_ui::controls::{Controls, Handlers};
+use opusdm_media::timefmt::{offset, slider_to_ns};
 use crate::view::{choose, ViewKind};
 use gtk4 as gtk;
 use gtk::gdk;
@@ -78,12 +78,12 @@ fn _handlers(engine: &Rc<Engine>) -> Handlers {
         toggle_play: Box::new(move || _toggle_play(&e_play)),
         seek: Box::new(move |value, accurate| {
             let Some(duration) = e_seek.duration() else { return };
-            let ns = crate::timefmt::slider_to_ns(value, duration);
+            let ns = slider_to_ns(value, duration);
             if let Err(e) = e_seek.seek(ns, accurate) { opusdm_ipc::err_log!("player", "{e}"); }
         }),
         volume: Box::new(move |v| e_vol.set_volume(v)),
         mute: Box::new(move |m| e_mute.set_muted(m)),
-        looping: Box::new(move |on| e_loop.set_loop(on)),
+        looping: Some(Box::new(move |on| e_loop.set_loop(on))),
     }
 }
 
@@ -94,7 +94,7 @@ fn _toggle_play(engine: &Engine) {
     if let Err(e) = result { opusdm_ipc::err_log!("player", "{e}"); }
 }
 
-/// Space, arrows, F, M and Esc.
+/// Space, arrows, F, M, Q and Esc.
 fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Rc<Engine>, controls: &Rc<Controls>) {
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -115,6 +115,7 @@ fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Rc<Engine>, controls: &R
             gdk::Key::f | gdk::Key::F => w.set_fullscreened(!w.is_fullscreen()),
             gdk::Key::m | gdk::Key::M => controls.toggle_mute(),
             gdk::Key::Escape if w.is_fullscreen() => w.set_fullscreened(false),
+            gdk::Key::q | gdk::Key::Q => w.close(),
             _ => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop

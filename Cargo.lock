@@ -1743,6 +1743,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-media-ui"
+version = "0.5.0"
+dependencies = [
+ "gtk4",
+ "opusdm-media",
+]
+
+[[package]]
 name = "opusdm-panel"
 version = "0.5.0"
 dependencies = [
@@ -1767,6 +1775,7 @@ dependencies = [
  "gtk4",
  "opusdm-ipc",
  "opusdm-media",
+ "opusdm-media-ui",
  "opusdm-ui",
 ]
 
@@ -1834,6 +1843,19 @@ dependencies = [
  "opusdm-ipc",
  "tempfile",
  "x11rb",
+]
+
+[[package]]
+name = "opusdm-viewer"
+version = "0.5.0"
+dependencies = [
+ "async-channel",
+ "gtk4",
+ "opusdm-ipc",
+ "opusdm-media",
+ "opusdm-media-ui",
+ "opusdm-ui",
+ "tempfile",
 ]
 
 [[package]]

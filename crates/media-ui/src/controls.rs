@@ -1,7 +1,7 @@
 //! The control bar: play / pause, seek slider, times, volume, mute and loop.
 
 use crate::icons::{Icon, IconView};
-use crate::timefmt::{format_time, ns_to_slider, SLIDER_MAX};
+use opusdm_media::timefmt::{format_time, ns_to_slider, SLIDER_MAX};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::cell::Cell;
@@ -21,7 +21,8 @@ pub struct Handlers {
     /// Volume from 0.0 to 1.0.
     pub volume: Box<dyn Fn(f64)>,
     pub mute: Box<dyn Fn(bool)>,
-    pub looping: Box<dyn Fn(bool)>,
+    /// Loop switch; `None` leaves the Loop button out of the bar.
+    pub looping: Option<Box<dyn Fn(bool)>>,
 }
 
 /// The bar widget and the bits of state it needs.
@@ -38,7 +39,8 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// Build the bar. `looping` is the initial state of the Loop button.
+    /// Build the bar. `looping` is the initial state of the Loop button, which
+    /// exists only when `handlers.looping` is set.
     pub fn new(handlers: Handlers, looping: bool) -> Rc<Self> {
         let h = Rc::new(handlers);
         let play_icon = IconView::new(Icon::Play);
@@ -68,10 +70,14 @@ impl Controls {
         root.set_margin_end(8);
         root.set_margin_top(6);
         root.set_margin_bottom(6);
-        for w in [play.upcast_ref::<gtk::Widget>(), scale.upcast_ref(), time.upcast_ref(), mute.upcast_ref(), volume.upcast_ref(), loop_btn.upcast_ref()] {
+        for w in [play.upcast_ref::<gtk::Widget>(), scale.upcast_ref(), time.upcast_ref(), mute.upcast_ref(), volume.upcast_ref()] {
             root.append(w);
             // Keys go to the window (Space, arrows...), never to a focused button.
             w.set_focusable(false);
+        }
+        if h.looping.is_some() {
+            root.append(&loop_btn);
+            loop_btn.set_focusable(false);
         }
 
         let dragging = Rc::new(Cell::new(false));
@@ -103,8 +109,9 @@ impl Controls {
         });
         let hh = h.clone();
         this.volume.connect_value_changed(move |s| (hh.volume)(s.value() / VOLUME_MAX));
-        let hh = h;
-        loop_btn.connect_toggled(move |b| (hh.looping)(b.is_active()));
+        loop_btn.connect_toggled(move |b| {
+            if let Some(looping) = &h.looping { looping(b.is_active()); }
+        });
         this
     }
 

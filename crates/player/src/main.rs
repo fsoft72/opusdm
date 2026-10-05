@@ -4,9 +4,6 @@
 
 mod args;
 mod audio_view;
-mod controls;
-mod icons;
-mod timefmt;
 mod view;
 mod window;
 
