@@ -101,6 +101,7 @@ Il desktop mostra le icone della cartella Desktop dell'utente
    **New File...**, **New Group...**, **Button Banks...**, **Hide All**,
    **Open Terminal Here**, **Settings**, **About**, **Quit** e un sottomenu
    **Desktop** (espandilo con un click) che contiene **Rearrange icons**,
+   **Edit Hotkeys** (apre direttamente l'editor delle hotkey),
    **Manage Functions** (apre direttamente l'elenco delle function),
    **Edit File Types** (apre direttamente l'editor dei tipi di file), **Edit Theme** (apre direttamente il Theme Editor) e **Settings**.
 3. Scegli **New Folder...**, scrivi `prova` e conferma con **OK**: appare una
@@ -881,7 +882,8 @@ Per questi step ti serve almeno una function salvata (step 15).
 
 ### Step 16.1 - Assegna una hotkey
 
-1. `Ctrl+P` > **Edit Hotkeys...**.
+1. `Ctrl+P` > **Edit Hotkeys...** (oppure, dal menu del desktop,
+   **Desktop > Edit Hotkeys**): si apre in una finestra a parte.
 2. Clicca **Add Hotkey**.
 3. Clicca il pulsante del tasto nella riga, e quando compare "Press the key
    combination now" premi, ad esempio, `Ctrl+Alt+U` (`Esc` annulla).

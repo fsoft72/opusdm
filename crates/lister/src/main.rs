@@ -96,6 +96,12 @@ fn run_functions_manager() -> gtk4::glib::ExitCode {
     run_tool("org.opusdm.Functions", function_editor::open_standalone)
 }
 
+/// Run only the Edit Hotkeys window, with no file window. The application
+/// exits when the window is closed.
+fn run_hotkey_editor() -> gtk4::glib::ExitCode {
+    run_tool("org.opusdm.Hotkeys", hotkey_editor::open_standalone)
+}
+
 /// Run a tool window on its own: a themed GTK application `app_id` whose
 /// activation calls `open`.
 fn run_tool(app_id: &str, open: fn(&gtk4::Application)) -> gtk4::glib::ExitCode {
@@ -123,6 +129,10 @@ fn main() {
     }
     if std::env::args().any(|a| a == function_editor::MANAGE_FUNCTIONS_FLAG) {
         let code = run_functions_manager();
+        std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
+    }
+    if std::env::args().any(|a| a == hotkey_editor::EDIT_HOTKEYS_FLAG) {
+        let code = run_hotkey_editor();
         std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
     }
     crate::dlog!("starting");

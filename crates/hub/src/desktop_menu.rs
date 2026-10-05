@@ -43,6 +43,11 @@ pub(crate) fn launch_functions_manager() {
     spawn_lister_tool("--manage-functions");
 }
 
+/// Spawn the Lister binary with only the Edit Hotkeys window open.
+pub(crate) fn launch_hotkey_editor() {
+    spawn_lister_tool("--edit-hotkeys");
+}
+
 /// Spawn the Lister binary (next to the hub executable, else on `PATH`) with
 /// `flag`, which makes it open one tool window instead of a file window.
 fn spawn_lister_tool(flag: &str) {
@@ -489,6 +494,17 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             btn.connect_clicked(move |_| {
                 menu_ref.set_visible(false);
                 reload_desktop_field(&widgets);
+            });
+            sub.append(&btn);
+        }
+
+        // Edit Hotkeys: open the hotkey editor on its own.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Edit Hotkeys");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                launch_hotkey_editor();
             });
             sub.append(&btn);
         }

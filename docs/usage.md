@@ -309,7 +309,7 @@ Desktop folder are not saved; only left-out icons (see 3.21) remember where they
 ### 3.13 User Hotkeys
 
 Any saved function (see Manage Functions) can be bound to a key. Open the
-Command Palette and choose **Edit Hotkeys...**. Each row has a key (click it,
+Command Palette and choose **Edit Hotkeys...** (or **Desktop > Edit Hotkeys** in the desktop menu; it opens in its own window). Each row has a key (click it,
 then press the combination; Escape cancels), the function to run and a
 **Global** check box. Rules:
 
