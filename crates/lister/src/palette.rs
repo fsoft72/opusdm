@@ -162,7 +162,11 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         CommandId::ManageBanks => {
             let _ = ui.hub.client.send(&ToHub::OpenBankManager);
         }
-        CommandId::ManageHotkeys => crate::hotkey_editor::open_hotkey_editor(ui),
+        CommandId::ManageHotkeys => {
+            if let Err(e) = crate::hotkey_editor::launch_editor() {
+                crate::actions::flash(ui, &format!("cannot open Edit Hotkeys: {e}"));
+            }
+        }
         CommandId::FindKey => crate::hotkey_editor::open_find_key(ui),
         CommandId::ManageUserMenu => crate::menu_editor::open_menu_editor(ui),
         CommandId::ManageScripts => crate::scripts_editor::open_scripts_editor(ui),

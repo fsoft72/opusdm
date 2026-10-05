@@ -2,6 +2,7 @@
 //! key capture, live validation, and the "Find Key" requester. See
 //! `docs/superpowers/specs/2026-09-29-hotkeys-usermenu-scripts-design.md`.
 
+use crate::client::{Client, Inbound};
 use crate::keys::{Action, Focus};
 use crate::window::Ui;
 use gtk4 as gtk;
@@ -94,10 +95,68 @@ struct State {
     window: gtk::Window,
 }
 
-/// Open the "Edit Hotkeys" window, working on a copy of the Lister's cached
-/// hotkeys. Save sends only the hotkey section back to the hub.
-pub fn open_hotkey_editor(ui: &Rc<Ui>) {
-    let shell = opusdm_ui::DialogShell::new(&ui.window, "Edit Hotkeys").size(640, 420).scrolled();
+/// Command line flag that makes the Lister open only the Edit Hotkeys window.
+pub const EDIT_HOTKEYS_FLAG: &str = "--edit-hotkeys";
+
+/// Start the Edit Hotkeys window as its own process (this binary run with
+/// [`EDIT_HOTKEYS_FLAG`]), so it lives on its own instead of over the Lister
+/// that asked for it.
+pub fn launch_editor() -> std::io::Result<()> {
+    crate::function_editor::launch_tool(EDIT_HOTKEYS_FLAG)
+}
+
+/// Open the "Edit Hotkeys" window on its own, owned by `app` (which exits
+/// when it is closed). It works on a copy of the hotkeys and functions on
+/// disk, and Save sends only the hotkey section to the hub, which is the
+/// only writer of the binding files. A running hub is required. A second
+/// launch only raises the window already open.
+pub fn open_standalone(app: &gtk::Application) {
+    if let Some(window) = app.windows().first() {
+        window.present();
+        return;
+    }
+    let shell = opusdm_ui::DialogShell::standalone(app, "Edit Hotkeys");
+    let mut client = match Client::connect_tool(&opusdm_ipc::sockpath::hub_sock_path()) {
+        Ok(client) => client,
+        Err(e) => {
+            let window = shell.window().clone();
+            shell.present();
+            let to_close = window.clone();
+            opusdm_ui::requester(&window, "Edit Hotkeys", &format!("cannot reach the OpusDM hub: {e}"), None, &[("OK", ())], move |_| {
+                to_close.destroy();
+            });
+            return;
+        }
+    };
+    let inbox = client.take_inbox();
+    let window = shell.window().clone();
+    gtk::glib::spawn_future_local(async move {
+        while let Ok(inbound) = inbox.recv().await {
+            if let Inbound::HubGone = inbound {
+                // The hub quit: nothing could be saved any more.
+                window.destroy();
+                return;
+            }
+        }
+    });
+    let window = shell.window().clone();
+    let save: Rc<dyn Fn(Vec<Hotkey>)> = Rc::new(move |hotkeys| {
+        let mut updated = bindings::load_bindings();
+        updated.hotkeys = hotkeys;
+        match client.send(&opusdm_ipc::ToHub::SetBindings(updated)) {
+            Ok(()) => eprintln!("opusdm-lister: hotkeys saved"),
+            Err(e) => {
+                opusdm_ui::requester(&window, "Edit Hotkeys", &format!("lost the connection to the hub: {e}"), None, &[("OK", ())], |_| {});
+            }
+        }
+    });
+    build_editor(shell, bindings::load_bindings().hotkeys, opusdm_ipc::function::load_functions(), save);
+}
+
+/// Fill `shell` with the hotkey editor. `save` receives the hotkeys when
+/// Save is pressed.
+fn build_editor(shell: opusdm_ui::DialogShell, hotkeys: Vec<Hotkey>, functions: Vec<Function>, save: Rc<dyn Fn(Vec<Hotkey>)>) {
+    let shell = shell.size(640, 420).scrolled();
     let root = shell.content();
 
     let rows_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -111,8 +170,8 @@ pub fn open_hotkey_editor(ui: &Rc<Ui>) {
     shell.close_button("Close");
 
     let state = Rc::new(State {
-        hotkeys: RefCell::new(ui.hub.bindings.borrow().hotkeys.clone()),
-        functions: ui.hub.functions.borrow().clone(),
+        hotkeys: RefCell::new(hotkeys),
+        functions,
         rows_box,
         save_btn: save_btn.clone(),
         window: shell.window().clone(),
@@ -126,14 +185,8 @@ pub fn open_hotkey_editor(ui: &Rc<Ui>) {
         });
     }
     {
-        let ui = ui.clone();
         let state = state.clone();
-        save_btn.connect_clicked(move |_| {
-            let mut updated = ui.hub.bindings.borrow().clone();
-            updated.hotkeys = state.hotkeys.borrow().clone();
-            let _ = ui.hub.client.send(&opusdm_ipc::ToHub::SetBindings(updated));
-            crate::actions::flash(&ui, "hotkeys saved");
-        });
+        save_btn.connect_clicked(move |_| save(state.hotkeys.borrow().clone()));
     }
 
     rebuild(&state);

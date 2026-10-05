@@ -18,10 +18,16 @@ pub const MANAGE_FUNCTIONS_FLAG: &str = "--manage-functions";
 
 /// Start the Manage Functions window as its own process (this binary run
 /// with [`MANAGE_FUNCTIONS_FLAG`]), so it lives on its own instead of over
-/// the Lister that asked for it. A thread reaps it when it exits.
+/// the Lister that asked for it.
 pub fn launch_manager() -> std::io::Result<()> {
+    launch_tool(MANAGE_FUNCTIONS_FLAG)
+}
+
+/// Start this binary with `flag`, which makes it open one tool window
+/// instead of a file window. A thread reaps the process when it exits.
+pub fn launch_tool(flag: &str) -> std::io::Result<()> {
     let bin = std::env::current_exe()?;
-    let mut child = std::process::Command::new(bin).arg(MANAGE_FUNCTIONS_FLAG).spawn()?;
+    let mut child = std::process::Command::new(bin).arg(flag).spawn()?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });
