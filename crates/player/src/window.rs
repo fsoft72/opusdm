@@ -3,7 +3,7 @@
 use crate::args::Args;
 use crate::audio_view::AudioView;
 use crate::controls::{Controls, Handlers};
-use crate::timefmt::offset;
+use opusdm_media::timefmt::{offset, slider_to_ns};
 use crate::view::{choose, ViewKind};
 use gtk4 as gtk;
 use gtk::gdk;
@@ -78,7 +78,7 @@ fn _handlers(engine: &Rc<Engine>) -> Handlers {
         toggle_play: Box::new(move || _toggle_play(&e_play)),
         seek: Box::new(move |value, accurate| {
             let Some(duration) = e_seek.duration() else { return };
-            let ns = crate::timefmt::slider_to_ns(value, duration);
+            let ns = slider_to_ns(value, duration);
             if let Err(e) = e_seek.seek(ns, accurate) { opusdm_ipc::err_log!("player", "{e}"); }
         }),
         volume: Box::new(move |v| e_vol.set_volume(v)),

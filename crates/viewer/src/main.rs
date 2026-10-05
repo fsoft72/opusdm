@@ -10,7 +10,6 @@ mod kind;
 mod loader;
 mod slideshow;
 mod strip;
-mod timefmt;
 mod video_view;
 mod window;
 mod zoom;

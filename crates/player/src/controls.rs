@@ -1,7 +1,7 @@
 //! The control bar: play / pause, seek slider, times, volume, mute and loop.
 
 use crate::icons::{Icon, IconView};
-use crate::timefmt::{format_time, ns_to_slider, SLIDER_MAX};
+use opusdm_media::timefmt::{format_time, ns_to_slider, SLIDER_MAX};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::cell::Cell;

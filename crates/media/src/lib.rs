@@ -6,6 +6,7 @@ mod engine;
 mod error;
 mod event;
 mod tags;
+pub mod timefmt;
 mod uri;
 
 pub use engine::{Engine, EngineOptions, VideoSink};

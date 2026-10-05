@@ -1,7 +1,7 @@
 //! The video area: the engine's paintable and a bar with play / pause, a seek
 //! slider and the time.
 
-use crate::timefmt::{format_time, ns_to_slider, offset, slider_to_ns, SLIDER_MAX};
+use opusdm_media::timefmt::{format_time, ns_to_slider, offset, slider_to_ns, SLIDER_MAX};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
