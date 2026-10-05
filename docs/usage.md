@@ -516,6 +516,37 @@ hub bar, to start a program by typing its name.
   arguments. A program that cannot start is reported in red under the input.
 - **Close:** **Esc**, a click outside the window, or running something.
 
+### 3.26 Screenshot (`opusdm-shot`)
+
+A screenshot tool: it freezes the screen, you drag the area to keep, edit it a
+little and save it.
+
+- **Open it:** bind a hotkey to the program `opusdm-shot` (Edit Hotkeys, choose
+  **Exec**, tick **Global** to use it from anywhere). Only the primary monitor
+  is captured.
+- **Select the area:** the screen is frozen and dimmed. Drag a rectangle (the
+  size is shown next to it) and release. A click or a selection under 4 x 4
+  pixels is ignored; **Esc** quits with no screenshot.
+- **Edit:** the editor has four tools: **Select** (click an annotation to select
+  it, drag to move it, **Delete** removes it), **Line**, **Arrow** (drag; hold
+  **Shift** to lock the angle to 15 degrees) and **Text** (click, type, **Enter**
+  adds a line, **Esc** or a click elsewhere finishes; click a text again with the
+  Text tool to edit it). Colour (6 swatches) and size (S, M, L: stroke 2, 4, 8 px,
+  text 16, 24, 40 px) apply to what you draw next and to the selected annotation.
+  **Ctrl+Z** undoes, **Ctrl+Shift+Z** (or **Ctrl+Y**) redoes. The defaults are red
+  and M.
+- **Save as...:** choose the format in the bar first: **PNG** (lossless), **JPG**
+  or **WebP** with a quality slider (1-100, default 90; WebP also has a
+  **Lossless** switch). In the dialog the extension you type decides the format;
+  with no or an unknown extension the format of the bar is appended. The window
+  closes after a successful save; an error is shown under the image and nothing
+  is lost.
+- **Quick save:** writes a PNG named `shot-YYYYMMDD-HHMMSS.png` in
+  `~/Pictures/Screenshots` (created if needed, an existing name is never
+  overwritten) and closes.
+- **Copy:** puts the image on the clipboard. The window stays open, because
+  without a clipboard manager the image would vanish with the process.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

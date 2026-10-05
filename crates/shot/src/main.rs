@@ -1,0 +1,73 @@
+//! `opusdm-shot`: screenshot with area selection and a basic editor. A hotkey
+//! bound to `exec:opusdm-shot` freezes the screen, the user drags the area to
+//! keep, and an editor opens for lines, arrows and text before saving. See
+//! `docs/superpowers/specs/2026-10-05-screenshot-design.md`.
+
+mod annotations;
+mod capture;
+mod editor;
+mod export;
+mod icons;
+mod overlay;
+mod render;
+mod selection;
+
+use gtk4 as gtk;
+use gtk::gdk;
+use gtk::prelude::*;
+
+/// Load the shared OpusDM look (theme mode, fonts) plus the editor style.
+fn apply_theme() {
+    let settings = opusdm_ipc::settings::load_settings("opusdm-shot");
+    opusdm_ui::apply_theme_mode(settings.appearance.theme_mode);
+    let Some(display) = gdk::Display::default() else { return };
+    let provider = gtk::CssProvider::new();
+    let css = format!("{} {} {}", opusdm_ui::chrome_css(settings.appearance.theme_mode), opusdm_ui::ui_look_css(&settings), editor::editor_css());
+    provider.load_from_data(&css);
+    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+/// The primary monitor and its geometry (x, y, width, height).
+fn primary_monitor() -> Result<(gdk::Monitor, (i32, i32, i32, i32)), String> {
+    let display = gdk::Display::default().ok_or("no display")?;
+    let monitor = display
+        .monitors()
+        .item(0)
+        .and_then(|o| o.downcast::<gdk::Monitor>().ok())
+        .ok_or("no monitor found")?;
+    let g = monitor.geometry();
+    Ok((monitor, (g.x(), g.y(), g.width(), g.height())))
+}
+
+/// Capture the primary monitor and start the overlay, then the editor.
+fn start(app: &gtk::Application) {
+    let (monitor, (x, y, w, h)) = match primary_monitor() {
+        Ok(m) => m,
+        Err(e) => return fail(app, &e),
+    };
+    // The screen is captured before any window of ours is shown.
+    let screen = match capture::capture(x, y, w as u32, h as u32) {
+        Ok(s) => s,
+        Err(e) => return fail(app, &format!("capture failed: {e}")),
+    };
+    let app2 = app.clone();
+    overlay::open(app, &monitor, screen, move |cropped| editor::open(&app2, cropped));
+}
+
+/// Log `message` and quit with a failure.
+fn fail(app: &gtk::Application, message: &str) {
+    opusdm_ipc::err_log!("opusdm-shot", "{message}");
+    app.quit();
+    std::process::exit(1);
+}
+
+fn main() -> gtk::glib::ExitCode {
+    let app = gtk::Application::builder().application_id("org.opusdm.Shot").build();
+    app.connect_activate(|app| {
+        // A second launch while a window is open does nothing.
+        if !app.windows().is_empty() { return; }
+        apply_theme();
+        start(app);
+    });
+    app.run()
+}
