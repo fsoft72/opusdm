@@ -3,6 +3,7 @@
 
 use crate::annotations::{self, Annotation, Color, Document, Point, Shape, Size, DEFAULT_COLOR, DEFAULT_SIZE, PALETTE};
 use crate::export::{self, Format, Options};
+use crate::icons::{self, Icon};
 use crate::render;
 use gtk4 as gtk;
 use gtk::cairo;
@@ -184,10 +185,17 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
 fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
     let bar = bar();
 
-    let tools = [("Select", Tool::Select), ("Line", Tool::Line), ("Arrow", Tool::Arrow), ("Text", Tool::Text)];
+    let tools = [
+        ("Select and move", Icon::Select, Tool::Select),
+        ("Line", Icon::Line, Tool::Line),
+        ("Arrow", Icon::Arrow, Tool::Arrow),
+        ("Text", Icon::Text, Tool::Text),
+    ];
     let mut first: Option<gtk::ToggleButton> = None;
-    for (label, tool) in tools {
-        let button = toggle(label, first.as_ref());
+    for (name, icon, tool) in tools {
+        let button = toggle(first.as_ref());
+        button.set_child(Some(&icons::widget(icon)));
+        button.set_tooltip_text(Some(name));
         button.set_active(tool == Tool::Arrow);
         let ui = ui.clone();
         button.connect_toggled(move |b| {
@@ -202,7 +210,7 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
 
     let mut first: Option<gtk::ToggleButton> = None;
     for (i, (name, color)) in PALETTE.iter().enumerate() {
-        let button = toggle("", first.as_ref());
+        let button = toggle(first.as_ref());
         button.add_css_class("shot-swatch");
         button.add_css_class(&format!("shot-color-{i}"));
         button.set_tooltip_text(Some(name));
@@ -219,9 +227,10 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
     let mut first: Option<gtk::ToggleButton> = None;
-    for (label, size) in [("S", Size::Small), ("M", Size::Medium), ("L", Size::Large)] {
-        let button = toggle(label, first.as_ref());
-        button.set_tooltip_text(Some(&format!("Stroke {} px, text {} px", size.line_width(), size.font_size())));
+    for (name, size) in [("Small", Size::Small), ("Medium", Size::Medium), ("Large", Size::Large)] {
+        let button = toggle(first.as_ref());
+        button.set_child(Some(&icons::widget(Icon::Width(size))));
+        button.set_tooltip_text(Some(&format!("{name}: stroke {} px, text {} px", size.line_width(), size.font_size())));
         button.set_active(size == DEFAULT_SIZE);
         let ui = ui.clone();
         button.connect_toggled(move |b| {
@@ -299,8 +308,8 @@ fn bar() -> gtk::Box {
 }
 
 /// A toggle button of a radio group (`group` is the first button of it).
-fn toggle(label: &str, group: Option<&gtk::ToggleButton>) -> gtk::ToggleButton {
-    let button = gtk::ToggleButton::with_label(label);
+fn toggle(group: Option<&gtk::ToggleButton>) -> gtk::ToggleButton {
+    let button = gtk::ToggleButton::new();
     button.set_focus_on_click(false);
     if let Some(g) = group { button.set_group(Some(g)); }
     button

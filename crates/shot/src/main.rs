@@ -7,6 +7,7 @@ mod annotations;
 mod capture;
 mod editor;
 mod export;
+mod icons;
 mod overlay;
 mod render;
 mod selection;
