@@ -204,7 +204,7 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 ### 3.10h File Types
 **Edit File Types...** (command palette) edits the list kept in `~/.config/opusdm/filetypes.json`. The first type (top to bottom) whose rule matches a file wins; use the arrows to reorder.
 - **Match**: one or more conditions combined with "all of" or "any of": file name patterns, bytes at an offset (hex, e.g. `89 50 4E 47`), text in the first N bytes, size range (`10K`, `4M`) and modified-time range (`7d`, `2026-01-01`). Content is read from the first 64 KiB of the file.
-- **Actions**: the function run on a **double click** (instead of the default application) and the functions listed in **Open With** in the right-click menu of matching files. The function works on the double clicked or right-clicked file, which becomes the only selected row. Folders and archives keep their usual behaviour; a file with no matching type opens with the default application as before.
+- **Actions**: what runs on a **double click** (instead of the default application: a saved function, a bash command or a program, see 3.13) and the entries listed in **Open With** in the right-click menu of matching files. The function works on the double clicked or right-clicked file, which becomes the only selected row. Folders and archives keep their usual behaviour; a file with no matching type opens with the default application as before.
 - **Drop** is stored in `filetypes.json` but not wired to drag and drop yet.
 - **Filetype Creator (from selected file)...** opens the editor with a new type derived from the selected file: `*.ext` for a file with an extension, its first bytes for a binary file without one, the exact name otherwise.
 - Changes apply at once to every Lister; Save is disabled while a type has a problem (shown under the form). A nested rule written by hand in the JSON is shown read-only and kept as it is.
@@ -332,7 +332,7 @@ a **Bash** command or an **Exec** program, see below) and a
 - **Bash**: a command line run by `bash -c`, so pipes, `&&` and variables work. Tick **Show output** to see its output in a window. The files selected in the SOURCE lister arrive as the positional parameters, so use `"$@"` (for example `bash:xdg-open "$@"`). The `{f}`-style placeholders of Manage Functions are not substituted inside a bash command: a file name pasted into a script would be run as shell code. Output windows of a global hotkey open on the SOURCE lister.
 - **Exec**: a program and its arguments, started directly with no shell (quotes group words, a backslash escapes the next character). **Browse...** picks the program. It is meant for graphical programs, for example a global `Ctrl+Alt+t` that opens a terminal.
 
-A Bash or Exec hotkey runs in the SOURCE lister's folder, or in your home folder when no lister is open. A command that cannot run (empty, unbalanced quotes, a program that is not installed) is flagged on its row and Save stays disabled. The same two kinds will be offered in the user menu, script events, button banks and file types in a later change.
+A Bash or Exec hotkey runs in the SOURCE lister's folder, or in your home folder when no lister is open. A command that cannot run (empty, unbalanced quotes, a program that is not installed) is flagged on its row and Save stays disabled. The same three choices (saved Function, Bash, Exec) are offered wherever a function can be picked: the user menu, script events, button banks and file type actions. A Bash command always receives the SOURCE selection as `"$@"`.
 
 **Find Key...** (Command Palette) asks for a key combination and tells you
 what it does: a function, an inline command, a built-in command, or nothing.
@@ -343,7 +343,7 @@ Bindings are stored in `~/.config/opusdm/hotkeys.json`.
 
 The **Menu** drop-down in the lister button row shows your own menu. Choose
 **Edit User Menu...** at the bottom of it (or the Command Palette entry of the
-same name) to add entries (each runs a saved function), submenus and
+same name) to add entries (each runs a saved function, a bash command or a program; see 3.13), submenus and
 separators, rename and reorder them. Changes show up in every open lister
 without a restart, and an entry whose function was deleted disappears from
 the menu (the editor marks it). Stored in `~/.config/opusdm/usermenu.json`.
@@ -355,7 +355,7 @@ events: `Startup`, `Shutdown` (the hub waits up to 10 seconds for these to
 finish), `Lister opened`, `Lister closed`, and double clicks on the desktop
 background with the primary, middle and right buttons. Functions started by an
 event run without a lister asking for them: they use the current SOURCE
-lister's selection, or an empty selection in your home directory.
+lister's selection, or an empty selection in your home directory. Each binding can also run a bash command or a program instead of a saved function (see 3.13); the output window of a "Show output" command opens on the SOURCE lister. A bash or exec `Shutdown` hook is waited for like any other.
 
 To stop a hook that opens a lister from looping, an event is ignored while its
 previous run is still going and never fires twice within 2 seconds. Stored in
@@ -475,8 +475,8 @@ To do it from the keyboard, make a function with the **Hide**, **Reveal** or **T
 ### 3.24 Button Banks
 
 A button bank is a small floating window of buttons. Each button has a label
-and/or an icon and up to three Functions: one for the left, one for the right
-and one for the middle mouse button. Bank windows do not appear in the window
+and/or an icon and up to three actions: one for the left, one for the right
+and one for the middle mouse button. Each is a saved Function, a bash command or a program (see 3.13), or nothing. Bank windows do not appear in the window
 list or the pager.
 
 - **Manage banks:** "Button Banks..." in the desktop menu or in the Command
