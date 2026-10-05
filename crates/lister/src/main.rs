@@ -15,6 +15,7 @@ mod cache_list;
 mod checkfit_ui;
 mod client;
 mod copy_as;
+mod compress_dialog;
 mod crypt_dialog;
 mod cli_dialog;
 mod clip;

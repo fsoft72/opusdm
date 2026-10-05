@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-05
+
+- Feature (lister, fsops, ipc, hub): **Compress...** in the file context menu and the Command Palette. A requester asks for the archive name (editable) and the format in a drop-down listing only what the installed tools can write: `.zip`, `.tar.bz2`, `.tar.gz`, `.7z`, `.tar.xz`, `.tar.zst`, and `.gz` / `.bz2` only when one regular file is selected (`CompressFormat::available`, checked against `PATH`). Changing the format swaps the suffix in the name. It acts on the whole selection when it holds the clicked row. New `Op::Compress { archive }` (format from the name suffix) runs as a hub job: `fsops::compress::run_compress` runs `zip` / `tar` / `7z` / `gzip` / `bzip2` in the sources' folder, reports progress from the archive size, kills the tool on cancel, never overwrites an existing archive and removes a partial one. The archive goes to the DEST Lister, or to the current folder when there is none (`link_dialogs::dest_or_cwd`). Sources must share one folder, and a folder cannot be archived into itself.
+
 ## 2026-10-03
 
 - Change (hub, lister): a Test from Manage Functions no longer starts in `$HOME` when no Lister is SOURCE. The hub answers `FunctionFailed` with `NO_SOURCE_ERROR` ("There is no SOURCE Lister: select a Lister as SOURCE, then try again."), and the Manage Functions window shows every Test failure in an OpusDM requester as well as in the log.

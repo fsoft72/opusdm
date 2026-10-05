@@ -70,6 +70,10 @@ pub enum Op {
     /// Split the single source into `chunk_bytes` parts named `name.001`,
     /// `name.002`, ... in `dest_dir`.
     Split { chunk_bytes: u64 },
+    /// Pack `srcs` (all in one folder) into the new archive `archive` in
+    /// `dest_dir`; the suffix of `archive` (`.zip`, `.tar.gz`, `.7z`, ...)
+    /// picks the format.
+    Compress { archive: String },
     /// Encrypt `srcs` with `password` into `dest_dir` as `name.enc` (folders
     /// keep their tree).
     Encrypt { password: Secret },

@@ -145,6 +145,8 @@ commands! {
     ManageUserMenu => ("Edit User Menu...", "Functions", None),
     /// Open the script events editor.
     ManageScripts => ("Edit Script Events...", "Functions", None),
+    /// Pack the selection into an archive.
+    Compress => ("Compress... (zip, tar.gz, 7z, ... Source -> Dest)", "File Ops", None),
     /// Encrypt the selection with a password.
     Encrypt => ("Encrypt... (password, Source -> Dest as .enc)", "File Ops", None),
     /// Decrypt the selected `.enc` files with a password.

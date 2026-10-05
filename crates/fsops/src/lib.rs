@@ -4,6 +4,7 @@
 pub mod attrs;
 pub mod cancel;
 pub mod checkfit;
+pub mod compress;
 pub mod copy;
 pub mod crypt;
 pub mod delete;
@@ -90,6 +91,7 @@ fn run_job_inner(spec: &JobSpec, tx: &Sender<Progress>, cancel: &CancelToken) ->
             Ok(()) => joinsplit::run_join(srcs, dest, target, tx, cancel),
             Err(msg) => rejected(dest, msg),
         },
+        Op::Compress { archive } => compress::run_compress(srcs, dest, archive, tx, cancel),
         Op::Encrypt { password } => crypt::run_crypt(srcs, dest, &password.0, true, tx, cancel),
         Op::Decrypt { password } => crypt::run_crypt(srcs, dest, &password.0, false, tx, cancel),
         Op::Split { chunk_bytes } => joinsplit::run_split(srcs, dest, *chunk_bytes, tx, cancel),

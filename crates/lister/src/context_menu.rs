@@ -134,6 +134,20 @@ pub fn show_context_menu(
         }
     }
 
+    // Compress: the whole selection when it holds the clicked row.
+    {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let btn = menu_button("Compress...");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            let srcs = crate::crypt_dialog::targets_for(ui.selected_paths(), &target_path);
+            crate::compress_dialog::open_compress(&ui, srcs);
+        });
+        menu_box.append(&btn);
+    }
+
     // Encrypt / Decrypt. Decrypt is offered on `.enc` files only.
     {
         let mut entries = vec![("Encrypt...", true)];

@@ -119,6 +119,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         CommandId::JoinFiles => crate::link_dialogs::open_join(ui),
         CommandId::SplitFile => crate::link_dialogs::open_split(ui),
         CommandId::CheckFit => crate::checkfit_ui::start(ui),
+        CommandId::Compress => crate::compress_dialog::open_compress(ui, ui.selected_paths()),
         CommandId::Encrypt => crate::crypt_dialog::open_crypt(ui, true, ui.selected_paths()),
         CommandId::Decrypt => crate::crypt_dialog::open_crypt(ui, false, ui.selected_paths()),
 
