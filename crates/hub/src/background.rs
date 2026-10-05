@@ -13,11 +13,12 @@ use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_hub::bg_sequence::Sequence;
+use opusdm_hub::fullscreen::{self, Rect};
 use opusdm_ipc::{Background, BackgroundEntry, ImageFit};
 use opusdm_media::{Engine, EngineOptions, Event, VideoSink};
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Name of the extra page painted when no entry can be shown.
 const FALLBACK_PAGE: &str = "fallback";
@@ -27,12 +28,17 @@ pub(crate) fn page_class(index: usize) -> String {
     format!("opusdm-bg-{index}")
 }
 
+/// How often the full screen windows are looked for.
+const COVER_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
 /// CSS class of the fallback page.
 pub(crate) const FALLBACK_CLASS: &str = "opusdm-bg-fallback";
 
 /// One desktop window's stack of pages.
 struct View {
     stack: glib::WeakRef<gtk::Stack>,
+    /// The monitor the stack covers.
+    monitor: Rect,
     /// The picture of each video page, by entry index.
     pictures: Vec<Option<gtk::Picture>>,
 }
@@ -103,6 +109,15 @@ struct Controller {
     retiring: Option<Engine>,
     /// Bumped on every install, so a stale callback can tell it is stale.
     generation: u64,
+    /// Every monitor is hidden behind a full screen window: the rotation and
+    /// the video are paused.
+    covered: bool,
+    /// When the rotation timer was armed, and for how long.
+    armed: Option<(Instant, Duration)>,
+    /// Time left to the entry on screen, kept while `covered` stops the timer.
+    remaining: Option<Duration>,
+    /// The cover check runs on a timer, started with the first view.
+    cover_watch: bool,
 }
 
 impl Controller {
@@ -119,6 +134,10 @@ impl Controller {
             engine: None,
             retiring: None,
             generation: 0,
+            covered: false,
+            armed: None,
+            remaining: None,
+            cover_watch: false,
         }
     }
 }
@@ -143,13 +162,13 @@ fn _seed() -> u64 {
 }
 
 /// A new desktop window's backdrop. It already shows the entry on screen.
-pub(crate) fn new_view() -> gtk::Stack {
+pub(crate) fn new_view(monitor: Rect) -> gtk::Stack {
     let stack = gtk::Stack::new();
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     CONTROLLER.with(|c| {
         let c = &mut *c.borrow_mut();
-        let mut view = View { stack: stack.downgrade(), pictures: Vec::new() };
+        let mut view = View { stack: stack.downgrade(), monitor, pictures: Vec::new() };
         view.populate(&stack, &c.entries, c.fade_ms);
         if let Some(index) = c.current {
             if let (Some(Some(picture)), Some(engine)) = (view.pictures.get(index), c.engine.as_ref()) {
@@ -159,6 +178,13 @@ pub(crate) fn new_view() -> gtk::Stack {
         view.show(&_current_page(c.current), false);
         c.views.retain(|v| v.stack.upgrade().is_some());
         c.views.push(view);
+        if !c.cover_watch {
+            c.cover_watch = true;
+            glib::timeout_add_local(COVER_CHECK_INTERVAL, || {
+                CONTROLLER.with(|c| _check_cover(&mut c.borrow_mut()));
+                glib::ControlFlow::Continue
+            });
+        }
     });
     stack
 }
@@ -204,6 +230,8 @@ fn _stop(c: &mut Controller) {
     }
     c.engine = None;
     c.retiring = None;
+    c.armed = None;
+    c.remaining = None;
 }
 
 /// Show the next usable entry, then arm the timer for the one after. With a
@@ -213,6 +241,8 @@ fn _advance(c: &mut Controller, fade: bool) {
     if let Some(id) = c.timer.take() {
         id.remove();
     }
+    c.armed = None;
+    c.remaining = None;
     let mut started = None;
     let picked = loop {
         let next = {
@@ -245,17 +275,27 @@ fn _advance(c: &mut Controller, fade: bool) {
         view.show(&name, fade && c.fade_ms > 0);
     }
     let usable_count = (0..c.entries.len()).filter(|&i| c.entries[i].is_usable() && !c.failed.contains(&i)).count();
+    if c.covered {
+        if let Some(engine) = &c.engine {
+            let _ = engine.pause();
+        }
+    }
     if usable_count > 1 {
-        _arm_timer(c);
+        let interval = c.installed.as_ref().map(|bg| Duration::from_secs(bg.interval_secs.into()));
+        match interval {
+            Some(interval) if c.covered => c.remaining = Some(interval),
+            Some(interval) => _arm_timer(c, interval),
+            None => {}
+        }
     }
 }
 
-/// Start the rotation timer: when it fires, move on to the next entry.
-fn _arm_timer(c: &mut Controller) {
-    let Some(bg) = c.installed.as_ref() else { return };
+/// Start the rotation timer: when it fires after `delay`, move on to the
+/// next entry.
+fn _arm_timer(c: &mut Controller, delay: Duration) {
     let generation = c.generation;
-    let interval = Duration::from_secs(bg.interval_secs.into());
-    c.timer = Some(glib::timeout_add_local_once(interval, move || {
+    c.armed = Some((Instant::now(), delay));
+    c.timer = Some(glib::timeout_add_local_once(delay, move || {
         CONTROLLER.with(|c| {
             let c = &mut *c.borrow_mut();
             c.timer = None;
@@ -264,6 +304,43 @@ fn _arm_timer(c: &mut Controller) {
             }
         });
     }));
+}
+
+/// Look for full screen windows. When they hide every monitor the video
+/// pauses and the rotation timer stops, keeping the time the entry has left;
+/// when the desktop shows again both go on from where they were.
+fn _check_cover(c: &mut Controller) {
+    let monitors: Vec<Rect> = c.views.iter().filter(|v| v.stack.upgrade().is_some()).map(|v| v.monitor).collect();
+    let covered = match fullscreen::fullscreen_windows() {
+        Ok(windows) => fullscreen::covers_all(&monitors, &windows),
+        Err(e) => {
+            opusdm_ipc::debug_log!("opusdm-hub", "cannot look for full screen windows: {e}");
+            false
+        }
+    };
+    if covered == c.covered {
+        return;
+    }
+    c.covered = covered;
+    opusdm_ipc::debug_log!("opusdm-hub", "desktop background {}", if covered { "paused: hidden by full screen windows" } else { "resumed" });
+    if covered {
+        if let Some(id) = c.timer.take() {
+            id.remove();
+        }
+        if let Some((since, delay)) = c.armed.take() {
+            c.remaining = Some(delay.saturating_sub(since.elapsed()));
+        }
+        if let Some(engine) = &c.engine {
+            let _ = engine.pause();
+        }
+        return;
+    }
+    if let Some(engine) = &c.engine {
+        let _ = engine.play();
+    }
+    if let Some(left) = c.remaining.take() {
+        _arm_timer(c, left);
+    }
 }
 
 /// Keep `old` playing until the fade that hides it is over, then drop it.

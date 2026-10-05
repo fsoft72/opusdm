@@ -304,7 +304,9 @@ standalone window. The background has its own **Desktop Background** tab in Sett
   list order. A video shorter than the interval plays again and again until the interval ends, a
   longer one is cut; videos are always silent. With one entry nothing rotates. An entry that
   cannot be shown (file removed, video that does not play) is skipped, and with none left the
-  desktop shows the default colour. An older single background becomes a list of one entry.
+  desktop shows the default colour. While full screen windows hide every monitor, the video
+  pauses and the interval stops counting; both go on when the desktop shows again. An older
+  single background becomes a list of one entry.
 - **Icon grid**: the icon size and the grid spacing, each with `S` / `M` / `L` preset buttons and a
   free spin box.
 - **Desktop folder**: override which directory the desktop shows. Empty means the default

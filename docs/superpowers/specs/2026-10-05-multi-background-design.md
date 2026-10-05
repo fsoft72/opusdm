@@ -64,6 +64,10 @@ New helpers: `BACKGROUND_VIDEO_EXTS`, `is_background_video`,
 - A glib timer fires after `interval_secs`; the next entry is shown with the
   fade, the outgoing video engine is dropped once the fade ends. The
   effective fade never exceeds half the interval.
+- While full screen windows hide every monitor (`fullscreen.rs`: EWMH
+  state polled once a second, a monitor counts as hidden when one window
+  covers at least 90% of it) the video pauses and the timer stops with its
+  remaining time kept; both resume when the desktop shows again.
 - A settings change identical to the current one is ignored, so unrelated
   theme changes do not restart the rotation.
 

@@ -159,6 +159,7 @@ pub(crate) fn build_one_desktop_window(
         icon_set,
         desktop_extras(widgets),
         panel_position,
+        opusdm_hub::fullscreen::Rect { x, y, w, h },
     );
     window.set_child(Some(&desktop_area));
 
@@ -511,12 +512,14 @@ pub(crate) fn spawn_desktop_watch(
 /// Build the desktop area that fills the window below the toolbar, wrapped in
 /// an overlay so the context menu can be laid on top of it. When `desktop_dir`
 /// is `Some`, an icon field in `Free` mode fills it and its initial entries
-/// are read. Otherwise the background stays plain.
+/// are read. Otherwise the background stays plain. `monitor` is the screen
+/// area the desktop window covers.
 pub(crate) fn build_desktop_area(
     desktop_dir: Option<&Path>,
     icon_set: opusdm_ipc::IconSetId,
     extras: opusdm_hub::leftout::DesktopExtras,
     panel_position: opusdm_ipc::PanelPosition,
+    monitor: opusdm_hub::fullscreen::Rect,
 ) -> (gtk::Overlay, Option<opusdm_iconview::IconField>) {
     let overlay = gtk::Overlay::new();
     overlay.set_hexpand(true);
@@ -551,7 +554,7 @@ pub(crate) fn build_desktop_area(
     };
 
     // The rotating background sits underneath; the icon area floats over it.
-    overlay.set_child(Some(&crate::background::new_view()));
+    overlay.set_child(Some(&crate::background::new_view(monitor)));
     overlay.add_overlay(&bg);
     (overlay, field)
 }
