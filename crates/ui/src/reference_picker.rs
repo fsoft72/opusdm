@@ -137,6 +137,13 @@ fn function_position(functions: &[Function], selected: &str) -> u32 {
     functions.iter().position(|f| f.id == selected).map(|p| p as u32).unwrap_or(gtk::INVALID_LIST_POSITION)
 }
 
+/// Add a search field at the top of the popup of a drop-down built with
+/// `DropDown::from_strings`: typing filters the entries.
+fn enable_filter(dropdown: &gtk::DropDown) {
+    dropdown.set_expression(Some(gtk::PropertyExpression::new(gtk::StringObject::static_type(), gtk::Expression::NONE, "string")));
+    dropdown.set_enable_search(true);
+}
+
 /// A drop-down listing every function by name, with `selected` (a function
 /// id) pre-selected. Nothing is selected when the id is not in the list: a
 /// dangling reference, which the editors flag as an error.
@@ -144,6 +151,7 @@ pub fn function_dropdown(functions: &[Function], selected: &str) -> gtk::DropDow
     let names: Vec<&str> = functions.iter().map(|f| f.name.as_str()).collect();
     let dropdown = gtk::DropDown::from_strings(&names);
     dropdown.set_selected(function_position(functions, selected));
+    enable_filter(&dropdown);
     dropdown
 }
 
@@ -251,6 +259,7 @@ impl RefPicker {
         root.append(&browse);
         let command_names: Vec<&str> = InternalCmd::ALL.iter().map(|c| c.label()).collect();
         let internal_dd = gtk::DropDown::from_strings(&command_names);
+        enable_filter(&internal_dd);
         root.append(&internal_dd);
         let internal_entry = gtk::Entry::new();
         internal_entry.set_hexpand(true);
