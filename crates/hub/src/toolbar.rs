@@ -151,8 +151,17 @@ impl Widgets {
     }
 }
 
+/// Ask the window manager for `count` virtual screens. A failure is logged
+/// and never stops the hub.
+fn apply_virtual_screens(count: u32) {
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.set_desktop_count(count)) {
+        opusdm_ipc::err_log!("opusdm-hub", "cannot set the number of virtual screens: {e}");
+    }
+}
+
 fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
     let desktop_settings = opusdm_hub::desktop_settings::load();
+    apply_virtual_screens(desktop_settings.virtual_screens);
     let initial_settings = settings::load_settings();
     crate::background::install(&initial_settings.theme.background);
     opusdm_ui::apply_theme_mode(initial_settings.appearance.theme_mode);
@@ -340,6 +349,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
         }
         HubEvent::DesktopSettingsChanged(ds) => {
             *widgets.desktop.settings.borrow_mut() = ds.clone();
+            apply_virtual_screens(ds.virtual_screens);
             let field = widgets.desktop.field.borrow().clone();
             if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);

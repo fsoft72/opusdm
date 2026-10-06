@@ -202,6 +202,13 @@ impl X11 {
         self.send_to_root(self.root, "_NET_CURRENT_DESKTOP", [target, 0, 0, 0, 0])
     }
 
+    /// Ask the window manager to offer `count` virtual desktops
+    /// (`_NET_NUMBER_OF_DESKTOPS` on the root window). A `count` of 0 is ignored.
+    pub fn set_desktop_count(&self, count: u32) -> Result<(), X11Error> {
+        if count == 0 { return Ok(()); }
+        self.send_to_root(self.root, "_NET_NUMBER_OF_DESKTOPS", [count, 0, 0, 0, 0])
+    }
+
     /// A plain `ConfigureWindow` of `window` to the given geometry.
     pub fn configure(&self, window: u32, x: i32, y: i32, w: u32, h: u32) -> Result<(), X11Error> {
         self.conn.configure_window(window, &xproto::ConfigureWindowAux::new().x(x).y(y).width(w).height(h))?;

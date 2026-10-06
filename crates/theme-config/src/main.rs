@@ -10,7 +10,7 @@ use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_desktop_config::menu_ui::MenuSection;
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
-use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection};
+use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection, VirtualScreensSection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -169,6 +169,10 @@ fn build_window(app: &gtk::Application) {
 
     let panel = Rc::new(PanelSection::new(desktop_data.panel_position));
     desktop_page.append(&panel.root);
+    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let screens = Rc::new(VirtualScreensSection::new(desktop_data.virtual_screens));
+    desktop_page.append(&screens.root);
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
 
@@ -283,6 +287,7 @@ fn build_window(app: &gtk::Application) {
         let grid = grid.clone();
         let folder = folder.clone();
         let panel = panel.clone();
+        let screens = screens.clone();
         let dock_section = dock_section.clone();
         let behavior_section = behavior_section.clone();
         let theme_mode_section = theme_mode_section.clone();
@@ -301,6 +306,7 @@ fn build_window(app: &gtk::Application) {
                 panel_position: panel.position(),
                 dock_position: dock_section.position(),
                 dock_icon_size: dock_section.icon_size(),
+                virtual_screens: screens.count(),
             }
             .sanitized();
             (prefs, desktop)

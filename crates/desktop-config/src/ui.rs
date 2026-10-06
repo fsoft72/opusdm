@@ -308,6 +308,39 @@ impl PanelSection {
     }
 }
 
+/// The virtual screens section: how many virtual desktops the window
+/// manager offers.
+pub struct VirtualScreensSection {
+    pub root: gtk::Box,
+    spin: gtk::SpinButton,
+}
+
+impl VirtualScreensSection {
+    /// Build the section seeded with the current number of virtual screens.
+    pub fn new(initial: u32) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        root.append(&heading("VIRTUAL SCREENS"));
+
+        let (lo, hi) = opusdm_ipc::VIRTUAL_SCREENS_RANGE;
+        let spin = gtk::SpinButton::with_range(lo as f64, hi as f64, 1.0);
+        spin.set_value(initial as f64);
+
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let name = gtk::Label::new(Some("Number of screens"));
+        name.set_xalign(0.0);
+        name.set_size_request(130, -1);
+        row.append(&name);
+        row.append(&spin);
+        root.append(&row);
+        Self { root, spin }
+    }
+
+    /// The chosen number of virtual screens.
+    pub fn count(&self) -> u32 {
+        self.spin.value_as_int().max(1) as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

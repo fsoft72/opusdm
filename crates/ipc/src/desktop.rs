@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 pub const ICON_SIZE_RANGE: (i32, i32) = (24, 256);
 /// Accepted range for [`DesktopSettings::dock_icon_size`], in pixels.
 pub const DOCK_ICON_SIZE_RANGE: (i32, i32) = (16, 128);
+/// Accepted range for [`DesktopSettings::virtual_screens`].
+pub const VIRTUAL_SCREENS_RANGE: (u32, u32) = (1, 16);
+/// Default for [`DesktopSettings::virtual_screens`].
+pub const DEFAULT_VIRTUAL_SCREENS: u32 = 4;
 
 /// Lower/upper bound for [`DesktopSettings::grid_spacing`], in pixels. The low
 /// end is below the smallest icon so a tight grid can pack icons closer than
@@ -317,6 +321,8 @@ pub struct DesktopSettings {
     pub dock_position: DockPosition,
     /// Dock launcher icon size in pixels.
     pub dock_icon_size: i32,
+    /// Number of virtual screens (desktops) the window manager offers.
+    pub virtual_screens: u32,
 }
 
 impl Default for DesktopSettings {
@@ -329,6 +335,7 @@ impl Default for DesktopSettings {
             panel_position: PanelPosition::Top,
             dock_position: DockPosition::Bottom,
             dock_icon_size: 48,
+            virtual_screens: DEFAULT_VIRTUAL_SCREENS,
         }
     }
 }
@@ -345,6 +352,8 @@ impl DesktopSettings {
         self.grid_gap = self.grid_gap.clamp(lo, hi);
         let (lo, hi) = DOCK_ICON_SIZE_RANGE;
         self.dock_icon_size = self.dock_icon_size.clamp(lo, hi);
+        let (lo, hi) = VIRTUAL_SCREENS_RANGE;
+        self.virtual_screens = self.virtual_screens.clamp(lo, hi);
         self
     }
 }
@@ -562,6 +571,21 @@ mod tests {
         // An older desktop.json without the fields keeps the defaults.
         let old: DesktopSettings = serde_json::from_str("{\"icon_size\":64}").unwrap();
         assert_eq!(old.dock_position, DockPosition::Bottom);
+    }
+
+    #[test]
+    fn virtual_screens_is_clamped_and_defaults_to_four() {
+        assert_eq!(DesktopSettings::default().virtual_screens, 4);
+        let d = DesktopSettings { virtual_screens: 99, ..Default::default() }.sanitized();
+        assert_eq!(d.virtual_screens, VIRTUAL_SCREENS_RANGE.1);
+        let d = DesktopSettings { virtual_screens: 0, ..Default::default() }.sanitized();
+        assert_eq!(d.virtual_screens, VIRTUAL_SCREENS_RANGE.0);
+    }
+
+    #[test]
+    fn old_file_without_virtual_screens_gets_the_default() {
+        let d: DesktopSettings = serde_json::from_str(r#"{"icon_size":64}"#).unwrap();
+        assert_eq!(d.virtual_screens, DEFAULT_VIRTUAL_SCREENS);
     }
 
     #[test]
