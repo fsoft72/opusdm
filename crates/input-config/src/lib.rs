@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod model;
+pub mod parse;
 pub mod store;
 
 pub use error::InputError;
