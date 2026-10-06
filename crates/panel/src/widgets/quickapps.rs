@@ -33,7 +33,7 @@ impl QuickApps {
     /// refreshes.
     pub fn new() -> Rc<Self> {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let icons = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let icons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         icons.add_css_class("opusdm-panel-quickapps");
         root.append(&icons);
         root.append(&gtk::Separator::new(gtk::Orientation::Vertical));

@@ -385,6 +385,7 @@ fn install_css() {
     provider.load_from_data(
         ".opusdm-panel { background-color: #2e3436; color: #d3d7cf; }\n\
          .opusdm-panel button { padding: 2px 8px; min-height: 0; }\n\
+         .opusdm-panel-quickapps button { padding: 2px 3px; }\n\
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
          .opusdm-panel-clock-date { font-size: 10px; }\n\
