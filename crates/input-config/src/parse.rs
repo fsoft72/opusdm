@@ -33,8 +33,20 @@ pub enum PointerKind {
 
 /// The slave pointers of `xinput list` output (the virtual core devices are left out).
 pub fn parse_pointer_list(out: &str) -> Vec<RawDevice> {
+    parse_devices(out, &["slave  pointer"])
+}
+
+/// Every slave pointer and slave keyboard (the virtual core devices are left
+/// out): what the hot plug signature is made of, because X resets the keymap
+/// when a keyboard is plugged in.
+pub fn parse_slave_devices(out: &str) -> Vec<RawDevice> {
+    parse_devices(out, &["slave  pointer", "slave  keyboard"])
+}
+
+/// The devices of `xinput list` output whose line holds one of `markers`.
+fn parse_devices(out: &str, markers: &[&str]) -> Vec<RawDevice> {
     out.lines()
-        .filter(|l| l.contains("slave  pointer"))
+        .filter(|l| markers.iter().any(|m| l.contains(m)))
         .filter_map(|line| {
             let (left, _) = line.split_once('\t')?;
             let name = left.split('\u{21b3}').nth(1)?.trim().to_string();
@@ -250,6 +262,12 @@ mod tests {
         let ids: Vec<u32> = devices.iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![9, 12]);
         assert_eq!(devices[0].name, "E-Signal Trust Gaming Mouse");
+    }
+
+    #[test]
+    fn slave_devices_include_the_keyboards() {
+        let ids: Vec<u32> = parse_slave_devices(LIST).iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![9, 12, 6]);
     }
 
     #[test]

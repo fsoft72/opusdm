@@ -5,9 +5,12 @@ use crate::backend::Backend;
 use crate::change::all_changes;
 use crate::{InputError, InputSettings};
 
-/// Apply every setting of `settings`; returns the errors of the commands that failed.
+/// Apply every setting of `settings`; returns the errors of the commands that
+/// failed (the same error that repeats, such as a missing tool, once).
 pub fn apply_all(backend: &impl Backend, settings: &InputSettings) -> Vec<InputError> {
-    all_changes(settings).iter().filter_map(|c| backend.apply(c).err()).collect()
+    let mut errors: Vec<InputError> = all_changes(settings).iter().filter_map(|c| backend.apply(c).err()).collect();
+    errors.dedup();
+    errors
 }
 
 /// When the pointer signature differs from `last`: look at the devices again,
@@ -74,5 +77,12 @@ mod tests {
         let mut last = None;
         assert!(reapply_if_changed(&b, &mut last, || None).is_empty());
         assert!(b.applied().is_empty());
+    }
+
+    #[test]
+    fn the_same_failure_is_reported_once() {
+        let b = backend();
+        b.set_failing(true);
+        assert_eq!(apply_all(&b, &InputSettings::default()).len(), 1);
     }
 }

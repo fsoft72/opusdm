@@ -7,7 +7,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 
 use crate::change::Change;
 use crate::commands::{commands_for, PointerDevice};
-use crate::parse::{self, device_kind, keyboard_from_outputs, parse_pointer_list, parse_props, PointerKind};
+use crate::parse::{self, device_kind, keyboard_from_outputs, parse_pointer_list, parse_props, parse_slave_devices, PointerKind};
 use crate::{InputError, InputSettings, KeyboardSettings};
 
 /// Whether a group of settings can be used, and why not.
@@ -125,11 +125,16 @@ fn run(argv: &[String]) -> Result<String, InputError> {
     Ok(stdout)
 }
 
-/// The signature after a look at the pointers: the new listing, or the
+/// Whether `change` goes to mice or touchpads (and so needs `xinput`).
+fn is_pointer_change(change: &Change) -> bool {
+    !matches!(change, Change::Layout { .. } | Change::Repeat { .. })
+}
+
+/// The signature after a look at the devices: the new listing, or the
 /// previous signature when the listing failed (a failure is not a change).
 fn next_signature(previous: &str, listing: Result<String, InputError>) -> String {
     match listing {
-        Ok(list) => parse_pointer_list(&list).iter().map(|d| format!("{}:{}", d.id, d.name)).collect::<Vec<_>>().join("\n"),
+        Ok(list) => parse_slave_devices(&list).iter().map(|d| format!("{}:{}", d.id, d.name)).collect::<Vec<_>>().join("\n"),
         Err(_) => previous.to_string(),
     }
 }
@@ -143,7 +148,7 @@ fn run_str(argv: &[&str]) -> Result<String, InputError> {
 #[derive(Default)]
 struct Probe {
     devices: Vec<PointerDevice>,
-    pointer_error: Option<String>,
+    pointer_error: Option<InputError>,
     keyboard: Option<KeyboardSettings>,
     keyboard_error: Option<String>,
 }
@@ -160,7 +165,7 @@ fn probe() -> Probe {
                 probe.devices.push(PointerDevice { id: raw.id, name: raw.name, kind, props });
             }
         }
-        Err(e) => probe.pointer_error = Some(e.to_string()),
+        Err(e) => probe.pointer_error = Some(e),
     }
     let query = run_str(&["setxkbmap", "-query"]);
     let xset = run_str(&["xset", "q"]);
@@ -189,7 +194,7 @@ impl XBackend {
     /// The group status for devices of `kind`.
     fn pointer_status(&self, kind: PointerKind, none_found: &str) -> GroupStatus {
         let probe = self.probe.borrow();
-        if let Some(e) = &probe.pointer_error { return GroupStatus::unavailable(e.clone()); }
+        if let Some(e) = &probe.pointer_error { return GroupStatus::unavailable(e.to_string()); }
         if probe.devices.iter().any(|d| d.kind == kind) { return GroupStatus::ok(); }
         GroupStatus::unavailable(none_found)
     }
@@ -227,8 +232,13 @@ impl Backend for XBackend {
         }
     }
 
-    /// Run the commands of `change`; the first failure is returned.
+    /// Run the commands of `change`; the first failure is returned. A pointer
+    /// change fails when `xinput` could not be used at all (no device is then
+    /// known), so the hub can log it; no mouse or touchpad is not an error.
     fn apply(&self, change: &Change) -> Result<(), InputError> {
+        if is_pointer_change(change) {
+            if let Some(e) = &self.probe.borrow().pointer_error { return Err(e.clone()); }
+        }
         let commands = commands_for(change, &self.probe.borrow().devices);
         for argv in commands {
             run(&argv)?;
@@ -236,7 +246,7 @@ impl Backend for XBackend {
         Ok(())
     }
 
-    /// The pointer ids and names, one per line (the last good value when listing fails).
+    /// The pointer and keyboard ids and names, one per line (the last good value when listing fails).
     fn signature(&self) -> String {
         let next = next_signature(&self.last_signature.borrow(), run_str(&["xinput", "list"]));
         *self.last_signature.borrow_mut() = next.clone();
@@ -301,5 +311,24 @@ mod tests {
         assert_eq!(next_signature("old", Ok(listing.to_string())), "9:mouse");
         let err = InputError::CommandFailed { command: "xinput list".into(), stderr: "No child processes".into() };
         assert_eq!(next_signature("9:mouse", Err(err)), "9:mouse");
+    }
+
+    #[test]
+    fn a_missing_xinput_is_an_error_for_pointer_changes_but_no_mouse_is_not() {
+        let missing = InputError::MissingTool { tool: "xinput".into(), package: "xinput".into() };
+        let broken = XBackend { probe: RefCell::new(Probe { pointer_error: Some(missing.clone()), ..Probe::default() }), last_signature: RefCell::new(String::new()) };
+        assert_eq!(broken.apply(&Change::MouseSpeed(0.5)), Err(missing));
+        let no_devices = XBackend { probe: RefCell::new(Probe::default()), last_signature: RefCell::new(String::new()) };
+        assert_eq!(no_devices.apply(&Change::TouchpadTap(true)), Ok(()));
+    }
+
+    #[test]
+    fn a_keyboard_plugged_in_changes_the_signature() {
+        let pointer = "\u{239c}   \u{21b3} mouse\t\tid=9\t[slave  pointer  (2)]\n";
+        let keyboard = "    \u{21b3} USB Keyboard\t\tid=11\t[slave  keyboard (3)]\n";
+        let without = next_signature("", Ok(pointer.to_string()));
+        let with = next_signature("", Ok(format!("{pointer}{keyboard}")));
+        assert_ne!(without, with);
+        assert!(with.contains("11:USB Keyboard"));
     }
 }

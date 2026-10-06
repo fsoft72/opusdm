@@ -34,6 +34,25 @@ fn set_prop(devices: &[PointerDevice], kind: PointerKind, property: &str, values
         .collect()
 }
 
+/// `xinput set-prop` for the acceleration profile of every mouse. The property
+/// lists one value per profile (adaptive, flat and, with newer drivers, custom):
+/// exactly one is 1, and the count is the one the device reports.
+fn profile_commands(devices: &[PointerDevice], flat: bool) -> Vec<Argv> {
+    const PROPERTY: &str = "libinput Accel Profile Enabled";
+    const MIN_PROFILES: usize = 2;
+    let chosen = usize::from(flat);
+    devices
+        .iter()
+        .filter(|d| d.kind == PointerKind::Mouse)
+        .filter_map(|d| {
+            let count = d.props.get(PROPERTY)?.len().max(MIN_PROFILES);
+            let mut argv: Argv = vec!["xinput".into(), "set-prop".into(), d.id.to_string(), PROPERTY.into()];
+            argv.extend((0..count).map(|i| bit(i == chosen).to_string()));
+            Some(argv)
+        })
+        .collect()
+}
+
 /// `"1"` or `"0"`.
 fn bit(on: bool) -> &'static str {
     if on { "1" } else { "0" }
@@ -59,10 +78,7 @@ pub fn commands_for(change: &Change, devices: &[PointerDevice]) -> Vec<Argv> {
     use PointerKind::{Mouse, Touchpad};
     match change {
         Change::MouseSpeed(v) => set_prop(devices, Mouse, "libinput Accel Speed", &[&format!("{v:.2}")]),
-        Change::MouseFlatProfile(flat) => {
-            let values = if *flat { ["0", "1", "0"] } else { ["1", "0", "0"] };
-            set_prop(devices, Mouse, "libinput Accel Profile Enabled", &values)
-        }
+        Change::MouseFlatProfile(flat) => profile_commands(devices, *flat),
         Change::MouseLeftHanded(on) => set_prop(devices, Mouse, "libinput Left Handed Enabled", &[bit(*on)]),
         Change::MouseNaturalScroll(on) => set_prop(devices, Mouse, "libinput Natural Scrolling Enabled", &[bit(*on)]),
         Change::TouchpadSpeed(v) => set_prop(devices, Touchpad, "libinput Accel Speed", &[&format!("{v:.2}")]),
@@ -150,5 +166,13 @@ mod tests {
     #[test]
     fn repeat_uses_xset() {
         assert_eq!(commands_for(&Change::Repeat { delay_ms: 300, rate: 40 }, &[]), vec![argv(&["xset", "r", "rate", "300", "40"])]);
+    }
+
+    #[test]
+    fn flat_profile_follows_the_size_of_the_device_property() {
+        const OLD_DRIVER: &str = "Device 'm':\n\tlibinput Accel Speed (1):\t0.0\n\tlibinput Accel Profile Enabled (2):\t1, 0\n";
+        let devices = [device(9, PointerKind::Mouse, OLD_DRIVER)];
+        assert_eq!(commands_for(&Change::MouseFlatProfile(true), &devices), vec![argv(&["xinput", "set-prop", "9", "libinput Accel Profile Enabled", "0", "1"])]);
+        assert_eq!(commands_for(&Change::MouseFlatProfile(false), &devices), vec![argv(&["xinput", "set-prop", "9", "libinput Accel Profile Enabled", "1", "0"])]);
     }
 }

@@ -638,8 +638,9 @@ window is open, so you can try it.
 - **Save** keeps the values in `~/.config/opusdm/input.json` and closes the window. Closing it any
   other way (**Cancel**, **Esc**, the window's close button) puts back the values that were active
   when it opened. Nothing is restored if the process is killed.
-- **At login** the hub applies `input.json` and applies it again when a pointer is plugged in or
-  removed (it looks every 3 seconds). With no file the system is left alone.
+- **At login** the hub applies `input.json` and applies it again when a mouse, touchpad or
+  keyboard is plugged in or removed (it looks every 3 seconds; X resets the keymap when a keyboard
+  is plugged in). With no file the system is left alone. A missing `xinput` is logged by the hub.
 - **Limits:** X11 only (under Wayland, or with no display, the window only says so). The double
   click time is not an X setting and is not offered. There are no per-device settings: one group
   for all mice and one for all touchpads.
