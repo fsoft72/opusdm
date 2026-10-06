@@ -11,9 +11,13 @@ pub mod filter;
 pub mod model;
 pub mod ops;
 pub mod parse;
+pub mod udisks;
+pub mod watch;
 
 
 pub use backend::{Backend, FakeBackend};
 pub use diff::{diff, DeviceEvent};
 pub use error::DeviceError;
 pub use model::{human_size, Device, Kind};
+pub use udisks::UdisksBackend;
+pub use watch::WatchMsg;
