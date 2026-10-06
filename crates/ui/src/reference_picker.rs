@@ -1,5 +1,5 @@
 //! A control that edits one function reference: a saved Function, a bash
-//! command or a program (see `opusdm_ipc::funcref`), optionally also "none".
+//! command, a program or an internal command (see `opusdm_ipc::funcref`), optionally also "none".
 //! Shared by the hotkey, user menu, script event, button bank and file type
 //! editors.
 
@@ -7,7 +7,7 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
 use opusdm_ipc::funcref::{self, FuncRef};
-use opusdm_ipc::function::{Function, FunctionId};
+use opusdm_ipc::function::{schema, Function, FunctionId, InternalCmd};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
@@ -23,6 +23,8 @@ pub enum RefKind {
     Bash,
     /// A program started directly.
     Exec,
+    /// An internal command, with its arguments.
+    Internal,
 }
 
 /// The kinds a picker offers, in drop-down order.
@@ -31,7 +33,7 @@ fn kinds(allow_none: bool) -> Vec<RefKind> {
     if allow_none {
         all.push(RefKind::None);
     }
-    all.extend([RefKind::Function, RefKind::Bash, RefKind::Exec]);
+    all.extend([RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal]);
     all
 }
 
@@ -43,6 +45,7 @@ impl RefKind {
             RefKind::Function => "Function",
             RefKind::Bash => "Bash",
             RefKind::Exec => "Exec",
+            RefKind::Internal => "Internal",
         }
     }
 }
@@ -55,13 +58,18 @@ struct Draft {
     bash: String,
     show_output: bool,
     exec: String,
+    /// The chosen internal command; `None` until one is picked (or when a
+    /// stored reference names an unknown one).
+    internal: Option<InternalCmd>,
+    /// The arguments of the internal command, as typed on a command line.
+    internal_args: String,
 }
 
 impl Draft {
     /// The draft for a stored reference string. An empty one is the `None`
     /// kind when `allow_none`, else an unchosen Function.
     fn from_reference(reference: &str, allow_none: bool) -> Draft {
-        let mut draft = Draft { kind: RefKind::Function, function: String::new(), bash: String::new(), show_output: false, exec: String::new() };
+        let mut draft = Draft { kind: RefKind::Function, function: String::new(), bash: String::new(), show_output: false, exec: String::new(), internal: None, internal_args: String::new() };
         if reference.is_empty() && allow_none {
             draft.kind = RefKind::None;
             return draft;
@@ -77,6 +85,13 @@ impl Draft {
                 draft.kind = RefKind::Exec;
                 draft.exec = line;
             }
+            FuncRef::Internal { line } => {
+                draft.kind = RefKind::Internal;
+                let line = line.trim_start();
+                let (head, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+                draft.internal = opusdm_ipc::cli::find_command(head);
+                draft.internal_args = if draft.internal.is_some() { rest.trim().to_string() } else { line.to_string() };
+            }
         }
         draft
     }
@@ -88,7 +103,15 @@ impl Draft {
             RefKind::Function => self.function.clone(),
             RefKind::Bash => funcref::format(&FuncRef::Bash { cmd: self.bash.clone(), show_output: self.show_output }),
             RefKind::Exec => funcref::format(&FuncRef::Exec { line: self.exec.clone() }),
+            RefKind::Internal => funcref::format(&FuncRef::Internal { line: self.internal_line() }),
         }
+    }
+
+    /// The command line of the internal kind: the command name and its
+    /// arguments (empty when no command is chosen and nothing was typed).
+    fn internal_line(&self) -> String {
+        let name = self.internal.map(|cmd| format!("{cmd:?}")).unwrap_or_default();
+        format!("{name} {}", self.internal_args).trim().to_string()
     }
 }
 
@@ -144,6 +167,8 @@ struct Inner {
     output: gtk::CheckButton,
     exec_entry: gtk::Entry,
     browse: gtk::Button,
+    internal_dd: gtk::DropDown,
+    internal_entry: gtk::Entry,
 }
 
 impl Inner {
@@ -154,6 +179,16 @@ impl Inner {
         self.output.set_visible(kind == RefKind::Bash);
         self.exec_entry.set_visible(kind == RefKind::Exec);
         self.browse.set_visible(kind == RefKind::Exec);
+        self.internal_dd.set_visible(kind == RefKind::Internal);
+        self.show_internal_args();
+    }
+
+    /// Show the arguments entry only for an internal command that has
+    /// parameters.
+    fn show_internal_args(&self) {
+        let draft = self.draft.borrow();
+        let takes_args = draft.internal.map(|cmd| !schema::params_for(cmd).is_empty()).unwrap_or(true);
+        self.internal_entry.set_visible(draft.kind == RefKind::Internal && takes_args);
     }
 
     /// Fill every widget from the draft, without reporting any change.
@@ -166,8 +201,12 @@ impl Inner {
         self.bash_entry.set_text(&draft.bash);
         self.output.set_active(draft.show_output);
         self.exec_entry.set_text(&draft.exec);
-        self.show_kind(draft.kind);
+        let internal_position = draft.internal.and_then(|cmd| InternalCmd::ALL.iter().position(|c| *c == cmd));
+        self.internal_dd.set_selected(internal_position.map(|p| p as u32).unwrap_or(gtk::INVALID_LIST_POSITION));
+        self.internal_entry.set_text(&draft.internal_args);
+        let kind = draft.kind;
         drop(draft);
+        self.show_kind(kind);
         self.loading.set(false);
     }
 }
@@ -210,6 +249,13 @@ impl RefPicker {
         let browse = gtk::Button::with_label("Browse...");
         root.append(&exec_entry);
         root.append(&browse);
+        let command_names: Vec<&str> = InternalCmd::ALL.iter().map(|c| c.label()).collect();
+        let internal_dd = gtk::DropDown::from_strings(&command_names);
+        root.append(&internal_dd);
+        let internal_entry = gtk::Entry::new();
+        internal_entry.set_hexpand(true);
+        internal_entry.set_placeholder_text(Some("arguments, e.g. name=value"));
+        root.append(&internal_entry);
 
         let inner = Rc::new(Inner {
             draft: RefCell::new(Draft::from_reference(current, allow_none)),
@@ -222,6 +268,8 @@ impl RefPicker {
             output,
             exec_entry,
             browse,
+            internal_dd,
+            internal_entry,
         });
         inner.load();
 
@@ -276,6 +324,28 @@ impl RefPicker {
                     return;
                 }
                 inner.draft.borrow_mut().exec = e.text().to_string();
+                on_change(inner.draft.borrow().reference());
+            });
+        }
+        {
+            let (inner, on_change) = (inner.clone(), on_change.clone());
+            inner.clone().internal_dd.connect_selected_notify(move |d| {
+                let Some(cmd) = InternalCmd::ALL.get(d.selected() as usize).copied() else { return };
+                if inner.loading.get() {
+                    return;
+                }
+                inner.draft.borrow_mut().internal = Some(cmd);
+                inner.show_internal_args();
+                on_change(inner.draft.borrow().reference());
+            });
+        }
+        {
+            let (inner, on_change) = (inner.clone(), on_change.clone());
+            inner.clone().internal_entry.connect_changed(move |e| {
+                if inner.loading.get() {
+                    return;
+                }
+                inner.draft.borrow_mut().internal_args = e.text().to_string();
                 on_change(inner.draft.borrow().reference());
             });
         }
@@ -358,8 +428,22 @@ mod tests {
 
     #[test]
     fn kinds_start_with_none_only_when_allowed() {
-        assert_eq!(kinds(false), vec![RefKind::Function, RefKind::Bash, RefKind::Exec]);
-        assert_eq!(kinds(true), vec![RefKind::None, RefKind::Function, RefKind::Bash, RefKind::Exec]);
+        assert_eq!(kinds(false), vec![RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal]);
+        assert_eq!(kinds(true), vec![RefKind::None, RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal]);
+    }
+
+    #[test]
+    fn an_internal_reference_splits_into_command_and_arguments() {
+        let d = Draft::from_reference("internal:CopyAs new_name=*.bak", false);
+        assert_eq!((d.kind, d.internal, d.internal_args.as_str()), (RefKind::Internal, Some(InternalCmd::CopyAs), "new_name=*.bak"));
+        assert_eq!(d.reference(), "internal:CopyAs new_name=*.bak");
+        let d = Draft::from_reference("internal:Hide", false);
+        assert_eq!((d.internal, d.internal_args.as_str()), (Some(InternalCmd::Hide), ""));
+        assert_eq!(d.reference(), "internal:Hide");
+        let d = Draft::from_reference("internal:frobnicate x", false);
+        assert_eq!(d.internal, None, "an unknown command is kept as typed");
+        assert_eq!(d.reference(), "internal:frobnicate x");
+        assert_eq!(Draft::from_reference("internal:", false).reference(), "internal:");
     }
 
     #[test]

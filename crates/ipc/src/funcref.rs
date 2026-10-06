@@ -3,12 +3,14 @@
 //! The places that used to store a saved Function's id keep storing one
 //! string. A reserved prefix turns it into an inline command: `bash:<cmd>`
 //! (run by `bash -c`), `bash+out:<cmd>` (the same, output in a window) or
-//! `exec:<program and arguments>` (started directly, no shell). A string
+//! `exec:<program and arguments>` (started directly, no shell) or
+//! `internal:<command and arguments>` (an internal command, written like a
+//! command line entry: `internal:CopyAs new_name=*.bak`). A string
 //! without a prefix is a saved Function id, as before. An inline reference
 //! runs as one synthetic `Run` step, so the hub needs no new executor. See
 //! `docs/superpowers/specs/2026-10-05-inline-commands-design.md`.
 
-use crate::cli::tokenize;
+use crate::cli::{self, tokenize, CliCommand};
 use crate::function::{FnStep, FunctionId, InternalArgs, InternalCmd, BOOL_TRUE};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -19,6 +21,8 @@ pub const BASH_PREFIX: &str = "bash:";
 pub const BASH_OUT_PREFIX: &str = "bash+out:";
 /// Prefix of a program started directly.
 pub const EXEC_PREFIX: &str = "exec:";
+/// Prefix of an internal command with its arguments.
+pub const INTERNAL_PREFIX: &str = "internal:";
 
 /// What a reference string stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +33,9 @@ pub enum FuncRef {
     Bash { cmd: String, show_output: bool },
     /// A program and its arguments, split like a `Run` step splits them.
     Exec { line: String },
+    /// An internal command name followed by its arguments, as on the
+    /// command line (`MakeDir backup`).
+    Internal { line: String },
 }
 
 /// Read a reference string. Total: anything that is not an inline command is
@@ -43,6 +50,9 @@ pub fn parse(reference: &str) -> FuncRef {
     if let Some(line) = reference.strip_prefix(EXEC_PREFIX) {
         return FuncRef::Exec { line: line.to_string() };
     }
+    if let Some(line) = reference.strip_prefix(INTERNAL_PREFIX) {
+        return FuncRef::Internal { line: line.to_string() };
+    }
     FuncRef::Saved(reference.to_string())
 }
 
@@ -53,6 +63,7 @@ pub fn format(r: &FuncRef) -> String {
         FuncRef::Bash { cmd, show_output: false } => format!("{BASH_PREFIX}{cmd}"),
         FuncRef::Bash { cmd, show_output: true } => format!("{BASH_OUT_PREFIX}{cmd}"),
         FuncRef::Exec { line } => format!("{EXEC_PREFIX}{line}"),
+        FuncRef::Internal { line } => format!("{INTERNAL_PREFIX}{line}"),
     }
 }
 
@@ -85,6 +96,21 @@ pub fn program_exists(program: &str) -> bool {
     std::env::split_paths(&path).any(|dir| is_executable_file(&dir.join(program)))
 }
 
+/// The internal command `line` asks for, with its arguments checked against
+/// the command's parameters. The error is the text to show the user.
+fn parse_internal(line: &str) -> Result<(InternalCmd, InternalArgs), String> {
+    let head = tokenize(line).map_err(|e| format!("internal: {e}"))?.into_iter().next();
+    let Some(head) = head else { return Err("internal: no command given".to_string()) };
+    if cli::find_command(&head).is_none() {
+        return Err(format!("internal: unknown command '{head}'"));
+    }
+    match cli::parse(line, &[]) {
+        Ok(CliCommand::Internal { cmd, args }) => Ok((cmd, args)),
+        Ok(_) => Err("internal: not an internal command".to_string()),
+        Err(e) => Err(format!("internal: {e}")),
+    }
+}
+
 /// Why `r` cannot run, or `None` when it can. A saved id is never a problem
 /// here: whether it exists is checked against the function list.
 pub fn problem(r: &FuncRef) -> Option<String> {
@@ -99,6 +125,7 @@ pub fn problem(r: &FuncRef) -> Option<String> {
             let Some(program) = words.first() else { return Some("exec: no program given".to_string()) };
             (!program_exists(program)).then(|| format!("exec: '{program}' was not found"))
         }
+        FuncRef::Internal { line } => parse_internal(line).err(),
     }
 }
 
@@ -109,6 +136,7 @@ pub fn describe(r: &FuncRef) -> Option<String> {
         FuncRef::Saved(_) => None,
         FuncRef::Bash { cmd, .. } => Some(format!("bash: {cmd}")),
         FuncRef::Exec { line } => Some(format!("exec: {line}")),
+        FuncRef::Internal { line } => Some(format!("internal: {}", line.trim())),
     }
 }
 
@@ -156,6 +184,10 @@ pub fn to_steps_with(r: &FuncRef, wait: bool) -> Result<Vec<FnStep>, String> {
         }
         FuncRef::Exec { line } => {
             args.0.insert("command".to_string(), line.trim().to_string());
+        }
+        FuncRef::Internal { line } => {
+            let (cmd, args) = parse_internal(line)?;
+            return Ok(vec![FnStep::Internal { cmd, args }]);
         }
     }
     if wait {
@@ -232,6 +264,27 @@ mod tests {
         assert!(problem(&parse("exec:sh 'oops")).unwrap().contains("quote"));
         assert_eq!(problem(&parse("bash:ls")), None);
         assert_eq!(problem(&parse("fn-1")), None);
+    }
+
+    #[test]
+    fn an_internal_reference_round_trips_and_becomes_that_command() {
+        assert_eq!(parse("internal:MakeDir backup"), FuncRef::Internal { line: "MakeDir backup".into() });
+        assert_eq!(format(&parse("internal:CopyAs new_name=*.bak")), "internal:CopyAs new_name=*.bak");
+        let steps = to_steps(&parse("internal:MakeDir backup")).unwrap();
+        let FnStep::Internal { cmd, args } = &steps[0] else { panic!("{steps:?}") };
+        assert_eq!((*cmd, args.get("name")), (InternalCmd::MakeDir, Some("backup")));
+        assert_eq!(describe(&parse("internal:Hide")).as_deref(), Some("internal: Hide"));
+    }
+
+    #[test]
+    fn problem_reports_a_bad_internal_command() {
+        assert_eq!(problem(&parse("internal:Hide")), None);
+        assert_eq!(problem(&parse("internal:Copy newer")), None);
+        assert!(problem(&parse("internal:")).unwrap().contains("no command"));
+        assert!(problem(&parse("internal:frobnicate")).unwrap().contains("unknown command"));
+        assert!(problem(&parse("internal:MakeDir")).unwrap().contains("missing required"));
+        assert!(problem(&parse("internal:Hide extra")).is_some());
+        assert!(problem(&parse("internal:MakeDir 'oops")).unwrap().contains("quote"));
     }
 
     #[test]
