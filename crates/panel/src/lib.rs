@@ -13,6 +13,9 @@ use std::rc::Rc;
 
 mod appmenu;
 mod dbusmenu;
+mod device_popup;
+mod devices_center;
+mod devices_model;
 mod ewmh;
 mod sni;
 mod systray;
@@ -72,6 +75,7 @@ fn build_bar_window(
     tray_cmd_tx: systray::TraySender,
     sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
     sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
+    devices: Rc<devices_center::DeviceCenter>,
 ) -> BarWindow {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
@@ -173,6 +177,11 @@ fn build_bar_window(
     if tray.is_some() || sni_widget.is_some() {
         right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
+    // The device notifier sits right before the CPU and network monitors, on
+    // the primary bar only (a device must not be listed twice).
+    if is_primary {
+        right.append(&devices.button());
+    }
     right.append(&widgets::sysmon::build());
     right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     right.append(&widgets::clock::build());
@@ -214,8 +223,13 @@ pub fn is_hidden() -> bool {
 /// The bars start docked to `position`. The returned function re-docks them
 /// to another edge live (rebuilding every bar); call it when the desktop
 /// settings change.
-pub fn attach(app: &gtk::Application, position: PanelPosition) -> Rc<dyn Fn(PanelPosition)> {
+pub fn attach(
+    app: &gtk::Application,
+    position: PanelPosition,
+    on_open_folder: Rc<dyn Fn(&std::path::Path)>,
+) -> Rc<dyn Fn(PanelPosition)> {
     let position = Rc::new(Cell::new(position));
+    let devices = devices_center::DeviceCenter::new(on_open_folder, position.clone());
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
@@ -233,6 +247,7 @@ pub fn attach(app: &gtk::Application, position: PanelPosition) -> Rc<dyn Fn(Pane
         let sni_cmd_tx = sni_cmd_tx.clone();
         let sni_evt_rx = sni_evt_rx.clone();
         let position = position.clone();
+        let devices = devices.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -247,7 +262,7 @@ pub fn attach(app: &gtk::Application, position: PanelPosition) -> Rc<dyn Fn(Pane
                 .map(|(i, (x, y, w, h))| {
                     let rx = if i == 0 { rx_slot.take() } else { None };
                     let place = Placement { position: position.get(), mon_x: x, mon_y: y, mon_w: w, mon_h: h };
-                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx)
+                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx, devices.clone())
                 })
                 .collect();
             drop(rx_slot);

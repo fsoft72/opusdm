@@ -1793,6 +1793,7 @@ dependencies = [
  "gdk4-x11",
  "gtk4",
  "libc",
+ "opusdm-devices",
  "opusdm-dock",
  "opusdm-ipc",
  "opusdm-ui",

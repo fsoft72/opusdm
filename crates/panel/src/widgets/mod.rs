@@ -2,6 +2,7 @@
 //! GTK widget that owns its own refresh timer or is fed by the EWMH observer.
 
 pub mod clock;
+pub mod devices;
 pub mod pager;
 pub mod quickapps;
 pub mod sni;

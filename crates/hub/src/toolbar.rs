@@ -233,7 +233,14 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
 
     // The panel dock lives in its own windows on the same application.
     let panel_position = widgets.desktop.settings.borrow().panel_position;
-    *widgets.set_panel_position.borrow_mut() = Some(opusdm_panel::attach(app, panel_position));
+    // A mounted device opens in a new Lister, like a desktop folder does.
+    let open_folder: Rc<dyn Fn(&std::path::Path)> = {
+        let cmd_tx = widgets.cmd_tx.clone();
+        Rc::new(move |path| {
+            let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(path.to_path_buf()) });
+        })
+    };
+    *widgets.set_panel_position.borrow_mut() = Some(opusdm_panel::attach(app, panel_position, open_folder));
 
     // The launcher dock is one more window on the same application.
     let dock_layout = dock_layout(&widgets.desktop.settings.borrow());

@@ -681,6 +681,28 @@ Edits the application menu of the panel and the `.desktop` entries in it, like t
 - **Save** writes the files and `menu.json` (a new item needs a command). Closing with unsaved
   changes asks first. The panel menu re-reads `menu.json` every time it opens.
 
+### 3.31 Device notifier (panel)
+
+Like the KDE Device Notifier: removable disks and USB sticks show up in the panel, and a popup
+offers to mount a device when it is plugged in.
+
+- **Icon:** a small drive on the right side of the panel, just before the CPU and network monitors
+  (primary bar only). It is hidden while no removable device is present.
+- **Drop-down (click the icon):** one row per volume with its label, size and mount point.
+  **Mount** mounts it; **Open** opens the mount point in a new Lister; **Unmount** unmounts it;
+  **Eject** (once per drive) unmounts every volume of the drive, then ejects and powers it off when
+  the drive supports it. A spinner replaces the buttons while an operation runs, and a failure
+  (for example *Device is busy*) shows as one red line for 5 seconds.
+- **Popup:** when a device is plugged in a small window appears in the screen corner next to the
+  panel with **Mount**, **Mount and open** and **Ignore**. It closes by itself after 10 seconds,
+  and when the device is mounted or unplugged. Devices already present when OpusDM starts, and
+  devices that are already mounted, do not pop up.
+- **Where it mounts:** through udisks2, so under `/media/<user>/<label>`, with no password and no
+  `sudo`. Needs the `udisks2` service.
+- **Which devices:** volumes with a filesystem on a removable or USB drive that udisks2 does not
+  call a system or hidden device. Root, `/boot`, swap, loop devices and internal disks never show.
+  Encrypted (LUKS) volumes are not unlocked.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
