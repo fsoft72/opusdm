@@ -458,8 +458,7 @@ fn build_step_row(state: &Rc<EditorState>, idx: usize, step: &FnStep) -> gtk::Bo
     row
 }
 
-/// Move-up/move-down/remove for the step at `idx`, mirroring
-/// `crates/desktop-config/src/menu_ui.rs::MenuInner::move_and_remove`.
+/// Move-up/move-down/remove for the step at `idx`.
 fn step_move_and_remove(idx: usize) -> [(&'static str, Box<dyn Fn(&mut Vec<FnStep>)>); 3] {
     [
         ("go-up-symbolic", Box::new(move |steps: &mut Vec<FnStep>| {

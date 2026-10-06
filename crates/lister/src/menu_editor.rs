@@ -1,6 +1,5 @@
 //! The user menu editor (F-04): the menu tree as indented rows with move,
-//! rename, remove and add controls. Modeled on
-//! `crates/desktop-config/src/menu_ui.rs`, editing functions instead of apps.
+//! rename, remove and add controls.
 
 use crate::window::Ui;
 use gtk4 as gtk;

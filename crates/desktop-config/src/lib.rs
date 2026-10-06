@@ -3,6 +3,5 @@
 
 pub mod background_ui;
 pub mod dock_ui;
-pub mod menu_ui;
 pub mod model;
 pub mod ui;
