@@ -7,7 +7,7 @@ use opusdm_ipc::sockpath::{ensure_sock_dir, probe_live_hub};
 use opusdm_ipc::ToHub;
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::Sender;
 
@@ -126,9 +126,32 @@ pub fn add_own_dir_to_path() {
     std::env::set_var("PATH", path_with_dir(std::env::var_os("PATH"), &dir));
 }
 
+/// Path of the tool `name`: next to `dir` (the hub's own folder) when known,
+/// otherwise the bare name for a `PATH` lookup.
+pub fn sibling_bin_in(dir: Option<&Path>, name: &str) -> PathBuf {
+    match dir {
+        Some(dir) => dir.join(name),
+        None => PathBuf::from(name),
+    }
+}
+
+/// Start the OpusDM tool `name` (a sibling of the running hub), detached.
+pub fn spawn_tool(name: &str) -> io::Result<()> {
+    let exe = std::env::current_exe().ok();
+    let bin = sibling_bin_in(exe.as_deref().and_then(Path::parent), name);
+    Command::new(bin).spawn().map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_tool_is_looked_up_next_to_the_hub_then_on_path() {
+        let dir = Path::new("/opt/opusdm/bin");
+        assert_eq!(sibling_bin_in(Some(dir), "opusdm-input-config"), dir.join("opusdm-input-config"));
+        assert_eq!(sibling_bin_in(None, "opusdm-input-config"), std::path::PathBuf::from("opusdm-input-config"));
+    }
+
     #[test]
     fn path_with_dir_puts_the_directory_first_once() {
         let dir = Path::new("/opt/opusdm/bin");

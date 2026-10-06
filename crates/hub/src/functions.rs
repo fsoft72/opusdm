@@ -173,6 +173,7 @@ fn run_steps_cancellable(
                     run_hide(run_id, step_idx, *cmd, events_tx)
                 }
                 InternalCmd::DesktopPrev | InternalCmd::DesktopNext => run_desktop(run_id, step_idx, *cmd, events_tx),
+                InternalCmd::OpenInputConfig => run_open_input_config(run_id, step_idx, events_tx),
                 InternalCmd::OpenBank => run_bank(run_id, step_idx, BankAction::Open, args, bank_exists, events_tx),
                 InternalCmd::CloseBank => run_bank(run_id, step_idx, BankAction::Close, args, bank_exists, events_tx),
                 InternalCmd::ToggleBank => run_bank(run_id, step_idx, BankAction::Toggle, args, bank_exists, events_tx),
@@ -352,6 +353,15 @@ fn run_desktop(run_id: u64, step_idx: usize, cmd: InternalCmd, events_tx: &Sende
     let delta = if cmd == InternalCmd::DesktopPrev { -1 } else { 1 };
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: cmd.label().to_string() }));
     let _ = events_tx.send((run_id, FnEvent::Desktop { delta }));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
+/// Run an `OpenInputConfig` step: start the Input window. It needs no
+/// selection and no parameters.
+fn run_open_input_config(run_id: u64, step_idx: usize, events_tx: &Sender<(u64, FnEvent)>) -> Result<(), String> {
+    crate::children::spawn_tool("opusdm-input-config").map_err(|e| format!("cannot start opusdm-input-config: {e}"))?;
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: InternalCmd::OpenInputConfig.label().to_string() }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
 }

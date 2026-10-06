@@ -620,6 +620,7 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::ToggleHide,
     InternalCmd::DesktopPrev,
     InternalCmd::DesktopNext,
+    InternalCmd::OpenInputConfig,
     InternalCmd::OpenBank,
     InternalCmd::CloseBank,
     InternalCmd::ToggleBank,

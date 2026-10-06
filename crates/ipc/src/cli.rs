@@ -204,6 +204,8 @@ mod tests {
         assert_eq!(find_command("toggle-hide"), Some(InternalCmd::ToggleHide));
         assert_eq!(find_command("desktop-prev"), Some(InternalCmd::DesktopPrev));
         assert_eq!(find_command("Next Desktop"), Some(InternalCmd::DesktopNext));
+        assert_eq!(find_command("input-settings"), Some(InternalCmd::OpenInputConfig));
+        assert_eq!(find_command("Input Settings"), Some(InternalCmd::OpenInputConfig));
         assert_eq!(find_command("nope"), None);
     }
 

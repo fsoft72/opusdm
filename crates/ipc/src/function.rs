@@ -89,6 +89,8 @@ pub enum InternalCmd {
     DesktopPrev,
     /// Switch the window manager to the next virtual desktop (wraps).
     DesktopNext,
+    /// Open the Input window (mouse, touchpad, keyboard settings).
+    OpenInputConfig,
     /// Open (or show) a button bank by name.
     OpenBank,
     /// Close a button bank by name.
@@ -106,7 +108,7 @@ pub enum InternalCmd {
 
 impl InternalCmd {
     /// Every internal command, in the order the editor offers them.
-    pub const ALL: [InternalCmd; 24] = [
+    pub const ALL: [InternalCmd; 25] = [
         InternalCmd::Copy,
         InternalCmd::Move,
         InternalCmd::Delete,
@@ -125,6 +127,7 @@ impl InternalCmd {
         InternalCmd::ToggleHide,
         InternalCmd::DesktopPrev,
         InternalCmd::DesktopNext,
+        InternalCmd::OpenInputConfig,
         InternalCmd::OpenBank,
         InternalCmd::CloseBank,
         InternalCmd::ToggleBank,
@@ -166,6 +169,7 @@ impl InternalCmd {
             InternalCmd::ToggleHide => "Toggle Hide",
             InternalCmd::DesktopPrev => "Previous Desktop",
             InternalCmd::DesktopNext => "Next Desktop",
+            InternalCmd::OpenInputConfig => "Input Settings",
             InternalCmd::OpenBank => "Open Bank",
             InternalCmd::CloseBank => "Close Bank",
             InternalCmd::ToggleBank => "Toggle Bank",
@@ -314,7 +318,8 @@ pub mod schema {
             | InternalCmd::Reveal
             | InternalCmd::ToggleHide
             | InternalCmd::DesktopPrev
-            | InternalCmd::DesktopNext => &[],
+            | InternalCmd::DesktopNext
+            | InternalCmd::OpenInputConfig => &[],
             InternalCmd::OpenBank | InternalCmd::CloseBank | InternalCmd::ToggleBank | InternalCmd::HideBank => &[ParamSpec {
                 key: "bank",
                 label: "Button bank",
@@ -841,6 +846,7 @@ mod tests {
             (InternalCmd::ToggleHide, "Toggle Hide"),
             (InternalCmd::DesktopPrev, "Previous Desktop"),
             (InternalCmd::DesktopNext, "Next Desktop"),
+            (InternalCmd::OpenInputConfig, "Input Settings"),
         ] {
             assert_eq!(cmd.label(), label);
             assert!(schema::params_for(cmd).is_empty());

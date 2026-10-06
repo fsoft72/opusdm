@@ -576,6 +576,19 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             sub.append(&btn);
         }
 
+        // Input: mouse, touchpad and keyboard settings.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Input");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                if let Err(e) = opusdm_hub::children::spawn_tool("opusdm-input-config") {
+                    opusdm_ipc::err_log!("opusdm-hub", "cannot start opusdm-input-config: {e}");
+                }
+            });
+            sub.append(&btn);
+        }
+
         let expander = gtk::Expander::new(Some("Desktop"));
         expander.set_child(Some(&sub));
         // Opening the expander grows the menu: pull it back on screen.
