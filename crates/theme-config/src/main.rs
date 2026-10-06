@@ -7,7 +7,6 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
 use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
-use opusdm_desktop_config::menu_ui::MenuSection;
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
 use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
@@ -242,21 +241,6 @@ fn build_window(app: &gtk::Application) {
         panel.connect_position_changed(move |position| dock_section.set_panel(position));
     }
 
-    // --- Menu tab: custom folders and apps for the application menu ---
-    // No outer ScrolledWindow here: MenuSection scrolls only its tree, so
-    // "Add Folder"/"Add App"/"Reset Default" stay fixed above it.
-    let menu_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    menu_page.set_margin_top(12);
-    menu_page.set_margin_bottom(12);
-    menu_page.set_margin_start(12);
-    menu_page.set_margin_end(12);
-
-    let menu_items = opusdm_ipc::menu::load_menu_config().map(|c| c.items).unwrap_or_default();
-    let menu_section = Rc::new(MenuSection::new(&window, menu_items));
-    menu_page.append(&menu_section.root);
-
-    notebook.append_page(&menu_page, Some(&gtk::Label::new(Some("Menu"))));
-
     // --- Lister tab: behaviour (the colours belong to the theme) ---
     let lister_page_outer = gtk::ScrolledWindow::new();
     let lister_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -355,7 +339,6 @@ fn build_window(app: &gtk::Application) {
         let icon_set = icon_set.clone();
         let read_ui = read_ui.clone();
         let dock_apps_section = dock_apps_section.clone();
-        let menu_section = menu_section.clone();
         let note = note.clone();
         apply.connect_clicked(move |_| {
             let selected = icon_set.borrow().value();
@@ -364,11 +347,6 @@ fn build_window(app: &gtk::Application) {
                 apps: dock_apps_section.apps(),
             }) {
                 opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
-            }
-            if let Err(e) = opusdm_ipc::menu::save_menu_config(&opusdm_ipc::MenuConfig {
-                items: menu_section.items(),
-            }) {
-                opusdm_ipc::err_log!("theme-config", "cannot write menu.json: {e}");
             }
             let settings = model::resolve_selected(&selected, &prefs);
             match model::apply_full(&settings, &desktop) {
