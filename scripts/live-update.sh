@@ -23,7 +23,7 @@ PREFIX=/opt/opusdm
 WITH_CONFIG=0
 RESTART_ALL=0
 # Process names (as shown by pgrep -x) of every OpusDM binary
-PROCESSES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-player opusdm-viewer"
+PROCESSES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-player opusdm-viewer opusdm-apps-editor"
 
 while [ $# -gt 0 ]; do
     case "$1" in
