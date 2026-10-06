@@ -2,6 +2,8 @@
 //! X tools, the commands that apply a change and the live / revert session.
 //! It has no GTK code, so the hub can reuse it to reapply the saved values.
 
+pub mod change;
+pub mod commands;
 pub mod error;
 pub mod model;
 pub mod parse;
