@@ -9,6 +9,7 @@ mod progress_window;
 mod desktop_menu;
 mod desktop_windows;
 mod groups_ui;
+mod input_apply;
 mod toolbar;
 
 use opusdm_hub::{children, server, settings};
@@ -52,6 +53,9 @@ fn main() {
     if opusdm_ipc::filetypes::seed_default_filetypes() {
         opusdm_ipc::debug_log!("opusdm-hub", "wrote the default file types");
     }
+
+    // Keep the saved mouse, touchpad and keyboard settings applied.
+    input_apply::start();
 
     let _ = handle.cmd_tx.send(server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup));
 

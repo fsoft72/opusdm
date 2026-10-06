@@ -1679,6 +1679,7 @@ dependencies = [
  "opusdm-dock",
  "opusdm-fsops",
  "opusdm-iconview",
+ "opusdm-input-config",
  "opusdm-ipc",
  "opusdm-media",
  "opusdm-panel",

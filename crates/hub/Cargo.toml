@@ -21,6 +21,7 @@ opusdm-media = { path = "../media" }
 opusdm-panel = { path = "../panel" }
 opusdm-dock = { path = "../dock" }
 opusdm-buttonbank = { path = "../buttonbank" }
+opusdm-input-config = { path = "../input-config" }
 async-channel.workspace = true
 signal-hook.workspace = true
 libc.workspace = true
