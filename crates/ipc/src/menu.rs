@@ -150,6 +150,49 @@ pub fn move_down(items: &mut Vec<MenuItem>, path: &[usize]) {
     }
 }
 
+/// How many entries the folder at `folder_path` (empty = root) holds. `None`
+/// when `folder_path` does not name a folder.
+pub fn children_len(items: &mut Vec<MenuItem>, folder_path: &[usize]) -> Option<usize> {
+    container_at(items, folder_path).map(|l| l.len())
+}
+
+/// Move the entry at `from` next to or into `target`: onto a folder it is
+/// appended to the folder, onto an app it is inserted before that app.
+/// Returns `false` (and changes nothing) when a path is invalid, `from` is
+/// `target`, or a folder would land inside itself.
+pub fn move_to(items: &mut Vec<MenuItem>, from: &[usize], target: &[usize]) -> bool {
+    if from.is_empty() || target.is_empty() || from == target || target.starts_with(from) {
+        return false;
+    }
+    let target_is_folder = {
+        let Some((list, idx)) = locate(items, target) else { return false };
+        matches!(list.get(idx), Some(MenuItem::Folder { .. }))
+    };
+    if locate(items, from).is_none() {
+        return false;
+    }
+    // Removing `from` shifts the index of later siblings along the target path.
+    let depth = from.len() - 1;
+    let mut target = target.to_vec();
+    if target.len() > depth && target[..depth] == from[..depth] && from[depth] < target[depth] {
+        target[depth] -= 1;
+    }
+    let Some((list, idx)) = locate(items, from) else { return false };
+    let item = list.remove(idx);
+    if target_is_folder {
+        match container_at(items, &target) {
+            Some(dest) => dest.push(item),
+            None => return false,
+        }
+    } else {
+        match locate(items, &target) {
+            Some((dest, at)) => dest.insert(at, item),
+            None => return false,
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +295,35 @@ mod tests {
         remove_at(&mut items, &[]);
         move_up(&mut items, &[0, 0]);
         assert_eq!(items, vec![app("a.desktop")]);
+    }
+
+    #[test]
+    fn move_to_inserts_before_an_app_and_appends_into_a_folder() {
+        let mut items = vec![app("a"), app("b"), folder("F", vec![app("c")]), app("d")];
+        assert!(move_to(&mut items, &[0], &[3]));
+        assert_eq!(items, vec![app("b"), folder("F", vec![app("c")]), app("a"), app("d")]);
+        assert!(move_to(&mut items, &[3], &[1]));
+        assert_eq!(items, vec![app("b"), folder("F", vec![app("c"), app("d")]), app("a")]);
+        assert!(move_to(&mut items, &[1, 1], &[0]));
+        assert_eq!(items, vec![app("d"), app("b"), folder("F", vec![app("c")]), app("a")]);
+    }
+
+    #[test]
+    fn move_to_refuses_a_folder_into_itself_and_bad_paths() {
+        let mut items = vec![folder("F", vec![folder("G", vec![])]), app("a")];
+        let before = items.clone();
+        assert!(!move_to(&mut items, &[0], &[0, 0]));
+        assert!(!move_to(&mut items, &[0], &[0]));
+        assert!(!move_to(&mut items, &[5], &[0]));
+        assert!(!move_to(&mut items, &[1], &[9]));
+        assert_eq!(items, before);
+    }
+
+    #[test]
+    fn children_len_counts_a_folder() {
+        let mut items = vec![folder("F", vec![app("a"), app("b")]), app("c")];
+        assert_eq!(children_len(&mut items, &[]), Some(2));
+        assert_eq!(children_len(&mut items, &[0]), Some(2));
+        assert_eq!(children_len(&mut items, &[1]), None);
     }
 }

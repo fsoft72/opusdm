@@ -2,8 +2,8 @@
 //! `menu.json`'s tree of folders and apps, plus Settings / About / Logout /
 //! Shutdown. `menu.json` is seeded (see `opusdm_dock::menu_defaults`) with
 //! the installed apps grouped by freedesktop category on first run (or
-//! whenever it is emptied), then edited through the "Menu" tab in
-//! `opusdm-settings`.
+//! whenever it is emptied), then edited with the Apps editor
+//! (`opusdm-apps-editor`). The items are re-read every time the menu opens.
 
 use gtk4 as gtk;
 use gtk::gdk;
@@ -122,6 +122,30 @@ fn build_custom_items(items: &[MenuItem], into: &gtk::Box, popover: &gtk::Popove
     }
 }
 
+/// The menu tree from `menu.json`, seeded from the installed apps grouped by
+/// category when the file is missing or was emptied, so the panel and the
+/// Apps editor always share one real file.
+fn load_items() -> Vec<MenuItem> {
+    match opusdm_ipc::menu::load_menu_config() {
+        Some(cfg) if !cfg.items.is_empty() => cfg.items,
+        _ => {
+            let cfg = opusdm_ipc::MenuConfig { items: opusdm_dock::menu_defaults::default_menu_items() };
+            if let Err(e) = opusdm_ipc::menu::save_menu_config(&cfg) {
+                opusdm_ipc::err_log!("panel", "cannot write menu.json: {e}");
+            }
+            cfg.items
+        }
+    }
+}
+
+/// Replace the content of `custom` with the current menu tree.
+fn fill_custom(custom: &gtk::Box, popover: &gtk::Popover) {
+    while let Some(child) = custom.first_child() {
+        custom.remove(&child);
+    }
+    build_custom_items(&load_items(), custom, popover);
+}
+
 /// Build the menu button and its popover. The popover opens downwards from a
 /// top panel and upwards from a bottom one (`position`).
 pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::MenuButton {
@@ -149,20 +173,15 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
     list.set_margin_start(4);
     list.set_margin_end(4);
 
-    // menu.json, seeded from the installed apps grouped by category when
-    // it is missing or was emptied, so the panel and the "Menu" tab in
-    // `opusdm-settings` always share one real file to edit.
-    let cfg = match opusdm_ipc::menu::load_menu_config() {
-        Some(cfg) if !cfg.items.is_empty() => cfg,
-        _ => {
-            let cfg = opusdm_ipc::MenuConfig { items: opusdm_dock::menu_defaults::default_menu_items() };
-            if let Err(e) = opusdm_ipc::menu::save_menu_config(&cfg) {
-                opusdm_ipc::err_log!("panel", "cannot write menu.json: {e}");
-            }
-            cfg
-        }
-    };
-    build_custom_items(&cfg.items, &list, &popover);
+    // The custom items sit in their own box, refilled from menu.json every
+    // time the menu opens, so the Apps editor's changes show up at once.
+    let custom = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    list.append(&custom);
+    fill_custom(&custom, &popover);
+    {
+        let (custom, menu) = (custom.clone(), popover.clone());
+        popover.connect_show(move |_| fill_custom(&custom, &menu));
+    }
 
     list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 

@@ -1,0 +1,16 @@
+[package]
+name = "opusdm-apps-editor"
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-apps-editor"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
+opusdm-dock = { path = "../dock" }
+gtk4.workspace = true
+dirs.workspace = true

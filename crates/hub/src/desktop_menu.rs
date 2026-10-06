@@ -553,6 +553,19 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
             sub.append(&btn);
         }
 
+        // Edit Apps: the application menu editor.
+        {
+            let menu_ref = menu.clone();
+            let btn = menu_button("Edit Apps");
+            btn.connect_clicked(move |_| {
+                menu_ref.set_visible(false);
+                if let Err(e) = opusdm_hub::children::spawn_tool("opusdm-apps-editor") {
+                    opusdm_ipc::err_log!("opusdm-hub", "cannot start opusdm-apps-editor: {e}");
+                }
+            });
+            sub.append(&btn);
+        }
+
         // Edit Theme: open the Theme Editor straight away.
         {
             let menu_ref = menu.clone();

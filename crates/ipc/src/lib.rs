@@ -29,6 +29,7 @@ pub mod bookmarks;
 pub mod buttonbank;
 pub mod cli;
 pub mod desktop;
+pub mod desktop_entry;
 pub mod dock;
 pub mod filetypes;
 pub mod format;

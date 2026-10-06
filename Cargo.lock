@@ -1601,6 +1601,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-apps-editor"
+version = "0.5.0"
+dependencies = [
+ "dirs",
+ "gtk4",
+ "opusdm-dock",
+ "opusdm-ipc",
+ "opusdm-ui",
+]
+
+[[package]]
 name = "opusdm-buttonbank"
 version = "0.5.0"
 dependencies = [

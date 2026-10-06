@@ -662,6 +662,25 @@ window is open, so you can try it.
 - **Requires** `xinput`, `setxkbmap` and `xset` (packages `xinput`, `x11-xkb-utils`,
   `x11-xserver-utils`). A missing tool greys out its tab and the window names the package.
 
+### 3.30 Apps Editor (`opusdm-apps-editor`)
+
+Edits the application menu of the panel and the `.desktop` entries in it, like the KDE menu editor.
+
+- **Open it:** Desktop menu (right click on the desktop) > **Desktop** > **Edit Apps**, or run
+  `opusdm-apps-editor`.
+- **Tree (left):** the folders and apps of `~/.config/opusdm/menu.json`. **New Submenu...** and
+  **New Item** add next to the selection (inside it when it is a folder), **Up** / **Down** move it
+  within its folder, **Delete** removes it from the menu, **Reset...** rebuilds the menu from the
+  installed apps. Drag a row onto an app to put it before that app, onto a folder to put it inside.
+- **Properties (right):** name, comment, command, icon (theme name or image file, **Browse...**),
+  work path and **Run in terminal**. A folder only has a name.
+- **Where it is written:** changing a system app writes a copy with the same id in
+  `~/.local/share/applications/`, which wins over the system file; other keys of the file are
+  kept. **New Item** creates `opusdm-<name>.desktop` there. **Delete** of such an entry also removes
+  its file on Save. System files are never touched or deleted.
+- **Save** writes the files and `menu.json` (a new item needs a command). Closing with unsaved
+  changes asks first. The panel menu re-reads `menu.json` every time it opens.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
