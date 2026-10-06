@@ -31,6 +31,7 @@ x11rb::atom_manager! {
         _NET_ACTIVE_WINDOW,
         _NET_WM_NAME,
         _NET_WM_DESKTOP,
+        _NET_WM_PID,
         _NET_WM_STATE,
         _NET_WM_STATE_HIDDEN,
         _NET_WM_STATE_SKIP_TASKBAR,
@@ -51,6 +52,8 @@ pub struct ClientWin {
     /// Virtual desktop index, or `-1` for "all desktops".
     pub desktop: i64,
     pub minimized: bool,
+    /// Owner process from `_NET_WM_PID`, when the client sets it.
+    pub pid: Option<u32>,
     pub icon: Option<IconRgba>,
 }
 
@@ -278,7 +281,9 @@ fn read_client(conn: &RustConnection, xid: Window, atoms: &Atoms) -> Option<Clie
     let icon = get_card_array(conn, xid, atoms._NET_WM_ICON)
         .and_then(|words| pick_icon(&words, 24));
 
-    Some(ClientWin { xid, title, desktop, minimized, icon })
+    let pid = get_card(conn, xid, atoms._NET_WM_PID).filter(|p| *p != 0);
+
+    Some(ClientWin { xid, title, desktop, minimized, pid, icon })
 }
 
 // --------------------------------------------------------------------------
@@ -351,9 +356,40 @@ pub fn iconify_window(xid: u32) {
     with_root(|x11| x11.send_to_root(xid, "WM_CHANGE_STATE", [ICONIC_STATE, 0, 0, 0, 0]));
 }
 
+/// Move `xid` to virtual desktop `index` (pager source indication).
+pub fn move_window_to_desktop(xid: u32, index: u32) {
+    with_root(|x11| x11.send_to_root(xid, "_NET_WM_DESKTOP", [index, 2, 0, 0, 0]));
+}
+
+/// True when `pid` is a process the panel may kill: never 0/1 and never the
+/// panel's own process (`own`).
+pub fn is_killable(pid: u32, own: u32) -> bool {
+    pid > 1 && pid != own
+}
+
+/// Send `SIGKILL` to `pid`. A refused or failed kill is logged, never raised.
+pub fn force_kill(pid: u32) {
+    if !is_killable(pid, std::process::id()) {
+        opusdm_ipc::err_log!("opusdm-panel", "refusing to kill pid {pid}");
+        return;
+    }
+    // SAFETY: `kill` takes plain integers and has no memory-safety contract.
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) } != 0 {
+        opusdm_ipc::err_log!("opusdm-panel", "kill -9 {pid} failed: {}", std::io::Error::last_os_error());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn killable_excludes_init_zero_and_self() {
+        assert!(!is_killable(0, 10));
+        assert!(!is_killable(1, 10));
+        assert!(!is_killable(10, 10));
+        assert!(is_killable(11, 10));
+    }
 
     #[test]
     fn desktop_names_split_on_nul_without_trailing_empty() {

@@ -143,7 +143,7 @@ fn build_bar_window(
     {
         let s = state.borrow();
         pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
-        tasklist.update(&s.clients, s.current_desktop, s.active);
+        tasklist.update(&s.clients, s.current_desktop, s.active, s.desktop_count, &s.desktop_names);
     }
 
     let left = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -357,7 +357,7 @@ fn apply_ewmh(state: &Rc<RefCell<PanelState>>, windows: &[BarWindow], ev: EwmhEv
     }
     for bw in windows {
         bw.pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
-        bw.tasklist.update(&s.clients, s.current_desktop, s.active);
+        bw.tasklist.update(&s.clients, s.current_desktop, s.active, s.desktop_count, &s.desktop_names);
     }
 }
 

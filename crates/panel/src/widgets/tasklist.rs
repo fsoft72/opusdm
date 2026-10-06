@@ -3,8 +3,10 @@
 //! every snapshot - the window count is small.
 
 use gtk4 as gtk;
-use gtk::glib;
+use gtk::{gio, glib};
 use gtk::prelude::*;
+
+use std::cell::RefCell;
 
 use crate::ewmh::{self, ClientWin};
 
@@ -14,6 +16,8 @@ const TITLE_CHARS: i32 = 22;
 /// The window-list widget.
 pub struct Tasklist {
     root: gtk::Box,
+    /// Context menus parented to the current buttons, released on rebuild.
+    popovers: RefCell<Vec<gtk::PopoverMenu>>,
 }
 
 impl Tasklist {
@@ -22,7 +26,7 @@ impl Tasklist {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         root.add_css_class("opusdm-panel-tasklist");
         root.set_hexpand(true);
-        Tasklist { root }
+        Tasklist { root, popovers: RefCell::new(Vec::new()) }
     }
 
     /// The GTK widget to pack into the panel.
@@ -32,7 +36,17 @@ impl Tasklist {
 
     /// Rebuild the buttons for every window on `current_desktop` (plus
     /// omnipresent windows), styling the active and minimised ones.
-    pub fn update(&self, clients: &[ClientWin], current_desktop: u32, active: Option<u32>) {
+    pub fn update(
+        &self,
+        clients: &[ClientWin],
+        current_desktop: u32,
+        active: Option<u32>,
+        desktop_count: u32,
+        desktop_names: &[String],
+    ) {
+        for popover in self.popovers.borrow_mut().drain(..) {
+            popover.unparent();
+        }
         while let Some(child) = self.root.first_child() {
             self.root.remove(&child);
         }
@@ -40,7 +54,10 @@ impl Tasklist {
             if c.desktop != -1 && c.desktop != current_desktop as i64 {
                 continue;
             }
-            self.root.append(&self.button(c, active == Some(c.xid)));
+            let btn = self.button(c, active == Some(c.xid));
+            let popover = context_menu(&btn, c, desktop_count, desktop_names);
+            self.popovers.borrow_mut().push(popover);
+            self.root.append(&btn);
         }
     }
 
@@ -78,6 +95,56 @@ impl Tasklist {
         });
         btn
     }
+}
+
+/// Label of virtual desktop `index`: its name when set, else `Desktop N`.
+fn desktop_label(index: u32, names: &[String]) -> String {
+    match names.get(index as usize) {
+        Some(n) if !n.is_empty() => n.clone(),
+        _ => format!("Desktop {}", index + 1),
+    }
+}
+
+/// Attach the right-click menu to `btn`: "Move to desktop" with one entry per
+/// desktop, and "Force kill" (SIGKILL on the window's process) when the
+/// client published its pid. Returns the popover so the caller can release it.
+fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) -> gtk::PopoverMenu {
+    let menu = gio::Menu::new();
+    let desktops = gio::Menu::new();
+    for i in 0..count {
+        desktops.append(Some(&desktop_label(i, names)), Some(&format!("win.move({i})")));
+    }
+    menu.append_submenu(Some("Move to desktop"), &desktops);
+    if c.pid.is_some() {
+        menu.append(Some("Force kill"), Some("win.kill"));
+    }
+
+    let actions = gio::SimpleActionGroup::new();
+    let xid = c.xid;
+    let move_action = gio::SimpleAction::new("move", Some(glib::VariantTy::INT32));
+    move_action.connect_activate(move |_, param| {
+        let Some(index) = param.and_then(|p| p.get::<i32>()) else { return };
+        ewmh::move_window_to_desktop(xid, index.max(0) as u32);
+    });
+    actions.add_action(&move_action);
+    if let Some(pid) = c.pid {
+        let kill_action = gio::SimpleAction::new("kill", None);
+        kill_action.connect_activate(move |_, _| ewmh::force_kill(pid));
+        actions.add_action(&kill_action);
+    }
+    btn.insert_action_group("win", Some(&actions));
+
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_parent(btn);
+    popover.set_has_arrow(false);
+    let secondary = gtk::GestureClick::new();
+    secondary.set_button(gtk::gdk::BUTTON_SECONDARY);
+    {
+        let popover = popover.clone();
+        secondary.connect_pressed(move |_, _, _, _| popover.popup());
+    }
+    btn.add_controller(secondary);
+    popover
 }
 
 impl Default for Tasklist {
