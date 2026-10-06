@@ -619,6 +619,33 @@ Shows one picture or video and lets you move through the others in the same fold
   keys keep working; a bad command line exits with status 1. GIFs show their first frame.
 - **Requires** the GStreamer packages of 3.27 for videos.
 
+### 3.29 Input Settings (`opusdm-input-config`)
+
+Sets the mouse, the touchpad and the keyboard. Every change takes effect **at once**, while the
+window is open, so you can try it.
+
+- **Open it:** Desktop menu (right click on the desktop) > **Desktop** > **Input**, the internal
+  command **Input Settings** (CLI word `input-settings`, usable in any function or hotkey), or run
+  `opusdm-input-config`.
+- **Mouse** tab (every mouse): pointer speed (-1 to 1), flat acceleration (no acceleration curve),
+  left handed (swap the buttons), natural scrolling.
+- **Touchpad** tab (every touchpad): pointer speed, tap to click, natural scrolling, disable while
+  typing. With no touchpad the tab says so and is greyed out.
+- **Keyboard** tab: up to 4 layouts, each with its variant (the drop-downs have a search field),
+  **Add layout** / **Remove**, the key that switches layout (the `grp:` options of XKB), the repeat
+  delay (100 to 2000 ms) and the repeat rate (1 to 100 per second). Other XKB options you already
+  have (for example `caps:escape`) are kept.
+- **Save** keeps the values in `~/.config/opusdm/input.json` and closes the window. Closing it any
+  other way (**Cancel**, **Esc**, the window's close button) puts back the values that were active
+  when it opened. Nothing is restored if the process is killed.
+- **At login** the hub applies `input.json` and applies it again when a pointer is plugged in or
+  removed (it looks every 3 seconds). With no file the system is left alone.
+- **Limits:** X11 only (under Wayland, or with no display, the window only says so). The double
+  click time is not an X setting and is not offered. There are no per-device settings: one group
+  for all mice and one for all touchpads.
+- **Requires** `xinput`, `setxkbmap` and `xset` (packages `xinput`, `x11-xkb-utils`,
+  `x11-xserver-utils`). A missing tool greys out its tab and the window names the package.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
