@@ -330,6 +330,24 @@ pub fn read_head(path: &Path, wanted: usize) -> Vec<u8> {
     buf
 }
 
+/// The double click reference of the user file type of the file at `path`,
+/// or `None` when the path is not a regular file, no type matches or the type
+/// has no double click action. Reads `filetypes.json` on every call, like the
+/// Lister does, so an edit applies at once.
+pub fn dblclick_for(path: &Path) -> Option<FunctionId> {
+    dblclick_in(&load_filetypes(), path)
+}
+
+/// [`dblclick_for`] against the given `types` (testable).
+fn dblclick_in(types: &FileTypes, path: &Path) -> Option<FunctionId> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let head = read_head(path, types.head_needed());
+    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let facts = FileFacts { name: &name, size: meta.len(), modified, head: &head };
+    types.find(&facts).and_then(|t| t.actions.dblclick.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +513,19 @@ mod tests {
         assert_eq!(read_head(&path, 100), b"0123456789");
         assert!(read_head(&path, 0).is_empty());
         assert!(read_head(&dir.path().join("none"), 4).is_empty());
+    }
+
+    #[test]
+    fn dblclick_finds_the_action_of_a_matching_regular_file_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (song, txt) = (dir.path().join("a.mp3"), dir.path().join("a.txt"));
+        std::fs::write(&song, "x").unwrap();
+        std::fs::write(&txt, "x").unwrap();
+        let types = default_filetypes();
+        assert_eq!(dblclick_in(&types, &song).as_deref(), Some("exec:opusdm-player {f}"));
+        assert_eq!(dblclick_in(&types, &txt), None, "no type matches");
+        assert_eq!(dblclick_in(&types, dir.path()), None, "a folder never matches");
+        assert_eq!(dblclick_in(&types, &dir.path().join("missing.mp3")), None);
     }
 
     #[test]

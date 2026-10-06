@@ -30,11 +30,8 @@ impl Hub {
         let run_id = self.next_run_id;
         self.next_run_id += 1;
         let Some(source_cid) = source else {
-            self.function_requesters.insert(run_id, requester);
             let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
-            let cancel = CancelToken::new();
-            self.function_cancels.insert(run_id, cancel.clone());
-            crate::functions::spawn_executor(run_id, steps, empty, None, self.function_events_tx.clone(), cancel);
+            self.spawn_run(run_id, requester, steps, empty);
             return run_id;
         };
         // Exclude the source itself: a Lister that currently holds a DEST role
@@ -61,6 +58,15 @@ impl Hub {
         run_id
     }
 
+    /// Start the executor of run `run_id` at once, on `selection` and with no
+    /// DEST.
+    fn spawn_run(&mut self, run_id: u64, requester: Option<u64>, steps: Vec<FnStep>, selection: SelectionCtx) {
+        self.function_requesters.insert(run_id, requester);
+        let cancel = CancelToken::new();
+        self.function_cancels.insert(run_id, cancel.clone());
+        crate::functions::spawn_executor(run_id, steps, selection, None, self.function_events_tx.clone(), cancel);
+    }
+
     /// Queue `run_id` on `cid`'s FIFO of pending selection requests and ask
     /// the Lister for its selection.
     pub(super) fn query_selection(&mut self, cid: u64, run_id: u64) {
@@ -70,27 +76,40 @@ impl Hub {
         }
     }
 
-    /// Start the inline command `reference` (`bash:`, `bash+out:` or
-    /// `exec:`) as a one-step run for `requester`. A command that cannot run
-    /// is reported through [`Self::function_failed`]. Returns the run id.
-    fn run_inline(&mut self, requester: Option<u64>, source: Option<u64>, reference: &opusdm_ipc::funcref::FuncRef) -> Option<u64> {
-        match opusdm_ipc::funcref::to_steps(reference) {
-            Ok(steps) => Some(self.start_function_run(requester, source, steps)),
-            Err(e) => {
-                self.function_failed(requester, e);
-                None
-            }
-        }
-    }
-
     /// Run the inline command `id` names (`bash:`, `exec:`), else load the
     /// saved function `id`, validate it and start it for `requester`
     /// (see [`Self::start_function_run`]). A missing or invalid function is
     /// reported through [`Self::function_failed`]. Returns the run id.
     pub(super) fn run_function_by_id(&mut self, requester: Option<u64>, source: Option<u64>, id: &str) -> Option<u64> {
+        let steps = self.steps_for(requester, id)?;
+        Some(self.start_function_run(requester, source, steps))
+    }
+
+    /// Run the function or inline command `id` names on the files `paths`
+    /// (the selection it sees, with their folder as working directory), with
+    /// no Lister involved. Used by the desktop, whose icons are not in a
+    /// Lister. Returns the run id.
+    pub(super) fn run_on_paths(&mut self, id: &str, paths: Vec<PathBuf>) -> Option<u64> {
+        let steps = self.steps_for(None, id)?;
+        let cwd = paths.first().and_then(|p| p.parent()).map(PathBuf::from).unwrap_or_else(home_dir);
+        let run_id = self.next_run_id;
+        self.next_run_id += 1;
+        self.spawn_run(run_id, None, steps, SelectionCtx { paths, cwd });
+        Some(run_id)
+    }
+
+    /// The steps of the function or inline command `id` names. A missing or
+    /// invalid one is reported through [`Self::function_failed`].
+    fn steps_for(&mut self, requester: Option<u64>, id: &str) -> Option<Vec<FnStep>> {
         let reference = opusdm_ipc::funcref::parse(id);
         if !matches!(reference, opusdm_ipc::funcref::FuncRef::Saved(_)) {
-            return self.run_inline(requester, source, &reference);
+            return match opusdm_ipc::funcref::to_steps(&reference) {
+                Ok(steps) => Some(steps),
+                Err(e) => {
+                    self.function_failed(requester, e);
+                    None
+                }
+            };
         }
         let Some(function) = self.current_functions.iter().find(|f| f.id == id).cloned() else {
             self.function_failed(requester, format!("function '{id}' not found (it may have been deleted)"));
@@ -101,7 +120,7 @@ impl Hub {
             self.function_failed(requester, format!("function '{}' is invalid: {}", function.name, first.message));
             return None;
         }
-        Some(self.start_function_run(requester, source, function.steps))
+        Some(function.steps)
     }
 
     /// Run the saved function `id` on the hub's own initiative: SOURCE is the

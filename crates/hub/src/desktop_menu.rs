@@ -4,7 +4,6 @@
 use crate::server::HubCmd;
 use opusdm_ipc::bindings::ScriptEvent;
 use gtk4 as gtk;
-use gtk::gio;
 use gtk::prelude::*;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -261,8 +260,7 @@ pub(crate) fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opu
             if opens_in_lister {
                 let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(path.clone()) });
             } else {
-                let uri = format!("file://{}", path.display());
-                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                crate::desktop_windows::open_file(&widgets.cmd_tx, &path);
             }
         });
         menu.append(&btn);

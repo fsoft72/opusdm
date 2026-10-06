@@ -194,6 +194,24 @@ pub(crate) fn build_one_desktop_window(
     window
 }
 
+/// Run the double click action of the user file type of `path` on it. False
+/// when no file type has one, so the caller opens the file the default way.
+pub(crate) fn run_file_type(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) -> bool {
+    let Some(id) = opusdm_ipc::filetypes::dblclick_for(path) else { return false };
+    let _ = cmd_tx.send(HubCmd::RunFunctionOnPaths { id, paths: vec![path.to_path_buf()] });
+    true
+}
+
+/// Open the file `path` as a double click in a Lister would: through its
+/// file type when it has one, else with the default application.
+pub(crate) fn open_file(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) {
+    if run_file_type(cmd_tx, path) {
+        return;
+    }
+    let uri = format!("file://{}", path.display());
+    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+}
+
 /// Wire the primary monitor's icon field: open on activate, copy/move on
 /// drop, and spawn a new Lister on a background double-click.
 pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_iconview::IconField) {
@@ -214,8 +232,7 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
             if opusdm_hub::leftout::opens_in_lister(&entry) {
                 let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
             } else {
-                let uri = format!("file://{}", entry.path.display());
-                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                open_file(&cmd_tx, &entry.path);
             }
         });
     }
@@ -447,6 +464,9 @@ pub(crate) fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconE
             }
         }
         LaunchAction::Default => {
+            if run_file_type(&widgets.cmd_tx, &entry.path) {
+                return;
+            }
             let uri = gio::File::for_path(&entry.path).uri();
             if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
                 opusdm_ipc::err_log!("hub", "cannot open {}: {e}", entry.path.display());

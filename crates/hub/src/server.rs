@@ -109,6 +109,9 @@ pub enum HubCmd {
     /// script event): SOURCE is the current SOURCE Lister, or an empty
     /// selection when there is none.
     RunFunctionHeadless(opusdm_ipc::function::FunctionId),
+    /// Run a saved Function or inline command on the given files, with no
+    /// Lister (a double click on a desktop icon that has a file type).
+    RunFunctionOnPaths { id: opusdm_ipc::function::FunctionId, paths: Vec<std::path::PathBuf> },
     /// Emit a script event: run every function bound to it (from `main` for
     /// `Startup`, from the desktop for the double clicks).
     EmitScriptEvent(ScriptEvent),
@@ -959,6 +962,10 @@ impl Hub {
 
             HubCmd::RunFunctionHeadless(id) => {
                 self.run_headless(&id);
+            }
+
+            HubCmd::RunFunctionOnPaths { id, paths } => {
+                self.run_on_paths(&id, paths);
             }
 
             HubCmd::SetHidden(hidden) => self.set_hidden(hidden),
@@ -2427,6 +2434,24 @@ mod tests {
 
         wait_for_lines(&marker, 1);
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "{o} ${f}\n");
+    }
+
+    #[test]
+    fn run_function_on_paths_gives_the_files_as_the_selection() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+        let marker = out.path().join("marker");
+
+        let (_td, listener, _path) = bind_temp();
+        let handle = spawn_server(listener, Box::new(|_p| {}));
+        let id = format!("bash:echo \"$@\" >> {}", marker.display());
+        handle.cmd_tx.send(HubCmd::RunFunctionOnPaths { id, paths: vec![out.path().join("a b.jpg")] }).unwrap();
+
+        wait_for_lines(&marker, 1);
+        let want = format!("{}\n", out.path().join("a b.jpg").display());
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), want);
     }
 
     #[test]
