@@ -9,6 +9,7 @@ use gtk4 as gtk;
 use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
+use crate::widgets;
 use opusdm_dock::apps;
 use opusdm_ipc::{MenuItem, PanelPosition};
 use std::process::Command;
@@ -58,13 +59,45 @@ fn custom_app_row(id: &str, popover: &gtk::Popover) -> Option<gtk::Button> {
     btn.add_css_class("flat");
     btn.set_halign(gtk::Align::Fill);
 
-    let popover = popover.clone();
+    let menu = popover.clone();
     let info = entry.info.clone();
     btn.connect_clicked(move |_| {
-        popover.popdown();
+        menu.popdown();
         apps::launch(&info);
     });
+    attach_quick_apps_menu(&btn, id, &popover);
     Some(btn)
+}
+
+/// Right click on a menu row opens "Add to quick apps" (disabled when the app
+/// is already one); `menu` is the application menu popover, closed on use.
+fn attach_quick_apps_menu(btn: &gtk::Button, id: &str, menu: &gtk::Popover) {
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(false);
+    let add = gtk::Button::with_label("Add to quick apps");
+    add.add_css_class("flat");
+    popover.set_child(Some(&add));
+    popover.set_parent(btn);
+    {
+        let popover = popover.clone();
+        btn.connect_destroy(move |_| popover.unparent());
+    }
+    {
+        let (popover, menu, id) = (popover.clone(), menu.clone(), id.to_string());
+        add.connect_clicked(move |_| {
+            popover.popdown();
+            menu.popdown();
+            widgets::quickapps::add_app(&id);
+        });
+    }
+    let (id, add) = (id.to_string(), add.clone());
+    let click = gtk::GestureClick::new();
+    click.set_button(gdk::BUTTON_SECONDARY);
+    click.connect_pressed(move |_, _, _, _| {
+        add.set_sensitive(!widgets::quickapps::contains(&id));
+        popover.popup();
+    });
+    btn.add_controller(click);
 }
 
 /// Render one level of the custom menu tree into `into`: apps as rows,

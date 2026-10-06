@@ -53,12 +53,14 @@ struct BarWindow {
     menu: gtk::MenuButton,
     pager: Rc<Pager>,
     tasklist: Rc<Tasklist>,
+    /// Kept alive so the strip stays registered for refreshes.
+    _quick_apps: Rc<widgets::quickapps::QuickApps>,
     /// `Some` only for the primary bar (the one built from the first
     /// monitor rect) - one tray manager total, not one per monitor.
     tray: Option<Rc<Tray>>,
 }
 
-/// Build one full bar (menu, pager, tasklist, sysmon, clock) on the monitor
+/// Build one full bar (menu, pager, quick apps, tasklist, sysmon, clock) on the monitor
 /// and edge `place` describes, and present it. `state` seeds the pager
 /// and tasklist immediately, so a bar created after startup (monitor plugged
 /// in later) doesn't show empty widgets until the next EWMH event.
@@ -154,6 +156,8 @@ fn build_bar_window(
     left.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     left.append(pager.widget());
     left.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    let quick_apps = widgets::quickapps::QuickApps::new();
+    left.append(quick_apps.widget());
     left.append(tasklist.widget());
     bar.set_start_widget(Some(&left));
 
@@ -181,7 +185,7 @@ fn build_bar_window(
         win.present();
     }
 
-    BarWindow { window: win, place, menu, pager, tasklist, tray }
+    BarWindow { window: win, place, menu, pager, tasklist, tray, _quick_apps: quick_apps }
 }
 
 /// Title of every panel bar window; the hub uses it to hide and show the panel.

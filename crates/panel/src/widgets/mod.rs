@@ -3,6 +3,7 @@
 
 pub mod clock;
 pub mod pager;
+pub mod quickapps;
 pub mod sni;
 pub mod sysmon;
 pub mod tasklist;
