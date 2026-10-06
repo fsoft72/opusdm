@@ -55,6 +55,17 @@ pub struct ClientWin {
     /// Owner process from `_NET_WM_PID`, when the client sets it.
     pub pid: Option<u32>,
     pub icon: Option<IconRgba>,
+    /// Position and size of the client area in root coordinates.
+    pub rect: WinRect,
+}
+
+/// A window rectangle in root (screen) coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WinRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
 }
 
 /// A window icon decoded from `_NET_WM_ICON` into tightly packed RGBA8.
@@ -76,6 +87,8 @@ pub enum EwmhEvent {
     Clients(Vec<ClientWin>),
     /// The active window changed (`None` when nothing is active).
     ActiveWindow(Option<u32>),
+    /// Windows moved or were resized: `(xid, rect)` for every managed client.
+    Geometries(Vec<(u32, WinRect)>),
 }
 
 // --------------------------------------------------------------------------
@@ -171,8 +184,26 @@ fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::err
     emit_clients(&conn, root, &atoms, &mut watched, tx);
     emit_active(&conn, root, &atoms, tx);
 
+    let mut pending: Option<Event> = None;
     loop {
-        let event = conn.wait_for_event()?;
+        let event = match pending.take() {
+            Some(ev) => ev,
+            None => conn.wait_for_event()?,
+        };
+        if let Event::ConfigureNotify(e) = &event {
+            if !watched.contains(&e.window) {
+                continue;
+            }
+            // A window drag sends a burst: collapse it into one snapshot.
+            while let Some(next) = conn.poll_for_event()? {
+                if !matches!(next, Event::ConfigureNotify(_)) {
+                    pending = Some(next);
+                    break;
+                }
+            }
+            emit_geometries(&conn, root, &atoms, &watched, tx);
+            continue;
+        }
         let Event::PropertyNotify(e) = event else { continue };
         if e.window == root {
             if e.atom == atoms._NET_CURRENT_DESKTOP {
@@ -212,6 +243,35 @@ fn emit_desktops(
     let _ = tx.send_blocking(EwmhEvent::Desktops { count, current, names });
 }
 
+/// Send the current rectangle of every watched, still existing client.
+fn emit_geometries(
+    conn: &RustConnection,
+    root: Window,
+    atoms: &Atoms,
+    watched: &HashSet<Window>,
+    tx: &async_channel::Sender<EwmhEvent>,
+) {
+    let Some(raw) = get_bytes(conn, root, atoms._NET_CLIENT_LIST) else { return };
+    let rects: Vec<(u32, WinRect)> = parse_window_list(&raw)
+        .into_iter()
+        .filter(|xid| watched.contains(xid))
+        .filter_map(|xid| read_rect(conn, root, xid).map(|r| (xid, r)))
+        .collect();
+    let _ = tx.send_blocking(EwmhEvent::Geometries(rects));
+}
+
+/// Read the client area of `xid` in root coordinates; `None` if it vanished.
+fn read_rect(conn: &RustConnection, root: Window, xid: Window) -> Option<WinRect> {
+    let geo = conn.get_geometry(xid).ok()?.reply().ok()?;
+    let pos = conn.translate_coordinates(xid, root, 0, 0).ok()?.reply().ok()?;
+    Some(WinRect {
+        x: i32::from(pos.dst_x),
+        y: i32::from(pos.dst_y),
+        w: u32::from(geo.width),
+        h: u32::from(geo.height),
+    })
+}
+
 fn emit_active(
     conn: &RustConnection,
     root: Window,
@@ -238,10 +298,10 @@ fn emit_clients(
         if watched.insert(xid) {
             let _ = conn.change_window_attributes(
                 xid,
-                &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
             );
         }
-        if let Some(c) = read_client(conn, xid, atoms) {
+        if let Some(c) = read_client(conn, root, xid, atoms) {
             clients.push(c);
         }
     }
@@ -251,7 +311,7 @@ fn emit_clients(
 /// Read the panel-relevant properties of one client window. Returns `None`
 /// for windows we never show (docks, the desktop, windows that ask to be
 /// left out of the taskbar) or that vanished.
-fn read_client(conn: &RustConnection, xid: Window, atoms: &Atoms) -> Option<ClientWin> {
+fn read_client(conn: &RustConnection, root: Window, xid: Window, atoms: &Atoms) -> Option<ClientWin> {
     // Skip docks and the desktop.
     if let Some(types) = get_atoms(conn, xid, atoms._NET_WM_WINDOW_TYPE) {
         if types.contains(&atoms._NET_WM_WINDOW_TYPE_DOCK)
@@ -283,7 +343,9 @@ fn read_client(conn: &RustConnection, xid: Window, atoms: &Atoms) -> Option<Clie
 
     let pid = get_card(conn, xid, atoms._NET_WM_PID).filter(|p| *p != 0);
 
-    Some(ClientWin { xid, title, desktop, minimized, pid, icon })
+    let rect = read_rect(conn, root, xid).unwrap_or_default();
+
+    Some(ClientWin { xid, title, desktop, minimized, pid, icon, rect })
 }
 
 // --------------------------------------------------------------------------

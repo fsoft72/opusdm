@@ -142,7 +142,7 @@ fn build_bar_window(
     let tasklist = Rc::new(Tasklist::new());
     {
         let s = state.borrow();
-        pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
+        pager.update(s.desktop_count, s.current_desktop, &s.desktop_names, &s.clients, s.active);
         tasklist.update(&s.clients, s.current_desktop, s.active, s.desktop_count, &s.desktop_names);
     }
 
@@ -345,6 +345,7 @@ fn redock_bar(bw: &BarWindow, position: PanelPosition) {
 /// Fold one observer snapshot into `state` and repaint every bar it touched.
 fn apply_ewmh(state: &Rc<RefCell<PanelState>>, windows: &[BarWindow], ev: EwmhEvent) {
     let mut s = state.borrow_mut();
+    let mut geometry_only = false;
     match ev {
         EwmhEvent::Desktops { count, current, names } => {
             s.desktop_count = count;
@@ -354,9 +355,20 @@ fn apply_ewmh(state: &Rc<RefCell<PanelState>>, windows: &[BarWindow], ev: EwmhEv
         EwmhEvent::CurrentDesktop(current) => s.current_desktop = current,
         EwmhEvent::Clients(clients) => s.clients = clients,
         EwmhEvent::ActiveWindow(active) => s.active = active,
+        EwmhEvent::Geometries(rects) => {
+            for c in s.clients.iter_mut() {
+                if let Some((_, r)) = rects.iter().find(|(xid, _)| *xid == c.xid) {
+                    c.rect = *r;
+                }
+            }
+            geometry_only = true;
+        }
     }
     for bw in windows {
-        bw.pager.update(s.desktop_count, s.current_desktop, &s.desktop_names);
+        bw.pager.update(s.desktop_count, s.current_desktop, &s.desktop_names, &s.clients, s.active);
+        if geometry_only {
+            continue;
+        }
         bw.tasklist.update(&s.clients, s.current_desktop, s.active, s.desktop_count, &s.desktop_names);
     }
 }
@@ -369,7 +381,6 @@ fn install_css() {
     provider.load_from_data(
         ".opusdm-panel { background-color: #2e3436; color: #d3d7cf; }\n\
          .opusdm-panel button { padding: 2px 8px; min-height: 0; }\n\
-         .opusdm-panel-pager button.active { background-color: #4a90d9; color: #ffffff; }\n\
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
          .opusdm-panel-clock-date { font-size: 10px; }\n\
