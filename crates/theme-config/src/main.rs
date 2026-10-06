@@ -10,7 +10,7 @@ use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_desktop_config::menu_ui::MenuSection;
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
-use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection, VirtualScreensSection, WindowsSection};
+use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -173,6 +173,10 @@ fn build_window(app: &gtk::Application) {
 
     let screens = Rc::new(VirtualScreensSection::new(desktop_data.virtual_screens));
     desktop_page.append(&screens.root);
+    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let startup_apps = Rc::new(StartupAppsSection::new(&desktop_data.startup_apps));
+    desktop_page.append(&startup_apps.root);
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
 
@@ -303,6 +307,7 @@ fn build_window(app: &gtk::Application) {
         let folder = folder.clone();
         let panel = panel.clone();
         let screens = screens.clone();
+        let startup_apps = startup_apps.clone();
         let windows = windows.clone();
         let dock_section = dock_section.clone();
         let behavior_section = behavior_section.clone();
@@ -326,6 +331,7 @@ fn build_window(app: &gtk::Application) {
                 transparency_enabled: windows.enabled(),
                 inactive_opacity: windows.inactive_opacity(),
                 active_opacity: windows.active_opacity(),
+                startup_apps: startup_apps.apps(),
             }
             .sanitized();
             (prefs, desktop)

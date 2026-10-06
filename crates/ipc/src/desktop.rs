@@ -23,6 +23,8 @@ pub const WINDOW_OPACITY_RANGE: (u32, u32) = (20, 100);
 pub const DEFAULT_INACTIVE_OPACITY: u32 = 88;
 /// Default for [`DesktopSettings::active_opacity`], in percent.
 pub const DEFAULT_ACTIVE_OPACITY: u32 = 100;
+/// Accepted range, in seconds, for [`StartupApp::wait_secs`].
+pub const STARTUP_WAIT_SECS_RANGE: (u32, u32) = (0, 600);
 
 /// Lower/upper bound for [`DesktopSettings::grid_spacing`], in pixels. The low
 /// end is below the smallest icon so a tight grid can pack icons closer than
@@ -304,6 +306,16 @@ impl From<BackgroundWire> for Background {
     }
 }
 
+/// One application started when the session starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartupApp {
+    /// Program and arguments, split like an `exec:` hotkey (quotes group).
+    pub command: String,
+    /// Seconds to wait, counted from the hub start, before launching it.
+    #[serde(default)]
+    pub wait_secs: u32,
+}
+
 /// Every desktop-window setting `opus-desktop-config` owns. On-disk shape of
 /// `~/.config/opusdm/desktop.json`, the hub's in-memory copy, and the payload
 /// of [`crate::ToHub::SetDesktopSettings`] - one struct, three roles, like
@@ -337,6 +349,8 @@ pub struct DesktopSettings {
     pub inactive_opacity: u32,
     /// Opacity in percent of the window that has the focus.
     pub active_opacity: u32,
+    /// Applications started when the session starts, each after its own wait.
+    pub startup_apps: Vec<StartupApp>,
 }
 
 impl Default for DesktopSettings {
@@ -353,6 +367,7 @@ impl Default for DesktopSettings {
             transparency_enabled: true,
             inactive_opacity: DEFAULT_INACTIVE_OPACITY,
             active_opacity: DEFAULT_ACTIVE_OPACITY,
+            startup_apps: Vec::new(),
         }
     }
 }
@@ -374,6 +389,12 @@ impl DesktopSettings {
         let (lo, hi) = WINDOW_OPACITY_RANGE;
         self.inactive_opacity = self.inactive_opacity.clamp(lo, hi);
         self.active_opacity = self.active_opacity.clamp(lo, hi);
+        let (lo, hi) = STARTUP_WAIT_SECS_RANGE;
+        for app in &mut self.startup_apps {
+            app.command = app.command.trim().to_string();
+            app.wait_secs = app.wait_secs.clamp(lo, hi);
+        }
+        self.startup_apps.retain(|app| !app.command.is_empty());
         self
     }
 }
@@ -788,5 +809,41 @@ mod tests {
         assert!(!missing.is_usable());
         let here = BackgroundEntry::Image { path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"), fit: ImageFit::Fill };
         assert!(here.is_usable());
+    }
+
+    #[test]
+    fn startup_apps_default_to_none_and_old_files_load() {
+        assert!(DesktopSettings::default().startup_apps.is_empty());
+        let d: DesktopSettings = serde_json::from_str("{\"icon_size\": 80}").unwrap();
+        assert!(d.startup_apps.is_empty());
+    }
+
+    #[test]
+    fn startup_apps_roundtrip_and_wait_defaults_to_zero() {
+        let mut d = DesktopSettings::default();
+        d.startup_apps = vec![StartupApp { command: "firefox".into(), wait_secs: 5 }];
+        let s = serde_json::to_string(&d).unwrap();
+        assert_eq!(serde_json::from_str::<DesktopSettings>(&s).unwrap(), d);
+        let app: StartupApp = serde_json::from_str("{\"command\": \"nm-applet\"}").unwrap();
+        assert_eq!(app, StartupApp { command: "nm-applet".into(), wait_secs: 0 });
+    }
+
+    #[test]
+    fn sanitized_clamps_the_startup_wait_and_drops_blank_commands() {
+        let mut d = DesktopSettings::default();
+        d.startup_apps = vec![
+            StartupApp { command: "  firefox  ".into(), wait_secs: 99_999 },
+            StartupApp { command: "   ".into(), wait_secs: 3 },
+            StartupApp { command: String::new(), wait_secs: 0 },
+            StartupApp { command: "xterm".into(), wait_secs: 2 },
+        ];
+        let d = d.sanitized();
+        assert_eq!(
+            d.startup_apps,
+            vec![
+                StartupApp { command: "firefox".into(), wait_secs: STARTUP_WAIT_SECS_RANGE.1 },
+                StartupApp { command: "xterm".into(), wait_secs: 2 },
+            ]
+        );
     }
 }

@@ -57,6 +57,9 @@ fn main() {
     // Keep the saved mouse, touchpad and keyboard settings applied.
     input_apply::start();
 
+    // Launch the Startup Apps of Settings, each after its own wait time.
+    opusdm_hub::startup_apps::start(&opusdm_hub::desktop_settings::load().startup_apps);
+
     let _ = handle.cmd_tx.send(server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup));
 
     children::install_sigchld(handle.cmd_tx.clone());

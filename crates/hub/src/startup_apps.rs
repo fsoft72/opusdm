@@ -1,0 +1,125 @@
+//! Starts the applications listed in Settings, Desktop, Startup Apps.
+
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use opusdm_ipc::StartupApp;
+
+/// The command line of `app`, split like an `exec:` hotkey (quotes group).
+/// An empty command or an unclosed quote is an error.
+pub fn argv_for(app: &StartupApp) -> Result<Vec<String>, String> {
+    let argv = opusdm_ipc::cli::tokenize(&app.command)?;
+    if argv.is_empty() {
+        return Err("no program given".to_string());
+    }
+    Ok(argv)
+}
+
+/// Start `argv` detached: own process group, no stdio, so it outlives the
+/// hub's terminal. Fails when the program cannot be started.
+pub fn spawn_detached(argv: &[String]) -> Result<(), String> {
+    let Some((program, args)) = argv.split_first() else { return Err("nothing to run".to_string()) };
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(|_child| ())
+        .map_err(|e| format!("cannot run '{program}': {e}"))
+}
+
+/// Wait for the app's own time, then launch it. A failure is logged and
+/// never stops the other apps.
+fn launch_after_wait(app: &StartupApp) {
+    std::thread::sleep(Duration::from_secs(u64::from(app.wait_secs)));
+    let started = argv_for(app).and_then(|argv| spawn_detached(&argv));
+    if let Err(e) = started {
+        opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': {e}", app.command);
+    }
+}
+
+/// Start every app after its own wait, counted from this call. Each app has
+/// its own thread, so the waits run side by side and never delay each other.
+pub fn start(apps: &[StartupApp]) {
+    for app in apps {
+        let app = app.clone();
+        let spawned = std::thread::Builder::new()
+            .name("startup-app".to_string())
+            .spawn(move || launch_after_wait(&app));
+        if let Err(e) = spawned {
+            opusdm_ipc::err_log!("opusdm-hub", "cannot start a thread for a startup app: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opusdm_ipc::StartupApp;
+    use std::time::{Duration, Instant};
+
+    fn app(command: &str, wait_secs: u32) -> StartupApp {
+        StartupApp { command: command.to_string(), wait_secs }
+    }
+
+    #[test]
+    fn argv_splits_like_an_exec_hotkey() {
+        let argv = argv_for(&app("sh -c 'echo hi there'", 0)).unwrap();
+        assert_eq!(argv, vec!["sh", "-c", "echo hi there"]);
+    }
+
+    #[test]
+    fn argv_reports_an_unclosed_quote_and_an_empty_command() {
+        assert!(argv_for(&app("sh -c 'oops", 0)).is_err());
+        assert!(argv_for(&app("   ", 0)).is_err());
+    }
+
+    #[test]
+    fn spawn_reports_a_missing_program() {
+        let argv = vec!["opusdm-no-such-program-xyz".to_string()];
+        assert!(spawn_detached(&argv).unwrap_err().contains("opusdm-no-such-program-xyz"));
+    }
+
+    /// Wait until `path` exists, up to a few seconds.
+    fn appears(path: &std::path::Path) -> bool {
+        let end = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < end {
+            if path.exists() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn start_runs_an_app_with_no_wait_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("now");
+        start(&[app(&format!("touch {}", marker.display()), 0)]);
+        assert!(appears(&marker));
+    }
+
+    #[test]
+    fn start_holds_an_app_back_for_its_wait_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("later");
+        let begun = Instant::now();
+        start(&[app(&format!("touch {}", marker.display()), 1)]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "launched before its wait time");
+        assert!(appears(&marker));
+        assert!(begun.elapsed() >= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_failing_app_does_not_stop_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("after-failure");
+        start(&[app("opusdm-no-such-program-xyz", 0), app(&format!("touch {}", marker.display()), 0)]);
+        assert!(appears(&marker));
+    }
+}

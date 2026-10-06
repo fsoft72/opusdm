@@ -311,6 +311,13 @@ standalone window. The background has its own **Desktop Background** tab in Sett
   free spin box.
 - **Desktop folder**: override which directory the desktop shows. Empty means the default
   (`$XDG_DESKTOP_DIR`, then `~/Desktop`). **Reset to default** clears the override.
+- **Startup apps**: the programs started with the session. Each row has the command (program and
+  arguments, quotes group them, like an `exec:` hotkey), **Browse...** to pick a program, **Wait
+  (s)** (0 to 600, default 0) and **Remove**; **Add** appends a row. The wait is counted from the
+  start of the hub and the rows are independent, so two apps with a wait of 10 both start after 10
+  seconds. Rows with an empty command are dropped on save. The apps start only when the hub
+  starts: saving the settings does not launch them again. A command that cannot be started is
+  logged and the other apps still start.
 
 The **Windows** tab sets the transparency of the windows, drawn by the compositor (picom, not
 Openbox, which has no such setting): **Enable window transparency** is the master switch (off means

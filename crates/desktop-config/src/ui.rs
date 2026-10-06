@@ -4,8 +4,10 @@
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_ipc::PanelPosition;
+use opusdm_ipc::{PanelPosition, StartupApp};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::model::{hex_to_rgba, rgba_to_hex};
 
@@ -341,6 +343,120 @@ impl VirtualScreensSection {
     }
 }
 
+/// One row of the startup apps list: its widget and the two inputs.
+struct StartupRow {
+    row: gtk::Box,
+    command: gtk::Entry,
+    wait: gtk::SpinButton,
+}
+
+/// The startup apps section: the programs started with the session, each
+/// with the seconds to wait (from the hub start) before it is launched.
+pub struct StartupAppsSection {
+    pub root: gtk::Box,
+    list: gtk::Box,
+    rows: Rc<RefCell<Vec<StartupRow>>>,
+}
+
+impl StartupAppsSection {
+    /// Build the section seeded with the saved startup apps.
+    pub fn new(initial: &[StartupApp]) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        root.append(&heading("STARTUP APPS"));
+        let hint = gtk::Label::new(Some("Started with the session, each after its own wait (seconds from the start)."));
+        hint.set_xalign(0.0);
+        hint.add_css_class("dim-label");
+        root.append(&hint);
+
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        root.append(&list);
+        let add = gtk::Button::with_label("Add");
+        add.set_halign(gtk::Align::Start);
+        root.append(&add);
+
+        let section = Self { root, list, rows: Rc::new(RefCell::new(Vec::new())) };
+        for app in initial {
+            section.add_row(app);
+        }
+        {
+            let (list, rows) = (section.list.clone(), section.rows.clone());
+            add.connect_clicked(move |_| Self::append_row(&list, &rows, &StartupApp { command: String::new(), wait_secs: 0 }));
+        }
+        section
+    }
+
+    /// Append a row seeded with `app`.
+    fn add_row(&self, app: &StartupApp) {
+        Self::append_row(&self.list, &self.rows, app);
+    }
+
+    /// Build a row for `app`, add it to `list` and track it in `rows`.
+    fn append_row(list: &gtk::Box, rows: &Rc<RefCell<Vec<StartupRow>>>, app: &StartupApp) {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+
+        let command = gtk::Entry::new();
+        command.set_hexpand(true);
+        command.set_placeholder_text(Some("Command, e.g. firefox or nm-applet"));
+        command.set_text(&app.command);
+
+        let browse = gtk::Button::with_label("Browse...");
+        {
+            let command = command.clone();
+            browse.connect_clicked(move |btn| {
+                let dialog = gtk::FileDialog::builder().title("Choose the program to start").build();
+                let command = command.clone();
+                let win = btn.root().and_downcast::<gtk::Window>();
+                dialog.open(win.as_ref(), gio::Cancellable::NONE, move |res| {
+                    let Ok(file) = res else { return };
+                    let Some(path) = file.path() else { return };
+                    command.set_text(&path.to_string_lossy());
+                });
+            });
+        }
+
+        let (lo, hi) = opusdm_ipc::STARTUP_WAIT_SECS_RANGE;
+        let wait = gtk::SpinButton::with_range(lo as f64, hi as f64, 1.0);
+        wait.set_value(app.wait_secs as f64);
+        wait.set_tooltip_text(Some("Seconds to wait before starting it"));
+        let wait_label = gtk::Label::new(Some("Wait (s)"));
+
+        let remove = gtk::Button::with_label("Remove");
+        {
+            let (list, rows, row) = (list.clone(), rows.clone(), row.clone());
+            remove.connect_clicked(move |_| {
+                list.remove(&row);
+                rows.borrow_mut().retain(|r| r.row != row);
+            });
+        }
+
+        row.append(&command);
+        row.append(&browse);
+        row.append(&wait_label);
+        row.append(&wait);
+        row.append(&remove);
+        list.append(&row);
+        rows.borrow_mut().push(StartupRow { row, command, wait });
+    }
+
+    /// The apps as edited, in list order. Blank commands are left for
+    /// `DesktopSettings::sanitized` to drop.
+    pub fn apps(&self) -> Vec<StartupApp> {
+        self.rows
+            .borrow()
+            .iter()
+            .map(|r| StartupApp { command: r.command.text().to_string(), wait_secs: r.wait.value_as_int().max(0) as u32 })
+            .collect()
+    }
+
+    /// Drop the row at `index`, as the Remove button does.
+    #[cfg(test)]
+    fn remove_row_for_test(&self, index: usize) {
+        let row = self.rows.borrow()[index].row.clone();
+        self.list.remove(&row);
+        self.rows.borrow_mut().remove(index);
+    }
+}
+
 /// The window transparency section: a master switch and the opacity of the
 /// inactive and of the active windows, in percent.
 pub struct WindowsSection {
@@ -454,6 +570,33 @@ mod tests {
         let s = WindowsSection::new(false, 0, 500);
         assert!(!s.enabled());
         assert_eq!((s.inactive_opacity(), s.active_opacity()), (20, 100));
+    }
+
+    #[test]
+    fn startup_apps_section_reports_seeded_rows_in_order() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let seeded = vec![
+            StartupApp { command: "firefox".into(), wait_secs: 5 },
+            StartupApp { command: "nm-applet --indicator".into(), wait_secs: 0 },
+        ];
+        let s = StartupAppsSection::new(&seeded);
+        assert_eq!(s.apps(), seeded);
+        assert!(StartupAppsSection::new(&[]).apps().is_empty());
+    }
+
+    #[test]
+    fn startup_apps_section_reports_added_and_removed_rows() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let s = StartupAppsSection::new(&[StartupApp { command: "a".into(), wait_secs: 1 }]);
+        s.add_row(&StartupApp { command: "b".into(), wait_secs: 700 });
+        assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(s.apps()[1].wait_secs, opusdm_ipc::STARTUP_WAIT_SECS_RANGE.1, "spin clamps the wait");
+        s.remove_row_for_test(0);
+        assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["b"]);
     }
 
     #[test]
