@@ -49,8 +49,14 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
 export PATH="$HERE/bin:$PATH"
 
+# picom runs on a per-user copy of its config: the hub rewrites the opacity
+# keys of that copy (Settings, Windows tab) and signals picom to reload it.
+export OPUSDM_PICOM_BASE="$HERE/config/picom.conf"
+PICOM_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/opusdm/picom.conf"
 if command -v picom >/dev/null 2>&1; then
-    picom --config "$HERE/config/picom.conf" &
+    mkdir -p "$(dirname "$PICOM_USER_CONF")"
+    [ -f "$PICOM_USER_CONF" ] || cp "$OPUSDM_PICOM_BASE" "$PICOM_USER_CONF"
+    picom --config "$PICOM_USER_CONF" &
 fi
 "$HERE/bin/opusdm-hub" &
 exec openbox --config-file "$HERE/config/openbox-rc.xml"

@@ -10,7 +10,7 @@ use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_desktop_config::menu_ui::MenuSection;
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
-use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection, VirtualScreensSection};
+use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection, VirtualScreensSection, WindowsSection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -176,6 +176,21 @@ fn build_window(app: &gtk::Application) {
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
 
+    // --- Windows tab: transparency of the active and inactive windows ---
+    let windows_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    windows_page.set_margin_top(12);
+    windows_page.set_margin_bottom(12);
+    windows_page.set_margin_start(12);
+    windows_page.set_margin_end(12);
+
+    let windows = Rc::new(WindowsSection::new(
+        desktop_data.transparency_enabled,
+        desktop_data.inactive_opacity,
+        desktop_data.active_opacity,
+    ));
+    windows_page.append(&windows.root);
+    notebook.append_page(&windows_page, Some(&gtk::Label::new(Some("Windows"))));
+
     // --- Desktop Background tab: the rotating list of backgrounds ---
     let background_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
     background_page.set_margin_top(12);
@@ -288,6 +303,7 @@ fn build_window(app: &gtk::Application) {
         let folder = folder.clone();
         let panel = panel.clone();
         let screens = screens.clone();
+        let windows = windows.clone();
         let dock_section = dock_section.clone();
         let behavior_section = behavior_section.clone();
         let theme_mode_section = theme_mode_section.clone();
@@ -307,6 +323,9 @@ fn build_window(app: &gtk::Application) {
                 dock_position: dock_section.position(),
                 dock_icon_size: dock_section.icon_size(),
                 virtual_screens: screens.count(),
+                transparency_enabled: windows.enabled(),
+                inactive_opacity: windows.inactive_opacity(),
+                active_opacity: windows.active_opacity(),
             }
             .sanitized();
             (prefs, desktop)

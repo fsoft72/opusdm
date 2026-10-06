@@ -16,6 +16,13 @@ pub const DOCK_ICON_SIZE_RANGE: (i32, i32) = (16, 128);
 pub const VIRTUAL_SCREENS_RANGE: (u32, u32) = (1, 16);
 /// Default for [`DesktopSettings::virtual_screens`].
 pub const DEFAULT_VIRTUAL_SCREENS: u32 = 4;
+/// Accepted range, in percent, for [`DesktopSettings::inactive_opacity`] and
+/// [`DesktopSettings::active_opacity`]. The low end keeps a window readable.
+pub const WINDOW_OPACITY_RANGE: (u32, u32) = (20, 100);
+/// Default for [`DesktopSettings::inactive_opacity`], in percent.
+pub const DEFAULT_INACTIVE_OPACITY: u32 = 88;
+/// Default for [`DesktopSettings::active_opacity`], in percent.
+pub const DEFAULT_ACTIVE_OPACITY: u32 = 100;
 
 /// Lower/upper bound for [`DesktopSettings::grid_spacing`], in pixels. The low
 /// end is below the smallest icon so a tight grid can pack icons closer than
@@ -323,6 +330,13 @@ pub struct DesktopSettings {
     pub dock_icon_size: i32,
     /// Number of virtual screens (desktops) the window manager offers.
     pub virtual_screens: u32,
+    /// Master switch for window transparency. Off means every window is drawn
+    /// fully opaque, whatever the two opacity values below say.
+    pub transparency_enabled: bool,
+    /// Opacity in percent of the windows that do not have the focus.
+    pub inactive_opacity: u32,
+    /// Opacity in percent of the window that has the focus.
+    pub active_opacity: u32,
 }
 
 impl Default for DesktopSettings {
@@ -336,6 +350,9 @@ impl Default for DesktopSettings {
             dock_position: DockPosition::Bottom,
             dock_icon_size: 48,
             virtual_screens: DEFAULT_VIRTUAL_SCREENS,
+            transparency_enabled: true,
+            inactive_opacity: DEFAULT_INACTIVE_OPACITY,
+            active_opacity: DEFAULT_ACTIVE_OPACITY,
         }
     }
 }
@@ -354,6 +371,9 @@ impl DesktopSettings {
         self.dock_icon_size = self.dock_icon_size.clamp(lo, hi);
         let (lo, hi) = VIRTUAL_SCREENS_RANGE;
         self.virtual_screens = self.virtual_screens.clamp(lo, hi);
+        let (lo, hi) = WINDOW_OPACITY_RANGE;
+        self.inactive_opacity = self.inactive_opacity.clamp(lo, hi);
+        self.active_opacity = self.active_opacity.clamp(lo, hi);
         self
     }
 }
@@ -586,6 +606,24 @@ mod tests {
     fn old_file_without_virtual_screens_gets_the_default() {
         let d: DesktopSettings = serde_json::from_str(r#"{"icon_size":64}"#).unwrap();
         assert_eq!(d.virtual_screens, DEFAULT_VIRTUAL_SCREENS);
+    }
+
+    #[test]
+    fn window_opacity_is_clamped_and_has_defaults() {
+        let d = DesktopSettings::default();
+        assert!(d.transparency_enabled);
+        assert_eq!((d.inactive_opacity, d.active_opacity), (88, 100));
+        let d = DesktopSettings { inactive_opacity: 0, active_opacity: 500, ..Default::default() }.sanitized();
+        assert_eq!(d.inactive_opacity, WINDOW_OPACITY_RANGE.0);
+        assert_eq!(d.active_opacity, WINDOW_OPACITY_RANGE.1);
+    }
+
+    #[test]
+    fn old_file_without_opacity_gets_the_defaults() {
+        let d: DesktopSettings = serde_json::from_str(r#"{"icon_size":64}"#).unwrap();
+        assert!(d.transparency_enabled);
+        assert_eq!(d.inactive_opacity, DEFAULT_INACTIVE_OPACITY);
+        assert_eq!(d.active_opacity, DEFAULT_ACTIVE_OPACITY);
     }
 
     #[test]

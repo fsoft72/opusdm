@@ -341,6 +341,83 @@ impl VirtualScreensSection {
     }
 }
 
+/// The window transparency section: a master switch and the opacity of the
+/// inactive and of the active windows, in percent.
+pub struct WindowsSection {
+    pub root: gtk::Box,
+    enabled: gtk::CheckButton,
+    inactive: gtk::Scale,
+    active: gtk::Scale,
+}
+
+impl WindowsSection {
+    /// Build the section seeded with the current transparency settings.
+    pub fn new(enabled: bool, inactive_opacity: u32, active_opacity: u32) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        root.append(&heading("TRANSPARENCY"));
+
+        let enabled_check = gtk::CheckButton::with_label("Enable window transparency");
+        enabled_check.set_active(enabled);
+        root.append(&enabled_check);
+
+        let inactive = Self::opacity_scale(inactive_opacity);
+        let active = Self::opacity_scale(active_opacity);
+        root.append(&Self::scale_row("Inactive windows", &inactive));
+        root.append(&Self::scale_row("Active window", &active));
+
+        // The sliders only matter while the switch is on.
+        let sync = {
+            let (inactive, active) = (inactive.clone(), active.clone());
+            move |on: bool| {
+                inactive.set_sensitive(on);
+                active.set_sensitive(on);
+            }
+        };
+        sync(enabled);
+        enabled_check.connect_toggled(move |c| sync(c.is_active()));
+
+        Self { root, enabled: enabled_check, inactive, active }
+    }
+
+    /// A horizontal 0-100 percent slider seeded with `value`, clamped to the accepted range.
+    fn opacity_scale(value: u32) -> gtk::Scale {
+        let (lo, hi) = opusdm_ipc::WINDOW_OPACITY_RANGE;
+        let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, lo as f64, hi as f64, 1.0);
+        scale.set_value(value.clamp(lo, hi) as f64);
+        scale.set_digits(0);
+        scale.set_draw_value(true);
+        scale.set_value_pos(gtk::PositionType::Right);
+        scale.set_hexpand(true);
+        scale
+    }
+
+    /// A labelled row holding `scale`.
+    fn scale_row(label: &str, scale: &gtk::Scale) -> gtk::Box {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let name = gtk::Label::new(Some(label));
+        name.set_xalign(0.0);
+        name.set_size_request(130, -1);
+        row.append(&name);
+        row.append(scale);
+        row
+    }
+
+    /// Whether transparency is switched on.
+    pub fn enabled(&self) -> bool {
+        self.enabled.is_active()
+    }
+
+    /// The chosen opacity of the inactive windows, in percent.
+    pub fn inactive_opacity(&self) -> u32 {
+        self.inactive.value().round() as u32
+    }
+
+    /// The chosen opacity of the active window, in percent.
+    pub fn active_opacity(&self) -> u32 {
+        self.active.value().round() as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +441,19 @@ mod tests {
         assert_eq!(s.grid_gap(), 4);
         s.set_icon_size_for_test(120);
         assert_eq!(s.icon_size(), 120);
+    }
+
+    #[test]
+    fn windows_section_reports_seeded_values_and_clamps() {
+        if gtk::init().is_err() {
+            return;
+        }
+        let s = WindowsSection::new(true, 70, 95);
+        assert!(s.enabled());
+        assert_eq!((s.inactive_opacity(), s.active_opacity()), (70, 95));
+        let s = WindowsSection::new(false, 0, 500);
+        assert!(!s.enabled());
+        assert_eq!((s.inactive_opacity(), s.active_opacity()), (20, 100));
     }
 
     #[test]

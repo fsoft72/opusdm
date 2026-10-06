@@ -103,8 +103,14 @@ if [ -n "$COMPOSITOR" ]; then
         COMP_ARGS=()
         # Use the sandbox picom config when present
         if [ "$COMPOSITOR" = "picom" ] && [ -f "$PICOM_CONFIG" ]; then
-            COMP_ARGS=(--config "$PICOM_CONFIG")
-            echo "  using config: $PICOM_CONFIG"
+            # Run on a per-user copy: the hub rewrites its opacity keys and
+            # signals picom to reload it (Settings, Windows tab).
+            PICOM_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/opusdm/picom.conf"
+            mkdir -p "$(dirname "$PICOM_USER_CONF")"
+            [ -f "$PICOM_USER_CONF" ] || cp "$PICOM_CONFIG" "$PICOM_USER_CONF"
+            COMP_ARGS=(--config "$PICOM_USER_CONF")
+            export OPUSDM_PICOM_BASE="$PICOM_CONFIG"
+            echo "  using config: $PICOM_USER_CONF (base: $PICOM_CONFIG)"
         fi
         DISPLAY="$DISPLAY_NUM" "$COMPOSITOR" ${COMP_ARGS[@]+"${COMP_ARGS[@]}"} &
         CHILD_PIDS+=("$!")

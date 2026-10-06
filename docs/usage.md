@@ -312,6 +312,14 @@ standalone window. The background has its own **Desktop Background** tab in Sett
 - **Desktop folder**: override which directory the desktop shows. Empty means the default
   (`$XDG_DESKTOP_DIR`, then `~/Desktop`). **Reset to default** clears the override.
 
+The **Windows** tab sets the transparency of the windows, drawn by the compositor (picom, not
+Openbox, which has no such setting): **Enable window transparency** is the master switch (off means
+every window is opaque, the two values are kept), **Inactive windows** (default 88%) and **Active
+window** (default 100%) go from 20% to 100%. The change is live: the hub rewrites
+`~/.config/opusdm/picom.conf` from the base config of the install (`$OPUSDM_PICOM_BASE`) and makes
+picom reload it. A session started before this feature (picom running on the base config) needs a
+new login, or a restart of picom with `--config ~/.config/opusdm/picom.conf`, to follow the tab.
+
 **Apply** sends the change to the running hub, which repaints the desktop immediately; **Save** does
 the same and closes. When no hub is running the settings are written to
 `~/.config/opusdm/desktop.json` and take effect the next time the hub starts. Icon positions of the
