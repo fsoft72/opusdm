@@ -1708,6 +1708,7 @@ name = "opusdm-input-config"
 version = "0.5.0"
 dependencies = [
  "gtk4",
+ "libc",
  "opusdm-ipc",
  "opusdm-ui",
  "serde",

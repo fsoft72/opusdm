@@ -2,7 +2,8 @@
 //! use; `XBackend` is the real one (it starts `xinput`, `setxkbmap`, `xset`).
 
 use std::cell::RefCell;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Child, Command, ExitStatus, Stdio};
 
 use crate::change::Change;
 use crate::commands::{commands_for, PointerDevice};
@@ -87,20 +88,50 @@ fn package_of(tool: &str) -> &'static str {
     }
 }
 
+/// Read the output of `child` and wait for it. The wait goes through
+/// `opusdm_ipc::reaped`, because the hub's SIGCHLD reaper can collect the
+/// child first (a plain wait would then fail with `ECHILD`).
+fn collect(mut child: Child) -> std::io::Result<(ExitStatus, String, String)> {
+    let stderr = child.stderr.take();
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = stderr {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_string(&mut stdout)?;
+    }
+    let status = opusdm_ipc::reaped::wait(&mut child)?;
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Ok((status, stdout, stderr))
+}
+
 /// Run `argv` and return its stdout.
 fn run(argv: &[String]) -> Result<String, InputError> {
     let Some(program) = argv.first() else { return Err(InputError::Session("empty command".to_string())) };
-    let output = Command::new(program).args(&argv[1..]).output().map_err(|e| {
+    let failed = |reason: String| InputError::CommandFailed { command: argv.join(" "), stderr: reason };
+    let child = Command::new(program).args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             InputError::MissingTool { tool: program.clone(), package: package_of(program).to_string() }
         } else {
-            InputError::CommandFailed { command: argv.join(" "), stderr: e.to_string() }
+            failed(e.to_string())
         }
     })?;
-    if !output.status.success() {
-        return Err(InputError::CommandFailed { command: argv.join(" "), stderr: String::from_utf8_lossy(&output.stderr).trim().to_string() });
+    let (status, stdout, stderr) = collect(child).map_err(|e| failed(e.to_string()))?;
+    if !status.success() { return Err(failed(stderr.trim().to_string())); }
+    Ok(stdout)
+}
+
+/// The signature after a look at the pointers: the new listing, or the
+/// previous signature when the listing failed (a failure is not a change).
+fn next_signature(previous: &str, listing: Result<String, InputError>) -> String {
+    match listing {
+        Ok(list) => parse_pointer_list(&list).iter().map(|d| format!("{}:{}", d.id, d.name)).collect::<Vec<_>>().join("\n"),
+        Err(_) => previous.to_string(),
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// `run` for a literal command line.
@@ -146,12 +177,13 @@ fn probe() -> Probe {
 /// The real backend: runs the X command line tools.
 pub struct XBackend {
     probe: RefCell<Probe>,
+    last_signature: RefCell<String>,
 }
 
 impl XBackend {
     /// Look at the system once and keep what was found.
     pub fn new() -> Self {
-        Self { probe: RefCell::new(probe()) }
+        Self { probe: RefCell::new(probe()), last_signature: RefCell::new(String::new()) }
     }
 
     /// The group status for devices of `kind`.
@@ -204,12 +236,11 @@ impl Backend for XBackend {
         Ok(())
     }
 
-    /// The pointer ids and names, one per line.
+    /// The pointer ids and names, one per line (the last good value when listing fails).
     fn signature(&self) -> String {
-        match run_str(&["xinput", "list"]) {
-            Ok(list) => parse_pointer_list(&list).iter().map(|d| format!("{}:{}", d.id, d.name)).collect::<Vec<_>>().join("\n"),
-            Err(e) => format!("error:{e}"),
-        }
+        let next = next_signature(&self.last_signature.borrow(), run_str(&["xinput", "list"]));
+        *self.last_signature.borrow_mut() = next.clone();
+        next
     }
 
     /// Probe the system again.
@@ -244,5 +275,31 @@ mod tests {
             InputError::CommandFailed { stderr, .. } => assert_eq!(stderr, "boom"),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_child_reaped_by_the_hub_still_gives_its_output_and_status() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::Stdio;
+        // Simulate the hub's SIGCHLD reaper taking the child before we wait for it.
+        let child = Command::new("sh").args(["-c", "echo hi; exit 3"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut raw = 0;
+        // SAFETY: waitpid on our own child with a valid out pointer.
+        assert_eq!(unsafe { libc::waitpid(pid as i32, &mut raw, 0) }, pid as i32);
+        opusdm_ipc::reaped::record(pid, raw);
+        let (status, stdout, _stderr) = collect(child).unwrap();
+        assert_eq!(status.code(), Some(3));
+        assert_eq!(stdout.trim(), "hi");
+        assert_eq!(status.into_raw(), raw);
+    }
+
+    #[test]
+    fn a_failed_listing_keeps_the_last_good_signature() {
+        let listing = "\u{239c}   \u{21b3} mouse\t\tid=9\t[slave  pointer  (2)]\n";
+        assert_eq!(next_signature("old", Ok(listing.to_string())), "9:mouse");
+        let err = InputError::CommandFailed { command: "xinput list".into(), stderr: "No child processes".into() };
+        assert_eq!(next_signature("9:mouse", Err(err)), "9:mouse");
     }
 }
