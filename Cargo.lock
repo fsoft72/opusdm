@@ -1637,6 +1637,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-devices"
+version = "0.5.0"
+dependencies = [
+ "async-channel",
+ "zbus",
+]
+
+[[package]]
 name = "opusdm-dock"
 version = "0.5.0"
 dependencies = [
