@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-06
+
+- Feature (ipc, ui, hub, lister): **virtual desktop switching**. Two new internal commands, `DesktopPrev` ("Previous Desktop", CLI `desktop-prev`) and `DesktopNext` ("Next Desktop", CLI `desktop-next`), usable in any function and in the function editor. The hub runs them with the new `X11::switch_desktop(delta)` (`opusdm-ui`): it reads `_NET_CURRENT_DESKTOP` and `_NET_NUMBER_OF_DESKTOPS` and sends the EWMH `_NET_CURRENT_DESKTOP` message to the root window; the switch wraps from the last desktop to the first and back (`wrapped_desktop`, unit tested). A window manager that reports no desktops is left alone, and an X error is logged. On first start (no `hotkeys.json`) the hub writes two global hotkeys, **Alt+1** (previous desktop) and **Alt+2** (next desktop), and adds the saved functions they run (`builtin-desktop-prev`, `builtin-desktop-next`) to `functions.json` (`bindings::seed_default_hotkeys`, `_in` for tests). An existing `hotkeys.json` is never touched, so users who already have one can bind the new commands by hand, and a hotkey the user deletes does not come back. Global hotkeys are X11 only, as before. Tests: wrapping, labels and schema, CLI names, the events a step emits, and the seed rules.
+
 ## 2026-10-05
 
 - Feature (viewer): the **.** key switches picture scaling between smooth (default) and sharp pixels, for pixel art and detail at high zoom. `gtk::Picture` always interpolates a plain texture and ignores `image-rendering`, so the sharp mode wraps the texture in `nearest::NearestPaintable`, a small `gdk::Paintable` that snapshots it with `gsk::ScalingFilter::Nearest`. The info bar shows `pixels` while it is on and the choice survives file changes. Checked under Xephyr with a 4x4 checkerboard at 1455%: smooth is blurred, sharp has crisp squares. Test: key mapping.

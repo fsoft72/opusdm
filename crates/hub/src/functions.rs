@@ -43,6 +43,9 @@ pub enum FnEvent {
     Reveal,
     /// A `ToggleHide` step: the hub must flip the hidden state.
     ToggleHide,
+    /// A `DesktopPrev` or `DesktopNext` step: the hub must switch the virtual
+    /// desktop by `delta` (`-1` or `1`).
+    Desktop { delta: i32 },
     /// A bank step: the hub must apply `action` to the bank called `bank`.
     Bank { action: opusdm_ipc::buttonbank::BankAction, bank: String },
     /// A Copy/Move/Delete/... step wants a file job run. The hub submits it to
@@ -169,6 +172,7 @@ fn run_steps_cancellable(
                 InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide => {
                     run_hide(run_id, step_idx, *cmd, events_tx)
                 }
+                InternalCmd::DesktopPrev | InternalCmd::DesktopNext => run_desktop(run_id, step_idx, *cmd, events_tx),
                 InternalCmd::OpenBank => run_bank(run_id, step_idx, BankAction::Open, args, bank_exists, events_tx),
                 InternalCmd::CloseBank => run_bank(run_id, step_idx, BankAction::Close, args, bank_exists, events_tx),
                 InternalCmd::ToggleBank => run_bank(run_id, step_idx, BankAction::Toggle, args, bank_exists, events_tx),
@@ -338,6 +342,16 @@ fn run_hide(run_id: u64, step_idx: usize, cmd: InternalCmd, events_tx: &Sender<(
     };
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: cmd.label().to_string() }));
     let _ = events_tx.send((run_id, event));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
+/// Run a `DesktopPrev` or `DesktopNext` step: no parameters and no selection
+/// needed, the hub switches the desktop when it receives the event.
+fn run_desktop(run_id: u64, step_idx: usize, cmd: InternalCmd, events_tx: &Sender<(u64, FnEvent)>) -> Result<(), String> {
+    let delta = if cmd == InternalCmd::DesktopPrev { -1 } else { 1 };
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: cmd.label().to_string() }));
+    let _ = events_tx.send((run_id, FnEvent::Desktop { delta }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
 }
@@ -1140,6 +1154,19 @@ mod tests {
         let events = drain(rx);
         assert!(events.iter().any(|e| matches!(e, FnEvent::PutAway { paths } if paths.len() == 1)));
         assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+    }
+
+    #[test]
+    fn desktop_steps_emit_a_signed_delta() {
+        for (cmd, expected) in [(InternalCmd::DesktopPrev, -1), (InternalCmd::DesktopNext, 1)] {
+            let (tx, rx) = channel();
+            let src = ctx(&[], "/tmp");
+            run_steps(1, &selection_step(cmd), &src, None, &tx);
+            drop(tx);
+            let events = drain(rx);
+            assert!(events.iter().any(|e| matches!(e, FnEvent::Desktop { delta } if *delta == expected)), "{cmd:?}");
+            assert!(matches!(events.last(), Some(FnEvent::AllDone)), "{cmd:?}");
+        }
     }
 
     #[test]

@@ -228,6 +228,12 @@ impl Hub {
                 self.set_hidden(!self.hidden);
                 return;
             }
+            crate::functions::FnEvent::Desktop { delta } => {
+                if let Err(e) = opusdm_ui::with_x11(|x11| x11.switch_desktop(*delta)) {
+                    opusdm_ipc::err_log!("hub", "cannot switch the virtual desktop: {e}");
+                }
+                return;
+            }
             crate::functions::FnEvent::Bank { action, bank } => {
                 let _ = self.evt_tx.send(HubEvent::Bank { action: *action, bank: bank.clone() });
                 return;
@@ -258,6 +264,7 @@ impl Hub {
             | crate::functions::FnEvent::Hide
             | crate::functions::FnEvent::Reveal
             | crate::functions::FnEvent::ToggleHide
+            | crate::functions::FnEvent::Desktop { .. }
             | crate::functions::FnEvent::Bank { .. } => return,
             crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
             crate::functions::FnEvent::StepDone { step_idx, exit_code } => {

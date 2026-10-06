@@ -566,6 +566,61 @@ pub fn load_bindings_from(dir: &Path) -> Bindings {
     }
 }
 
+/// Id of the saved function that switches to the previous virtual desktop.
+pub const DESKTOP_PREV_ID: &str = "builtin-desktop-prev";
+
+/// Id of the saved function that switches to the next virtual desktop.
+pub const DESKTOP_NEXT_ID: &str = "builtin-desktop-next";
+
+/// The two saved functions the default desktop hotkeys run.
+pub fn default_desktop_functions() -> Vec<crate::function::Function> {
+    use crate::function::{FnStep, Function, InternalArgs, InternalCmd};
+    [(DESKTOP_PREV_ID, InternalCmd::DesktopPrev), (DESKTOP_NEXT_ID, InternalCmd::DesktopNext)]
+        .into_iter()
+        .map(|(id, cmd)| Function {
+            id: id.to_string(),
+            name: cmd.label().to_string(),
+            steps: vec![FnStep::Internal { cmd, args: InternalArgs::default() }],
+        })
+        .collect()
+}
+
+/// The default global hotkeys: `Alt+1` for the previous desktop, `Alt+2` for
+/// the next one.
+pub fn default_hotkeys() -> Vec<Hotkey> {
+    vec![
+        Hotkey { key: "Alt+1".into(), function: DESKTOP_PREV_ID.into(), global: true },
+        Hotkey { key: "Alt+2".into(), function: DESKTOP_NEXT_ID.into(), global: true },
+    ]
+}
+
+/// First run: write [`default_hotkeys`] to `hotkeys.json` and add the saved
+/// functions they run. Does nothing when `hotkeys.json` exists (even empty or
+/// malformed), so what the user edited or deleted stays that way. Returns
+/// whether the defaults were written.
+pub fn seed_default_hotkeys() -> bool {
+    seed_default_hotkeys_in(&config_dir(), &crate::function::functions_path())
+}
+
+/// Testable core of [`seed_default_hotkeys`]. A failure is logged, never fatal.
+pub fn seed_default_hotkeys_in(dir: &Path, functions_file: &Path) -> bool {
+    let hotkeys_file = dir.join("hotkeys.json");
+    if hotkeys_file.exists() {
+        return false;
+    }
+    let mut functions: Vec<crate::function::Function> = load_json(functions_file, "opusdm", "functions");
+    for default in default_desktop_functions() {
+        if !functions.iter().any(|f| f.id == default.id) {
+            functions.push(default);
+        }
+    }
+    let written = save_json(functions_file, &functions).and_then(|()| save_json(&hotkeys_file, &default_hotkeys()));
+    if let Err(e) = &written {
+        crate::err_log!("opusdm", "cannot write the default hotkeys to {}: {e}", hotkeys_file.display());
+    }
+    written.is_ok()
+}
+
 /// Save the three files under the standard config directory.
 pub fn save_bindings(bindings: &Bindings) -> io::Result<()> {
     save_bindings_to(&config_dir(), bindings)
@@ -588,6 +643,32 @@ mod tests {
 
     fn hk(key: &str, function: &str, global: bool) -> Hotkey {
         Hotkey { key: key.into(), function: function.into(), global }
+    }
+
+    #[test]
+    fn seed_default_hotkeys_writes_valid_defaults_once_and_keeps_existing_functions() {
+        let dir = tempfile::tempdir().unwrap();
+        let functions_file = dir.path().join("functions.json");
+        let mine = crate::function::Function::new("mine");
+        save_json(&functions_file, &[mine.clone()]).unwrap();
+        assert!(seed_default_hotkeys_in(dir.path(), &functions_file));
+        let hotkeys: Vec<Hotkey> = load_json(&dir.path().join("hotkeys.json"), "opusdm", "hotkeys");
+        assert_eq!(hotkeys, default_hotkeys());
+        let functions: Vec<crate::function::Function> = load_json(&functions_file, "opusdm", "functions");
+        assert_eq!(functions.len(), 3);
+        assert!(functions.contains(&mine));
+        let ids: HashSet<FunctionId> = functions.iter().map(|f| f.id.clone()).collect();
+        assert!(validate_hotkeys(&hotkeys, &ids).is_empty());
+        assert!(!seed_default_hotkeys_in(dir.path(), &functions_file));
+    }
+
+    #[test]
+    fn seed_default_hotkeys_never_touches_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let functions_file = dir.path().join("functions.json");
+        std::fs::write(dir.path().join("hotkeys.json"), "[]").unwrap();
+        assert!(!seed_default_hotkeys_in(dir.path(), &functions_file));
+        assert!(!functions_file.exists());
     }
 
     #[test]

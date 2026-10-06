@@ -517,6 +517,10 @@ group windows hidden; the desktop stays as the backdrop. Only windows the hub
 minimized are restored on reveal. Acceptance: a global hotkey bound to a
 `Toggle Hide` function toggles hidden and revealed with all windows restored.
 
+Related: `Previous Desktop` and `Next Desktop` switch the window manager's virtual
+desktop (wrapping); `Alt+1` and `Alt+2` are bound to them as global hotkeys on
+first start.
+
 ---
 
 ## 6. Network

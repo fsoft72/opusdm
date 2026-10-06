@@ -32,6 +32,12 @@ fn main() {
     };
 
     let sock_for_spawn = sock_path.clone();
+    // First run: Alt+1 / Alt+2 switch the virtual desktop. Before the hub
+    // loads the bindings, and never overwrites a file.
+    if opusdm_ipc::bindings::seed_default_hotkeys() {
+        opusdm_ipc::debug_log!("opusdm-hub", "wrote the default hotkeys");
+    }
+
     let handle = server::spawn_server_with(
         listener,
         Box::new(move |start: Option<std::path::PathBuf>| {

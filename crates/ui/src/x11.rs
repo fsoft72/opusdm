@@ -40,6 +40,16 @@ const MOVERESIZE_ALL: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 
 /// window, so the geometry and states are asserted again a few times.
 pub const PLACEMENT_RETRY_MS: [u64; 3] = [80, 400, 1000];
 
+/// The desktop `delta` steps from `current` among `count` desktops, wrapping
+/// around at both ends. `None` when there are no desktops.
+pub fn wrapped_desktop(current: u32, count: u32, delta: i32) -> Option<u32> {
+    if count == 0 {
+        return None;
+    }
+    let target = (i64::from(current) + i64::from(delta)).rem_euclid(i64::from(count));
+    u32::try_from(target).ok()
+}
+
 /// Run `f` once after each of `delays_ms` milliseconds, on the GTK main loop.
 /// Used to re-assert a window's placement once the window manager has
 /// settled (see [`PLACEMENT_RETRY_MS`]).
@@ -174,6 +184,24 @@ impl X11 {
         self.send_to_root(window, "_NET_WM_STATE", [NET_WM_STATE_REMOVE, sticky, 0, 0, 0])
     }
 
+    /// The first value of the CARDINAL property `name` on the root window.
+    fn root_cardinal(&self, name: &'static str) -> Result<Option<u32>, X11Error> {
+        let atom = self.atom(name)?;
+        let reply = self.conn.get_property(false, self.root, atom, AtomEnum::CARDINAL, 0, 1)?.reply()?;
+        Ok(reply.value32().and_then(|mut v| v.next()))
+    }
+
+    /// Switch the window manager to the virtual desktop `delta` steps away
+    /// from the current one, wrapping at both ends (`-1` previous, `1`
+    /// next). Does nothing when the window manager reports no desktops.
+    pub fn switch_desktop(&self, delta: i32) -> Result<(), X11Error> {
+        let current = self.root_cardinal("_NET_CURRENT_DESKTOP")?.unwrap_or(0);
+        let count = self.root_cardinal("_NET_NUMBER_OF_DESKTOPS")?.unwrap_or(0);
+        let Some(target) = wrapped_desktop(current, count, delta) else { return Ok(()) };
+        // Data: the new desktop and the source indication; 0 = current time.
+        self.send_to_root(self.root, "_NET_CURRENT_DESKTOP", [target, 0, 0, 0, 0])
+    }
+
     /// A plain `ConfigureWindow` of `window` to the given geometry.
     pub fn configure(&self, window: u32, x: i32, y: i32, w: u32, h: u32) -> Result<(), X11Error> {
         self.conn.configure_window(window, &xproto::ConfigureWindowAux::new().x(x).y(y).width(w).height(h))?;
@@ -206,6 +234,16 @@ impl X11 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_desktop_wraps_at_both_ends() {
+        assert_eq!(wrapped_desktop(1, 4, 1), Some(2));
+        assert_eq!(wrapped_desktop(1, 4, -1), Some(0));
+        assert_eq!(wrapped_desktop(3, 4, 1), Some(0));
+        assert_eq!(wrapped_desktop(0, 4, -1), Some(3));
+        assert_eq!(wrapped_desktop(0, 1, 1), Some(0));
+        assert_eq!(wrapped_desktop(0, 0, 1), None);
+    }
 
     /// Needs a running X server (`DISPLAY`), e.g. `Xephyr :99`; run with
     /// `cargo test -p opusdm-ui -- --ignored`.
