@@ -331,19 +331,89 @@ pub fn compare_directories(src: &Path, tgt: &Path) -> std::io::Result<Vec<DirDif
     Ok(diffs)
 }
 
-/// Open the Directory Compare / Sync dialog.
-pub fn open_compare_dialog(ui: &Rc<Ui>) {
-    let src_path = ui.cwd_path();
+/// The label and CSS class of the badge that names a difference.
+fn diff_badge(kind: &DiffKind) -> (&'static str, &'static str) {
+    match kind {
+        DiffKind::OnlyInSource => ("Only in A (New)", "success-text"),
+        DiffKind::OnlyInTarget => ("Only in B", "error-text"),
+        DiffKind::NewerInSource => ("Newer in A", "success-text"),
+        DiffKind::NewerInTarget => ("Newer in B", "error-text"),
+        DiffKind::DifferentSize => ("Different Size", "palette-cat"),
+        DiffKind::Identical => ("Identical", "dim-label"),
+    }
+}
 
-    let shell = opusdm_ui::DialogShell::new(&ui.window, "Compare / Sync Directories")
-        .size(720, 500);
-    let root = shell.content();
+/// The counts shown in the summary line and the names "Select Differences" picks.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DiffSummary {
+    only_src: usize,
+    only_tgt: usize,
+    modified: usize,
+    identical: usize,
+    /// Entries that are new or newer in the source, or differ in size.
+    to_select: Vec<String>,
+}
 
-    // Header inputs
-    let grid = gtk::Grid::builder()
-        .column_spacing(8)
-        .row_spacing(6)
-        .build();
+impl DiffSummary {
+    /// Count the differences and collect the names to select in the Lister.
+    fn of(diffs: &[DirDiffItem]) -> Self {
+        let mut sum = DiffSummary::default();
+        for item in diffs {
+            match item.kind {
+                DiffKind::OnlyInSource => sum.only_src += 1,
+                DiffKind::OnlyInTarget => sum.only_tgt += 1,
+                DiffKind::NewerInSource | DiffKind::NewerInTarget | DiffKind::DifferentSize => sum.modified += 1,
+                DiffKind::Identical => sum.identical += 1,
+            }
+            if matches!(item.kind, DiffKind::OnlyInSource | DiffKind::NewerInSource | DiffKind::DifferentSize) {
+                sum.to_select.push(item.name.clone());
+            }
+        }
+        sum
+    }
+
+    /// The text of the summary line.
+    fn text(&self) -> String {
+        format!(
+            "Results: {} in A only, {} in B only, {} modified, {} identical",
+            self.only_src, self.only_tgt, self.modified, self.identical
+        )
+    }
+}
+
+/// One result row: the entry name and its badge.
+fn build_diff_row(item: &DirDiffItem) -> gtk::ListBoxRow {
+    let (badge_text, badge_css) = diff_badge(&item.kind);
+    let row = gtk::ListBoxRow::new();
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    hbox.set_margin_start(8);
+    hbox.set_margin_end(8);
+    hbox.set_margin_top(4);
+    hbox.set_margin_bottom(4);
+
+    let name_lbl = gtk::Label::new(Some(&item.name));
+    name_lbl.set_xalign(0.0);
+    name_lbl.set_hexpand(true);
+
+    let badge = gtk::Label::new(Some(badge_text));
+    badge.add_css_class(badge_css);
+
+    hbox.append(&name_lbl);
+    hbox.append(&badge);
+    row.set_child(Some(&hbox));
+    row
+}
+
+/// The widgets of the compare dialog the handlers need.
+struct CompareWidgets {
+    src_entry: gtk::Entry,
+    tgt_entry: gtk::Entry,
+    compare_btn: gtk::Button,
+}
+
+/// The header grid: the two path entries and the Compare button.
+fn build_compare_header(src_path: &Path) -> (gtk::Grid, CompareWidgets) {
+    let grid = gtk::Grid::builder().column_spacing(8).row_spacing(6).build();
 
     let src_lbl = gtk::Label::new(Some("Source (A):"));
     src_lbl.set_xalign(1.0);
@@ -362,155 +432,108 @@ pub fn open_compare_dialog(ui: &Rc<Ui>) {
 
     grid.attach(&src_lbl, 0, 0, 1, 1);
     grid.attach(&src_entry, 1, 0, 1, 1);
-
     grid.attach(&tgt_lbl, 0, 1, 1, 1);
     grid.attach(&tgt_entry, 1, 1, 1, 1);
     grid.attach(&compare_btn, 2, 1, 1, 1);
+    (grid, CompareWidgets { src_entry, tgt_entry, compare_btn })
+}
 
+/// Compare the two folders typed in the entries when Compare is clicked and
+/// show the rows, the summary line and the names to select.
+fn connect_compare(
+    inputs: &CompareWidgets,
+    summary_lbl: &gtk::Label,
+    list_box: &gtk::ListBox,
+    select_diff_btn: &gtk::Button,
+    diff_names: &Rc<std::cell::RefCell<Vec<String>>>,
+) {
+    let src_entry = inputs.src_entry.clone();
+    let tgt_entry = inputs.tgt_entry.clone();
+    let summary_lbl = summary_lbl.clone();
+    let list_box = list_box.clone();
+    let select_diff_btn = select_diff_btn.clone();
+    let diff_names = diff_names.clone();
+
+    inputs.compare_btn.connect_clicked(move |_| {
+        let src_dir = PathBuf::from(src_entry.text().to_string());
+        let tgt_dir = PathBuf::from(tgt_entry.text().to_string());
+
+        if !src_dir.is_dir() || !tgt_dir.is_dir() {
+            summary_lbl.set_text("⚠️ Error: both paths must be valid directories");
+            return;
+        }
+
+        let diffs = match compare_directories(&src_dir, &tgt_dir) {
+            Ok(diffs) => diffs,
+            Err(e) => {
+                summary_lbl.set_text(&format!("⚠️ Error comparing: {e}"));
+                return;
+            }
+        };
+        while let Some(child) = list_box.first_child() {
+            list_box.remove(&child);
+        }
+        for item in &diffs {
+            list_box.append(&build_diff_row(item));
+        }
+        let summary = DiffSummary::of(&diffs);
+        summary_lbl.set_text(&summary.text());
+        select_diff_btn.set_sensitive(!summary.to_select.is_empty());
+        *diff_names.borrow_mut() = summary.to_select;
+    });
+}
+
+/// Select the names in `diff_names` in the Lister and close the dialog.
+fn connect_select_in_lister(
+    ui: &Rc<Ui>,
+    dlg: &gtk::Window,
+    select_diff_btn: &gtk::Button,
+    diff_names: &Rc<std::cell::RefCell<Vec<String>>>,
+) {
+    let ui = ui.clone();
+    let diff_names = diff_names.clone();
+    let dlg = dlg.clone();
+    select_diff_btn.connect_clicked(move |_| {
+        let names = diff_names.borrow().clone();
+        ui.view.selection.unselect_all();
+        for i in 0..ui.view.selection.n_items() {
+            if let Some(row) = ui.row_at(i) {
+                if names.contains(&row.name) {
+                    ui.view.selection.select_item(i, false);
+                }
+            }
+        }
+        dlg.close();
+        crate::actions::flash(&ui, &format!("Selected {} differing file(s)", names.len()));
+    });
+}
+
+/// Open the Directory Compare / Sync dialog.
+pub fn open_compare_dialog(ui: &Rc<Ui>) {
+    let shell = opusdm_ui::DialogShell::new(&ui.window, "Compare / Sync Directories").size(720, 500);
+    let root = shell.content();
+
+    let (grid, inputs) = build_compare_header(&ui.cwd_path());
     root.append(&grid);
 
-    // Summary banner
     let summary_lbl = gtk::Label::new(Some("Enter a target directory and click Compare"));
     summary_lbl.set_xalign(0.0);
     summary_lbl.add_css_class("dim-label");
     root.append(&summary_lbl);
 
-    // Results table
     let list_box = gtk::ListBox::new();
     list_box.set_selection_mode(gtk::SelectionMode::None);
-
-    let scroller = gtk::ScrolledWindow::builder()
-        .child(&list_box)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
+    let scroller = gtk::ScrolledWindow::builder().child(&list_box).vexpand(true).hexpand(true).build();
     root.append(&scroller);
 
-    // Footer actions
     let select_diff_btn = shell.button("Select Differences in Lister");
     select_diff_btn.set_sensitive(false);
     shell.button_spacer();
     shell.close_button("Close");
 
-    let diff_names_to_select = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-
-    // Compare logic
-    {
-        let src_entry = src_entry.clone();
-        let tgt_entry = tgt_entry.clone();
-        let summary_lbl = summary_lbl.clone();
-        let list_box = list_box.clone();
-        let select_diff_btn = select_diff_btn.clone();
-        let diff_names = diff_names_to_select.clone();
-
-        compare_btn.connect_clicked(move |_| {
-            let src_dir = PathBuf::from(src_entry.text().to_string());
-            let tgt_dir = PathBuf::from(tgt_entry.text().to_string());
-
-            if !src_dir.is_dir() || !tgt_dir.is_dir() {
-                summary_lbl.set_text("⚠️ Error: both paths must be valid directories");
-                return;
-            }
-
-            match compare_directories(&src_dir, &tgt_dir) {
-                Ok(diffs) => {
-                    while let Some(child) = list_box.first_child() {
-                        list_box.remove(&child);
-                    }
-
-                    let mut only_src = 0;
-                    let mut only_tgt = 0;
-                    let mut modified = 0;
-                    let mut identical = 0;
-                    let mut to_sel = Vec::new();
-
-                    for item in &diffs {
-                        let (badge_text, badge_css) = match item.kind {
-                            DiffKind::OnlyInSource => {
-                                only_src += 1;
-                                to_sel.push(item.name.clone());
-                                ("Only in A (New)", "success-text")
-                            }
-                            DiffKind::OnlyInTarget => {
-                                only_tgt += 1;
-                                ("Only in B", "error-text")
-                            }
-                            DiffKind::NewerInSource => {
-                                modified += 1;
-                                to_sel.push(item.name.clone());
-                                ("Newer in A", "success-text")
-                            }
-                            DiffKind::NewerInTarget => {
-                                modified += 1;
-                                ("Newer in B", "error-text")
-                            }
-                            DiffKind::DifferentSize => {
-                                modified += 1;
-                                to_sel.push(item.name.clone());
-                                ("Different Size", "palette-cat")
-                            }
-                            DiffKind::Identical => {
-                                identical += 1;
-                                ("Identical", "dim-label")
-                            }
-                        };
-
-                        let row = gtk::ListBoxRow::new();
-                        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-                        hbox.set_margin_start(8);
-                        hbox.set_margin_end(8);
-                        hbox.set_margin_top(4);
-                        hbox.set_margin_bottom(4);
-
-                        let name_lbl = gtk::Label::new(Some(&item.name));
-                        name_lbl.set_xalign(0.0);
-                        name_lbl.set_hexpand(true);
-
-                        let badge = gtk::Label::new(Some(badge_text));
-                        badge.add_css_class(badge_css);
-
-                        hbox.append(&name_lbl);
-                        hbox.append(&badge);
-                        row.set_child(Some(&hbox));
-                        list_box.append(&row);
-                    }
-
-                    summary_lbl.set_text(&format!(
-                        "Results: {} in A only, {} in B only, {} modified, {} identical",
-                        only_src, only_tgt, modified, identical
-                    ));
-                    *diff_names.borrow_mut() = to_sel;
-                    select_diff_btn.set_sensitive(!diff_names.borrow().is_empty());
-                }
-                Err(e) => {
-                    summary_lbl.set_text(&format!("⚠️ Error comparing: {e}"));
-                }
-            }
-        });
-    }
-
-    // Select in Lister action
-    {
-        let ui_clone = ui.clone();
-        let diff_names = diff_names_to_select.clone();
-        let dlg = shell.window().clone();
-        select_diff_btn.connect_clicked(move |_| {
-            let names = diff_names.borrow().clone();
-            ui_clone.view.selection.unselect_all();
-            for i in 0..ui_clone.view.selection.n_items() {
-                if let Some(row) = ui_clone.row_at(i) {
-                    if names.contains(&row.name) {
-                        ui_clone.view.selection.select_item(i, false);
-                    }
-                }
-            }
-            dlg.close();
-            crate::actions::flash(
-                &ui_clone,
-                &format!("Selected {} differing file(s)", names.len()),
-            );
-        });
-    }
+    let diff_names = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    connect_compare(&inputs, &summary_lbl, &list_box, &select_diff_btn, &diff_names);
+    connect_select_in_lister(ui, shell.window(), &select_diff_btn, &diff_names);
 
     shell.present();
 }
@@ -518,6 +541,31 @@ pub fn open_compare_dialog(ui: &Rc<Ui>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn item(name: &str, kind: DiffKind) -> DirDiffItem {
+        DirDiffItem { name: name.to_string(), kind }
+    }
+
+    #[test]
+    fn the_summary_counts_each_kind_and_selects_what_the_source_adds_or_changes() {
+        let diffs = [
+            item("new", DiffKind::OnlyInSource),
+            item("gone", DiffKind::OnlyInTarget),
+            item("fresh", DiffKind::NewerInSource),
+            item("stale", DiffKind::NewerInTarget),
+            item("resized", DiffKind::DifferentSize),
+            item("same", DiffKind::Identical),
+        ];
+        let sum = DiffSummary::of(&diffs);
+        assert_eq!((sum.only_src, sum.only_tgt, sum.modified, sum.identical), (1, 1, 3, 1));
+        assert_eq!(sum.to_select, ["new", "fresh", "resized"]);
+        assert_eq!(sum.text(), "Results: 1 in A only, 1 in B only, 3 modified, 1 identical");
+    }
+
+    #[test]
+    fn an_empty_comparison_selects_nothing() {
+        assert_eq!(DiffSummary::of(&[]), DiffSummary::default());
+    }
 
     #[test]
     fn test_compute_dir_size_nonexistent() {
