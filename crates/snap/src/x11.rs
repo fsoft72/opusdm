@@ -54,8 +54,9 @@ const KEY_RELEASE: u8 = 3;
 /// Most client windows scanned for struts.
 const STRUT_SCAN_LIMIT: u32 = 1024;
 
-/// Time given to Openbox to cancel its move loop after Escape.
-const CANCEL_DRAG_WAIT: Duration = Duration::from_millis(120);
+/// Time given to Openbox to cancel its move loop after Escape, between
+/// [`Display::begin_restore`] and [`Display::finish_restore`].
+pub const CANCEL_DRAG_WAIT: Duration = Duration::from_millis(120);
 
 /// The part of `a` that is also in `b`, or `None` when they do not overlap.
 pub fn intersect(a: Rect, b: Rect) -> Option<Rect> {
@@ -287,23 +288,30 @@ impl Display {
         Ok(())
     }
 
-    /// Give `window` its pre-snap size at `rect` while the user is dragging it.
-    /// `rect` was computed for the pointer at `decided_at`.
+    /// First half of giving `window` its pre-snap size while the user drags
+    /// it: unmaximize it and, when the button is down, cancel Openbox's move
+    /// loop (Escape through XTEST). Returns whether a drag was cancelled. The
+    /// caller waits [`CANCEL_DRAG_WAIT`] without blocking, then calls
+    /// [`Display::finish_restore`].
     ///
     /// Openbox keeps applying the geometry it had when the drag started, so
-    /// the move is cancelled first (Escape through XTEST), the window is
-    /// resized, and a fresh move is started under the pointer with
-    /// `_NET_WM_MOVERESIZE`. The pointer moves while Openbox cancels, so the
-    /// rectangle is shifted by that travel, to keep the pointer where it was
-    /// inside the window. If the button is already up the window is only
-    /// resized.
-    pub fn restore(&self, window: Window, rect: Rect, decided_at: (i32, i32)) -> Result<(), Box<dyn Error>> {
+    /// the move has to be cancelled before the window can be resized.
+    pub fn begin_restore(&self, window: Window) -> Result<bool, Box<dyn Error>> {
         self.set_maximized(window, false)?;
         let dragging = self.pointer()?.1;
         if dragging {
             self.press_escape()?;
-            std::thread::sleep(CANCEL_DRAG_WAIT);
         }
+        self.conn.flush()?;
+        Ok(dragging)
+    }
+
+    /// Second half of the restore: resize the window to `rect` (computed for
+    /// the pointer at `decided_at`) and, if `dragging` and the button is still
+    /// down, start a fresh move under the pointer with `_NET_WM_MOVERESIZE`.
+    /// The pointer moved while Openbox cancelled, so the rectangle is shifted
+    /// by that travel, to keep the pointer where it was inside the window.
+    pub fn finish_restore(&self, window: Window, rect: Rect, decided_at: (i32, i32), dragging: bool) -> Result<(), Box<dyn Error>> {
         let ((x, y), still_down) = self.pointer()?;
         let rect = shifted(rect, decided_at, (x, y));
         self.move_resize_frame(window, rect)?;
