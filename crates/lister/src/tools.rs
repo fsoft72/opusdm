@@ -266,12 +266,9 @@ pub enum DiffKind {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DirDiffItem {
     pub name: String,
     pub kind: DiffKind,
-    pub src_size: u64,
-    pub tgt_size: u64,
 }
 
 /// Compare two directories and compute entry-level diffs.
@@ -299,20 +296,16 @@ pub fn compare_directories(src: &Path, tgt: &Path) -> std::io::Result<Vec<DirDif
 
     for name in all_names {
         match (src_map.get(&name), tgt_map.get(&name)) {
-            (Some(s), None) => {
+            (Some(_), None) => {
                 diffs.push(DirDiffItem {
                     name,
                     kind: DiffKind::OnlyInSource,
-                    src_size: s.size,
-                    tgt_size: 0,
                 });
             }
-            (None, Some(t)) => {
+            (None, Some(_)) => {
                 diffs.push(DirDiffItem {
                     name,
                     kind: DiffKind::OnlyInTarget,
-                    src_size: 0,
-                    tgt_size: t.size,
                 });
             }
             (Some(s), Some(t)) => {
@@ -328,8 +321,6 @@ pub fn compare_directories(src: &Path, tgt: &Path) -> std::io::Result<Vec<DirDif
                 diffs.push(DirDiffItem {
                     name,
                     kind,
-                    src_size: s.size,
-                    tgt_size: t.size,
                 });
             }
             (None, None) => {}
