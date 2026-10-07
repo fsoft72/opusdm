@@ -5,7 +5,7 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
 use opusdm_ipc::{PanelPosition, StartupApp};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -340,6 +340,93 @@ impl VirtualScreensSection {
     /// The chosen number of virtual screens.
     pub fn count(&self) -> u32 {
         self.spin.value_as_int().max(1) as u32
+    }
+}
+
+/// The brightness section: a slider that changes the monitor brightness as it
+/// moves. Detection and every change run on the `opusdm-brightness` worker,
+/// so the window never waits for `ddcutil`.
+pub struct BrightnessSection {
+    pub root: gtk::Box,
+}
+
+impl BrightnessSection {
+    /// Build the section; the slider stays disabled until a method is found.
+    pub fn new() -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        root.append(&heading("BRIGHTNESS"));
+
+        let scale = gtk::Scale::with_range(
+            gtk::Orientation::Horizontal,
+            opusdm_brightness::MIN_PERCENT as f64,
+            opusdm_brightness::MAX_PERCENT as f64,
+            1.0,
+        );
+        scale.set_hexpand(true);
+        scale.set_draw_value(true);
+        scale.set_value_pos(gtk::PositionType::Right);
+        scale.set_sensitive(false);
+
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let name = gtk::Label::new(Some("Monitor brightness"));
+        name.set_xalign(0.0);
+        name.set_size_request(130, -1);
+        row.append(&name);
+        row.append(&scale);
+        root.append(&row);
+
+        let status = gtk::Label::new(Some("Looking for a way to change it..."));
+        status.set_xalign(0.0);
+        status.set_wrap(true);
+        status.add_css_class("dim-label");
+        root.append(&status);
+
+        let (controller, events) = opusdm_brightness::spawn(opusdm_brightness::detect);
+        // Set while the slider is moved by the code, so it is not sent back.
+        let syncing = Rc::new(Cell::new(false));
+        {
+            let syncing = syncing.clone();
+            let status = status.clone();
+            scale.connect_value_changed(move |s| {
+                if syncing.get() {
+                    return;
+                }
+                if let Err(e) = controller.set(s.value().round() as u8) {
+                    status.set_text(&e.to_string());
+                }
+            });
+        }
+
+        // The future holds weak references, so closing the window drops the
+        // controller, which stops the worker and ends the loop.
+        let scale_weak = scale.downgrade();
+        let status_weak = status.downgrade();
+        gtk::glib::spawn_future_local(async move {
+            let mut method = String::new();
+            while let Ok(event) = events.recv().await {
+                let (Some(scale), Some(status)) = (scale_weak.upgrade(), status_weak.upgrade()) else { break };
+                match event {
+                    opusdm_brightness::Event::Ready { method: name, percent } => {
+                        method = format!("Method: {name}");
+                        syncing.set(true);
+                        scale.set_value(opusdm_brightness::clamp_percent(percent) as f64);
+                        syncing.set(false);
+                        scale.set_sensitive(true);
+                        status.set_text(&method);
+                    }
+                    opusdm_brightness::Event::Unavailable(reason) => status.set_text(&reason),
+                    opusdm_brightness::Event::Applied(_) => status.set_text(&method),
+                    opusdm_brightness::Event::Failed(reason) => status.set_text(&reason),
+                }
+            }
+        });
+        Self { root }
+    }
+}
+
+impl Default for BrightnessSection {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

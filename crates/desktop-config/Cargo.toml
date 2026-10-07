@@ -8,6 +8,7 @@ rust-version.workspace = true
 opusdm-ipc = { path = "../ipc" }
 opusdm-dock = { path = "../dock" }
 opusdm-ui = { path = "../ui" }
+opusdm-brightness = { path = "../brightness" }
 gtk4.workspace = true
 serde_json.workspace = true
 dirs.workspace = true

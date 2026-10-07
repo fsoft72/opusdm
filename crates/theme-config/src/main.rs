@@ -9,7 +9,7 @@ use gtk::gio;
 use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
-use opusdm_desktop_config::ui::{FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
+use opusdm_desktop_config::ui::{BrightnessSection, FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -142,6 +142,11 @@ fn build_window(app: &gtk::Application) {
 
     let startup_apps = Rc::new(StartupAppsSection::new(&desktop_data.startup_apps));
     desktop_page.append(&startup_apps.root);
+    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Applied live by its own worker: it is not part of desktop.json.
+    let brightness = BrightnessSection::new();
+    desktop_page.append(&brightness.root);
 
     notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
 

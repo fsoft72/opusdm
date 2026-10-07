@@ -1,0 +1,16 @@
+[package]
+name = "opusdm-brightness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_brightness"
+path = "src/lib.rs"
+
+[dependencies]
+async-channel.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
