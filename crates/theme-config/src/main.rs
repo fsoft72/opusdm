@@ -190,6 +190,7 @@ fn build_window(app: &gtk::Application) {
         desktop_data.transparency_enabled,
         desktop_data.inactive_opacity,
         desktop_data.active_opacity,
+        desktop_data.snap_enabled,
     ));
     windows_page.append(&windows.root);
     notebook.append_page(&windows_page, Some(&gtk::Label::new(Some("Windows"))));
@@ -316,6 +317,7 @@ fn build_window(app: &gtk::Application) {
                 inactive_opacity: windows.inactive_opacity(),
                 active_opacity: windows.active_opacity(),
                 startup_apps: startup_apps.apps(),
+                snap_enabled: windows.snap_enabled(),
             }
             .sanitized();
             (prefs, desktop)

@@ -5,4 +5,4 @@
 //! constant below whenever you cut a new release.
 
 /// Human-readable OpusDM version, shown in the About requester.
-pub const VERSION: &str = "0.5.0";
+pub const VERSION: &str = "0.7.0";

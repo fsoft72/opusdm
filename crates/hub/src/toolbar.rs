@@ -163,6 +163,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     let desktop_settings = opusdm_hub::desktop_settings::load();
     apply_virtual_screens(desktop_settings.virtual_screens);
     opusdm_hub::compositor::apply(&desktop_settings);
+    opusdm_hub::snap::start(desktop_settings.snap_enabled);
     let initial_settings = settings::load_settings();
     crate::background::install(&initial_settings.theme.background);
     opusdm_ui::apply_theme_mode(initial_settings.appearance.theme_mode);
@@ -359,6 +360,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             *widgets.desktop.settings.borrow_mut() = ds.clone();
             apply_virtual_screens(ds.virtual_screens);
             opusdm_hub::compositor::apply(&ds);
+            opusdm_hub::snap::set_enabled(ds.snap_enabled);
             let field = widgets.desktop.field.borrow().clone();
             if let Some(field) = field.as_ref() {
                 field.set_icon_size(ds.icon_size);

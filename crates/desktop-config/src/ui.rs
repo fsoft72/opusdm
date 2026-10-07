@@ -464,11 +464,12 @@ pub struct WindowsSection {
     enabled: gtk::CheckButton,
     inactive: gtk::Scale,
     active: gtk::Scale,
+    snap: gtk::CheckButton,
 }
 
 impl WindowsSection {
-    /// Build the section seeded with the current transparency settings.
-    pub fn new(enabled: bool, inactive_opacity: u32, active_opacity: u32) -> Self {
+    /// Build the section seeded with the current transparency and snapping settings.
+    pub fn new(enabled: bool, inactive_opacity: u32, active_opacity: u32, snap_enabled: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.append(&heading("TRANSPARENCY"));
 
@@ -492,7 +493,12 @@ impl WindowsSection {
         sync(enabled);
         enabled_check.connect_toggled(move |c| sync(c.is_active()));
 
-        Self { root, enabled: enabled_check, inactive, active }
+        root.append(&heading("SNAPPING"));
+        let snap = gtk::CheckButton::with_label("Snap windows dragged to the screen edges");
+        snap.set_active(snap_enabled);
+        root.append(&snap);
+
+        Self { root, enabled: enabled_check, inactive, active, snap }
     }
 
     /// A horizontal 0-100 percent slider seeded with `value`, clamped to the accepted range.
@@ -532,6 +538,11 @@ impl WindowsSection {
     pub fn active_opacity(&self) -> u32 {
         self.active.value().round() as u32
     }
+
+    /// Whether snapping windows to the screen edges is switched on.
+    pub fn snap_enabled(&self) -> bool {
+        self.snap.is_active()
+    }
 }
 
 #[cfg(test)]
@@ -564,11 +575,13 @@ mod tests {
         if gtk::init().is_err() {
             return;
         }
-        let s = WindowsSection::new(true, 70, 95);
+        let s = WindowsSection::new(true, 70, 95, true);
         assert!(s.enabled());
         assert_eq!((s.inactive_opacity(), s.active_opacity()), (70, 95));
-        let s = WindowsSection::new(false, 0, 500);
+        assert!(s.snap_enabled());
+        let s = WindowsSection::new(false, 0, 500, false);
         assert!(!s.enabled());
+        assert!(!s.snap_enabled());
         assert_eq!((s.inactive_opacity(), s.active_opacity()), (20, 100));
     }
 

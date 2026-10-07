@@ -351,6 +351,9 @@ pub struct DesktopSettings {
     pub active_opacity: u32,
     /// Applications started when the session starts, each after its own wait.
     pub startup_apps: Vec<StartupApp>,
+    /// Whether dragging a window to a screen edge snaps it to a zone (half
+    /// screen, quarters, thirds, maximized), with a preview of the zone.
+    pub snap_enabled: bool,
 }
 
 impl Default for DesktopSettings {
@@ -368,6 +371,7 @@ impl Default for DesktopSettings {
             inactive_opacity: DEFAULT_INACTIVE_OPACITY,
             active_opacity: DEFAULT_ACTIVE_OPACITY,
             startup_apps: Vec::new(),
+            snap_enabled: true,
         }
     }
 }
@@ -637,6 +641,20 @@ mod tests {
         let d = DesktopSettings { inactive_opacity: 0, active_opacity: 500, ..Default::default() }.sanitized();
         assert_eq!(d.inactive_opacity, WINDOW_OPACITY_RANGE.0);
         assert_eq!(d.active_opacity, WINDOW_OPACITY_RANGE.1);
+    }
+
+    #[test]
+    fn snapping_is_on_by_default_and_old_files_get_it() {
+        assert!(DesktopSettings::default().snap_enabled);
+        let d: DesktopSettings = serde_json::from_str(r#"{"icon_size":64}"#).unwrap();
+        assert!(d.snap_enabled);
+    }
+
+    #[test]
+    fn snapping_off_roundtrips() {
+        let d = DesktopSettings { snap_enabled: false, ..Default::default() };
+        let back: DesktopSettings = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert!(!back.snap_enabled);
     }
 
     #[test]
