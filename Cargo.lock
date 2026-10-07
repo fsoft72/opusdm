@@ -1882,6 +1882,7 @@ dependencies = [
  "image",
  "opusdm-ipc",
  "opusdm-ui",
+ "serde",
  "tempfile",
  "webp",
  "x11rb",

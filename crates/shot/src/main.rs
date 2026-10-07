@@ -5,6 +5,7 @@
 
 mod annotations;
 mod capture;
+mod config;
 mod editor;
 mod export;
 mod icons;
@@ -39,6 +40,19 @@ fn primary_monitor() -> Result<(gdk::Monitor, (i32, i32, i32, i32)), String> {
     Ok((monitor, (g.x(), g.y(), g.width(), g.height())))
 }
 
+/// Wait the configured delay (none by default), then capture and start.
+fn start_after_delay(app: &gtk::Application) {
+    let delay = config::load().delay_secs;
+    if delay == 0 { return start(app); }
+    // No window is open while waiting: hold the app so it does not quit.
+    let hold = app.hold();
+    let app = app.clone();
+    gtk::glib::timeout_add_seconds_local_once(delay, move || {
+        start(&app);
+        drop(hold);
+    });
+}
+
 /// Capture the primary monitor and start the overlay, then the editor.
 fn start(app: &gtk::Application) {
     let (monitor, (x, y, w, h)) = match primary_monitor() {
@@ -67,7 +81,7 @@ fn main() -> gtk::glib::ExitCode {
         // A second launch while a window is open does nothing.
         if !app.windows().is_empty() { return; }
         apply_theme();
-        start(app);
+        start_after_delay(app);
     });
     app.run()
 }

@@ -2,6 +2,7 @@
 //! arrows and text, and the Save, Copy and Quick save actions.
 
 use crate::annotations::{self, Annotation, Color, Document, Point, Shape, Size, DEFAULT_COLOR, DEFAULT_SIZE, PALETTE};
+use crate::config;
 use crate::export::{self, Format, Options};
 use crate::icons::{self, Icon};
 use crate::render;
@@ -106,6 +107,7 @@ struct Ui {
     format: gtk::DropDown,
     quality: gtk::Scale,
     lossless: gtk::CheckButton,
+    delay: gtk::SpinButton,
     state: RefCell<State>,
 }
 
@@ -140,6 +142,9 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     quality.set_draw_value(true);
     quality.set_width_request(QUALITY_WIDTH);
     let lossless = gtk::CheckButton::with_label("Lossless");
+    let delay = gtk::SpinButton::with_range(0.0, config::MAX_DELAY_SECS as f64, 1.0);
+    delay.set_value(config::load().delay_secs as f64);
+    delay.set_tooltip_text(Some("Seconds to wait before the screen is captured, from the next launch"));
 
     let ui = Rc::new(Ui {
         window: window.clone(),
@@ -149,6 +154,7 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
         format,
         quality,
         lossless,
+        delay,
         state: RefCell::new(State {
             base,
             surface,
@@ -272,6 +278,9 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar.append(&ui.format);
     bar.append(&ui.quality);
     bar.append(&ui.lossless);
+    bar.append(&gtk::Label::new(Some("Delay (s)")));
+    bar.append(&ui.delay);
+    ui.delay.connect_value_changed(|spin| config::save(&config::ShotConfig { delay_secs: spin.value_as_int().max(0) as u32 }));
     {
         let ui2 = ui.clone();
         ui.format.connect_selected_notify(move |_| refresh_save_options(&ui2));
