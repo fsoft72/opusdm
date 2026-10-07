@@ -1,6 +1,7 @@
 //! The individual panel widgets. Each `build()` (or `new()`) returns a ready
 //! GTK widget that owns its own refresh timer or is fed by the EWMH observer.
 
+pub mod audio;
 pub mod clock;
 pub mod devices;
 pub mod pager;

@@ -15,6 +15,8 @@ mod appmenu;
 mod dbusmenu;
 mod device_popup;
 mod devices_center;
+mod audio_center;
+mod audio_model;
 mod devices_model;
 mod ewmh;
 mod sni;
@@ -63,7 +65,7 @@ struct BarWindow {
     tray: Option<Rc<Tray>>,
 }
 
-/// Build one full bar (menu, pager, quick apps, tasklist, sysmon, clock) on the monitor
+/// Build one full bar (menu, pager, quick apps, tasklist, device and audio trays, sysmon, clock) on the monitor
 /// and edge `place` describes, and present it. `state` seeds the pager
 /// and tasklist immediately, so a bar created after startup (monitor plugged
 /// in later) doesn't show empty widgets until the next EWMH event.
@@ -76,6 +78,7 @@ fn build_bar_window(
     sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
     sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
     devices: Rc<devices_center::DeviceCenter>,
+    audio: Rc<audio_center::AudioCenter>,
 ) -> BarWindow {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
@@ -182,6 +185,10 @@ fn build_bar_window(
     if is_primary {
         right.append(&devices.button());
     }
+    // The audio tray sits next to the device notifier, on the primary bar only.
+    if is_primary {
+        right.append(&audio.button());
+    }
     right.append(&widgets::sysmon::build());
     right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     right.append(&widgets::clock::build());
@@ -230,6 +237,7 @@ pub fn attach(
 ) -> Rc<dyn Fn(PanelPosition)> {
     let position = Rc::new(Cell::new(position));
     let devices = devices_center::DeviceCenter::new(on_open_folder, position.clone());
+    let audio = audio_center::AudioCenter::new();
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
@@ -248,6 +256,7 @@ pub fn attach(
         let sni_evt_rx = sni_evt_rx.clone();
         let position = position.clone();
         let devices = devices.clone();
+        let audio = audio.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -262,7 +271,7 @@ pub fn attach(
                 .map(|(i, (x, y, w, h))| {
                     let rx = if i == 0 { rx_slot.take() } else { None };
                     let place = Placement { position: position.get(), mon_x: x, mon_y: y, mon_w: w, mon_h: h };
-                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx, devices.clone())
+                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx, devices.clone(), audio.clone())
                 })
                 .collect();
             drop(rx_slot);

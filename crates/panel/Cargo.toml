@@ -20,6 +20,7 @@ async-channel.workspace = true
 dirs.workspace = true
 zbus = { version = "5.19.0", features = ["blocking"] }
 opusdm-devices = { path = "../devices" }
+opusdm-audio = { path = "../audio" }
 
 [dev-dependencies]
 tempfile.workspace = true
