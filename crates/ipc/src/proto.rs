@@ -196,7 +196,7 @@ pub enum ToHub {
     /// sanitises the theme's background, persists to settings.json, applies
     /// live to its own desktop, and broadcasts the new `Settings` to every
     /// connected Lister. No reply.
-    SetSettings(Settings),
+    SetSettings(Box<Settings>),
     /// Run a Function's steps, expanding placeholders against this Lister's
     /// (SOURCE) and the current DEST Lister's selection.
     RunFunction { steps: Vec<crate::function::FnStep> },
@@ -491,7 +491,7 @@ pub enum ToLister {
     InvalidatePath(PathBuf),
     /// Settings changed: the full new `Settings`, replacing the ones from
     /// `Welcome`.
-    SettingsUpdate(Settings),
+    SettingsUpdate(Box<Settings>),
     /// Graceful-exit request.
     Shutdown,
     /// Ask this Lister for its current selection and cwd, for Function
@@ -611,7 +611,7 @@ mod tests {
         roundtrip_tohub(ToHub::PresentLister(ListerId(5)));
         roundtrip_tohub(ToHub::ConflictReply { req_id: 7, resolution: Resolution::OverwriteAll });
         roundtrip_tohub(ToHub::SetDesktopSettings(crate::desktop::DesktopSettings::default()));
-        roundtrip_tohub(ToHub::SetSettings(Settings::default()));
+        roundtrip_tohub(ToHub::SetSettings(Box::default()));
         roundtrip_tohub(ToHub::RunFunction {
             steps: vec![crate::function::FnStep::External {
                 argv: vec!["notify-send".into(), "done".into()],
@@ -698,7 +698,7 @@ mod tests {
             dst: FileMeta { size: 2, modified_unix: 20 },
         });
         roundtrip_tolister(ToLister::InvalidatePath("/dst".into()));
-        roundtrip_tolister(ToLister::SettingsUpdate(Settings::default()));
+        roundtrip_tolister(ToLister::SettingsUpdate(Box::default()));
         roundtrip_tolister(ToLister::Shutdown);
         roundtrip_tolister(ToLister::QuerySelection);
         roundtrip_tolister(ToLister::CheckFitResult {

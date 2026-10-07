@@ -596,7 +596,7 @@ impl Ui {
                     old.theme.icon_set != new_settings.theme.icon_set
                         || old.appearance.type_indicators != new_settings.appearance.type_indicators
                 };
-                *self.hub.settings.borrow_mut() = new_settings;
+                *self.hub.settings.borrow_mut() = *new_settings;
                 let capacity = self.hub.settings.borrow().behavior.cache_capacity();
                 self.caches.dirs.borrow_mut().set_capacity(capacity);
                 self.report_cache();

@@ -8,7 +8,7 @@ use std::sync::mpsc::{channel, Sender};
 
 /// Messages persisted to disk off the owner thread.
 pub(super) enum PersistMsg {
-    Settings(opusdm_ipc::Settings),
+    Settings(Box<opusdm_ipc::Settings>),
     Desktop(DesktopSettings),
     Bindings(Bindings),
     Formats(FormatStore),

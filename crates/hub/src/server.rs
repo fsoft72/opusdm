@@ -70,7 +70,7 @@ pub enum HubEvent {
     DesktopSettingsChanged(DesktopSettings),
     /// Theme changed (from `opusdm-settings`). Carries the new theme; the GTK
     /// side repaints the desktop background and re-renders desktop icons.
-    ThemeChanged(opusdm_ipc::Theme),
+    ThemeChanged(Box<opusdm_ipc::Theme>),
     /// Appearance changed (from `opusdm-settings`). Carries the new value;
     /// the GTK side applies `appearance.theme_mode` live via
     /// `opusdm_ui::apply_theme_mode`.
@@ -255,7 +255,7 @@ struct Conn {
 /// `Welcome` is sent exactly once, right after `Register`; everything
 /// else after that is a `ToLister`.
 enum OutMsg {
-    Welcome(Welcome),
+    Welcome(Box<Welcome>),
     ToLister(ToLister),
 }
 
@@ -267,7 +267,7 @@ impl From<ToLister> for OutMsg {
 
 impl From<Welcome> for OutMsg {
     fn from(msg: Welcome) -> Self {
-        OutMsg::Welcome(msg)
+        OutMsg::Welcome(Box::new(msg))
     }
 }
 
@@ -277,7 +277,7 @@ impl From<Welcome> for OutMsg {
 fn writer_loop(mut stream: UnixStream, rx: Receiver<OutMsg>) {
     for msg in rx {
         let result = match msg {
-            OutMsg::Welcome(w) => send(&mut stream, &w),
+            OutMsg::Welcome(w) => send(&mut stream, &*w),
             OutMsg::ToLister(m) => send(&mut stream, &m),
         };
         if result.is_err() {
@@ -431,7 +431,7 @@ impl Hub {
                     .send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
             }
 
-            ToHub::SetSettings(new_settings) => self.apply_settings(new_settings),
+            ToHub::SetSettings(new_settings) => self.apply_settings(*new_settings),
 
             ToHub::SetBindings(new_bindings) => {
                 opusdm_ipc::debug_log!("hub", "SetBindings from conn {cid}: {} hotkeys", new_bindings.hotkeys.len());
@@ -792,9 +792,9 @@ impl Hub {
     fn apply_settings(&mut self, mut new_settings: opusdm_ipc::Settings) {
         new_settings.theme.background = new_settings.theme.background.sanitized();
         self.current_settings = new_settings;
-        let _ = self.persist_tx.send(PersistMsg::Settings(self.current_settings.clone()));
-        self.broadcast(ToLister::SettingsUpdate(self.current_settings.clone()));
-        let _ = self.evt_tx.send(HubEvent::ThemeChanged(self.current_settings.theme.clone()));
+        let _ = self.persist_tx.send(PersistMsg::Settings(Box::new(self.current_settings.clone())));
+        self.broadcast(ToLister::SettingsUpdate(Box::new(self.current_settings.clone())));
+        let _ = self.evt_tx.send(HubEvent::ThemeChanged(Box::new(self.current_settings.theme.clone())));
         let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
     }
 
@@ -1564,7 +1564,7 @@ mod tests {
             angle: 900, // above GRADIENT_ANGLE_MAX, hub must clamp
         }];
         settings.appearance.monospace_list = true;
-        send(&mut c, &ToHub::SetSettings(settings.clone())).unwrap();
+        send(&mut c, &ToHub::SetSettings(Box::new(settings.clone()))).unwrap();
 
         let mut got = None;
         while let Ok(ev) = handle.evt_rx.recv_timeout(Duration::from_millis(500)) {

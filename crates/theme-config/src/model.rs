@@ -56,7 +56,7 @@ pub fn apply_full(settings: &Settings, desktop: &DesktopSettings) -> ApplyOutcom
 fn send_to_hub(sock: &std::path::Path, settings: &Settings, desktop: &DesktopSettings) -> std::io::Result<()> {
     use std::os::unix::net::UnixStream;
     let mut stream = UnixStream::connect(sock)?;
-    opusdm_ipc::frame::send(&mut stream, &opusdm_ipc::ToHub::SetSettings(settings.clone()))?;
+    opusdm_ipc::frame::send(&mut stream, &opusdm_ipc::ToHub::SetSettings(Box::new(settings.clone())))?;
     opusdm_ipc::frame::send(&mut stream, &opusdm_ipc::ToHub::SetDesktopSettings(desktop.clone()))
 }
 
