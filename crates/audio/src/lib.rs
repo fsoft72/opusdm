@@ -9,9 +9,13 @@ pub mod diff;
 pub mod error;
 pub mod filter;
 pub mod model;
+pub mod pulse;
 pub mod volume;
+pub mod watch;
 
 pub use backend::{Backend, FakeBackend};
 pub use diff::{diff, AudioEvent};
 pub use error::AudioError;
 pub use model::{AudioDevice, Kind};
+pub use pulse::PulseBackend;
+pub use watch::WatchMsg;

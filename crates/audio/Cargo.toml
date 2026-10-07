@@ -7,3 +7,7 @@ rust-version.workspace = true
 [lib]
 name = "opusdm_audio"
 path = "src/lib.rs"
+
+[dependencies]
+libpulse-binding = "2.30"
+async-channel.workspace = true
