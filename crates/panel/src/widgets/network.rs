@@ -158,6 +158,11 @@ impl NetworkButton {
         self.root.clone().upcast()
     }
 
+    /// Ask for the password of `ssid` and connect with it.
+    pub fn prompt_password(&self, center: &Rc<NetworkCenter>, ssid: &str, security: Security) {
+        ask_and_connect(center, &self.popover, &self.button, ssid, security);
+    }
+
     /// Whether the widget is still inside a bar window.
     pub fn is_attached(&self) -> bool {
         self.root.parent().is_some()
@@ -247,15 +252,18 @@ fn on_row_clicked(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &g
         RowAction::Disconnect => center.send(Request::DisconnectWifi),
         RowAction::Connect => center.send(Request::Connect { ssid: ap.ssid.clone(), password: None }),
         RowAction::Unsupported(why) => center.show_error(why.to_string()),
-        RowAction::AskPassword => {
-            popover.popdown();
-            let parent = button.root().and_then(|r| r.downcast::<gtk::Window>().ok());
-            let (center, ssid) = (center.clone(), ap.ssid.clone());
-            ask_password(parent.as_ref(), &ap.ssid, ap.security, move |password| {
-                center.send(Request::Connect { ssid: ssid.clone(), password: Some(password) });
-            });
-        }
+        RowAction::AskPassword => ask_and_connect(center, popover, button, &ap.ssid, ap.security),
     }
+}
+
+/// Close the popover, ask for the password of `ssid` and connect with it.
+fn ask_and_connect(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::MenuButton, ssid: &str, security: Security) {
+    popover.popdown();
+    let parent = button.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+    let (center, name) = (center.clone(), ssid.to_string());
+    ask_password(parent.as_ref(), ssid, security, move |password| {
+        center.send(Request::Connect { ssid: name.clone(), password: Some(password) });
+    });
 }
 
 /// A small modal window that asks for the password of `ssid`.

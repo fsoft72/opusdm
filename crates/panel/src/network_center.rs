@@ -18,6 +18,8 @@ const MESSAGE_SECS: u32 = 5;
 enum Done {
     /// A request failed.
     Failed(NetError),
+    /// A saved network has no stored key: ask for it and connect again.
+    NeedsPassword(String),
     /// A connect to this network ended, well or not.
     Connected(String),
 }
@@ -147,12 +149,25 @@ impl NetworkCenter {
     fn on_done(self: &Rc<Self>, done: Done) {
         match done {
             Done::Failed(e) => self.show_message(e.text()),
+            Done::NeedsPassword(ssid) => self.ask_password(&ssid),
             Done::Connected(ssid) => {
                 if self.connecting.borrow().as_deref() == Some(ssid.as_str()) {
                     *self.connecting.borrow_mut() = None;
                 }
                 self.notify();
             }
+        }
+    }
+
+    /// Ask for the password of a saved network from the first live button.
+    fn ask_password(self: &Rc<Self>, ssid: &str) {
+        let Some(ap) = self.state().aps.into_iter().find(|a| a.ssid == ssid) else {
+            return self.show_message(format!("{ssid} is out of range"));
+        };
+        let button = self.buttons.borrow().iter().find(|b| b.is_attached()).cloned();
+        match button {
+            Some(button) => button.prompt_password(self, &ap.ssid, ap.security),
+            None => self.show_message("A password is needed".to_string()),
         }
     }
 
@@ -223,12 +238,54 @@ fn run_request(backend: &dyn Backend, request: &Request, done: &async_channel::S
         }
     };
     if let Err(e) = result {
-        if done.send_blocking(Done::Failed(e)).is_err() {
+        let report = match request {
+            Request::Connect { ssid, .. } if e.needs_password => Done::NeedsPassword(ssid.clone()),
+            _ => Done::Failed(e),
+        };
+        if done.send_blocking(report).is_err() {
             return false;
         }
     }
     match request {
         Request::Connect { ssid, .. } => done.send_blocking(Done::Connected(ssid.clone())).is_ok(),
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opusdm_network::FakeBackend;
+
+    /// Every report of one request, in order.
+    fn reports(backend: &FakeBackend, request: &Request) -> Vec<Done> {
+        let (tx, rx) = async_channel::unbounded();
+        assert!(run_request(backend, request, &tx));
+        drop(tx);
+        let mut out = Vec::new();
+        while let Ok(d) = rx.try_recv() {
+            out.push(d);
+        }
+        out
+    }
+
+    fn connect(ssid: &str, password: Option<&str>) -> Request {
+        Request::Connect { ssid: ssid.to_string(), password: password.map(str::to_string) }
+    }
+
+    #[test]
+    fn a_saved_network_without_a_key_asks_for_the_password() {
+        let backend = FakeBackend::default();
+        *backend.fail_connect.lock().unwrap() = Some(NetError::password_needed());
+        let done = reports(&backend, &connect("os3", None));
+        assert!(matches!(done.as_slice(), [Done::NeedsPassword(s), Done::Connected(c)] if s == "os3" && c == "os3"));
+    }
+
+    #[test]
+    fn any_other_failure_is_shown_as_an_error_line() {
+        let backend = FakeBackend::default();
+        *backend.fail_connect.lock().unwrap() = Some(NetError::other("Could not connect"));
+        let done = reports(&backend, &connect("os3", None));
+        assert!(matches!(done.as_slice(), [Done::Failed(e), Done::Connected(_)] if e.text() == "Could not connect"));
     }
 }

@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-07
+- Fix (network, panel): joining a saved Wi-Fi network no longer always ends in "Could not connect". The profiles made by other tools keep the key out of the profile (`psk-flags` agent-owned or not saved) and NetworkManager asked a secret agent that does not exist ("no secrets: No agents were available"). `NmBackend::connect` now reads the profile first: if its key is not stored and there is no password it returns `NetError::password_needed()` (new `needs_password` flag) without trying to activate; the panel opens the existing password window and sends the connect again with it. With a password the backend stores it in the profile (`Update`, `psk-flags` 0) and activates; if that fails the original settings are put back, so a wrong password does not stay, and the error says "wrong password?". Pure parts tested (`key_not_stored`, `with_stored_key`, error flag, worker report order). Checked live against the real NetworkManager only up to the password request (os3-5g and os3: asked for a password, no activation started); the store and activate step was NOT run for lack of the Wi-Fi password. The generic "Could not connect" text is unchanged for other failures.
 - Docs: `docs/YOUTUBE.md`, a scene by scene flow for a YouTube demo video (demo data, script, timings, titles, 60 second cut).
 - Docs: `docs/FEATURES.md`, a marketing style feature list (taglines, section copy, comparison table, site structure) to feed the promotional website.
 

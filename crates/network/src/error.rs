@@ -6,17 +6,25 @@ pub struct NetError {
     /// D-Bus error name, empty for a transport or logic error.
     pub name: String,
     pub message: String,
+    /// The network is saved but its key is not: the caller must ask for it
+    /// and connect again with it.
+    pub needs_password: bool,
 }
 
 impl NetError {
     /// Build from a D-Bus error name and message.
     pub fn from_dbus(name: &str, message: &str) -> Self {
-        Self { name: name.to_string(), message: message.to_string() }
+        Self { name: name.to_string(), message: message.to_string(), needs_password: false }
     }
 
     /// An error with no D-Bus name (connection problems, failed joins).
     pub fn other(message: impl Into<String>) -> Self {
-        Self { name: String::new(), message: message.into() }
+        Self { name: String::new(), message: message.into(), needs_password: false }
+    }
+
+    /// The saved network has no stored key, so a password is needed to join it.
+    pub fn password_needed() -> Self {
+        Self { name: String::new(), message: "A password is needed".to_string(), needs_password: true }
     }
 
     /// Convert a zbus error, keeping the remote error name when there is one.
@@ -54,6 +62,13 @@ mod tests {
     fn permission_errors_get_a_short_text() {
         let e = NetError::from_dbus("org.freedesktop.NetworkManager.PermissionDenied", "long polkit text");
         assert_eq!(e.text(), "Not authorized");
+    }
+
+    #[test]
+    fn only_password_needed_asks_for_a_password() {
+        assert!(NetError::password_needed().needs_password);
+        assert!(!NetError::other("x").needs_password);
+        assert!(!NetError::from_dbus("org.x.Failed", "boom").needs_password);
     }
 
     #[test]
