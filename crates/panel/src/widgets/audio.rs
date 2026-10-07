@@ -122,7 +122,9 @@ impl Section {
         let guard = Rc::new(RefCell::new(DragGuard::default()));
         let updating = Rc::new(Cell::new(false));
 
-        let mute = gtk::ToggleButton::with_label("Mute");
+        let mute = gtk::ToggleButton::new();
+        mute.set_tooltip_text(Some("Mute"));
+        mute.set_child(Some(&mute_icon(&mute)));
         let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
         scale.set_hexpand(true);
         scale.set_draw_value(false);
@@ -207,6 +209,21 @@ fn build_row(center: &Rc<AudioCenter>, d: &AudioDevice) -> gtk::Button {
     let (center, kind, device_name) = (center.clone(), d.kind, d.name.clone());
     button.connect_clicked(move |_| center.send(Request::SetDefault { kind, name: device_name.clone() }));
     button
+}
+
+/// The speaker drawn inside a mute toggle: with waves when sound is on, crossed when muted.
+fn mute_icon(toggle: &gtk::ToggleButton) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(ICON_SIZE);
+    area.set_content_height(ICON_SIZE);
+    let weak = toggle.downgrade();
+    area.set_draw_func(move |area, cr, w, h| {
+        let muted = weak.upgrade().is_some_and(|t| t.is_active());
+        draw_icon(area, cr, w, h, if muted { IconLevel::Muted } else { IconLevel::High });
+    });
+    let area_ref = area.clone();
+    toggle.connect_toggled(move |_| area_ref.queue_draw());
+    area
 }
 
 /// A speaker with 0 to 3 sound waves, or a cross when muted, in the text colour.
