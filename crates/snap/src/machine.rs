@@ -78,6 +78,11 @@ impl Machine {
         Self { state: State::Idle, snapped: HashMap::new() }
     }
 
+    /// Whether no press or drag is in progress.
+    pub fn is_idle(&self) -> bool {
+        matches!(self.state, State::Idle)
+    }
+
     /// Forget a window that was closed.
     pub fn forget(&mut self, window: WindowId) {
         self.snapped.remove(&window);

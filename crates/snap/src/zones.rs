@@ -9,7 +9,7 @@ pub const EDGE_THRESHOLD: i32 = 20;
 const CORNER_BAND: i32 = 80;
 
 /// A rectangle in root window coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,

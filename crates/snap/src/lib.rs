@@ -5,9 +5,13 @@
 //! does not depend on GTK.
 
 pub mod machine;
+pub mod overlay;
 pub mod restore;
+pub mod watcher;
+pub mod x11;
 pub mod zones;
 
 pub use machine::{Action, Machine, Sample, WindowId, RESTORE_THRESHOLD};
 pub use restore::restore_rect;
+pub use watcher::Watcher;
 pub use zones::{zone_at, zone_rect, Rect, Zone, EDGE_THRESHOLD};
