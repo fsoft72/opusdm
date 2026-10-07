@@ -1898,6 +1898,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-snap"
+version = "0.7.0"
+
+[[package]]
 name = "opusdm-theme-config"
 version = "0.7.0"
 dependencies = [
