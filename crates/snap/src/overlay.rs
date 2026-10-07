@@ -14,16 +14,19 @@ use x11rb::protocol::xproto::{
 };
 
 /// Accent colour of the preview (red, green, blue).
-const ACCENT: [u8; 3] = [0x35, 0x84, 0xe4];
+pub const ACCENT: [u8; 3] = [0x35, 0x84, 0xe4];
 
 /// Opacity of the fill at full visibility.
-const FILL_ALPHA: f32 = 0.22;
+pub const FILL_ALPHA: f32 = 0.22;
 
 /// Opacity of the border at full visibility.
-const LINE_ALPHA: f32 = 0.85;
+pub const LINE_ALPHA: f32 = 0.85;
 
 /// Border width in pixels.
-const BORDER: i32 = 3;
+pub const BORDER: i32 = 3;
+
+/// Radius in pixels of the rounded corners of the preview.
+pub const CORNER_RADIUS: i32 = 10;
 
 /// Duration in milliseconds of the slide from one zone to another.
 const RECT_MS: u64 = 120;
@@ -40,6 +43,33 @@ fn ease_out(t: f32) -> f32 {
 /// `a` to `b` at `t`, rounded.
 fn lerp(a: i32, b: i32, t: f32) -> i32 {
     (a as f32 + (b - a) as f32 * t).round() as i32
+}
+
+/// The rectangle `0, 0, w, h` with its four corners rounded by `radius`, as a
+/// list of rectangles (one per run of rows that share a corner inset) that
+/// together cover it. The radius is limited to half the shorter side. Used as
+/// a Shape region, which has hard edges: it cannot be antialiased.
+pub fn rounded_spans(w: i32, h: i32, radius: i32) -> Vec<Rect> {
+    if w <= 0 || h <= 0 { return Vec::new(); }
+    let r = radius.min(w / 2).min(h / 2).max(0);
+    // How far row `y` (counted from the top of a corner) is inset from the side.
+    let inset = |y: i32| {
+        let dy = r as f32 - (y as f32 + 0.5);
+        (r as f32 - ((r * r) as f32 - dy * dy).max(0.0).sqrt()).round() as i32
+    };
+    let mut spans: Vec<Rect> = Vec::new();
+    let mut push = |y: i32, rows: i32, inset: i32| match spans.last_mut() {
+        Some(last) if last.x == inset && last.y + last.h == y => last.h += rows,
+        _ => spans.push(Rect::new(inset, y, w - 2 * inset, rows)),
+    };
+    for y in 0..r {
+        push(y, 1, inset(y));
+    }
+    push(r, h - 2 * r, 0);
+    for y in 0..r {
+        push(h - r + y, 1, inset(r - 1 - y));
+    }
+    spans
 }
 
 /// A pixel for a 32-bit ARGB window: `color` at `alpha`, premultiplied.
@@ -115,6 +145,8 @@ pub struct Overlay {
     transition: Transition,
     mapped: bool,
     drawn: Option<(Rect, u32)>,
+    /// The size the rounded Shape region was made for.
+    shaped: Option<(i32, i32)>,
 }
 
 impl Overlay {
@@ -122,6 +154,13 @@ impl Overlay {
     /// 32-bit ARGB visual or no compositing manager runs: without one the
     /// translucent window would be opaque.
     pub fn new(display: &Display) -> Result<Option<Overlay>, Box<dyn Error>> {
+        Self::create(display, true)
+    }
+
+    /// Like [`Overlay::new`], but with `require_compositor` false the preview
+    /// is also made when no compositing manager runs (it then draws opaque).
+    /// For tests, which have no compositor to run.
+    pub fn create(display: &Display, require_compositor: bool) -> Result<Option<Overlay>, Box<dyn Error>> {
         let conn = &display.conn;
         let screen = &conn.setup().roots[display.screen_num];
         let Some((depth, visual)) = screen.allowed_depths.iter().filter(|d| d.depth == 32).find_map(|d| {
@@ -129,7 +168,7 @@ impl Overlay {
         }) else {
             return Ok(None);
         };
-        if !display.compositor_running()? { return Ok(None); }
+        if require_compositor && !display.compositor_running()? { return Ok(None); }
 
         let colormap = conn.generate_id()?;
         conn.create_colormap(ColormapAlloc::NONE, colormap, display.root, visual)?;
@@ -154,7 +193,12 @@ impl Overlay {
             opusdm_ipc::err_log!("opusdm-snap", "cannot make the overlay click-through: {e}");
         }
         conn.flush()?;
-        Ok(Some(Overlay { window, gc, transition: Transition::hidden(), mapped: false, drawn: None }))
+        Ok(Some(Overlay { window, gc, transition: Transition::hidden(), mapped: false, drawn: None, shaped: None }))
+    }
+
+    /// The preview window, for tests that look at what was drawn.
+    pub fn window(&self) -> Window {
+        self.window
     }
 
     /// Show the preview on `rect`, in root coordinates.
@@ -189,7 +233,8 @@ impl Overlay {
         Ok(self.transition.is_animating(now_ms))
     }
 
-    /// Paint the fill (the window background) and the border at `rect`.
+    /// Paint the preview at `rect`: the border colour over the whole window,
+    /// the translucent fill over the inside, both with rounded corners.
     fn draw(&mut self, display: &Display, rect: Rect, alpha: f32, fill: u32) -> Result<(), Box<dyn Error>> {
         let conn = &display.conn;
         let (w, h) = (rect.w.max(1), rect.h.max(1));
@@ -197,22 +242,37 @@ impl Overlay {
             self.window,
             &ConfigureWindowAux::new().x(rect.x).y(rect.y).width(w as u32).height(h as u32).stack_mode(StackMode::ABOVE),
         )?;
-        conn.change_window_attributes(self.window, &ChangeWindowAttributesAux::new().background_pixel(fill))?;
+        if self.shaped != Some((w, h)) {
+            self.round_corners(conn, w, h);
+            self.shaped = Some((w, h));
+        }
+        conn.change_window_attributes(self.window, &ChangeWindowAttributesAux::new().background_pixel(argb(ACCENT, alpha * LINE_ALPHA)))?;
         if !self.mapped {
             conn.map_window(self.window)?;
             self.mapped = true;
         }
         conn.clear_area(false, self.window, 0, 0, 0, 0)?;
-        conn.change_gc(self.gc, &ChangeGCAux::new().foreground(argb(ACCENT, alpha * LINE_ALPHA)))?;
+        conn.change_gc(self.gc, &ChangeGCAux::new().foreground(fill))?;
         let b = BORDER.min(w / 2).min(h / 2).max(1);
-        let side = |x: i32, y: i32, rw: i32, rh: i32| xproto::Rectangle { x: x as i16, y: y as i16, width: rw.max(1) as u16, height: rh.max(1) as u16 };
-        conn.poly_fill_rectangle(
-            self.window,
-            self.gc,
-            &[side(0, 0, w, b), side(0, h - b, w, b), side(0, b, b, h - 2 * b), side(w - b, b, b, h - 2 * b)],
-        )?;
+        let inner: Vec<xproto::Rectangle> = rounded_spans(w - 2 * b, h - 2 * b, (CORNER_RADIUS - b).max(0))
+            .iter()
+            .map(|r| xproto::Rectangle { x: (r.x + b) as i16, y: (r.y + b) as i16, width: r.w as u16, height: r.h as u16 })
+            .collect();
+        conn.poly_fill_rectangle(self.window, self.gc, &inner)?;
         conn.flush()?;
         Ok(())
+    }
+
+    /// Clip the window to a rounded rectangle of size `w` x `h` (the Shape
+    /// bounding region). A failure is logged and the corners stay square.
+    fn round_corners(&self, conn: &impl Connection, w: i32, h: i32) {
+        let rects: Vec<xproto::Rectangle> = rounded_spans(w, h, CORNER_RADIUS)
+            .iter()
+            .map(|r| xproto::Rectangle { x: r.x as i16, y: r.y as i16, width: r.w as u16, height: r.h as u16 })
+            .collect();
+        if let Err(e) = shape::rectangles(conn, SO::SET, SK::BOUNDING, xproto::ClipOrdering::YX_BANDED, self.window, 0, 0, &rects) {
+            opusdm_ipc::err_log!("opusdm-snap", "cannot round the corners of the overlay: {e}");
+        }
     }
 }
 
@@ -222,6 +282,66 @@ mod tests {
 
     const LEFT: Rect = Rect { x: 0, y: 30, w: 960, h: 1050 };
     const RIGHT: Rect = Rect { x: 960, y: 30, w: 960, h: 1050 };
+
+    /// Whether the pixel `(x, y)` is inside the union of `spans`.
+    fn covers(spans: &[Rect], x: i32, y: i32) -> bool {
+        spans.iter().any(|s| s.contains((x, y)))
+    }
+
+    #[test]
+    fn the_corners_are_cut_and_the_middle_is_kept() {
+        let spans = rounded_spans(100, 60, 10);
+        for corner in [(0, 0), (99, 0), (0, 59), (99, 59)] {
+            assert!(!covers(&spans, corner.0, corner.1), "corner {corner:?} must be cut");
+        }
+        for inside in [(10, 0), (89, 0), (0, 10), (99, 49), (50, 30), (10, 59), (89, 59)] {
+            assert!(covers(&spans, inside.0, inside.1), "{inside:?} must be kept");
+        }
+    }
+
+    #[test]
+    fn the_spans_do_not_overlap_and_the_area_matches_a_rounded_rectangle() {
+        let (w, h, r) = (200, 120, 10);
+        let spans = rounded_spans(w, h, r);
+        let area: i32 = spans.iter().map(|s| s.w * s.h).sum();
+        let mut covered = std::collections::HashSet::new();
+        for s in &spans {
+            for y in s.y..s.y + s.h {
+                for x in s.x..s.x + s.w {
+                    assert!(covered.insert((x, y)), "({x}, {y}) is covered twice");
+                }
+            }
+        }
+        // A quarter of a circle cut off each corner: r^2 * (1 - pi/4) pixels, four times.
+        let cut = 4.0 * (r * r) as f32 * (1.0 - std::f32::consts::FRAC_PI_4);
+        assert!((((w * h) as f32 - cut) - area as f32).abs() < 12.0, "area {area}");
+    }
+
+    #[test]
+    fn the_shape_is_symmetric() {
+        let spans = rounded_spans(80, 50, 10);
+        for y in 0..50 {
+            for x in 0..80 {
+                assert_eq!(covers(&spans, x, y), covers(&spans, 79 - x, y), "left/right at ({x}, {y})");
+                assert_eq!(covers(&spans, x, y), covers(&spans, x, 49 - y), "top/bottom at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn the_radius_is_limited_to_half_the_shorter_side() {
+        let spans = rounded_spans(40, 8, 10);
+        assert!(covers(&spans, 20, 4), "the middle is kept");
+        assert!(!covers(&spans, 0, 0));
+        assert!(spans.iter().all(|s| s.y >= 0 && s.y + s.h <= 8 && s.x >= 0 && s.x + s.w <= 40), "inside the window: {spans:?}");
+    }
+
+    #[test]
+    fn no_radius_or_an_empty_size_is_plain() {
+        assert_eq!(rounded_spans(30, 20, 0), vec![Rect::new(0, 0, 30, 20)]);
+        assert!(rounded_spans(0, 20, 10).is_empty());
+        assert!(rounded_spans(30, -1, 10).is_empty());
+    }
 
     #[test]
     fn argb_is_premultiplied() {

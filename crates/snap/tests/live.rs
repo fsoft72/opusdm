@@ -298,3 +298,39 @@ fn an_idle_display_sleeps_until_a_button_event() {
     let slept = waiter.join().unwrap();
     assert!(slept < Duration::from_secs(2), "the press did not wake the display, slept {slept:?}");
 }
+
+#[test]
+#[ignore = "needs an X server; run scripts/snap-live-test.sh"]
+fn the_preview_is_clipped_to_rounded_corners_and_painted_with_a_border() {
+    use opusdm_snap::overlay::{argb, rounded_spans, Overlay, ACCENT, BORDER, CORNER_RADIUS, FILL_ALPHA, LINE_ALPHA};
+    use x11rb::protocol::shape::{self, SK};
+
+    let rig = Rig::new();
+    // No compositor is needed to look at the clip and the pixels.
+    let mut overlay = Overlay::create(&rig.display, false).unwrap().expect("a 32 bit visual");
+    let rect = Rect::new(100, 80, 300, 200);
+    overlay.show(rect, 0);
+    overlay.tick(&rig.display, 10_000).unwrap();
+    rig.session.conn.flush().unwrap();
+    let window = overlay.window();
+    let conn = &rig.session.conn;
+
+    // The bounding region is the rounded rectangle.
+    let region = shape::get_rectangles(conn, window, SK::BOUNDING).unwrap().reply().unwrap();
+    let mut got: Vec<(i16, i16, u16, u16)> = region.rectangles.iter().map(|r| (r.x, r.y, r.width, r.height)).collect();
+    let mut want: Vec<(i16, i16, u16, u16)> = rounded_spans(rect.w, rect.h, CORNER_RADIUS).iter().map(|r| (r.x as i16, r.y as i16, r.w as u16, r.h as u16)).collect();
+    got.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(got, want, "the bounding region of the preview");
+
+    // The border colour on the edge, the translucent fill inside.
+    let image = conn.get_image(xproto::ImageFormat::Z_PIXMAP, window, 0, 0, rect.w as u16, rect.h as u16, !0).unwrap().reply().unwrap();
+    let pixel = |x: i32, y: i32| {
+        let at = ((y * rect.w + x) * 4) as usize;
+        u32::from_le_bytes([image.data[at], image.data[at + 1], image.data[at + 2], image.data[at + 3]])
+    };
+    assert_eq!(pixel(rect.w / 2, 0), argb(ACCENT, LINE_ALPHA), "top edge");
+    assert_eq!(pixel(rect.w / 2, rect.h / 2), argb(ACCENT, FILL_ALPHA), "inside");
+    assert_eq!(pixel(rect.w / 2, BORDER - 1), argb(ACCENT, LINE_ALPHA), "last border row");
+    assert_eq!(pixel(rect.w / 2, BORDER), argb(ACCENT, FILL_ALPHA), "first fill row");
+}

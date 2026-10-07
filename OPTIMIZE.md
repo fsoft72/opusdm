@@ -48,5 +48,5 @@ None found.
   - File(s): `crates/lister/src/tools.rs:269`
 - [x] **Keep the snap watcher thread responsive during a restore** - `Display::restore` sleeps 120 ms on the watcher thread while Openbox cancels the move, so the preview and state machine freeze for that time. Making the restore a step of the state machine (cancel, wait for the next samples, then resize) removes the sleep. Also, `watcher::apply` takes 7 parameters and would read better with a small context struct.
   - File(s): `crates/snap/src/x11.rs`, `crates/snap/src/watcher.rs`
-- [ ] **Round the corners of the snap preview** - the preview is a plain rectangle; KDE's has rounded corners. The X Shape extension (already used for the click-through region) can clip the bounding region, at the cost of one mask per size change.
+- [x] **Round the corners of the snap preview** - the preview is a plain rectangle; KDE's has rounded corners. The X Shape extension (already used for the click-through region) can clip the bounding region, at the cost of one mask per size change.
   - File(s): `crates/snap/src/overlay.rs`
