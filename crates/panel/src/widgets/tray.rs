@@ -88,16 +88,20 @@ impl Tray {
     }
 
     /// Recompute every docked icon's absolute screen rect from its
-    /// placeholder's current layout and tell `systray.rs` to move the real
+    /// placeholder's current layout (relative to the bar window) and tell `systray.rs` to move the real
     /// window there. Safe to call any time the placeholders are realized;
     /// a placeholder with no allocation yet (bounds unavailable) is skipped -
     /// the next reposition pass (next `update`, or the panel's settle-delay
     /// timers) will place it once layout has run.
     pub fn reposition_now(&self) {
         let (origin_x, origin_y) = self.origin.get();
+        // Bounds must be relative to the bar window (not to the tray box), or
+        // the tray's own offset inside the bar is lost and every icon lands at
+        // the top-left corner of the bar.
+        let Some(window) = self.root.root() else { return };
         let placeholders = self.placeholders.borrow();
         for (&xid, square) in placeholders.iter() {
-            let Some(bounds) = square.compute_bounds(&self.root) else { continue };
+            let Some(bounds) = square.compute_bounds(window.upcast_ref::<gtk::Widget>()) else { continue };
             let x = origin_x + bounds.x() as i32;
             let y = origin_y + bounds.y() as i32;
             let w = bounds.width() as i32;
