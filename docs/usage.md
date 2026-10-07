@@ -327,6 +327,24 @@ window** (default 100%) go from 20% to 100%. The change is live: the hub rewrite
 picom reload it. A session started before this feature (picom running on the base config) needs a
 new login, or a restart of picom with `--config ~/.config/opusdm/picom.conf`, to follow the tab.
 
+The same tab has **Snap windows dragged to the screen edges** (on by default), which works like the
+edge tiling of KDE and applies to every window, not only the OpusDM ones. While you drag a window by
+its title bar (or with Alt), moving the pointer within 20 px of a screen edge shows a translucent
+preview of where the window will go, and releasing the button puts it there:
+
+- top edge: maximized
+- the four corners: a quarter of the screen
+- left or right edge: the middle third of the edge is the half screen, the upper third is the half
+  width and one third of the height at the top, the lower third the same at the bottom
+- bottom edge between the corners: nothing
+
+The preview follows the monitor under the pointer and leaves out the panel and the dock. Dragging a
+snapped window away (more than 8 px) gives it back the size it had before the snap, under the
+pointer, as KDE does; snapping it again keeps that first size. Limits: the preview needs a
+compositor (picom), without one the snap still works but nothing is shown; windows of fixed size,
+docks and the desktop are never snapped; on several monitors the panel offset is the one of the
+whole work area (`_NET_WORKAREA`), so it is applied to every monitor.
+
 **Apply** sends the change to the running hub, which repaints the desktop immediately; **Save** does
 the same and closes. When no hub is running the settings are written to
 `~/.config/opusdm/desktop.json` and take effect the next time the hub starts. Icon positions of the

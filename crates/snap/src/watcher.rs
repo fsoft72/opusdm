@@ -155,8 +155,8 @@ fn apply(
                 Err(e) => opusdm_ipc::err_log!("opusdm-snap", "cannot snap window {window:#x} to {zone:?}: {e}"),
             }
         }
-        Action::Restore { window, rect } => {
-            if let Err(e) = display.restore(window, rect) {
+        Action::Restore { window, rect, pointer } => {
+            if let Err(e) = display.restore(window, rect, pointer) {
                 opusdm_ipc::err_log!("opusdm-snap", "cannot restore window {window:#x} to {rect:?}: {e}");
             }
         }

@@ -133,3 +133,7 @@ Decided by the Task 4 spike, run on a nested Xephyr with Openbox and an xterm, p
 - **Chosen: cancel and restart the move.** On `Action::Restore`: (1) send an `Escape` key press and release through XTEST (Openbox cancels its move loop and puts the window back where the drag started), (2) `_NET_MOVERESIZE_WINDOW` to the restored frame rectangle, (3) `_NET_WM_MOVERESIZE` with the pointer position, direction 8 (move), button 1, source 1, which starts a fresh move loop that follows the pointer. Measured: the window followed the pointer exactly (expected client position (364,353), got (364,353)).
 - Cost: the XTEST extension (`x11rb` feature `xtest`), and about 300 ms of steps with sleeps in the placement code, run off the GTK main loop.
 - NOT verified: the same sequence with a physical mouse. The spike held the button down with XTEST, a real device is a different slave device. To be checked by the user on the real session, with fallback strategy 2 (restore at release) selectable with the constant `RESTORE_DURING_DRAG` in `crates/hub/src/snap.rs`.
+
+## Deviations while building
+
+Placement and restore live in `crates/snap` (`x11::Display::place` and `restore`), not in `crates/hub/src/snap.rs`, which only starts the watcher (`snap::start`) and switches it (`snap::set_enabled`). The overlay draws with a window background and border rectangles instead of `render_rect`, and the animation is `overlay::Transition`. `Action::Restore` carries the pointer it was computed for. See the implementation notes of the spec.

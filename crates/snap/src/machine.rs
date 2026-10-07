@@ -40,8 +40,10 @@ pub enum Action {
     Zone(Option<Zone>),
     /// Put `window` into `rect`, the rectangle of `zone`.
     Place { window: WindowId, zone: Zone, rect: Rect },
-    /// Give `window` back its pre-snap size at `rect`.
-    Restore { window: WindowId, rect: Rect },
+    /// Give `window` back its pre-snap size at `rect`, computed for the
+    /// pointer at `pointer`: the caller shifts it by how far the pointer moved
+    /// since.
+    Restore { window: WindowId, rect: Rect, pointer: (i32, i32) },
 }
 
 /// A snapped window: its frame rectangle before the snap and right after.
@@ -141,7 +143,7 @@ impl Machine {
         if travel <= RESTORE_THRESHOLD { return None; }
         self.snapped.remove(&window);
         let rect = restore_rect(snapped.pre, snapped.at, press, sample.pointer, sample.area);
-        actions.push(Action::Restore { window, rect });
+        actions.push(Action::Restore { window, rect, pointer: sample.pointer });
         Some(rect)
     }
 
@@ -288,7 +290,7 @@ mod tests {
         assert!(m.step(&sample(true, (485, 40), nudge)).is_empty(), "under the threshold nothing happens");
         let away = Rect::new(snapped.x + 200, snapped.y + 100, snapped.w, snapped.h);
         let out = m.step(&sample(true, (680, 140), away));
-        let Some(Action::Restore { window, rect }) = out.first().copied() else { panic!("no restore in {out:?}") };
+        let Some(Action::Restore { window, rect, .. }) = out.first().copied() else { panic!("no restore in {out:?}") };
         assert_eq!(window, W);
         assert_eq!((rect.w, rect.h), (START.w, START.h));
     }

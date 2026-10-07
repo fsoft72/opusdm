@@ -111,3 +111,14 @@ and `RESTORE_THRESHOLD` are constants, not settings.
 
 Shift-drag layout grid, custom layouts, keyboard shortcuts (Meta+arrows), top
 edge thirds, Wayland (see `docs/WAYLAND-PORT.md`).
+
+## Implementation notes (after the build)
+
+- The Openbox spike decided the restore strategy: resizing mid-drag does not work, so the move is
+  cancelled with Escape (XTEST), the window is resized and `_NET_WM_MOVERESIZE` starts a new move.
+- The crate places and restores windows itself (it needs XTEST and its own connection), so the hub
+  only starts the watcher and switches it. `opusdm_ui::x11` is not used.
+- The overlay is a window background plus four border rectangles, not a pixel buffer: no rounded
+  corners, but it slides between zones at almost no cost.
+- No RandR or no `_NET_WORKAREA`: falls back to the whole screen and keeps working, instead of
+  disabling snap.

@@ -63,9 +63,6 @@ const KEY_RELEASE: u8 = 3;
 /// Time given to Openbox to cancel its move loop after Escape.
 const CANCEL_DRAG_WAIT: Duration = Duration::from_millis(120);
 
-/// Time given to Openbox to apply the new geometry before a new move starts.
-const RESTART_DRAG_WAIT: Duration = Duration::from_millis(100);
-
 /// Frame extents of a window: left, right, top, bottom.
 pub type Extents = [i32; 4];
 
@@ -86,6 +83,11 @@ pub fn area_for(pointer: (i32, i32), monitors: &[Rect], workarea: Option<Rect>) 
 /// The frame rectangle of a window whose client area is `client`.
 pub fn frame_from_client(client: Rect, extents: Extents) -> Rect {
     Rect::new(client.x - extents[0], client.y - extents[2], client.w + extents[0] + extents[1], client.h + extents[2] + extents[3])
+}
+
+/// `rect` moved by the distance the pointer travelled from `from` to `to`.
+pub fn shifted(rect: Rect, from: (i32, i32), to: (i32, i32)) -> Rect {
+    Rect::new(rect.x + to.0 - from.0, rect.y + to.1 - from.1, rect.w, rect.h)
 }
 
 /// What `_NET_MOVERESIZE_WINDOW` expects to put the frame at `frame`: the
@@ -285,26 +287,28 @@ impl Display {
     }
 
     /// Give `window` its pre-snap size at `rect` while the user is dragging it.
+    /// `rect` was computed for the pointer at `decided_at`.
     ///
     /// Openbox keeps applying the geometry it had when the drag started, so
     /// the move is cancelled first (Escape through XTEST), the window is
     /// resized, and a fresh move is started under the pointer with
-    /// `_NET_WM_MOVERESIZE`. If the button is already up the window is only
+    /// `_NET_WM_MOVERESIZE`. The pointer moves while Openbox cancels, so the
+    /// rectangle is shifted by that travel, to keep the pointer where it was
+    /// inside the window. If the button is already up the window is only
     /// resized.
-    pub fn restore(&self, window: Window, rect: Rect) -> Result<(), Box<dyn Error>> {
+    pub fn restore(&self, window: Window, rect: Rect, decided_at: (i32, i32)) -> Result<(), Box<dyn Error>> {
         self.set_maximized(window, false)?;
         let dragging = self.pointer()?.1;
         if dragging {
             self.press_escape()?;
             std::thread::sleep(CANCEL_DRAG_WAIT);
         }
-        self.move_resize_frame(window, rect)?;
-        self.conn.flush()?;
-        if !dragging { return Ok(()); }
-        std::thread::sleep(RESTART_DRAG_WAIT);
         let ((x, y), still_down) = self.pointer()?;
-        if !still_down { return Ok(()); }
-        self.send_to_root(window, self.atoms._NET_WM_MOVERESIZE, [x as u32, y as u32, MOVERESIZE_MOVE, 1, SOURCE_APPLICATION])?;
+        let rect = shifted(rect, decided_at, (x, y));
+        self.move_resize_frame(window, rect)?;
+        if dragging && still_down {
+            self.send_to_root(window, self.atoms._NET_WM_MOVERESIZE, [x as u32, y as u32, MOVERESIZE_MOVE, 1, SOURCE_APPLICATION])?;
+        }
         self.conn.flush()?;
         Ok(())
     }
@@ -364,6 +368,13 @@ mod tests {
     #[test]
     fn client_geometry_matches_the_spec_example() {
         assert_eq!(client_geometry(Rect::new(0, 30, 960, 1050), [1, 1, 24, 1]), (0, 30, 958, 1025));
+    }
+
+    #[test]
+    fn the_rectangle_follows_the_pointer_travel() {
+        let rect = Rect::new(100, 50, 600, 400);
+        assert_eq!(shifted(rect, (10, 10), (110, 40)), Rect::new(200, 80, 600, 400));
+        assert_eq!(shifted(rect, (10, 10), (10, 10)), rect);
     }
 
     #[test]
