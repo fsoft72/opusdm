@@ -21,7 +21,7 @@ None found.
   - File(s): `crates/snap/src/x11.rs` (`Display::environment`, `workarea`)
 - [ ] **Replace the snap polling with events** - the watcher wakes 20 times a second even when idle, and while a button is down it does five or six X round trips every 16 ms. Listening for button press and release with XInput2 raw events would wake it only during a drag, and the window-type and size-hint reads could be cached per window.
   - File(s): `crates/snap/src/watcher.rs`, `crates/snap/src/x11.rs`
-- [ ] **Turn the live snap check into a repeatable test** - `watcher` and `overlay` have no automated test; the live check (Xephyr, Openbox, picom, XTEST drags) was done with throwaway examples. Keep it as an `#[ignore]` integration test plus a script that starts the nested server, so a regression in zones, preview or restore is caught.
+- [x] **Turn the live snap check into a repeatable test** - `watcher` and `overlay` have no automated test; the live check (Xephyr, Openbox, picom, XTEST drags) was done with throwaway examples. Keep it as an `#[ignore]` integration test plus a script that starts the nested server, so a regression in zones, preview or restore is caught.
   - File(s): `crates/snap/` (new `tests/live.rs`), `scripts/`
 - [x] **Share the watcher skeleton of the devices, audio and network crates** - the three `watch.rs` files each carry their own 30 s retry loop, 300 ms coalescing and `thread::sleep`, and the three `backend.rs` files repeat the same `Backend` plus `FakeBackend` shape. A small shared helper (retrying connect, coalescing burst drain) removes about 100 duplicated lines and keeps the three behaving the same.
   - File(s): `crates/devices/src/watch.rs`, `crates/audio/src/watch.rs`, `crates/network/src/watch.rs`
