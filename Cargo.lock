@@ -1839,6 +1839,7 @@ dependencies = [
  "gdk4-x11",
  "gtk4",
  "libc",
+ "opusdm-audio",
  "opusdm-devices",
  "opusdm-dock",
  "opusdm-ipc",

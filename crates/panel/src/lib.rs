@@ -15,6 +15,7 @@ mod appmenu;
 mod dbusmenu;
 mod device_popup;
 mod devices_center;
+mod audio_model;
 mod devices_model;
 mod ewmh;
 mod sni;
