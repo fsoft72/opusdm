@@ -29,14 +29,7 @@ pub fn load_dock_config() -> Option<DockConfig> {
 
 /// Testable core of [`load_dock_config`].
 pub fn load_dock_config_from(path: &Path) -> Option<DockConfig> {
-    let content = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str(&content) {
-        Ok(cfg) => Some(cfg),
-        Err(e) => {
-            crate::err_log!("ipc", "malformed dock config in {}: {e}", path.display());
-            None
-        }
-    }
+    crate::settings::read_json(path, "ipc", "dock config")
 }
 
 /// Save the dock config to the standard path, creating the directory.
@@ -65,6 +58,7 @@ mod tests {
         let path = td.path().join("dock.json");
         std::fs::write(&path, b"nope").unwrap();
         assert_eq!(load_dock_config_from(&path), None);
+        assert_eq!(std::fs::read_to_string(td.path().join("dock.json.bak")).unwrap(), "nope", "the broken file is kept");
     }
 
     #[test]

@@ -184,10 +184,7 @@ pub fn is_plain_file_name(name: &str) -> bool {
 /// `Settings` already has for a hand-edited `settings.json`.
 pub fn load_theme_data(slug: &str) -> CustomThemeData {
     let path = theme_dir(slug).join("theme.json");
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default()
+    crate::settings::load_json(&path, "opusdm", "theme data")
 }
 
 /// The wallpaper pictures theme `slug` bundles: every picture file in its

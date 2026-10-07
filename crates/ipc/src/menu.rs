@@ -46,14 +46,7 @@ pub fn load_menu_config() -> Option<MenuConfig> {
 
 /// Testable core of [`load_menu_config`].
 pub fn load_menu_config_from(path: &Path) -> Option<MenuConfig> {
-    let content = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str(&content) {
-        Ok(cfg) => Some(cfg),
-        Err(e) => {
-            crate::err_log!("ipc", "malformed menu config in {}: {e}", path.display());
-            None
-        }
-    }
+    crate::settings::read_json(path, "ipc", "menu config")
 }
 
 /// Save the menu config to the standard path, creating the directory.
@@ -217,6 +210,7 @@ mod tests {
         let path = td.path().join("menu.json");
         std::fs::write(&path, b"nope").unwrap();
         assert_eq!(load_menu_config_from(&path), None);
+        assert_eq!(std::fs::read_to_string(td.path().join("menu.json.bak")).unwrap(), "nope", "the broken file is kept");
     }
 
     #[test]
