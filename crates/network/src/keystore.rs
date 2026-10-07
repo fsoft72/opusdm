@@ -7,6 +7,9 @@ use secret_service::EncryptionType;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// The alias of the keyring that is encrypted and opened by the login. The
+/// default keyring may be a plain text file, which is no place for a Wi-Fi key.
+const LOGIN_ALIAS: &str = "login";
 /// The schema `nm-applet` and GNOME give to the secrets of a connection.
 const SCHEMA: &str = "org.freedesktop.NetworkManager.Connection";
 /// The settings group that holds the Wi-Fi key.
@@ -39,7 +42,8 @@ fn keyring_error(e: secret_service::Error) -> NetError {
     NetError::other(format!("Keyring: {e}"))
 }
 
-/// The Secret Service on the session bus. Connects at every call: the calls
+/// The Secret Service on the session bus. Keys are written to the login
+/// keyring and looked up in all of them. Connects at every call: the calls
 /// are rare and this way a keyring that starts later or restarts just works.
 pub struct SecretServiceStore;
 
@@ -56,7 +60,7 @@ impl KeyStore for SecretServiceStore {
 
     fn set(&self, uuid: &str, name: &str, key: &str) -> Result<(), NetError> {
         let ss = SecretService::connect(EncryptionType::Dh).map_err(keyring_error)?;
-        let collection = ss.get_default_collection().map_err(keyring_error)?;
+        let collection = ss.get_collection_by_alias(LOGIN_ALIAS).map_err(keyring_error)?;
         collection.unlock().map_err(keyring_error)?;
         collection.create_item(&label(name), attributes(uuid), key.as_bytes(), true, "text/plain").map_err(keyring_error)?;
         Ok(())
