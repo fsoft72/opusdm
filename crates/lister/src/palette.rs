@@ -203,6 +203,138 @@ fn select_and_reveal(list_box: &gtk::ListBox, scroller: &gtk::ScrolledWindow, ro
     }
 }
 
+/// One palette row: its entry's category, title and shortcut in a line.
+fn build_command_row(cmd: &CommandItem) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    hbox.set_margin_start(8);
+    hbox.set_margin_end(8);
+    hbox.set_margin_top(3);
+    hbox.set_margin_bottom(3);
+
+    let cat_label = gtk::Label::new(Some(cmd.category.as_ref()));
+    cat_label.add_css_class("palette-cat");
+    cat_label.set_size_request(80, -1);
+    cat_label.set_xalign(0.0);
+
+    let title_label = gtk::Label::new(Some(cmd.title.as_ref()));
+    title_label.set_xalign(0.0);
+    title_label.set_hexpand(true);
+    title_label.add_css_class("palette-title");
+
+    hbox.append(&cat_label);
+    hbox.append(&title_label);
+
+    if let Some(sc) = cmd.shortcut {
+        let sc_label = gtk::Label::new(Some(sc));
+        sc_label.add_css_class("palette-shortcut");
+        hbox.append(&sc_label);
+    }
+
+    row.set_child(Some(&hbox));
+    row
+}
+
+/// Hide the rows that do not match the search text and select the first one left.
+fn connect_filter(entry: &gtk::SearchEntry, rows: &PaletteRows, list_box: &gtk::ListBox, scroller: &gtk::ScrolledWindow) {
+    let rows = rows.clone();
+    let list_box = list_box.clone();
+    let scroller = scroller.clone();
+    entry.connect_search_changed(move |e| {
+        let q = e.text().to_string();
+        let mut first_visible: Option<&gtk::ListBoxRow> = None;
+        for (row, cmd) in &rows {
+            let haystack = format!("{} {}", cmd.title, cmd.category);
+            let visible = fuzzy_match(&q, &haystack);
+            row.set_visible(visible);
+            if visible && first_visible.is_none() {
+                first_visible = Some(row);
+            }
+        }
+        if let Some(r) = first_visible {
+            select_and_reveal(&list_box, &scroller, r);
+        }
+    });
+}
+
+/// The index to select when moving one visible row `down` or up from
+/// `current` among `len` visible rows; `None` at either end.
+fn neighbour_index(len: usize, current: usize, down: bool) -> Option<usize> {
+    if down {
+        (current + 1 < len).then_some(current + 1)
+    } else {
+        current.checked_sub(1)
+    }
+}
+
+/// Move the selection one visible row down or up.
+fn move_selection(rows: &PaletteRows, list_box: &gtk::ListBox, scroller: &gtk::ScrolledWindow, down: bool) {
+    let visible_rows: Vec<&gtk::ListBoxRow> = rows.iter().filter(|(r, _)| r.is_visible()).map(|(r, _)| r).collect();
+    let Some(sel) = list_box.selected_row() else { return };
+    let Some(pos) = visible_rows.iter().position(|r| **r == sel) else { return };
+    if let Some(next) = neighbour_index(visible_rows.len(), pos, down) {
+        select_and_reveal(list_box, scroller, visible_rows[next]);
+    }
+}
+
+/// A closure that closes the palette and runs the selected row's command.
+fn make_execute_selected(ui: &Rc<Ui>, dlg: &gtk::Window, list_box: &gtk::ListBox, rows: &PaletteRows) -> Rc<dyn Fn()> {
+    let ui = ui.clone();
+    let dlg = dlg.clone();
+    let list_box = list_box.clone();
+    let rows = rows.clone();
+    Rc::new(move || {
+        let Some(selected_row) = list_box.selected_row() else { return };
+        if let Some((_, cmd)) = rows.iter().find(|(r, _)| *r == selected_row) {
+            dlg.close();
+            execute_command(&ui, cmd.id.clone());
+        }
+    })
+}
+
+/// Enter, Esc, Up and Down in the search entry.
+fn connect_navigation_keys(
+    entry: &gtk::SearchEntry,
+    dlg: &gtk::Window,
+    rows: &PaletteRows,
+    list_box: &gtk::ListBox,
+    scroller: &gtk::ScrolledWindow,
+    exec: Rc<dyn Fn()>,
+) {
+    let key_ctrl = gtk::EventControllerKey::new();
+    // Capture phase: the entry's inner text widget handles Enter itself
+    // (it emits `activate` and stops the event), so a bubble-phase
+    // controller on the entry never sees it.
+    key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let dlg = dlg.clone();
+    let list_box = list_box.clone();
+    let scroller = scroller.clone();
+    let rows = rows.clone();
+    key_ctrl.connect_key_pressed(move |_, keyval, _, _| match keyval {
+        gdk::Key::Escape => {
+            dlg.close();
+            glib::Propagation::Stop
+        }
+        gdk::Key::Return | gdk::Key::KP_Enter => {
+            exec();
+            glib::Propagation::Stop
+        }
+        gdk::Key::Down => {
+            move_selection(&rows, &list_box, &scroller, true);
+            glib::Propagation::Stop
+        }
+        gdk::Key::Up => {
+            move_selection(&rows, &list_box, &scroller, false);
+            glib::Propagation::Stop
+        }
+        _ => glib::Propagation::Proceed,
+    });
+    entry.add_controller(key_ctrl);
+}
+
+/// The palette's rows, each paired with the command it runs.
+type PaletteRows = Vec<(gtk::ListBoxRow, CommandItem)>;
+
 /// Open the Command Palette modal HUD.
 pub fn open_command_palette(ui: &Rc<Ui>) {
     let shell = opusdm_ui::DialogShell::new(&ui.window, "OpusDM Command Palette")
@@ -220,162 +352,29 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
     list_box.set_selection_mode(gtk::SelectionMode::Single);
     list_box.add_css_class("palette-list");
 
-    let commands = get_commands(&ui.hub.functions.borrow());
-    let mut rows: Vec<(gtk::ListBoxRow, CommandItem)> = Vec::new();
+    let rows: PaletteRows = get_commands(&ui.hub.functions.borrow())
+        .into_iter()
+        .map(|cmd| {
+            let row = build_command_row(&cmd);
+            list_box.append(&row);
+            (row, cmd)
+        })
+        .collect();
 
-    for cmd in &commands {
-        let row = gtk::ListBoxRow::new();
-        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        hbox.set_margin_start(8);
-        hbox.set_margin_end(8);
-        hbox.set_margin_top(3);
-        hbox.set_margin_bottom(3);
-
-        let cat_label = gtk::Label::new(Some(cmd.category.as_ref()));
-        cat_label.add_css_class("palette-cat");
-        cat_label.set_size_request(80, -1);
-        cat_label.set_xalign(0.0);
-
-        let title_label = gtk::Label::new(Some(cmd.title.as_ref()));
-        title_label.set_xalign(0.0);
-        title_label.set_hexpand(true);
-        title_label.add_css_class("palette-title");
-
-        hbox.append(&cat_label);
-        hbox.append(&title_label);
-
-        if let Some(sc) = cmd.shortcut {
-            let sc_label = gtk::Label::new(Some(sc));
-            sc_label.add_css_class("palette-shortcut");
-            hbox.append(&sc_label);
-        }
-
-        row.set_child(Some(&hbox));
-        list_box.append(&row);
-        rows.push((row, cmd.clone()));
-    }
-
-    let scroller = gtk::ScrolledWindow::builder()
-        .child(&list_box)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
+    let scroller = gtk::ScrolledWindow::builder().child(&list_box).vexpand(true).hexpand(true).build();
     root.append(&scroller);
 
-    // Initial selection
     if let Some((first_row, _)) = rows.first() {
         list_box.select_row(Some(first_row));
     }
 
-    // Filter list as search entry changes
-    {
-        let rows_ref = rows.clone();
-        let list_box_clone = list_box.clone();
-        let scroller_clone = scroller.clone();
-        entry.connect_search_changed(move |e| {
-            let q = e.text().to_string();
-            let mut first_visible: Option<&gtk::ListBoxRow> = None;
-            for (row, cmd) in &rows_ref {
-                let haystack = format!("{} {}", cmd.title, cmd.category);
-                let visible = fuzzy_match(&q, &haystack);
-                row.set_visible(visible);
-                if visible && first_visible.is_none() {
-                    first_visible = Some(row);
-                }
-            }
-            if let Some(r) = first_visible {
-                select_and_reveal(&list_box_clone, &scroller_clone, r);
-            }
-        });
-    }
-
-    // Execute selected row helper
-    let execute_selected = {
-        let ui_for_exec = ui.clone();
-        let dlg = shell.window().clone();
-        let list_box_clone = list_box.clone();
-        let rows_for_exec = rows.clone();
-        Rc::new(move || {
-            if let Some(selected_row) = list_box_clone.selected_row() {
-                for (r, cmd) in &rows_for_exec {
-                    if *r == selected_row {
-                        dlg.close();
-                        execute_command(&ui_for_exec, cmd.id.clone());
-                        break;
-                    }
-                }
-            }
-        })
-    };
-
-    // Activate on row click
+    connect_filter(&entry, &rows, &list_box, &scroller);
+    let execute_selected = make_execute_selected(ui, shell.window(), &list_box, &rows);
     {
         let exec = execute_selected.clone();
-        list_box.connect_row_activated(move |_, _| {
-            exec();
-        });
+        list_box.connect_row_activated(move |_, _| exec());
     }
-
-    // Key handling for Enter, Esc, Up, Down in SearchEntry
-    {
-        let key_ctrl = gtk::EventControllerKey::new();
-        // Capture phase: the entry's inner text widget handles Enter itself
-        // (it emits `activate` and stops the event), so a bubble-phase
-        // controller on the entry never sees it.
-        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let dlg = shell.window().clone();
-        let list_box_clone = list_box.clone();
-        let scroller_clone = scroller.clone();
-        let rows_clone = rows.clone();
-        let exec = execute_selected.clone();
-
-        key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
-            match keyval {
-                gdk::Key::Escape => {
-                    dlg.close();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::Return | gdk::Key::KP_Enter => {
-                    exec();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::Down => {
-                    // Move to next visible row
-                    let visible_rows: Vec<&gtk::ListBoxRow> = rows_clone
-                        .iter()
-                        .filter(|(r, _)| r.is_visible())
-                        .map(|(r, _)| r)
-                        .collect();
-                    if let Some(sel) = list_box_clone.selected_row() {
-                        if let Some(pos) = visible_rows.iter().position(|r| **r == sel) {
-                            if pos + 1 < visible_rows.len() {
-                                select_and_reveal(&list_box_clone, &scroller_clone, visible_rows[pos + 1]);
-                            }
-                        }
-                    }
-                    glib::Propagation::Stop
-                }
-                gdk::Key::Up => {
-                    // Move to previous visible row
-                    let visible_rows: Vec<&gtk::ListBoxRow> = rows_clone
-                        .iter()
-                        .filter(|(r, _)| r.is_visible())
-                        .map(|(r, _)| r)
-                        .collect();
-                    if let Some(sel) = list_box_clone.selected_row() {
-                        if let Some(pos) = visible_rows.iter().position(|r| **r == sel) {
-                            if pos > 0 {
-                                select_and_reveal(&list_box_clone, &scroller_clone, visible_rows[pos - 1]);
-                            }
-                        }
-                    }
-                    glib::Propagation::Stop
-                }
-                _ => glib::Propagation::Proceed,
-            }
-        });
-        entry.add_controller(key_ctrl);
-    }
+    connect_navigation_keys(&entry, shell.window(), &rows, &list_box, &scroller, execute_selected);
 
     shell.present();
     entry.grab_focus();
@@ -384,6 +383,18 @@ pub fn open_command_palette(ui: &Rc<Ui>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moving_down_stops_at_the_last_visible_row() {
+        assert_eq!(neighbour_index(3, 0, true), Some(1));
+        assert_eq!(neighbour_index(3, 2, true), None);
+    }
+
+    #[test]
+    fn moving_up_stops_at_the_first_visible_row() {
+        assert_eq!(neighbour_index(3, 2, false), Some(1));
+        assert_eq!(neighbour_index(3, 0, false), None);
+    }
 
     #[test]
     fn reveal_offset_leaves_a_fully_visible_row_alone() {
