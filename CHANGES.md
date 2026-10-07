@@ -452,3 +452,4 @@
 - Removed the unused `desktop-config/src/menu_ui.rs` (the old Settings Menu tab); the Apps editor replaced it.
 - Fix: `scripts/build-release.sh` stages `opusdm-apps-editor` in `dist/bin` and `scripts/live-update.sh` knows its process name; it was missing, so "Edit Apps" could not start from an installed copy.
 - Docs: design spec for the audio tray (volume, mute and default device for output and input in the panel, libpulse backend), `docs/superpowers/specs/2026-10-07-audio-tray-design.md`.
+- Docs: implementation plan for the audio tray, `docs/superpowers/plans/2026-10-07-audio-tray.md`.
