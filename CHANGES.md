@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-07
+- Docs: `docs/YOUTUBE.md`, a scene by scene flow for a YouTube demo video (demo data, script, timings, titles, 60 second cut).
 - Docs: `docs/FEATURES.md`, a marketing style feature list (taglines, section copy, comparison table, site structure) to feed the promotional website.
 
 - Feature (snap): the zone preview has rounded corners (radius 10 px, `CORNER_RADIUS`). The window is clipped with the X Shape bounding region, rebuilt only when the size changes; the pure `rounded_spans` makes it from one rectangle per run of rows with the same inset (tests: cut corners, no overlap and the area of a rounded rectangle, symmetry, radius limited to half the shorter side, empty sizes). The border is now the window background in the border colour and the fill is painted over the inside with its own rounded region, so the ring follows the corners (before, 4 border rectangles). `Overlay::create(display, require_compositor)` makes a preview without a compositor, for tests: a new ignored live test checks the Shape rectangles of a real preview window and its pixels (border colour on the edge, fill inside). The Shape region has hard edges, so the corners are not antialiased. NOT seen with a compositor (picom is not installed here).
