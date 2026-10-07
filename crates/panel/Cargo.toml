@@ -15,6 +15,7 @@ opusdm-dock = { path = "../dock" }
 gtk4.workspace = true
 gdk4-x11.workspace = true
 x11rb.workspace = true
+opusdm-x11 = { path = "../x11" }
 libc.workspace = true
 async-channel.workspace = true
 dirs.workspace = true

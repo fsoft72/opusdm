@@ -8,10 +8,10 @@ use std::cell::Cell;
 use std::error::Error;
 use std::time::Duration;
 use x11rb::connection::Connection;
-use x11rb::errors::ReplyError;
 use x11rb::properties::WmSizeHints;
 use x11rb::protocol::randr;
-use x11rb::protocol::xproto::{self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, Window};
+use opusdm_x11::{extents_of, gone, send_to_root, Extents, MOVERESIZE_ALL, NET_WM_STATE_ADD, NET_WM_STATE_REMOVE, SOURCE_APPLICATION};
+use x11rb::protocol::xproto::{self, AtomEnum, ConnectionExt, Window};
 use x11rb::protocol::xtest;
 use x11rb::rust_connection::RustConnection;
 
@@ -34,21 +34,8 @@ x11rb::atom_manager! {
     }
 }
 
-/// `_NET_MOVERESIZE_WINDOW` flags: default gravity, x, y, width and height
-/// supplied, request from a normal application.
-const MOVERESIZE_FLAGS: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
-
 /// `_NET_WM_MOVERESIZE` direction: move the window with the pointer.
 const MOVERESIZE_MOVE: u32 = 8;
-
-/// `_NET_WM_STATE` action: remove the property.
-const STATE_REMOVE: u32 = 0;
-
-/// `_NET_WM_STATE` action: add the property.
-const STATE_ADD: u32 = 1;
-
-/// EWMH source indication of a normal application.
-const SOURCE_APPLICATION: u32 = 1;
 
 /// Keysym of the Escape key.
 const KEYSYM_ESCAPE: u32 = 0xff1b;
@@ -62,9 +49,6 @@ const KEY_RELEASE: u8 = 3;
 
 /// Time given to Openbox to cancel its move loop after Escape.
 const CANCEL_DRAG_WAIT: Duration = Duration::from_millis(120);
-
-/// Frame extents of a window: left, right, top, bottom.
-pub type Extents = [i32; 4];
 
 /// The part of `a` that is also in `b`, or `None` when they do not overlap.
 pub fn intersect(a: Rect, b: Rect) -> Option<Rect> {
@@ -98,15 +82,6 @@ pub fn client_geometry(frame: Rect, extents: Extents) -> (i32, i32, u32, u32) {
     (frame.x, frame.y, w, h)
 }
 
-/// Turn "the window is gone" into `None` and keep real connection failures.
-fn gone<T>(result: Result<T, ReplyError>) -> Result<Option<T>, Box<dyn Error>> {
-    match result {
-        Ok(value) => Ok(Some(value)),
-        Err(ReplyError::X11Error(_)) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
 /// The monitors and the work area, read when a drag may start.
 #[derive(Debug, Clone)]
 pub struct Environment {
@@ -136,8 +111,7 @@ pub struct Display {
 impl Display {
     /// Connect to the X server and intern the atoms.
     pub fn connect() -> Result<Display, Box<dyn Error>> {
-        let (conn, screen_num) = x11rb::connect(None)?;
-        let root = conn.setup().roots[screen_num].root;
+        let opusdm_x11::Session { conn, screen_num, root } = opusdm_x11::connect()?;
         let atoms = Atoms::new(&conn)?.reply()?;
         let escape_keycode = Self::find_escape_keycode(&conn)?;
         Ok(Display { conn, root, screen_num, atoms, escape_keycode, checked: Cell::new(None) })
@@ -239,29 +213,18 @@ impl Display {
         let extents = self.conn.get_property(false, window, self.atoms._NET_FRAME_EXTENTS, AtomEnum::CARDINAL, 0, 4)?;
         let (Some(geometry), Some(origin)) = (gone(geometry.reply())?, gone(origin.reply())?) else { return Ok(None) };
         let client = Rect::new(i32::from(origin.dst_x), i32::from(origin.dst_y), i32::from(geometry.width), i32::from(geometry.height));
-        Ok(Some(frame_from_client(client, Self::extents_of(gone(extents.reply())?))))
-    }
-
-    /// The frame extents in a `_NET_FRAME_EXTENTS` reply; zero when absent.
-    fn extents_of(reply: Option<xproto::GetPropertyReply>) -> Extents {
-        let values: Vec<u32> = reply.and_then(|r| r.value32().map(|v| v.collect())).unwrap_or_default();
-        match values[..] {
-            [l, r, t, b] => [l as i32, r as i32, t as i32, b as i32],
-            _ => [0; 4],
-        }
+        Ok(Some(frame_from_client(client, extents_of(gone(extents.reply())?))))
     }
 
     /// Send a client message about `window` to the root window, as an EWMH
     /// client does.
     fn send_to_root(&self, window: Window, kind: u32, data: [u32; 5]) -> Result<(), Box<dyn Error>> {
-        let event = ClientMessageEvent::new(32, window, kind, data);
-        self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, event)?;
-        Ok(())
+        send_to_root(&self.conn, self.root, window, kind, data)
     }
 
     /// Add or remove the maximized state of `window`.
     fn set_maximized(&self, window: Window, on: bool) -> Result<(), Box<dyn Error>> {
-        let action = if on { STATE_ADD } else { STATE_REMOVE };
+        let action = if on { NET_WM_STATE_ADD } else { NET_WM_STATE_REMOVE };
         let data = [action, self.atoms._NET_WM_STATE_MAXIMIZED_VERT, self.atoms._NET_WM_STATE_MAXIMIZED_HORZ, SOURCE_APPLICATION, 0];
         self.send_to_root(window, self.atoms._NET_WM_STATE, data)
     }
@@ -269,8 +232,8 @@ impl Display {
     /// Put the frame of `window` at `frame`.
     fn move_resize_frame(&self, window: Window, frame: Rect) -> Result<(), Box<dyn Error>> {
         let reply = gone(self.conn.get_property(false, window, self.atoms._NET_FRAME_EXTENTS, AtomEnum::CARDINAL, 0, 4)?.reply())?;
-        let (x, y, w, h) = client_geometry(frame, Self::extents_of(reply));
-        self.send_to_root(window, self.atoms._NET_MOVERESIZE_WINDOW, [MOVERESIZE_FLAGS, x as u32, y as u32, w, h])
+        let (x, y, w, h) = client_geometry(frame, extents_of(reply));
+        self.send_to_root(window, self.atoms._NET_MOVERESIZE_WINDOW, [MOVERESIZE_ALL, x as u32, y as u32, w, h])
     }
 
     /// Snap `window` to `zone`: maximized for [`Zone::Maximize`], otherwise

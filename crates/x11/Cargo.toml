@@ -1,0 +1,12 @@
+[package]
+name = "opusdm-x11"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_x11"
+path = "src/lib.rs"
+
+[dependencies]
+x11rb.workspace = true

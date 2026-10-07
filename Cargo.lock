@@ -1752,6 +1752,7 @@ dependencies = [
  "opusdm-panel",
  "opusdm-snap",
  "opusdm-ui",
+ "opusdm-x11",
  "serde",
  "serde_json",
  "signal-hook",
@@ -1857,6 +1858,7 @@ dependencies = [
  "opusdm-ipc",
  "opusdm-network",
  "opusdm-ui",
+ "opusdm-x11",
  "tempfile",
  "x11rb",
  "zbus",
@@ -1895,6 +1897,7 @@ dependencies = [
  "image",
  "opusdm-ipc",
  "opusdm-ui",
+ "opusdm-x11",
  "serde",
  "tempfile",
  "webp",
@@ -1906,6 +1909,7 @@ name = "opusdm-snap"
 version = "0.7.0"
 dependencies = [
  "opusdm-ipc",
+ "opusdm-x11",
  "x11rb",
 ]
 
@@ -1945,6 +1949,7 @@ dependencies = [
  "async-channel",
  "gtk4",
  "opusdm-ipc",
+ "opusdm-x11",
  "tempfile",
  "x11rb",
 ]
@@ -1968,6 +1973,13 @@ version = "0.7.0"
 dependencies = [
  "async-channel",
  "zbus",
+]
+
+[[package]]
+name = "opusdm-x11"
+version = "0.7.0"
+dependencies = [
+ "x11rb",
 ]
 
 [[package]]

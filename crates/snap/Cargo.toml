@@ -11,3 +11,4 @@ path = "src/lib.rs"
 [dependencies]
 x11rb = { workspace = true, features = ["randr", "xtest", "shape"] }
 opusdm-ipc = { path = "../ipc" }
+opusdm-x11 = { path = "../x11" }

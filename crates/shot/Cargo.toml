@@ -13,6 +13,7 @@ opusdm-ui = { path = "../ui" }
 opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
 x11rb.workspace = true
+opusdm-x11 = { path = "../x11" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 webp = "0.3"
 dirs.workspace = true

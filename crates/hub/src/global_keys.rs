@@ -125,8 +125,8 @@ impl GlobalKeys {
     /// `on_key` with the function id of every grabbed key press. `None` (after
     /// one log line) when there is no X connection.
     pub fn start(on_key: Box<dyn Fn(FunctionId) + Send>) -> Option<GlobalKeys> {
-        let (conn, screen_num) = match x11rb::connect(None) {
-            Ok(pair) => pair,
+        let opusdm_x11::Session { conn, root, .. } = match opusdm_x11::connect() {
+            Ok(session) => session,
             Err(e) => {
                 opusdm_ipc::err_log!("hub", "global hotkeys unavailable (no X11 connection): {e}");
                 return None;
@@ -134,7 +134,6 @@ impl GlobalKeys {
         };
         let conn = Arc::new(conn);
         let setup = conn.setup();
-        let root = setup.roots[screen_num].root;
         let (min, max) = (setup.min_keycode, setup.max_keycode);
         let mapping = match conn
             .get_keyboard_mapping(min, max - min + 1)

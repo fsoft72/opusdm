@@ -155,8 +155,7 @@ fn run(
     wake: &OwnedFd,
     tx: async_channel::Sender<TrayEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (conn, screen_num) = x11rb::connect(None)?;
-    let root = conn.setup().roots[screen_num].root;
+    let opusdm_x11::Session { conn, screen_num, root } = opusdm_x11::connect()?;
     let atoms = Atoms::new(&conn)?.reply()?;
 
     let selection_name = format!("_NET_SYSTEM_TRAY_S{screen_num}");

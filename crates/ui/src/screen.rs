@@ -54,9 +54,8 @@ where
 /// Blocking loop: forward every root-window resize to `tx` as the primary
 /// monitor's new geometry. Returns when the connection or the channel dies.
 fn pump(tx: &async_channel::Sender<(i32, i32)>) -> Result<(), Box<dyn std::error::Error>> {
-    let (conn, screen_num) = x11rb::connect(None)?;
+    let opusdm_x11::Session { conn, screen_num, root } = opusdm_x11::connect()?;
     let screen = &conn.setup().roots[screen_num];
-    let root = screen.root;
     let mut last = (screen.width_in_pixels as i32, screen.height_in_pixels as i32);
 
     // Root ConfigureNotify is what a screen resize looks like to a plain X

@@ -168,8 +168,7 @@ pub fn spawn() -> async_channel::Receiver<EwmhEvent> {
 }
 
 fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::error::Error>> {
-    let (conn, screen_num) = x11rb::connect(None)?;
-    let root = conn.setup().roots[screen_num].root;
+    let opusdm_x11::Session { conn, root, .. } = opusdm_x11::connect()?;
     let atoms = Atoms::new(&conn)?.reply()?;
 
     conn.change_window_attributes(

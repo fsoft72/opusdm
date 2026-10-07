@@ -12,7 +12,8 @@ const SUPPORTED_BPP: u8 = 32;
 /// layout is not 32 bit little endian.
 pub fn capture(x: i32, y: i32, w: u32, h: u32) -> Result<RgbaImage, String> {
     if w == 0 || h == 0 { return Err("cannot capture an empty area".to_string()); }
-    let (conn, screen_num) = x11rb::connect(None).map_err(|e| format!("cannot connect to the X server: {e}"))?;
+    let opusdm_x11::Session { conn, screen_num, .. } =
+        opusdm_x11::connect().map_err(|e| format!("cannot connect to the X server: {e}"))?;
     let setup = conn.setup();
     let screen = &setup.roots[screen_num];
     let format = setup.pixmap_formats.iter().find(|f| f.depth == screen.root_depth)

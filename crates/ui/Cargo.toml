@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 gtk4.workspace = true
 x11rb = { workspace = true, features = ["randr"] }
+opusdm-x11 = { path = "../x11" }
 async-channel.workspace = true
 opusdm-ipc = { path = "../ipc" }
 
