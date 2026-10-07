@@ -2,7 +2,7 @@
 //! sent to the sound server, and the buttons that show it. Owned by `attach`,
 //! so a monitor-hotplug rebuild of the bars never loses the state.
 
-use crate::audio_model::{coalesce, IconLevel, Model, Request};
+use crate::audio_model::{coalesce, should_show, IconLevel, Model, Request};
 use crate::widgets::audio::AudioButton;
 use gtk4 as gtk;
 use gtk::glib;
@@ -53,7 +53,9 @@ impl AudioCenter {
             let center = center.clone();
             glib::spawn_future_local(async move {
                 while let Ok(e) = error_rx.recv().await {
-                    center.show_message(e.text());
+                    if should_show(&e) {
+                        center.show_message(e.text());
+                    }
                 }
             });
         }

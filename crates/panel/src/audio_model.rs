@@ -1,6 +1,6 @@
 //! The audio devices as the panel sees them: pure state, no GTK.
 
-use opusdm_audio::{AudioDevice, AudioEvent, Kind, WatchMsg};
+use opusdm_audio::{AudioDevice, AudioError, AudioEvent, Kind, WatchMsg};
 use std::time::{Duration, Instant};
 
 /// How long after the last slider change a server event may not move the slider.
@@ -97,6 +97,12 @@ impl Model {
             Some(d) => format!("Volume {}%", d.volume_percent),
         }
     }
+}
+
+/// Whether a failed request deserves an error line. A device that vanished
+/// in the meantime (unplugged headphones) is already gone from the list.
+pub fn should_show(error: &AudioError) -> bool {
+    *error != AudioError::NoSuchDevice
 }
 
 /// Remembers when the user last moved a slider.
@@ -258,6 +264,13 @@ mod tests {
         assert_eq!(m.tooltip(), "Volume 130%");
         m.apply(WatchMsg::Event(AudioEvent::Changed(dev(Kind::Output, 1, 130, true, true))));
         assert_eq!(m.tooltip(), "Muted");
+    }
+
+    #[test]
+    fn an_error_about_a_vanished_device_is_not_shown() {
+        assert!(!should_show(&AudioError::NoSuchDevice));
+        assert!(should_show(&AudioError::Rejected("no".into())));
+        assert!(should_show(&AudioError::ConnectionFailed("x".into())));
     }
 
     #[test]

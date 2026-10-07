@@ -91,3 +91,15 @@ the device button do.
 - `backend`: set volume, mute and default with the `FakeBackend`, and the events they produce.
 - Panel: the row model (default device, mute state, icon level, hidden section, events added, removed and changed, ignoring a `Changed` while dragging) is a pure struct tested without GTK, as `devices_model.rs` does.
 - By hand under the real session: slider, mute, switching the default output and input, plugging and unplugging headphones, restarting `pipewire-pulse` while the panel runs. Whatever is not checked by hand will be stated in `CHANGES.md`.
+
+## As built
+
+Differences from the text above, decided while implementing (details in `docs/superpowers/plans/2026-10-07-audio-tray.md`):
+
+- The watcher is a module function `watch::spawn()` (as in `opusdm-devices`), not a method of the `Backend` trait. The trait has `list`, `set_volume`, `set_mute` and `set_default`.
+- The monitor filter is `filter::is_input(name)`; there is no `RawSource` type.
+- libpulse objects are not `Send`, so a `Session` type owns them on one thread and `PulseBackend` is a handle that sends it jobs.
+- The channel average comes from libpulse (`avg()`); `volume::from_raw` is not clamped, so a volume raised above 100% shows its real value, and `to_raw` clamps at 100.
+- The panel never autospawns a sound server (`NOAUTOSPAWN`).
+- A request that fails because the device is gone (`AudioError::NoSuchDevice`) shows no error line.
+- Volume requests queued during a drag are merged by `coalesce` in the worker thread.

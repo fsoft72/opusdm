@@ -8,6 +8,7 @@ use crate::filter;
 use crate::model::{AudioDevice, Kind};
 use crate::volume;
 use libpulse_binding::callbacks::ListResult;
+use libpulse_binding::error::{Code, PAErr};
 use libpulse_binding::context::introspect::{SinkInfo, SourceInfo};
 use libpulse_binding::context::subscribe::InterestMaskSet;
 use libpulse_binding::context::{Context, FlagSet, State};
@@ -93,7 +94,8 @@ impl Pulse {
         })));
         ml.lock();
         let started = ctx
-            .connect(None, FlagSet::NOFLAGS, None)
+            // Never start a sound server from the panel: if it is down, retry later.
+            .connect(None, FlagSet::NOAUTOSPAWN, None)
             .map_err(|e| fail(&e.to_string().unwrap_or_default()))
             .and_then(|_| ml.start().map_err(|e| fail(&e.to_string().unwrap_or_default())));
         ml.unlock();
@@ -199,6 +201,25 @@ impl Pulse {
         Ok(all.into_iter().map(|(d, _)| d).collect())
     }
 
+    /// Wait for the success flag of a set call. A refusal because the device is
+    /// gone (unplugged in the meantime) is `NoSuchDevice`; anything else keeps the server text.
+    fn ack(&mut self, rx: &Receiver<bool>) -> Result<(), AudioError> {
+        match rx.recv_timeout(Duration::from_secs(CALL_TIMEOUT_SECS)) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                self.ml.lock();
+                let errno = self.ctx.errno();
+                self.ml.unlock();
+                // `pa_context_errno` gives the code as a positive number, `Code` wants it negative.
+                if Code::try_from(PAErr(-errno.0.abs())) == Ok(Code::NoEntity) {
+                    return Err(AudioError::NoSuchDevice);
+                }
+                Err(AudioError::Rejected(errno.to_string().unwrap_or_else(|| "unknown error".to_string())))
+            }
+            Err(_) => Err(timeout_error()),
+        }
+    }
+
     /// Set one volume on every channel of a device.
     fn set_volume(&mut self, kind: Kind, index: u32, percent: u32) -> Result<(), AudioError> {
         let channels = self.channels.get(&(kind, index)).copied().unwrap_or(DEFAULT_CHANNELS);
@@ -215,7 +236,7 @@ impl Pulse {
             Kind::Input => intro.set_source_volume_by_index(index, &cv, Some(done)),
         };
         self.ml.unlock();
-        wait_ack(&rx)
+        self.ack(&rx)
     }
 
     /// Mute or unmute a device.
@@ -231,7 +252,7 @@ impl Pulse {
             Kind::Input => intro.set_source_mute_by_index(index, muted, Some(done)),
         };
         self.ml.unlock();
-        wait_ack(&rx)
+        self.ack(&rx)
     }
 
     /// Make the device called `name` the default of its kind.
@@ -246,7 +267,7 @@ impl Pulse {
             Kind::Input => self.ctx.set_default_source(name, done),
         };
         self.ml.unlock();
-        wait_ack(&rx)
+        self.ack(&rx)
     }
 }
 
@@ -293,15 +314,6 @@ fn collect(rx: &Receiver<Item>) -> Result<Vec<(AudioDevice, u8)>, AudioError> {
             Ok(Item::Failed) => return Err(AudioError::Rejected("the device list failed".to_string())),
             Err(_) => return Err(timeout_error()),
         }
-    }
-}
-
-/// Wait for the success flag of a set call.
-fn wait_ack(rx: &Receiver<bool>) -> Result<(), AudioError> {
-    match rx.recv_timeout(Duration::from_secs(CALL_TIMEOUT_SECS)) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(AudioError::Rejected("the server said no".to_string())),
-        Err(_) => Err(timeout_error()),
     }
 }
 
