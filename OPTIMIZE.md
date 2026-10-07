@@ -38,7 +38,7 @@ None found.
 
 ## Low / Nice to have
 
-- [ ] **Replace the remaining production `unwrap` and `expect` calls with errors** - `lister/columns.rs` has 9, `lister/archive.rs` 5 and `hub/server.rs` 5 outside tests; each should fail with a message or fall back instead of panicking the UI or the hub.
+- [x] **Replace the remaining production `unwrap` and `expect` calls with errors** - `lister/columns.rs` has 9, `lister/archive.rs` 5 and `hub/server.rs` 5 outside tests; each should fail with a message or fall back instead of panicking the UI or the hub.
   - File(s): `crates/lister/src/columns.rs`, `crates/lister/src/archive.rs`, `crates/hub/src/server.rs`
 - [x] **Use one version for the whole workspace** - the version is repeated in 25 `Cargo.toml` files plus `opusdm_ui::VERSION`, and every release means editing all of them by hand (as the 0.7.0 bump did). Put it in `[workspace.package]` with `version.workspace = true` and build `VERSION` from `env!("CARGO_PKG_VERSION")`.
   - File(s): `Cargo.toml`, `crates/*/Cargo.toml`, `crates/ui/src/version.rs`

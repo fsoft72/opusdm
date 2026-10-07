@@ -33,6 +33,11 @@ impl ColKind {
     }
 }
 
+/// The `Row` a list model item carries, `None` for any other object.
+fn row_of(item: &gtk::glib::Object) -> Option<Rc<Row>> {
+    item.downcast_ref::<BoxedAnyObject>().map(|o| o.borrow::<Rc<Row>>().clone())
+}
+
 /// Toggle the CSS class that shows selection. Needed because row-dir/row-file
 /// paint an opaque background on every cell, which otherwise sits on top of
 /// (and hides) GTK's normal selection highlight.
@@ -55,7 +60,7 @@ pub fn add_column(
     {
         let ui_getter = ui_getter.clone();
         factory.connect_setup(move |_, list_item| {
-            let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
+            let Some(item) = list_item.downcast_ref::<gtk::ListItem>() else { return };
             let label = gtk::Label::new(None);
             label.set_xalign(0.0);
             label.set_valign(gtk::Align::Fill);
@@ -194,18 +199,18 @@ pub fn add_column(
     }
     let ui_getter_bind = ui_getter.clone();
     factory.connect_bind(move |_, list_item| {
-        let item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(item) = list_item.downcast_ref::<gtk::ListItem>() else { return };
         let row = item
             .item()
             .and_downcast::<BoxedAnyObject>()
             .map(|o| o.borrow::<Rc<Row>>().clone());
         let Some(row) = row else { return };
         let label = if matches!(kind, ColKind::Name) {
-            let cell = item.child().and_downcast::<gtk::Box>().unwrap();
-            cell.last_child().and_downcast::<gtk::Label>().unwrap()
+            item.child().and_downcast::<gtk::Box>().and_then(|cell| cell.last_child()).and_downcast::<gtk::Label>()
         } else {
-            item.child().and_downcast::<gtk::Label>().unwrap()
+            item.child().and_downcast::<gtk::Label>()
         };
+        let Some(label) = label else { return };
         // Every cell in the row gets the same dir/file background+text CSS
         // class, so the whole row reads as one colored line. The class goes
         // on the whole cell, not the label: in the Name column the label only
@@ -227,13 +232,14 @@ pub fn add_column(
                     })
                     .unwrap_or((opusdm_ipc::IconSetId::default(), false));
                 label.set_xalign(0.0);
-                let icon_widget = item
+                let Some(icon_widget) = item
                     .child()
                     .and_downcast::<gtk::Box>()
-                    .unwrap()
-                    .first_child()
+                    .and_then(|cell| cell.first_child())
                     .and_downcast::<gtk::Image>()
-                    .unwrap();
+                else {
+                    return;
+                };
                 if let Some(texture) = crate::glyphs::icon_texture_for_row(&row, &icon_set) {
                     icon_widget.set_paintable(Some(&texture));
                     icon_widget.set_visible(true);
@@ -271,8 +277,7 @@ pub fn add_column(
     // and keeps directories on top in both directions.
     let sort_col = kind.sort_col();
     let sorter = gtk::CustomSorter::new(move |a, b| {
-        let ra = a.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
-        let rb = b.downcast_ref::<BoxedAnyObject>().unwrap().borrow::<Rc<Row>>().clone();
+        let (Some(ra), Some(rb)) = (row_of(a), row_of(b)) else { return gtk::Ordering::Equal };
         dir_first_cmp(&ra, &rb, sort_col, false, opusdm_ipc::Separate::DirsFirst).into()
     });
 
