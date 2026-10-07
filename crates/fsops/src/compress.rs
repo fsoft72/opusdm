@@ -172,7 +172,7 @@ pub fn run_compress(
     let child = match spawn_tool(format, &plan, &out_path, out) {
         Ok(c) => c,
         Err(e) => {
-            let _ = std::fs::remove_file(&out_path);
+            crate::cleanup::remove_partial(&out_path);
             return failed(&out_path, format!("cannot start the compressor: {e}"));
         }
     };
@@ -180,11 +180,11 @@ pub fn run_compress(
     match outcome {
         Ok(()) => Progress::Done { copied: srcs.len() as u64, skipped: 0, cancelled: false, errors: Vec::new() },
         Err(WaitError::Cancelled) => {
-            let _ = std::fs::remove_file(&out_path);
+            crate::cleanup::remove_partial(&out_path);
             Progress::Done { copied: 0, skipped: 0, cancelled: true, errors: Vec::new() }
         }
         Err(WaitError::Failed(msg)) => {
-            let _ = std::fs::remove_file(&out_path);
+            crate::cleanup::remove_partial(&out_path);
             failed(&out_path, msg)
         }
     }

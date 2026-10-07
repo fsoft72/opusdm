@@ -128,7 +128,7 @@ pub fn run_join(
             }
             Err(e) => {
                 drop(out);
-                let _ = std::fs::remove_file(&out_path);
+                crate::cleanup::remove_partial(&out_path);
                 let cancelled = e.kind() == io::ErrorKind::Interrupted;
                 return failed(src, e.to_string(), 0, cancelled).with_no_error_if(cancelled);
             }
@@ -208,7 +208,7 @@ pub fn run_split(
         });
         if let Err(e) = result {
             for p in &written {
-                let _ = std::fs::remove_file(p);
+                crate::cleanup::remove_partial(p);
             }
             let cancelled = e.kind() == io::ErrorKind::Interrupted;
             return failed(part, e.to_string(), 0, cancelled).with_no_error_if(cancelled);

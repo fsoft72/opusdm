@@ -82,7 +82,9 @@ pub fn sweep_old_downloads(base: &Path, now: SystemTime) {
         }
         let age = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok());
         if age.is_some_and(|a| a > DOWNLOAD_DIR_MAX_AGE) {
-            let _ = std::fs::remove_dir_all(entry.path());
+            if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                opusdm_ipc::err_log!("opusdm-lister", "cannot remove old download folder {}: {e}", entry.path().display());
+            }
         }
     }
 }

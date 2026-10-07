@@ -363,7 +363,9 @@ pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<Pat
     PREVIEW_DIRS.lock().unwrap_or_else(|e| e.into_inner()).push(temp_dir.clone());
     let extracted = _extract_one(kind, arch, inner_file, &temp_dir);
     if extracted.is_err() {
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        if let Err(e) = std::fs::remove_dir_all(&temp_dir) {
+            opusdm_ipc::err_log!("opusdm-lister", "cannot remove preview folder {}: {e}", temp_dir.display());
+        }
     }
     extracted
 }

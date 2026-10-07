@@ -191,11 +191,11 @@ fn crypt_file(src: &Path, target: &Path, password: &str, encrypt: bool, cancel: 
     drop(output);
     match result {
         Ok(()) => std::fs::rename(&part, target).map_err(|e| {
-            let _ = std::fs::remove_file(&part);
+            crate::cleanup::remove_partial(&part);
             CryptError::from(e)
         }),
         Err(e) => {
-            let _ = std::fs::remove_file(&part);
+            crate::cleanup::remove_partial(&part);
             Err(e)
         }
     }

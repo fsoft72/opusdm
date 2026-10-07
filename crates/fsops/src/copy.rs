@@ -92,7 +92,7 @@ pub fn copy_file(
     });
     if finish.is_err() {
         drop(writer);
-        let _ = std::fs::remove_file(&out);
+        crate::cleanup::remove_partial(&out);
     }
     finish
 }

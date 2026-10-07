@@ -4,6 +4,7 @@
 pub mod attrs;
 pub mod cancel;
 pub mod checkfit;
+pub mod cleanup;
 pub mod compress;
 pub mod copy;
 pub mod crypt;
