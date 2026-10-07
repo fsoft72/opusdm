@@ -2,6 +2,7 @@
 
 ## 2026-10-07
 
+- Change (workspace): one version for everything. `version = "0.7.0"` now lives only in `[workspace.package]` of the root `Cargo.toml`; the 26 crates use `version.workspace = true` and `opusdm_ui::VERSION` is `env!("CARGO_PKG_VERSION")`. A release is a one line edit.
 - Cleanup (lister): removed `#[allow(dead_code)]` on `DirDiffItem` and the two fields it hid (`src_size`, `tgt_size`, never read).
 - Fix (fsops, lister): cleanup after a failed copy, compress, encrypt, split or archive operation is no longer silent. New `fsops::cleanup::remove_partial` removes a partial file and logs the path when it cannot (a file already gone is ignored); the lister's preview folder and old download folder cleanups log too. Left as they were on purpose: `copy.rs:468` (removes a link before replacing it) and `copy.rs:630` (`remove_dir` that is meant to fail on a non-empty folder).
 - Fix (devices, audio, network, panel, hub, lister): a poisoned mutex no longer makes every later call panic. The 6, 6 and 4 `lock().unwrap()` of the backends, the ones in `panel/sni.rs`, `hub/global_keys.rs` and `lister/archive.rs` now use `unwrap_or_else(|e| e.into_inner())`, as `ui/x11.rs` already did. Tests of devices, audio, network and panel pass; `hub` and `lister` could NOT be built here (no gstreamer or openssl headers), the change there is the same mechanical replacement.

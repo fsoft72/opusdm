@@ -40,7 +40,7 @@ None found.
 
 - [ ] **Replace the remaining production `unwrap` and `expect` calls with errors** - `lister/columns.rs` has 9, `lister/archive.rs` 5 and `hub/server.rs` 5 outside tests; each should fail with a message or fall back instead of panicking the UI or the hub.
   - File(s): `crates/lister/src/columns.rs`, `crates/lister/src/archive.rs`, `crates/hub/src/server.rs`
-- [ ] **Use one version for the whole workspace** - the version is repeated in 25 `Cargo.toml` files plus `opusdm_ui::VERSION`, and every release means editing all of them by hand (as the 0.7.0 bump did). Put it in `[workspace.package]` with `version.workspace = true` and build `VERSION` from `env!("CARGO_PKG_VERSION")`.
+- [x] **Use one version for the whole workspace** - the version is repeated in 25 `Cargo.toml` files plus `opusdm_ui::VERSION`, and every release means editing all of them by hand (as the 0.7.0 bump did). Put it in `[workspace.package]` with `version.workspace = true` and build `VERSION` from `env!("CARGO_PKG_VERSION")`.
   - File(s): `Cargo.toml`, `crates/*/Cargo.toml`, `crates/ui/src/version.rs`
 - [ ] **Finish moving the JSON files onto `load_json`** - 11 callers already use `opusdm_ipc::settings::load_json`, but `ipc/menu.rs:50` and a few others still parse by hand, and the 35 `load_*` functions each repeat the path plus load plus save trio. A small `ConfigFile<T>` helper would give one place for the error messages.
   - File(s): `crates/ipc/src/menu.rs`, `crates/ipc/src/bookmarks.rs`, `crates/ipc/src/quickapps.rs`, `crates/ipc/src/filetypes.rs`, `crates/ipc/src/format.rs`
