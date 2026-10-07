@@ -11,3 +11,4 @@ path = "src/lib.rs"
 [dependencies]
 libpulse-binding = "2.30"
 async-channel.workspace = true
+opusdm-watch = { path = "../watch" }

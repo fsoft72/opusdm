@@ -1,0 +1,13 @@
+[package]
+name = "opusdm-watch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_watch"
+path = "src/lib.rs"
+
+[dependencies]
+zbus = { version = "5.19.0", features = ["blocking"] }
+async-channel.workspace = true

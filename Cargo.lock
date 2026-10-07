@@ -1655,6 +1655,7 @@ version = "0.7.0"
 dependencies = [
  "async-channel",
  "libpulse-binding",
+ "opusdm-watch",
 ]
 
 [[package]]
@@ -1687,6 +1688,7 @@ name = "opusdm-devices"
 version = "0.7.0"
 dependencies = [
  "async-channel",
+ "opusdm-watch",
  "zbus",
 ]
 
@@ -1836,6 +1838,7 @@ name = "opusdm-network"
 version = "0.7.0"
 dependencies = [
  "async-channel",
+ "opusdm-watch",
  "zbus",
 ]
 
@@ -1957,6 +1960,14 @@ dependencies = [
  "opusdm-media-ui",
  "opusdm-ui",
  "tempfile",
+]
+
+[[package]]
+name = "opusdm-watch"
+version = "0.7.0"
+dependencies = [
+ "async-channel",
+ "zbus",
 ]
 
 [[package]]

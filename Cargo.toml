@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/ui", "crates/iconview", "crates/desktop-config", "crates/panel", "crates/dock", "crates/runner", "crates/shot", "crates/media", "crates/player", "crates/viewer", "crates/media-ui", "crates/theme-config", "crates/buttonbank", "crates/ftp", "crates/themepack", "crates/input-config", "crates/apps-editor", "crates/devices", "crates/audio", "crates/network", "crates/snap", "xtask"]
+members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/ui", "crates/iconview", "crates/desktop-config", "crates/panel", "crates/dock", "crates/runner", "crates/shot", "crates/media", "crates/player", "crates/viewer", "crates/media-ui", "crates/theme-config", "crates/buttonbank", "crates/ftp", "crates/themepack", "crates/input-config", "crates/apps-editor", "crates/devices", "crates/audio", "crates/network", "crates/snap", "crates/watch", "xtask"]
 
 [workspace.package]
 version = "0.7.0"
