@@ -703,6 +703,27 @@ offers to mount a device when it is plugged in.
   call a system or hidden device. Root, `/boot`, swap, loop devices and internal disks never show.
   Encrypted (LUKS) volumes are not unlocked.
 
+### 3.32 Audio tray (panel)
+
+Like the KDE Audio Volume applet: volume, mute and default device of the sound output and input.
+
+- **Icon:** a speaker on the right side of the panel, next to the device notifier and before the CPU
+  and network monitors (primary bar only). It shows a cross when muted, and one, two or three waves
+  as the volume of the default output grows. The tooltip shows the percentage, or *Muted*. It is
+  hidden while the sound server is not reachable.
+- **Popover (click the icon):** an **Output** and an **Input** section. Each lists its devices (a
+  check mark on the default one; click a device to make it the default), with a **Mute** button and a
+  volume slider for the default device. A volume raised above 100% by another tool shows its real
+  percentage and the slider rests at the top; the panel itself never goes above 100%. A failure
+  shows as one red line for 5 seconds.
+- **Live:** changes made by other tools (a keyboard volume key, `pavucontrol`, plugging in a USB
+  headset) show up at once; the slider does not jump while you drag it.
+- **Needs:** PulseAudio, or PipeWire with `pipewire-pulse`. If the server is missing the icon stays
+  hidden and the panel tries again every 30 seconds.
+- **Not included:** volume per application, profiles and ports, mouse wheel and middle click on the icon.
+- **Balance:** setting the volume applies one value to every channel, so a left/right balance set
+  elsewhere is flattened.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

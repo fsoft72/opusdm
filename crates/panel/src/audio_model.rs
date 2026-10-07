@@ -117,8 +117,9 @@ impl DragGuard {
     }
 }
 
-/// What the user asked for.
+/// What the user asked for. The `Set` prefix mirrors the `Backend` methods.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum Request {
     SetVolume { kind: Kind, index: u32, percent: u32 },
     SetMute { kind: Kind, index: u32, muted: bool },
