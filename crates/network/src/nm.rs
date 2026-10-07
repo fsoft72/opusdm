@@ -1,10 +1,13 @@
 //! The real backend: NetworkManager over the D-Bus system bus.
 
+use crate::agent;
 use crate::backend::Backend;
 use crate::error::NetError;
+use crate::keystore::{KeyStore, SecretServiceStore, SECURITY_GROUP};
 use crate::model::{NetState, Security};
 use crate::parse::{self, RawAp, DEVICE_ETHERNET, DEVICE_WIFI};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
@@ -28,9 +31,9 @@ const ACTIVE_ACTIVATED: u32 = 2;
 const ACTIVE_DEACTIVATED: u32 = 4;
 /// `NM_SETTING_SECRET_FLAG_AGENT_OWNED | NM_SETTING_SECRET_FLAG_NOT_SAVED`: the
 /// key is not in the profile, a secret agent has to provide it.
-const SECRET_NOT_STORED: u32 = 0x1 | 0x2;
-/// The settings group that holds the Wi-Fi key.
-const SECURITY_GROUP: &str = "802-11-wireless-security";
+const SECRET_NOT_STORED: u32 = SECRET_AGENT_OWNED | 0x2;
+/// `NM_SETTING_SECRET_FLAG_AGENT_OWNED`: the key lives with the secret agent.
+const SECRET_AGENT_OWNED: u32 = 0x1;
 /// How long a connection may take to come up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often the state of a connecting connection is read.
@@ -45,13 +48,21 @@ type NoOptions<'a> = HashMap<&'a str, Value<'a>>;
 /// NetworkManager on the system bus.
 pub struct NmBackend {
     conn: Connection,
+    /// Where the keys of the profiles that keep them out of NetworkManager live.
+    keys: Arc<dyn KeyStore>,
 }
 
 impl NmBackend {
     /// Connect to the system bus. Does not need NetworkManager to be running yet.
     pub fn connect() -> Result<Self, NetError> {
         let conn = Connection::system().map_err(|e| NetError::from_zbus(&e))?;
-        Ok(Self { conn })
+        Ok(Self { conn, keys: Arc::new(SecretServiceStore) })
+    }
+
+    /// Serve the secret agent and register it; NetworkManager must be running.
+    /// Without it a profile that keeps its key out of NetworkManager cannot join.
+    pub fn register_agent(&self) -> Result<(), NetError> {
+        agent::register(&self.conn, self.keys.clone())
     }
 
     /// The connection, for the signal watcher.
@@ -133,27 +144,27 @@ impl NmBackend {
         }
     }
 
-    /// Make sure a saved profile can be activated with no secret agent.
+    /// Make sure a saved profile can be activated: the secret agent must find
+    /// its key.
     ///
-    /// A profile whose key is not stored fails with "no secrets", so without a
-    /// `password` this asks the caller for one. With it, the key goes into the
-    /// profile. Returns the settings to put back if the connection then fails,
-    /// `None` when nothing was changed.
-    fn ensure_key(&self, profile: &OwnedObjectPath, password: Option<&str>) -> Result<Option<Settings>, NetError> {
+    /// A profile whose key NetworkManager does not keep needs one in the
+    /// keyring. Without a `password` and without a key there, this asks the
+    /// caller for one. With a `password` it goes into the keyring. Returns the
+    /// UUID to forget if the connection then fails, `None` when nothing was kept.
+    fn ensure_key(&self, profile: &OwnedObjectPath, password: Option<&str>) -> Result<Option<String>, NetError> {
         let conn = self.proxy(profile.as_str(), CONNECTION_IFACE)?;
-        let original: Settings = conn.call("GetSettings", &()).map_err(|e| NetError::from_zbus(&e))?;
-        if !key_not_stored(&original) { return Ok(None); }
-        let Some(password) = password else { return Err(NetError::password_needed()) };
-        let updated = with_stored_key(&original, password)?;
-        conn.call::<_, _, ()>("Update", &(updated,)).map_err(|e| NetError::from_zbus(&e))?;
-        Ok(Some(original))
-    }
-
-    /// Put back the settings of a profile, ignoring the error: it only undoes
-    /// the storing of a key that did not work.
-    fn restore_profile(&self, path: &OwnedObjectPath, settings: &Settings) {
-        let Ok(conn) = self.proxy(path.as_str(), CONNECTION_IFACE) else { return };
-        let _ = conn.call::<_, _, ()>("Update", &(settings,));
+        let settings: Settings = conn.call("GetSettings", &()).map_err(|e| NetError::from_zbus(&e))?;
+        if !key_not_stored(&settings) { return Ok(None); }
+        let uuid = text_of(&settings, "connection", "uuid").ok_or_else(|| NetError::other("The profile has no uuid"))?;
+        let Some(password) = password else {
+            return match self.keys.get(&uuid)? {
+                Some(_) => Ok(None),
+                None => Err(NetError::password_needed()),
+            };
+        };
+        let name = text_of(&settings, "connection", "id").unwrap_or_else(|| uuid.clone());
+        self.keys.set(&uuid, &name, password)?;
+        Ok(Some(uuid))
     }
 
     /// Remove a profile, ignoring the error: it only cleans up after a failure.
@@ -176,18 +187,9 @@ fn key_not_stored(settings: &Settings) -> bool {
     flags.is_some_and(|f| f & SECRET_NOT_STORED != 0)
 }
 
-/// A copy of the profile that stores `password` as its key.
-fn with_stored_key(settings: &Settings, password: &str) -> Result<Settings, NetError> {
-    let mut out = settings.clone();
-    let group = out.get_mut(SECURITY_GROUP).ok_or_else(|| NetError::other("The profile has no security settings"))?;
-    group.insert("psk".to_string(), owned(Value::from(password))?);
-    group.insert("psk-flags".to_string(), owned(Value::from(0u32))?);
-    Ok(out)
-}
-
-/// A D-Bus value that owns its data.
-fn owned(value: Value<'_>) -> Result<OwnedValue, NetError> {
-    OwnedValue::try_from(value).map_err(|e| NetError::other(e.to_string()))
+/// One text value of a profile.
+fn text_of(settings: &Settings, group: &str, key: &str) -> Option<String> {
+    String::try_from(settings.get(group)?.get(key)?.clone()).ok()
 }
 
 /// The settings of a new profile: the name, the network and the key.
@@ -196,7 +198,7 @@ fn new_profile<'a>(ssid: &'a str, key: Option<(&'static str, &'a str)>) -> HashM
     let Some((key_mgmt, psk)) = key else { return s };
     s.insert("connection", HashMap::from([("type", Value::from("802-11-wireless")), ("id", Value::from(ssid))]));
     s.insert("802-11-wireless", HashMap::from([("ssid", Value::from(ssid.as_bytes().to_vec())), ("mode", Value::from("infrastructure"))]));
-    s.insert("802-11-wireless-security", HashMap::from([("key-mgmt", Value::from(key_mgmt)), ("psk", Value::from(psk))]));
+    s.insert("802-11-wireless-security", HashMap::from([("key-mgmt", Value::from(key_mgmt)), ("psk", Value::from(psk)), ("psk-flags", Value::from(SECRET_AGENT_OWNED))]));
     s
 }
 
@@ -266,14 +268,16 @@ impl Backend for NmBackend {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
         let profile = self.saved_profiles()?.into_iter().find(|(_, name)| name == ssid).map(|(p, _)| p);
         if let Some(profile) = profile {
-            let undo = self.ensure_key(&profile, password)?;
+            let kept = self.ensure_key(&profile, password)?;
             let active: OwnedObjectPath = nm
                 .call("ActivateConnection", &(&profile, &wifi.path, &ap))
                 .map_err(|e| NetError::from_zbus(&e))?;
             return self.wait_active(&active).map_err(|why| {
-                // A key that did not work must not stay in the profile.
-                if let Some(original) = &undo { self.restore_profile(&profile, original); }
-                NetError::other(if undo.is_some() { format!("{why}, wrong password?") } else { why })
+                // A key that did not work must not stay in the keyring.
+                if let Some(uuid) = &kept {
+                    let _ = self.keys.delete(uuid);
+                }
+                NetError::other(if kept.is_some() { format!("{why}, wrong password?") } else { why })
             });
         }
         let key = match (security, password) {
@@ -317,7 +321,7 @@ mod tests {
     fn saved(flags: Option<u32>) -> Settings {
         let mut group = Props::new();
         if let Some(flags) = flags {
-            group.insert("psk-flags".to_string(), owned(Value::from(flags)).unwrap());
+            group.insert("psk-flags".to_string(), OwnedValue::try_from(Value::from(flags)).unwrap());
         }
         Settings::from([(SECURITY_GROUP.to_string(), group)])
     }
@@ -337,19 +341,19 @@ mod tests {
     }
 
     #[test]
-    fn storing_a_key_sets_the_password_and_clears_the_flags() {
-        let before = saved(Some(1));
-        let after = with_stored_key(&before, "secret").unwrap();
-        assert!(!key_not_stored(&after));
-        assert_eq!(String::try_from(after[SECURITY_GROUP]["psk"].clone()).unwrap(), "secret");
-        // The original is what gets restored after a failure.
-        assert!(key_not_stored(&before));
-        assert!(!before[SECURITY_GROUP].contains_key("psk"));
+    fn text_of_reads_a_text_value_and_nothing_else() {
+        let mut s = saved(Some(1));
+        s.get_mut(SECURITY_GROUP).unwrap().insert("psk".to_string(), OwnedValue::try_from(Value::from("secret")).unwrap());
+        assert_eq!(text_of(&s, SECURITY_GROUP, "psk").as_deref(), Some("secret"));
+        assert_eq!(text_of(&s, SECURITY_GROUP, "psk-flags"), None);
+        assert_eq!(text_of(&s, SECURITY_GROUP, "missing"), None);
+        assert_eq!(text_of(&s, "missing", "psk"), None);
     }
 
     #[test]
-    fn storing_a_key_needs_the_security_group() {
-        assert!(with_stored_key(&Settings::new(), "secret").is_err());
+    fn a_new_profile_leaves_its_key_to_the_secret_agent() {
+        let s = new_profile("home", Some(("wpa-psk", "secret")));
+        assert_eq!(u32::try_from(s["802-11-wireless-security"]["psk-flags"].clone()).unwrap(), SECRET_AGENT_OWNED);
     }
 
     #[test]

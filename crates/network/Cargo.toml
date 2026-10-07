@@ -10,5 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 zbus = { version = "5.19.0", features = ["blocking"] }
+secret-service = { version = "5.2", features = ["rt-async-io-crypto-rust"] }
 async-channel.workspace = true
 opusdm-watch = { path = "../watch" }

@@ -4,8 +4,10 @@
 //! system bus, `FakeBackend` for tests) and a watcher that turns
 //! NetworkManager signals into state snapshots.
 
+pub mod agent;
 pub mod backend;
 pub mod error;
+pub mod keystore;
 pub mod model;
 pub mod nm;
 pub mod parse;
