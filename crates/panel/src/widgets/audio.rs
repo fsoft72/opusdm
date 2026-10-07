@@ -80,7 +80,6 @@ impl AudioButton {
         button.set_popover(Some(&popover));
 
         root.append(&button);
-        root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         Rc::new(Self { root, icon, level, button, message, outputs, inputs })
     }
 
