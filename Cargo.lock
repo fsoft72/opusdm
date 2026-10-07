@@ -1900,6 +1900,10 @@ dependencies = [
 [[package]]
 name = "opusdm-snap"
 version = "0.7.0"
+dependencies = [
+ "opusdm-ipc",
+ "x11rb",
+]
 
 [[package]]
 name = "opusdm-theme-config"

@@ -112,7 +112,7 @@ Rules (each one gets a test first):
 - Produces: `pub fn start(enabled: bool) -> Option<Watcher>`, `pub fn client_geometry(rect: Rect, extents: (i32, i32, i32, i32)) -> (i32, i32, u32, u32)` (frame rect to the client geometry `_NET_MOVERESIZE_WINDOW` expects, never below 1x1).
 
 - [ ] **Step 1: Failing tests:** `desktop.rs` (default is `true`, `{"icon_size":64}` loads with `true`, `false` roundtrips), `hub::snap::client_geometry` (a 960x1050 frame with extents `(1,1,24,1)` gives a 958x1025 client at the frame origin), `WindowsSection` seeded value is reported back (guarded by `gtk::init()` like the existing tests).
-- [ ] **Step 2: Run** fail. **Step 3: Implement.** `Placement::Place` with `Zone::Maximize` sends `_NET_WM_STATE_ADD` for `_NET_WM_STATE_MAXIMIZED_VERT` and `_HORZ`; any other zone first removes both maximized states, then `move_resize`. `Placement::Restore` follows the strategy of Task 4. Errors are logged with the window id and ignored.
+- [ ] **Step 2: Run** fail. **Step 3: Implement.** `Placement::Place` with `Zone::Maximize` sends `_NET_WM_STATE_ADD` for `_NET_WM_STATE_MAXIMIZED_VERT` and `_HORZ`; any other zone first removes both maximized states, then `move_resize`. `Placement::Restore` follows the strategy decided by Task 4 (see the end of this plan). Errors are logged with the window id and ignored.
 - [ ] **Step 4: Run** `cargo test --workspace` and `cargo clippy --workspace -- -D warnings`.
 - [ ] **Step 5: Commit** `feat(snap): hub integration and Windows setting`.
 
@@ -126,4 +126,10 @@ Rules (each one gets a test first):
 
 ## Restore strategy
 
-Decided by Task 4 (written there).
+Decided by the Task 4 spike, run on a nested Xephyr with Openbox and an xterm, pointer driven with XTEST:
+
+- Resizing the window in the middle of Openbox's move loop does NOT work: the next pointer motion makes Openbox reapply its cached size and the original position plus the pointer delta. A `_NET_WM_MOVERESIZE` sent while the loop runs is ignored.
+- Restoring at button release works, but is not the KDE behaviour.
+- **Chosen: cancel and restart the move.** On `Action::Restore`: (1) send an `Escape` key press and release through XTEST (Openbox cancels its move loop and puts the window back where the drag started), (2) `_NET_MOVERESIZE_WINDOW` to the restored frame rectangle, (3) `_NET_WM_MOVERESIZE` with the pointer position, direction 8 (move), button 1, source 1, which starts a fresh move loop that follows the pointer. Measured: the window followed the pointer exactly (expected client position (364,353), got (364,353)).
+- Cost: the XTEST extension (`x11rb` feature `xtest`), and about 300 ms of steps with sleeps in the placement code, run off the GTK main loop.
+- NOT verified: the same sequence with a physical mouse. The spike held the button down with XTEST, a real device is a different slave device. To be checked by the user on the real session, with fallback strategy 2 (restore at release) selectable with the constant `RESTORE_DURING_DRAG` in `crates/hub/src/snap.rs`.

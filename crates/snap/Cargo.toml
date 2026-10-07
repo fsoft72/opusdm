@@ -9,3 +9,5 @@ name = "opusdm_snap"
 path = "src/lib.rs"
 
 [dependencies]
+x11rb = { workspace = true, features = ["randr", "xtest"] }
+opusdm-ipc = { path = "../ipc" }
