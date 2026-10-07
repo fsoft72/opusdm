@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 /// Time between samples while a button is down or the overlay animates.
 const POLL: Duration = Duration::from_millis(16);
 
-/// Time between samples when nothing happens: only the button is watched.
-const IDLE_POLL: Duration = Duration::from_millis(50);
+/// Longest sleep when nothing happens: the watcher wakes on a button event,
+/// and this only bounds how late it notices it was switched on or off.
+const IDLE_WAIT: Duration = Duration::from_millis(500);
 
 /// Time after a placement at which the real rectangle of the window is read.
 const SETTLE_DELAY: Duration = Duration::from_millis(250);
@@ -122,7 +123,7 @@ fn watch(display: &Display, enabled: &AtomicBool) -> Result<(), Box<dyn Error>> 
                 overlay.hide(now_ms);
                 overlay.tick(display, now_ms)?;
             }
-            std::thread::sleep(IDLE_POLL);
+            display.wait_for_button(IDLE_WAIT)?;
             continue;
         }
 
@@ -160,7 +161,11 @@ fn watch(display: &Display, enabled: &AtomicBool) -> Result<(), Box<dyn Error>> 
             Some(overlay) => overlay.tick(display, now_ms)?,
             None => false,
         };
-        std::thread::sleep(if busy || animating || pending.settle.is_some() || pending.restore.is_some() { POLL } else { IDLE_POLL });
+        if busy || animating || pending.settle.is_some() || pending.restore.is_some() {
+            std::thread::sleep(POLL);
+        } else {
+            display.wait_for_button(IDLE_WAIT)?;
+        }
     }
 }
 

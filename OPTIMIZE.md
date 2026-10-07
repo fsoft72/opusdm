@@ -19,7 +19,7 @@ None found.
 
 - [x] **Read the per-monitor work area from the docks' struts** - the snap area is the monitor intersected with `_NET_WORKAREA`, which is the union over all monitors, so a top panel on one monitor also shrinks the zones of the others. Reading `_NET_WM_STRUT_PARTIAL` of dock windows gives the real area of each monitor.
   - File(s): `crates/snap/src/x11.rs` (`Display::environment`, `workarea`)
-- [ ] **Replace the snap polling with events** - the watcher wakes 20 times a second even when idle, and while a button is down it does five or six X round trips every 16 ms. Listening for button press and release with XInput2 raw events would wake it only during a drag, and the window-type and size-hint reads could be cached per window.
+- [x] **Replace the snap polling with events** - the watcher wakes 20 times a second even when idle, and while a button is down it does five or six X round trips every 16 ms. Listening for button press and release with XInput2 raw events would wake it only during a drag, and the window-type and size-hint reads could be cached per window.
   - File(s): `crates/snap/src/watcher.rs`, `crates/snap/src/x11.rs`
 - [x] **Turn the live snap check into a repeatable test** - `watcher` and `overlay` have no automated test; the live check (Xephyr, Openbox, picom, XTEST drags) was done with throwaway examples. Keep it as an `#[ignore]` integration test plus a script that starts the nested server, so a regression in zones, preview or restore is caught.
   - File(s): `crates/snap/` (new `tests/live.rs`), `scripts/`

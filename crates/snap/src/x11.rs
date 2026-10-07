@@ -7,10 +7,13 @@ use crate::workarea::{monitor_area, Strut};
 use crate::zones::{Rect, Zone};
 use std::cell::Cell;
 use std::error::Error;
+use std::os::fd::AsRawFd;
 use std::time::Duration;
 use x11rb::connection::Connection;
 use x11rb::properties::WmSizeHints;
 use x11rb::protocol::randr;
+use x11rb::protocol::xinput::{self, XIEventMask};
+use x11rb::protocol::Event;
 use opusdm_x11::{extents_of, gone, send_to_root, Extents, MOVERESIZE_ALL, NET_WM_STATE_ADD, NET_WM_STATE_REMOVE, SOURCE_APPLICATION};
 use x11rb::protocol::xproto::{self, AtomEnum, ConnectionExt, Window};
 use x11rb::protocol::xtest;
@@ -50,6 +53,13 @@ const FALLBACK_ESCAPE_KEYCODE: u8 = 9;
 /// XTEST event types.
 const KEY_PRESS: u8 = 2;
 const KEY_RELEASE: u8 = 3;
+
+/// XInput version asked for: raw events need 2.0.
+const XI_MAJOR: u16 = 2;
+const XI_MINOR: u16 = 0;
+
+/// Time slept between checks when the server has no XInput 2.
+const NO_EVENTS_POLL: Duration = Duration::from_millis(50);
 
 /// Most client windows scanned for struts.
 const STRUT_SCAN_LIMIT: u32 = 1024;
@@ -124,6 +134,9 @@ pub struct Display {
     escape_keycode: u8,
     /// The last window checked by [`Display::snappable`] and the answer.
     checked: Cell<Option<(Window, bool)>>,
+    /// Whether button press and release events of the pointer are selected
+    /// (XInput 2 raw events), so [`Display::wait_for_button`] can sleep.
+    button_events: bool,
 }
 
 impl Display {
@@ -132,7 +145,56 @@ impl Display {
         let opusdm_x11::Session { conn, screen_num, root } = opusdm_x11::connect()?;
         let atoms = Atoms::new(&conn)?.reply()?;
         let escape_keycode = Self::find_escape_keycode(&conn)?;
-        Ok(Display { conn, root, screen_num, atoms, escape_keycode, checked: Cell::new(None) })
+        let button_events = Self::select_button_events(&conn, root);
+        Ok(Display { conn, root, screen_num, atoms, escape_keycode, checked: Cell::new(None), button_events })
+    }
+
+    /// Ask for the raw button press and release events of every pointer
+    /// (XInput 2). `false`, with one log line, when the server cannot: the
+    /// watcher then polls instead of sleeping until a button moves.
+    fn select_button_events(conn: &RustConnection, root: Window) -> bool {
+        let select = || -> Result<(), Box<dyn Error>> {
+            xinput::xi_query_version(conn, XI_MAJOR, XI_MINOR)?.reply()?;
+            let mask = xinput::EventMask { deviceid: xinput::Device::ALL_MASTER.into(), mask: vec![XIEventMask::RAW_BUTTON_PRESS | XIEventMask::RAW_BUTTON_RELEASE] };
+            xinput::xi_select_events(conn, root, &[mask])?.check()?;
+            Ok(())
+        };
+        match select() {
+            Ok(()) => true,
+            Err(e) => {
+                opusdm_ipc::err_log!("opusdm-snap", "no XInput 2 button events, polling instead: {e}");
+                false
+            }
+        }
+    }
+
+    /// Sleep until a mouse button is pressed or released, or `timeout` has
+    /// passed. Without XInput 2 it just sleeps for [`NO_EVENTS_POLL`].
+    pub fn wait_for_button(&self, timeout: Duration) -> Result<(), Box<dyn Error>> {
+        if !self.button_events {
+            std::thread::sleep(timeout.min(NO_EVENTS_POLL));
+            return Ok(());
+        }
+        // Events that arrived while a reply was read are already queued here
+        // and would never wake the poll below.
+        if self.button_event_queued()? { return Ok(()); }
+        let mut fd = libc::pollfd { fd: self.conn.stream().as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let millis = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
+        // SAFETY: `fd` is one valid pollfd and the count passed is 1.
+        let ready = unsafe { libc::poll(&mut fd, 1, millis) };
+        if ready > 0 {
+            self.button_event_queued()?;
+        }
+        Ok(())
+    }
+
+    /// Drain the queued events; whether one of them was a button event.
+    fn button_event_queued(&self) -> Result<bool, Box<dyn Error>> {
+        let mut found = false;
+        while let Some(event) = self.conn.poll_for_event()? {
+            found |= matches!(event, Event::XinputRawButtonPress(_) | Event::XinputRawButtonRelease(_));
+        }
+        Ok(found)
     }
 
     /// The keycode of Escape on the current keyboard map.

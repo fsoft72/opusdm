@@ -275,3 +275,26 @@ fn snapping_and_restoring_windows_on_a_real_session() {
     rig.close(window);
     rig.close(dock);
 }
+
+#[test]
+#[ignore = "needs an X server; run scripts/snap-live-test.sh"]
+fn an_idle_display_sleeps_until_a_button_event() {
+    let rig = Rig::new();
+    // Nothing happens: the wait runs to its timeout instead of returning early.
+    let started = Instant::now();
+    rig.display.wait_for_button(Duration::from_millis(400)).unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(350), "woke after {:?} with no event", started.elapsed());
+
+    // A button press wakes it at once, long before the timeout.
+    let waiter = std::thread::spawn(|| {
+        let display = Display::connect().unwrap();
+        let started = Instant::now();
+        display.wait_for_button(Duration::from_secs(5)).unwrap();
+        started.elapsed()
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    rig.button(true);
+    rig.button(false);
+    let slept = waiter.join().unwrap();
+    assert!(slept < Duration::from_secs(2), "the press did not wake the display, slept {slept:?}");
+}
