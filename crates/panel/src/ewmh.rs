@@ -111,7 +111,7 @@ pub fn parse_desktop_names(raw: &[u8]) -> Vec<String> {
 /// Decode a `_NET_CLIENT_LIST` blob (array of 32-bit little-endian window
 /// ids). Trailing bytes that do not fill a whole id are ignored.
 pub fn parse_window_list(raw: &[u8]) -> Vec<u32> {
-    raw.chunks_exact(4)
+    raw.as_chunks::<4>().0.iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

@@ -39,7 +39,7 @@ fn kinds(allow_none: bool) -> Vec<RefKind> {
 
 impl RefKind {
     /// The drop-down text; `none_label` names the "nothing" kind.
-    fn label<'a>(self, none_label: &'a str) -> &'a str {
+    fn label(self, none_label: &str) -> &str {
         match self {
             RefKind::None => none_label,
             RefKind::Function => "Function",

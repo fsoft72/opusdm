@@ -303,6 +303,7 @@ pub enum ThemeMode {
 /// background) - those live in [`crate::theme::Theme`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Appearance {
     /// Append an `ls -F` style type character (`/ * @ = |`) to each name.
     pub type_indicators: bool,
@@ -315,11 +316,6 @@ pub struct Appearance {
     pub theme_mode: ThemeMode,
 }
 
-impl Default for Appearance {
-    fn default() -> Self {
-        Self { type_indicators: false, monospace_list: false, theme_window: false, theme_mode: ThemeMode::default() }
-    }
-}
 
 /// Non-visual behaviour switches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

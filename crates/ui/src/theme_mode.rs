@@ -221,7 +221,7 @@ mod tests {
         for (mode, text) in [(ThemeMode::Dark, DARK.text), (ThemeMode::Light, LIGHT.text)] {
             let css = chrome_css(mode);
             assert!(css.contains(&format!("label {{ color: {text}")), "{mode:?} label color");
-            assert!(css.contains(&format!("notebook")), "{mode:?} notebook rule");
+            assert!(css.contains(&"notebook".to_string()), "{mode:?} notebook rule");
         }
     }
 

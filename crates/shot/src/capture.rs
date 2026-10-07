@@ -35,7 +35,7 @@ pub fn bgrx_to_image(data: &[u8], w: u32, h: u32) -> Result<RgbaImage, String> {
     if data.len() != expected {
         return Err(format!("expected {expected} bytes for {w}x{h}, the server sent {}", data.len()));
     }
-    let rgba: Vec<u8> = data.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+    let rgba: Vec<u8> = data.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], 255]).collect();
     RgbaImage::from_raw(w, h, rgba).ok_or_else(|| "pixel buffer does not fit the image".to_string())
 }
 

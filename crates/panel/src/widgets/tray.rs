@@ -72,12 +72,12 @@ impl Tray {
             }
         }
         for &xid in order {
-            if !placeholders.contains_key(&xid) {
+            placeholders.entry(xid).or_insert_with(|| {
                 let square = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 square.set_size_request(self.icon_size, self.icon_size);
                 self.root.append(&square);
-                placeholders.insert(xid, square);
-            }
+                square
+            });
         }
         drop(placeholders);
 

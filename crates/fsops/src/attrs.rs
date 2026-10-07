@@ -158,7 +158,7 @@ mod tests {
         fs::write(root.join("sub/b.txt"), "b").unwrap();
         let (tx, _rx) = channel();
 
-        let (n, errors) = done(run_chmod(&[root.clone()], 0o644, true, None, &tx, &CancelToken::new()));
+        let (n, errors) = done(run_chmod(std::slice::from_ref(&root), 0o644, true, None, &tx, &CancelToken::new()));
 
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(n, 4);
@@ -179,7 +179,7 @@ mod tests {
         let (tx, _rx) = channel();
         let glob = GlobSet::parse("*.txt").unwrap();
 
-        let (n, _) = done(run_chmod(&[root.clone()], 0o640, true, Some(&glob), &tx, &CancelToken::new()));
+        let (n, _) = done(run_chmod(std::slice::from_ref(&root), 0o640, true, Some(&glob), &tx, &CancelToken::new()));
 
         assert_eq!(n, 1);
         assert_eq!(mode_of(&root.join("a.txt")), 0o640);
@@ -195,7 +195,7 @@ mod tests {
         fs::set_permissions(root.join("a.txt"), fs::Permissions::from_mode(0o600)).unwrap();
         let (tx, _rx) = channel();
 
-        let (n, _) = done(run_chmod(&[root.clone()], 0o700, false, None, &tx, &CancelToken::new()));
+        let (n, _) = done(run_chmod(std::slice::from_ref(&root), 0o700, false, None, &tx, &CancelToken::new()));
 
         assert_eq!(n, 1);
         assert_eq!(mode_of(&root), 0o700);
@@ -228,7 +228,7 @@ mod tests {
         let (tx, _rx) = channel();
         let when = 1_500_000_000;
 
-        let (n, errors) = done(run_touch(&[root.clone()], when, true, None, &tx, &CancelToken::new()));
+        let (n, errors) = done(run_touch(std::slice::from_ref(&root), when, true, None, &tx, &CancelToken::new()));
 
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(n, 3);
@@ -248,7 +248,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let (tx, _rx) = channel();
 
-        run_touch(&[link.clone()], 1_000_000_000, false, None, &tx, &CancelToken::new());
+        run_touch(std::slice::from_ref(&link), 1_000_000_000, false, None, &tx, &CancelToken::new());
 
         let after = filetime::FileTime::from_last_modification_time(&fs::metadata(&target).unwrap());
         assert_eq!(before, after);

@@ -46,7 +46,7 @@ pub fn run_duplicate(
         };
         let new_name = free_copy_name(parent, &own_name.to_string_lossy(), &reserved);
         reserved.insert(parent.join(&new_name));
-        match copy_tree_opts(&[src.clone()], parent, tx, cancel, false, &one_opts(new_name)) {
+        match copy_tree_opts(std::slice::from_ref(src), parent, tx, cancel, false, &one_opts(new_name)) {
             Progress::Done { copied: c, skipped: s, cancelled, errors: mut e } => {
                 copied += c;
                 skipped += s;

@@ -77,12 +77,12 @@ mod tests {
         let file = td.path().join("f");
         std::fs::write(&file, "x").unwrap();
 
-        assert!(wants_filter(true, &Op::Copy, &[dir.clone()]));
+        assert!(wants_filter(true, &Op::Copy, std::slice::from_ref(&dir)));
         assert!(wants_filter(true, &Op::Delete, &[file.clone(), dir.clone()]));
-        assert!(!wants_filter(false, &Op::Copy, &[dir.clone()]));
+        assert!(!wants_filter(false, &Op::Copy, std::slice::from_ref(&dir)));
         assert!(!wants_filter(true, &Op::Copy, &[file]));
-        assert!(wants_filter(true, &Op::Chmod { mode: 0o644, recurse: true }, &[dir.clone()]));
-        assert!(!wants_filter(true, &Op::Chmod { mode: 0o644, recurse: false }, &[dir.clone()]));
+        assert!(wants_filter(true, &Op::Chmod { mode: 0o644, recurse: true }, std::slice::from_ref(&dir)));
+        assert!(!wants_filter(true, &Op::Chmod { mode: 0o644, recurse: false }, std::slice::from_ref(&dir)));
         assert!(!wants_filter(true, &Op::MakeDir { name: "x".into() }, &[dir]));
     }
 }

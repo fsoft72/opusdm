@@ -2293,7 +2293,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("touch", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, path) = bind_temp();
         let _handle = spawn_server(listener, Box::new(|_p| {}));
@@ -2489,7 +2489,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("touch", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, _path) = bind_temp();
         let handle = spawn_server(listener, Box::new(|_p| {}));
@@ -2506,7 +2506,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("touch", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, path) = bind_temp();
         let handle = spawn_server(listener, Box::new(|_p| {}));
@@ -2574,7 +2574,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("hook", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, _path) = bind_temp();
         let bindings = opusdm_ipc::Bindings {
@@ -2595,7 +2595,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("hook", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, _path) = bind_temp();
         let bindings = opusdm_ipc::Bindings {
@@ -2616,7 +2616,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("hook", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, path) = bind_temp();
         let bindings = opusdm_ipc::Bindings {
@@ -2648,7 +2648,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("hook", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, path) = bind_temp();
         let bindings = opusdm_ipc::Bindings {
@@ -2673,7 +2673,7 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", cfg.path());
         let marker = out.path().join("marker");
         let f = marker_function("hook", &marker);
-        opusdm_ipc::function::save_functions(&[f.clone()]).unwrap();
+        opusdm_ipc::function::save_functions(std::slice::from_ref(&f)).unwrap();
 
         let (_td, listener, path) = bind_temp();
         let bindings = opusdm_ipc::Bindings {

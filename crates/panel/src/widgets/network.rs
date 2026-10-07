@@ -224,7 +224,7 @@ fn build_row(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::M
         lock.set_content_width(LOCK_WIDTH);
         lock.set_content_height(LOCK_WIDTH);
         lock.set_valign(gtk::Align::Center);
-        lock.set_draw_func(|area, cr, w, h| draw_lock(area, cr, w, h));
+        lock.set_draw_func(draw_lock);
         line.append(&lock);
     }
     let signal = gtk::Label::new(Some(&format!("{}%", ap.signal)));

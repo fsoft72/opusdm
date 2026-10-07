@@ -134,7 +134,7 @@ mod tests {
         fs::write(root.join("a.txt"), b"hello").unwrap();
         fs::write(root.join("sub/b.txt"), b"worldXX").unwrap();
 
-        let plan = scan(&[root.clone()]).unwrap();
+        let plan = scan(std::slice::from_ref(&root)).unwrap();
 
         assert_eq!(plan.total_files, 2);
         assert_eq!(plan.total_bytes, 12);

@@ -55,14 +55,14 @@ pub(crate) mod tests {
     #[test]
     fn added_and_removed() {
         let a = dev("sdb1", "D");
-        assert_eq!(diff(&[], &[a.clone()]), vec![DeviceEvent::Added(a.clone())]);
-        assert_eq!(diff(&[a.clone()], &[]), vec![DeviceEvent::Removed(a.path)]);
+        assert_eq!(diff(&[], std::slice::from_ref(&a)), vec![DeviceEvent::Added(a.clone())]);
+        assert_eq!(diff(std::slice::from_ref(&a), &[]), vec![DeviceEvent::Removed(a.path)]);
     }
 
     #[test]
     fn unchanged_gives_nothing_and_mount_gives_changed() {
         let a = dev("sdb1", "D");
-        assert!(diff(&[a.clone()], &[a.clone()]).is_empty());
+        assert!(diff(std::slice::from_ref(&a), std::slice::from_ref(&a)).is_empty());
         let mut m = a.clone();
         m.mount_point = Some("/media/fabio/X".into());
         assert_eq!(diff(&[a], &[m.clone()]), vec![DeviceEvent::Changed(m)]);

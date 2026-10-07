@@ -327,7 +327,7 @@ pub fn compare_directories(src: &Path, tgt: &Path) -> std::io::Result<Vec<DirDif
         }
     }
 
-    diffs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    diffs.sort_by_key(|a| a.name.to_lowercase());
     Ok(diffs)
 }
 

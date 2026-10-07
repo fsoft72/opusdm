@@ -188,7 +188,7 @@ impl AppsInner {
                 let at = ids.iter().position(|x| x == id).unwrap_or(0);
                 list::insert_at(ids, id, at + 2);
             })),
-            ("list-remove-symbolic", Box::new(|ids, id| list::remove(ids, id))),
+            ("list-remove-symbolic", Box::new(list::remove)),
         ];
         for (icon, edit) in buttons {
             let button = gtk::Button::from_icon_name(icon);

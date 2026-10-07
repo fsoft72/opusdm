@@ -54,7 +54,7 @@ pub fn free_bytes(dir: &Path) -> io::Result<u64> {
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(u64::from(st.f_bavail) * u64::from(st.f_frsize))
+    Ok(st.f_bavail * st.f_frsize)
 }
 
 /// Size `srcs` and compare with the free space at `dest_dir`.
@@ -71,7 +71,7 @@ mod tests {
     fn compute_reports_the_share_that_fits() {
         assert_eq!(compute(2000, 1000), CheckFit { needed: 2000, free: 1000, fits: false, percent: 50 });
         assert_eq!(compute(100, 1000), CheckFit { needed: 100, free: 1000, fits: true, percent: 100 });
-        assert_eq!(compute(1000, 1000).fits, true);
+        assert!(compute(1000, 1000).fits);
         assert_eq!(compute(0, 0), CheckFit { needed: 0, free: 0, fits: true, percent: 100 });
         assert_eq!(compute(u64::MAX, 1).percent, 0);
     }

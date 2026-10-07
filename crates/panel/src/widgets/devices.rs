@@ -40,7 +40,7 @@ impl DeviceButton {
         let icon = gtk::DrawingArea::new();
         icon.set_content_width(ICON_SIZE);
         icon.set_content_height(ICON_SIZE);
-        icon.set_draw_func(|area, cr, w, h| draw_icon(area, cr, w, h));
+        icon.set_draw_func(draw_icon);
         let button = gtk::MenuButton::new();
         button.add_css_class("flat");
         button.set_child(Some(&icon));

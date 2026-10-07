@@ -219,7 +219,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let file = td.path().join("f.txt");
         std::fs::write(&file, b"x").unwrap();
-        assert!(check_leavable(&[file.clone()]).is_ok());
+        assert!(check_leavable(std::slice::from_ref(&file)).is_ok());
         let err = check_leavable(&[p("relative.txt")]).unwrap_err();
         assert!(err.contains("not an absolute path") && err.contains("relative.txt"), "{err}");
         let err = check_leavable(&[file, td.path().join("gone")]).unwrap_err();

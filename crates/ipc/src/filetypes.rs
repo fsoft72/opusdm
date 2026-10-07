@@ -196,7 +196,7 @@ pub fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let compact: String = text.chars().filter(|c| !c.is_whitespace() && *c != ',').collect();
     let compact = compact.replace("0x", "").replace("0X", "");
-    if compact.len() % 2 != 0 {
+    if !compact.len().is_multiple_of(2) {
         return Err(format!("odd number of hex digits in {text:?}"));
     }
     for pair in compact.as_bytes().chunks(2) {

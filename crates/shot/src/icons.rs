@@ -142,7 +142,7 @@ mod tests {
         }
         surface.flush();
         let data = surface.data().unwrap();
-        data.chunks_exact(4).filter(|p| p[3] != 0).count()
+        data.as_chunks::<4>().0.iter().filter(|p| p[3] != 0).count()
     }
 
     #[test]

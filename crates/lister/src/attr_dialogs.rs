@@ -77,7 +77,7 @@ pub fn open_permissions(ui: &Rc<Ui>) {
             (0..3)
                 .map(|bit| {
                     let check = gtk::CheckButton::new();
-                    grid.attach(&check, bit as i32 + 1, class as i32 + 1, 1, 1);
+                    grid.attach(&check, bit + 1, class as i32 + 1, 1, 1);
                     check
                 })
                 .collect()

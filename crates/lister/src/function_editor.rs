@@ -537,7 +537,7 @@ fn build_bank_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::Par
         Some(FnStep::Internal { args, .. }) => args.get(key).map(str::to_string),
         _ => None,
     };
-    if names.is_empty() && current.as_deref().map_or(true, |c| c.trim().is_empty()) {
+    if names.is_empty() && current.as_deref().is_none_or(|c| c.trim().is_empty()) {
         row.append(&gtk::Label::new(Some("(no button banks yet, create one first)")));
         return row;
     }

@@ -186,7 +186,7 @@ fn fetch_item(service: &str, path: &str) -> Result<SniItem, Box<dyn std::error::
 fn pick_sni_icon(pixmaps: &[(i32, i32, Vec<u8>)], target: i32) -> Option<IconRgba> {
     let (w, h, bytes) = pixmaps.iter().min_by_key(|(w, _, _)| (*w - target).abs())?;
     let mut rgba = Vec::with_capacity(bytes.len());
-    for px in bytes.chunks_exact(4) {
+    for px in bytes.as_chunks::<4>().0 {
         let (a, r, g, b) = (px[0], px[1], px[2], px[3]);
         rgba.extend_from_slice(&[r, g, b, a]);
     }

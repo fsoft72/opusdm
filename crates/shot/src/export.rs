@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn lower_quality_gives_a_smaller_jpg() {
-        let img = RgbaImage::from_fn(64, 64, |x, y| Rgba([(x * 4 ^ y * 3) as u8, (x * y) as u8, (x + y) as u8, 255]));
+        let img = RgbaImage::from_fn(64, 64, |x, y| Rgba([((x * 4) ^ (y * 3)) as u8, (x * y) as u8, (x + y) as u8, 255]));
         let high = encode(&img, &Options { format: Format::Jpg, quality: 95, lossless: false }).unwrap();
         let low = encode(&img, &Options { format: Format::Jpg, quality: 10, lossless: false }).unwrap();
         assert!(low.len() < high.len());

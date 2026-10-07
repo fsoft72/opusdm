@@ -406,12 +406,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("d");
         std::fs::create_dir(&sub).unwrap();
-        assert!(errors(&run(&[sub.clone()], dir.path(), "x.unknown"))[0].contains("unknown"));
+        assert!(errors(&run(std::slice::from_ref(&sub), dir.path(), "x.unknown"))[0].contains("unknown"));
         if CompressFormat::Gz.is_available() {
-            assert!(errors(&run(&[sub.clone()], dir.path(), "d.gz"))[0].contains("one regular file"));
+            assert!(errors(&run(std::slice::from_ref(&sub), dir.path(), "d.gz"))[0].contains("one regular file"));
         }
         if CompressFormat::TarGz.is_available() {
-            assert!(errors(&run(&[sub.clone()], &sub, "d.tar.gz"))[0].contains("inside"));
+            assert!(errors(&run(std::slice::from_ref(&sub), &sub, "d.tar.gz"))[0].contains("inside"));
         }
         assert!(!dir.path().join("x.unknown").exists());
     }

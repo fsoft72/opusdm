@@ -650,7 +650,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let functions_file = dir.path().join("functions.json");
         let mine = crate::function::Function::new("mine");
-        save_json(&functions_file, &[mine.clone()]).unwrap();
+        save_json(&functions_file, std::slice::from_ref(&mine)).unwrap();
         assert!(seed_default_hotkeys_in(dir.path(), &functions_file));
         let hotkeys: Vec<Hotkey> = load_json(&dir.path().join("hotkeys.json"), "opusdm", "hotkeys");
         assert_eq!(hotkeys, default_hotkeys());

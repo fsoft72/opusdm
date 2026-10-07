@@ -65,7 +65,7 @@ fn custom_app_row(id: &str, popover: &gtk::Popover) -> Option<gtk::Button> {
         menu.popdown();
         apps::launch(&info);
     });
-    attach_quick_apps_menu(&btn, id, &popover);
+    attach_quick_apps_menu(&btn, id, popover);
     Some(btn)
 }
 

@@ -262,8 +262,8 @@ mod tests {
     fn remote_locations_are_refused_as_source_or_destination() {
         let local = PathBuf::from("/tmp/a");
         let remote = PathBuf::from("sftp://me@host/data/a");
-        assert!(validate_op(&Op::Copy, &[local.clone()], Path::new("sftp://host/dest")).is_err());
-        assert!(validate_op(&Op::Delete, &[remote.clone()], Path::new("/tmp")).is_err());
+        assert!(validate_op(&Op::Copy, std::slice::from_ref(&local), Path::new("sftp://host/dest")).is_err());
+        assert!(validate_op(&Op::Delete, std::slice::from_ref(&remote), Path::new("/tmp")).is_err());
         assert!(validate_op(&Op::Copy, &[PathBuf::from("FTP://h/x")], Path::new("/tmp")).is_err());
         assert!(validate_op(&Op::Copy, &[local], Path::new("/other")).is_ok());
     }
@@ -290,13 +290,13 @@ mod tests {
     #[test]
     fn validate_rejects_dest_inside_source() {
         let src = PathBuf::from("/home/x/dir");
-        assert!(validate_job(&[src.clone()], &src.join("child")).is_err());
+        assert!(validate_job(std::slice::from_ref(&src), &src.join("child")).is_err());
     }
 
     #[test]
     fn validate_rejects_source_equals_dest() {
         let p = PathBuf::from("/home/x/dir");
-        assert!(validate_job(&[p.clone()], &p).is_err());
+        assert!(validate_job(std::slice::from_ref(&p), &p).is_err());
     }
 
     #[test]
