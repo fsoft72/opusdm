@@ -84,9 +84,10 @@ pub fn same_listing(a: &[Row], b: &[Row]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::RowAttrs;
 
     fn row(name: &str, size: u64) -> Row {
-        Row::new(name.to_string(), false, false, false, size, 100, 0, 0, 0o644)
+        Row::new(name.to_string(), RowAttrs { size, modified_unix: 100, mode: 0o644, ..Default::default() })
     }
 
     fn dir(n: &str) -> PathBuf {

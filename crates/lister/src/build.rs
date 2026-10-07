@@ -1,7 +1,7 @@
 //! Constructing the Lister window: widgets and the signal wiring that
 //! connects them to `Ui` behavior. Behavior itself lives in `window.rs`.
 
-use crate::client::{Client, Inbound, Roles};
+use crate::client::{Client, Connected, Inbound, Roles};
 use crate::model::{dir_first_cmp, Row, SortCol};
 use crate::window::{Caches, FormatState, HubConnection, StatusBar, Typeahead, Ui, ViewMode, ViewState};
 use gtk4 as gtk;
@@ -18,16 +18,8 @@ use std::rc::Rc;
 const PATH_ENTRY_ERROR_FLASH_MS: u64 = 600;
 
 /// Build and run the window application.
-pub fn run(
-    mut client: Client,
-    id: ListerId,
-    roles: Roles,
-    settings: Settings,
-    bindings: opusdm_ipc::Bindings,
-    formats: opusdm_ipc::FormatStore,
-    functions: Vec<opusdm_ipc::function::Function>,
-    start: PathBuf,
-) -> glib::ExitCode {
+pub fn run(connected: Connected, start: PathBuf) -> glib::ExitCode {
+    let (mut client, id, roles, settings, bindings, formats, functions) = connected;
     let inbox = client.take_inbox();
     let client = Rc::new(client);
     let shared: Rc<RefCell<Option<StartState>>> = Rc::new(RefCell::new(Some(StartState {

@@ -1,6 +1,6 @@
 //! Virtual archive filesystem support for navigating and extracting Zip, Tar, 7z.
 
-use crate::model::Row;
+use crate::model::{Row, RowAttrs};
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
@@ -259,14 +259,7 @@ pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec
             if seen_dirs.insert(dir_name.to_string()) {
                 rows.push(Row::new(
                     dir_name.to_string(),
-                    true,
-                    false,
-                    false,
-                    0,
-                    0,
-                    1000,
-                    1000,
-                    0o755,
+                    RowAttrs { is_dir: true, uid: 1000, gid: 1000, mode: 0o755, ..Default::default() },
                 ));
             }
         } else {
@@ -274,14 +267,14 @@ pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec
             let name = rel.to_string();
             rows.push(Row::new(
                 name,
-                is_dir,
-                false,
-                false,
-                if is_dir { 0 } else { item.size },
-                0,
-                1000,
-                1000,
-                item.mode,
+                RowAttrs {
+                    is_dir,
+                    size: if is_dir { 0 } else { item.size },
+                    uid: 1000,
+                    gid: 1000,
+                    mode: item.mode,
+                    ..Default::default()
+                },
             ));
         }
     }

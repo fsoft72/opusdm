@@ -101,13 +101,8 @@ pub(crate) fn full_rebuild_desktop_windows(
             let window = build_one_desktop_window(
                 app,
                 widgets,
-                x,
-                y,
-                w,
-                h,
-                is_primary,
-                desired_dir.as_deref(),
-                icon_set.clone(),
+                (x, y, w, h),
+                DesktopIcons { is_primary, desktop_dir: desired_dir.as_deref(), icon_set: icon_set.clone() },
             );
             DesktopWindow { window, x, y, w, h }
         })
@@ -115,20 +110,24 @@ pub(crate) fn full_rebuild_desktop_windows(
     *widgets.windows.borrow_mut() = built;
 }
 
-/// Build one desktop window at `(x, y)`, `w` x `h`. Only the primary monitor
-/// (`is_primary`) gets the interactive icon field, its drag/drop wiring and
-/// the inotify watch; the rest are background-only.
+/// What a desktop window shows: only the primary monitor (`is_primary`) gets
+/// the interactive icon field, its drag/drop wiring and the inotify watch.
+pub(crate) struct DesktopIcons<'a> {
+    pub is_primary: bool,
+    pub desktop_dir: Option<&'a Path>,
+    pub icon_set: opusdm_ipc::IconSetId,
+}
+
+/// Build one desktop window at `rect` (x, y, width, height); the windows of
+/// the other monitors are background-only (see [`DesktopIcons`]).
 pub(crate) fn build_one_desktop_window(
     app: &gtk::Application,
     widgets: &Rc<Widgets>,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    is_primary: bool,
-    desktop_dir: Option<&Path>,
-    icon_set: opusdm_ipc::IconSetId,
+    rect: opusdm_ui::MonitorRect,
+    icons: DesktopIcons,
 ) -> gtk::ApplicationWindow {
+    let (x, y, w, h) = rect;
+    let DesktopIcons { is_primary, desktop_dir, icon_set } = icons;
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM")

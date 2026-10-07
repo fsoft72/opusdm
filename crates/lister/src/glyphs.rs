@@ -73,9 +73,10 @@ pub fn decorate_name(row: &Row, indicators: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::RowAttrs;
 
     fn row(name: &str) -> Row {
-        Row::new(name.into(), false, false, false, 0, 0, 0, 0, 0o100_644)
+        Row::new(name.into(), RowAttrs { mode: 0o100_644, ..Default::default() })
     }
 
     #[test]

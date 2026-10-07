@@ -2,7 +2,7 @@
 //! path from a local one, turning server entries into rows, parents, and the
 //! scratch folders downloads land in. The GTK flows are in `remote_ui.rs`.
 
-use crate::model::Row;
+use crate::model::{Row, RowAttrs};
 use opusdm_ftp::{ConnectParams, RemoteEntry, RemoteUrl};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -42,7 +42,19 @@ pub fn rows_from(entries: Vec<RemoteEntry>) -> Vec<Row> {
         .into_iter()
         .map(|e| {
             let mode = if e.mode != 0 { e.mode } else if e.is_dir { 0o755 } else { 0o644 };
-            Row::new(e.name, e.is_dir, e.is_symlink, false, if e.is_dir { 0 } else { e.size }, e.modified, 1000, 1000, mode)
+            Row::new(
+                e.name,
+                RowAttrs {
+                    is_dir: e.is_dir,
+                    is_symlink: e.is_symlink,
+                    size: if e.is_dir { 0 } else { e.size },
+                    modified_unix: e.modified,
+                    uid: 1000,
+                    gid: 1000,
+                    mode,
+                    ..Default::default()
+                },
+            )
         })
         .collect()
 }

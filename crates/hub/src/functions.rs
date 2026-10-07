@@ -189,7 +189,7 @@ fn run_steps_cancellable(
                 InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, &source, dest, events_tx),
             },
             FnStep::External { argv, cwd_source } => {
-                run_external(run_id, step_idx, argv, None, *cwd_source, &source, dest, events_tx)
+                run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, &source, dest, events_tx)
             }
         };
         if let Err(error) = result {
@@ -609,7 +609,14 @@ fn run_run(
     let script = if args.flag("script") && templates.len() > 2 { Some(templates[2].as_str()) } else { None };
     // Waiting without a window is the plain External step.
     if wait && !window {
-        return run_external(run_id, step_idx, &templates, script, true, source, dest, events_tx);
+        return run_external(
+            run_id,
+            step_idx,
+            ExternalCall { argv: &templates, script, cwd_source: true },
+            source,
+            dest,
+            events_tx,
+        );
     }
     let argv = expand_run_argv(&templates, script, source, dest).map_err(|e| format!("Run: {e}"))?;
     let mut command = Command::new(&argv[0]);
@@ -680,19 +687,26 @@ fn expand_run_argv(argv: &[String], script: Option<&str>, source: &SelectionCtx,
     Ok(expanded)
 }
 
+/// What an `External` step runs: the argv templates, the script word that
+/// is passed as typed, and whether the working directory is the source's.
+struct ExternalCall<'a> {
+    argv: &'a [String],
+    script: Option<&'a str>,
+    cwd_source: bool,
+}
+
 /// Run one `External` step: expand every argv element (keeping `script`,
 /// see [`expand_run_argv`]), spawn it with piped stdout/stderr, stream every
 /// line as it arrives, and report the exit status.
 fn run_external(
     run_id: u64,
     step_idx: usize,
-    argv: &[String],
-    script: Option<&str>,
-    cwd_source: bool,
+    call: ExternalCall,
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
+    let ExternalCall { argv, script, cwd_source } = call;
     if argv.is_empty() {
         return Err("External step: command is required".to_string());
     }

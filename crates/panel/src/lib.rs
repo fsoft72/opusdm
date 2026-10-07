@@ -70,6 +70,17 @@ struct BarWindow {
 /// Pixels between the device, audio and network tray buttons.
 const TRAY_SPACING: i32 = 2;
 
+/// The shared services one bar is wired to. `sni_evt_rx` is only given to the
+/// primary bar, as the receiver cannot be cloned.
+struct BarServices {
+    tray_cmd_tx: systray::TraySender,
+    sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
+    sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
+    devices: Rc<devices_center::DeviceCenter>,
+    audio: Rc<audio_center::AudioCenter>,
+    network: Rc<network_center::NetworkCenter>,
+}
+
 /// Build one full bar (menu, pager, quick apps, tasklist, device, audio and network trays, sysmon, clock) on the monitor
 /// and edge `place` describes, and present it. `state` seeds the pager
 /// and tasklist immediately, so a bar created after startup (monitor plugged
@@ -79,13 +90,9 @@ fn build_bar_window(
     place: Placement,
     state: &Rc<RefCell<PanelState>>,
     is_primary: bool,
-    tray_cmd_tx: systray::TraySender,
-    sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
-    sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
-    devices: Rc<devices_center::DeviceCenter>,
-    audio: Rc<audio_center::AudioCenter>,
-    network: Rc<network_center::NetworkCenter>,
+    services: BarServices,
 ) -> BarWindow {
+    let BarServices { tray_cmd_tx, sni_cmd_tx, sni_evt_rx, devices, audio, network } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -280,7 +287,15 @@ pub fn attach(
                 .map(|(i, (x, y, w, h))| {
                     let rx = if i == 0 { rx_slot.take() } else { None };
                     let place = Placement { position: position.get(), mon_x: x, mon_y: y, mon_w: w, mon_h: h };
-                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx, devices.clone(), audio.clone(), network.clone())
+                    let services = BarServices {
+                        tray_cmd_tx: tray_cmd_tx.clone(),
+                        sni_cmd_tx: sni_cmd_tx.clone(),
+                        sni_evt_rx: rx,
+                        devices: devices.clone(),
+                        audio: audio.clone(),
+                        network: network.clone(),
+                    };
+                    build_bar_window(&app, place, &state, i == 0, services)
                 })
                 .collect();
             drop(rx_slot);

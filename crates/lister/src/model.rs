@@ -38,19 +38,24 @@ pub struct Row {
     pub group_lower: String,
 }
 
+/// The attributes of a `Row` other than its name, for `Row::new`. The default
+/// is a regular, empty entry owned by root with no permission bits.
+#[derive(Default)]
+pub struct RowAttrs {
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub broken_link: bool,
+    pub size: u64,
+    pub modified_unix: i64,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u32,
+}
+
 impl Row {
     /// Build a `Row`, deriving the precomputed sort keys from the given fields.
-    pub fn new(
-        name: String,
-        is_dir: bool,
-        is_symlink: bool,
-        broken_link: bool,
-        size: u64,
-        modified_unix: i64,
-        uid: u32,
-        gid: u32,
-        mode: u32,
-    ) -> Self {
+    pub fn new(name: String, attrs: RowAttrs) -> Self {
+        let RowAttrs { is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode } = attrs;
         let name_lower = name.to_lowercase();
         let user_lower = format_user(uid).to_lowercase();
         let group_lower = format_group(gid).to_lowercase();
@@ -125,7 +130,7 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
             }
         };
         let RowFields { is_dir, size, modified_unix, uid, gid, mode } = fields;
-        rows.push(Row::new(name, is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode));
+        rows.push(Row::new(name, RowAttrs { is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode }));
     }
     Ok(rows)
 }
@@ -601,7 +606,7 @@ mod tests {
     }
 
     fn row(name: &str, is_dir: bool, size: u64, mtime: i64) -> Row {
-        Row::new(name.into(), is_dir, false, false, size, mtime, 0, 0, 0)
+        Row::new(name.into(), RowAttrs { is_dir, size, modified_unix: mtime, ..Default::default() })
     }
 
     #[test]

@@ -113,6 +113,7 @@ impl Criteria {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::RowAttrs;
 
     /// A fixed "now" for the relative dates: 2026-09-29 12:00:00 UTC.
     const NOW: i64 = 1_790_683_200;
@@ -120,11 +121,11 @@ mod tests {
     const MIB: u64 = 1024 * 1024;
 
     fn file(name: &str, size: u64, age_days: i64) -> Row {
-        Row::new(name.to_string(), false, false, false, size, NOW - age_days * DAY, 0, 0, 0o644)
+        Row::new(name.to_string(), RowAttrs { size, modified_unix: NOW - age_days * DAY, mode: 0o644, ..Default::default() })
     }
 
     fn dir(name: &str, age_days: i64) -> Row {
-        Row::new(name.to_string(), true, false, false, 0, NOW - age_days * DAY, 0, 0, 0o755)
+        Row::new(name.to_string(), RowAttrs { is_dir: true, modified_unix: NOW - age_days * DAY, mode: 0o755, ..Default::default() })
     }
 
     fn fields() -> Fields<'static> {

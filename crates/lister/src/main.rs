@@ -151,17 +151,16 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("/"));
 
     let pid = std::process::id();
-    let (client, lister_id, roles, settings, bindings, formats, functions) =
-        match client::Client::connect(&sock_path, pid, &start_path) {
-            Ok(t) => t,
-            Err(e) => {
-                opusdm_ipc::err_log!("opusdm-lister", "cannot reach hub: {e}");
-                std::process::exit(1);
-            }
-        };
+    let connected = match client::Client::connect(&sock_path, pid, &start_path) {
+        Ok(t) => t,
+        Err(e) => {
+            opusdm_ipc::err_log!("opusdm-lister", "cannot reach hub: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    crate::dlog!("connected to hub, lister_id={lister_id:?}, start={}", start_path.display());
-    let code = build::run(client, lister_id, roles, settings, bindings, formats, functions, start_path);
+    crate::dlog!("connected to hub, lister_id={:?}, start={}", connected.1, start_path.display());
+    let code = build::run(connected, start_path);
     crate::dlog!("event loop exited, code={code:?}");
     archive::cleanup_temp_dirs();
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
