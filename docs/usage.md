@@ -724,6 +724,30 @@ Like the KDE Audio Volume applet: volume, mute and default device of the sound o
 - **Balance:** setting the volume applies one value to every channel, so a left/right balance set
   elsewhere is flattened.
 
+### 3.33 Network tray (panel)
+
+Like the KDE Networks applet: Wi-Fi and Ethernet switches and the list of the Wi-Fi networks in range.
+
+- **Icon:** on the right side of the panel, after the audio tray (primary bar only; the device,
+  audio and network buttons sit close together). It shows a plug when Ethernet is connected, Wi-Fi
+  arcs (one to three, by signal) when connected to a network, and dimmed arcs with a slash when
+  nothing is connected. The tooltip says what is connected. It is hidden while NetworkManager is
+  not reachable.
+- **Popover (click the icon):** an **Ethernet** and a **Wi-Fi** switch (a row is hidden when the
+  machine has no such device; the Ethernet switch is greyed out without a cable), then the networks
+  sorted by signal, the connected one first with a check mark and a lock on protected ones. The
+  list is scanned again each time the popover opens.
+- **Click a network:** a saved or open network connects at once; the connected one disconnects; a
+  new protected network asks for the password in a small window (the eye shows it) and saves the
+  connection in NetworkManager. A wrong password removes the new connection again. While it
+  connects the popover says *Connecting to ...*; a failure shows as one red line for 5 seconds.
+- **Ethernet switch:** *off* disconnects the device and NetworkManager does not reconnect it by
+  itself; *on* connects with the best saved connection.
+- **Needs:** NetworkManager on the system bus. Without it the icon stays hidden and the panel tries
+  again every 30 seconds.
+- **Not included:** VPN, hotspot, IP settings, hidden networks, WEP and enterprise (802.1X) networks
+  (clicking one shows a message).
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

@@ -1831,6 +1831,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-network"
+version = "0.5.0"
+dependencies = [
+ "async-channel",
+ "zbus",
+]
+
+[[package]]
 name = "opusdm-panel"
 version = "0.5.0"
 dependencies = [
@@ -1843,6 +1851,7 @@ dependencies = [
  "opusdm-devices",
  "opusdm-dock",
  "opusdm-ipc",
+ "opusdm-network",
  "opusdm-ui",
  "tempfile",
  "x11rb",

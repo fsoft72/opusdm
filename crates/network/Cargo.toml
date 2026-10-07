@@ -1,0 +1,13 @@
+[package]
+name = "opusdm-network"
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_network"
+path = "src/lib.rs"
+
+[dependencies]
+zbus = { version = "5.19.0", features = ["blocking"] }
+async-channel.workspace = true

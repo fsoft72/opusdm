@@ -17,6 +17,8 @@ mod device_popup;
 mod devices_center;
 mod audio_center;
 mod audio_model;
+mod network_center;
+mod network_model;
 mod devices_model;
 mod ewmh;
 mod sni;
@@ -65,7 +67,10 @@ struct BarWindow {
     tray: Option<Rc<Tray>>,
 }
 
-/// Build one full bar (menu, pager, quick apps, tasklist, device and audio trays, sysmon, clock) on the monitor
+/// Pixels between the device, audio and network tray buttons.
+const TRAY_SPACING: i32 = 2;
+
+/// Build one full bar (menu, pager, quick apps, tasklist, device, audio and network trays, sysmon, clock) on the monitor
 /// and edge `place` describes, and present it. `state` seeds the pager
 /// and tasklist immediately, so a bar created after startup (monitor plugged
 /// in later) doesn't show empty widgets until the next EWMH event.
@@ -79,6 +84,7 @@ fn build_bar_window(
     sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
     devices: Rc<devices_center::DeviceCenter>,
     audio: Rc<audio_center::AudioCenter>,
+    network: Rc<network_center::NetworkCenter>,
 ) -> BarWindow {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
@@ -180,14 +186,15 @@ fn build_bar_window(
     if tray.is_some() || sni_widget.is_some() {
         right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
-    // The device notifier sits right before the CPU and network monitors, on
-    // the primary bar only (a device must not be listed twice).
+    // The device, audio and network trays sit right before the CPU and network
+    // monitors, close together, on the primary bar only (a device must not be
+    // listed twice). The network tray draws the separator that closes the group.
     if is_primary {
-        right.append(&devices.button());
-    }
-    // The audio tray sits next to the device notifier, on the primary bar only.
-    if is_primary {
-        right.append(&audio.button());
+        let trays = gtk::Box::new(gtk::Orientation::Horizontal, TRAY_SPACING);
+        trays.append(&devices.button());
+        trays.append(&audio.button());
+        trays.append(&network.button());
+        right.append(&trays);
     }
     right.append(&widgets::sysmon::build());
     right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -238,6 +245,7 @@ pub fn attach(
     let position = Rc::new(Cell::new(position));
     let devices = devices_center::DeviceCenter::new(on_open_folder, position.clone());
     let audio = audio_center::AudioCenter::new();
+    let network = network_center::NetworkCenter::new();
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
@@ -257,6 +265,7 @@ pub fn attach(
         let position = position.clone();
         let devices = devices.clone();
         let audio = audio.clone();
+        let network = network.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -271,7 +280,7 @@ pub fn attach(
                 .map(|(i, (x, y, w, h))| {
                     let rx = if i == 0 { rx_slot.take() } else { None };
                     let place = Placement { position: position.get(), mon_x: x, mon_y: y, mon_w: w, mon_h: h };
-                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx, devices.clone(), audio.clone())
+                    build_bar_window(&app, place, &state, i == 0, tray_cmd_tx.clone(), sni_cmd_tx.clone(), rx, devices.clone(), audio.clone(), network.clone())
                 })
                 .collect();
             drop(rx_slot);
