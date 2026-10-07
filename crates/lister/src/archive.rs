@@ -360,7 +360,7 @@ pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<Pat
     let kind = _archive_kind(arch)?;
     _check_inner_path(inner_file)?;
     let temp_dir = tempfile::Builder::new().prefix("opusdm-preview-").tempdir()?.keep();
-    PREVIEW_DIRS.lock().unwrap().push(temp_dir.clone());
+    PREVIEW_DIRS.lock().unwrap_or_else(|e| e.into_inner()).push(temp_dir.clone());
     let extracted = _extract_one(kind, arch, inner_file, &temp_dir);
     if extracted.is_err() {
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -419,14 +419,14 @@ static SCRATCH: Mutex<VecDeque<(tempfile::TempDir, usize)>> = Mutex::new(VecDequ
 
 /// Keep `dir` alive until `jobs` jobs have finished (see [`scratch_job_done`]).
 pub fn keep_scratch(dir: tempfile::TempDir, jobs: usize) {
-    SCRATCH.lock().unwrap().push_back((dir, jobs.max(1)));
+    SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).push_back((dir, jobs.max(1)));
 }
 
 /// A job finished: the oldest extraction folder has one reply fewer to wait
 /// for, and is deleted when none is left. Jobs that were cancelled before they
 /// started leave their folder until [`cleanup_temp_dirs`] runs at exit.
 pub fn scratch_job_done() {
-    let mut scratch = SCRATCH.lock().unwrap();
+    let mut scratch = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
     let Some((_, waiting)) = scratch.front_mut() else { return };
     *waiting -= 1;
     if *waiting == 0 {
@@ -437,10 +437,10 @@ pub fn scratch_job_done() {
 /// Remove every preview and extraction folder this process created (call when
 /// the app quits).
 pub fn cleanup_temp_dirs() {
-    for dir in PREVIEW_DIRS.lock().unwrap().drain(..) {
+    for dir in PREVIEW_DIRS.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
         let _ = std::fs::remove_dir_all(dir);
     }
-    SCRATCH.lock().unwrap().clear();
+    SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// Extract items from archive into `dest_dir`. Entry names are passed so they

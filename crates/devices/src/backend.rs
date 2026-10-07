@@ -28,30 +28,30 @@ pub struct FakeBackend {
 impl FakeBackend {
     /// The recorded calls, oldest first.
     pub fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
 impl Backend for FakeBackend {
     fn list(&self) -> Result<Vec<Device>, DeviceError> {
-        Ok(self.devices.lock().unwrap().clone())
+        Ok(self.devices.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     fn mount(&self, path: &str) -> Result<PathBuf, DeviceError> {
-        self.calls.lock().unwrap().push(format!("mount {path}"));
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(format!("mount {path}"));
         Ok(PathBuf::from("/media/test"))
     }
 
     fn unmount(&self, path: &str) -> Result<(), DeviceError> {
-        self.calls.lock().unwrap().push(format!("unmount {path}"));
-        match self.fail_unmount.lock().unwrap().clone() {
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(format!("unmount {path}"));
+        match self.fail_unmount.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(e) => Err(e),
             None => Ok(()),
         }
     }
 
     fn eject_drive(&self, drive_path: &str, power_off: bool) -> Result<(), DeviceError> {
-        self.calls.lock().unwrap().push(format!("eject {drive_path} {power_off}"));
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(format!("eject {drive_path} {power_off}"));
         Ok(())
     }
 }

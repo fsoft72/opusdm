@@ -27,23 +27,23 @@ pub struct FakeBackend {
 impl FakeBackend {
     /// The recorded calls, oldest first.
     pub fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Record `call` in the log.
     fn record(&self, call: String) {
-        self.calls.lock().unwrap().push(call);
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(call);
     }
 }
 
 impl Backend for FakeBackend {
     fn list(&self) -> Result<Vec<AudioDevice>, AudioError> {
-        Ok(self.devices.lock().unwrap().clone())
+        Ok(self.devices.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     fn set_volume(&self, kind: Kind, index: u32, percent: u32) -> Result<(), AudioError> {
         self.record(format!("volume {kind:?} {index} {percent}"));
-        let mut devices = self.devices.lock().unwrap();
+        let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
         let d = devices.iter_mut().find(|d| d.key() == (kind, index)).ok_or(AudioError::NoSuchDevice)?;
         d.volume_percent = percent.min(MAX_PERCENT);
         Ok(())
@@ -51,7 +51,7 @@ impl Backend for FakeBackend {
 
     fn set_mute(&self, kind: Kind, index: u32, muted: bool) -> Result<(), AudioError> {
         self.record(format!("mute {kind:?} {index} {muted}"));
-        let mut devices = self.devices.lock().unwrap();
+        let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
         let d = devices.iter_mut().find(|d| d.key() == (kind, index)).ok_or(AudioError::NoSuchDevice)?;
         d.muted = muted;
         Ok(())
@@ -59,7 +59,7 @@ impl Backend for FakeBackend {
 
     fn set_default(&self, kind: Kind, name: &str) -> Result<(), AudioError> {
         self.record(format!("default {kind:?} {name}"));
-        let mut devices = self.devices.lock().unwrap();
+        let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
         if !devices.iter().any(|d| d.kind == kind && d.name == name) {
             return Err(AudioError::NoSuchDevice);
         }
@@ -88,7 +88,7 @@ mod tests {
 
     fn fake() -> FakeBackend {
         let f = FakeBackend::default();
-        *f.devices.lock().unwrap() = vec![
+        *f.devices.lock().unwrap_or_else(|e| e.into_inner()) = vec![
             dev(Kind::Output, 1, true),
             dev(Kind::Output, 2, false),
             dev(Kind::Input, 1, true),

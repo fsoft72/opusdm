@@ -32,17 +32,17 @@ pub struct FakeBackend {
 impl FakeBackend {
     /// The recorded calls, oldest first.
     pub fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn record(&self, call: String) {
-        self.calls.lock().unwrap().push(call);
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(call);
     }
 }
 
 impl Backend for FakeBackend {
     fn state(&self) -> Result<NetState, NetError> {
-        Ok(self.state.lock().unwrap().clone())
+        Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     fn set_wifi_enabled(&self, on: bool) -> Result<(), NetError> {
@@ -62,7 +62,7 @@ impl Backend for FakeBackend {
 
     fn connect(&self, ssid: &str, password: Option<&str>) -> Result<(), NetError> {
         self.record(format!("connect {ssid} password={}", password.is_some()));
-        match self.fail_connect.lock().unwrap().clone() {
+        match self.fail_connect.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(e) => Err(e),
             None => Ok(()),
         }
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn fake_can_fail_a_connect() {
         let fake = FakeBackend::default();
-        *fake.fail_connect.lock().unwrap() = Some(NetError::other("bad"));
+        *fake.fail_connect.lock().unwrap_or_else(|e| e.into_inner()) = Some(NetError::other("bad"));
         assert_eq!(fake.connect("home", None).unwrap_err().text(), "bad");
     }
 }

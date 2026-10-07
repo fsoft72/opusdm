@@ -100,7 +100,7 @@ impl Watcher {
         let (service, path) = resolve_service(service, &sender);
 
         let already = {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if s.items.iter().any(|i| i == &service) {
                 true
             } else {
@@ -127,7 +127,7 @@ impl Watcher {
 
     #[zbus(property)]
     async fn registered_status_notifier_items(&self) -> Vec<String> {
-        self.state.lock().unwrap().items.clone()
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).items.clone()
     }
 
     #[zbus(property)]

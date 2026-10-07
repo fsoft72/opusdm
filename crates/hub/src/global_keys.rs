@@ -156,7 +156,7 @@ impl GlobalKeys {
             match event_conn.wait_for_event() {
                 Ok(Event::KeyPress(ev)) => {
                     let id = {
-                        let table = event_table.lock().unwrap();
+                        let table = event_table.lock().unwrap_or_else(|e| e.into_inner());
                         lookup(&table, ev.detail, u16::from(ev.state)).cloned()
                     };
                     if let Some(id) = id {
@@ -209,7 +209,7 @@ impl GlobalKeys {
                 table.insert((grab.keycode, grab.mods), grab.function);
             }
         }
-        *self.table.lock().unwrap() = table;
+        *self.table.lock().unwrap_or_else(|e| e.into_inner()) = table;
         let _ = self.conn.flush();
     }
 }
