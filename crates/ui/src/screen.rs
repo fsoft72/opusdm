@@ -118,11 +118,11 @@ fn choose_monitor(monitors: &[MonitorInfo], root_size: (i32, i32)) -> (i32, i32)
 /// a window per raw monitor would just stack duplicates at the same spot.
 /// Works unchanged for horizontal, vertical or mixed layouts - callers place
 /// one window per returned rect, using its own `(x, y)` as origin.
-pub fn list_monitors(display: &gdk::Display) -> Vec<(i32, i32, i32, i32)> {
+pub fn list_monitors(display: &gdk::Display) -> Vec<MonitorRect> {
     rects_from_model(&display.monitors())
 }
 
-fn rects_from_model(monitors: &gio::ListModel) -> Vec<(i32, i32, i32, i32)> {
+fn rects_from_model(monitors: &gio::ListModel) -> Vec<MonitorRect> {
     let rects = (0..monitors.n_items())
         .filter_map(|i| monitors.item(i))
         .filter_map(|o| o.downcast::<gdk::Monitor>().ok())
@@ -136,8 +136,8 @@ fn rects_from_model(monitors: &gio::ListModel) -> Vec<(i32, i32, i32, i32)> {
 }
 
 /// Collapse duplicate rects (mirrored monitors), keeping first-seen order.
-fn dedupe_rects(rects: Vec<(i32, i32, i32, i32)>) -> Vec<(i32, i32, i32, i32)> {
-    let mut out: Vec<(i32, i32, i32, i32)> = Vec::new();
+fn dedupe_rects(rects: Vec<MonitorRect>) -> Vec<MonitorRect> {
+    let mut out: Vec<MonitorRect> = Vec::new();
     for r in rects {
         if !out.contains(&r) {
             out.push(r);
@@ -146,22 +146,28 @@ fn dedupe_rects(rects: Vec<(i32, i32, i32, i32)>) -> Vec<(i32, i32, i32, i32)> {
     out
 }
 
-/// Call `on_change` with the current `list_monitors` result every time the
+/// A monitor rectangle in root coordinates: x, y, width, height.
+pub type MonitorRect = (i32, i32, i32, i32);
+
+/// Shared callback that receives the monitor list after a change.
+type MonitorsCallback = Rc<dyn Fn(Vec<MonitorRect>)>;
+
+/// Call `on_change` with the current `list_monitors` result result every time the
 /// monitor list changes (hotplug) or any monitor's geometry changes
 /// (resolution switch, or a mirror layout toggled at runtime). Not called
 /// immediately - callers already apply the initial layout at startup.
 pub fn watch_monitors<F>(display: &gdk::Display, on_change: F)
 where
-    F: Fn(Vec<(i32, i32, i32, i32)>) + 'static,
+    F: Fn(Vec<MonitorRect>) + 'static,
 {
-    let on_change: Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)> = Rc::new(on_change);
+    let on_change: MonitorsCallback = Rc::new(on_change);
     let monitors = display.monitors();
     let handlers: Rc<RefCell<Vec<(gdk::Monitor, glib::SignalHandlerId)>>> =
         Rc::new(RefCell::new(Vec::new()));
 
     fn rewire(
         monitors: &gio::ListModel,
-        on_change: &Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)>,
+        on_change: &MonitorsCallback,
         handlers: &Rc<RefCell<Vec<(gdk::Monitor, glib::SignalHandlerId)>>>,
     ) {
         for (m, id) in handlers.borrow_mut().drain(..) {

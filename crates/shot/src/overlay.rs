@@ -12,6 +12,9 @@ use image::RgbaImage;
 use std::cell::Cell;
 use std::rc::Rc;
 
+/// A selection rectangle in screen coordinates: x, y, width, height.
+type Selection = (f64, f64, f64, f64);
+
 /// Opacity of the black layer over the part of the screen that is not selected.
 const DIM_ALPHA: f64 = 0.45;
 
@@ -45,7 +48,7 @@ where
         }
     };
     let screen = Rc::new(screen);
-    let selection: Rc<Cell<Option<(f64, f64, f64, f64)>>> = Rc::new(Cell::new(None));
+    let selection: Rc<Cell<Option<Selection>>> = Rc::new(Cell::new(None));
 
     let area = gtk::DrawingArea::new();
     area.set_cursor_from_name(Some("crosshair"));

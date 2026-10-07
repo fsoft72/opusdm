@@ -51,7 +51,7 @@ pub fn fetch_layout(
     let proxy = zbus::blocking::Proxy::new(conn, service, path.as_str(), "com.canonical.dbusmenu")?;
     let _ = proxy.call_method("AboutToShow", &(0_i32,));
 
-    let (_revision, layout): (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) =
+    let (_revision, layout): (u32, LayoutTuple) =
         proxy.call("GetLayout", &(0_i32, -1_i32, Vec::<String>::new()))?;
 
     Ok(parse_layout_tuple(layout))
@@ -60,7 +60,7 @@ pub fn fetch_layout(
 /// Recursively turn one `(id, properties, children)` zvariant tuple (each
 /// child itself wrapped in a `Variant` since the array is heterogeneous by
 /// depth) into a `MenuNode` tree, via `parse_layout_node` for the leaf work.
-fn parse_layout_tuple(node: (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) -> MenuNode {
+fn parse_layout_tuple(node: LayoutTuple) -> MenuNode {
     let (id, props, raw_children) = node;
     let children = raw_children
         .into_iter()
@@ -92,6 +92,9 @@ pub fn send_event_clicked(
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
+
+/// The `(id, properties, children)` tuple of a dbusmenu layout node.
+type LayoutTuple = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
 /// Build a `gtk::PopoverMenu` from `root`'s children (the root node itself
 /// is never shown - it's the menu's invisible container). Each visible,

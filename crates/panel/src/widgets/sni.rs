@@ -56,7 +56,7 @@ fn apply_event(
     ev: SniEvent,
 ) {
     match ev {
-        SniEvent::ItemAdded { service, item } | SniEvent::ItemChanged { service, item } => {
+        SniEvent::Added { service, item } | SniEvent::Changed { service, item } => {
             let mut buttons = buttons.borrow_mut();
             if let Some(entry) = buttons.get(&service) {
                 entry.button.set_child(Some(&icon_widget(&item)));
@@ -73,7 +73,7 @@ fn apply_event(
                 buttons.insert(service, ItemButton { button: btn, menu_path, item_path });
             }
         }
-        SniEvent::ItemRemoved { service } => {
+        SniEvent::Removed { service } => {
             if let Some(entry) = buttons.borrow_mut().remove(&service) {
                 root.remove(&entry.button);
             }

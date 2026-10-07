@@ -308,7 +308,6 @@ mod tests {
             fonts: opusdm_ipc::look::Fonts {
                 ui: opusdm_ipc::look::FontSpec { family: "Cantarell".into(), size: 10 },
                 list: opusdm_ipc::look::FontSpec { family: "Iosevka".into(), size: 12 },
-                ..Default::default()
             },
             surfaces: {
                 let mut surfaces = opusdm_ipc::look::Surfaces::default();

@@ -18,6 +18,9 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
+
+/// A setter closure installed once the widget it drives exists.
+type LateSetter<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 use super::{desktop_windows::*, groups_ui::*};
 
 /// Delays for re-asserting every desktop window's geometry a couple of times
@@ -130,10 +133,10 @@ pub(crate) struct Widgets {
     pub(crate) progress_window: crate::progress_window::ProgressWindow,
     /// Re-docks the panel bars to another screen edge. Set once the panel
     /// is attached, which happens after the `Widgets` are built.
-    pub(crate) set_panel_position: RefCell<Option<Rc<dyn Fn(opusdm_ipc::PanelPosition)>>>,
+    pub(crate) set_panel_position: LateSetter<opusdm_ipc::PanelPosition>,
     /// Re-lays out the dock (edge, icon size, panel edge). Set once the dock
     /// window exists.
-    pub(crate) set_dock_layout: RefCell<Option<Rc<dyn Fn(opusdm_dock::DockLayout)>>>,
+    pub(crate) set_dock_layout: LateSetter<opusdm_dock::DockLayout>,
     /// The button banks (`buttons/<id>.json`), owned by the GTK side.
     pub(crate) banks: Rc<RefCell<opusdm_ipc::Banks>>,
     /// The open bank windows.

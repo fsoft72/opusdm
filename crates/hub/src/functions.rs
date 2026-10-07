@@ -1181,7 +1181,8 @@ mod tests {
 
     #[test]
     fn hide_reveal_and_toggle_steps_emit_their_events_without_a_selection() {
-        let cases: [(InternalCmd, fn(&FnEvent) -> bool); 3] = [
+        type EventCheck = fn(&FnEvent) -> bool;
+        let cases: [(InternalCmd, EventCheck); 3] = [
             (InternalCmd::Hide, |e| matches!(e, FnEvent::Hide)),
             (InternalCmd::Reveal, |e| matches!(e, FnEvent::Reveal)),
             (InternalCmd::ToggleHide, |e| matches!(e, FnEvent::ToggleHide)),

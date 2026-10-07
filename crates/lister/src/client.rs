@@ -9,6 +9,10 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// What `Client::connect` returns: the client plus everything the `Welcome`
+/// carried (id, roles, settings, bindings, formats and functions).
+pub type Connected = (Client, ListerId, Roles, Settings, Bindings, FormatStore, Vec<Function>);
+
 /// The roles the hub reported.
 #[derive(Debug, Clone, Default)]
 pub struct Roles {
@@ -70,7 +74,7 @@ impl Client {
         sock_path: &Path,
         pid: u32,
         initial_path: &Path,
-    ) -> io::Result<(Client, ListerId, Roles, Settings, Bindings, FormatStore, Vec<Function>)> {
+    ) -> io::Result<Connected> {
         let mut stream = UnixStream::connect(sock_path)?;
         send(&mut stream, &ToHub::Register { pid, initial_path: initial_path.to_path_buf() })?;
         let welcome: Welcome = recv(&mut stream)?

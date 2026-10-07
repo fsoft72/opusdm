@@ -555,8 +555,10 @@ mod tests {
     #[test]
     fn test_compute_batch_rename_simple() {
         let names = vec!["file1.txt".into(), "file2.txt".into()];
-        let mut rules = RenameRules::default();
-        rules.prefix = "new_".into();
+        let rules = RenameRules {
+            prefix: "new_".into(),
+            ..RenameRules::default()
+        };
         let res = compute_batch_rename(&names, &rules);
         assert_eq!(res[0].1, "new_file1.txt");
         assert_eq!(res[1].1, "new_file2.txt");
@@ -565,10 +567,12 @@ mod tests {
     #[test]
     fn test_compute_batch_rename_numbering() {
         let names = vec!["photo.jpg".into(), "photo.jpg".into()];
-        let mut rules = RenameRules::default();
-        rules.numbering = true;
-        rules.number_start = 1;
-        rules.number_padding = 3;
+        let rules = RenameRules {
+            numbering: true,
+            number_start: 1,
+            number_padding: 3,
+            ..RenameRules::default()
+        };
         let res = compute_batch_rename(&names, &rules);
         assert_eq!(res[0].1, "photo_001.jpg");
         assert_eq!(res[1].1, "photo_002.jpg");

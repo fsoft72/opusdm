@@ -9,6 +9,9 @@ use opusdm_ipc::{DockPosition, PanelPosition};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// An edit of the dock id list for one entry (move up, move down, remove).
+type ListEdit = Box<dyn Fn(&mut Vec<String>, &str)>;
+
 /// Icon sizes the drop-down offers, in pixels.
 const ICON_SIZES: [i32; 3] = [32, 48, 64];
 
@@ -179,7 +182,7 @@ impl AppsInner {
         label.set_hexpand(true);
         row.append(&label);
 
-        let buttons: [(&str, Box<dyn Fn(&mut Vec<String>, &str)>); 3] = [
+        let buttons: [(&str, ListEdit); 3] = [
             ("go-up-symbolic", Box::new(|ids, id| {
                 let at = ids.iter().position(|x| x == id).unwrap_or(0);
                 list::insert_at(ids, id, at.saturating_sub(1));

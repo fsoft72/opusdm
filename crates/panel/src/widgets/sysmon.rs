@@ -86,6 +86,9 @@ fn read(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
+/// A shared trace and its line color as (r, g, b).
+type TraceColor = (Rc<RefCell<Trace>>, (f64, f64, f64));
+
 /// A fixed-length ring of recent samples, oldest first.
 struct Trace {
     samples: std::collections::VecDeque<f64>,
@@ -108,7 +111,7 @@ impl Trace {
 /// `None`), so each tick only needs a `queue_draw` - no callback churn.
 fn install_sparkline(
     area: &gtk::DrawingArea,
-    traces: Vec<(Rc<RefCell<Trace>>, (f64, f64, f64))>,
+    traces: Vec<TraceColor>,
     fixed_max: Option<f64>,
 ) {
     area.set_draw_func(move |_, cr, width, height| {

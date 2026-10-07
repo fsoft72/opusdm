@@ -82,8 +82,10 @@ mod tests {
         let mut settings = Settings::default();
         settings.theme.icon_set = opusdm_ipc::IconSetId::Custom("breeze-dark".to_string());
         settings.appearance.monospace_list = true;
-        let mut desktop = DesktopSettings::default();
-        desktop.icon_size = 96;
+        let desktop = DesktopSettings {
+            icon_size: 96,
+            ..DesktopSettings::default()
+        };
 
         match apply_full(&settings, &desktop) {
             ApplyOutcome::WroteFile => {}

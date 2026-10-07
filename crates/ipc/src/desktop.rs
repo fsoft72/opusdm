@@ -524,9 +524,11 @@ mod tests {
 
     #[test]
     fn roundtrips_through_json() {
-        let mut d = DesktopSettings::default();
-        d.icon_size = 96;
-        d.desktop_dir = Some(PathBuf::from("/home/u/Desk"));
+        let d = DesktopSettings {
+            icon_size: 96,
+            desktop_dir: Some(PathBuf::from("/home/u/Desk")),
+            ..DesktopSettings::default()
+        };
         let s = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<DesktopSettings>(&s).unwrap(), d);
 
@@ -556,10 +558,12 @@ mod tests {
 
     #[test]
     fn sanitized_clamps_every_numeric_field_at_both_ends() {
-        let mut d = DesktopSettings::default();
-        d.icon_size = 5;
-        d.grid_spacing = 9999;
-        d.grid_gap = 9999;
+        let d = DesktopSettings {
+            icon_size: 5,
+            grid_spacing: 9999,
+            grid_gap: 9999,
+            ..DesktopSettings::default()
+        };
         let d = d.sanitized();
         assert_eq!(d.icon_size, ICON_SIZE_RANGE.0);
         assert_eq!(d.grid_spacing, GRID_SPACING_RANGE.1);
@@ -577,10 +581,12 @@ mod tests {
         let bg = Background { interval_secs: 999_999, ..Background::default() }.sanitized();
         assert_eq!(bg.interval_secs, INTERVAL_SECS_RANGE.1);
 
-        let mut d = DesktopSettings::default();
-        d.icon_size = 999;
-        d.grid_spacing = 1;
-        d.grid_gap = -5;
+        let d = DesktopSettings {
+            icon_size: 999,
+            grid_spacing: 1,
+            grid_gap: -5,
+            ..DesktopSettings::default()
+        };
         let d = d.sanitized();
         assert_eq!(d.icon_size, ICON_SIZE_RANGE.1);
         assert_eq!(d.grid_spacing, GRID_SPACING_RANGE.0);
@@ -838,8 +844,10 @@ mod tests {
 
     #[test]
     fn startup_apps_roundtrip_and_wait_defaults_to_zero() {
-        let mut d = DesktopSettings::default();
-        d.startup_apps = vec![StartupApp { command: "firefox".into(), wait_secs: 5 }];
+        let d = DesktopSettings {
+            startup_apps: vec![StartupApp { command: "firefox".into(), wait_secs: 5 }],
+            ..DesktopSettings::default()
+        };
         let s = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<DesktopSettings>(&s).unwrap(), d);
         let app: StartupApp = serde_json::from_str("{\"command\": \"nm-applet\"}").unwrap();
@@ -848,13 +856,15 @@ mod tests {
 
     #[test]
     fn sanitized_clamps_the_startup_wait_and_drops_blank_commands() {
-        let mut d = DesktopSettings::default();
-        d.startup_apps = vec![
-            StartupApp { command: "  firefox  ".into(), wait_secs: 99_999 },
-            StartupApp { command: "   ".into(), wait_secs: 3 },
-            StartupApp { command: String::new(), wait_secs: 0 },
-            StartupApp { command: "xterm".into(), wait_secs: 2 },
-        ];
+        let d = DesktopSettings {
+            startup_apps: vec![
+                StartupApp { command: "  firefox  ".into(), wait_secs: 99_999 },
+                StartupApp { command: "   ".into(), wait_secs: 3 },
+                StartupApp { command: String::new(), wait_secs: 0 },
+                StartupApp { command: "xterm".into(), wait_secs: 2 },
+            ],
+            ..DesktopSettings::default()
+        };
         let d = d.sanitized();
         assert_eq!(
             d.startup_apps,

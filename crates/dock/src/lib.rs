@@ -300,11 +300,10 @@ impl Dock {
             if new_ids.is_empty() {
                 return false;
             }
-            let mut index = dock.placement().insert_index(dock.state.borrow().entries.len(), x, y);
+            let first = dock.placement().insert_index(dock.state.borrow().entries.len(), x, y);
             let mut ids = apps::ids(&dock.state.borrow().entries);
-            for id in &new_ids {
-                list::insert_at(&mut ids, id, index);
-                index += 1;
+            for (offset, id) in new_ids.iter().enumerate() {
+                list::insert_at(&mut ids, id, first + offset);
             }
             dock.commit(ids);
             true

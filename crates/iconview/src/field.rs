@@ -28,6 +28,9 @@ use std::rc::Rc;
 /// A list of listener closures with signature `F`.
 type Listeners<F> = RefCell<Vec<Box<F>>>;
 
+/// Pinned icons that were moved: each path with its new position.
+type PinnedMoves = Vec<(PathBuf, (f64, f64))>;
+
 /// Entry counts at or above this stop getting a live widget per item;
 /// realization becomes viewport-driven instead (see `sync_realized`).
 pub(super) const VIRTUALIZE_THRESHOLD: usize = 400;
@@ -88,7 +91,7 @@ pub(super) struct Events {
     pub(super) on_rename_requested: Listeners<dyn Fn(usize, String)>,
     pub(super) on_zoom_requested: Listeners<dyn Fn(i32)>,
     pub(super) on_move_icons: Listeners<dyn Fn()>,
-    pub(super) on_pinned_moved: Listeners<dyn Fn(Vec<(PathBuf, (f64, f64))>)>,
+    pub(super) on_pinned_moved: Listeners<dyn Fn(PinnedMoves)>,
 }
 
 pub(super) struct Inner {
@@ -509,7 +512,7 @@ impl IconField {
     /// Register a listener fired at the end of a reposition drag with the new
     /// position of every moved entry whose `left_out` or `group` flag is set. Not fired
     /// when no such entry moved.
-    pub fn connect_pinned_moved(&self, f: impl Fn(Vec<(PathBuf, (f64, f64))>) + 'static) {
+    pub fn connect_pinned_moved(&self, f: impl Fn(PinnedMoves) + 'static) {
         self.inner.events.on_pinned_moved.borrow_mut().push(Box::new(f));
     }
 
@@ -1149,7 +1152,7 @@ mod tests {
         assert_eq!(fp.free_positions().get(&1), Some(&(200.0, 150.0)));
 
         // Dragging reports only left-out entries, and remembers the new spot.
-        let moved_log: Rc<RefCell<Vec<(PathBuf, (f64, f64))>>> = Rc::new(RefCell::new(Vec::new()));
+        let moved_log: Rc<RefCell<PinnedMoves>> = Rc::new(RefCell::new(Vec::new()));
         let log = moved_log.clone();
         fp.connect_pinned_moved(move |m| log.borrow_mut().extend(m));
         fp.select_all();
@@ -1180,7 +1183,7 @@ mod tests {
         fr.set_mode(LayoutMode::Free);
         fr.inner.layout.scroller.set_size_request(600, 400);
         fr.set_entries(&all_left());
-        let stray: Rc<RefCell<Vec<(PathBuf, (f64, f64))>>> = Rc::new(RefCell::new(Vec::new()));
+        let stray: Rc<RefCell<PinnedMoves>> = Rc::new(RefCell::new(Vec::new()));
         let log = stray.clone();
         fr.connect_pinned_moved(move |m| log.borrow_mut().extend(m));
         fr.select_all();
@@ -1215,7 +1218,7 @@ mod tests {
         fg.set_pinned_positions(HashMap::from([(PathBuf::from("group:tools"), (300.0, 200.0))]));
         fg.set_entries(&with_group);
         assert_eq!(fg.free_positions().get(&2), Some(&(300.0, 200.0)));
-        let group_log: Rc<RefCell<Vec<(PathBuf, (f64, f64))>>> = Rc::new(RefCell::new(Vec::new()));
+        let group_log: Rc<RefCell<PinnedMoves>> = Rc::new(RefCell::new(Vec::new()));
         let log = group_log.clone();
         fg.connect_pinned_moved(move |m| log.borrow_mut().extend(m));
         fg.select_all();

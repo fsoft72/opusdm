@@ -637,8 +637,10 @@ mod tests {
 
     #[test]
     fn set_desktop_settings_carries_the_value() {
-        let mut ds = crate::desktop::DesktopSettings::default();
-        ds.icon_size = 120;
+        let ds = crate::desktop::DesktopSettings {
+            icon_size: 120,
+            ..crate::desktop::DesktopSettings::default()
+        };
         let mut buf = Vec::new();
         send(&mut buf, &ToHub::SetDesktopSettings(ds.clone())).unwrap();
         let got: Option<ToHub> = recv(&mut Cursor::new(buf)).unwrap();

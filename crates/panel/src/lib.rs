@@ -255,7 +255,7 @@ pub fn attach(
     // it to hand the new primary bar (known v1 gap, see the SNI plan).
     let sni_evt_rx = Rc::new(RefCell::new(Some(sni_evt_rx)));
 
-    let rebuild: Rc<dyn Fn(Vec<(i32, i32, i32, i32)>)> = {
+    let rebuild: Rc<dyn Fn(Vec<opusdm_ui::MonitorRect>)> = {
         let app = app.clone();
         let state = state.clone();
         let windows = windows.clone();

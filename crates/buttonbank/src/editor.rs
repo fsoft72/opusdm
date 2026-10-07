@@ -578,11 +578,13 @@ mod tests {
 
     #[test]
     fn a_broken_inline_command_on_a_button_is_reported_with_its_number() {
-        let mut bank = ButtonBank::default();
-        bank.buttons = vec![
-            Btn { label: "ok".into(), left: Some("bash:ls".into()), ..Btn::default() },
-            Btn { label: "bad".into(), right: Some("exec:opusdm-no-such-program-xyz".into()), ..Btn::default() },
-        ];
+        let mut bank = ButtonBank {
+            buttons: vec![
+                Btn { label: "ok".into(), left: Some("bash:ls".into()), ..Btn::default() },
+                Btn { label: "bad".into(), right: Some("exec:opusdm-no-such-program-xyz".into()), ..Btn::default() },
+            ],
+            ..ButtonBank::default()
+        };
         let problem = inline_command_problem(&bank).unwrap();
         assert!(problem.starts_with("Button 2:") && problem.contains("was not found"), "{problem}");
         bank.buttons.remove(1);
@@ -591,8 +593,10 @@ mod tests {
 
     #[test]
     fn a_saved_function_id_is_never_an_inline_problem() {
-        let mut bank = ButtonBank::default();
-        bank.buttons = vec![Btn { label: "x".into(), left: Some("fn-gone".into()), ..Btn::default() }];
+        let bank = ButtonBank {
+            buttons: vec![Btn { label: "x".into(), left: Some("fn-gone".into()), ..Btn::default() }],
+            ..ButtonBank::default()
+        };
         assert_eq!(inline_command_problem(&bank), None, "a deleted function only greys the button");
     }
 

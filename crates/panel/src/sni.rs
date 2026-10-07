@@ -30,9 +30,9 @@ pub struct SniItem {
 /// `resolve_service`).
 #[derive(Clone, Debug)]
 pub enum SniEvent {
-    ItemAdded { service: String, item: SniItem },
-    ItemChanged { service: String, item: SniItem },
-    ItemRemoved { service: String },
+    Added { service: String, item: SniItem },
+    Changed { service: String, item: SniItem },
+    Removed { service: String },
 }
 
 /// Commands the GTK side sends to the SNI thread. `path` is the item's
@@ -113,7 +113,7 @@ impl Watcher {
         }
         match fetch_item(&service, &path) {
             Ok(item) => {
-                let _ = self.tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
+                let _ = self.tx.send_blocking(SniEvent::Added { service: service.clone(), item });
                 watch_item(service, path, self.tx.clone());
             }
             Err(e) => opusdm_ipc::err_log!("opusdm-panel", "cannot fetch SNI item {service} at {path}: {e}"),
@@ -218,10 +218,10 @@ fn watch_item(service: String, path: String, tx: async_channel::Sender<SniEvent>
             while changes.next().is_some() {
                 match fetch_item(&service, &path) {
                     Ok(item) => {
-                        let _ = tx.send_blocking(SniEvent::ItemChanged { service: service.clone(), item });
+                        let _ = tx.send_blocking(SniEvent::Changed { service: service.clone(), item });
                     }
                     Err(_) => {
-                        let _ = tx.send_blocking(SniEvent::ItemRemoved { service: service.clone() });
+                        let _ = tx.send_blocking(SniEvent::Removed { service: service.clone() });
                         break;
                     }
                 }
@@ -237,7 +237,7 @@ fn watch_item(service: String, path: String, tx: async_channel::Sender<SniEvent>
             return;
         };
         if owner_lost.next().is_some() {
-            let _ = tx.send_blocking(SniEvent::ItemRemoved { service });
+            let _ = tx.send_blocking(SniEvent::Removed { service });
         }
     });
 }
@@ -304,7 +304,7 @@ fn run_as_host_client(
             let (service, path) = split_registered_item(&entry);
             match fetch_item(&service, &path) {
                 Ok(item) => {
-                    let _ = tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
+                    let _ = tx.send_blocking(SniEvent::Added { service: service.clone(), item });
                     watch_item(service, path, tx.clone());
                 }
                 Err(e) => opusdm_ipc::err_log!("opusdm-panel", "cannot fetch existing SNI item {service} at {path}: {e}"),
@@ -333,7 +333,7 @@ fn watch_host_registrations(watcher: zbus::blocking::Proxy<'static>, tx: async_c
                     let (service, path) = split_registered_item(&entry);
                     match fetch_item(&service, &path) {
                         Ok(item) => {
-                            let _ = tx.send_blocking(SniEvent::ItemAdded { service: service.clone(), item });
+                            let _ = tx.send_blocking(SniEvent::Added { service: service.clone(), item });
                             watch_item(service, path, tx.clone());
                         }
                         Err(e) => {
@@ -346,7 +346,7 @@ fn watch_host_registrations(watcher: zbus::blocking::Proxy<'static>, tx: async_c
             if let Some(msg) = unregistered.next() {
                 if let Ok(entry) = msg.body().deserialize::<String>() {
                     let (service, _path) = split_registered_item(&entry);
-                    let _ = tx.send_blocking(SniEvent::ItemRemoved { service });
+                    let _ = tx.send_blocking(SniEvent::Removed { service });
                 }
                 continue;
             }

@@ -57,8 +57,10 @@ mod tests {
     fn save_then_load_roundtrips_and_sanitizes() {
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("nested").join("desktop.json");
-        let mut d = DesktopSettings::default();
-        d.icon_size = 100_000; // out of range on purpose
+        let d = DesktopSettings {
+            icon_size: 100_000,
+            ..DesktopSettings::default()
+        };
         save_to(&path, &d).unwrap();
         let got = load_from(&path);
         assert_eq!(got.icon_size, opusdm_ipc::ICON_SIZE_RANGE.1); // clamped

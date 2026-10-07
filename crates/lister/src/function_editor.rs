@@ -12,6 +12,9 @@ use opusdm_ipc::{Resolution, ToHub, ToLister};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// An edit of the step list for one step (move up, move down, remove).
+type StepEdit = Box<dyn Fn(&mut Vec<FnStep>)>;
+
 /// Command line flag that makes the Lister open only the Manage Functions
 /// window.
 pub const MANAGE_FUNCTIONS_FLAG: &str = "--manage-functions";
@@ -459,7 +462,7 @@ fn build_step_row(state: &Rc<EditorState>, idx: usize, step: &FnStep) -> gtk::Bo
 }
 
 /// Move-up/move-down/remove for the step at `idx`.
-fn step_move_and_remove(idx: usize) -> [(&'static str, Box<dyn Fn(&mut Vec<FnStep>)>); 3] {
+fn step_move_and_remove(idx: usize) -> [(&'static str, StepEdit); 3] {
     [
         ("go-up-symbolic", Box::new(move |steps: &mut Vec<FnStep>| {
             if idx > 0 {

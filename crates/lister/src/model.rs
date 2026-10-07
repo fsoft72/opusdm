@@ -724,7 +724,7 @@ mod tests {
                 .is_some_and(|s| s.trim() == "0")
     }
 
-    fn sorted(names: &mut Vec<Row>, desc: bool, separate: Separate) -> Vec<String> {
+    fn sorted(names: &mut [Row], desc: bool, separate: Separate) -> Vec<String> {
         names.sort_by(|a, b| dir_first_cmp(a, b, SortCol::Name, desc, separate));
         names.iter().map(|r| r.name.clone()).collect()
     }

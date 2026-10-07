@@ -29,7 +29,7 @@ fn apply_theme() {
 }
 
 /// The primary monitor and its geometry (x, y, width, height).
-fn primary_monitor() -> Result<(gdk::Monitor, (i32, i32, i32, i32)), String> {
+fn primary_monitor() -> Result<(gdk::Monitor, opusdm_ui::MonitorRect), String> {
     let display = gdk::Display::default().ok_or("no display")?;
     let monitor = display
         .monitors()

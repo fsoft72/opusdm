@@ -252,8 +252,10 @@ mod tests {
     fn load_desktop_settings_sanitizes_clamped_values() {
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("desktop.json");
-        let mut d = DesktopSettings::default();
-        d.icon_size = 100_000;
+        let d = DesktopSettings {
+            icon_size: 100_000,
+            ..DesktopSettings::default()
+        };
         save_desktop_settings_to(&path, &d).unwrap();
         let loaded = load_desktop_settings_from(&path, "test");
         assert_eq!(loaded.icon_size, crate::desktop::ICON_SIZE_RANGE.1);

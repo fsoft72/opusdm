@@ -93,10 +93,12 @@ mod tests {
 
     #[test]
     fn theme_values_replace_the_look_but_never_light_or_dark() {
-        let mut data = CustomThemeData::default();
-        data.colors = Some(ColorSettings { file_fg: "#ff00ff".to_string(), ..ColorSettings::default() });
-        data.appearance = Some(Appearance { monospace_list: true, theme_mode: ThemeMode::Dark, ..Appearance::default() });
-        data.fonts = Some(Fonts { list: FontSpec { family: "Iosevka".into(), size: 12 }, ui: FontSpec::default() });
+        let data = CustomThemeData {
+            colors: Some(ColorSettings { file_fg: "#ff00ff".to_string(), ..ColorSettings::default() }),
+            appearance: Some(Appearance { monospace_list: true, theme_mode: ThemeMode::Dark, ..Appearance::default() }),
+            fonts: Some(Fonts { list: FontSpec { family: "Iosevka".into(), size: 12 }, ui: FontSpec::default() }),
+            ..CustomThemeData::default()
+        };
         let s = resolve_look("t", &data, &prefs());
         assert_eq!(s.theme.colors.file_fg, "#ff00ff");
         assert!(s.appearance.monospace_list && !s.appearance.type_indicators);
@@ -109,11 +111,13 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
-        let mut data = CustomThemeData::default();
-        data.surfaces = Some(ThemeSurfaces {
-            lister: Some(ThemeSurface { image: Some("l.png".into()), fit: Some(ImageFit::Tile) }),
-            requester: None,
-        });
+        let data = CustomThemeData {
+            surfaces: Some(ThemeSurfaces {
+                lister: Some(ThemeSurface { image: Some("l.png".into()), fit: Some(ImageFit::Tile) }),
+                requester: None,
+            }),
+            ..CustomThemeData::default()
+        };
         let s = resolve_look("t", &data, &prefs());
         assert!(s.surfaces.lister.image_path.unwrap().ends_with("themes/t/backgrounds/l.png"));
         assert_eq!(s.surfaces.lister.fit, ImageFit::Tile);
@@ -122,11 +126,13 @@ mod tests {
 
     #[test]
     fn image_names_that_are_paths_are_ignored() {
-        let mut data = CustomThemeData::default();
-        data.surfaces = Some(ThemeSurfaces {
-            lister: Some(ThemeSurface { image: Some("../../x.png".into()), fit: None }),
-            requester: None,
-        });
+        let data = CustomThemeData {
+            surfaces: Some(ThemeSurfaces {
+                lister: Some(ThemeSurface { image: Some("../../x.png".into()), fit: None }),
+                requester: None,
+            }),
+            ..CustomThemeData::default()
+        };
         let s = resolve_look("t", &data, &Settings::default());
         assert_eq!(s.surfaces.lister.image_path, None);
     }

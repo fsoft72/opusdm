@@ -1407,8 +1407,10 @@ mod tests {
         let handle = spawn_server(listener, Box::new(|_p| {}));
 
         let mut c = connect(&path);
-        let mut ds = DesktopSettings::default();
-        ds.icon_size = 5; // below ICON_SIZE_RANGE.0, hub must clamp
+        let ds = DesktopSettings {
+            icon_size: 5,
+            ..DesktopSettings::default()
+        };
         send(&mut c, &ToHub::SetDesktopSettings(ds)).unwrap();
 
         let mut got = None;
