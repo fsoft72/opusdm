@@ -423,36 +423,15 @@ impl Hub {
                 let _ = self.evt_tx.send(HubEvent::RaiseToolbar);
             }
 
-            ToHub::SetDesktopSettings(ds) => {
-                self.current_desktop = ds.sanitized();
-                let _ = self.persist_tx.send(PersistMsg::Desktop(self.current_desktop.clone()));
-                let _ = self
-                    .evt_tx
-                    .send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
-            }
+            ToHub::SetDesktopSettings(ds) => self.set_desktop_settings(ds),
 
             ToHub::SetSettings(new_settings) => self.apply_settings(*new_settings),
 
-            ToHub::SetBindings(new_bindings) => {
-                opusdm_ipc::debug_log!("hub", "SetBindings from conn {cid}: {} hotkeys", new_bindings.hotkeys.len());
-                self.current_bindings = bindings::sanitize(new_bindings);
-                let _ = self.persist_tx.send(PersistMsg::Bindings(self.current_bindings.clone()));
-                self.broadcast(ToLister::BindingsUpdate(self.current_bindings.clone()));
-                self.apply_global_keys();
-            }
+            ToHub::SetBindings(new_bindings) => self.set_bindings(cid, new_bindings),
 
-            ToHub::SetFormats(new_formats) => {
-                self.current_formats = new_formats.sanitized();
-                let _ = self.persist_tx.send(PersistMsg::Formats(self.current_formats.clone()));
-                self.broadcast(ToLister::FormatsUpdate(self.current_formats.clone()));
-            }
+            ToHub::SetFormats(new_formats) => self.set_formats(new_formats),
 
-            ToHub::SetFunctions(new_functions) => {
-                self.current_functions = new_functions;
-                let _ = self.persist_tx.send(PersistMsg::Functions(self.current_functions.clone()));
-                self.broadcast(ToLister::FunctionsUpdate(self.current_functions.clone()));
-                let _ = self.evt_tx.send(HubEvent::FunctionsChanged(self.current_functions.clone()));
-            }
+            ToHub::SetFunctions(new_functions) => self.set_functions(new_functions),
 
             ToHub::CacheReport(paths) => {
                 if let Some(c) = self.conns.get_mut(&cid) {
@@ -460,22 +439,7 @@ impl Hub {
                 }
             }
 
-            ToHub::QueryCaches => {
-                let mut ids: Vec<u64> = self.conns.iter().filter(|(_, c)| c.registered).map(|(id, _)| *id).collect();
-                ids.sort_unstable();
-                let entries: Vec<opusdm_ipc::CacheEntry> = ids
-                    .iter()
-                    .flat_map(|id| {
-                        self.conns[id]
-                            .cache_paths
-                            .iter()
-                            .map(move |p| opusdm_ipc::CacheEntry { lister: ListerId(*id), path: p.clone() })
-                    })
-                    .collect();
-                if let Some(c) = self.conns.get(&cid) {
-                    let _ = c.tx.send(ToLister::CacheList(entries).into());
-                }
-            }
+            ToHub::QueryCaches => self.query_caches(cid),
 
             ToHub::OpenBankManager => {
                 let _ = self.evt_tx.send(HubEvent::OpenBankManager);
@@ -495,48 +459,7 @@ impl Hub {
                 }
             }
 
-            ToHub::Register { pid, initial_path } => {
-                if let Some(c) = self.conns.get_mut(&cid) {
-                    c.registered = true;
-                    c.pid = pid;
-                    c.path = initial_path.clone();
-                    let _ = c.tx.send(
-                        Welcome {
-                            lister_id: ListerId(cid),
-                            source: self.roles.source(),
-                            dests: self.roles.dests(),
-                            source_locked: self.roles.source_locked(),
-                            settings: self.current_settings.clone(),
-                            bindings: self.current_bindings.clone(),
-                            formats: self.current_formats.clone(),
-                            functions: self.current_functions.clone(),
-                        }
-                        .into(),
-                    );
-                    let _ = self.evt_tx.send(HubEvent::ListerRegistered {
-                        id: ListerId(cid),
-                        pid,
-                        path: initial_path,
-                    });
-                    emit_roles(&self.roles, &self.conns, &self.evt_tx);
-                }
-                if self.conns.get(&cid).is_some_and(|c| c.registered) {
-                    // While everything is hidden, a Lister somebody asked for
-                    // means the user wants to see it: bring the desktop back
-                    // (without raising the old SOURCE over the new window). One
-                    // nobody asked for (the initial Lister) hides with the rest.
-                    let requested = self.visible_spawns_pending > 0;
-                    self.visible_spawns_pending = self.visible_spawns_pending.saturating_sub(1);
-                    if self.hidden {
-                        if requested {
-                            self.set_hidden_with(false, false);
-                        } else if let Some(c) = self.conns.get_mut(&cid) {
-                            let _ = c.tx.send(ToLister::SetHidden(true).into());
-                        }
-                    }
-                    self.emit_script_event(ScriptEvent::ListerOpened);
-                }
-            }
+            ToHub::Register { pid, initial_path } => self.register_lister(cid, pid, initial_path),
 
             ToHub::FocusGained => {
                 apply_role(&mut self.roles, RoleEvent::FocusGained(ListerId(cid)), &mut self.conns, &self.evt_tx);
@@ -611,6 +534,100 @@ impl Hub {
             ToHub::Goodbye => {
                 self.drop_lister(cid);
             }
+        }
+    }
+
+    /// A Lister asked to change the desktop settings: clamp, save and tell the GTK side.
+    fn set_desktop_settings(&mut self, ds: DesktopSettings) {
+        self.current_desktop = ds.sanitized();
+        let _ = self.persist_tx.send(PersistMsg::Desktop(self.current_desktop.clone()));
+        let _ = self.evt_tx.send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
+    }
+
+    /// A Lister sent new hotkeys and script bindings: sanitize, save, tell every Lister and re-grab the global keys.
+    fn set_bindings(&mut self, cid: u64, new_bindings: Bindings) {
+        opusdm_ipc::debug_log!("hub", "SetBindings from conn {cid}: {} hotkeys", new_bindings.hotkeys.len());
+        self.current_bindings = bindings::sanitize(new_bindings);
+        let _ = self.persist_tx.send(PersistMsg::Bindings(self.current_bindings.clone()));
+        self.broadcast(ToLister::BindingsUpdate(self.current_bindings.clone()));
+        self.apply_global_keys();
+    }
+
+    /// A Lister sent new formats: sanitize, save and tell every Lister.
+    fn set_formats(&mut self, new_formats: FormatStore) {
+        self.current_formats = new_formats.sanitized();
+        let _ = self.persist_tx.send(PersistMsg::Formats(self.current_formats.clone()));
+        self.broadcast(ToLister::FormatsUpdate(self.current_formats.clone()));
+    }
+
+    /// A Lister sent new functions: save, tell every Lister and the GTK side.
+    fn set_functions(&mut self, new_functions: Vec<opusdm_ipc::function::Function>) {
+        self.current_functions = new_functions;
+        let _ = self.persist_tx.send(PersistMsg::Functions(self.current_functions.clone()));
+        self.broadcast(ToLister::FunctionsUpdate(self.current_functions.clone()));
+        let _ = self.evt_tx.send(HubEvent::FunctionsChanged(self.current_functions.clone()));
+    }
+
+    /// Answer `cid` with the cache folders every registered Lister reported.
+    fn query_caches(&mut self, cid: u64) {
+        let mut ids: Vec<u64> = self.conns.iter().filter(|(_, c)| c.registered).map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        let entries: Vec<opusdm_ipc::CacheEntry> = ids
+            .iter()
+            .flat_map(|id| {
+                self.conns[id]
+                    .cache_paths
+                    .iter()
+                    .map(move |p| opusdm_ipc::CacheEntry { lister: ListerId(*id), path: p.clone() })
+            })
+            .collect();
+        if let Some(c) = self.conns.get(&cid) {
+            let _ = c.tx.send(ToLister::CacheList(entries).into());
+        }
+    }
+
+    /// `cid` registered: send its `Welcome`, announce it, share the roles and,
+    /// while everything is hidden, decide whether it brings the desktop back.
+    fn register_lister(&mut self, cid: u64, pid: u32, initial_path: PathBuf) {
+        if let Some(c) = self.conns.get_mut(&cid) {
+            c.registered = true;
+            c.pid = pid;
+            c.path = initial_path.clone();
+            let _ = c.tx.send(
+                Welcome {
+                    lister_id: ListerId(cid),
+                    source: self.roles.source(),
+                    dests: self.roles.dests(),
+                    source_locked: self.roles.source_locked(),
+                    settings: self.current_settings.clone(),
+                    bindings: self.current_bindings.clone(),
+                    formats: self.current_formats.clone(),
+                    functions: self.current_functions.clone(),
+                }
+                .into(),
+            );
+            let _ = self.evt_tx.send(HubEvent::ListerRegistered {
+                id: ListerId(cid),
+                pid,
+                path: initial_path,
+            });
+            emit_roles(&self.roles, &self.conns, &self.evt_tx);
+        }
+        if self.conns.get(&cid).is_some_and(|c| c.registered) {
+            // While everything is hidden, a Lister somebody asked for
+            // means the user wants to see it: bring the desktop back
+            // (without raising the old SOURCE over the new window). One
+            // nobody asked for (the initial Lister) hides with the rest.
+            let requested = self.visible_spawns_pending > 0;
+            self.visible_spawns_pending = self.visible_spawns_pending.saturating_sub(1);
+            if self.hidden {
+                if requested {
+                    self.set_hidden_with(false, false);
+                } else if let Some(c) = self.conns.get_mut(&cid) {
+                    let _ = c.tx.send(ToLister::SetHidden(true).into());
+                }
+            }
+            self.emit_script_event(ScriptEvent::ListerOpened);
         }
     }
 
