@@ -249,6 +249,191 @@ fn rename_all(dir: &Path, mappings: &[(String, String)]) -> (usize, Vec<String>)
     (renamed, errors)
 }
 
+/// The case transformation the "Case" drop-down item `index` stands for.
+fn case_from_index(index: u32) -> CaseTransform {
+    match index {
+        1 => CaseTransform::Lowercase,
+        2 => CaseTransform::Uppercase,
+        3 => CaseTransform::TitleCase,
+        4 => CaseTransform::SnakeCase,
+        5 => CaseTransform::KebabCase,
+        _ => CaseTransform::None,
+    }
+}
+
+/// The inputs of the rules dialog.
+#[derive(Clone)]
+struct RulesControls {
+    find_entry: gtk::Entry,
+    rep_entry: gtk::Entry,
+    regex_check: gtk::CheckButton,
+    pre_entry: gtk::Entry,
+    suf_entry: gtk::Entry,
+    ext_check: gtk::CheckButton,
+    case_combo: gtk::DropDown,
+    num_check: gtk::CheckButton,
+}
+
+impl RulesControls {
+    /// Build the controls and the grid that lays them out.
+    fn build() -> (gtk::Grid, Self) {
+        let grid = gtk::Grid::builder().column_spacing(8).row_spacing(6).build();
+
+        // Find & Replace
+        let find_label = gtk::Label::new(Some("Find:"));
+        find_label.set_xalign(1.0);
+        let find_entry = gtk::Entry::new();
+        find_entry.set_hexpand(true);
+        find_entry.set_placeholder_text(Some("Text or regex pattern to match"));
+
+        let rep_label = gtk::Label::new(Some("Replace:"));
+        rep_label.set_xalign(1.0);
+        let rep_entry = gtk::Entry::new();
+        rep_entry.set_hexpand(true);
+        rep_entry.set_placeholder_text(Some("Replacement string (supports $1, $2 with regex)"));
+
+        let regex_check = gtk::CheckButton::with_label("Use Regex");
+
+        grid.attach(&find_label, 0, 0, 1, 1);
+        grid.attach(&find_entry, 1, 0, 1, 1);
+        grid.attach(&regex_check, 2, 0, 1, 1);
+
+        grid.attach(&rep_label, 0, 1, 1, 1);
+        grid.attach(&rep_entry, 1, 1, 2, 1);
+
+        // Prefix & Suffix
+        let pre_label = gtk::Label::new(Some("Prefix:"));
+        pre_label.set_xalign(1.0);
+        let pre_entry = gtk::Entry::new();
+        pre_entry.set_placeholder_text(Some("Prefix"));
+
+        let suf_label = gtk::Label::new(Some("Suffix:"));
+        suf_label.set_xalign(1.0);
+        let suf_entry = gtk::Entry::new();
+        suf_entry.set_placeholder_text(Some("Suffix"));
+
+        let ext_check = gtk::CheckButton::with_label("Preserve Extension");
+        ext_check.set_active(true);
+
+        grid.attach(&pre_label, 0, 2, 1, 1);
+        grid.attach(&pre_entry, 1, 2, 1, 1);
+        grid.attach(&ext_check, 2, 2, 1, 1);
+
+        grid.attach(&suf_label, 0, 3, 1, 1);
+        grid.attach(&suf_entry, 1, 3, 1, 1);
+
+        // Case Transformation
+        let case_label = gtk::Label::new(Some("Case:"));
+        case_label.set_xalign(1.0);
+        let case_combo = gtk::DropDown::from_strings(&[
+            "Keep Original",
+            "lowercase",
+            "UPPERCASE",
+            "Title Case",
+            "snake_case",
+            "kebab-case",
+        ]);
+        grid.attach(&case_label, 0, 4, 1, 1);
+        grid.attach(&case_combo, 1, 4, 1, 1);
+
+        // Numbering
+        let num_check = gtk::CheckButton::with_label("Add Sequence Number (_001)");
+        grid.attach(&num_check, 1, 5, 2, 1);
+
+        (grid, Self { find_entry, rep_entry, regex_check, pre_entry, suf_entry, ext_check, case_combo, num_check })
+    }
+
+    /// The rules the inputs describe right now.
+    fn rules(&self) -> RenameRules {
+        RenameRules {
+            find: self.find_entry.text().to_string(),
+            replace: self.rep_entry.text().to_string(),
+            use_regex: self.regex_check.is_active(),
+            prefix: self.pre_entry.text().to_string(),
+            suffix: self.suf_entry.text().to_string(),
+            numbering: self.num_check.is_active(),
+            number_start: 1,
+            number_step: 1,
+            number_padding: 3,
+            case: case_from_index(self.case_combo.selected()),
+            preserve_ext: self.ext_check.is_active(),
+        }
+    }
+
+    /// Call `on_change` whenever any input changes.
+    fn connect_changed(&self, on_change: Rc<dyn Fn()>) {
+        let up = on_change.clone();
+        self.find_entry.connect_changed(move |_| up());
+        let up = on_change.clone();
+        self.rep_entry.connect_changed(move |_| up());
+        let up = on_change.clone();
+        self.regex_check.connect_toggled(move |_| up());
+        let up = on_change.clone();
+        self.pre_entry.connect_changed(move |_| up());
+        let up = on_change.clone();
+        self.suf_entry.connect_changed(move |_| up());
+        let up = on_change.clone();
+        self.ext_check.connect_toggled(move |_| up());
+        let up = on_change.clone();
+        self.num_check.connect_toggled(move |_| up());
+        self.case_combo.connect_selected_notify(move |_| on_change());
+    }
+}
+
+/// One preview row: the old name, an arrow and the new name, coloured by
+/// whether it collides with an earlier one or changes.
+fn build_preview_row(orig: &str, new: &str, collides: bool) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    hbox.set_margin_start(8);
+    hbox.set_margin_end(8);
+    hbox.set_margin_top(4);
+    hbox.set_margin_bottom(4);
+
+    let orig_lbl = gtk::Label::new(Some(orig));
+    orig_lbl.set_xalign(0.0);
+    orig_lbl.set_hexpand(true);
+    orig_lbl.add_css_class("dim-label");
+
+    let arrow_lbl = gtk::Label::new(Some("➜"));
+
+    let new_lbl = gtk::Label::new(Some(new));
+    new_lbl.set_xalign(0.0);
+    new_lbl.set_hexpand(true);
+
+    if collides {
+        new_lbl.add_css_class("error-text");
+    } else if orig != new {
+        new_lbl.add_css_class("success-text");
+    }
+
+    hbox.append(&orig_lbl);
+    hbox.append(&arrow_lbl);
+    hbox.append(&new_lbl);
+    row.set_child(Some(&hbox));
+    row
+}
+
+/// Replace the preview rows with `mappings` and show a warning when two of
+/// them end up with the same new name.
+fn render_preview(list_box: &gtk::ListBox, warning_label: &gtk::Label, mappings: &[(String, String)]) {
+    while let Some(child) = list_box.first_child() {
+        list_box.remove(&child);
+    }
+    let mut seen_new_names = HashSet::new();
+    let mut has_conflict = false;
+    for (orig, new) in mappings {
+        let collides = !seen_new_names.insert(new.clone());
+        has_conflict |= collides;
+        list_box.append(&build_preview_row(orig, new, collides));
+    }
+    if has_conflict {
+        warning_label.set_text("⚠️ Warning: Multiple items have identical new names (collision)!");
+    } else {
+        warning_label.set_text("");
+    }
+}
+
 /// The rules dialog (find/replace, prefix, suffix, case, numbering) with a
 /// live preview over the selected names. `on_apply` receives the final
 /// `(old, new)` pairs when the apply button is pressed.
@@ -258,85 +443,13 @@ pub fn open_rules_dialog(ui: &Rc<Ui>, title: &str, apply_label: &str, on_apply: 
         return;
     }
 
-    let shell = opusdm_ui::DialogShell::new(
-        &ui.window,
-        &format!("{title} - {} items", names.len()),
-    )
-    .size(680, 520);
+    let shell = opusdm_ui::DialogShell::new(&ui.window, &format!("{title} - {} items", names.len())).size(680, 520);
     let root = shell.content();
 
-    // Controls grid
-    let grid = gtk::Grid::builder()
-        .column_spacing(8)
-        .row_spacing(6)
-        .build();
-
-    // Find & Replace
-    let find_label = gtk::Label::new(Some("Find:"));
-    find_label.set_xalign(1.0);
-    let find_entry = gtk::Entry::new();
-    find_entry.set_hexpand(true);
-    find_entry.set_placeholder_text(Some("Text or regex pattern to match"));
-
-    let rep_label = gtk::Label::new(Some("Replace:"));
-    rep_label.set_xalign(1.0);
-    let rep_entry = gtk::Entry::new();
-    rep_entry.set_hexpand(true);
-    rep_entry.set_placeholder_text(Some("Replacement string (supports $1, $2 with regex)"));
-
-    let regex_check = gtk::CheckButton::with_label("Use Regex");
-
-    grid.attach(&find_label, 0, 0, 1, 1);
-    grid.attach(&find_entry, 1, 0, 1, 1);
-    grid.attach(&regex_check, 2, 0, 1, 1);
-
-    grid.attach(&rep_label, 0, 1, 1, 1);
-    grid.attach(&rep_entry, 1, 1, 2, 1);
-
-    // Prefix & Suffix
-    let pre_label = gtk::Label::new(Some("Prefix:"));
-    pre_label.set_xalign(1.0);
-    let pre_entry = gtk::Entry::new();
-    pre_entry.set_placeholder_text(Some("Prefix"));
-
-    let suf_label = gtk::Label::new(Some("Suffix:"));
-    suf_label.set_xalign(1.0);
-    let suf_entry = gtk::Entry::new();
-    suf_entry.set_placeholder_text(Some("Suffix"));
-
-    let ext_check = gtk::CheckButton::with_label("Preserve Extension");
-    ext_check.set_active(true);
-
-    grid.attach(&pre_label, 0, 2, 1, 1);
-    grid.attach(&pre_entry, 1, 2, 1, 1);
-    grid.attach(&ext_check, 2, 2, 1, 1);
-
-    grid.attach(&suf_label, 0, 3, 1, 1);
-    grid.attach(&suf_entry, 1, 3, 1, 1);
-
-    // Case Transformation
-    let case_label = gtk::Label::new(Some("Case:"));
-    case_label.set_xalign(1.0);
-    let case_combo = gtk::DropDown::from_strings(&[
-        "Keep Original",
-        "lowercase",
-        "UPPERCASE",
-        "Title Case",
-        "snake_case",
-        "kebab-case",
-    ]);
-    grid.attach(&case_label, 0, 4, 1, 1);
-    grid.attach(&case_combo, 1, 4, 1, 1);
-
-    // Numbering
-    let num_check = gtk::CheckButton::with_label("Add Sequence Number (_001)");
-    grid.attach(&num_check, 1, 5, 2, 1);
-
+    let (grid, controls) = RulesControls::build();
     root.append(&grid);
-
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    // Live preview table
     let preview_header = gtk::Label::new(Some("Live Preview:"));
     preview_header.set_xalign(0.0);
     preview_header.add_css_class("dim-label");
@@ -344,12 +457,7 @@ pub fn open_rules_dialog(ui: &Rc<Ui>, title: &str, apply_label: &str, on_apply: 
 
     let list_box = gtk::ListBox::new();
     list_box.set_selection_mode(gtk::SelectionMode::None);
-
-    let scroller = gtk::ScrolledWindow::builder()
-        .child(&list_box)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
+    let scroller = gtk::ScrolledWindow::builder().child(&list_box).vexpand(true).hexpand(true).build();
     root.append(&scroller);
 
     let warning_label = gtk::Label::new(None);
@@ -357,160 +465,51 @@ pub fn open_rules_dialog(ui: &Rc<Ui>, title: &str, apply_label: &str, on_apply: 
     warning_label.add_css_class("error-text");
     root.append(&warning_label);
 
-    // Buttons
     shell.close_button("Cancel");
     let apply_btn = shell.button(apply_label);
     apply_btn.add_css_class("suggested-action");
 
     let current_mappings = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
-
-    // Closure to update live preview
-    let update_preview = {
-        let names = names.clone();
-        let find_entry = find_entry.clone();
-        let rep_entry = rep_entry.clone();
-        let regex_check = regex_check.clone();
-        let pre_entry = pre_entry.clone();
-        let suf_entry = suf_entry.clone();
-        let ext_check = ext_check.clone();
-        let case_combo = case_combo.clone();
-        let num_check = num_check.clone();
-        let list_box = list_box.clone();
-        let warning_label = warning_label.clone();
+    let update_preview: Rc<dyn Fn()> = {
+        let controls = controls.clone();
         let current_mappings = current_mappings.clone();
-
         Rc::new(move || {
-            let case = match case_combo.selected() {
-                1 => CaseTransform::Lowercase,
-                2 => CaseTransform::Uppercase,
-                3 => CaseTransform::TitleCase,
-                4 => CaseTransform::SnakeCase,
-                5 => CaseTransform::KebabCase,
-                _ => CaseTransform::None,
-            };
-
-            let rules = RenameRules {
-                find: find_entry.text().to_string(),
-                replace: rep_entry.text().to_string(),
-                use_regex: regex_check.is_active(),
-                prefix: pre_entry.text().to_string(),
-                suffix: suf_entry.text().to_string(),
-                numbering: num_check.is_active(),
-                number_start: 1,
-                number_step: 1,
-                number_padding: 3,
-                case,
-                preserve_ext: ext_check.is_active(),
-            };
-
-            let mappings = compute_batch_rename(&names, &rules);
-            *current_mappings.borrow_mut() = mappings.clone();
-
-            // Clear list
-            while let Some(child) = list_box.first_child() {
-                list_box.remove(&child);
-            }
-
-            let mut seen_new_names = HashSet::new();
-            let mut has_conflict = false;
-
-            for (orig, new) in &mappings {
-                let row = gtk::ListBoxRow::new();
-                let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-                hbox.set_margin_start(8);
-                hbox.set_margin_end(8);
-                hbox.set_margin_top(4);
-                hbox.set_margin_bottom(4);
-
-                let orig_lbl = gtk::Label::new(Some(orig));
-                orig_lbl.set_xalign(0.0);
-                orig_lbl.set_hexpand(true);
-                orig_lbl.add_css_class("dim-label");
-
-                let arrow_lbl = gtk::Label::new(Some("➜"));
-
-                let new_lbl = gtk::Label::new(Some(new));
-                new_lbl.set_xalign(0.0);
-                new_lbl.set_hexpand(true);
-
-                if !seen_new_names.insert(new.clone()) {
-                    new_lbl.add_css_class("error-text");
-                    has_conflict = true;
-                } else if orig != new {
-                    new_lbl.add_css_class("success-text");
-                }
-
-                hbox.append(&orig_lbl);
-                hbox.append(&arrow_lbl);
-                hbox.append(&new_lbl);
-                row.set_child(Some(&hbox));
-                list_box.append(&row);
-            }
-
-            if has_conflict {
-                warning_label.set_text("⚠️ Warning: Multiple items have identical new names (collision)!");
-            } else {
-                warning_label.set_text("");
-            }
+            let mappings = compute_batch_rename(&names, &controls.rules());
+            render_preview(&list_box, &warning_label, &mappings);
+            *current_mappings.borrow_mut() = mappings;
         })
     };
-
-    // Connect inputs to live preview update
-    {
-        let up = update_preview.clone();
-        find_entry.connect_changed(move |_| up());
-    }
-    {
-        let up = update_preview.clone();
-        rep_entry.connect_changed(move |_| up());
-    }
-    {
-        let up = update_preview.clone();
-        regex_check.connect_toggled(move |_| up());
-    }
-    {
-        let up = update_preview.clone();
-        pre_entry.connect_changed(move |_| up());
-    }
-    {
-        let up = update_preview.clone();
-        suf_entry.connect_changed(move |_| up());
-    }
-    {
-        let up = update_preview.clone();
-        ext_check.connect_toggled(move |_| up());
-    }
-    {
-        let up = update_preview.clone();
-        num_check.connect_toggled(move |_| up());
-    }
-    {
-        let up = update_preview.clone();
-        case_combo.connect_selected_notify(move |_| up());
-    }
-
-    // Initial calculation
+    controls.connect_changed(update_preview.clone());
     update_preview();
 
-    // Apply
     {
         let dlg = shell.window().clone();
-        let ui_clone = ui.clone();
-        let current_mappings = current_mappings.clone();
+        let ui = ui.clone();
         apply_btn.connect_clicked(move |_| {
             let mappings = current_mappings.borrow().clone();
             dlg.close();
-            on_apply(&ui_clone, mappings);
+            on_apply(&ui, mappings);
         });
     }
 
     shell.present();
-    find_entry.grab_focus();
+    controls.find_entry.grab_focus();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_case_drop_down_maps_to_its_transformation() {
+        assert_eq!(case_from_index(0), CaseTransform::None);
+        assert_eq!(case_from_index(1), CaseTransform::Lowercase);
+        assert_eq!(case_from_index(2), CaseTransform::Uppercase);
+        assert_eq!(case_from_index(3), CaseTransform::TitleCase);
+        assert_eq!(case_from_index(4), CaseTransform::SnakeCase);
+        assert_eq!(case_from_index(5), CaseTransform::KebabCase);
+        assert_eq!(case_from_index(99), CaseTransform::None);
+    }
 
     fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
         v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
