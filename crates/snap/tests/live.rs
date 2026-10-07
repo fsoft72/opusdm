@@ -89,6 +89,22 @@ impl Rig {
         }
     }
 
+    /// Create and map a dock of `height` pixels along the bottom edge that
+    /// reserves its band with `_NET_WM_STRUT_PARTIAL`.
+    fn bottom_dock(&self, screen: Rect, height: u16) -> Window {
+        let conn = &self.session.conn;
+        let atom = |name: &str| conn.intern_atom(false, name.as_bytes()).unwrap().reply().unwrap().atom;
+        let window = conn.generate_id().unwrap();
+        let (width, y) = (screen.w as u16, (screen.y + screen.h) as i16 - height as i16);
+        conn.create_window(0, window, self.session.root, screen.x as i16, y, width, height, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new()).unwrap();
+        conn.change_property32(xproto::PropMode::REPLACE, window, atom("_NET_WM_WINDOW_TYPE"), AtomEnum::ATOM, &[atom("_NET_WM_WINDOW_TYPE_DOCK")]).unwrap();
+        let strut = [0, 0, 0, u32::from(height), 0, 0, 0, 0, 0, 0, screen.x as u32, (screen.x + screen.w - 1) as u32];
+        conn.change_property32(xproto::PropMode::REPLACE, window, atom("_NET_WM_STRUT_PARTIAL"), AtomEnum::CARDINAL, &strut).unwrap();
+        conn.map_window(window).unwrap();
+        conn.flush().unwrap();
+        window
+    }
+
     fn is_active(&self, window: Window) -> bool {
         let conn = &self.session.conn;
         let atom = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").unwrap().reply().unwrap().atom;
@@ -246,4 +262,16 @@ fn snapping_and_restoring_windows_on_a_real_session() {
     let again = rig.frame(window).unwrap();
     assert!((again.w - first.w).abs() <= TOLERANCE && (again.h - first.h).abs() <= TOLERANCE, "size after two cycles {again:?}, first {first:?}");
     rig.close(window);
+
+    // A dock that reserves a band with a strut shrinks the zones of its monitor.
+    let dock = rig.bottom_dock(screen, 40);
+    rig.wait_for(|| rig.area((10, 10)).h == screen.h - 40, "the strut of the dock to count");
+    let area = rig.area((10, 10));
+    assert_eq!((area.x, area.y, area.w), (screen.x, screen.y, screen.w), "only the bottom band is reserved: {area:?}");
+    let window = rig.client_window(300, 200);
+    rig.drag_title(window, (area.x + area.w / 2, area.y + 2), || {});
+    let frame = rig.frame(window).unwrap();
+    assert!(near(frame, area), "maximized above the dock: {frame:?}, area {area:?}");
+    rig.close(window);
+    rig.close(dock);
 }

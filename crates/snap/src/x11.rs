@@ -3,6 +3,7 @@
 //! pure and unit tested.
 
 use crate::machine::WindowId;
+use crate::workarea::{monitor_area, Strut};
 use crate::zones::{Rect, Zone};
 use std::cell::Cell;
 use std::error::Error;
@@ -25,6 +26,9 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE_DESKTOP,
         _NET_WM_WINDOW_TYPE_SPLASH,
         _NET_WORKAREA,
+        _NET_CLIENT_LIST,
+        _NET_WM_STRUT,
+        _NET_WM_STRUT_PARTIAL,
         _NET_CURRENT_DESKTOP,
         _NET_WM_STATE,
         _NET_WM_STATE_MAXIMIZED_VERT,
@@ -47,6 +51,9 @@ const FALLBACK_ESCAPE_KEYCODE: u8 = 9;
 const KEY_PRESS: u8 = 2;
 const KEY_RELEASE: u8 = 3;
 
+/// Most client windows scanned for struts.
+const STRUT_SCAN_LIMIT: u32 = 1024;
+
 /// Time given to Openbox to cancel its move loop after Escape.
 const CANCEL_DRAG_WAIT: Duration = Duration::from_millis(120);
 
@@ -58,9 +65,13 @@ pub fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 }
 
 /// The usable area of the monitor under `pointer`: the monitor itself minus
-/// what the panel and the dock reserve (`workarea`). `None` without monitors.
-pub fn area_for(pointer: (i32, i32), monitors: &[Rect], workarea: Option<Rect>) -> Option<Rect> {
+/// what the panels and docks reserve on it. With no strut at all the screen's
+/// `workarea` is used instead (it also holds the margins the window manager
+/// itself configures); with struts only the bands that touch the monitor
+/// count. `None` without monitors.
+pub fn area_for(pointer: (i32, i32), monitors: &[Rect], struts: &[Strut], screen: (i32, i32), workarea: Option<Rect>) -> Option<Rect> {
     let monitor = monitors.iter().find(|m| m.contains(pointer)).or_else(|| monitors.first()).copied()?;
+    if !struts.is_empty() { return Some(monitor_area(monitor, struts, screen)); }
     Some(workarea.and_then(|w| intersect(monitor, w)).unwrap_or(monitor))
 }
 
@@ -82,10 +93,16 @@ pub fn client_geometry(frame: Rect, extents: Extents) -> (i32, i32, u32, u32) {
     (frame.x, frame.y, w, h)
 }
 
-/// The monitors and the work area, read when a drag may start.
+/// The monitors, the struts of the docks and the work area, read when a drag
+/// may start.
 #[derive(Debug, Clone)]
 pub struct Environment {
     pub monitors: Vec<Rect>,
+    /// What the panels and docks reserve, one entry per window that reserves.
+    pub struts: Vec<Strut>,
+    /// Size of the whole screen, the struts are relative to its edges.
+    pub screen: (i32, i32),
+    /// `_NET_WORKAREA` of the current desktop, the fallback without struts.
     pub workarea: Option<Rect>,
 }
 
@@ -93,7 +110,7 @@ impl Environment {
     /// The usable area under `pointer`; an empty rectangle (which arms no
     /// zone) when there is no monitor.
     pub fn area(&self, pointer: (i32, i32)) -> Rect {
-        area_for(pointer, &self.monitors, self.workarea).unwrap_or_default()
+        area_for(pointer, &self.monitors, &self.struts, self.screen, self.workarea).unwrap_or_default()
     }
 }
 
@@ -158,11 +175,32 @@ impl Display {
                     .collect()
             })
             .unwrap_or_default();
+        let root = &self.conn.setup().roots[self.screen_num];
+        let screen = (i32::from(root.width_in_pixels), i32::from(root.height_in_pixels));
         if monitors.is_empty() {
-            let screen = &self.conn.setup().roots[self.screen_num];
-            monitors.push(Rect::new(0, 0, i32::from(screen.width_in_pixels), i32::from(screen.height_in_pixels)));
+            monitors.push(Rect::new(0, 0, screen.0, screen.1));
         }
-        Ok(Environment { monitors, workarea: self.workarea()? })
+        Ok(Environment { monitors, struts: self.struts()?, screen, workarea: self.workarea()? })
+    }
+
+    /// The struts of every managed window that reserves space at a screen
+    /// edge (`_NET_WM_STRUT_PARTIAL`, or the older `_NET_WM_STRUT`).
+    fn struts(&self) -> Result<Vec<Strut>, Box<dyn Error>> {
+        let list = self.conn.get_property(false, self.root, self.atoms._NET_CLIENT_LIST, AtomEnum::WINDOW, 0, STRUT_SCAN_LIMIT)?.reply()?;
+        let windows: Vec<Window> = list.value32().map(|v| v.collect()).unwrap_or_default();
+        let mut requests = Vec::with_capacity(windows.len());
+        for window in windows {
+            let partial = self.conn.get_property(false, window, self.atoms._NET_WM_STRUT_PARTIAL, AtomEnum::CARDINAL, 0, 12)?;
+            let plain = self.conn.get_property(false, window, self.atoms._NET_WM_STRUT, AtomEnum::CARDINAL, 0, 4)?;
+            requests.push((partial, plain));
+        }
+        let mut struts = Vec::new();
+        for (partial, plain) in requests {
+            let read = |reply: Option<xproto::GetPropertyReply>| reply.and_then(|r| r.value32().map(|v| v.collect::<Vec<u32>>())).and_then(|v| Strut::parse(&v));
+            let strut = read(gone(partial.reply())?).or_else(|| read(gone(plain.reply()).ok().flatten()));
+            struts.extend(strut);
+        }
+        Ok(struts)
     }
 
     /// `_NET_WORKAREA` of the current virtual desktop.
@@ -297,26 +335,38 @@ mod tests {
         assert_eq!(intersect(Rect::new(0, 0, 10, 10), Rect::new(10, 0, 10, 10)), None);
     }
 
+    const SCREEN: (i32, i32) = (3200, 1080);
+
     #[test]
     fn the_area_is_the_monitor_under_the_pointer_minus_the_panel() {
         let monitors = [Rect::new(0, 0, 1920, 1080), Rect::new(1920, 0, 1280, 1024)];
         let workarea = Some(Rect::new(0, 30, 3200, 1050));
-        assert_eq!(area_for((100, 500), &monitors, workarea), Some(Rect::new(0, 30, 1920, 1050)));
-        assert_eq!(area_for((2000, 500), &monitors, workarea), Some(Rect::new(1920, 30, 1280, 994)));
+        assert_eq!(area_for((100, 500), &monitors, &[], SCREEN, workarea), Some(Rect::new(0, 30, 1920, 1050)));
+        assert_eq!(area_for((2000, 500), &monitors, &[], SCREEN, workarea), Some(Rect::new(1920, 30, 1280, 994)));
+    }
+
+    #[test]
+    fn with_struts_a_panel_only_shrinks_its_own_monitor() {
+        let monitors = [Rect::new(0, 0, 1920, 1080), Rect::new(1920, 0, 1280, 1024)];
+        let panel = Strut::parse(&[0, 0, 30, 0, 0, 0, 0, 0, 0, 1919, 0, 0]).unwrap();
+        // The union work area would shrink the second monitor too.
+        let workarea = Some(Rect::new(0, 30, 3200, 1050));
+        assert_eq!(area_for((100, 500), &monitors, &[panel], SCREEN, workarea), Some(Rect::new(0, 30, 1920, 1050)));
+        assert_eq!(area_for((2000, 500), &monitors, &[panel], SCREEN, workarea), Some(monitors[1]));
     }
 
     #[test]
     fn the_area_falls_back_to_the_monitor_without_a_work_area() {
         let monitors = [Rect::new(0, 0, 1920, 1080)];
-        assert_eq!(area_for((5, 5), &monitors, None), Some(monitors[0]));
-        assert_eq!(area_for((5, 5), &monitors, Some(Rect::new(5000, 0, 10, 10))), Some(monitors[0]));
-        assert_eq!(area_for((5, 5), &[], None), None);
+        assert_eq!(area_for((5, 5), &monitors, &[], SCREEN, None), Some(monitors[0]));
+        assert_eq!(area_for((5, 5), &monitors, &[], SCREEN, Some(Rect::new(5000, 0, 10, 10))), Some(monitors[0]));
+        assert_eq!(area_for((5, 5), &[], &[], SCREEN, None), None);
     }
 
     #[test]
     fn a_pointer_outside_every_monitor_uses_the_first() {
         let monitors = [Rect::new(0, 0, 1920, 1080), Rect::new(1920, 0, 1280, 1024)];
-        assert_eq!(area_for((-50, 5), &monitors, None), Some(monitors[0]));
+        assert_eq!(area_for((-50, 5), &monitors, &[], SCREEN, None), Some(monitors[0]));
     }
 
     #[test]

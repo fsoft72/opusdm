@@ -8,6 +8,7 @@ pub mod machine;
 pub mod overlay;
 pub mod restore;
 pub mod watcher;
+pub mod workarea;
 pub mod x11;
 pub mod zones;
 
