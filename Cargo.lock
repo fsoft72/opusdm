@@ -1748,6 +1748,7 @@ dependencies = [
  "opusdm-ipc",
  "opusdm-media",
  "opusdm-panel",
+ "opusdm-snap",
  "opusdm-ui",
  "serde",
  "serde_json",

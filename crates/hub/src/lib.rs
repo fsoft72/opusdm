@@ -14,5 +14,6 @@ pub mod roles;
 pub mod server;
 pub mod startup_apps;
 pub mod settings;
+pub mod snap;
 pub mod global_keys;
 pub mod script_events;
