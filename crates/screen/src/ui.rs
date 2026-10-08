@@ -111,11 +111,19 @@ fn drop_down(items: &[&str]) -> gtk::DropDown {
     gtk::DropDown::from_strings(items)
 }
 
-/// Replace the entries of a drop down and select `index`.
+/// Show these entries in a drop down and select `index`. The model is only
+/// replaced when the entries differ and the selection only when it moves:
+/// this runs while the drop down is handling its own selection, and changing
+/// its model then freezes the open list.
 fn set_items(dropdown: &gtk::DropDown, items: &[String], index: usize) {
-    let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-    dropdown.set_model(Some(&gtk::StringList::new(&refs)));
-    dropdown.set_selected(index as u32);
+    let same = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()).is_some_and(|list| {
+        list.n_items() as usize == items.len() && items.iter().enumerate().all(|(i, text)| list.string(i as u32).as_deref() == Some(text.as_str()))
+    });
+    if !same {
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        dropdown.set_model(Some(&gtk::StringList::new(&refs)));
+    }
+    if dropdown.selected() != index as u32 { dropdown.set_selected(index as u32); }
 }
 
 /// The text of a refresh rate.
