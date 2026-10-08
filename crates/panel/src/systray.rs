@@ -145,6 +145,8 @@ pub fn spawn(panel_height: i32) -> (TraySender, async_channel::Receiver<TrayEven
             if let Err(e) = run(panel_height, cmd_rx, &thread_wake, evt_tx) {
                 opusdm_ipc::err_log!("opusdm-panel", "system tray stopped: {e}");
             }
+            // Also covers a tray that never started: nobody should wait for it.
+            crate::tray_ready::mark_ready(crate::tray_ready::TrayKind::XEmbed);
         })
         .expect("spawn systray thread");
     (TraySender { tx: cmd_tx, wake }, evt_rx)
@@ -165,6 +167,7 @@ fn run(
     let owner = conn.get_selection_owner(selection_atom)?.reply()?.owner;
     if owner != 0 {
         opusdm_ipc::err_log!("opusdm-panel", "system tray already running, tray disabled");
+        crate::tray_ready::mark_ready(crate::tray_ready::TrayKind::XEmbed);
         return Ok(());
     }
 
@@ -211,6 +214,8 @@ fn run(
         &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
     )?;
     conn.flush()?;
+    // Icons can dock from now on.
+    crate::tray_ready::mark_ready(crate::tray_ready::TrayKind::XEmbed);
 
     let icon_size = icon_square_size(panel_height);
     let mut containers: HashMap<u32, u32> = HashMap::new();

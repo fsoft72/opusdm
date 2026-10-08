@@ -97,6 +97,8 @@ pub fn spawn() -> (mpsc::Sender<SniCmd>, async_channel::Receiver<SniEvent>) {
             if let Err(e) = run(cmd_rx, evt_tx) {
                 opusdm_ipc::err_log!("opusdm-panel", "SNI tray stopped: {e}");
             }
+            // Also covers a tray that never started: nobody should wait for it.
+            crate::tray_ready::mark_ready(crate::tray_ready::TrayKind::Sni);
         })
         .expect("spawn sni thread");
     (cmd_tx, evt_rx)
@@ -522,6 +524,8 @@ fn run(
     if is_host_only {
         join_external_watcher(&tracker);
     }
+    // Items can register (with our watcher or the external one) from now on.
+    crate::tray_ready::mark_ready(crate::tray_ready::TrayKind::Sni);
 
     command_loop(&tracker.calls, &cmd_rx);
     Ok(())

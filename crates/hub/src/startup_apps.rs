@@ -32,6 +32,10 @@ pub fn spawn_detached(argv: &[String]) -> Result<u32, String> {
         .map_err(|e| format!("cannot run '{program}': {e}"))
 }
 
+/// Longest wait for the panel's tray before the wait times start anyway (a
+/// panel that never gets its tray must not hold the apps back forever).
+pub const TRAY_WAIT_LIMIT: Duration = Duration::from_secs(20);
+
 /// Wait for the app's own time, then launch it; for a `start_in_tray` app,
 /// close the first window it opens (see `tray_start`). A failure is logged
 /// and never stops the other apps.
@@ -60,9 +64,33 @@ fn launch_after_wait(app: &StartupApp) {
     }
 }
 
-/// Start every app after its own wait, counted from this call. Each app has
-/// its own thread, so the waits run side by side and never delay each other.
+/// Start every app after its own wait, counted from the moment the panel's
+/// tray exists (at most `TRAY_WAIT_LIMIT` from this call), so a tray app
+/// with a wait of 0 finds the tray. Each app has its own thread, so the
+/// waits run side by side and never delay each other.
 pub fn start(apps: &[StartupApp]) {
+    start_after(apps, || {
+        if !opusdm_panel::tray_ready::wait_until_ready(TRAY_WAIT_LIMIT) {
+            opusdm_ipc::err_log!("opusdm-hub", "the panel tray is not ready, starting the startup apps anyway");
+        }
+    });
+}
+
+/// Start every app after `ready` returns, then after its own wait. `ready`
+/// runs once, on a thread of its own, so the caller never blocks.
+fn start_after(apps: &[StartupApp], ready: impl FnOnce() + Send + 'static) {
+    let apps = apps.to_vec();
+    let spawned = std::thread::Builder::new().name("startup-apps".to_string()).spawn(move || {
+        ready();
+        launch_all(&apps);
+    });
+    if let Err(e) = spawned {
+        opusdm_ipc::err_log!("opusdm-hub", "cannot start a thread for the startup apps: {e}");
+    }
+}
+
+/// Launch every app after its own wait, each on its own thread.
+fn launch_all(apps: &[StartupApp]) {
     for app in apps {
         let app = app.clone();
         let spawned = std::thread::Builder::new()
@@ -118,7 +146,7 @@ mod tests {
     fn start_runs_an_app_with_no_wait_at_once() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("now");
-        start(&[app(&format!("touch {}", marker.display()), 0)]);
+        start_after(&[app(&format!("touch {}", marker.display()), 0)], || {});
         assert!(appears(&marker));
     }
 
@@ -127,7 +155,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("later");
         let begun = Instant::now();
-        start(&[app(&format!("touch {}", marker.display()), 1)]);
+        start_after(&[app(&format!("touch {}", marker.display()), 1)], || {});
         std::thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "launched before its wait time");
         assert!(appears(&marker));
@@ -135,10 +163,24 @@ mod tests {
     }
 
     #[test]
+    fn the_wait_times_start_when_the_tray_is_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("after-tray");
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel::<()>();
+        start_after(&[app(&format!("touch {}", marker.display()), 0)], move || {
+            let _ = tray_rx.recv();
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "launched before the tray was ready");
+        tray_tx.send(()).unwrap();
+        assert!(appears(&marker));
+    }
+
+    #[test]
     fn a_failing_app_does_not_stop_the_next_one() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("after-failure");
-        start(&[app("opusdm-no-such-program-xyz", 0), app(&format!("touch {}", marker.display()), 0)]);
+        start_after(&[app("opusdm-no-such-program-xyz", 0), app(&format!("touch {}", marker.display()), 0)], || {});
         assert!(appears(&marker));
     }
 }

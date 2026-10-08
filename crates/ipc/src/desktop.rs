@@ -311,7 +311,8 @@ impl From<BackgroundWire> for Background {
 pub struct StartupApp {
     /// Program and arguments, split like an `exec:` hotkey (quotes group).
     pub command: String,
-    /// Seconds to wait, counted from the hub start, before launching it.
+    /// Seconds to wait, counted from when the panel tray is ready, before
+    /// launching it.
     #[serde(default)]
     pub wait_secs: u32,
     /// Start it with no window, only its tray icon: the hub closes the first

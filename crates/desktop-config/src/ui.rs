@@ -459,7 +459,7 @@ impl StartupAppsSection {
         open_lister.set_active(open_lister_at_start);
         root.append(&open_lister);
         let hint = gtk::Label::new(Some(
-            "Started with the session, each after its own wait (seconds from the start). \
+            "Started with the session, each after its own wait (seconds from when the panel tray is ready). \
              Tray: start with no window, only the tray icon (an app with no tray icon quits instead).",
         ));
         hint.set_wrap(true);

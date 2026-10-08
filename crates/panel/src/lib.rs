@@ -23,6 +23,7 @@ mod devices_model;
 mod ewmh;
 mod sni;
 mod systray;
+pub mod tray_ready;
 mod window;
 pub mod widgets;
 
