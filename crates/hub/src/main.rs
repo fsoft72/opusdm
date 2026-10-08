@@ -58,16 +58,19 @@ fn main() {
     input_apply::start();
 
     // Launch the Startup Apps of Settings, each after its own wait time.
-    opusdm_hub::startup_apps::start(&opusdm_hub::desktop_settings::load().startup_apps);
+    let desktop_settings = opusdm_hub::desktop_settings::load();
+    opusdm_hub::startup_apps::start(&desktop_settings.startup_apps);
 
     let _ = handle.cmd_tx.send(server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup));
 
     children::install_sigchld(handle.cmd_tx.clone());
 
-    // Open the first Lister at $HOME.
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    if let Err(e) = children::spawn_lister(&sock_path, home.as_deref()) {
-        opusdm_ipc::err_log!("opusdm-hub", "cannot spawn initial lister: {e}");
+    // Open the first Lister at $HOME, unless Settings turned it off.
+    if desktop_settings.open_lister_at_start {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        if let Err(e) = children::spawn_lister(&sock_path, home.as_deref()) {
+            opusdm_ipc::err_log!("opusdm-hub", "cannot spawn initial lister: {e}");
+        }
     }
 
     let code = toolbar::run(handle, sock_path);

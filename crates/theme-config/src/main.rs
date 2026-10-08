@@ -140,7 +140,7 @@ fn build_window(app: &gtk::Application) {
     desktop_page.append(&screens.root);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    let startup_apps = Rc::new(StartupAppsSection::new(&desktop_data.startup_apps));
+    let startup_apps = Rc::new(StartupAppsSection::new(&desktop_data.startup_apps, desktop_data.open_lister_at_start));
     desktop_page.append(&startup_apps.root);
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -288,6 +288,7 @@ fn build_window(app: &gtk::Application) {
                 inactive_opacity: windows.inactive_opacity(),
                 active_opacity: windows.active_opacity(),
                 startup_apps: startup_apps.apps(),
+                open_lister_at_start: startup_apps.open_lister_at_start(),
                 snap_enabled: windows.snap_enabled(),
             }
             .sanitized();

@@ -438,20 +438,26 @@ struct StartupRow {
     in_tray: gtk::CheckButton,
 }
 
-/// The startup apps section: the programs started with the session, each
-/// with the seconds to wait (from the hub start) before it is launched and
-/// whether it starts with no window, only in the tray.
+/// The startup apps section: whether a Lister opens at start, and the
+/// programs started with the session, each with the seconds to wait (from
+/// the hub start) before it is launched and whether it starts with no
+/// window, only in the tray.
 pub struct StartupAppsSection {
     pub root: gtk::Box,
+    open_lister: gtk::CheckButton,
     list: gtk::Box,
     rows: Rc<RefCell<Vec<StartupRow>>>,
 }
 
 impl StartupAppsSection {
-    /// Build the section seeded with the saved startup apps.
-    pub fn new(initial: &[StartupApp]) -> Self {
+    /// Build the section seeded with the saved startup apps and the saved
+    /// "open a Lister at start" choice.
+    pub fn new(initial: &[StartupApp], open_lister_at_start: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.append(&heading("STARTUP APPS"));
+        let open_lister = gtk::CheckButton::with_label("Open a Lister on the home folder at start");
+        open_lister.set_active(open_lister_at_start);
+        root.append(&open_lister);
         let hint = gtk::Label::new(Some(
             "Started with the session, each after its own wait (seconds from the start). \
              Tray: start with no window, only the tray icon (an app with no tray icon quits instead).",
@@ -467,7 +473,7 @@ impl StartupAppsSection {
         add.set_halign(gtk::Align::Start);
         root.append(&add);
 
-        let section = Self { root, list, rows: Rc::new(RefCell::new(Vec::new())) };
+        let section = Self { root, open_lister, list, rows: Rc::new(RefCell::new(Vec::new())) };
         for app in initial {
             section.add_row(app);
         }
@@ -536,6 +542,11 @@ impl StartupAppsSection {
         row.append(&remove);
         list.append(&row);
         rows.borrow_mut().push(StartupRow { row, command, wait, in_tray });
+    }
+
+    /// Whether a Lister opens at start.
+    pub fn open_lister_at_start(&self) -> bool {
+        self.open_lister.is_active()
     }
 
     /// The apps as edited, in list order. Blank commands are left for
@@ -699,9 +710,12 @@ mod tests {
             StartupApp { command: "nm-applet --indicator".into(), wait_secs: 0, start_in_tray: false },
             StartupApp { command: "megasync".into(), wait_secs: 10, start_in_tray: true },
         ];
-        let s = StartupAppsSection::new(&seeded);
+        let s = StartupAppsSection::new(&seeded, true);
         assert_eq!(s.apps(), seeded);
-        assert!(StartupAppsSection::new(&[]).apps().is_empty());
+        assert!(s.open_lister_at_start());
+        let empty = StartupAppsSection::new(&[], false);
+        assert!(empty.apps().is_empty());
+        assert!(!empty.open_lister_at_start());
     }
 
     #[test]
@@ -709,7 +723,7 @@ mod tests {
         if gtk::init().is_err() {
             return;
         }
-        let s = StartupAppsSection::new(&[StartupApp { command: "a".into(), wait_secs: 1, start_in_tray: false }]);
+        let s = StartupAppsSection::new(&[StartupApp { command: "a".into(), wait_secs: 1, start_in_tray: false }], true);
         s.add_row(&StartupApp { command: "b".into(), wait_secs: 700, start_in_tray: false });
         assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(s.apps()[1].wait_secs, opusdm_ipc::STARTUP_WAIT_SECS_RANGE.1, "spin clamps the wait");

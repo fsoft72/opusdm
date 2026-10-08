@@ -356,6 +356,8 @@ pub struct DesktopSettings {
     pub active_opacity: u32,
     /// Applications started when the session starts, each after its own wait.
     pub startup_apps: Vec<StartupApp>,
+    /// Whether the hub opens a Lister at the home folder when it starts.
+    pub open_lister_at_start: bool,
     /// Whether dragging a window to a screen edge snaps it to a zone (half
     /// screen, quarters, thirds, maximized), with a preview of the zone.
     pub snap_enabled: bool,
@@ -376,6 +378,7 @@ impl Default for DesktopSettings {
             inactive_opacity: DEFAULT_INACTIVE_OPACITY,
             active_opacity: DEFAULT_ACTIVE_OPACITY,
             startup_apps: Vec::new(),
+            open_lister_at_start: true,
             snap_enabled: true,
         }
     }
@@ -838,6 +841,15 @@ mod tests {
         assert!(!missing.is_usable());
         let here = BackgroundEntry::Image { path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"), fit: ImageFit::Fill };
         assert!(here.is_usable());
+    }
+
+    #[test]
+    fn the_start_lister_is_on_by_default_and_in_old_files() {
+        assert!(DesktopSettings::default().open_lister_at_start);
+        let d: DesktopSettings = serde_json::from_str("{\"icon_size\": 80}").unwrap();
+        assert!(d.open_lister_at_start);
+        let d: DesktopSettings = serde_json::from_str("{\"open_lister_at_start\": false}").unwrap();
+        assert!(!d.open_lister_at_start);
     }
 
     #[test]
