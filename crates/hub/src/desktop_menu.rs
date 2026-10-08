@@ -31,23 +31,6 @@ pub(crate) fn theme_config_bin() -> PathBuf {
     PathBuf::from("opusdm-settings")
 }
 
-/// Spawn the Lister binary with only the Manage Functions window open.
-pub(crate) fn launch_functions_manager() {
-    spawn_lister_tool("--manage-functions");
-}
-
-/// Spawn the Lister binary (next to the hub executable, else on `PATH`) with
-/// `flag`, which makes it open one tool window instead of a file window.
-fn spawn_lister_tool(flag: &str) {
-    let bin = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("opusdm-lister")))
-        .unwrap_or_else(|| PathBuf::from("opusdm-lister"));
-    if let Err(e) = std::process::Command::new(&bin).arg(flag).spawn() {
-        opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", bin.display());
-    }
-}
-
 /// Spawn the theme configuration app, detached.
 pub(crate) fn launch_theme_config() {
     spawn_theme_config(&[]);
@@ -460,7 +443,6 @@ fn build_desktop_submenu(menu: &gtk::Box, widgets: &Rc<Widgets>) -> gtk::Expande
         let widgets = widgets.clone();
         add_item(&sub, menu, "Rearrange icons", move || reload_desktop_field(&widgets));
     }
-    add_item(&sub, menu, "Manage Functions", launch_functions_manager);
     add_item(&sub, menu, "Edit Theme", launch_theme_editor);
     // Settings: the standalone opusdm-settings app. Icon grid metrics and the
     // desktop folder override live there too.
