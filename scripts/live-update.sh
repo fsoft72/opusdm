@@ -14,7 +14,9 @@
 #   --prefix   installation prefix, default /opt/opusdm.
 #
 # Openbox and picom are never restarted. The copy needs sudo because the prefix
-# is owned by root.
+# is owned by root. The restarted hub writes its output to
+# ${XDG_STATE_HOME:-~/.local/state}/opusdm/hub.log (the previous run's log is
+# kept as hub.log.1).
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -34,7 +36,7 @@ while [ $# -gt 0 ]; do
             PREFIX="$2"
             shift
             ;;
-        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "live-update: unknown option $1" >&2; exit 2 ;;
     esac
     shift
@@ -99,8 +101,16 @@ if pgrep -u "$(id -u)" -x opusdm-hub >/dev/null; then
     exit 1
 fi
 
+# The hub's output goes to a log file, so a crash leaves a trace. The log of
+# the previous run is kept once.
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/opusdm"
+HUB_LOG="$LOG_DIR/hub.log"
+mkdir -p "$LOG_DIR"
+[ -f "$HUB_LOG" ] && mv -f "$HUB_LOG" "$HUB_LOG.1"
+
 # Same environment as opusdm-session: the OpusDM binaries are found by name.
-# setsid detaches the new hub from this terminal.
-echo "Starting opusdm-hub"
-PATH="$PREFIX/bin:$PATH" setsid "$PREFIX/bin/opusdm-hub" >/dev/null 2>&1 < /dev/null &
+# setsid detaches the new hub from this terminal. RUST_BACKTRACE puts the stack
+# of a panic in the log.
+echo "Starting opusdm-hub (log: $HUB_LOG)"
+PATH="$PREFIX/bin:$PATH" RUST_BACKTRACE=1 setsid "$PREFIX/bin/opusdm-hub" >"$HUB_LOG" 2>&1 < /dev/null &
 echo "Done"
