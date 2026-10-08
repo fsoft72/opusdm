@@ -173,6 +173,18 @@ impl Layout {
         others.peek().is_some() && others.all(|m| m.pos == first.pos)
     }
 
+    /// The same layout moved so the monitors that are on start at 0,0 (X has
+    /// no negative positions). Monitors that are off do not count.
+    pub fn shifted_to_origin(&self) -> Layout {
+        let min_x = self.enabled().map(|m| m.pos.0).min().unwrap_or(0);
+        let min_y = self.enabled().map(|m| m.pos.1).min().unwrap_or(0);
+        let mut shifted = self.clone();
+        for m in shifted.monitors.iter_mut().filter(|m| m.enabled) {
+            m.pos = (m.pos.0 - min_x, m.pos.1 - min_y);
+        }
+        shifted
+    }
+
     /// Check the layout against the monitors it is for: at least one monitor
     /// is on, at most one is primary, and every mode and rate exists.
     pub fn validate(&self, monitors: &[Monitor]) -> Result<(), ScreenError> {
@@ -220,25 +232,7 @@ impl Layout {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::*;
-
-    /// A monitor with the given modes (`(w, h, rates)`), the first preferred.
-    pub fn monitor(name: &str, edid: &str, modes: &[(u32, u32, &[f64])]) -> Monitor {
-        Monitor {
-            name: name.to_string(),
-            edid_id: edid.to_string(),
-            modes: modes.iter().map(|(w, h, r)| Mode { width: *w, height: *h, rates: r.to_vec() }).collect(),
-            preferred: modes.first().map(|(w, h, _)| (*w, *h)),
-        }
-    }
-
-    /// A laptop panel and an external monitor.
-    pub fn two_monitors() -> Vec<Monitor> {
-        vec![
-            monitor("eDP-1", "aaaa", &[(2560, 1600, &[240.0, 60.0]), (1920, 1080, &[60.0])]),
-            monitor("HDMI-1", "bbbb", &[(2560, 1440, &[60.0]), (1920, 1080, &[60.0, 50.0])]),
-        ]
-    }
+    pub use crate::fake::{monitor, two_monitors};
 }
 
 #[cfg(test)]
@@ -336,6 +330,19 @@ mod tests {
         let mut other = ms.clone();
         other[1].edid_id = "cccc".to_string();
         assert_eq!(layout.remapped_to(&other), None);
+    }
+
+    #[test]
+    fn shifted_to_origin_moves_the_monitors_that_are_on() {
+        let ms = two_monitors();
+        let mut layout = Layout { monitors: vec![config(&ms[0], -1920), config(&ms[1], 640)] };
+        layout.monitors[0].pos.1 = -100;
+        let shifted = layout.shifted_to_origin();
+        assert_eq!(shifted.monitors[0].pos, (0, 0));
+        assert_eq!(shifted.monitors[1].pos, (2560, 100));
+        layout.monitors[0].enabled = false;
+        assert_eq!(layout.shifted_to_origin().monitors[1].pos, (0, 0));
+        assert_eq!(layout.shifted_to_origin().monitors[0].pos, (-1920, -100), "a monitor that is off is left alone");
     }
 
     #[test]

@@ -73,7 +73,9 @@ impl<B: ScreenBackend> Session<B> {
     /// `revert`; on failure nothing changed on the session.
     pub fn apply(&mut self) -> Result<(), ScreenError> {
         if self.state == State::Pending { return Err(ScreenError::Session("a layout is waiting for an answer".to_string())); }
-        self.edited.validate(&self.monitors)?;
+        let layout = self.edited.shifted_to_origin();
+        layout.validate(&self.monitors)?;
+        self.edited = layout;
         self.backend.apply(&self.edited)?;
         self.previous = Some(std::mem::replace(&mut self.committed, self.edited.clone()));
         self.state = State::Pending;
@@ -200,6 +202,17 @@ mod tests {
         s.apply().unwrap();
         assert!(s.apply().is_err());
         assert!(s.refresh().is_err());
+    }
+
+    #[test]
+    fn apply_moves_the_layout_to_the_origin() {
+        let mut s = session();
+        let mut moved = s.committed().clone();
+        moved.monitors.iter_mut().for_each(|m| m.pos.0 -= 500);
+        s.edit(moved);
+        s.apply().unwrap();
+        assert_eq!(s.committed().monitors[0].pos, (0, 0));
+        assert_eq!(s.committed().monitors[1].pos, (2560, 0));
     }
 
     #[test]

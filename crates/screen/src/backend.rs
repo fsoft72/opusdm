@@ -16,6 +16,18 @@ pub trait ScreenBackend {
     fn apply(&self, layout: &Layout) -> Result<(), ScreenError>;
 }
 
+impl<T: ScreenBackend + ?Sized> ScreenBackend for Box<T> {
+    /// Ask the boxed backend.
+    fn query(&self) -> Result<Parsed, ScreenError> {
+        (**self).query()
+    }
+
+    /// Ask the boxed backend.
+    fn apply(&self, layout: &Layout) -> Result<(), ScreenError> {
+        (**self).apply(layout)
+    }
+}
+
 /// Why the session cannot be configured, or `None`.
 pub fn session_problem_from(display: Option<&str>, session_type: Option<&str>) -> Option<String> {
     if display.map(str::is_empty).unwrap_or(true) {
@@ -89,7 +101,8 @@ impl ScreenBackend for XrandrBackend {
 
     /// Run the one `xrandr` call that sets the whole layout.
     fn apply(&self, layout: &Layout) -> Result<(), ScreenError> {
-        run(&xrandr_args(layout)).map(|_| ())
+        let current = self.query()?.layout;
+        run(&xrandr_args(layout, &current)).map(|_| ())
     }
 }
 

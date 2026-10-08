@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 
 use crate::backend::ScreenBackend;
 use crate::parse::Parsed;
-use crate::{Layout, ScreenError};
+use crate::{Layout, Mode, Monitor, MonitorConfig, ScreenError};
 
 /// Records every applied layout; can be told to fail.
 pub struct FakeBackend {
@@ -54,11 +54,27 @@ impl ScreenBackend for FakeBackend {
     }
 }
 
-/// A laptop panel (on) and an external monitor (on, to its right), for tests.
-#[cfg(test)]
-pub(crate) fn two_monitor_system() -> Parsed {
-    use crate::model::test_support::two_monitors;
-    use crate::MonitorConfig;
+/// A monitor with the given modes (`(w, h, rates)`), the first preferred.
+pub fn monitor(name: &str, edid: &str, modes: &[(u32, u32, &[f64])]) -> Monitor {
+    Monitor {
+        name: name.to_string(),
+        edid_id: edid.to_string(),
+        modes: modes.iter().map(|(w, h, r)| Mode { width: *w, height: *h, rates: r.to_vec() }).collect(),
+        preferred: modes.first().map(|(w, h, _)| (*w, *h)),
+    }
+}
+
+/// A laptop panel and an external monitor.
+pub fn two_monitors() -> Vec<Monitor> {
+    vec![
+        monitor("eDP-1", "aaaa", &[(2560, 1600, &[240.0, 60.0]), (1920, 1080, &[60.0])]),
+        monitor("HDMI-1", "bbbb", &[(2560, 1440, &[60.0]), (1920, 1080, &[60.0, 50.0])]),
+    ]
+}
+
+/// A laptop panel (primary) and an external monitor on its right, both on.
+/// Used by the tests and by `opusdm-screen --demo`.
+pub fn two_monitor_system() -> Parsed {
     let monitors = two_monitors();
     let mut layout = Layout { monitors: monitors.iter().map(|m| MonitorConfig::default_for(m).unwrap()).collect() };
     layout.monitors[0].primary = true;

@@ -7,6 +7,7 @@ pub mod backend;
 pub mod commands;
 pub mod error;
 pub mod fake;
+pub mod geometry;
 pub mod model;
 pub mod modes;
 pub mod parse;

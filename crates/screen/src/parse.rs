@@ -169,7 +169,7 @@ fn config_of(output: &Output, edid_id: String, monitor: &Monitor) -> MonitorConf
     // The geometry is the area on the desktop, so it is turned and scaled;
     // the starred mode is the real resolution.
     let (mode, rate) = match output.current {
-        Some((mode, rate)) => (mode, Some(rate)),
+        Some((mode, rate)) => (mode, Some(rate).filter(|r| *r > 0.0)),
         None if output.rotation.is_sideways() => ((geometry.size.1, geometry.size.0), None),
         None => (geometry.size, None),
     };
