@@ -100,7 +100,7 @@ fn wire_click(
         let cmd_tx = cmd_tx.clone();
         move |_gesture: &gtk::GestureClick, _n: i32, x: f64, y: f64| {
             if let Some(path) = menu_path.borrow().clone() {
-                show_menu(&btn, &service, &path);
+                show_menu(&btn, &service, &path, &cmd_tx);
                 return;
             }
             let path = item_path.borrow().clone();
@@ -124,23 +124,61 @@ fn wire_click(
     btn.add_controller(secondary);
 }
 
-/// Fetch and show `service`'s DBusMenu, anchored to `btn`. A short-lived
-/// connection + blocking call, same throwaway style as `sni.rs`'s
-/// `send_activate`/`send_context_menu` - acceptable since this only runs
-/// once per click, not per frame.
-fn show_menu(btn: &gtk::Button, service: &str, path: &zbus::zvariant::OwnedObjectPath) {
-    let Ok(conn) = zbus::blocking::Connection::session() else { return };
-    let Ok(root) = crate::dbusmenu::fetch_layout(&conn, service, path) else { return };
+/// Text of the popover shown while the app has not sent its menu yet.
+const MENU_WAITING_TEXT: &str = "Waiting for the app...";
 
-    let service = service.to_string();
-    let path = path.clone();
-    let popover = crate::dbusmenu::build_popover(&root, move |id| {
-        if let Ok(conn) = zbus::blocking::Connection::session() {
-            crate::dbusmenu::send_event_clicked(&conn, &service, &path, id);
+/// Text of that popover when the app did not send a menu.
+const MENU_FAILED_TEXT: &str = "The app did not send its menu";
+
+/// Show `service`'s DBusMenu, anchored to `btn`. The menu is read on the SNI
+/// side (`SniCmd::FetchMenu`), never here: a busy app would freeze the panel
+/// until it answers. Meanwhile a small popover says the menu is coming; it
+/// turns into the menu when the reply arrives, and a reply that comes after
+/// the user closed it is dropped.
+fn show_menu(btn: &gtk::Button, service: &str, path: &zbus::zvariant::OwnedObjectPath, cmd_tx: &Sender<SniCmd>) {
+    let label = gtk::Label::new(Some(MENU_WAITING_TEXT));
+    let waiting = gtk::Popover::new();
+    waiting.set_child(Some(&label));
+    waiting.set_parent(btn);
+    unparent_when_closed(&waiting);
+    waiting.popup();
+
+    let (reply_tx, reply_rx) = async_channel::bounded(1);
+    let fetch = SniCmd::FetchMenu { service: service.to_string(), menu_path: path.clone(), reply: reply_tx };
+    if cmd_tx.send(fetch).is_err() {
+        label.set_text(MENU_FAILED_TEXT);
+        return;
+    }
+
+    let (btn, service, path, cmd_tx) = (btn.clone(), service.to_string(), path.clone(), cmd_tx.clone());
+    glib::spawn_future_local(async move {
+        let Ok(menu) = reply_rx.recv().await else { return };
+        if !waiting.is_visible() {
+            return;
         }
+        let Ok(root) = menu else {
+            label.set_text(MENU_FAILED_TEXT);
+            return;
+        };
+        waiting.popdown();
+        let popover = crate::dbusmenu::build_popover(&root, move |id| {
+            let clicked = SniCmd::MenuClicked { service: service.clone(), menu_path: path.clone(), id };
+            let _ = cmd_tx.send(clicked);
+        });
+        popover.set_parent(&btn);
+        unparent_when_closed(&popover);
+        popover.popup();
     });
-    popover.set_parent(btn);
-    popover.popup();
+}
+
+/// Detach `popover` from its button once it closes, so every click doesn't
+/// leave one more popover parented to the button. Deferred to idle: GTK
+/// is still inside the popover's own code when `closed` is emitted.
+fn unparent_when_closed(popover: &impl IsA<gtk::Popover>) {
+    popover.upcast_ref::<gtk::Popover>().connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
 }
 
 /// Render one item's icon: its pixmap when present, else an icon-theme

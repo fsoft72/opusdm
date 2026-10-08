@@ -78,11 +78,23 @@ pub enum SniEvent {
 
 /// Commands the GTK side sends to the SNI thread. `service`/`path` are the
 /// item's `SniItem::service`/`SniItem::path`, since `Activate`/`ContextMenu`
-/// are called on the item's actual object, not a spec-default one.
+/// are called on the item's actual object, not a spec-default one. Every
+/// call to an app happens on the SNI side, never on the GTK thread: a busy
+/// app (MEGAsync answers nothing for ~25 s while it starts) must not freeze
+/// the panel.
 #[derive(Clone, Debug)]
 pub enum SniCmd {
     Activate { service: String, path: String, x: i32, y: i32 },
     ContextMenu { service: String, path: String, x: i32, y: i32 },
+    /// Read the item's DBusMenu at `menu_path`; the tree (or why it could
+    /// not be read) is sent on `reply`.
+    FetchMenu {
+        service: String,
+        menu_path: OwnedObjectPath,
+        reply: async_channel::Sender<Result<crate::dbusmenu::MenuNode, String>>,
+    },
+    /// Tell the app that the DBusMenu entry `id` was clicked.
+    MenuClicked { service: String, menu_path: OwnedObjectPath, id: i32 },
 }
 
 /// Start the SNI thread. Returns a command sender and event receiver; if no
@@ -688,17 +700,40 @@ fn fetch_item(
     Ok(item_from_props(&props, service, path))
 }
 
-/// Forward GTK-side clicks to the apps until the GTK side drops its sender.
-/// Blocks in `recv`, so an idle tray costs no wake-ups.
+/// Forward GTK-side commands to the apps until the GTK side drops its
+/// sender. Blocks in `recv`, so an idle tray costs no wake-ups. Each command
+/// runs on its own thread, so one busy app can't delay the clicks on the
+/// others (the calls time out after `METHOD_TIMEOUT`).
 fn command_loop(calls: &zbus::blocking::Connection, cmd_rx: &mpsc::Receiver<SniCmd>) {
     while let Ok(cmd) = cmd_rx.recv() {
-        let (method, service, path, x, y) = match cmd {
-            SniCmd::Activate { service, path, x, y } => ("Activate", service, path, x, y),
-            SniCmd::ContextMenu { service, path, x, y } => ("ContextMenu", service, path, x, y),
-        };
-        if let Err(e) = calls.call_method(Some(service.as_str()), path.as_str(), Some(ITEM_INTERFACE), method, &(x, y)) {
-            opusdm_ipc::err_log!("opusdm-panel", "SNI {method} failed for {service}: {e}");
+        let calls = calls.clone();
+        run_detached(move || run_command(&calls, cmd));
+    }
+}
+
+/// Make the app call one `SniCmd` stands for.
+fn run_command(calls: &zbus::blocking::Connection, cmd: SniCmd) {
+    match cmd {
+        SniCmd::Activate { service, path, x, y } => call_item(calls, &service, &path, "Activate", x, y),
+        SniCmd::ContextMenu { service, path, x, y } => call_item(calls, &service, &path, "ContextMenu", x, y),
+        SniCmd::FetchMenu { service, menu_path, reply } => {
+            let menu = crate::dbusmenu::fetch_layout(calls, &service, &menu_path).map_err(|e| e.to_string());
+            if let Err(e) = &menu {
+                opusdm_ipc::err_log!("opusdm-panel", "cannot read the menu of {service}: {e}");
+            }
+            // The popover may be gone already; then nobody wants the menu.
+            let _ = reply.send_blocking(menu);
         }
+        SniCmd::MenuClicked { service, menu_path, id } => {
+            crate::dbusmenu::send_event_clicked(calls, &service, &menu_path, id)
+        }
+    }
+}
+
+/// Call `Activate` or `ContextMenu` on an item.
+fn call_item(calls: &zbus::blocking::Connection, service: &str, path: &str, method: &str, x: i32, y: i32) {
+    if let Err(e) = calls.call_method(Some(service), path, Some(ITEM_INTERFACE), method, &(x, y)) {
+        opusdm_ipc::err_log!("opusdm-panel", "SNI {method} failed for {service}: {e}");
     }
 }
 
