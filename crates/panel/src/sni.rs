@@ -120,6 +120,22 @@ pub fn spawn() -> (mpsc::Sender<SniCmd>, async_channel::Receiver<SniEvent>) {
 // Pure helpers
 // --------------------------------------------------------------------------
 
+/// Keep `items` (every hosted item, in the order they appeared) in step with
+/// one `SniEvent`. The panel keeps this list outside the bars, so a bar
+/// rebuilt later starts with every item already hosted. A `Changed` for an
+/// unknown id adds it, the same as `Added`.
+pub fn apply_to_list(items: &mut Vec<(String, SniItem)>, ev: &SniEvent) {
+    match ev {
+        SniEvent::Added { id, item } | SniEvent::Changed { id, item } => {
+            match items.iter_mut().find(|(known, _)| known == id) {
+                Some(entry) => entry.1 = item.clone(),
+                None => items.push((id.clone(), item.clone())),
+            }
+        }
+        SniEvent::Removed { id } => items.retain(|(known, _)| known != id),
+    }
+}
+
 /// Resolve a `RegisterStatusNotifierItem` argument into `(bus_name,
 /// object_path)`, per the freedesktop spec: an argument starting with `/`
 /// is an object path *on the calling connection* (`sender`'s unique name);
@@ -750,6 +766,24 @@ mod tests {
         let (wake, rx) = mpsc::channel();
         let t = Tracked { service: service.into(), path: path.into(), owner: owner.into(), wake, rules: Vec::new() };
         (t, rx)
+    }
+
+    fn titled(title: &str) -> SniItem {
+        item_from_props(&HashMap::from([("Title".to_string(), owned(Value::from(title)))]), ":1.5", "/StatusNotifierItem")
+    }
+
+    #[test]
+    fn the_item_list_keeps_order_updates_in_place_and_drops_removed_items() {
+        let mut items = Vec::new();
+        apply_to_list(&mut items, &SniEvent::Added { id: "a".into(), item: titled("A") });
+        apply_to_list(&mut items, &SniEvent::Added { id: "b".into(), item: titled("B") });
+        apply_to_list(&mut items, &SniEvent::Changed { id: "a".into(), item: titled("A2") });
+        let titles: Vec<_> = items.iter().map(|(id, i)| (id.as_str(), i.title.as_str())).collect();
+        assert_eq!(titles, vec![("a", "A2"), ("b", "B")]);
+        apply_to_list(&mut items, &SniEvent::Removed { id: "a".into() });
+        apply_to_list(&mut items, &SniEvent::Changed { id: "c".into(), item: titled("C") });
+        let ids: Vec<_> = items.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "c"]);
     }
 
     #[test]

@@ -1,9 +1,7 @@
 //! Hosted SNI item icons: one small clickable button per item registered
 //! with `sni.rs`'s watcher, rendered from the item's pixmap (or icon-theme
-//! name as a fallback). Click handling (DBusMenu popover vs a plain
-//! `Activate`/`ContextMenu` call) is wired on top in a follow-up change to
-//! this file - `build`/`apply_event` here only keep the icons themselves
-//! in sync with the registered-item set.
+//! name as a fallback). A click shows the item's DBusMenu popover or sends
+//! a plain `Activate`/`ContextMenu` call.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
@@ -27,56 +25,54 @@ struct ItemButton {
     item_path: Rc<RefCell<String>>,
 }
 
-/// Build the (initially empty) SNI icon strip and start draining `evt_rx`
-/// into it. `cmd_tx` is the sender half from `sni::spawn`.
-pub fn build(cmd_tx: Sender<SniCmd>, evt_rx: async_channel::Receiver<SniEvent>) -> gtk::Widget {
-    let root = gtk::Box::new(gtk::Orientation::Horizontal, crate::widgets::tray::ICON_SPACING);
-    root.set_valign(gtk::Align::Center);
-
-    let buttons: Rc<RefCell<HashMap<String, ItemButton>>> = Rc::new(RefCell::new(HashMap::new()));
-
-    {
-        let root = root.clone();
-        let buttons = buttons.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(ev) = evt_rx.recv().await {
-                apply_event(&root, &buttons, &cmd_tx, ev);
-            }
-        });
-    }
-
-    root.upcast()
+/// The SNI icon strip of one bar. The items themselves live in the panel's
+/// shared state (see `sni::apply_to_list`), so a rebuilt bar (monitor
+/// change, screen resize) gets a new strip seeded with every item already
+/// hosted, instead of losing them.
+pub struct SniStrip {
+    root: gtk::Box,
+    cmd_tx: Sender<SniCmd>,
+    buttons: RefCell<HashMap<String, ItemButton>>,
 }
 
-/// Reconcile one `SniEvent` into the displayed buttons: add/update/remove.
-fn apply_event(
-    root: &gtk::Box,
-    buttons: &Rc<RefCell<HashMap<String, ItemButton>>>,
-    cmd_tx: &Sender<SniCmd>,
-    ev: SniEvent,
-) {
-    match ev {
-        SniEvent::Added { id, item } | SniEvent::Changed { id, item } => {
-            let mut buttons = buttons.borrow_mut();
-            if let Some(entry) = buttons.get(&id) {
-                entry.button.set_child(Some(&icon_widget(&item)));
-                *entry.menu_path.borrow_mut() = item.menu_path.clone();
-                *entry.item_path.borrow_mut() = item.path.clone();
-            } else {
-                let btn = gtk::Button::new();
-                btn.add_css_class("flat");
-                btn.add_css_class("opusdm-panel-tray-item");
-                btn.set_child(Some(&icon_widget(&item)));
-                let menu_path = Rc::new(RefCell::new(item.menu_path.clone()));
-                let item_path = Rc::new(RefCell::new(item.path.clone()));
-                wire_click(&btn, item.service.clone(), menu_path.clone(), item_path.clone(), cmd_tx.clone());
-                root.append(&btn);
-                buttons.insert(id, ItemButton { button: btn, menu_path, item_path });
+impl SniStrip {
+    /// Build an empty strip. `cmd_tx` is the sender half from `sni::spawn`.
+    pub fn new(cmd_tx: Sender<SniCmd>) -> Rc<Self> {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, crate::widgets::tray::ICON_SPACING);
+        root.set_valign(gtk::Align::Center);
+        Rc::new(Self { root, cmd_tx, buttons: RefCell::new(HashMap::new()) })
+    }
+
+    /// The strip's top-level widget, for packing into the bar.
+    pub fn widget(&self) -> &gtk::Widget {
+        self.root.upcast_ref()
+    }
+
+    /// Reconcile one `SniEvent` into the displayed buttons: add/update/remove.
+    pub fn apply(&self, ev: &SniEvent) {
+        match ev {
+            SniEvent::Added { id, item } | SniEvent::Changed { id, item } => {
+                let mut buttons = self.buttons.borrow_mut();
+                if let Some(entry) = buttons.get(id) {
+                    entry.button.set_child(Some(&icon_widget(item)));
+                    *entry.menu_path.borrow_mut() = item.menu_path.clone();
+                    *entry.item_path.borrow_mut() = item.path.clone();
+                } else {
+                    let btn = gtk::Button::new();
+                    btn.add_css_class("flat");
+                    btn.add_css_class("opusdm-panel-tray-item");
+                    btn.set_child(Some(&icon_widget(item)));
+                    let menu_path = Rc::new(RefCell::new(item.menu_path.clone()));
+                    let item_path = Rc::new(RefCell::new(item.path.clone()));
+                    wire_click(&btn, item.service.clone(), menu_path.clone(), item_path.clone(), self.cmd_tx.clone());
+                    self.root.append(&btn);
+                    buttons.insert(id.clone(), ItemButton { button: btn, menu_path, item_path });
+                }
             }
-        }
-        SniEvent::Removed { id } => {
-            if let Some(entry) = buttons.borrow_mut().remove(&id) {
-                root.remove(&entry.button);
+            SniEvent::Removed { id } => {
+                if let Some(entry) = self.buttons.borrow_mut().remove(id) {
+                    self.root.remove(&entry.button);
+                }
             }
         }
     }

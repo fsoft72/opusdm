@@ -49,6 +49,10 @@ struct PanelState {
     /// monitor-hotplug rebuild can reseed a freshly built primary bar
     /// without waiting for the next dock/undock event.
     tray_order: Vec<u32>,
+    /// Hosted SNI items, in the order they appeared. Kept here for the same
+    /// reason as `tray_order`: every rebuild of the bars (monitor change,
+    /// screen resize) seeds the new primary bar's strip from it.
+    sni_items: Vec<(String, sni::SniItem)>,
 }
 
 /// One bar window and the widgets on it that need repainting on EWMH events.
@@ -66,17 +70,17 @@ struct BarWindow {
     /// `Some` only for the primary bar (the one built from the first
     /// monitor rect) - one tray manager total, not one per monitor.
     tray: Option<Rc<Tray>>,
+    /// The SNI icon strip, on the primary bar only, like `tray`.
+    sni: Option<Rc<widgets::sni::SniStrip>>,
 }
 
 /// Pixels between the device, audio and network tray buttons.
 const TRAY_SPACING: i32 = 2;
 
-/// The shared services one bar is wired to. `sni_evt_rx` is only given to the
-/// primary bar, as the receiver cannot be cloned.
+/// The shared services one bar is wired to.
 struct BarServices {
     tray_cmd_tx: systray::TraySender,
     sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
-    sni_evt_rx: Option<async_channel::Receiver<sni::SniEvent>>,
     devices: Rc<devices_center::DeviceCenter>,
     audio: Rc<audio_center::AudioCenter>,
     network: Rc<network_center::NetworkCenter>,
@@ -93,7 +97,7 @@ fn build_bar_window(
     is_primary: bool,
     services: BarServices,
 ) -> BarWindow {
-    let BarServices { tray_cmd_tx, sni_cmd_tx, sni_evt_rx, devices, audio, network } = services;
+    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, network } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -120,11 +124,13 @@ fn build_bar_window(
     } else {
         None
     };
-    let sni_widget = if is_primary {
-        sni_evt_rx.map(|rx| widgets::sni::build(sni_cmd_tx, rx))
-    } else {
-        None
-    };
+    let sni = is_primary.then(|| {
+        let strip = widgets::sni::SniStrip::new(sni_cmd_tx);
+        for (id, item) in &state.borrow().sni_items {
+            strip.apply(&sni::SniEvent::Added { id: id.clone(), item: item.clone() });
+        }
+        strip
+    });
 
     {
         let place = place.clone();
@@ -189,10 +195,10 @@ fn build_bar_window(
     if let Some(tray) = &tray {
         right.append(tray.widget());
     }
-    if let Some(sni_widget) = &sni_widget {
-        right.append(sni_widget);
+    if let Some(sni) = &sni {
+        right.append(sni.widget());
     }
-    if tray.is_some() || sni_widget.is_some() {
+    if tray.is_some() || sni.is_some() {
         right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
     // The device, audio and network trays sit right before the CPU and network
@@ -217,7 +223,7 @@ fn build_bar_window(
         win.present();
     }
 
-    BarWindow { window: win, place, menu, pager, tasklist, tray, _quick_apps: quick_apps }
+    BarWindow { window: win, place, menu, pager, tasklist, tray, sni, _quick_apps: quick_apps }
 }
 
 /// Title of every panel bar window; the hub uses it to hide and show the panel.
@@ -259,10 +265,6 @@ pub fn attach(
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
     let (sni_cmd_tx, sni_evt_rx) = sni::spawn();
-    // Only the primary bar's widget ever drains this receiver - it isn't
-    // `Clone`, and a monitor-hotplug rebuild after the first one won't have
-    // it to hand the new primary bar (known v1 gap, see the SNI plan).
-    let sni_evt_rx = Rc::new(RefCell::new(Some(sni_evt_rx)));
 
     let rebuild: Rc<dyn Fn(Vec<opusdm_ui::MonitorRect>)> = {
         let app = app.clone();
@@ -270,7 +272,6 @@ pub fn attach(
         let windows = windows.clone();
         let tray_cmd_tx = tray_cmd_tx.clone();
         let sni_cmd_tx = sni_cmd_tx.clone();
-        let sni_evt_rx = sni_evt_rx.clone();
         let position = position.clone();
         let devices = devices.clone();
         let audio = audio.clone();
@@ -282,17 +283,14 @@ pub fn attach(
             if rects.is_empty() {
                 rects.push((0, 0, 1280, 800));
             }
-            let mut rx_slot = sni_evt_rx.borrow_mut();
             let built = rects
                 .into_iter()
                 .enumerate()
                 .map(|(i, (x, y, w, h))| {
-                    let rx = if i == 0 { rx_slot.take() } else { None };
                     let place = Placement { position: position.get(), mon_x: x, mon_y: y, mon_w: w, mon_h: h };
                     let services = BarServices {
                         tray_cmd_tx: tray_cmd_tx.clone(),
                         sni_cmd_tx: sni_cmd_tx.clone(),
-                        sni_evt_rx: rx,
                         devices: devices.clone(),
                         audio: audio.clone(),
                         network: network.clone(),
@@ -300,7 +298,6 @@ pub fn attach(
                     build_bar_window(&app, place, &state, i == 0, services)
                 })
                 .collect();
-            drop(rx_slot);
             *windows.borrow_mut() = built;
         })
     };
@@ -352,6 +349,21 @@ pub fn attach(
                 for bw in windows.borrow().iter() {
                     if let Some(tray) = &bw.tray {
                         tray.update(&order);
+                    }
+                }
+            }
+        });
+    }
+
+    // Drain the SNI thread into shared state and the primary bar's strip.
+    {
+        let (state, windows) = (state.clone(), windows.clone());
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(ev) = sni_evt_rx.recv().await {
+                sni::apply_to_list(&mut state.borrow_mut().sni_items, &ev);
+                for bw in windows.borrow().iter() {
+                    if let Some(strip) = &bw.sni {
+                        strip.apply(&ev);
                     }
                 }
             }
