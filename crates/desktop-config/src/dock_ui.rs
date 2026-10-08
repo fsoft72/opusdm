@@ -255,17 +255,16 @@ mod tests {
 
     #[test]
     fn section_reads_back_seeded_values_and_follows_the_panel() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let s = DockSection::new(DockPosition::Left, 64, PanelPosition::Top);
-        assert_eq!((s.position(), s.icon_size()), (DockPosition::Left, 64));
-        // A bottom dock is not offered under a bottom panel: it falls back.
-        let s = DockSection::new(DockPosition::Bottom, 48, PanelPosition::Bottom);
-        assert_eq!(s.position(), DockPosition::Top);
-        // Moving the panel onto the chosen edge moves the choice.
-        let s = DockSection::new(DockPosition::Top, 48, PanelPosition::Bottom);
-        s.set_panel(PanelPosition::Top);
-        assert_eq!(s.position(), DockPosition::Bottom);
+        crate::gtk_test::run(|| {
+            let s = DockSection::new(DockPosition::Left, 64, PanelPosition::Top);
+            assert_eq!((s.position(), s.icon_size()), (DockPosition::Left, 64));
+            // A bottom dock is not offered under a bottom panel: it falls back.
+            let s = DockSection::new(DockPosition::Bottom, 48, PanelPosition::Bottom);
+            assert_eq!(s.position(), DockPosition::Top);
+            // Moving the panel onto the chosen edge moves the choice.
+            let s = DockSection::new(DockPosition::Top, 48, PanelPosition::Bottom);
+            s.set_panel(PanelPosition::Top);
+            assert_eq!(s.position(), DockPosition::Bottom);
+        });
     }
 }

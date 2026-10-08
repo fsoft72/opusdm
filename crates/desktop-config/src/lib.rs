@@ -5,3 +5,6 @@ pub mod background_ui;
 pub mod dock_ui;
 pub mod model;
 pub mod ui;
+
+#[cfg(test)]
+mod gtk_test;

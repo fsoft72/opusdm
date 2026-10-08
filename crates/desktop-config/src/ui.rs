@@ -674,71 +674,66 @@ mod tests {
 
     #[test]
     fn grid_section_reports_seeded_then_edited_values() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let s = GridSection::new(64, 96, 4);
-        assert_eq!(s.icon_size(), 64);
-        assert_eq!(s.grid_spacing(), 96);
-        assert_eq!(s.grid_gap(), 4);
-        s.set_icon_size_for_test(120);
-        assert_eq!(s.icon_size(), 120);
+        crate::gtk_test::run(|| {
+            let s = GridSection::new(64, 96, 4);
+            assert_eq!(s.icon_size(), 64);
+            assert_eq!(s.grid_spacing(), 96);
+            assert_eq!(s.grid_gap(), 4);
+            s.set_icon_size_for_test(120);
+            assert_eq!(s.icon_size(), 120);
+        });
     }
 
     #[test]
     fn windows_section_reports_seeded_values_and_clamps() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let s = WindowsSection::new(true, 70, 95, true);
-        assert!(s.enabled());
-        assert_eq!((s.inactive_opacity(), s.active_opacity()), (70, 95));
-        assert!(s.snap_enabled());
-        let s = WindowsSection::new(false, 0, 500, false);
-        assert!(!s.enabled());
-        assert!(!s.snap_enabled());
-        assert_eq!((s.inactive_opacity(), s.active_opacity()), (20, 100));
+        crate::gtk_test::run(|| {
+            let s = WindowsSection::new(true, 70, 95, true);
+            assert!(s.enabled());
+            assert_eq!((s.inactive_opacity(), s.active_opacity()), (70, 95));
+            assert!(s.snap_enabled());
+            let s = WindowsSection::new(false, 0, 500, false);
+            assert!(!s.enabled());
+            assert!(!s.snap_enabled());
+            assert_eq!((s.inactive_opacity(), s.active_opacity()), (20, 100));
+        });
     }
 
     #[test]
     fn startup_apps_section_reports_seeded_rows_in_order() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let seeded = vec![
-            StartupApp { command: "firefox".into(), wait_secs: 5, start_in_tray: false },
-            StartupApp { command: "nm-applet --indicator".into(), wait_secs: 0, start_in_tray: false },
-            StartupApp { command: "megasync".into(), wait_secs: 10, start_in_tray: true },
-        ];
-        let s = StartupAppsSection::new(&seeded, true);
-        assert_eq!(s.apps(), seeded);
-        assert!(s.open_lister_at_start());
-        let empty = StartupAppsSection::new(&[], false);
-        assert!(empty.apps().is_empty());
-        assert!(!empty.open_lister_at_start());
+        crate::gtk_test::run(|| {
+            let seeded = vec![
+                StartupApp { command: "firefox".into(), wait_secs: 5, start_in_tray: false },
+                StartupApp { command: "nm-applet --indicator".into(), wait_secs: 0, start_in_tray: false },
+                StartupApp { command: "megasync".into(), wait_secs: 10, start_in_tray: true },
+            ];
+            let s = StartupAppsSection::new(&seeded, true);
+            assert_eq!(s.apps(), seeded);
+            assert!(s.open_lister_at_start());
+            let empty = StartupAppsSection::new(&[], false);
+            assert!(empty.apps().is_empty());
+            assert!(!empty.open_lister_at_start());
+        });
     }
 
     #[test]
     fn startup_apps_section_reports_added_and_removed_rows() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let s = StartupAppsSection::new(&[StartupApp { command: "a".into(), wait_secs: 1, start_in_tray: false }], true);
-        s.add_row(&StartupApp { command: "b".into(), wait_secs: 700, start_in_tray: false });
-        assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["a", "b"]);
-        assert_eq!(s.apps()[1].wait_secs, opusdm_ipc::STARTUP_WAIT_SECS_RANGE.1, "spin clamps the wait");
-        s.remove_row_for_test(0);
-        assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["b"]);
+        crate::gtk_test::run(|| {
+            let s = StartupAppsSection::new(&[StartupApp { command: "a".into(), wait_secs: 1, start_in_tray: false }], true);
+            s.add_row(&StartupApp { command: "b".into(), wait_secs: 700, start_in_tray: false });
+            assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+            assert_eq!(s.apps()[1].wait_secs, opusdm_ipc::STARTUP_WAIT_SECS_RANGE.1, "spin clamps the wait");
+            s.remove_row_for_test(0);
+            assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["b"]);
+        });
     }
 
     #[test]
     fn folder_section_reports_none_when_empty_and_some_when_set() {
-        if gtk::init().is_err() {
-            return;
-        }
-        let s = FolderSection::new(None);
-        assert_eq!(s.override_dir(), None);
-        let s = FolderSection::new(Some(Path::new("/home/u/Desk")));
-        assert_eq!(s.override_dir(), Some(PathBuf::from("/home/u/Desk")));
+        crate::gtk_test::run(|| {
+            let s = FolderSection::new(None);
+            assert_eq!(s.override_dir(), None);
+            let s = FolderSection::new(Some(Path::new("/home/u/Desk")));
+            assert_eq!(s.override_dir(), Some(PathBuf::from("/home/u/Desk")));
+        });
     }
 }
