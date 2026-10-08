@@ -1,8 +1,17 @@
 //! "Start in tray" for the Startup Apps: X11 has no standard way to ask an
 //! app to start with no window, so after launching it the hub watches the
-//! window manager's client list and closes the first normal window the app
-//! opens (`WM_DELETE_WINDOW`, the same as clicking its close button). A tray
-//! app answers by hiding itself in the tray; one with no tray quits.
+//! window manager's client list for the first normal window the app opens.
+//! The window opens normally, where the app wants it; the hub minimizes it
+//! (`WM_CHANGE_STATE`) and then closes it (`WM_DELETE_WINDOW`, the same as
+//! clicking its close button). A tray app answers by hiding itself in the
+//! tray; one with no tray quits. The window is never moved, so it keeps its
+//! real place when it is opened again from the tray icon.
+//!
+//! Toolkits remember the minimize: Qt, told by the window manager that the
+//! window is hidden, maps it minimized again on its next plain `show()`.
+//! Once the app has hidden the window, its `_NET_WM_STATE` from before the
+//! minimize is written back without `_NET_WM_STATE_HIDDEN`; the toolkit
+//! reads it and forgets the minimize (and keeps a maximize).
 //!
 //! A window belongs to the launch when its `_NET_WM_PID` is the launched
 //! process, one of its descendants, or a process of its process group (the
@@ -14,8 +23,7 @@ use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask, MapState,
-    PropMode, Window,
+    AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, MapState, PropMode, Window,
 };
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
@@ -26,10 +34,10 @@ use x11rb::wrapper::ConnectionExt as _;
 /// so a window the user opens later from the tray is never closed.
 pub const WATCH_TIME: Duration = Duration::from_secs(30);
 
-/// Pause between the window becoming visible and the close request. The
-/// window manager lists a window before the app has finished showing it,
-/// and a close that arrives then is often ignored (measured with a GTK3
-/// app under Openbox: 2 runs out of 3).
+/// Pause between the window becoming visible and the minimize and close
+/// requests. The window manager lists a window before the app has finished
+/// showing it, and a close that arrives then is often ignored (measured
+/// with a GTK3 app under Openbox: 2 runs out of 3).
 const SETTLE_TIME: Duration = Duration::from_millis(300);
 
 /// How long a closed window gets to disappear before it is asked again.
@@ -38,8 +46,8 @@ const CLOSE_CHECK_TIME: Duration = Duration::from_secs(1);
 /// Close requests sent to one window before giving up.
 const MAX_CLOSE_TRIES: u32 = 3;
 
-/// Pixels past the bottom right corner of the screen a window is moved to.
-const OFF_SCREEN_GAP: i32 = 100;
+/// ICCCM `IconicState`: the `WM_CHANGE_STATE` value that minimizes a window.
+const ICONIC_STATE: u32 = 3;
 
 /// Poll step while waiting for the window to become visible.
 const MAP_POLL: Duration = Duration::from_millis(50);
@@ -55,8 +63,9 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE_NORMAL,
         WM_PROTOCOLS,
         WM_DELETE_WINDOW,
-        _NET_MOVERESIZE_WINDOW,
-        _NET_WM_WINDOW_OPACITY,
+        WM_CHANGE_STATE,
+        _NET_WM_STATE,
+        _NET_WM_STATE_HIDDEN,
     }
 }
 
@@ -97,6 +106,16 @@ pub fn is_from_launch(pid: u32, launched: u32, stat_of: impl Fn(u32) -> Option<(
 /// the like are left alone.
 pub fn is_normal_window(types: &[u32], normal: u32) -> bool {
     types.first().is_none_or(|t| *t == normal)
+}
+
+/// Data words of the `WM_CHANGE_STATE` message that minimizes a window.
+pub fn iconify_data() -> [u32; 5] {
+    [ICONIC_STATE, 0, 0, 0, 0]
+}
+
+/// `states` (a `_NET_WM_STATE` atom list) without `unwanted`.
+pub fn without_state(states: &[u32], unwanted: u32) -> Vec<u32> {
+    states.iter().copied().filter(|s| *s != unwanted).collect()
 }
 
 /// `(ppid, pgrp)` of a live process, read from `/proc`.
@@ -176,23 +195,17 @@ impl Watch {
         Ok(is_normal_window(&types, self.atoms._NET_WM_WINDOW_TYPE_NORMAL))
     }
 
-    /// Move `window` off screen at once, wait until it is visible, then ask
-    /// it to close until it is no longer visible, up to `MAX_CLOSE_TRIES`
-    /// times. Whatever happens, the window goes back to where it was, so it
-    /// shows in the right place when the app shows it again (from its tray
-    /// icon) or when it refused to close. Returns `window` once it is hidden
-    /// or gone, `None` when it stayed open or could not be asked.
+    /// Wait until `window` is visible, then minimize it and ask it to close
+    /// until the app has hidden it (it left the window manager's client list)
+    /// or it is gone, up to `MAX_CLOSE_TRIES` times. A window that is still
+    /// visible before a try (the app or the window manager ignored the first
+    /// minimize request) is minimized again. The window is never moved, so it
+    /// shows at its own place when the app shows it again from its tray icon;
+    /// once hidden, its state from before the minimize is given back (see the
+    /// module doc). One that refuses to close stays minimized. Returns
+    /// `window` once it is hidden or gone, `None` when it stayed or could not
+    /// be asked.
     fn close_until_hidden(&self, window: Window, deadline: Instant) -> Result<Option<Window>, opusdm_x11::X11Error> {
-        let home = self.move_off_screen(window)?;
-        let closed = self.close_when_visible(window, deadline);
-        if let Some((x, y)) = home {
-            self.move_back(window, x, y)?;
-        }
-        closed
-    }
-
-    /// The close loop of `close_until_hidden`, with the window off screen.
-    fn close_when_visible(&self, window: Window, deadline: Instant) -> Result<Option<Window>, opusdm_x11::X11Error> {
         loop {
             match self.is_viewable(window)? {
                 None => return Ok(Some(window)),
@@ -201,73 +214,56 @@ impl Watch {
                 Some(false) => std::thread::sleep(MAP_POLL),
             }
         }
+        let mut states = None;
         for _ in 0..MAX_CLOSE_TRIES {
             std::thread::sleep(SETTLE_TIME);
+            if self.is_viewable(window)? == Some(true) {
+                if states.is_none() {
+                    states = Some(self.cardinals(window, self.atoms._NET_WM_STATE, AtomEnum::ATOM)?);
+                }
+                self.iconify(window)?;
+            }
             if !self.close(window)? {
                 return Ok(None);
             }
             std::thread::sleep(CLOSE_CHECK_TIME);
-            if self.is_viewable(window)? != Some(true) {
+            if !self.is_managed(window)? {
+                self.unminimize_hidden(window, &states.unwrap_or_default())?;
                 return Ok(Some(window));
             }
         }
-        opusdm_ipc::err_log!("opusdm-hub", "start in tray: window {window:#x} still open after {MAX_CLOSE_TRIES} close requests");
+        opusdm_ipc::err_log!("opusdm-hub", "start in tray: window {window:#x} still open after {MAX_CLOSE_TRIES} close requests, left minimized");
         Ok(None)
     }
 
-    /// Hide `window` while the app finishes showing it: make it fully
-    /// transparent (a compositor such as picom honours
-    /// `_NET_WM_WINDOW_OPACITY`) and ask the window manager to put it past
-    /// the bottom right corner of the screen. Openbox keeps a few pixels of
-    /// a window on screen whatever a client asks, so the move alone leaves a
-    /// small corner visible. Returns its position before the move (root
-    /// coordinates of the client area), `None` when it is gone.
-    fn move_off_screen(&self, window: Window) -> Result<Option<(i32, i32)>, opusdm_x11::X11Error> {
-        let Some(pos) = opusdm_x11::gone(self.conn.translate_coordinates(window, self.root, 0, 0)?.reply())? else {
-            return Ok(None);
-        };
-        let (width, height) = self
-            .conn
-            .setup()
-            .roots
-            .iter()
-            .find(|s| s.root == self.root)
-            .map_or((0, 0), |s| (s.width_in_pixels, s.height_in_pixels));
-        self.conn.change_property32(
-            PropMode::REPLACE,
-            window,
-            self.atoms._NET_WM_WINDOW_OPACITY,
-            AtomEnum::CARDINAL,
-            &[0],
-        )?;
-        self.request_move(window, i32::from(width) + OFF_SCREEN_GAP, i32::from(height) + OFF_SCREEN_GAP)?;
-        Ok(Some((i32::from(pos.dst_x), i32::from(pos.dst_y))))
-    }
-
-    /// Make `window` opaque again and put it back at `x`, `y`. A hidden (withdrawn) window is no
-    /// longer managed, so it is moved directly; the window manager starts
-    /// from there when the app maps it again. A visible one goes through
-    /// the window manager.
-    fn move_back(&self, window: Window, x: i32, y: i32) -> Result<(), opusdm_x11::X11Error> {
-        self.conn.delete_property(window, self.atoms._NET_WM_WINDOW_OPACITY)?;
-        match self.is_viewable(window)? {
-            None => {}
-            Some(true) => self.request_move(window, x, y)?,
-            Some(false) => {
-                self.conn.configure_window(window, &ConfigureWindowAux::new().x(x).y(y))?;
-                self.conn.flush()?;
-            }
-        }
-        Ok(())
-    }
-
-    /// `_NET_MOVERESIZE_WINDOW` with only x and y given.
-    fn request_move(&self, window: Window, x: i32, y: i32) -> Result<(), opusdm_x11::X11Error> {
-        let flags = (1 << 8) | (1 << 9) | (opusdm_x11::SOURCE_APPLICATION << 12);
-        let data = [flags, x as u32, y as u32, 0, 0];
-        opusdm_x11::send_to_root(&self.conn, self.root, window, self.atoms._NET_MOVERESIZE_WINDOW, data)?;
+    /// Ask the window manager to minimize `window` (ICCCM `WM_CHANGE_STATE`
+    /// with `IconicState`).
+    fn iconify(&self, window: Window) -> Result<(), opusdm_x11::X11Error> {
+        opusdm_x11::send_to_root(&self.conn, self.root, window, self.atoms.WM_CHANGE_STATE, iconify_data())?;
         self.conn.flush()?;
         Ok(())
+    }
+
+    /// Write `states` (the window's `_NET_WM_STATE` before the minimize)
+    /// back on the hidden `window`, without `_NET_WM_STATE_HIDDEN`. The
+    /// window manager erased the property when the app hid the window; the
+    /// new value tells the toolkit the window is no longer minimized. A
+    /// window that is gone is left alone.
+    fn unminimize_hidden(&self, window: Window, states: &[u32]) -> Result<(), opusdm_x11::X11Error> {
+        if self.is_viewable(window)?.is_none() {
+            return Ok(());
+        }
+        let kept = without_state(states, self.atoms._NET_WM_STATE_HIDDEN);
+        self.conn.change_property32(PropMode::REPLACE, window, self.atoms._NET_WM_STATE, AtomEnum::ATOM, &kept)?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// Whether the window manager still manages `window`: it is in
+    /// `_NET_CLIENT_LIST`. A minimized window still is; one the app hid
+    /// (withdrew) or destroyed is not.
+    fn is_managed(&self, window: Window) -> Result<bool, opusdm_x11::X11Error> {
+        Ok(self.client_list()?.contains(&window))
     }
 
     /// Whether `window` is mapped and visible; `None` when it is gone.
@@ -282,7 +278,7 @@ impl Watch {
     fn close(&self, window: Window) -> Result<bool, opusdm_x11::X11Error> {
         let protocols = self.cardinals(window, self.atoms.WM_PROTOCOLS, AtomEnum::ATOM)?;
         if !protocols.contains(&self.atoms.WM_DELETE_WINDOW) {
-            opusdm_ipc::err_log!("opusdm-hub", "start in tray: window {window:#x} cannot be closed politely, left open");
+            opusdm_ipc::err_log!("opusdm-hub", "start in tray: window {window:#x} cannot be closed politely, left minimized");
             return Ok(false);
         }
         let data = [self.atoms.WM_DELETE_WINDOW, x11rb::CURRENT_TIME, 0, 0, 0];
@@ -365,6 +361,19 @@ mod tests {
     fn a_parent_loop_does_not_hang() {
         let stat = table(&[(10, 11, 10), (11, 10, 11)]);
         assert!(!is_from_launch(10, 100, &stat));
+    }
+
+    #[test]
+    fn the_minimize_request_asks_for_the_iconic_state() {
+        assert_eq!(iconify_data(), [3, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_restored_state_drops_only_hidden() {
+        let (hidden, max_v, max_h) = (10, 11, 12);
+        assert_eq!(without_state(&[max_v, hidden, max_h], hidden), vec![max_v, max_h]);
+        assert!(without_state(&[hidden], hidden).is_empty());
+        assert!(without_state(&[], hidden).is_empty());
     }
 
     #[test]

@@ -315,9 +315,10 @@ pub struct StartupApp {
     /// launching it.
     #[serde(default)]
     pub wait_secs: u32,
-    /// Start it with no window, only its tray icon: the hub closes the first
-    /// normal window the app opens, which a tray app answers by hiding
-    /// itself in the tray. An app with no tray icon quits instead.
+    /// Start it with no window, only its tray icon: the hub minimizes and
+    /// then closes the first normal window the app opens, which a tray app
+    /// answers by hiding itself in the tray. An app with no tray icon quits
+    /// instead.
     #[serde(default)]
     pub start_in_tray: bool,
 }

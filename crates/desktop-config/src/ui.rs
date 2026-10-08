@@ -522,7 +522,7 @@ impl StartupAppsSection {
         let in_tray = gtk::CheckButton::with_label("Tray");
         in_tray.set_active(app.start_in_tray);
         in_tray.set_tooltip_text(Some(
-            "Start with no window: the first window the app opens is closed, so it stays only in the tray",
+            "Start with no window: the first window the app opens is minimized and closed, so it stays only in the tray",
         ));
 
         let remove = gtk::Button::with_label("Remove");
