@@ -80,8 +80,14 @@ pub(crate) fn full_rebuild_desktop_windows(
     widgets: &Rc<Widgets>,
     mut rects: Vec<(i32, i32, i32, i32)>,
 ) {
-    for dw in widgets.windows.borrow_mut().drain(..) {
-        dw.window.close();
+    // Take the old windows out first: nothing may hold `widgets.windows`
+    // while they go. `destroy`, not `close`: `close` asks the window's
+    // close-request handler, which wants to quit OpusDM (and reads
+    // `widgets.windows`, a RefCell panic inside a GTK callback that aborted
+    // the hub when a monitor was turned off).
+    let old: Vec<DesktopWindow> = widgets.windows.borrow_mut().drain(..).collect();
+    for dw in old {
+        dw.window.destroy();
     }
     *widgets.desktop.watch.borrow_mut() = None;
     *widgets.desktop.field.borrow_mut() = None;
