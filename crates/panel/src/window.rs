@@ -13,6 +13,11 @@ use x11rb::wrapper::ConnectionExt as _;
 /// Height of the panel strip, in pixels.
 pub const PANEL_HEIGHT: i32 = 40;
 
+/// Background colour of the panel strip, `0xRRGGBB`. Used by the CSS and as
+/// the background of the XEmbed tray icon containers, which the icons
+/// expect to show through their transparent parts.
+pub const PANEL_BACKGROUND: u32 = 0x2e3436;
+
 /// Where one bar sits: the edge it is docked to and the monitor rect
 /// `(mon_x, mon_y)`, `mon_w` x `mon_h` it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

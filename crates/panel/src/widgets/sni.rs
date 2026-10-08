@@ -56,9 +56,9 @@ fn apply_event(
     ev: SniEvent,
 ) {
     match ev {
-        SniEvent::Added { service, item } | SniEvent::Changed { service, item } => {
+        SniEvent::Added { id, item } | SniEvent::Changed { id, item } => {
             let mut buttons = buttons.borrow_mut();
-            if let Some(entry) = buttons.get(&service) {
+            if let Some(entry) = buttons.get(&id) {
                 entry.button.set_child(Some(&icon_widget(&item)));
                 *entry.menu_path.borrow_mut() = item.menu_path.clone();
                 *entry.item_path.borrow_mut() = item.path.clone();
@@ -68,13 +68,13 @@ fn apply_event(
                 btn.set_child(Some(&icon_widget(&item)));
                 let menu_path = Rc::new(RefCell::new(item.menu_path.clone()));
                 let item_path = Rc::new(RefCell::new(item.path.clone()));
-                wire_click(&btn, service.clone(), menu_path.clone(), item_path.clone(), cmd_tx.clone());
+                wire_click(&btn, item.service.clone(), menu_path.clone(), item_path.clone(), cmd_tx.clone());
                 root.append(&btn);
-                buttons.insert(service, ItemButton { button: btn, menu_path, item_path });
+                buttons.insert(id, ItemButton { button: btn, menu_path, item_path });
             }
         }
-        SniEvent::Removed { service } => {
-            if let Some(entry) = buttons.borrow_mut().remove(&service) {
+        SniEvent::Removed { id } => {
+            if let Some(entry) = buttons.borrow_mut().remove(&id) {
                 root.remove(&entry.button);
             }
         }

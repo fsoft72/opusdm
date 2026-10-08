@@ -112,6 +112,7 @@ fn build_bar_window(
     let tray = if is_primary {
         let icon_size = systray::icon_square_size(window::PANEL_HEIGHT);
         let tray = Tray::new(icon_size, tray_cmd_tx);
+        tray.follow_layout();
         tray.set_origin(place.get().mon_x, place.get().bar_y());
         tray.update(&state.borrow().tray_order);
         Some(tray)
@@ -430,9 +431,10 @@ fn apply_ewmh(state: &Rc<RefCell<PanelState>>, windows: &[BarWindow], ev: EwmhEv
 fn install_css() {
     let Some(display) = gtk::gdk::Display::default() else { return };
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(
-        ".opusdm-panel { background-color: #2e3436; color: #d3d7cf; }\n\
-         .opusdm-panel button { padding: 2px 8px; min-height: 0; }\n\
+    let css = format!(
+        ".opusdm-panel {{ background-color: #{:06x}; color: #d3d7cf; }}\n{}",
+        window::PANEL_BACKGROUND,
+        ".opusdm-panel button { padding: 2px 8px; min-height: 0; }\n\
          .opusdm-panel-quickapps button { padding: 2px 3px; }\n\
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
@@ -442,6 +444,7 @@ fn install_css() {
          .opusdm-panel-net-in { color: #74d161; }\n\
          .opusdm-panel-net-out { color: #5c99e6; }",
     );
+    provider.load_from_data(&css);
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,

@@ -54,7 +54,7 @@ use std::sync::Arc;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux, ConnectionExt,
-    CreateWindowAux, EventMask, PropMode, Window, WindowClass,
+    CreateWindowAux, EventMask, PropMode, SetMode, StackMode, Window, WindowClass,
 };
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
@@ -66,6 +66,7 @@ x11rb::atom_manager! {
         MANAGER,
         _NET_SYSTEM_TRAY_OPCODE,
         _NET_SYSTEM_TRAY_ORIENTATION,
+        _NET_SYSTEM_TRAY_ICON_SIZE,
         _XEMBED,
     }
 }
@@ -189,6 +190,15 @@ fn run(
         x11rb::protocol::xproto::AtomEnum::CARDINAL,
         &[0], // horizontal
     )?;
+    // Tells GTK3 (and other recent clients) what size to draw at, instead
+    // of drawing a default 16 px icon in the corner of the container.
+    conn.change_property32(
+        PropMode::REPLACE,
+        manager,
+        atoms._NET_SYSTEM_TRAY_ICON_SIZE,
+        x11rb::protocol::xproto::AtomEnum::CARDINAL,
+        &[icon_square_size(panel_height).max(1) as u32],
+    )?;
     let ev = ClientMessageEvent::new(
         32,
         root,
@@ -232,15 +242,15 @@ fn event_loop(
                     }
                 }
                 Event::DestroyNotify(e) if containers.contains_key(&e.window) => {
-                    undock_icon(conn, containers, e.window, tx);
+                    undock_icon(conn, root, containers, e.window, false, tx);
                 }
                 Event::UnmapNotify(e) if containers.contains_key(&e.window) => {
-                    undock_icon(conn, containers, e.window, tx);
+                    undock_icon(conn, root, containers, e.window, true, tx);
                 }
                 Event::ReparentNotify(e)
                     if containers.get(&e.window).is_some_and(|c| *c != e.parent) =>
                 {
-                    undock_icon(conn, containers, e.window, tx);
+                    undock_icon(conn, root, containers, e.window, false, tx);
                 }
                 _ => {}
             }
@@ -263,6 +273,14 @@ fn event_loop(
 /// reparent the client's icon into it, complete the XEmbed handshake, and
 /// map both. Errors for one icon are logged and swallowed so a single
 /// misbehaving client can't take down the tray thread.
+///
+/// A repeated request for an icon that is already docked is ignored: a
+/// second container would stay mapped at the first one's old place, on top
+/// of whatever moved there. The icon is reparented *before* we select its
+/// structure events: reparenting a mapped window unmaps and remaps it, and
+/// seeing that `UnmapNotify` would undock the icon we just docked. The
+/// selection is a checked request, so an icon that died before docking
+/// fails here instead of leaving a container that never goes away.
 fn dock_icon(
     conn: &RustConnection,
     atoms: &Atoms,
@@ -272,8 +290,11 @@ fn dock_icon(
     icon_xid: u32,
     tx: &async_channel::Sender<TrayEvent>,
 ) {
-    let run = || -> Result<Window, Box<dyn std::error::Error>> {
-        let container = conn.generate_id()?;
+    if containers.contains_key(&icon_xid) || containers.values().any(|c| *c == icon_xid) {
+        return;
+    }
+    let Ok(container) = conn.generate_id() else { return };
+    let run = || -> Result<(), Box<dyn std::error::Error>> {
         conn.create_window(
             x11rb::COPY_DEPTH_FROM_PARENT,
             container,
@@ -285,13 +306,24 @@ fn dock_icon(
             0,
             WindowClass::INPUT_OUTPUT,
             COPY_FROM_PARENT,
-            &CreateWindowAux::new().override_redirect(1),
+            // Without a background the parts the icon leaves transparent
+            // (icons with a ParentRelative background, like GTK3's) show
+            // whatever was on screen there before, which looks like another
+            // icon drawn over this one.
+            &CreateWindowAux::new()
+                .override_redirect(1)
+                .background_pixel(crate::window::PANEL_BACKGROUND),
         )?;
+        // Save-set: if the panel exits or crashes, the X server moves the
+        // icon back to the root window instead of destroying it with its
+        // container, so the app survives and can dock again.
+        conn.change_save_set(SetMode::INSERT, icon_xid)?;
+        conn.reparent_window(icon_xid, container, 0, 0)?.check()?;
         conn.change_window_attributes(
             icon_xid,
             &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
-        )?;
-        conn.reparent_window(icon_xid, container, 0, 0)?;
+        )?
+        .check()?;
         conn.configure_window(
             icon_xid,
             &ConfigureWindowAux::new()
@@ -308,33 +340,48 @@ fn dock_icon(
         conn.map_window(icon_xid)?;
         conn.map_window(container)?;
         conn.flush()?;
-        Ok(container)
+        Ok(())
     };
     match run() {
-        Ok(container) => {
+        Ok(()) => {
             containers.insert(icon_xid, container);
             let _ = tx.send_blocking(TrayEvent::IconDocked(icon_xid));
         }
-        Err(e) => opusdm_ipc::err_log!("opusdm-panel", "cannot dock tray icon {icon_xid}: {e}"),
+        Err(e) => {
+            let _ = conn.destroy_window(container);
+            let _ = conn.flush();
+            opusdm_ipc::err_log!("opusdm-panel", "cannot dock tray icon {icon_xid}: {e}");
+        }
     }
 }
 
 /// Destroy `icon_xid`'s container (if any tracked) and report its removal.
+/// When the icon is `still_inside` the container (it was only unmapped) it
+/// is moved back to `root` first: destroying a window destroys its
+/// children, and the icon window belongs to the app.
 fn undock_icon(
     conn: &RustConnection,
+    root: Window,
     containers: &mut HashMap<u32, u32>,
     icon_xid: u32,
+    still_inside: bool,
     tx: &async_channel::Sender<TrayEvent>,
 ) {
     if let Some(container) = containers.remove(&icon_xid) {
+        if still_inside {
+            let _ = conn.reparent_window(icon_xid, root, 0, 0);
+            let _ = conn.change_save_set(SetMode::DELETE, icon_xid);
+        }
         let _ = conn.destroy_window(container);
         let _ = conn.flush();
         let _ = tx.send_blocking(TrayEvent::IconRemoved(icon_xid));
     }
 }
 
-/// Move/resize a docked icon's container window. A no-op if `xid` isn't
-/// currently docked (e.g. it was removed just before the command arrived).
+/// Move/resize a docked icon's container window and raise it, so it stays
+/// above the panel after the panel itself was raised. A no-op if `xid`
+/// isn't currently docked (e.g. it was removed just before the command
+/// arrived).
 fn place_icon(
     conn: &RustConnection,
     containers: &HashMap<u32, u32>,
@@ -347,7 +394,12 @@ fn place_icon(
     let Some(&container) = containers.get(&xid) else { return Ok(()) };
     conn.configure_window(
         container,
-        &ConfigureWindowAux::new().x(x).y(y).width(w as u32).height(h as u32),
+        &ConfigureWindowAux::new()
+            .x(x)
+            .y(y)
+            .width(w.max(1) as u32)
+            .height(h.max(1) as u32)
+            .stack_mode(StackMode::ABOVE),
     )?;
     conn.flush()?;
     Ok(())
