@@ -14,9 +14,15 @@ use opusdm_ipc::ThemeMode;
 /// window ends up looking identical regardless of the desktop it runs
 /// under, rather than depending on that desktop's own theme's assumptions.
 pub fn apply_theme_mode(mode: ThemeMode) {
-    if let Some(settings) = gtk::Settings::default() {
+    let Some(settings) = gtk::Settings::default() else { return };
+    // GTK reloads the style of every window on a property write, even for
+    // an unchanged value: write only what differs, or the desktop flickers.
+    if settings.gtk_theme_name().as_deref() != Some("Adwaita") {
         settings.set_gtk_theme_name(Some("Adwaita"));
-        settings.set_gtk_application_prefer_dark_theme(mode == ThemeMode::Dark);
+    }
+    let dark = mode == ThemeMode::Dark;
+    if settings.is_gtk_application_prefer_dark_theme() != dark {
+        settings.set_gtk_application_prefer_dark_theme(dark);
     }
 }
 

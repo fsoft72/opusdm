@@ -198,6 +198,7 @@ pub(crate) fn install(bg: &Background) {
         if c.installed.as_ref() == Some(bg) {
             return;
         }
+        opusdm_ipc::debug_log!("hub", "background changed, restarting it: {} entries", bg.entries.len());
         _stop(c);
         c.installed = Some(bg.clone());
         c.entries = bg.effective_entries();

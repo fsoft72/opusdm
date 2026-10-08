@@ -539,7 +539,11 @@ impl Hub {
 
     /// A Lister asked to change the desktop settings: clamp, save and tell the GTK side.
     fn set_desktop_settings(&mut self, ds: DesktopSettings) {
-        self.current_desktop = ds.sanitized();
+        let ds = ds.sanitized();
+        if ds == self.current_desktop {
+            return;
+        }
+        self.current_desktop = ds;
         let _ = self.persist_tx.send(PersistMsg::Desktop(self.current_desktop.clone()));
         let _ = self.evt_tx.send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
     }
@@ -808,6 +812,10 @@ impl Hub {
     /// function step.
     fn apply_settings(&mut self, mut new_settings: opusdm_ipc::Settings) {
         new_settings.theme.background = new_settings.theme.background.sanitized();
+        // Nothing changed: no write, no repaint, no message to the Listers.
+        if new_settings == self.current_settings {
+            return;
+        }
         self.current_settings = new_settings;
         let _ = self.persist_tx.send(PersistMsg::Settings(Box::new(self.current_settings.clone())));
         self.broadcast(ToLister::SettingsUpdate(Box::new(self.current_settings.clone())));

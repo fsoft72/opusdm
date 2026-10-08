@@ -1624,3 +1624,35 @@ fn reveal_presents_only_the_source_lister_after_telling_everyone() {
     }
     assert!(got_reveal);
 }
+
+#[test]
+fn an_unchanged_apply_emits_no_event() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut c = connect(&path);
+
+    let mut settings = opusdm_ipc::Settings::default();
+    settings.appearance.monospace_list = true;
+    let desktop = DesktopSettings { icon_size: 100, ..DesktopSettings::default() };
+    send(&mut c, &ToHub::SetSettings(Box::new(settings.clone()))).unwrap();
+    send(&mut c, &ToHub::SetDesktopSettings(desktop.clone())).unwrap();
+    let first = next_matching(&handle, Duration::from_millis(500), |ev| match ev {
+        HubEvent::DesktopSettingsChanged(_) => Some(()),
+        _ => None,
+    });
+    assert!(first.is_some(), "the first apply must be announced");
+
+    // Drain what the first apply produced, then repeat it unchanged.
+    while handle.evt_rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+    send(&mut c, &ToHub::SetSettings(Box::new(settings))).unwrap();
+    send(&mut c, &ToHub::SetDesktopSettings(desktop)).unwrap();
+    let again = next_matching(&handle, Duration::from_millis(500), |ev| match ev {
+        HubEvent::ThemeChanged(_) | HubEvent::AppearanceChanged(_) | HubEvent::DesktopSettingsChanged(_) => Some(()),
+        _ => None,
+    });
+    assert!(again.is_none(), "an identical apply must not reach the GTK side");
+}

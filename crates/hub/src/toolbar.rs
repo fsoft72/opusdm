@@ -319,6 +319,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             }
         }
         HubEvent::ThemeChanged(theme) => {
+            // `install` and `set_icon_set` do nothing for an unchanged value.
             crate::background::install(&theme.background);
             *widgets.desktop.icon_set.borrow_mut() = theme.icon_set.clone();
             if let Some(field) = widgets.desktop.field.borrow().as_ref() {
@@ -360,24 +361,49 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             opusdm_ui::apply_theme_mode(appearance.theme_mode);
         }
         HubEvent::DesktopSettingsChanged(ds) => {
+            // Redo only what changed: re-applying an untouched part (the
+            // compositor above all) makes the whole desktop flicker.
+            let changes = opusdm_hub::desktop_diff::diff(&widgets.desktop.settings.borrow(), &ds);
+            if !changes.any() {
+                return;
+            }
             *widgets.desktop.settings.borrow_mut() = ds.clone();
-            apply_virtual_screens(ds.virtual_screens);
-            opusdm_hub::compositor::apply(&ds);
-            opusdm_hub::snap::set_enabled(ds.snap_enabled);
+            if changes.virtual_screens {
+                apply_virtual_screens(ds.virtual_screens);
+            }
+            if changes.transparency {
+                opusdm_hub::compositor::apply(&ds);
+            }
+            if changes.snap {
+                opusdm_hub::snap::set_enabled(ds.snap_enabled);
+            }
             let field = widgets.desktop.field.borrow().clone();
             if let Some(field) = field.as_ref() {
-                field.set_icon_size(ds.icon_size);
-                field.set_grid_spacing(ds.grid_spacing);
-                field.set_grid_gap(ds.grid_gap);
-                keep_clear_of_panel(field.widget(), ds.panel_position);
+                if changes.icon_size {
+                    field.set_icon_size(ds.icon_size);
+                }
+                if changes.grid {
+                    field.set_grid_spacing(ds.grid_spacing);
+                    field.set_grid_gap(ds.grid_gap);
+                }
+                if changes.panel_position {
+                    keep_clear_of_panel(field.widget(), ds.panel_position);
+                }
             }
-            if let Some(set_position) = widgets.set_panel_position.borrow().as_ref() {
-                set_position(ds.panel_position);
+            if changes.panel_position {
+                if let Some(set_position) = widgets.set_panel_position.borrow().as_ref() {
+                    set_position(ds.panel_position);
+                }
             }
-            if let Some(set_layout) = widgets.set_dock_layout.borrow().as_ref() {
-                set_layout(dock_layout(&ds));
+            if changes.dock_layout {
+                if let Some(set_layout) = widgets.set_dock_layout.borrow().as_ref() {
+                    set_layout(dock_layout(&ds));
+                }
             }
 
+            if !changes.desktop_dir {
+                return;
+            }
             let wanted =
                 opusdm_hub::desktop_files::effective_desktop_dir(ds.desktop_dir.as_deref());
             *widgets.desktop.desired_dir.borrow_mut() = wanted.clone();

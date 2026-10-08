@@ -4,6 +4,7 @@
 pub mod bg_sequence;
 pub mod children;
 pub mod compositor;
+pub mod desktop_diff;
 pub mod desktop_files;
 pub mod fullscreen;
 pub mod desktop_settings;
