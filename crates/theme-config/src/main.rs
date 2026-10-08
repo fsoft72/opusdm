@@ -87,8 +87,6 @@ fn build_window(app: &gtk::Application) {
     outer.set_margin_start(12);
     outer.set_margin_end(12);
 
-    outer.append(&tools::build_row());
-
     let notebook = gtk::Notebook::new();
     notebook.set_vexpand(true);
 
@@ -144,8 +142,6 @@ fn build_window(app: &gtk::Application) {
     desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let startup_apps = Rc::new(StartupAppsSection::new(&desktop_data.startup_apps, desktop_data.open_lister_at_start));
-    desktop_page.append(&startup_apps.root);
-    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     // Applied live by its own worker: it is not part of desktop.json.
     let brightness = BrightnessSection::new();
@@ -230,6 +226,21 @@ fn build_window(app: &gtk::Application) {
     lister_page_outer.set_child(Some(&lister_page));
 
     notebook.append_page(&lister_page_outer, Some(&gtk::Label::new(Some("Lister"))));
+
+    // --- Startup Apps tab ---
+    let startup_page_outer = gtk::ScrolledWindow::new();
+    let startup_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    startup_page.set_margin_top(12);
+    startup_page.set_margin_bottom(12);
+    startup_page.set_margin_start(12);
+    startup_page.set_margin_end(12);
+    startup_page.append(&startup_apps.root);
+    startup_page_outer.set_child(Some(&startup_page));
+    notebook.append_page(&startup_page_outer, Some(&gtk::Label::new(Some("Startup Apps"))));
+
+    // --- Advanced and System tabs: buttons that open the other tools ---
+    notebook.append_page(&tools::build_advanced_page(), Some(&gtk::Label::new(Some("Advanced"))));
+    notebook.append_page(&tools::build_system_page(), Some(&gtk::Label::new(Some("System"))));
 
     outer.append(&notebook);
 

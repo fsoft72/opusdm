@@ -1,4 +1,4 @@
-//! The buttons that open the other OpusDM configuration tools (Hotkeys, File
+//! The tabs of buttons that open the other OpusDM configuration tools (Hotkeys, File
 //! Types, Functions, Apps, Input, Screens), each as its own process, and the
 //! Button Banks manager, which lives in the hub.
 
@@ -14,31 +14,45 @@ enum Action {
     OpenBankManager,
 }
 
-/// The tool buttons: label and action.
-const TOOLS: [(&str, Action); 7] = [
+/// The buttons of the Advanced tab: label and action.
+const ADVANCED_TOOLS: [(&str, Action); 5] = [
     ("Hotkeys", Action::Spawn("opusdm-lister", &["--edit-hotkeys"])),
     ("File Types", Action::Spawn("opusdm-lister", &["--edit-filetypes"])),
     ("Manage Functions", Action::Spawn("opusdm-lister", &["--manage-functions"])),
     ("Button Banks", Action::OpenBankManager),
     ("Apps", Action::Spawn("opusdm-apps-editor", &[])),
+];
+
+/// The buttons of the System tab: label and action.
+const SYSTEM_TOOLS: [(&str, Action); 2] = [
     ("Input", Action::Spawn("opusdm-input-config", &[])),
     ("Screens", Action::Spawn("opusdm-screen", &[])),
 ];
 
-/// Build the wrapping grid of buttons, one per entry in `TOOLS`.
-pub fn build_row() -> gtk::FlowBox {
-    let row = gtk::FlowBox::new();
-    row.set_selection_mode(gtk::SelectionMode::None);
-    row.set_homogeneous(true);
-    row.set_max_children_per_line(4);
-    row.set_row_spacing(6);
-    row.set_column_spacing(6);
-    for (label, action) in &TOOLS {
+/// Build the page of the Advanced tab.
+pub fn build_advanced_page() -> gtk::Box {
+    build_page(&ADVANCED_TOOLS)
+}
+
+/// Build the page of the System tab.
+pub fn build_system_page() -> gtk::Box {
+    build_page(&SYSTEM_TOOLS)
+}
+
+/// Build a tab page with one button per entry of `tools`.
+fn build_page(tools: &'static [(&str, Action)]) -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    page.set_margin_top(12);
+    page.set_margin_bottom(12);
+    page.set_margin_start(12);
+    page.set_margin_end(12);
+    for (label, action) in tools {
         let button = gtk::Button::with_label(label);
+        button.set_halign(gtk::Align::Start);
         button.connect_clicked(move |_| run(action));
-        row.append(&button);
+        page.append(&button);
     }
-    row
+    page
 }
 
 /// Run the action of a tool button.
