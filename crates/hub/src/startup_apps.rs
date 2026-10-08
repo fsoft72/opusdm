@@ -17,8 +17,9 @@ pub fn argv_for(app: &StartupApp) -> Result<Vec<String>, String> {
 }
 
 /// Start `argv` detached: own process group, no stdio, so it outlives the
-/// hub's terminal. Fails when the program cannot be started.
-pub fn spawn_detached(argv: &[String]) -> Result<(), String> {
+/// hub's terminal. Returns the new process's pid, which is also its process
+/// group id. Fails when the program cannot be started.
+pub fn spawn_detached(argv: &[String]) -> Result<u32, String> {
     let Some((program, args)) = argv.split_first() else { return Err("nothing to run".to_string()) };
     Command::new(program)
         .args(args)
@@ -27,17 +28,35 @@ pub fn spawn_detached(argv: &[String]) -> Result<(), String> {
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .map(|_child| ())
+        .map(|child| child.id())
         .map_err(|e| format!("cannot run '{program}': {e}"))
 }
 
-/// Wait for the app's own time, then launch it. A failure is logged and
-/// never stops the other apps.
+/// Wait for the app's own time, then launch it; for a `start_in_tray` app,
+/// close the first window it opens (see `tray_start`). A failure is logged
+/// and never stops the other apps.
 fn launch_after_wait(app: &StartupApp) {
     std::thread::sleep(Duration::from_secs(u64::from(app.wait_secs)));
-    let started = argv_for(app).and_then(|argv| spawn_detached(&argv));
-    if let Err(e) = started {
-        opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': {e}", app.command);
+    // Watch before launching, so a window that appears at once is not missed.
+    let watch = if app.start_in_tray {
+        crate::tray_start::Watch::new()
+            .inspect_err(|e| opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': cannot watch its windows: {e}", app.command))
+            .ok()
+    } else {
+        None
+    };
+    let pid = match argv_for(app).and_then(|argv| spawn_detached(&argv)) {
+        Ok(pid) => pid,
+        Err(e) => {
+            opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': {e}", app.command);
+            return;
+        }
+    };
+    let Some(watch) = watch else { return };
+    match watch.close_first_window(pid) {
+        Ok(Some(_)) => {}
+        Ok(None) => opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': no window to send to the tray", app.command),
+        Err(e) => opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': start in tray failed: {e}", app.command),
     }
 }
 
@@ -62,7 +81,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn app(command: &str, wait_secs: u32) -> StartupApp {
-        StartupApp { command: command.to_string(), wait_secs }
+        StartupApp { command: command.to_string(), wait_secs, start_in_tray: false }
     }
 
     #[test]

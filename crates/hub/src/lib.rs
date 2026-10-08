@@ -13,6 +13,7 @@ pub mod leftout;
 pub mod roles;
 pub mod server;
 pub mod startup_apps;
+pub mod tray_start;
 pub mod settings;
 pub mod snap;
 pub mod global_keys;

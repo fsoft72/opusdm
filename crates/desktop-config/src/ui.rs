@@ -430,15 +430,17 @@ impl Default for BrightnessSection {
     }
 }
 
-/// One row of the startup apps list: its widget and the two inputs.
+/// One row of the startup apps list: its widget and the three inputs.
 struct StartupRow {
     row: gtk::Box,
     command: gtk::Entry,
     wait: gtk::SpinButton,
+    in_tray: gtk::CheckButton,
 }
 
 /// The startup apps section: the programs started with the session, each
-/// with the seconds to wait (from the hub start) before it is launched.
+/// with the seconds to wait (from the hub start) before it is launched and
+/// whether it starts with no window, only in the tray.
 pub struct StartupAppsSection {
     pub root: gtk::Box,
     list: gtk::Box,
@@ -450,7 +452,11 @@ impl StartupAppsSection {
     pub fn new(initial: &[StartupApp]) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.append(&heading("STARTUP APPS"));
-        let hint = gtk::Label::new(Some("Started with the session, each after its own wait (seconds from the start)."));
+        let hint = gtk::Label::new(Some(
+            "Started with the session, each after its own wait (seconds from the start). \
+             Tray: start with no window, only the tray icon (an app with no tray icon quits instead).",
+        ));
+        hint.set_wrap(true);
         hint.set_xalign(0.0);
         hint.add_css_class("dim-label");
         root.append(&hint);
@@ -467,7 +473,7 @@ impl StartupAppsSection {
         }
         {
             let (list, rows) = (section.list.clone(), section.rows.clone());
-            add.connect_clicked(move |_| Self::append_row(&list, &rows, &StartupApp { command: String::new(), wait_secs: 0 }));
+            add.connect_clicked(move |_| Self::append_row(&list, &rows, &StartupApp { command: String::new(), wait_secs: 0, start_in_tray: false }));
         }
         section
     }
@@ -507,6 +513,12 @@ impl StartupAppsSection {
         wait.set_tooltip_text(Some("Seconds to wait before starting it"));
         let wait_label = gtk::Label::new(Some("Wait (s)"));
 
+        let in_tray = gtk::CheckButton::with_label("Tray");
+        in_tray.set_active(app.start_in_tray);
+        in_tray.set_tooltip_text(Some(
+            "Start with no window: the first window the app opens is closed, so it stays only in the tray",
+        ));
+
         let remove = gtk::Button::with_label("Remove");
         {
             let (list, rows, row) = (list.clone(), rows.clone(), row.clone());
@@ -520,9 +532,10 @@ impl StartupAppsSection {
         row.append(&browse);
         row.append(&wait_label);
         row.append(&wait);
+        row.append(&in_tray);
         row.append(&remove);
         list.append(&row);
-        rows.borrow_mut().push(StartupRow { row, command, wait });
+        rows.borrow_mut().push(StartupRow { row, command, wait, in_tray });
     }
 
     /// The apps as edited, in list order. Blank commands are left for
@@ -531,7 +544,11 @@ impl StartupAppsSection {
         self.rows
             .borrow()
             .iter()
-            .map(|r| StartupApp { command: r.command.text().to_string(), wait_secs: r.wait.value_as_int().max(0) as u32 })
+            .map(|r| StartupApp {
+                command: r.command.text().to_string(),
+                wait_secs: r.wait.value_as_int().max(0) as u32,
+                start_in_tray: r.in_tray.is_active(),
+            })
             .collect()
     }
 
@@ -678,8 +695,9 @@ mod tests {
             return;
         }
         let seeded = vec![
-            StartupApp { command: "firefox".into(), wait_secs: 5 },
-            StartupApp { command: "nm-applet --indicator".into(), wait_secs: 0 },
+            StartupApp { command: "firefox".into(), wait_secs: 5, start_in_tray: false },
+            StartupApp { command: "nm-applet --indicator".into(), wait_secs: 0, start_in_tray: false },
+            StartupApp { command: "megasync".into(), wait_secs: 10, start_in_tray: true },
         ];
         let s = StartupAppsSection::new(&seeded);
         assert_eq!(s.apps(), seeded);
@@ -691,8 +709,8 @@ mod tests {
         if gtk::init().is_err() {
             return;
         }
-        let s = StartupAppsSection::new(&[StartupApp { command: "a".into(), wait_secs: 1 }]);
-        s.add_row(&StartupApp { command: "b".into(), wait_secs: 700 });
+        let s = StartupAppsSection::new(&[StartupApp { command: "a".into(), wait_secs: 1, start_in_tray: false }]);
+        s.add_row(&StartupApp { command: "b".into(), wait_secs: 700, start_in_tray: false });
         assert_eq!(s.apps().iter().map(|a| a.command.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(s.apps()[1].wait_secs, opusdm_ipc::STARTUP_WAIT_SECS_RANGE.1, "spin clamps the wait");
         s.remove_row_for_test(0);

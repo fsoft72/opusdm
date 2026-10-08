@@ -314,6 +314,11 @@ pub struct StartupApp {
     /// Seconds to wait, counted from the hub start, before launching it.
     #[serde(default)]
     pub wait_secs: u32,
+    /// Start it with no window, only its tray icon: the hub closes the first
+    /// normal window the app opens, which a tray app answers by hiding
+    /// itself in the tray. An app with no tray icon quits instead.
+    #[serde(default)]
+    pub start_in_tray: bool,
 }
 
 /// Every desktop-window setting `opus-desktop-config` owns. On-disk shape of
@@ -845,23 +850,23 @@ mod tests {
     #[test]
     fn startup_apps_roundtrip_and_wait_defaults_to_zero() {
         let d = DesktopSettings {
-            startup_apps: vec![StartupApp { command: "firefox".into(), wait_secs: 5 }],
+            startup_apps: vec![StartupApp { command: "firefox".into(), wait_secs: 5, start_in_tray: false }],
             ..DesktopSettings::default()
         };
         let s = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<DesktopSettings>(&s).unwrap(), d);
         let app: StartupApp = serde_json::from_str("{\"command\": \"nm-applet\"}").unwrap();
-        assert_eq!(app, StartupApp { command: "nm-applet".into(), wait_secs: 0 });
+        assert_eq!(app, StartupApp { command: "nm-applet".into(), wait_secs: 0, start_in_tray: false });
     }
 
     #[test]
     fn sanitized_clamps_the_startup_wait_and_drops_blank_commands() {
         let d = DesktopSettings {
             startup_apps: vec![
-                StartupApp { command: "  firefox  ".into(), wait_secs: 99_999 },
-                StartupApp { command: "   ".into(), wait_secs: 3 },
-                StartupApp { command: String::new(), wait_secs: 0 },
-                StartupApp { command: "xterm".into(), wait_secs: 2 },
+                StartupApp { command: "  firefox  ".into(), wait_secs: 99_999, start_in_tray: false },
+                StartupApp { command: "   ".into(), wait_secs: 3, start_in_tray: false },
+                StartupApp { command: String::new(), wait_secs: 0, start_in_tray: false },
+                StartupApp { command: "xterm".into(), wait_secs: 2, start_in_tray: false },
             ],
             ..DesktopSettings::default()
         };
@@ -869,8 +874,8 @@ mod tests {
         assert_eq!(
             d.startup_apps,
             vec![
-                StartupApp { command: "firefox".into(), wait_secs: STARTUP_WAIT_SECS_RANGE.1 },
-                StartupApp { command: "xterm".into(), wait_secs: 2 },
+                StartupApp { command: "firefox".into(), wait_secs: STARTUP_WAIT_SECS_RANGE.1, start_in_tray: false },
+                StartupApp { command: "xterm".into(), wait_secs: 2, start_in_tray: false },
             ]
         );
     }
