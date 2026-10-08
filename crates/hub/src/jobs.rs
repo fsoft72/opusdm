@@ -54,7 +54,7 @@ pub fn is_remote_path(path: &Path) -> bool {
 
 /// Validate the parameters of `op`. Copy and Move refuse in-place transfers;
 /// the "As" variants and Duplicate legitimately land in the source directory,
-/// so they only need a non-empty selection, as do Compress, Encrypt and Decrypt (their
+/// so they only need a non-empty selection, as do Compress, Extract, Encrypt and Decrypt (their
 /// output names differ from the source names). Other ops need no check. Remote
 /// locations are refused for every op.
 pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
@@ -72,6 +72,7 @@ pub fn validate_op(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<(), Str
         | Op::Join { .. }
         | Op::Split { .. }
         | Op::Compress { .. }
+        | Op::Extract
         | Op::Encrypt { .. }
         | Op::Decrypt { .. }
             if srcs.is_empty() =>

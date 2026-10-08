@@ -11,6 +11,7 @@ pub mod crypt;
 pub mod delete;
 pub mod duplicate;
 pub mod errors;
+pub mod extract;
 pub mod joinsplit;
 pub mod links;
 pub mod moveop;
@@ -93,6 +94,7 @@ fn run_job_inner(spec: &JobSpec, tx: &Sender<Progress>, cancel: &CancelToken) ->
             Err(msg) => rejected(dest, msg),
         },
         Op::Compress { archive } => compress::run_compress(srcs, dest, archive, tx, cancel),
+        Op::Extract => extract::run_extract(srcs, dest, tx, cancel),
         Op::Encrypt { password } => crypt::run_crypt(srcs, dest, &password.0, true, tx, cancel),
         Op::Decrypt { password } => crypt::run_crypt(srcs, dest, &password.0, false, tx, cancel),
         Op::Split { chunk_bytes } => joinsplit::run_split(srcs, dest, *chunk_bytes, tx, cancel),

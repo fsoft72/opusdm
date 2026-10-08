@@ -148,6 +148,21 @@ pub fn show_context_menu(
         menu_box.append(&btn);
     }
 
+    // Extract archive: offered on a supported archive file (not on one
+    // already inside an archive). The whole selection when it holds the clicked row.
+    if !row.is_dir && !crate::extract_dialog::extractable(vec![target_path.clone()]).is_empty() {
+        let ui = ui.clone();
+        let pop = popover.clone();
+        let target_path = target_path.clone();
+        let btn = menu_button("Extract archive");
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            let srcs = crate::crypt_dialog::targets_for(ui.selected_paths(), &target_path);
+            crate::extract_dialog::open_extract(&ui, srcs);
+        });
+        menu_box.append(&btn);
+    }
+
     // Encrypt / Decrypt. Decrypt is offered on `.enc` files only.
     {
         let mut entries = vec![("Encrypt...", true)];

@@ -74,6 +74,8 @@ pub enum Op {
     /// `dest_dir`; the suffix of `archive` (`.zip`, `.tar.gz`, `.7z`, ...)
     /// picks the format.
     Compress { archive: String },
+    /// Unpack the archives `srcs` into `dest_dir`; existing files are kept.
+    Extract,
     /// Encrypt `srcs` with `password` into `dest_dir` as `name.enc` (folders
     /// keep their tree).
     Encrypt { password: Secret },
