@@ -1,0 +1,24 @@
+[package]
+name = "opusdm-screen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_screen"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-screen"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
+gtk4.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

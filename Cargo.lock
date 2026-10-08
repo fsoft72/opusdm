@@ -2088,6 +2088,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-screen"
+version = "0.7.0"
+dependencies = [
+ "gtk4",
+ "opusdm-ipc",
+ "opusdm-ui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "opusdm-shot"
 version = "0.7.0"
 dependencies = [

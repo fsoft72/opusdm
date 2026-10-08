@@ -1,0 +1,125 @@
+//! The boundary to the X tools. `ScreenBackend` is what the session and the
+//! hub use; `XrandrBackend` is the real one (it starts `xrandr`).
+
+use std::io::Read;
+use std::process::{Child, Command, ExitStatus, Stdio};
+
+use crate::commands::{xrandr_args, XRANDR};
+use crate::parse::{parse_query, Parsed};
+use crate::{Layout, ScreenError};
+
+/// What reads and changes the monitors of the system.
+pub trait ScreenBackend {
+    /// The connected monitors and how they are set now.
+    fn query(&self) -> Result<Parsed, ScreenError>;
+    /// Set the monitors as `layout` says, in one step.
+    fn apply(&self, layout: &Layout) -> Result<(), ScreenError>;
+}
+
+/// Why the session cannot be configured, or `None`.
+pub fn session_problem_from(display: Option<&str>, session_type: Option<&str>) -> Option<String> {
+    if display.map(str::is_empty).unwrap_or(true) {
+        return Some("No X display: run opusdm-screen inside the OpusDM session.".to_string());
+    }
+    if session_type == Some("wayland") {
+        return Some("Screen settings work on X11 sessions only.".to_string());
+    }
+    None
+}
+
+/// `session_problem_from` for the current environment.
+pub fn session_problem() -> Option<String> {
+    session_problem_from(std::env::var("DISPLAY").ok().as_deref(), std::env::var("XDG_SESSION_TYPE").ok().as_deref())
+}
+
+/// Read the output of `child` and wait for it. The wait goes through
+/// `opusdm_ipc::reaped`, because the hub's SIGCHLD reaper can collect the
+/// child first (a plain wait would then fail with `ECHILD`).
+fn collect(mut child: Child) -> std::io::Result<(ExitStatus, String, String)> {
+    let stderr = child.stderr.take();
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = stderr {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_string(&mut stdout)?;
+    }
+    let status = opusdm_ipc::reaped::wait(&mut child)?;
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Ok((status, stdout, stderr))
+}
+
+/// Run `argv` and return its stdout.
+fn run(argv: &[String]) -> Result<String, ScreenError> {
+    let Some(program) = argv.first() else { return Err(ScreenError::Session("empty command".to_string())) };
+    let failed = |reason: String| ScreenError::CommandFailed { command: argv.join(" "), stderr: reason };
+    let child = Command::new(program).args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ScreenError::MissingTool { tool: program.clone(), package: "x11-xserver-utils".to_string() }
+        } else {
+            failed(e.to_string())
+        }
+    })?;
+    let (status, stdout, stderr) = collect(child).map_err(|e| failed(e.to_string()))?;
+    if !status.success() { return Err(failed(stderr.trim().to_string())); }
+    Ok(stdout)
+}
+
+/// The real backend: `xrandr`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct XrandrBackend;
+
+impl XrandrBackend {
+    /// A backend for the current X display.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ScreenBackend for XrandrBackend {
+    /// Run `xrandr --query --props` and parse it.
+    fn query(&self) -> Result<Parsed, ScreenError> {
+        let args = [XRANDR, "--query", "--props"].map(String::from);
+        Ok(parse_query(&run(&args)?))
+    }
+
+    /// Run the one `xrandr` call that sets the whole layout.
+    fn apply(&self, layout: &Layout) -> Result<(), ScreenError> {
+        run(&xrandr_args(layout)).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_display_or_wayland_is_a_problem() {
+        assert!(session_problem_from(None, None).is_some());
+        assert!(session_problem_from(Some(""), None).is_some());
+        assert!(session_problem_from(Some(":0"), Some("wayland")).is_some());
+        assert_eq!(session_problem_from(Some(":0"), Some("x11")), None);
+        assert_eq!(session_problem_from(Some(":0"), None), None);
+    }
+
+    #[test]
+    fn a_missing_program_is_reported_with_its_package() {
+        let err = run(&["opusdm-no-such-tool".to_string()]).unwrap_err();
+        assert!(matches!(err, ScreenError::MissingTool { .. }), "{err}");
+    }
+
+    #[test]
+    fn a_failing_program_reports_its_command_and_stderr() {
+        let err = run(&["sh".to_string(), "-c".to_string(), "echo boom >&2; exit 3".to_string()]).unwrap_err();
+        assert_eq!(err, ScreenError::CommandFailed { command: "sh -c echo boom >&2; exit 3".to_string(), stderr: "boom".to_string() });
+    }
+
+    #[test]
+    fn a_working_program_gives_its_output() {
+        assert_eq!(run(&["echo".to_string(), "hi".to_string()]).unwrap(), "hi\n");
+    }
+}
