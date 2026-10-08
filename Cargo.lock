@@ -1935,6 +1935,7 @@ version = "0.7.0"
 dependencies = [
  "async-channel",
  "dirs",
+ "enumflags2",
  "gdk4-x11",
  "gtk4",
  "libc",

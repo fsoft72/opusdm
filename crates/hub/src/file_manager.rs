@@ -7,6 +7,8 @@ use gtk4::gio::prelude::FileExt;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
+use zbus::fdo::RequestNameReply;
+use enumflags2::BitFlags;
 
 /// Well known bus name of the service.
 pub const BUS_NAME: &str = "org.freedesktop.FileManager1";
@@ -59,22 +61,31 @@ impl FileManager {
     }
 }
 
-/// Take the bus name and serve the interface on a background thread for the
-/// life of the process. Fails (logged) when another file manager owns the
-/// name: it is never taken over from a running one.
+/// Serve the interface on a background thread for the life of the process
+/// and queue for the bus name. A file manager that already owns the name is
+/// never taken over: the hub waits in the queue and gets the name when that
+/// owner exits (stop `plasma-dolphin.service` to hand it over).
 pub fn start(cmd_tx: Sender<HubCmd>) {
     let spawned = std::thread::Builder::new().name("opusdm-filemanager1".into()).spawn(move || {
         let service = FileManager { cmd_tx: Mutex::new(cmd_tx) };
         let conn = zbus::blocking::connection::Builder::session()
-            .and_then(|b| b.name(BUS_NAME))
             .and_then(|b| b.serve_at(OBJECT_PATH, service))
             .and_then(|b| b.build());
-        match conn {
-            // Dropping the connection would release the name: park with it.
-            Ok(_conn) => loop {
-                std::thread::park();
-            },
-            Err(e) => opusdm_ipc::err_log!("opusdm-hub", "cannot serve {BUS_NAME} (another file manager owns it?): {e}"),
+        let conn = match conn {
+            Ok(c) => c,
+            Err(e) => return opusdm_ipc::err_log!("opusdm-hub", "cannot serve {BUS_NAME}: {e}"),
+        };
+        // No flags: queue behind the current owner instead of giving up.
+        match conn.request_name_with_flags(BUS_NAME, BitFlags::empty()) {
+            Ok(RequestNameReply::InQueue) => {
+                opusdm_ipc::err_log!("opusdm-hub", "{BUS_NAME} is owned by another file manager: waiting for it to exit")
+            }
+            Ok(_) => {}
+            Err(e) => return opusdm_ipc::err_log!("opusdm-hub", "cannot request {BUS_NAME}: {e}"),
+        }
+        // Dropping the connection would release the name: park with it.
+        loop {
+            std::thread::park();
         }
     });
     if let Err(e) = spawned {
@@ -105,5 +116,28 @@ mod tests {
     #[test]
     fn an_empty_request_opens_nothing() {
         assert!(paths_from_uris(&[]).is_empty());
+    }
+
+    /// Live check on the session bus: `cargo test -p opusdm-hub -- --ignored`
+    /// inside `dbus-run-session` (never against the real session, where
+    /// another file manager owns the name).
+    #[test]
+    #[ignore]
+    fn show_items_on_the_bus_asks_for_a_lister() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        start(tx);
+        let conn = zbus::blocking::Connection::session().unwrap();
+        let proxy = zbus::blocking::Proxy::new(&conn, BUS_NAME, OBJECT_PATH, BUS_NAME).unwrap();
+        let uris = vec!["file:///tmp/My%20Docs/a.pdf".to_string()];
+        for _ in 0..50 {
+            if proxy.call::<_, _, ()>("ShowItems", &(uris.clone(), "")).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        match rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap() {
+            HubCmd::SpawnRequested { start_path } => assert_eq!(start_path, Some(PathBuf::from("/tmp/My Docs/a.pdf"))),
+            other => panic!("unexpected command {other:?}"),
+        }
     }
 }
