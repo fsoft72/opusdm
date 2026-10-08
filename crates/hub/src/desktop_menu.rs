@@ -31,20 +31,9 @@ pub(crate) fn theme_config_bin() -> PathBuf {
     PathBuf::from("opusdm-settings")
 }
 
-/// Spawn the Lister binary (next to the hub executable, else on `PATH`) with
-/// only the File Types editor open.
-pub(crate) fn launch_filetypes_editor() {
-    spawn_lister_tool("--edit-filetypes");
-}
-
 /// Spawn the Lister binary with only the Manage Functions window open.
 pub(crate) fn launch_functions_manager() {
     spawn_lister_tool("--manage-functions");
-}
-
-/// Spawn the Lister binary with only the Edit Hotkeys window open.
-pub(crate) fn launch_hotkey_editor() {
-    spawn_lister_tool("--edit-hotkeys");
 }
 
 /// Spawn the Lister binary (next to the hub executable, else on `PATH`) with
@@ -379,13 +368,6 @@ fn with_desktop_dir(widgets: &Rc<Widgets>, action: impl FnOnce(PathBuf)) {
     action(dir);
 }
 
-/// Start the sibling tool `bin` and log a failure to start it.
-fn launch_tool(bin: &str) {
-    if let Err(e) = opusdm_hub::children::spawn_tool(bin) {
-        opusdm_ipc::err_log!("opusdm-hub", "cannot start {bin}: {e}");
-    }
-}
-
 /// The top part of the menu: New Lister, Paste, New Folder, New File, Hide
 /// All, New Group, Button Banks and Open Terminal Here.
 fn add_file_items(menu: &gtk::Box, widgets: &Rc<Widgets>) {
@@ -478,18 +460,11 @@ fn build_desktop_submenu(menu: &gtk::Box, widgets: &Rc<Widgets>) -> gtk::Expande
         let widgets = widgets.clone();
         add_item(&sub, menu, "Rearrange icons", move || reload_desktop_field(&widgets));
     }
-    add_item(&sub, menu, "Edit Hotkeys", launch_hotkey_editor);
     add_item(&sub, menu, "Manage Functions", launch_functions_manager);
-    add_item(&sub, menu, "Edit File Types", launch_filetypes_editor);
-    add_item(&sub, menu, "Edit Apps", || launch_tool("opusdm-apps-editor"));
     add_item(&sub, menu, "Edit Theme", launch_theme_editor);
     // Settings: the standalone opusdm-settings app. Icon grid metrics and the
     // desktop folder override live there too.
     add_item(&sub, menu, "Settings", launch_theme_config);
-    // Input: mouse, touchpad and keyboard settings.
-    add_item(&sub, menu, "Input", || launch_tool("opusdm-input-config"));
-    // Screens: monitor layout, resolution, mirroring.
-    add_item(&sub, menu, "Screens", || launch_tool("opusdm-screen"));
 
     let expander = gtk::Expander::new(Some("Desktop"));
     expander.set_child(Some(&sub));

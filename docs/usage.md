@@ -355,7 +355,7 @@ Desktop folder are not saved; only left-out icons (see 3.21) remember where they
 ### 3.13 User Hotkeys
 
 Any saved function (see Manage Functions) can be bound to a key. Open the
-Command Palette and choose **Edit Hotkeys...** (or **Desktop > Edit Hotkeys** in the desktop menu; it opens in its own window). Each row has a key (click it,
+Command Palette and choose **Edit Hotkeys...** (or the **Hotkeys** button of OpusDM Settings; it opens in its own window). Each row has a key (click it,
 then press the combination; Escape cancels), what to run (a saved **Function**,
 a **Bash** command or an **Exec** program, see below) and a
 **Global** check box. Rules:
@@ -657,7 +657,7 @@ Shows one picture or video and lets you move through the others in the same fold
 Sets the mouse, the touchpad and the keyboard. Every change takes effect **at once**, while the
 window is open, so you can try it.
 
-- **Open it:** Desktop menu (right click on the desktop) > **Desktop** > **Input**, the internal
+- **Open it:** the **Input** button of OpusDM Settings (Desktop menu > **Desktop** > **Settings**), the internal
   command **Input Settings** (CLI word `input-settings`, usable in any function or hotkey), or run
   `opusdm-input-config`.
 - **Mouse** tab (every mouse): pointer speed (-1 to 1), flat acceleration (no acceleration curve),
@@ -684,7 +684,7 @@ window is open, so you can try it.
 
 Edits the application menu of the panel and the `.desktop` entries in it, like the KDE menu editor.
 
-- **Open it:** Desktop menu (right click on the desktop) > **Desktop** > **Edit Apps**, or run
+- **Open it:** the **Apps** button of OpusDM Settings (Desktop menu > **Desktop** > **Settings**), or run
   `opusdm-apps-editor`.
 - **Tree (left):** the folders and apps of `~/.config/opusdm/menu.json`. **New Submenu...** and
   **New Item** add next to the selection (inside it when it is a folder), **Up** / **Down** move it
@@ -770,7 +770,7 @@ Like the KDE Networks applet: Wi-Fi and Ethernet switches and the list of the Wi
 
 Arranges the monitors, like the Display Configuration of KDE Plasma.
 
-- **Open it:** Desktop menu (right click on the desktop) > **Desktop** > **Screens**, or run
+- **Open it:** the **Screens** button of OpusDM Settings (Desktop menu > **Desktop** > **Settings**), or run
   `opusdm-screen`. `opusdm-screen --demo` opens it on two made up monitors and never touches the
   real screens (useful to try the window).
 - **Canvas:** one rectangle per monitor that is on. Drag one to move it; it snaps to the edges of

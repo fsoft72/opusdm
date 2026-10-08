@@ -21,6 +21,7 @@ mod exporter;
 mod importer;
 mod migrate;
 mod model;
+mod tools;
 mod ui;
 mod writer;
 
@@ -85,6 +86,8 @@ fn build_window(app: &gtk::Application) {
     outer.set_margin_bottom(12);
     outer.set_margin_start(12);
     outer.set_margin_end(12);
+
+    outer.append(&tools::build_row());
 
     let notebook = gtk::Notebook::new();
     notebook.set_vexpand(true);
