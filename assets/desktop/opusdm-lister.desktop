@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpusDM Lister
+Comment=Browse folders with OpusDM
+Exec=opusdm-open-folder %U
+Icon=system-file-manager
+Terminal=false
+NoDisplay=true
+Categories=System;FileManager;
+MimeType=inode/directory;

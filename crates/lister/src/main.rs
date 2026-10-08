@@ -8,6 +8,7 @@ mod archive;
 mod attr_dialogs;
 mod batch_rename;
 mod size_format;
+mod start_target;
 mod bookmarks_ui;
 mod build;
 mod busy;
@@ -144,12 +145,11 @@ fn main() {
         }
     };
 
-    let start_path = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .filter(|p| p.is_dir())
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/"));
+    let target = start_target::resolve(
+        std::env::args_os().nth(1).map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    );
+    let start_path = target.dir;
 
     let pid = std::process::id();
     let connected = match client::Client::connect(&sock_path, pid, &start_path) {
@@ -161,7 +161,7 @@ fn main() {
     };
 
     crate::dlog!("connected to hub, lister_id={:?}, start={}", connected.1, start_path.display());
-    let code = build::run(connected, start_path);
+    let code = build::run(connected, start_path, target.select);
     crate::dlog!("event loop exited, code={code:?}");
     archive::cleanup_temp_dirs();
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });

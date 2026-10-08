@@ -37,6 +37,10 @@ for b in $BINARIES; do
     cp "$src" "$DIST/bin/$b"
 done
 
+# Folder opener behind the opusdm-lister.desktop entry (inode/directory)
+cp "$REPO_ROOT/scripts/opusdm-open-folder" "$DIST/bin/opusdm-open-folder"
+cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.desktop"
+
 cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$DIST/config/"
 cp "$REPO_ROOT"/target/themes/*.zip "$DIST/themes/"
 
@@ -84,8 +88,14 @@ if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
 $SUDO mkdir -p "$PREFIX"
 $SUDO cp -r "$HERE/bin" "$HERE/config" "$HERE/themes" "$HERE/opusdm-session" "$PREFIX/"
+# The folder handler needs opusdm-open-folder on the PATH of the programs that call it
+$SUDO mkdir -p /usr/local/bin
+$SUDO ln -sf "$PREFIX/bin/opusdm-open-folder" /usr/local/bin/opusdm-open-folder
+$SUDO mkdir -p /usr/share/applications
+$SUDO cp "$HERE/opusdm-lister.desktop" /usr/share/applications/opusdm-lister.desktop
 sed "s|@PREFIX@|$PREFIX|" "$HERE/opusdm.desktop" | $SUDO tee "$XSESSIONS/opusdm.desktop" >/dev/null
 echo "Installed to $PREFIX, session entry: $XSESSIONS/opusdm.desktop"
+echo "To open folders in OpusDM by default: xdg-mime default opusdm-lister.desktop inode/directory"
 INSTALL
 chmod +x "$DIST/install.sh"
 

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Open a folder (or show a file in its folder) in an OpusDM Lister by asking
+# the running hub through org.freedesktop.FileManager1. Used by the
+# opusdm-lister.desktop entry, so xdg-open and file choosers reach OpusDM.
+# Usage: opusdm-open-folder <path or file:// URI>...
+set -eu
+[ "$#" -gt 0 ] || { echo "usage: opusdm-open-folder <path or URI>..." >&2; exit 1; }
+for target in "$@"; do
+    case "$target" in
+        file://*) uri="$target" ;;
+        /*) uri="file://$target" ;;
+        *) uri="file://$PWD/$target" ;;
+    esac
+    gdbus call --session --dest org.freedesktop.FileManager1 \
+        --object-path /org/freedesktop/FileManager1 \
+        --method org.freedesktop.FileManager1.ShowItems "['$uri']" "" >/dev/null
+done

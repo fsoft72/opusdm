@@ -49,6 +49,9 @@ fn main() {
         server::ServerOptions::production(),
     );
 
+    // Answer "show in folder" requests from browsers and other programs.
+    opusdm_hub::file_manager::start(handle.cmd_tx.clone());
+
     // First run: start with the default file types (never overwrites a file).
     if opusdm_ipc::filetypes::seed_default_filetypes() {
         opusdm_ipc::debug_log!("opusdm-hub", "wrote the default file types");

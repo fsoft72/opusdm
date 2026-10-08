@@ -18,7 +18,7 @@ use std::rc::Rc;
 const PATH_ENTRY_ERROR_FLASH_MS: u64 = 600;
 
 /// Build and run the window application.
-pub fn run(connected: Connected, start: PathBuf) -> glib::ExitCode {
+pub fn run(connected: Connected, start: PathBuf, select: Vec<String>) -> glib::ExitCode {
     let (mut client, id, roles, settings, bindings, formats, functions) = connected;
     let inbox = client.take_inbox();
     let client = Rc::new(client);
@@ -31,6 +31,7 @@ pub fn run(connected: Connected, start: PathBuf) -> glib::ExitCode {
         formats,
         functions,
         start,
+        select,
         inbox: Some(inbox),
     })));
 
@@ -55,7 +56,9 @@ pub fn run(connected: Connected, start: PathBuf) -> glib::ExitCode {
         // initialized" before this point.
         opusdm_ui::apply_theme_mode(st.settings.appearance.theme_mode);
         let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone(), st.bindings.clone(), st.formats.clone(), st.functions.clone());
-        ui.navigate_to(&st.start);
+        let to_select = st.select.clone();
+        let ui_for_select = ui.clone();
+        ui.navigate(&st.start, true, move || ui_for_select.select_names(&to_select));
 
         let ui_for_pump = ui.clone();
         glib::spawn_future_local(async move {
@@ -86,6 +89,8 @@ struct StartState {
     formats: opusdm_ipc::FormatStore,
     functions: Vec<opusdm_ipc::function::Function>,
     start: PathBuf,
+    /// Names to select once `start` is listed (a file shown in its folder).
+    select: Vec<String>,
     inbox: Option<async_channel::Receiver<Inbound>>,
 }
 

@@ -1954,6 +1954,7 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "x11rb",
+ "zbus",
 ]
 
 [[package]]
