@@ -254,9 +254,9 @@ fn connect(ui: &Rc<Ui>, window: &gtk::ApplicationWindow, keep: &gtk::Button, rev
     ui.primary.connect_toggled(move |c| u.on_primary(c.is_active()));
 
     let u = ui.clone();
-    ui.extend.connect_clicked(move |_| u.on_mode(|m, l| modes::extend(m, l)));
+    ui.extend.connect_clicked(move |_| u.on_mode(modes::extend));
     let u = ui.clone();
-    ui.duplicate.connect_clicked(move |_| u.on_mode(|m, l| modes::mirror(m, l)));
+    ui.duplicate.connect_clicked(move |_| u.on_mode(modes::mirror));
     let u = ui.clone();
     ui.reset.connect_clicked(move |_| {
         u.session.borrow_mut().reset();

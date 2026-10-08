@@ -11,6 +11,7 @@ pub mod geometry;
 pub mod model;
 pub mod modes;
 pub mod parse;
+pub mod reapply;
 pub mod session;
 pub mod store;
 

@@ -1,7 +1,7 @@
 # opusdm-screen: multi-monitor manager design
 
 Date: 2026-10-08
-Status: draft, awaiting review
+Status: implemented (see the notes at the end for what changed while building)
 
 ## Goal
 
@@ -54,7 +54,6 @@ pub struct Mode { pub width: u32, pub height: u32, pub rates: Vec<f64> }
 pub struct Monitor {
     pub name: String,          // xrandr output name, e.g. "HDMI-1"
     pub edid_id: String,       // stable id: hash of EDID, fallback to name
-    pub connected: bool,
     pub modes: Vec<Mode>,      // sorted largest first
     pub preferred: Option<(u32, u32)>,
 }
@@ -67,17 +66,21 @@ pub struct MonitorConfig {
     pub rate: Option<f64>,
     pub pos: (i32, i32),
     pub rotation: Rotation,    // Normal, Left, Right, Inverted
-    pub scale: f64,            // 1.0 default
+    pub scale: f64,            // xrandr --scale factor, 1.0 default
     pub primary: bool,
-    pub mirror_of: Option<String>, // set when duplicating another output
 }
 
 pub struct Layout { pub monitors: Vec<MonitorConfig> }
 ```
 
+`Parsed` (what `query` returns) holds the connected monitors only; a
+disconnected output is dropped by the parser. Duplicated screens have no field:
+a layout is mirrored when several enabled monitors share the same `pos`
+(`Layout::is_mirrored`).
+
 `Layout` validation (fail fast, descriptive `ScreenError`): at least one
 enabled monitor, at most one primary, mode and rate must exist in the monitor's
-modes, mirror target must be enabled and distinct.
+modes, scale must be positive.
 
 ## Backend
 
@@ -195,3 +198,25 @@ layout. Operations: `edit(Change)`, `apply()`, `confirm()`, `revert()`,
 - `xrandr` EDID parsing: some outputs expose no EDID, so `edid_id` falls back
   to the output name, which makes profiles less stable across ports.
 - Mirror with no common mode is rejected rather than scaled.
+
+## Changes while building
+
+- No `connected` and no `mirror_of` field (see Data model): the parser drops
+  disconnected outputs and mirror is "same position".
+- `MonitorConfig::scale` is the raw `xrandr --scale` factor (2.0 shrinks
+  things), and the window explains it in a tooltip.
+- `xrandr_args(layout, current)` also takes the current layout: `--scale` is
+  only sent when the monitor is scaled now or will be, because a server
+  without transform support refuses `--scale 1x1`. `XrandrBackend::apply`
+  queries the current layout itself.
+- `Session::apply` moves the layout so the top left enabled monitor is at 0,0.
+- New `geometry.rs` (edge snapping, canvas view) and `reapply.rs` (the hub
+  decision) in the library, both tested without GTK.
+- Hotplug applies a profile only when the set of connected monitors differs
+  from the last one seen, so a manual change with the same monitors (or an
+  Apply still waiting for Keep) is not undone. It also runs once at hub start.
+- The Keep question is a bar in the main window, not a dialog, so the
+  countdown can be shown and the window can still be closed to revert.
+- `opusdm-screen --demo` uses the fake backend.
+- Not done: scaling a picture to fit when Duplicate finds no common
+  resolution (still rejected), an internal hub command for the window.

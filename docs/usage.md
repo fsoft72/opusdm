@@ -766,6 +766,41 @@ Like the KDE Networks applet: Wi-Fi and Ethernet switches and the list of the Wi
 - **Not included:** VPN, hotspot, IP settings, hidden networks, WEP and enterprise (802.1X) networks
   (clicking one shows a message).
 
+### 3.34 Screens (`opusdm-screen`)
+
+Arranges the monitors, like the Display Configuration of KDE Plasma.
+
+- **Open it:** Desktop menu (right click on the desktop) > **Desktop** > **Screens**, or run
+  `opusdm-screen`. `opusdm-screen --demo` opens it on two made up monitors and never touches the
+  real screens (useful to try the window).
+- **Canvas:** one rectangle per monitor that is on. Drag one to move it; it snaps to the edges of
+  the others (touching or lined up, within 12 pixels of the canvas). Click one to select it. A
+  stripe on top marks the primary monitor. Duplicated monitors share one rectangle and one label.
+- **Buttons on top:** **Extend** (all monitors on at their preferred resolution, side by side in
+  their current order), **Duplicate** (all monitors on at the largest resolution they all have,
+  same picture; it says so when they have none in common) and **Only NAME** (that monitor on and
+  primary, the others off).
+- **Panel (selected monitor):** the monitor list, **Enabled**, **Resolution**, **Refresh rate**
+  (*Automatic* lets `xrandr` choose), **Rotation**, **Scale** and **Primary monitor**. The scale is
+  the `xrandr --scale` factor: 2.00x draws the desktop twice as large and shrinks it to the screen
+  (things look smaller), 0.50x the opposite. A monitor turned on goes to the right of the others.
+  At least one monitor must stay on.
+- **Apply** sends the whole layout in one `xrandr` call, then asks **Keep these display settings?**
+  with a 15 second countdown. **Keep** confirms; **Revert**, the countdown reaching zero or closing
+  the window put the previous layout back. Positions are moved so the top left monitor is at 0,0.
+- **Remember for these monitors** (on by default): **Keep** also saves the layout in
+  `~/.config/opusdm/screens.json`, keyed by the EDID ids of the connected monitors. The same
+  monitors on other ports are recognized.
+- **Reset** drops the edits; **Detect monitors** reads the monitors again.
+- **At login and on hot plug** the hub applies the saved layout for the monitors that are connected
+  (it listens to RandR events and waits 0.5 s for them to settle). A set of monitors with no saved
+  layout is left alone, a layout already in place is not applied again, and a change you make by
+  hand while the monitors stay the same is never undone.
+- **Limits:** X11 only (under Wayland, or with no display, the window only says so). No gamma,
+  night light or per-monitor wallpaper. Duplicate does not scale a picture to fit. Overlapping
+  monitors are allowed (that is how Duplicate works) but are not reported.
+- **Requires** `xrandr` (package `x11-xserver-utils`).
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

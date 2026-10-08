@@ -10,6 +10,7 @@ mod desktop_menu;
 mod desktop_windows;
 mod groups_ui;
 mod input_apply;
+mod screen_hotplug;
 mod toolbar;
 
 use opusdm_hub::{children, server, settings};
@@ -59,6 +60,9 @@ fn main() {
 
     // Keep the saved mouse, touchpad and keyboard settings applied.
     input_apply::start();
+
+    // Put the saved screen layout back when monitors are plugged or unplugged.
+    screen_hotplug::start();
 
     // Launch the Startup Apps of Settings, each after its own wait time.
     let desktop_settings = opusdm_hub::desktop_settings::load();

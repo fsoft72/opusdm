@@ -1947,6 +1947,7 @@ dependencies = [
  "opusdm-ipc",
  "opusdm-media",
  "opusdm-panel",
+ "opusdm-screen",
  "opusdm-snap",
  "opusdm-ui",
  "opusdm-x11",

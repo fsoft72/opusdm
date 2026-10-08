@@ -488,6 +488,8 @@ fn build_desktop_submenu(menu: &gtk::Box, widgets: &Rc<Widgets>) -> gtk::Expande
     add_item(&sub, menu, "Settings", launch_theme_config);
     // Input: mouse, touchpad and keyboard settings.
     add_item(&sub, menu, "Input", || launch_tool("opusdm-input-config"));
+    // Screens: monitor layout, resolution, mirroring.
+    add_item(&sub, menu, "Screens", || launch_tool("opusdm-screen"));
 
     let expander = gtk::Expander::new(Some("Desktop"));
     expander.set_child(Some(&sub));
