@@ -14,6 +14,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use crate::systray::{TrayCmd, TraySender};
 
+/// Pixels between two tray icons (XEmbed squares and SNI buttons alike).
+pub const ICON_SPACING: i32 = 2;
+
 pub struct Tray {
     root: gtk::Box,
     icon_size: i32,
@@ -36,7 +39,7 @@ impl Tray {
     /// applied to the panel height; `cmd_tx` is the sender half returned by
     /// `systray::spawn`.
     pub fn new(icon_size: i32, cmd_tx: TraySender) -> Rc<Self> {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, ICON_SPACING);
         root.set_valign(gtk::Align::Center);
         Rc::new(Tray {
             root,

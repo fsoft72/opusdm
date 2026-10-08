@@ -30,7 +30,7 @@ struct ItemButton {
 /// Build the (initially empty) SNI icon strip and start draining `evt_rx`
 /// into it. `cmd_tx` is the sender half from `sni::spawn`.
 pub fn build(cmd_tx: Sender<SniCmd>, evt_rx: async_channel::Receiver<SniEvent>) -> gtk::Widget {
-    let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, crate::widgets::tray::ICON_SPACING);
     root.set_valign(gtk::Align::Center);
 
     let buttons: Rc<RefCell<HashMap<String, ItemButton>>> = Rc::new(RefCell::new(HashMap::new()));
@@ -65,6 +65,7 @@ fn apply_event(
             } else {
                 let btn = gtk::Button::new();
                 btn.add_css_class("flat");
+                btn.add_css_class("opusdm-panel-tray-item");
                 btn.set_child(Some(&icon_widget(&item)));
                 let menu_path = Rc::new(RefCell::new(item.menu_path.clone()));
                 let item_path = Rc::new(RefCell::new(item.path.clone()));
