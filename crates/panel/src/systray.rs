@@ -42,6 +42,28 @@ pub fn parse_dock_request(data: [u32; 5]) -> Option<u32> {
     }
 }
 
+/// How many times a docked icon is resized back to fill its container before
+/// the tray gives up and only centres it, so a client that insists on its
+/// own size can't start an endless resize ping-pong.
+pub const MAX_FORCED_RESIZES: u32 = 5;
+
+/// The geometry `(x, y, width, height)` to give a docked icon now at
+/// `icon` (x, y, width, height inside its container) in a container of
+/// `container` size, or `None` when it is already right. The icon is made
+/// to fill the container (GTK3 icons resize themselves back to 16 px after
+/// docking and then draw in the top left corner); once `forced` reaches
+/// `MAX_FORCED_RESIZES` it keeps its size and is centred instead.
+pub fn icon_fit(container: (u32, u32), icon: (i32, i32, u32, u32), forced: u32) -> Option<(i32, i32, u32, u32)> {
+    let (cw, ch) = container;
+    let (x, y, w, h) = icon;
+    let target = if forced < MAX_FORCED_RESIZES {
+        (0, 0, cw, ch)
+    } else {
+        ((cw as i32 - w as i32) / 2, (ch as i32 - h as i32) / 2, w, h)
+    };
+    (target != (x, y, w, h)).then_some(target)
+}
+
 // --------------------------------------------------------------------------
 // Protocol thread
 // --------------------------------------------------------------------------
@@ -78,6 +100,15 @@ pub enum TrayEvent {
     IconDocked(u32),
     /// A docked icon's owner withdrew it or exited.
     IconRemoved(u32),
+}
+
+/// One docked icon: the container window it was reparented into, that
+/// container's current size and how many times the icon was resized back
+/// to fill it (see `icon_fit`).
+struct Docked {
+    container: Window,
+    size: (u32, u32),
+    forced: u32,
 }
 
 /// Commands the GTK side sends to the tray thread.
@@ -218,7 +249,7 @@ fn run(
     crate::tray_ready::mark_ready(crate::tray_ready::TrayKind::XEmbed);
 
     let icon_size = icon_square_size(panel_height);
-    let mut containers: HashMap<u32, u32> = HashMap::new();
+    let mut containers: HashMap<u32, Docked> = HashMap::new();
 
     event_loop(&conn, root, &atoms, manager, icon_size, &mut containers, &cmd_rx, wake, &tx)
 }
@@ -230,7 +261,7 @@ fn event_loop(
     atoms: &Atoms,
     manager: Window,
     icon_size: i32,
-    containers: &mut HashMap<u32, u32>,
+    containers: &mut HashMap<u32, Docked>,
     cmd_rx: &mpsc::Receiver<TrayCmd>,
     wake: &OwnedFd,
     tx: &async_channel::Sender<TrayEvent>,
@@ -253,9 +284,13 @@ fn event_loop(
                     undock_icon(conn, root, containers, e.window, true, tx);
                 }
                 Event::ReparentNotify(e)
-                    if containers.get(&e.window).is_some_and(|c| *c != e.parent) =>
+                    if containers.get(&e.window).is_some_and(|d| d.container != e.parent) =>
                 {
                     undock_icon(conn, root, containers, e.window, false, tx);
+                }
+                Event::ConfigureNotify(e) if e.event == e.window && containers.contains_key(&e.window) => {
+                    let icon = (i32::from(e.x), i32::from(e.y), u32::from(e.width), u32::from(e.height));
+                    fit_icon(conn, containers, e.window, icon)?;
                 }
                 _ => {}
             }
@@ -289,13 +324,13 @@ fn event_loop(
 fn dock_icon(
     conn: &RustConnection,
     atoms: &Atoms,
-    containers: &mut HashMap<u32, u32>,
+    containers: &mut HashMap<u32, Docked>,
     root: Window,
     icon_size: i32,
     icon_xid: u32,
     tx: &async_channel::Sender<TrayEvent>,
 ) {
-    if containers.contains_key(&icon_xid) || containers.values().any(|c| *c == icon_xid) {
+    if containers.contains_key(&icon_xid) || containers.values().any(|d| d.container == icon_xid) {
         return;
     }
     let Ok(container) = conn.generate_id() else { return };
@@ -349,7 +384,8 @@ fn dock_icon(
     };
     match run() {
         Ok(()) => {
-            containers.insert(icon_xid, container);
+            let side = icon_size.max(1) as u32;
+            containers.insert(icon_xid, Docked { container, size: (side, side), forced: 0 });
             let _ = tx.send_blocking(TrayEvent::IconDocked(icon_xid));
         }
         Err(e) => {
@@ -367,12 +403,12 @@ fn dock_icon(
 fn undock_icon(
     conn: &RustConnection,
     root: Window,
-    containers: &mut HashMap<u32, u32>,
+    containers: &mut HashMap<u32, Docked>,
     icon_xid: u32,
     still_inside: bool,
     tx: &async_channel::Sender<TrayEvent>,
 ) {
-    if let Some(container) = containers.remove(&icon_xid) {
+    if let Some(Docked { container, .. }) = containers.remove(&icon_xid) {
         if still_inside {
             let _ = conn.reparent_window(icon_xid, root, 0, 0);
             let _ = conn.change_save_set(SetMode::DELETE, icon_xid);
@@ -384,21 +420,24 @@ fn undock_icon(
 }
 
 /// Move/resize a docked icon's container window and raise it, so it stays
-/// above the panel after the panel itself was raised. A no-op if `xid`
-/// isn't currently docked (e.g. it was removed just before the command
-/// arrived).
+/// above the panel after the panel itself was raised; a new size is passed
+/// on to the icon. A no-op if `xid` isn't currently docked (e.g. it was
+/// removed just before the command arrived).
 fn place_icon(
     conn: &RustConnection,
-    containers: &HashMap<u32, u32>,
+    containers: &mut HashMap<u32, Docked>,
     xid: u32,
     x: i32,
     y: i32,
     w: i32,
     h: i32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(&container) = containers.get(&xid) else { return Ok(()) };
+    let Some(docked) = containers.get_mut(&xid) else { return Ok(()) };
+    let size = (w.max(1) as u32, h.max(1) as u32);
+    let resized = docked.size != size;
+    docked.size = size;
     conn.configure_window(
-        container,
+        docked.container,
         &ConfigureWindowAux::new()
             .x(x)
             .y(y)
@@ -406,6 +445,32 @@ fn place_icon(
             .height(h.max(1) as u32)
             .stack_mode(StackMode::ABOVE),
     )?;
+    conn.flush()?;
+    if resized {
+        // The icon's own ConfigureNotify will not come for a container
+        // change, so ask for its geometry here.
+        if let Some(geo) = opusdm_x11::gone(conn.get_geometry(xid)?.reply())? {
+            let icon = (i32::from(geo.x), i32::from(geo.y), u32::from(geo.width), u32::from(geo.height));
+            fit_icon(conn, containers, xid, icon)?;
+        }
+    }
+    Ok(())
+}
+
+/// Give the docked icon `xid`, now at `icon` inside its container, the
+/// geometry `icon_fit` asks for, counting the forced resizes.
+fn fit_icon(
+    conn: &RustConnection,
+    containers: &mut HashMap<u32, Docked>,
+    xid: u32,
+    icon: (i32, i32, u32, u32),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(docked) = containers.get_mut(&xid) else { return Ok(()) };
+    let Some((x, y, w, h)) = icon_fit(docked.size, icon, docked.forced) else { return Ok(()) };
+    if (w, h) == docked.size {
+        docked.forced += 1;
+    }
+    conn.configure_window(xid, &ConfigureWindowAux::new().x(x).y(y).width(w).height(h))?;
     conn.flush()?;
     Ok(())
 }
@@ -437,6 +502,24 @@ mod tests {
         let mut counter: u64 = 0;
         let read = unsafe { libc::read(wake.as_raw_fd(), (&mut counter as *mut u64).cast(), 8) };
         assert_eq!(read, -1, "the wake signal was consumed");
+    }
+
+    #[test]
+    fn icon_fit_grows_a_small_icon_to_the_container() {
+        assert_eq!(icon_fit((24, 24), (0, 0, 16, 16), 0), Some((0, 0, 24, 24)));
+    }
+
+    #[test]
+    fn icon_fit_leaves_a_fitting_icon_alone() {
+        assert_eq!(icon_fit((24, 24), (0, 0, 24, 24), 0), None);
+        assert_eq!(icon_fit((24, 24), (4, 4, 16, 16), MAX_FORCED_RESIZES), None);
+    }
+
+    #[test]
+    fn icon_fit_centres_an_icon_that_keeps_resizing_back() {
+        assert_eq!(icon_fit((24, 24), (0, 0, 16, 16), MAX_FORCED_RESIZES), Some((4, 4, 16, 16)));
+        // A bigger icon is centred too (negative offsets crop it evenly).
+        assert_eq!(icon_fit((24, 24), (0, 0, 32, 32), MAX_FORCED_RESIZES), Some((-4, -4, 32, 32)));
     }
 
     #[test]
