@@ -626,7 +626,24 @@ fn run_run(
     } else {
         command.stdout(Stdio::null()).stderr(Stdio::null());
     }
-    let mut child = command.spawn().map_err(|e| format!("Run: cannot start '{}': {e}", argv[0]))?;
+    // A detached program may open a window: announce the launch so the
+    // window manager gives that window the focus (see `launch_focus`).
+    let launch = if window { None } else { crate::launch_focus::begin(&argv[0]) };
+    if let Some(launch) = &launch {
+        command.env(crate::launch_focus::STARTUP_ID_ENV, launch.startup_id());
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            if let Some(launch) = launch {
+                launch.abort();
+            }
+            return Err(format!("Run: cannot start '{}': {e}", argv[0]));
+        }
+    };
+    if let Some(launch) = launch {
+        launch.watch(child.id());
+    }
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("started {} (pid {})", argv[0], child.id()) }));
 
     if !window {
