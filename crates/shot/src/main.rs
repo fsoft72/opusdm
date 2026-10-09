@@ -17,6 +17,9 @@ use gtk4 as gtk;
 use gtk::gdk;
 use gtk::prelude::*;
 
+/// Time given to the compositor to unmap closed windows before a new capture.
+const RESTART_SETTLE_MS: u64 = 250;
+
 /// Load the shared OpusDM look (theme mode, fonts) plus the editor style.
 fn apply_theme() {
     let settings = opusdm_ipc::settings::load_settings("opusdm-shot");
@@ -68,6 +71,18 @@ fn start(app: &gtk::Application) {
     overlay::open(app, &monitor, screen, move |cropped| editor::open(&app2, cropped));
 }
 
+/// Close every open window and start a fresh screenshot. The app is held while
+/// the windows go away, and the capture waits so they are off screen first.
+fn restart(app: &gtk::Application) {
+    let hold = app.hold();
+    for window in app.windows() { window.close(); }
+    let app = app.clone();
+    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(RESTART_SETTLE_MS), move || {
+        start_after_delay(&app);
+        drop(hold);
+    });
+}
+
 /// Log `message` and quit with a failure.
 fn fail(app: &gtk::Application, message: &str) {
     opusdm_ipc::err_log!("opusdm-shot", "{message}");
@@ -78,9 +93,9 @@ fn fail(app: &gtk::Application, message: &str) {
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.Shot").build();
     app.connect_activate(|app| {
-        // A second launch while a window is open does nothing.
-        if !app.windows().is_empty() { return; }
         apply_theme();
+        // A second launch while a window is open replaces it with a new shot.
+        if !app.windows().is_empty() { return restart(app); }
         start_after_delay(app);
     });
     app.run()
