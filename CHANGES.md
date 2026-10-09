@@ -1,5 +1,8 @@
 # Changes
 
+## 2026-10-09
+- Feature (lister): **Ctrl+double click** on a folder (details and icon view) and **Ctrl+Return** on the folder under the cursor open that folder in a new Lister (`ToHub::SpawnLister`), also inside archives and on remote sites; on a file both behave like a plain double click / Return. A capture-phase `EventControllerLegacy` on the window records whether the last button press held Ctrl (`Ui::ctrl_click`, reset by any key press), `activate_row` reads it; Ctrl+Return resolves to the new `Action::EnterNew` over the list only (not in text fields). 1 unit test in `keys.rs`. Builds and tests pass; NOT checked by eye in a running session.
+
 ## 2026-10-08
 - Change (settings): the tool buttons moved from the row above the tabs into two new tabs: **Advanced** (Hotkeys, File Types, Manage Functions, Button Banks, Apps) and **System** (Input, Screens). The Startup Apps section moved from the Desktop tab to its own **Startup Apps** tab. Builds; NOT checked by eye.
 - Change (hub): **Manage Functions** is gone from the **Desktop** submenu of the desktop menu (it is a button of OpusDM Settings); removed `launch_functions_manager` and `spawn_lister_tool`.

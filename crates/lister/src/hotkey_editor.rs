@@ -78,6 +78,7 @@ fn action_title(action: &Action) -> String {
             .map(|c| c.title.to_string())
             .unwrap_or_else(|| format!("{id:?}")),
         Action::Enter => "Open the row under the cursor".to_string(),
+        Action::EnterNew => "Open the folder under the cursor in a new Lister".to_string(),
         Action::ToggleSelectAndAdvance => "Toggle the selection and move down".to_string(),
         Action::SwapRoleFocus => "Switch to the SOURCE/DEST Lister".to_string(),
         Action::OpenPalette => "Open the command palette".to_string(),

@@ -530,6 +530,7 @@ fn assemble_ui(
         },
         last_selection: RefCell::new(Vec::new()),
         user_menu_btn,
+        ctrl_click: Cell::new(false),
     })
 }
 
@@ -705,6 +706,25 @@ fn wire_selection(ui: &Rc<Ui>) {
 /// Window-level signals: focus notifies the hub, closing sends `Goodbye` so
 /// the process can exit.
 fn wire_window_signals(ui: &Rc<Ui>) {
+    {
+        // Record the Ctrl state of every button press before the list sees
+        // it, for Ctrl+double click (open the folder in a new Lister).
+        let window = ui.window.clone();
+        let ui = ui.clone();
+        let legacy = gtk::EventControllerLegacy::new();
+        legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
+        legacy.connect_event(move |_, event| {
+            match event.event_type() {
+                gdk::EventType::ButtonPress => {
+                    ui.ctrl_click.set(event.modifier_state().contains(gdk::ModifierType::CONTROL_MASK));
+                }
+                gdk::EventType::KeyPress => ui.ctrl_click.set(false),
+                _ => {}
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(legacy);
+    }
     {
         let ui = ui.clone();
         let focus = gtk::EventControllerFocus::new();

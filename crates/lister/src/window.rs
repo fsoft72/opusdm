@@ -223,6 +223,10 @@ pub struct Ui {
     pub history: RefCell<crate::history::History>,
     /// Back / forward buttons and the history drop-down.
     pub nav_history: NavHistory,
+    /// Whether the latest mouse button press in the window held Ctrl, so a
+    /// Ctrl+double click on a folder opens it in a new Lister. Key presses
+    /// reset it, so keyboard activation always stays in this Lister.
+    pub ctrl_click: Cell<bool>,
 }
 
 impl Ui {
@@ -706,6 +710,7 @@ impl Ui {
         match action {
             Action::Command(id) => crate::palette::execute_command(self, id),
             Action::Enter => self.activate_row(self.view.cursor.get()),
+            Action::EnterNew => self.activate_row_in_new_lister(self.view.cursor.get()),
             Action::ToggleSelectAndAdvance => self.toggle_select_and_advance(),
             Action::SwapRoleFocus => self.swap_role_focus(),
             Action::OpenPalette => crate::palette::open_command_palette(self),
@@ -746,6 +751,10 @@ impl Ui {
     /// file to its default application.
     pub fn activate_row(self: &Rc<Self>, position: u32) {
         let Some(row) = self.row_at(position) else { return };
+        if row.is_dir && self.ctrl_click.get() {
+            self.open_row_in_new_lister(&row);
+            return;
+        }
         let cwd = self.cwd.borrow().clone();
         if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
             let next_inner = if inner.is_empty() {
@@ -788,6 +797,32 @@ impl Ui {
             let uri = format!("file://{}", target.to_string_lossy());
             let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
         }
+    }
+
+    /// Ctrl+Return: open the folder at `position` in a new Lister. Anything
+    /// that is not a folder is activated as usual.
+    pub fn activate_row_in_new_lister(self: &Rc<Self>, position: u32) {
+        let Some(row) = self.row_at(position) else { return };
+        if row.is_dir {
+            self.open_row_in_new_lister(&row);
+        } else {
+            self.activate_row(position);
+        }
+    }
+
+    /// Open the folder `row` of the current directory in a new Lister,
+    /// stepping into archives and remote sites the same way `activate_row`
+    /// does.
+    fn open_row_in_new_lister(&self, row: &Row) {
+        let cwd = self.cwd.borrow().clone();
+        let target = match crate::archive::parse_archive_path(&cwd) {
+            Some((arch, inner)) if inner.is_empty() => crate::archive::make_archive_path(&arch, &row.name),
+            Some((arch, inner)) => {
+                crate::archive::make_archive_path(&arch, &format!("{}/{}", inner.trim_end_matches('/'), row.name))
+            }
+            None => cwd.join(&row.name),
+        };
+        let _ = self.hub.client.send(&ToHub::SpawnLister { start_path: Some(target) });
     }
 
     /// Put the keyboard cursor on `pos` and make that row the only

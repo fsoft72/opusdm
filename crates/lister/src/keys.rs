@@ -191,6 +191,8 @@ pub enum Action {
     Command(CommandId),
     /// Open the row under the cursor (enter directory, open file).
     Enter,
+    /// Ctrl+Return: open the folder under the cursor in a new Lister.
+    EnterNew,
     /// Toggle the selection of the row under the cursor, then move down.
     ToggleSelectAndAdvance,
     /// Raise the Lister holding the opposite role.
@@ -219,6 +221,9 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         // Ctrl+N must not create anything.
         if focus == Focus::List && matches!(key, gdk::Key::n | gdk::Key::N) {
             return Some(Action::Command(if shift { CommandId::NewFile } else { CommandId::Mkdir }));
+        }
+        if focus == Focus::List && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
+            return Some(Action::EnterNew);
         }
         return match key {
             gdk::Key::p | gdk::Key::P => Some(Action::OpenPalette),
@@ -293,6 +298,13 @@ mod tests {
     fn return_enters_and_backspace_goes_to_the_parent() {
         assert_eq!(list(gdk::Key::Return), Some(Action::Enter));
         assert_eq!(list(gdk::Key::BackSpace), Some(Action::Command(CommandId::ParentDir)));
+    }
+
+    #[test]
+    fn ctrl_return_enters_in_a_new_lister_only_over_the_list() {
+        assert_eq!(resolve(gdk::Key::Return, true, false, Focus::List), Some(Action::EnterNew));
+        assert_eq!(resolve(gdk::Key::KP_Enter, true, false, Focus::List), Some(Action::EnterNew));
+        assert_eq!(resolve(gdk::Key::Return, true, false, Focus::Editing), None);
     }
 
     #[test]
