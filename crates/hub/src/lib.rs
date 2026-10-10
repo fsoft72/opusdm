@@ -7,6 +7,7 @@ pub mod compositor;
 pub mod desktop_diff;
 pub mod desktop_files;
 pub mod file_manager;
+pub mod folder_handler;
 pub mod fullscreen;
 pub mod desktop_settings;
 pub mod functions;

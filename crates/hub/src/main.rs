@@ -52,6 +52,8 @@ fn main() {
 
     // Answer "show in folder" requests from browsers and other programs.
     opusdm_hub::file_manager::start(handle.cmd_tx.clone());
+    // Folders opened through xdg (xdg-open, file choosers) go to a Lister.
+    opusdm_hub::folder_handler::ensure_default();
 
     // First run: start with the default file types (never overwrites a file).
     if opusdm_ipc::filetypes::seed_default_filetypes() {

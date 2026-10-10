@@ -95,7 +95,7 @@ $SUDO mkdir -p /usr/share/applications
 $SUDO cp "$HERE/opusdm-lister.desktop" /usr/share/applications/opusdm-lister.desktop
 sed "s|@PREFIX@|$PREFIX|" "$HERE/opusdm.desktop" | $SUDO tee "$XSESSIONS/opusdm.desktop" >/dev/null
 echo "Installed to $PREFIX, session entry: $XSESSIONS/opusdm.desktop"
-echo "To open folders in OpusDM by default: xdg-mime default opusdm-lister.desktop inode/directory"
+echo "Folders open in OpusDM by default: opusdm-hub sets opusdm-lister.desktop for inode/directory at every start"
 INSTALL
 chmod +x "$DIST/install.sh"
 
