@@ -1,7 +1,8 @@
 # Wayland port: exploration notes
 
-Status: **in progress** (started 2026-10-10). See "Decisions" and
-"Implementation plan" at the end; the analysis below is from 2026-10-05.
+Status: **implemented** (2026-10-10) for wlroots compositors, labwc first.
+See "Decisions", "Implementation plan" and "What works where" at the end;
+the analysis below is from 2026-10-05.
 
 ## Summary
 
@@ -170,3 +171,35 @@ Each step is one or more commits; X11 is tested after each one.
 5. **Screens and screenshots.** `wlr-randr` backend for `opusdm-screen` and the
    hot plug; `grim` for `opusdm-shot`.
 6. **Launch focus** through xdg-activation tokens.
+
+## What works where (2026-10-10)
+
+One binary, chosen at run time (`opusdm_ipc::session`). Build and run time
+need `libgtk4-layer-shell` (on X11 too); `wlr-randr` is needed on Wayland
+for the screen settings.
+
+| Feature | X11 | labwc / sway (wlroots) | KDE Plasma | GNOME |
+|---|---|---|---|---|
+| Desktop, panel, dock, Run window, device popup | EWMH | layer shell | layer shell | plain windows |
+| Borderless button banks (saved position) | EWMH | layer shell, Alt+drag | layer shell, Alt+drag | plain windows |
+| Tasklist, pager, desktop switch | EWMH | foreign-toplevel, ext-workspace | no (KDE protocols) | no |
+| Full screen pause, Start in Tray | EWMH | foreign-toplevel | no | no |
+| Global hotkeys | `XGrabKey` | labwc keybinds (`rc.xml` block); sway: bind `opusdm-hub --run` by hand | GlobalShortcuts portal | GlobalShortcuts portal |
+| Screen settings, hot plug | `xrandr` | `wlr-randr` | no | no |
+| Input settings | `xinput`, `setxkbmap`, `xset` | labwc only (`rc.xml`, `environment`) | no | no |
+| Screenshots | `GetImage` | wlr-screencopy | no | no |
+| XEmbed tray | yes | no (SNI only) | no (SNI only) | no (SNI only) |
+| Window snapping (`opusdm-snap`) | yes | compositor's own | compositor's own | compositor's own |
+| Launch focus | startup notification | not needed (labwc focuses new windows) | - | - |
+| Number of virtual desktops | EWMH | compositor config (labwc `<desktops>`) | - | - |
+| Window opacity (picom) | yes | no | no | no |
+
+Known gaps on Wayland: the tasklist shows no window icons from the
+window itself (the desktop file of the app id instead), no Force kill
+(no pid) and no Move to desktop; the pager draws no window boxes; a full
+screen window on another workspace also pauses the background.
+
+Testing: `./run-wayland.sh` (nested labwc), `./run-wayland.sh --headless`
+for scripted runs; `crates/wayland/examples/watch.rs` prints the windows and
+workspaces, `examples/screenshot.rs` saves every output.
+

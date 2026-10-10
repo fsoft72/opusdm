@@ -45,8 +45,9 @@ Indice:
 
 ### Step 1.1 - Avvia OpusDM
 
-OpusDM ha bisogno di una sessione X11 (le hotkey globali e alcune funzioni di
-finestra non funzionano su Wayland). Per provarlo senza toccare la tua sessione
+OpusDM funziona su X11 e su Wayland con gli stessi binari: su Wayland il
+compositor di riferimento è labwc (vedi `docs/WAYLAND-PORT.md` per cosa funziona
+dove). Per provarlo senza toccare la tua sessione
 reale c'è uno script che apre un server X annidato (Xephyr) con un window
 manager (openbox):
 
@@ -56,7 +57,10 @@ manager (openbox):
 3. Lo script compila il progetto in release, apre la finestra Xephyr e avvia
    `opusdm-hub`, che a sua volta apre il primo Lister.
 
-In alternativa, dentro una sessione X11 normale, avvia direttamente
+Per provarlo su Wayland lancia invece `./run-wayland.sh` (apre un labwc
+annidato; richiede i pacchetti `labwc`, `wlr-randr` e `libgtk4-layer-shell-dev`).
+
+In alternativa, dentro una sessione X11 o labwc normale, avvia direttamente
 `target/release/opusdm-hub`.
 
 Dovresti vedere: uno sfondo desktop con delle icone, un pannello in alto, un

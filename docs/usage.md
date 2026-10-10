@@ -680,7 +680,12 @@ window is open, so you can try it.
 - **At login** the hub applies `input.json` and applies it again when a mouse, touchpad or
   keyboard is plugged in or removed (it looks every 3 seconds; X resets the keymap when a keyboard
   is plugged in). With no file the system is left alone. A missing `xinput` is logged by the hub.
-- **Limits:** X11 only (under Wayland, or with no display, the window only says so). The double
+- **Wayland:** under labwc the settings are written into labwc's configuration (a `<libinput>`
+  block and the key repeat in `~/.config/labwc/rc.xml`, the layouts as `XKB_DEFAULT_*` lines of
+  `~/.config/labwc/environment`, each in a block marked as OpusDM's; the rest is never touched)
+  and labwc reloads them. Other Wayland compositors keep their own input settings: the window
+  only says so.
+- **Limits:** with no display the window only says so. The double
   click time is not an X setting and is not offered. There are no per-device settings: one group
   for all mice and one for all touchpads.
 - **Requires** `xinput`, `setxkbmap` and `xset` (packages `xinput`, `x11-xkb-utils`,
@@ -802,7 +807,10 @@ Arranges the monitors, like the Display Configuration of KDE Plasma.
   (it listens to RandR events and waits 0.5 s for them to settle). A set of monitors with no saved
   layout is left alone, a layout already in place is not applied again, and a change you make by
   hand while the monitors stay the same is never undone.
-- **Limits:** X11 only (under Wayland, or with no display, the window only says so). No gamma,
+- **Wayland:** on wlroots compositors (labwc, sway) the monitors are read and set with `wlr-randr`
+  (package `wlr-randr`); there is no primary monitor, so that option is hidden. The hub reapplies
+  the saved layout when GTK reports a monitor change.
+- **Limits:** with no display the window only says so. No gamma,
   night light or per-monitor wallpaper. Duplicate does not scale a picture to fit. Overlapping
   monitors are allowed (that is how Duplicate works) but are not reported.
 - **Requires** `xrandr` (package `x11-xserver-utils`).
