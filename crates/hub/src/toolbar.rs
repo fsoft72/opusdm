@@ -213,7 +213,10 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     // icon field and inotify watch alive); different count -> full rebuild.
     if let Some(d) = display.as_ref() {
         let (app, widgets) = (app.clone(), widgets.clone());
-        opusdm_ui::watch_monitors(d, move |rects| reconcile_desktop_windows(&app, &widgets, rects));
+        opusdm_ui::watch_monitors(d, move |rects| {
+            crate::screen_hotplug::monitors_changed();
+            reconcile_desktop_windows(&app, &widgets, rects);
+        });
     }
     {
         let (app, widgets) = (app.clone(), widgets.clone());

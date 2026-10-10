@@ -199,6 +199,8 @@ fn build(app: &gtk::Application, session: Session<Box<dyn ScreenBackend>>) {
     panel.append(&labeled("Rotation", &ui.rotation));
     panel.append(&labeled("Scale", &ui.scale));
     panel.append(&ui.primary);
+    // Wayland has no primary monitor.
+    ui.primary.set_visible(!opusdm_ipc::session::is_wayland());
     root.append(&panel);
 
     ui.status.set_xalign(0.0);
