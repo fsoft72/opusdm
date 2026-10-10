@@ -5,7 +5,8 @@
 #   bin/      opusdm-hub, opusdm-lister, opusdm-settings, opusdm-dock, opusdm-run,
 #             opusdm-shot, opusdm-terminal, opusdm-player, opusdm-viewer, opusdm-input-config, opusdm-screen, opusdm-apps-editor
 #             (the hub finds opusdm-lister next to itself, keep them together)
-#   config/   openbox-rc.xml, picom.conf, labwc-rc.xml, wayfire.ini
+#   config/   openbox-rc.xml, picom.conf, labwc-rc.xml, wayfire.ini,
+#             opusdm-portals.conf
 #   themes/   <slug>.zip theme packages
 #   opusdm-session            X11 session script (Openbox + picom + opusdm-hub)
 #   opusdm-session-wayland    Wayland session script (Wayfire if installed,
@@ -46,7 +47,7 @@ done
 cp "$REPO_ROOT/scripts/opusdm-open-folder" "$DIST/bin/opusdm-open-folder"
 cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.desktop"
 
-cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$REPO_ROOT/labwc-rc.xml" "$REPO_ROOT/wayfire.ini" "$DIST/config/"
+cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$REPO_ROOT/labwc-rc.xml" "$REPO_ROOT/wayfire.ini" "$REPO_ROOT/opusdm-portals.conf" "$DIST/config/"
 cp "$REPO_ROOT"/target/themes/*.zip "$DIST/themes/"
 
 # X11 session script: resolves its own location, so dist can live anywhere
@@ -81,11 +82,33 @@ cat > "$DIST/opusdm-session-wayland" <<'SESSION'
 # window positions), else labwc. OPUSDM_COMPOSITOR=wayfire|labwc forces one.
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
+# "--hub": run by Wayfire's autostart, inside the compositor. Wayfire, unlike
+# labwc, does not hand its WAYLAND_DISPLAY to D-Bus and systemd, so the
+# portal backends could not open a display and every GTK app (the hub too)
+# waited 25 s for the Settings portal before showing a window. Hand the
+# environment over, restart portals left from an earlier session so they
+# pick it up, then become the hub.
+if [ "${1:-}" = "--hub" ]; then
+    dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE WAYFIRE_SOCKET \
+        || echo "opusdm-session-wayland: cannot update the D-Bus activation environment" >&2
+    systemctl --user try-restart xdg-desktop-portal-gtk.service xdg-desktop-portal.service \
+        || echo "opusdm-session-wayland: cannot restart the portals" >&2
+    exec "$HERE/bin/opusdm-hub"
+fi
+
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
 export PATH="$HERE/bin:$PATH"
 export XDG_SESSION_TYPE=wayland
 # GTK must not be pushed onto XWayland by a leftover setting.
 unset GDK_BACKEND
+
+# The portal backends of the OpusDM desktop (GTK), made the first time and
+# then left to the user.
+PORTALS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/opusdm-portals.conf"
+if [ ! -f "$PORTALS_CONF" ]; then
+    mkdir -p "$(dirname "$PORTALS_CONF")"
+    cp "$HERE/config/opusdm-portals.conf" "$PORTALS_CONF"
+fi
 
 COMPOSITOR="${OPUSDM_COMPOSITOR:-}"
 if [ -z "$COMPOSITOR" ]; then
@@ -95,13 +118,14 @@ fi
 if [ "$COMPOSITOR" = "wayfire" ]; then
     # Wayfire reads a per-user copy of the OpusDM wayfire.ini (made the first
     # time, then left to the user), not ~/.config/wayfire.ini: a Wayfire
-    # setup of the user's own stays untouched. It starts $OPUSDM_HUB.
+    # setup of the user's own stays untouched. It starts $OPUSDM_HUB, this
+    # script again with --hub.
     WAYFIRE_INI="${XDG_CONFIG_HOME:-$HOME/.config}/opusdm/wayfire.ini"
     if [ ! -f "$WAYFIRE_INI" ]; then
         mkdir -p "$(dirname "$WAYFIRE_INI")"
         cp "$HERE/config/wayfire.ini" "$WAYFIRE_INI"
     fi
-    export OPUSDM_HUB="$HERE/bin/opusdm-hub"
+    export OPUSDM_HUB="$HERE/opusdm-session-wayland --hub"
     # Wayfire's output goes to its own log (the previous run's is kept as
     # wayfire.log.1). OPUSDM_WAYFIRE_DEBUG=1, or the file wayfire-debug next
     # to wayfire.ini (a login manager sets no variables), adds -d.
