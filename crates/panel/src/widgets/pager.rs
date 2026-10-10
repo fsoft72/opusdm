@@ -169,8 +169,38 @@ fn mini_width(screen: (i32, i32, i32, i32)) -> i32 {
     (MINI_HEIGHT * w / h).clamp(24, 80)
 }
 
+/// Share of the miniature a placeholder box covers, per side.
+const PLACEHOLDER_SIZE: f64 = 0.6;
+/// Largest offset between two cascaded placeholder boxes, in pixels.
+const PLACEHOLDER_STEP: f64 = 4.0;
+
+/// Rectangle (x, y, w, h) of `c` on desktop `index` in a `width` x `height`
+/// miniature. A window without a known rectangle (Wayland does not tell it)
+/// gets a cascaded placeholder box instead.
+fn scaled_rect(st: &PagerState, c: &ClientWin, index: u32, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
+    if c.rect.w <= 0 || c.rect.h <= 0 {
+        if opusdm_ipc::session::is_x11() {
+            return None;
+        }
+        return placeholder_rect(st, c, index, width, height);
+    }
+    real_rect(st, c, width, height)
+}
+
+/// Cascaded placeholder box of `c`, by its place among the windows of desktop
+/// `index` that have no rectangle: same size, shifted one step each.
+fn placeholder_rect(st: &PagerState, c: &ClientWin, index: u32, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
+    let blind: Vec<u32> = st.clients.iter().filter(|c| shown_on(c, index) && (c.rect.w <= 0 || c.rect.h <= 0)).map(|c| c.xid).collect();
+    let n = blind.iter().position(|xid| *xid == c.xid)?;
+    let (w, h) = (f64::from(width) * PLACEHOLDER_SIZE, f64::from(height) * PLACEHOLDER_SIZE);
+    let last = blind.len().saturating_sub(1).max(1) as f64;
+    let step_x = (f64::from(width) - w).min(PLACEHOLDER_STEP * last) / last;
+    let step_y = (f64::from(height) - h).min(PLACEHOLDER_STEP * last) / last;
+    Some((step_x * n as f64, step_y * n as f64, w, h))
+}
+
 /// Rectangle (x, y, w, h) of `c` scaled into a `width` x `height` miniature.
-fn scaled_rect(st: &PagerState, c: &ClientWin, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
+fn real_rect(st: &PagerState, c: &ClientWin, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
     let (sx, sy, sw, sh) = st.screen;
     if sw <= 0 || sh <= 0 {
         return None;
@@ -192,7 +222,7 @@ fn shown_on(c: &ClientWin, index: u32) -> bool {
 /// The topmost window rectangle of desktop `index` under `(x, y)`.
 fn hit_window(st: &PagerState, index: u32, x: f64, y: f64, width: i32, height: i32) -> Option<u32> {
     st.clients.iter().rev().filter(|c| shown_on(c, index)).find_map(|c| {
-        let (rx, ry, rw, rh) = scaled_rect(st, c, width, height)?;
+        let (rx, ry, rw, rh) = scaled_rect(st, c, index, width, height)?;
         (x >= rx && x <= rx + rw && y >= ry && y <= ry + rh).then_some(c.xid)
     })
 }
@@ -206,7 +236,7 @@ fn draw_mini(st: &PagerState, index: u32, cr: &gtk::cairo::Context, width: i32, 
     let _ = cr.fill();
 
     for c in st.clients.iter().filter(|c| shown_on(c, index)) {
-        let Some((x, y, w, h)) = scaled_rect(st, c, width, height) else { continue };
+        let Some((x, y, w, h)) = scaled_rect(st, c, index, width, height) else { continue };
         let focused = st.active == Some(c.xid);
         cr.rectangle(x, y, w, h);
         cr.set_source_rgba(0.83, 0.84, 0.81, if focused { 0.85 } else { 0.45 });
@@ -254,8 +284,19 @@ mod tests {
     fn rect_is_scaled_to_the_miniature() {
         let st = state(vec![]);
         let c = client(1, 0, false, WinRect { x: 500, y: 250, w: 500, h: 250 });
-        let (x, y, w, h) = scaled_rect(&st, &c, 100, 50).unwrap();
+        let (x, y, w, h) = real_rect(&st, &c, 100, 50).unwrap();
         assert_eq!((x, y, w, h), (50.0, 25.0, 50.0, 25.0));
+    }
+
+    #[test]
+    fn windows_without_rect_cascade_as_placeholders() {
+        let none = WinRect::default();
+        let st = state(vec![client(1, 0, false, none), client(2, 0, false, none), client(3, 1, false, none)]);
+        let (x1, y1, w, h) = placeholder_rect(&st, &st.clients[0], 0, 40, 26).unwrap();
+        let (x2, y2, _, _) = placeholder_rect(&st, &st.clients[1], 0, 40, 26).unwrap();
+        assert_eq!((x1, y1, w, h), (0.0, 0.0, 24.0, 15.6));
+        assert!(x2 > x1 && y2 > y1);
+        assert!(placeholder_rect(&st, &st.clients[2], 0, 40, 26).is_none());
     }
 
     #[test]

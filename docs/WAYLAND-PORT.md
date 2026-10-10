@@ -196,7 +196,7 @@ for the screen settings.
 
 Known gaps on Wayland: the tasklist shows no window icons from the
 window itself (the desktop file of the app id instead), no Force kill
-(no pid) and no Move to desktop; the pager draws no window boxes; a full
+(no pid) and no Move to desktop; the pager draws a cascaded placeholder box per window (no real position); a full
 screen window on another workspace also pauses the background.
 
 Testing: `./run-wayland.sh` (nested labwc), `./run-wayland.sh --headless`
