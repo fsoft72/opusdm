@@ -60,13 +60,22 @@ if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 # Take the session environment of the running hub: the script may be started
 # from a terminal of another session (or none), and the new hub must join the
 # same X11 or Wayland session. A variable the hub does not have is unset.
-SESSION_VARS="DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP LABWC_PID GDK_BACKEND DBUS_SESSION_BUS_ADDRESS OPUSDM_LABWC_RC"
+SESSION_VARS="DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP LABWC_PID WAYFIRE_SOCKET WAYFIRE_CONFIG_FILE GDK_BACKEND DBUS_SESSION_BUS_ADDRESS OPUSDM_LABWC_RC"
 HUB_PID=$(pgrep -u "$(id -u)" -x opusdm-hub | head -n 1 || true)
 if [ -n "$HUB_PID" ] && [ -r "/proc/$HUB_PID/environ" ]; then
     for v in $SESSION_VARS; do
         line=$(tr '\0' '\n' < "/proc/$HUB_PID/environ" | grep "^$v=" | head -n 1 || true)
         if [ -n "$line" ]; then export "$line"; else unset "$v"; fi
     done
+fi
+# A hub restarted by an older live-update lost Wayfire's variables (and with
+# them the Wayfire support of the panel and of the input settings). Wayfire's
+# IPC plugin listens on /tmp/wayfire-$WAYLAND_DISPLAY.socket, and the session
+# script runs it with the per-user OpusDM wayfire.ini.
+if [ -z "${WAYFIRE_SOCKET:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "/tmp/wayfire-${WAYLAND_DISPLAY##*/}.socket" ]; then
+    export WAYFIRE_SOCKET="/tmp/wayfire-${WAYLAND_DISPLAY##*/}.socket"
+    WAYFIRE_INI="${XDG_CONFIG_HOME:-$HOME/.config}/opusdm/wayfire.ini"
+    [ -z "${WAYFIRE_CONFIG_FILE:-}" ] && [ -f "$WAYFIRE_INI" ] && export WAYFIRE_CONFIG_FILE="$WAYFIRE_INI"
 fi
 # Wayland unless the hub was forced onto X (GDK_BACKEND=x11), as OpusDM decides.
 if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${GDK_BACKEND:-}" != "x11" ]; then SESSION=wayland; else SESSION=x11; fi
