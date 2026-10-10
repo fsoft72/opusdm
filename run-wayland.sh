@@ -67,6 +67,8 @@ HUB_OUT="/dev/stderr"
     echo 'export WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"'
     echo "export XDG_RUNTIME_DIR=\"$HUB_RUNTIME_DIR\""
     echo 'unset GDK_BACKEND'
+    # The hub writes its global hotkeys into the sandbox's own rc.xml.
+    echo "export OPUSDM_LABWC_RC=\"$CONFIG_DIR/rc.xml\""
     # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name
     echo "export PATH=\"$(pwd)/target/release:\$PATH\""
     [ "$GRID_DEBUG" = "1" ] && echo 'export GRID_DEBUG=1'

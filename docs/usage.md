@@ -366,9 +366,15 @@ a **Bash** command or an **Exec** program, see below) and a
 - While a text field has focus, a user hotkey only fires if it has Ctrl, Alt
   or Super, or is a function key, so a plain letter never steals a character.
 - A **Global** hotkey works while any window has focus. It needs at least one
-  of Ctrl, Alt or Super. It uses the X11 key grab, so it needs an X11 session:
-  on Wayland, global hotkeys are not supported (local ones work everywhere).
-  A key another program already owns cannot be grabbed and is logged.
+  of Ctrl, Alt or Super. On X11 it uses a key grab; a key another program
+  already owns cannot be grabbed and is logged. On Wayland no program may
+  grab keys: under **labwc** the hub keeps the global hotkeys as labwc
+  keybinds in a marked block of `~/.config/labwc/rc.xml` (rewritten when the
+  hotkeys change, then labwc reloads; the rest of the file is never touched),
+  each running `opusdm-hub --run FUNCTION`. Under other compositors (KDE
+  Plasma, GNOME 48+, Hyprland) they go through the GlobalShortcuts portal,
+  which asks once to confirm them. `opusdm-hub --run FUNCTION` also works
+  from any script or keybind of your own.
 - A global hotkey runs the function on the current SOURCE lister's selection;
   with no lister open the selection is empty.
 

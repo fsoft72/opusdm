@@ -206,6 +206,10 @@ pub enum ToHub {
     /// validates it and runs it with this Lister as SOURCE. Used by hotkeys
     /// and the user menu; `RunFunction { steps }` stays for unsaved edits.
     RunFunctionById { id: crate::function::FunctionId },
+    /// Run a saved Function by id with no Lister involved, as an X11 global
+    /// hotkey does. Sent by `opusdm-hub --run` (a compositor keybind on
+    /// Wayland). No reply.
+    RunFunctionHeadless { id: crate::function::FunctionId },
     /// Leave `paths` out on the desktop as permanent icons. Sent by a Lister
     /// (context menu). The hub refuses the whole request when any path is not
     /// absolute or does not exist, and otherwise emits `HubEvent::LeftOutAdd`.
@@ -622,6 +626,7 @@ mod tests {
         });
         roundtrip_tohub(ToHub::SelectionReply { paths: vec!["/a".into()], cwd: "/home/x".into() });
         roundtrip_tohub(ToHub::RunFunctionById { id: "fn-1".into() });
+        roundtrip_tohub(ToHub::RunFunctionHeadless { id: "exec:opusdm-run".into() });
         roundtrip_tohub(ToHub::SetFunctions(vec![crate::function::Function::new("f")]));
         roundtrip_tohub(ToHub::SetBindings(crate::bindings::Bindings {
             hotkeys: vec![crate::bindings::Hotkey { key: "Ctrl+u".into(), function: "f".into(), global: true }],

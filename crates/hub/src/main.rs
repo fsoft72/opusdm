@@ -19,6 +19,11 @@ use children::AcquireOutcome;
 use opusdm_ipc::sockpath::hub_sock_path;
 
 fn main() {
+    // `opusdm-hub --run FUNCTION`: a client of the running hub, not a hub.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = opusdm_hub::remote::run_from_args(&args) {
+        std::process::exit(code);
+    }
     children::add_own_dir_to_path();
     let sock_path = hub_sock_path();
     let listener = match children::acquire_socket(&sock_path) {

@@ -339,7 +339,11 @@ struct Hub {
     owner_tx: Sender<OwnerMsg>,
     /// The X11 grabs, created lazily on the first non-empty global set.
     global_keys: Option<crate::global_keys::GlobalKeys>,
-    /// The X11 connection failed once; do not retry or log again.
+    /// The Wayland global hotkeys (labwc keybinds or the portal), created
+    /// lazily like the X11 grabs.
+    wayland_keys: Option<crate::global_keys_wl::GlobalKeysWl>,
+    /// The X11 connection (or, on Wayland, every global hotkey backend)
+    /// failed once; do not retry or log again.
     x11_failed: bool,
     persist_tx: Sender<PersistMsg>,
     engine: JobEngine,
@@ -499,6 +503,10 @@ impl Hub {
 
             ToHub::RunFunctionById { id } => {
                 self.run_function_by_id(Some(cid), Some(cid), &id);
+            }
+
+            ToHub::RunFunctionHeadless { id } => {
+                self.run_headless(&id);
             }
 
             ToHub::LeaveOut { paths } => self.leave_out(paths),
@@ -751,11 +759,18 @@ impl Hub {
     /// set; if it cannot be opened the hub gives up on global hotkeys for the
     /// rest of the session.
     fn apply_global_keys(&mut self) {
-        if !self.global_keys_enabled || !opusdm_ipc::session::is_x11() {
+        if !self.global_keys_enabled {
             return;
         }
         let globals: Vec<bindings::Hotkey> =
             self.current_bindings.hotkeys.iter().filter(|h| h.global).cloned().collect();
+        if opusdm_ipc::session::is_wayland() {
+            self.apply_wayland_global_keys(&globals);
+            return;
+        }
+        if !opusdm_ipc::session::is_x11() {
+            return;
+        }
         if self.global_keys.is_none() {
             if globals.is_empty() || self.x11_failed {
                 return;
@@ -774,6 +789,27 @@ impl Hub {
         }
         if let Some(keys) = &self.global_keys {
             keys.set(&globals);
+        }
+    }
+
+    /// [`Self::apply_global_keys`] on Wayland: compositor keybinds or the
+    /// GlobalShortcuts portal (see `global_keys_wl`), started on first use.
+    fn apply_wayland_global_keys(&mut self, globals: &[bindings::Hotkey]) {
+        if self.wayland_keys.is_none() && !self.x11_failed {
+            let tx = self.owner_tx.clone();
+            let started = crate::global_keys_wl::GlobalKeysWl::start(Box::new(move |id| {
+                let _ = tx.send(OwnerMsg::FromGtk(HubCmd::RunFunctionHeadless(id)));
+            }));
+            match started {
+                Some(keys) => self.wayland_keys = Some(keys),
+                None => {
+                    self.x11_failed = true;
+                    return;
+                }
+            }
+        }
+        if let Some(keys) = &self.wayland_keys {
+            keys.set(globals);
         }
     }
 
@@ -1174,6 +1210,7 @@ fn owner_loop(
         global_keys_enabled: opts.global_keys,
         owner_tx: owner_tx.clone(),
         global_keys: None,
+        wayland_keys: None,
         x11_failed: false,
         current_bindings: match opts.initial_bindings {
             Some(b) => b,
