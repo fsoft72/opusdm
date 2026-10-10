@@ -63,8 +63,14 @@ impl Shared {
     /// puts the saved options back.
     pub fn preview(&self, config: &TerminalConfig) {
         let theme = theme::find(&self.themes.borrow(), &config.theme).clone();
+        self.preview_with(config, &theme);
+    }
+
+    /// Apply `config` with the colours of `theme` (which may be an unsaved
+    /// edit) to every open terminal.
+    pub fn preview_with(&self, config: &TerminalConfig, theme: &TerminalTheme) {
         for term in self.all_terminals() {
-            crate::pane::apply_config(&term, config, &theme);
+            crate::pane::apply_config(&term, config, theme);
         }
     }
 

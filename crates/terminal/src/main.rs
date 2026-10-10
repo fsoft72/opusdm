@@ -12,6 +12,7 @@ mod prefs;
 mod quote;
 mod shared;
 mod theme;
+mod theme_editor;
 mod window;
 
 use gtk4 as gtk;

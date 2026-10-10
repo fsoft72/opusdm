@@ -2,7 +2,7 @@
 //! built-in presets plus user themes read from
 //! `~/.config/opusdm/terminal-themes/*.json`. Pure data, no GTK.
 
-use opusdm_ipc::settings::{config_dir, read_json};
+use opusdm_ipc::settings::{config_dir, read_json, save_json};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -60,6 +60,41 @@ pub fn parse_hex(text: &str) -> Option<Rgb> {
         _ => return None,
     };
     Some(Rgb { red: r, green: g, blue: b })
+}
+
+/// Format an [`Rgb`] as `#rrggbb`.
+pub fn to_hex(colour: Rgb) -> String {
+    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", channel(colour.red), channel(colour.green), channel(colour.blue))
+}
+
+/// File name for a user theme called `name`: lower-case letters and digits,
+/// every other run of characters turned into one `-`.
+pub fn theme_file_name(name: &str) -> String {
+    let mut slug = String::new();
+    for c in name.trim().chars() {
+        if c.is_alphanumeric() {
+            slug.extend(c.to_lowercase());
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    format!("{}.json", if slug.is_empty() { "theme" } else { slug })
+}
+
+/// Where the user theme called `name` is stored inside `dir`.
+pub fn user_theme_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(theme_file_name(name))
+}
+
+/// Validate `theme` and write it into `dir` (created if needed), returning
+/// the path of the file.
+pub fn save_user_theme(dir: &Path, theme: &TerminalTheme) -> Result<PathBuf, String> {
+    theme.validate()?;
+    let path = user_theme_path(dir, &theme.name);
+    save_json(&path, theme).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(path)
 }
 
 impl TerminalTheme {
@@ -215,6 +250,40 @@ mod tests {
         assert_eq!(parse_hex("ffffff"), None);
         assert_eq!(parse_hex("#12345"), None);
         assert_eq!(parse_hex("#gggggg"), None);
+    }
+
+    #[test]
+    fn hex_round_trips() {
+        for hex in ["#000000", "#ffffff", "#3daee9", "#0055aa"] {
+            assert_eq!(to_hex(parse_hex(hex).unwrap()), hex);
+        }
+    }
+
+    #[test]
+    fn theme_names_become_safe_file_names() {
+        assert_eq!(theme_file_name("My Theme"), "my-theme.json");
+        assert_eq!(theme_file_name("  Dracula (custom) "), "dracula-custom.json");
+        assert_eq!(theme_file_name("../etc/passwd"), "etc-passwd.json");
+        assert_eq!(theme_file_name("***"), "theme.json");
+    }
+
+    #[test]
+    fn a_saved_theme_is_loaded_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut theme = presets().remove(2);
+        theme.name = "Exported One".into();
+        let path = save_user_theme(dir.path(), &theme).unwrap();
+        assert_eq!(path, dir.path().join("exported-one.json"));
+        assert_eq!(load_user_themes_from(dir.path()), vec![theme]);
+    }
+
+    #[test]
+    fn an_invalid_theme_is_not_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut theme = presets().remove(0);
+        theme.palette.clear();
+        assert!(save_user_theme(dir.path(), &theme).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

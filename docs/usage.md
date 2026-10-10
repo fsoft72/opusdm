@@ -831,16 +831,23 @@ split panes in the style of Terminator.
   directory of the shell).
 - **Other keys:** `Ctrl+Shift+C` / `Ctrl+Shift+V` copy and paste, `Ctrl+Shift+A` select all,
   `Ctrl++` / `Ctrl+-` / `Ctrl+0` zoom, `Ctrl+Shift+G` reset and clear, `Ctrl+,` Preferences.
-- **Preferences** (right-click menu or `Ctrl+,`), two tabs:
-  - **General:** theme, font, cursor shape and blinking, bold in bright colours, audible bell and
+- **Preferences** (right-click menu or `Ctrl+,`), three tabs:
+  - **General:** font, cursor shape and blinking, bold in bright colours, audible bell and
     **Scrollback lines** (default 2000, **0 = unlimited**).
+  - **Theme:** the theme selector and its colours: text, background, cursor, text under the
+    cursor, selection, selected text (the last four can be left to the terminal with **Default**)
+    and the 16 palette colours (normal row, bright row). Every change is previewed at once.
+    **Reset** puts the colours of the selected theme back. **Export as New Theme...** asks a name
+    and writes the colours as a user theme (`~/.config/opusdm/terminal-themes/<name>.json`,
+    asking before replacing an existing file), then selects it. Pressing **Save** with edited
+    colours that were not exported offers **Export...** or **Discard**.
   - **Hotkeys:** one row per action. **Grab...** opens "Press a key combination": press the keys
     and they are written in the field (Escape cancels, so Escape cannot be bound; a letter or digit
     needs Ctrl, Alt or Super, otherwise it would be taken away from the shell). The field can also
     be typed in GTK syntax such as `<Ctrl><Shift>e`; empty disables the hotkey. Saving refuses an
     invalid hotkey and two actions on the same keys.
 
-  The options of **General** are previewed at once on all open terminals of that window's
+  The options of **General** and **Theme** are previewed at once on all open terminals of that window's
   process, so a theme or a font can be tried before deciding. **Save** keeps them and writes
   `~/.config/opusdm/terminal.json`; **Cancel** (or closing the window) puts the saved ones back.
 - **Themes:** separate from the Lister and desktop themes. Built in: OpusDM Dark (default), Tango
