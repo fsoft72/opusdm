@@ -204,9 +204,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
         let row = menu_row(Some("system-log-out"), "Logout");
         row.connect_clicked(move |_| {
             popover.popdown();
-            confirm(&parent, "Log out?", "This ends the openbox session.", || {
-                run_detached("openbox", &["--exit"]);
-            });
+            confirm(&parent, "Log out?", "This ends the OpusDM session.", logout);
         });
         list.append(&row);
     }
@@ -244,6 +242,14 @@ pub fn set_direction(button: &gtk::MenuButton, position: PanelPosition) {
 fn run_detached(bin: &str, args: &[&str]) {
     if let Err(e) = Command::new(bin).args(args).spawn() {
         opusdm_ipc::err_log!("opusdm-panel", "cannot run {bin}: {e}");
+    }
+}
+
+/// End the session: the Wayland compositor is told to quit, on X11 openbox.
+fn logout() {
+    if !opusdm_ipc::session::is_wayland() { return run_detached("openbox", &["--exit"]); }
+    if let Err(e) = opusdm_wayland::compositor::exit() {
+        opusdm_ipc::err_log!("opusdm-panel", "cannot log out: {e}");
     }
 }
 

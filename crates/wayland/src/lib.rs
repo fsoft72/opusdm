@@ -8,6 +8,7 @@
 //! `None` there.
 
 mod client;
+pub mod compositor;
 mod model;
 pub mod labwc;
 pub mod screencopy;
