@@ -173,8 +173,11 @@ pub fn spawn(panel_height: i32) -> (TraySender, async_channel::Receiver<TrayEven
     std::thread::Builder::new()
         .name("opusdm-panel-systray".into())
         .spawn(move || {
-            if let Err(e) = run(panel_height, cmd_rx, &thread_wake, evt_tx) {
-                opusdm_ipc::err_log!("opusdm-panel", "system tray stopped: {e}");
+            // XEmbed does not exist on Wayland: the SNI tray is the only one.
+            if opusdm_ipc::session::is_x11() {
+                if let Err(e) = run(panel_height, cmd_rx, &thread_wake, evt_tx) {
+                    opusdm_ipc::err_log!("opusdm-panel", "system tray stopped: {e}");
+                }
             }
             // Also covers a tray that never started: nobody should wait for it.
             crate::tray_ready::mark_ready(crate::tray_ready::TrayKind::XEmbed);

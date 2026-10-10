@@ -47,8 +47,11 @@ pub struct Session {
     pub root: Window,
 }
 
-/// Connect to the X server named by `DISPLAY`.
+/// Connect to the X server named by `DISPLAY`. Refused on a Wayland session,
+/// where `DISPLAY` names XWayland: the EWMH requests would reach nobody and
+/// the X clients seen there are only a part of the windows.
 pub fn connect() -> Result<Session, X11Error> {
+    if !opusdm_ipc::session::is_x11() { return Err("not an X11 session".into()); }
     let (conn, screen_num) = x11rb::connect(None)?;
     let root = conn.setup().roots[screen_num].root;
     Ok(Session { conn, screen_num, root })

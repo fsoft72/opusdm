@@ -156,6 +156,7 @@ pub fn pick_icon(words: &[u32], target: i32) -> Option<IconRgba> {
 /// runs until the X connection drops or the receiver is closed.
 pub fn spawn() -> async_channel::Receiver<EwmhEvent> {
     let (tx, rx) = async_channel::unbounded::<EwmhEvent>();
+    if !opusdm_ipc::session::is_x11() { return rx; }
     std::thread::Builder::new()
         .name("opusdm-panel-ewmh".into())
         .spawn(move || {

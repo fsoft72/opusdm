@@ -46,6 +46,7 @@ pub mod proto;
 pub mod quickapps;
 pub mod reaped;
 pub mod settings;
+pub mod session;
 pub mod sockpath;
 pub mod theme;
 pub mod themes;

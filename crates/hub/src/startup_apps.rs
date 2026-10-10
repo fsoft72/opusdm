@@ -42,7 +42,7 @@ pub const TRAY_WAIT_LIMIT: Duration = Duration::from_secs(20);
 fn launch_after_wait(app: &StartupApp) {
     std::thread::sleep(Duration::from_secs(u64::from(app.wait_secs)));
     // Watch before launching, so a window that appears at once is not missed.
-    let watch = if app.start_in_tray {
+    let watch = if app.start_in_tray && opusdm_ipc::session::is_x11() {
         crate::tray_start::Watch::new()
             .inspect_err(|e| opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': cannot watch its windows: {e}", app.command))
             .ok()

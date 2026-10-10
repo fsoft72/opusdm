@@ -157,6 +157,7 @@ impl Widgets {
 /// Ask the window manager for `count` virtual screens. A failure is logged
 /// and never stops the hub.
 fn apply_virtual_screens(count: u32) {
+    if !opusdm_ipc::session::is_x11() { return; }
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.set_desktop_count(count)) {
         opusdm_ipc::err_log!("opusdm-hub", "cannot set the number of virtual screens: {e}");
     }

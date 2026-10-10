@@ -1,10 +1,7 @@
 # Wayland port: exploration notes
 
-Status: **exploration only, nothing implemented.** These notes record how hard
-a Wayland port of OpusDM would be, what blocks it and a possible strategy, so
-the work can start later without redoing the analysis.
-
-Date of the analysis: 2026-10-05.
+Status: **in progress** (started 2026-10-10). See "Decisions" and
+"Implementation plan" at the end; the analysis below is from 2026-10-05.
 
 ## Summary
 
@@ -115,10 +112,61 @@ gdk4-x11).
 - FEATURES.md F-03 already documents that Wayland is unsupported for global
   grabs.
 
-## Open questions
+## Decisions (2026-10-10)
 
-- Which compositor is the primary Wayland target (labwc is the natural one)?
-- Is it acceptable to ship panel, dock and desktop only where `layer-shell`
-  exists, and degrade to plain windows elsewhere?
-- Should X11 and Wayland builds share one binary (runtime detection) or use
-  cargo features?
+- **One binary for both sessions.** The window system is detected at run time
+  (`opusdm_ipc::session`): `GDK_BACKEND` forcing x11 wins, then
+  `WAYLAND_DISPLAY`, then `DISPLAY`, the same order GDK uses. X11 must keep
+  working exactly as before: every Wayland path is chosen only when the
+  session is Wayland, never as a replacement.
+- Under a Wayland session `DISPLAY` is usually set too (XWayland). The X11
+  code must **not** run there: it would talk to XWayland and see only X
+  clients. Every X11 entry point is gated on the detected window system, not
+  on whether an X connection happens to open.
+- **Target: full parity** on wlroots compositors, **labwc** as the reference
+  (and for `run-wayland.sh`). Panel, dock and desktop use `gtk4-layer-shell`;
+  where layer-shell is missing they stay plain windows.
+- System packages are installed by hand:
+  `sudo apt install libgtk4-layer-shell-dev labwc wlr-randr`.
+
+## Code inventory update (2026-10-10)
+
+New X11 code since the analysis:
+
+| File | Role | Wayland plan |
+|---|---|---|
+| `crates/x11` | Shared connection and EWMH helpers (no GTK) | X11 only, gated |
+| `crates/hub/src/launch_focus.rs` | Startup notification + `_NET_ACTIVE_WINDOW` | xdg-activation token (`XDG_ACTIVATION_TOKEN`) |
+| `crates/hub/src/tray_start.rs` | Minimize + close the first window of a tray app | foreign-toplevel `close` |
+| `crates/hub/src/fullscreen.rs` | Is the desktop covered? | foreign-toplevel `fullscreen` state |
+| `crates/hub/src/screen_hotplug.rs` | RandR events -> reapply `screens.json` | GDK monitor list changes |
+| `crates/screen` | `xrandr` backend | `wlr-randr` backend |
+| `crates/input-config` | `xinput`/`xset` backend | not portable (compositor config), message |
+| `crates/shot/src/capture.rs` | `GetImage` on the root | `grim` (wlr-screencopy), portal fallback |
+| `crates/snap` | Edge snapping of other windows | impossible for a client; labwc snaps natively. Off on Wayland |
+| `crates/runner/src/ui.rs` | Run window placement | layer-shell OVERLAY, keyboard on demand |
+| `crates/panel/src/device_popup.rs` | Popup in the corner | layer-shell OVERLAY with margins |
+| `crates/hub/src/toolbar.rs` | Desktop count | `ext-workspace` when the compositor offers it |
+
+## Implementation plan
+
+Each step is one or more commits; X11 is tested after each one.
+
+1. **Session detection and gating.** `opusdm_ipc::session`; every X11 entry
+   point (helpers, observer threads, grabs, hot plug, launch focus, tray
+   start, snap, shot) does nothing on Wayland. `run-wayland.sh` with nested
+   labwc. Result: clean start on Wayland with reduced features.
+2. **Layer shell.** `gtk4-layer-shell` for desktop (BACKGROUND), panel (TOP,
+   exclusive zone), dock (BOTTOM), Run window and device popup (OVERLAY).
+   Button banks: TOP layer, position kept as margins.
+3. **Foreign toplevel.** A Wayland observer thread
+   (`zwlr_foreign_toplevel_manager_v1`) feeding the same `EwmhEvent`s to the
+   tasklist; activate, minimize, close. Used also by fullscreen detection and
+   tray start. Pager and desktop count through `ext-workspace-v1` when present,
+   otherwise hidden.
+4. **Global hotkeys.** `org.freedesktop.portal.GlobalShortcuts` where the
+   portal offers it; otherwise a `opusdm-hub --function <id>` command line and
+   an export of the bindings as labwc `rc.xml` keybinds.
+5. **Screens and screenshots.** `wlr-randr` backend for `opusdm-screen` and the
+   hot plug; `grim` for `opusdm-shot`.
+6. **Launch focus** through xdg-activation tokens.

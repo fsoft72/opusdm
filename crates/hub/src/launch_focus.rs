@@ -146,7 +146,7 @@ pub fn begin(program: &str) -> Option<Launch> {
     match try_begin(program) {
         Ok(launch) => Some(launch),
         Err(e) => {
-            if std::env::var_os("DISPLAY").is_some() {
+            if opusdm_ipc::session::is_x11() {
                 opusdm_ipc::err_log!("hub", "launch focus: cannot announce '{program}': {e}");
             }
             None

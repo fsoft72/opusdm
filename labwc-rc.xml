@@ -1,0 +1,62 @@
+<?xml version="1.0"?>
+<!--
+  labwc configuration for the OpusDM Wayland sandbox (run-wayland.sh): the
+  Wayland counterpart of openbox-rc.xml. labwc reads the same theme format
+  as Openbox and most of its rc.xml; only the parts OpusDM relies on are set,
+  everything else keeps the labwc defaults (<default /> below).
+-->
+<labwc_config>
+
+  <core>
+    <decoration>server</decoration>
+    <gap>0</gap>
+  </core>
+
+  <theme>
+    <name>Onyx</name>
+    <cornerRadius>0</cornerRadius>
+    <font place="ActiveWindow" name="sans" size="10" />
+    <font place="MenuItem" name="sans" size="10" />
+  </theme>
+
+  <placement>
+    <policy>Cascade</policy>
+  </placement>
+
+  <!-- The pager and the desktop switcher of OpusDM use these. -->
+  <desktops number="4">
+    <popupTime>500</popupTime>
+  </desktops>
+
+  <keyboard>
+    <default />
+    <keybind key="C-A-Left">
+      <action name="GoToDesktop" to="left" wrap="yes" />
+    </keybind>
+    <keybind key="C-A-Right">
+      <action name="GoToDesktop" to="right" wrap="yes" />
+    </keybind>
+    <keybind key="S-A-Left">
+      <action name="SendToDesktop" to="left" wrap="yes" />
+    </keybind>
+    <keybind key="S-A-Right">
+      <action name="SendToDesktop" to="right" wrap="yes" />
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <default />
+    <!-- The OpusDM desktop has its own menus: no labwc root menu. -->
+    <context name="Root">
+      <mousebind button="Left" action="Press" />
+      <mousebind button="Middle" action="Press" />
+      <mousebind button="Right" action="Press" />
+    </context>
+  </mouse>
+
+  <snapping>
+    <range>10</range>
+    <topMaximize>yes</topMaximize>
+  </snapping>
+
+</labwc_config>

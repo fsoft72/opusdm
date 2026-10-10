@@ -751,7 +751,7 @@ impl Hub {
     /// set; if it cannot be opened the hub gives up on global hotkeys for the
     /// rest of the session.
     fn apply_global_keys(&mut self) {
-        if !self.global_keys_enabled {
+        if !self.global_keys_enabled || !opusdm_ipc::session::is_x11() {
             return;
         }
         let globals: Vec<bindings::Hotkey> =

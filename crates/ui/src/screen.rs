@@ -30,12 +30,14 @@ use x11rb::protocol::Event;
 /// delivered - callers already apply it at startup.
 ///
 /// Must be called from the thread running the GTK main loop. Does nothing
-/// useful when not running under X11: the watcher thread just fails to
-/// connect and exits.
+/// when not running under X11.
 pub fn watch_screen_size<F>(on_resize: F)
 where
     F: Fn(i32, i32) + 'static,
 {
+    // Wayland compositors announce size changes through the GDK monitors,
+    // which `watch_monitors` already follows.
+    if !opusdm_ipc::session::is_x11() { return; }
     let (tx, rx) = async_channel::unbounded::<(i32, i32)>();
 
     std::thread::spawn(move || {

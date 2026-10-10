@@ -248,6 +248,7 @@ impl Hub {
                 return;
             }
             crate::functions::FnEvent::Desktop { delta } => {
+                if !opusdm_ipc::session::is_x11() { return; }
                 if let Err(e) = opusdm_ui::with_x11(|x11| x11.switch_desktop(*delta)) {
                     opusdm_ipc::err_log!("hub", "cannot switch the virtual desktop: {e}");
                 }

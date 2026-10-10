@@ -18,6 +18,7 @@ const SETTLE_MS: u64 = 500;
 /// Start the thread that keeps the saved screen layout applied. A failure is
 /// logged and never stops the hub.
 pub(crate) fn start() {
+    if !opusdm_ipc::session::is_x11() { return; }
     let spawned = std::thread::Builder::new().name("screen-hotplug".to_string()).spawn(|| {
         if let Err(e) = run() {
             opusdm_ipc::err_log!("opusdm-hub", "screen hot plug stopped: {e}");
@@ -30,8 +31,7 @@ pub(crate) fn start() {
 
 /// Apply the profile now, then once per burst of RandR events.
 fn run() -> Result<(), String> {
-    let (conn, screen) = x11rb::connect(None).map_err(|e| format!("cannot connect to X: {e}"))?;
-    let root = conn.setup().roots[screen].root;
+    let opusdm_x11::Session { conn, root, .. } = opusdm_x11::connect().map_err(|e| format!("cannot connect to X: {e}"))?;
     conn.randr_select_input(root, NotifyMask::SCREEN_CHANGE)
         .map_err(|e| e.to_string())?
         .check()

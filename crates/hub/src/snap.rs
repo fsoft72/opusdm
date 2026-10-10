@@ -11,6 +11,8 @@ static WATCHER: OnceLock<Watcher> = OnceLock::new();
 /// `enabled`. A failure to start is logged by the watcher and snapping stays
 /// off.
 pub fn start(enabled: bool) {
+    // A Wayland client cannot move other windows; the compositor snaps them.
+    if !opusdm_ipc::session::is_x11() { return; }
     if WATCHER.get().is_some() {
         set_enabled(enabled);
         return;

@@ -41,6 +41,12 @@ READY_TIMEOUT_TENTHS=50            # 50 * 0.1s = 5s max wait for the server
 command -v Xephyr >/dev/null 2>&1 || { echo "Xephyr not found (package: xserver-xephyr)"; exit 1; }
 command -v "$TERMINAL" >/dev/null 2>&1 || { echo "Terminal '$TERMINAL' not found"; exit 1; }
 
+# The sandbox is an X11 session even when started from a Wayland desktop:
+# without this GTK (and OpusDM's session detection) would pick the host
+# compositor instead of Xephyr.
+unset WAYLAND_DISPLAY
+export GDK_BACKEND=x11
+
 CHILD_PIDS=()
 
 # Kill every process we spawned when the script exits
