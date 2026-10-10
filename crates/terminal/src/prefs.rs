@@ -8,6 +8,8 @@ use crate::theme::user_themes_dir;
 use gtk4 as gtk;
 use gtk::{gdk, gio, glib, pango};
 use gtk::prelude::*;
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::rc::Rc;
 
 /// Gap between the columns and rows of the option grids.
@@ -268,17 +270,27 @@ fn grabbed_accel(key: gdk::Key, state: gdk::ModifierType) -> Option<String> {
     Some(gtk::accelerator_name(key.to_lower(), mods).to_string())
 }
 
-/// Create the user themes folder if needed and open it.
+/// Create the user themes folder if needed and open it in a Lister. Without
+/// a running hub (outside an OpusDM session) the system's default folder
+/// application opens it instead.
 fn open_themes_folder(button: &gtk::Button) {
     let dir = user_themes_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         opusdm_ipc::err_log!("opusdm-terminal", "cannot create {}: {e}", dir.display());
         return;
     }
+    let Err(e) = open_in_lister(&dir) else { return };
+    opusdm_ipc::err_log!("opusdm-terminal", "cannot reach the hub to open a Lister: {e}; using the default application");
     let window = button.root().and_downcast::<gtk::Window>();
     gtk::FileLauncher::new(Some(&gio::File::for_path(&dir))).launch(window.as_ref(), None::<&gio::Cancellable>, |result| {
         if let Err(e) = result {
             opusdm_ipc::err_log!("opusdm-terminal", "cannot open the themes folder: {e}");
         }
     });
+}
+
+/// Ask the running hub to open a Lister on `dir`.
+fn open_in_lister(dir: &Path) -> std::io::Result<()> {
+    let mut stream = UnixStream::connect(opusdm_ipc::sockpath::hub_sock_path())?;
+    opusdm_ipc::frame::send(&mut stream, &opusdm_ipc::ToHub::SpawnLister { start_path: Some(dir.to_path_buf()) })
 }

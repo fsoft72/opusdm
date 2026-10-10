@@ -845,7 +845,8 @@ split panes in the style of Terminator.
 - **Themes:** separate from the Lister and desktop themes. Built in: OpusDM Dark (default), Tango
   Dark, Tango Light, Solarized Dark, Solarized Light, Dracula, Gruvbox Dark, Nord, One Dark and
   Classic Amiga. Add your own as one JSON file per theme in `~/.config/opusdm/terminal-themes/`
-  (the **Themes Folder** button of Preferences opens it); a theme with the name of a built-in one
+  (the **Themes Folder** button of Preferences opens it in a Lister; outside an OpusDM session,
+  where no hub runs, in the system's default folder application); a theme with the name of a built-in one
   replaces it:
 
   ```json
