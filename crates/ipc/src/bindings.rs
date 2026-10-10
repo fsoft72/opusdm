@@ -586,11 +586,15 @@ pub fn default_desktop_functions() -> Vec<crate::function::Function> {
 }
 
 /// The default global hotkeys: `Alt+1` for the previous desktop, `Alt+2` for
-/// the next one.
+/// the next one, `Ctrl+\` for a terminal, `Ctrl+Print` for a screenshot and
+/// `Ctrl+Shift+Space` for the run dialog.
 pub fn default_hotkeys() -> Vec<Hotkey> {
     vec![
         Hotkey { key: "Alt+1".into(), function: DESKTOP_PREV_ID.into(), global: true },
         Hotkey { key: "Alt+2".into(), function: DESKTOP_NEXT_ID.into(), global: true },
+        Hotkey { key: "Ctrl+backslash".into(), function: "exec:terminator".into(), global: true },
+        Hotkey { key: "Ctrl+Print".into(), function: "exec:opusdm-shot".into(), global: true },
+        Hotkey { key: "Ctrl+Shift+space".into(), function: "exec:opusdm-run".into(), global: true },
     ]
 }
 
@@ -658,7 +662,9 @@ mod tests {
         assert_eq!(functions.len(), 3);
         assert!(functions.contains(&mine));
         let ids: HashSet<FunctionId> = functions.iter().map(|f| f.id.clone()).collect();
-        assert!(validate_hotkeys(&hotkeys, &ids).is_empty());
+        // The exec: programs may not be installed where the tests run.
+        let errors = validate_hotkeys(&hotkeys, &ids);
+        assert!(errors.iter().all(|e| matches!(e, BindingError::HotkeyInvalidCommand { .. })), "{errors:?}");
         assert!(!seed_default_hotkeys_in(dir.path(), &functions_file));
     }
 
