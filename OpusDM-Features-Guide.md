@@ -567,11 +567,13 @@ Selezionalo e usa **Read (SmartRead)**: si apre in modalità ANSI con i colori.
 4. Scrivi `cd cartella_a`: **anche il Lister entra in `cartella_a`**.
 5. Naviga con il Lister in un'altra cartella: il prompt del terminale si
    aggiorna alla nuova cartella.
-6. Il pulsante **External** nell'intestazione del cassetto apre un terminale
-   esterno completo (xterm) nella cartella corrente.
+6. Il pulsante **External** nell'intestazione del cassetto apre
+   `opusdm-terminal` nella cartella corrente.
 7. `F4` (o `Esc`) richiude il cassetto.
 
-Anche il menu del desktop ha **Open Terminal Here**.
+Anche il menu del desktop ha **Open Terminal Here**: apre `opusdm-terminal`
+nella cartella del Desktop (se non parte, prova `$TERMINAL` e poi alcuni
+terminali comuni).
 
 ---
 

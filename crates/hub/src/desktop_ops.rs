@@ -20,8 +20,11 @@ use std::sync::mpsc::Sender;
 const CUT_MARKER: &str = "#opusdm-clip:cut";
 const COPY_MARKER: &str = "#opusdm-clip:copy";
 
-/// Terminal binaries tried, in order, when `$TERMINAL` is unset or not on
-/// `PATH`.
+/// The OpusDM terminal, opened by "Open Terminal Here".
+const OPUSDM_TERMINAL: &str = "opusdm-terminal";
+
+/// Terminal binaries tried, in order, when `opusdm-terminal` cannot start
+/// and `$TERMINAL` is unset or not on `PATH`.
 const FALLBACK_TERMINALS: [&str; 8] = [
     "x-terminal-emulator",
     "gnome-terminal",
@@ -141,10 +144,17 @@ pub fn prompt_new(
     );
 }
 
-/// Launch a terminal emulator with `dir` as its working directory: `$TERMINAL`
-/// first, then a handful of common terminal binaries, whichever is found
-/// first. Errors (none found) are logged, not shown to the user.
+/// Launch a terminal emulator with `dir` as its working directory:
+/// `opusdm-terminal` (next to the hub, else on `PATH`) first; should it not
+/// start, `$TERMINAL`, then a handful of common terminal binaries, whichever
+/// is found first. Errors are logged, not shown to the user.
 pub fn open_terminal_in(dir: &Path) {
+    let exe = std::env::current_exe().ok();
+    let opusdm = crate::children::sibling_bin_in(exe.as_deref().and_then(Path::parent), OPUSDM_TERMINAL);
+    match std::process::Command::new(&opusdm).arg("-d").arg(dir).current_dir(dir).spawn() {
+        Ok(_) => return,
+        Err(e) => opusdm_ipc::err_log!("hub", "cannot start {}: {e}; trying another terminal", opusdm.display()),
+    }
     let candidates = std::env::var("TERMINAL")
         .into_iter()
         .chain(FALLBACK_TERMINALS.iter().map(|s| s.to_string()));
