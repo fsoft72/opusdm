@@ -34,6 +34,16 @@ pub fn open(shared: &Rc<Shared>, parent: &gtk::Window) {
     let config = shared.config();
     let shell = opusdm_ui::DialogShell::new(parent, "Terminal Preferences").size(560, 640);
     let form = Rc::new(build_form(shared, &config, shell.content()));
+    connect_preview(shared, &form);
+    // Closing without Save (Cancel, Escape, the window button) drops the
+    // previewed options; after Save this re-applies what was just saved.
+    {
+        let shared = shared.clone();
+        shell.window().connect_close_request(move |_| {
+            shared.preview(&shared.config());
+            glib::Propagation::Proceed
+        });
+    }
 
     let themes_btn = shell.button("Themes Folder");
     themes_btn.set_tooltip_text(Some("Open the folder of the user themes (one JSON file per theme)"));
@@ -189,19 +199,10 @@ fn build_form(shared: &Shared, config: &TerminalConfig, content: &gtk::Box) -> F
 }
 
 /// The config described by `form`, starting from `config`. Fails with a
-/// message naming the first hotkey GTK cannot parse.
-fn read_form(form: &Form, mut config: TerminalConfig) -> Result<TerminalConfig, String> {
-    if let Some(name) = form.theme_names.get(form.theme.selected() as usize) {
-        config.theme = name.clone();
-    }
-    if let Some(desc) = form.font.font_desc() {
-        config.font = desc.to_string();
-    }
-    config.scrollback_lines = form.scrollback.value_as_int().max(0) as u32;
-    config.cursor_shape = CursorShape::ALL.get(form.cursor_shape.selected() as usize).copied().unwrap_or_default();
-    config.cursor_blink = form.cursor_blink.is_active();
-    config.audible_bell = form.audible_bell.is_active();
-    config.bold_is_bright = form.bold_is_bright.is_active();
+/// message naming the first hotkey GTK cannot parse, or two actions on the
+/// same keys.
+fn read_form(form: &Form, config: TerminalConfig) -> Result<TerminalConfig, String> {
+    let mut config = read_general(form, config);
     config.hotkeys.clear();
     let mut used: Vec<(Action, gdk::Key, gdk::ModifierType)> = Vec::new();
     for (action, entry) in &form.hotkeys {
@@ -225,6 +226,47 @@ fn read_form(form: &Form, mut config: TerminalConfig) -> Result<TerminalConfig, 
         }
     }
     Ok(config)
+}
+
+/// `config` with the General options (appearance, scrolling) of `form`.
+fn read_general(form: &Form, mut config: TerminalConfig) -> TerminalConfig {
+    if let Some(name) = form.theme_names.get(form.theme.selected() as usize) {
+        config.theme = name.clone();
+    }
+    if let Some(desc) = form.font.font_desc() {
+        config.font = desc.to_string();
+    }
+    config.scrollback_lines = form.scrollback.value_as_int().max(0) as u32;
+    config.cursor_shape = CursorShape::ALL.get(form.cursor_shape.selected() as usize).copied().unwrap_or_default();
+    config.cursor_blink = form.cursor_blink.is_active();
+    config.audible_bell = form.audible_bell.is_active();
+    config.bold_is_bright = form.bold_is_bright.is_active();
+    config
+}
+
+/// Apply the General options of `form` to every open terminal as soon as
+/// one of them changes, so a theme or a font can be tried before saving.
+fn connect_preview(shared: &Rc<Shared>, form: &Rc<Form>) {
+    let refresh = {
+        let shared = shared.clone();
+        let form = Rc::downgrade(form);
+        Rc::new(move || {
+            let Some(form) = form.upgrade() else { return };
+            shared.preview(&read_general(&form, shared.config()));
+        })
+    };
+    let r = refresh.clone();
+    form.theme.connect_selected_notify(move |_| r());
+    let r = refresh.clone();
+    form.font.connect_font_desc_notify(move |_| r());
+    let r = refresh.clone();
+    form.cursor_shape.connect_selected_notify(move |_| r());
+    let r = refresh.clone();
+    form.scrollback.connect_value_changed(move |_| r());
+    for check in [&form.cursor_blink, &form.audible_bell, &form.bold_is_bright] {
+        let r = refresh.clone();
+        check.connect_toggled(move |_| r());
+    }
 }
 
 /// Ask for a key combination in a small modal window and write it into

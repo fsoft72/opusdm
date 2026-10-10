@@ -55,9 +55,16 @@ impl Shared {
         config::save(&config);
         *self.config.borrow_mut() = config;
         self.reload_themes();
-        let (config, theme) = (self.config(), self.theme());
+        self.preview(&self.config());
+    }
+
+    /// Apply `config` to every open terminal without storing it, for the
+    /// live preview of the Preferences dialog. `preview(&self.config())`
+    /// puts the saved options back.
+    pub fn preview(&self, config: &TerminalConfig) {
+        let theme = theme::find(&self.themes.borrow(), &config.theme).clone();
         for term in self.all_terminals() {
-            crate::pane::apply_config(&term, &config, &theme);
+            crate::pane::apply_config(&term, config, &theme);
         }
     }
 

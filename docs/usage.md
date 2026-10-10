@@ -840,8 +840,9 @@ split panes in the style of Terminator.
     be typed in GTK syntax such as `<Ctrl><Shift>e`; empty disables the hotkey. Saving refuses an
     invalid hotkey and two actions on the same keys.
 
-  **Save** applies the options to all open terminals of that window's process and writes
-  `~/.config/opusdm/terminal.json`.
+  The options of **General** are previewed at once on all open terminals of that window's
+  process, so a theme or a font can be tried before deciding. **Save** keeps them and writes
+  `~/.config/opusdm/terminal.json`; **Cancel** (or closing the window) puts the saved ones back.
 - **Themes:** separate from the Lister and desktop themes. Built in: OpusDM Dark (default), Tango
   Dark, Tango Light, Solarized Dark, Solarized Light, Dracula, Gruvbox Dark, Nord, One Dark and
   Classic Amiga. Add your own as one JSON file per theme in `~/.config/opusdm/terminal-themes/`
