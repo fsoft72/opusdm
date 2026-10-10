@@ -12,6 +12,13 @@
     <gap>0</gap>
   </core>
 
+  <!-- Buttons left of the colon go on the left of the titlebar, the others on
+       the right. Here: close, iconify and maximize on the left, title after. -->
+  <titlebar>
+    <layout>close,iconify,max:</layout>
+    <showTitle>yes</showTitle>
+  </titlebar>
+
   <theme>
     <name>Onyx</name>
     <cornerRadius>0</cornerRadius>
