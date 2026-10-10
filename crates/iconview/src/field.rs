@@ -558,9 +558,10 @@ impl IconField {
     }
 
     /// Whether a primary-button drag should start an inter-window file drag.
-    /// False in Free mode, where that gesture is an internal reposition.
-    pub(super) fn inter_window_drag_enabled(&self) -> bool {
-        !matches!(self.inner.layout.mode.get(), LayoutMode::Free)
+    /// In Free mode a plain drag is an internal reposition, so only a drag
+    /// started with Ctrl held (`ctrl`) exports the files there.
+    pub(super) fn inter_window_drag_enabled(&self, ctrl: bool) -> bool {
+        ctrl || !matches!(self.inner.layout.mode.get(), LayoutMode::Free)
     }
 
     /// Begin a reposition: only in Free mode and only when the press lands on
@@ -1092,13 +1093,14 @@ mod tests {
         // "rs" is not previewable, so no job is queued and nothing panics.
         f_on.set_icon_size(200);
 
-        // --- IconField: inter-window drag is off in Free mode ---
+        // --- IconField: inter-window drag is off in Free mode unless Ctrl ---
         let fd = IconField::new();
-        assert!(fd.inter_window_drag_enabled()); // Grid default
+        assert!(fd.inter_window_drag_enabled(false)); // Grid default
         fd.set_mode(LayoutMode::Free);
-        assert!(!fd.inter_window_drag_enabled());
+        assert!(!fd.inter_window_drag_enabled(false));
+        assert!(fd.inter_window_drag_enabled(true));
         fd.set_mode(LayoutMode::Grid);
-        assert!(fd.inter_window_drag_enabled());
+        assert!(fd.inter_window_drag_enabled(false));
 
         // --- IconField: begin/commit reposition moves a selected icon ---
         fd.set_mode(LayoutMode::Free);

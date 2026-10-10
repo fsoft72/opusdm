@@ -19,6 +19,9 @@ pub const MIN_DRAWER_HEIGHT: i32 = 90;
 /// Default drawer height on first show.
 pub const DEFAULT_DRAWER_HEIGHT: i32 = 260;
 
+/// Terminal opened by the External button.
+const EXTERNAL_TERMINAL: &str = "opusdm-terminal";
+
 pub struct TerminalDrawer {
     pub container: gtk::Box,
     pub title_label: gtk::Label,
@@ -66,7 +69,7 @@ impl TerminalDrawer {
 
         let xterm_btn = gtk::Button::with_label("External");
         xterm_btn.add_css_class("flat");
-        xterm_btn.set_tooltip_text(Some("Open in external terminal (xterm)"));
+        xterm_btn.set_tooltip_text(Some("Open the folder in OpusDM Terminal"));
 
         let close_btn = gtk::Button::with_label("✕");
         close_btn.add_css_class("flat");
@@ -143,14 +146,15 @@ impl TerminalDrawer {
             });
         }
 
-        // External terminal button
+        // External terminal button: a new opusdm-terminal window in the
+        // Lister folder (the hub puts the OpusDM binaries on PATH).
         {
             let drawer_clone = drawer.clone();
             xterm_btn.connect_clicked(move |_| {
                 let dir = drawer_clone.cwd.borrow().clone();
-                let _ = Command::new("xterm")
-                    .current_dir(&dir)
-                    .spawn();
+                if let Err(e) = Command::new(EXTERNAL_TERMINAL).arg("-d").arg(&dir).current_dir(&dir).spawn() {
+                    opusdm_ipc::err_log!("opusdm-lister", "cannot start {EXTERNAL_TERMINAL}: {e}");
+                }
             });
         }
 

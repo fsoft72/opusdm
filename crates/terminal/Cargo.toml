@@ -1,0 +1,21 @@
+[package]
+name = "opusdm-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-terminal"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
+gtk4.workspace = true
+vte4 = { version = "0.9", features = ["v0_70"] }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -2128,6 +2128,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-terminal"
+version = "0.7.0"
+dependencies = [
+ "gtk4",
+ "libc",
+ "opusdm-ipc",
+ "opusdm-ui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vte4",
+]
+
+[[package]]
 name = "opusdm-theme-config"
 version = "0.7.0"
 dependencies = [

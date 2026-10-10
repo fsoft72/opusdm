@@ -586,13 +586,13 @@ pub fn default_desktop_functions() -> Vec<crate::function::Function> {
 }
 
 /// The default global hotkeys: `Alt+1` for the previous desktop, `Alt+2` for
-/// the next one, `Ctrl+\` for a terminal, `Ctrl+Print` for a screenshot and
+/// the next one, `Ctrl+\` for `opusdm-terminal`, `Ctrl+Print` for a screenshot and
 /// `Ctrl+Shift+Space` for the run dialog.
 pub fn default_hotkeys() -> Vec<Hotkey> {
     vec![
         Hotkey { key: "Alt+1".into(), function: DESKTOP_PREV_ID.into(), global: true },
         Hotkey { key: "Alt+2".into(), function: DESKTOP_NEXT_ID.into(), global: true },
-        Hotkey { key: "Ctrl+backslash".into(), function: "exec:terminator".into(), global: true },
+        Hotkey { key: "Ctrl+backslash".into(), function: "exec:opusdm-terminal".into(), global: true },
         Hotkey { key: "Ctrl+Print".into(), function: "exec:opusdm-shot".into(), global: true },
         Hotkey { key: "Ctrl+Shift+space".into(), function: "exec:opusdm-run".into(), global: true },
     ]

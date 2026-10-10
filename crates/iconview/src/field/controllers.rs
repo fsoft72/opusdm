@@ -138,14 +138,22 @@ fn install_dnd_controllers(field: &IconField) {
     let src = gtk::DragSource::new();
     src.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
     let this = field.clone();
-    src.connect_prepare(move |_, x, y| {
+    src.connect_prepare(move |src, x, y| {
         crate::dbg_log!("icon field drag prepare at ({x}, {y})");
         // In Free mode a primary-button drag is an internal reposition, not
         // an inter-window file drag; leaving this on would let the DnD
-        // machinery steal the gesture and snap the icon back.
-        if !this.inter_window_drag_enabled() {
+        // machinery steal the gesture and snap the icon back. Ctrl held
+        // turns it into a file drag (onto a Lister, a terminal, ...).
+        let ctrl = src.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK);
+        if !this.inter_window_drag_enabled(ctrl) {
             crate::dbg_log!("icon field drag prepare: inter-window drag disabled");
             return None;
+        }
+        // The Ctrl+press that starts the drag toggled the icon under the
+        // pointer, which unselects an icon that was selected: the dragged
+        // icon always travels with the rest of the selection.
+        if let Some(hit) = this.item_at(x, y).filter(|i| ctrl && !this.selected_indices().contains(i)) {
+            this.toggle(hit);
         }
         let paths = this.selected_paths();
         crate::dbg_log!("icon field drag prepare: selected paths={paths:?}");
@@ -235,7 +243,12 @@ fn install_reposition_controller(field: &IconField) {
     let rdrag = gtk::GestureDrag::new();
     rdrag.set_button(gtk::gdk::BUTTON_PRIMARY);
     let this = field.clone();
-    rdrag.connect_drag_begin(move |_, x, y| {
+    rdrag.connect_drag_begin(move |g, x, y| {
+        // Ctrl+drag is a file drag to other windows, never a reposition.
+        if g.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+            this.inner.layout.reposition_active.set(false);
+            return;
+        }
         this.begin_reposition(x, y);
     });
     let this = field.clone();

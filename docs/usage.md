@@ -801,6 +801,64 @@ Arranges the monitors, like the Display Configuration of KDE Plasma.
   monitors are allowed (that is how Duplicate works) but are not reported.
 - **Requires** `xrandr` (package `x11-xserver-utils`).
 
+### 3.35 Terminal (`opusdm-terminal`)
+
+A terminal emulator built on VTE (the same engine as the Lister terminal drawer), with tabs and
+split panes in the style of Terminator.
+
+- **Open it:** the default global hotkey **`Ctrl+\`**, the **External** button of the Lister
+  terminal drawer (opens in the Lister folder), or run `opusdm-terminal`. Options:
+  `-d DIR` (start in DIR), `-e "COMMAND"` (run COMMAND through the shell), `-x PROGRAM ARGS...`
+  (run PROGRAM with the remaining arguments). Every launch opens its own window.
+- **Split:** **Split Vertically** (`Ctrl+Shift+E`) puts a new terminal beside the current one,
+  **Split Horizontally** (`Ctrl+Shift+O`) below it. Splits nest; drag the handle between two panes
+  to resize them. The new shell starts in the directory of the pane it was split from. The focused
+  pane of a split tab has a blue outline. `Ctrl+Shift+W` (or typing `exit`) closes a pane; its
+  neighbour takes the space, and the last pane closes the tab.
+- **Tabs:** `Ctrl+Shift+T` opens one, `Ctrl+Page Down` / `Ctrl+Page Up` switch, the tab bar shows
+  from the second tab on (tabs can be reordered by dragging). `Ctrl+Shift+I` opens a new window.
+- **Focus:** `Alt+Arrows` moves to the pane in that direction, `Ctrl+Shift+N` / `Ctrl+Shift+P` to
+  the next / previous one.
+- **Drag and drop:** files and folders dropped from a Lister (or from the desktop with
+  **Ctrl+drag**, see section 5) are typed at the prompt as shell-quoted paths followed by a space,
+  e.g. `'/home/me/my file.txt' `. Nothing is copied or moved.
+- **Links:** web addresses (`http`, `https`, `ftp`, `file`, `www.`) and e-mail addresses are
+  underlined under the pointer; **Ctrl+click** opens them with the default application. Explicit
+  hyperlinks printed by programs (OSC 8) work too. The right-click menu offers **Open Link** and
+  **Copy Link**.
+- **Export:** **Export Contents...** (`Ctrl+Shift+S` or right-click menu) saves the whole text of
+  the pane, scrollback included, to a text file (proposed name `terminal-DATE-TIME.txt` in the
+  directory of the shell).
+- **Other keys:** `Ctrl+Shift+C` / `Ctrl+Shift+V` copy and paste, `Ctrl+Shift+A` select all,
+  `Ctrl++` / `Ctrl+-` / `Ctrl+0` zoom, `Ctrl+Shift+G` reset and clear, `Ctrl+,` Preferences.
+- **Preferences** (right-click menu or `Ctrl+,`): theme, font, cursor shape and blinking, bold in
+  bright colours, audible bell, **Scrollback lines** (default 2000, **0 = unlimited**) and every
+  hotkey (GTK syntax such as `<Ctrl><Shift>e`; empty disables it). **Save** applies the options to
+  all open terminals of that window's process and writes `~/.config/opusdm/terminal.json`.
+- **Themes:** separate from the Lister and desktop themes. Built in: OpusDM Dark (default), Tango
+  Dark, Tango Light, Solarized Dark, Solarized Light, Dracula, Gruvbox Dark, Nord, One Dark and
+  Classic Amiga. Add your own as one JSON file per theme in `~/.config/opusdm/terminal-themes/`
+  (the **Themes Folder** button of Preferences opens it); a theme with the name of a built-in one
+  replaces it:
+
+  ```json
+  {
+    "name": "My Theme",
+    "foreground": "#d0d0d0",
+    "background": "#101010",
+    "cursor": "#ffffff",
+    "cursor_foreground": "#101010",
+    "selection": "#404060",
+    "selection_foreground": null,
+    "palette": ["#000000", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
+                "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec"]
+  }
+  ```
+
+  `cursor`, `cursor_foreground`, `selection` and `selection_foreground` are optional; the palette
+  needs exactly 16 colours (`#rgb` or `#rrggbb`). A file with an error is skipped (the reason is
+  written to the log).
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
@@ -861,3 +919,6 @@ OpusDM supports full Drag & Drop interactions complying with the standard `text/
 - Standard drop executes a **Copy** operation.
 - Holding **Shift** while dropping executes a **Move** operation.
 - You can also drag files out of or into external applications (text editors, file managers, desktop environments).
+- On the desktop a plain drag moves an icon; **Ctrl+drag** carries the files (the icon under the
+  pointer plus the selected ones) to another window instead: a Lister, `opusdm-terminal` (the paths
+  are typed at the prompt) or an external application.
