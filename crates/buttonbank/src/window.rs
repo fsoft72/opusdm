@@ -1,6 +1,6 @@
 //! One bank window: a top-level window with the grid of buttons.
 
-use crate::{grid, x11};
+use crate::{grid, layer, x11};
 use opusdm_ipc::buttonbank::position_on_screen;
 use gtk4 as gtk;
 use gtk::glib;
@@ -39,8 +39,11 @@ pub struct BankWindow {
     /// The bank the grid was last built from, so a click maps to its button.
     bank: Rc<RefCell<ButtonBank>>,
     /// Where the window should be placed when it is mapped: the saved
-    /// position at first, then wherever it was when it was last hidden.
+    /// position at first, then wherever it was when it was last hidden. For a
+    /// layer surface (see [`layer`]) it is always where the window is.
     place: Rc<Cell<Option<(i32, i32)>>>,
+    /// The window is a Wayland layer surface placed by the bank itself.
+    layered: bool,
 }
 
 /// Fill `window` with the grid for `bank` and apply its appearance.
@@ -70,6 +73,12 @@ impl BankWindow {
         let window = gtk::Window::builder().application(app).resizable(false).build();
         let shared = Rc::new(RefCell::new(ButtonBank::default()));
         fill(&window, &shared, bank, hooks);
+        let saved = bank.x.zip(bank.y).and_then(|p| position_on_screen(p, &current_monitors()));
+        let place = Rc::new(Cell::new(saved));
+        if layer::wants_layer(bank) {
+            init_layer(&window, &place);
+            return BankWindow { window, bank: shared, place, layered: true };
+        }
         let place = Rc::new(Cell::new(bank.x.zip(bank.y)));
         let place_for_map = place.clone();
         let bank_for_map = shared.clone();
@@ -104,7 +113,19 @@ impl BankWindow {
                 glib::ControlFlow::Continue
             });
         });
-        BankWindow { window, bank: shared, place }
+        BankWindow { window, bank: shared, place, layered: false }
+    }
+
+    /// Whether `bank` needs a new window: on Wayland a borderless bank is a
+    /// layer surface and a framed one a normal window, and a window cannot
+    /// turn from one into the other.
+    pub fn needs_rebuild(&self, bank: &ButtonBank) -> bool {
+        layer::wants_layer(bank) != self.layered
+    }
+
+    /// The application the window belongs to.
+    pub fn application(&self) -> Option<gtk::Application> {
+        self.window.application()
     }
 
     /// Rebuild the grid, title and decoration from `bank`. A change of the
@@ -112,14 +133,15 @@ impl BankWindow {
     pub fn update(&self, bank: &ButtonBank, hooks: &WindowHooks) {
         let was_all = self.bank.borrow().all_desktops;
         fill(&self.window, &self.bank, bank, hooks);
-        if self.window.is_mapped() && was_all != bank.all_desktops {
+        // Layer surfaces show on every desktop anyway.
+        if !self.layered && self.window.is_mapped() && was_all != bank.all_desktops {
             x11::set_all_desktops(&self.window, bank.all_desktops);
         }
     }
 
     /// Show or hide the window without destroying it.
     pub fn set_visible(&self, visible: bool) {
-        if !visible {
+        if !visible && !self.layered {
             if let Some(pos) = x11::position(&self.window) {
                 self.place.set(Some(pos));
             }
@@ -134,7 +156,7 @@ impl BankWindow {
 
     /// The position of the window on the screen, if it can be read.
     pub fn position(&self) -> Option<(i32, i32)> {
-        x11::position(&self.window)
+        if self.layered { self.place.get() } else { x11::position(&self.window) }
     }
 
     /// Close the window (runs the `connect_close` callback).
@@ -145,9 +167,42 @@ impl BankWindow {
     /// Call `f` with the window position when the window is closed, whether
     /// by the user or by [`BankWindow::close`].
     pub fn connect_close(&self, f: impl Fn(Option<(i32, i32)>) + 'static) {
-        self.window.connect_close_request(move |w| {
-            f(x11::position(w));
+        let this = self.clone();
+        self.window.connect_close_request(move |_| {
+            f(this.position());
             glib::Propagation::Proceed
         });
     }
+}
+
+/// Make `window` a layer surface at the position in `place`, centered on the
+/// first monitor once mapped when there is none, and moved by Alt+drag.
+fn init_layer(window: &gtk::Window, place: &Rc<Cell<Option<(i32, i32)>>>) {
+    let monitors = current_monitors();
+    let Some(first) = monitors.first().copied() else { return };
+    let pos = place.get().unwrap_or((first.0, first.1));
+    let monitor = layer::monitor_of(pos, &monitors).unwrap_or(first);
+    if !opusdm_ui::layer::init(window, &layer::spec_at(pos, monitor)) { return; }
+    let move_to = {
+        let (window, place) = (window.clone(), place.clone());
+        move |pos: (i32, i32)| {
+            let monitors = current_monitors();
+            let Some(monitor) = layer::monitor_of(pos, &monitors) else { return };
+            opusdm_ui::layer::update(&window, &layer::spec_at(pos, monitor));
+            place.set(Some(pos));
+        }
+    };
+    let move_to = Rc::new(move_to);
+    {
+        let (place, move_to) = (place.clone(), move_to.clone());
+        window.connect_map(move |w| {
+            if place.get().is_some() { return; }
+            move_to(layer::centered(first, (w.width(), w.height())));
+        });
+    }
+    let place = place.clone();
+    layer::connect_alt_drag(window, move |dx, dy| {
+        let Some(pos) = place.get() else { return };
+        move_to(layer::moved(pos, (dx, dy), &current_monitors()));
+    });
 }

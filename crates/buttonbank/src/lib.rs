@@ -4,5 +4,6 @@
 
 pub mod editor;
 pub mod grid;
+pub mod layer;
 pub mod window;
 pub mod x11;

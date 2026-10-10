@@ -145,6 +145,13 @@ impl BankWindows {
         let bank = self.banks.borrow().get(id).cloned();
         let window = self.open.borrow().get(id).map(|o| o.window.clone());
         match (window, bank) {
+            // On Wayland a border change turns a layer surface into a normal
+            // window or back: that takes a new window.
+            (Some(window), Some(bank)) if window.needs_rebuild(&bank) => {
+                let Some(app) = window.application() else { return };
+                window.close();
+                self.open_id(&app, id);
+            }
             (Some(window), Some(bank)) => window.update(&bank, &self.hooks),
             (Some(window), None) => window.close(),
             _ => {}
