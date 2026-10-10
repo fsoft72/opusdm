@@ -25,6 +25,7 @@ mod sni;
 mod systray;
 pub mod tray_ready;
 mod window;
+mod wl_windows;
 pub mod widgets;
 
 pub use window::PANEL_HEIGHT;

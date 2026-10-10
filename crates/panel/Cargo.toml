@@ -16,6 +16,7 @@ gtk4.workspace = true
 gdk4-x11.workspace = true
 x11rb.workspace = true
 opusdm-x11 = { path = "../x11" }
+opusdm-wayland = { path = "../wayland" }
 libc.workspace = true
 async-channel.workspace = true
 dirs.workspace = true

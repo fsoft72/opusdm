@@ -55,6 +55,9 @@ pub struct ClientWin {
     /// Owner process from `_NET_WM_PID`, when the client sets it.
     pub pid: Option<u32>,
     pub icon: Option<IconRgba>,
+    /// Wayland app id (the desktop file name), used for the icon when there
+    /// is no `_NET_WM_ICON`. Always `None` on X11.
+    pub app_id: Option<String>,
     /// Position and size of the client area in root coordinates.
     pub rect: WinRect,
 }
@@ -156,7 +159,10 @@ pub fn pick_icon(words: &[u32], target: i32) -> Option<IconRgba> {
 /// runs until the X connection drops or the receiver is closed.
 pub fn spawn() -> async_channel::Receiver<EwmhEvent> {
     let (tx, rx) = async_channel::unbounded::<EwmhEvent>();
-    if !opusdm_ipc::session::is_x11() { return rx; }
+    if !opusdm_ipc::session::is_x11() {
+        crate::wl_windows::spawn(tx);
+        return rx;
+    }
     std::thread::Builder::new()
         .name("opusdm-panel-ewmh".into())
         .spawn(move || {
@@ -345,7 +351,7 @@ fn read_client(conn: &RustConnection, root: Window, xid: Window, atoms: &Atoms) 
 
     let rect = read_rect(conn, root, xid).unwrap_or_default();
 
-    Some(ClientWin { xid, title, desktop, minimized, pid, icon, rect })
+    Some(ClientWin { xid, title, desktop, minimized, pid, icon, app_id: None, rect })
 }
 
 // --------------------------------------------------------------------------
@@ -397,6 +403,7 @@ fn get_string(conn: &RustConnection, win: Window, prop: u32) -> Option<String> {
 // --------------------------------------------------------------------------
 
 /// Run `f` on the shared connection; a failure is logged, never raised.
+/// On Wayland the actions go through `crate::wl_windows` instead.
 fn with_root(f: impl FnOnce(&opusdm_ui::X11) -> Result<(), opusdm_ui::X11Error>) {
     if let Err(e) = opusdm_ui::with_x11(f) {
         opusdm_ipc::err_log!("opusdm-panel", "X action failed: {e}");
@@ -405,21 +412,26 @@ fn with_root(f: impl FnOnce(&opusdm_ui::X11) -> Result<(), opusdm_ui::X11Error>)
 
 /// Switch to virtual desktop `index`.
 pub fn switch_desktop(index: u32) {
+    if crate::wl_windows::switch_desktop(index) { return; }
     with_root(|x11| x11.send_to_root(x11.root(), "_NET_CURRENT_DESKTOP", [index, CURRENT_TIME, 0, 0, 0]));
 }
 
 /// Raise and focus `xid` (pager source indication).
 pub fn activate_window(xid: u32) {
+    if crate::wl_windows::activate_window(xid) { return; }
     with_root(|x11| x11.send_to_root(xid, "_NET_ACTIVE_WINDOW", [2, CURRENT_TIME, 0, 0, 0]));
 }
 
 /// Minimise `xid` via ICCCM `WM_CHANGE_STATE`.
 pub fn iconify_window(xid: u32) {
+    if crate::wl_windows::iconify_window(xid) { return; }
     with_root(|x11| x11.send_to_root(xid, "WM_CHANGE_STATE", [ICONIC_STATE, 0, 0, 0, 0]));
 }
 
 /// Move `xid` to virtual desktop `index` (pager source indication).
 pub fn move_window_to_desktop(xid: u32, index: u32) {
+    // No Wayland protocol moves another client's window to a workspace.
+    if !opusdm_ipc::session::is_x11() { return; }
     with_root(|x11| x11.send_to_root(xid, "_NET_WM_DESKTOP", [index, 2, 0, 0, 0]));
 }
 

@@ -234,7 +234,7 @@ mod tests {
     use crate::ewmh::WinRect;
 
     fn client(xid: u32, desktop: i64, minimized: bool, rect: WinRect) -> ClientWin {
-        ClientWin { xid, title: String::new(), desktop, minimized, pid: None, icon: None, rect }
+        ClientWin { xid, title: String::new(), desktop, minimized, pid: None, icon: None, app_id: None, rect }
     }
 
     fn state(clients: Vec<ClientWin>) -> PagerState {

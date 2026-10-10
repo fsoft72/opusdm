@@ -110,11 +110,14 @@ fn desktop_label(index: u32, names: &[String]) -> String {
 /// client published its pid. Returns the popover so the caller can release it.
 fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) -> gtk::PopoverMenu {
     let menu = gio::Menu::new();
-    let desktops = gio::Menu::new();
-    for i in 0..count {
-        desktops.append(Some(&desktop_label(i, names)), Some(&format!("win.move({i})")));
+    // Wayland has no request that moves another client's window.
+    if opusdm_ipc::session::is_x11() {
+        let desktops = gio::Menu::new();
+        for i in 0..count {
+            desktops.append(Some(&desktop_label(i, names)), Some(&format!("win.move({i})")));
+        }
+        menu.append_submenu(Some("Move to desktop"), &desktops);
     }
-    menu.append_submenu(Some("Move to desktop"), &desktops);
     if c.pid.is_some() {
         menu.append(Some("Force kill"), Some("win.kill"));
     }
@@ -153,8 +156,9 @@ impl Default for Tasklist {
     }
 }
 
-/// A `gtk::Image` for the window: its `_NET_WM_ICON` when present, otherwise a
-/// generic themed icon.
+/// A `gtk::Image` for the window: its `_NET_WM_ICON` when present, else the
+/// icon of the desktop file its Wayland app id names, else a generic themed
+/// icon.
 fn icon_image(c: &ClientWin) -> gtk::Image {
     if let Some(icon) = &c.icon {
         if icon.width > 0 && icon.height > 0 && icon.rgba.len() == (icon.width * icon.height * 4) as usize
@@ -172,7 +176,21 @@ fn icon_image(c: &ClientWin) -> gtk::Image {
             return img;
         }
     }
-    let img = gtk::Image::from_icon_name("application-x-executable");
+    let img = match c.app_id.as_deref().and_then(app_icon) {
+        Some(icon) => gtk::Image::from_gicon(&icon),
+        None => gtk::Image::from_icon_name("application-x-executable"),
+    };
     img.set_pixel_size(18);
     img
+}
+
+/// The icon of the desktop file named by the Wayland `app_id`
+/// (`org.gnome.Nautilus`, or `foot` for `foot.desktop`), trying the
+/// lowercase name too.
+fn app_icon(app_id: &str) -> Option<gio::Icon> {
+    use gio::prelude::AppInfoExt;
+    [app_id.to_string(), app_id.to_lowercase()]
+        .iter()
+        .find_map(|id| gio::DesktopAppInfo::new(&format!("{id}.desktop")))
+        .and_then(|info| info.icon())
 }

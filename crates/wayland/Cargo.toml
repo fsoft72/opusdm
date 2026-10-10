@@ -1,0 +1,15 @@
+[package]
+name = "opusdm-wayland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_wayland"
+path = "src/lib.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
