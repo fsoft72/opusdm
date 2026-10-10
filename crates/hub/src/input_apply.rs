@@ -19,7 +19,7 @@ pub(crate) fn tick(backend: &impl Backend, last: &mut Option<String>, path: &Pat
 /// Start the thread that keeps the saved input settings applied. A failure
 /// is logged and never stops the hub.
 pub(crate) fn start() {
-    // Wayland without labwc: the compositor owns the input settings.
+    // Wayland without labwc or Wayfire: the compositor owns the input settings.
     if session_problem().is_some() { return; }
     let spawned = std::thread::Builder::new().name("input-apply".to_string()).spawn(|| {
         let backend = for_session();

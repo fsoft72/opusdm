@@ -65,13 +65,13 @@ pub trait Backend {
 
 /// Why the session cannot be configured, or `None`. On Wayland the
 /// settings belong to the compositor, and OpusDM can write them for labwc
-/// only.
-pub fn session_problem_from(window_system: opusdm_ipc::session::WindowSystem, under_labwc: bool) -> Option<String> {
+/// and Wayfire only (`known_compositor`).
+pub fn session_problem_from(window_system: opusdm_ipc::session::WindowSystem, known_compositor: bool) -> Option<String> {
     use opusdm_ipc::session::WindowSystem;
     match window_system {
         WindowSystem::None => Some("No display: run opusdm-input-config inside the OpusDM session.".to_string()),
-        WindowSystem::Wayland if !under_labwc => {
-            Some("On Wayland the input settings belong to the compositor: OpusDM can set them under labwc only.".to_string())
+        WindowSystem::Wayland if !known_compositor => {
+            Some("On Wayland the input settings belong to the compositor: OpusDM can set them under labwc and Wayfire only.".to_string())
         }
         _ => None,
     }
@@ -79,45 +79,49 @@ pub fn session_problem_from(window_system: opusdm_ipc::session::WindowSystem, un
 
 /// `session_problem_from` for the current environment.
 pub fn session_problem() -> Option<String> {
-    session_problem_from(opusdm_ipc::session::current(), opusdm_wayland::labwc::under_labwc())
+    let known_compositor = opusdm_wayland::labwc::under_labwc() || opusdm_wayland::wayfire::under_wayfire();
+    session_problem_from(opusdm_ipc::session::current(), known_compositor)
 }
 
-/// The real backend of this session: labwc's configuration on Wayland, the
-/// X tools otherwise.
+/// The real backend of this session: Wayfire's or labwc's configuration on
+/// Wayland, the X tools otherwise.
 pub enum SessionBackend {
     X(XBackend),
     Labwc(crate::labwc::LabwcBackend),
+    Wayfire(crate::wayfire::WayfireBackend),
 }
 
 /// The backend for this session (see [`session_problem`] first).
 pub fn for_session() -> SessionBackend {
-    if opusdm_ipc::session::is_wayland() { SessionBackend::Labwc(crate::labwc::LabwcBackend::new()) } else { SessionBackend::X(XBackend::new()) }
+    if !opusdm_ipc::session::is_wayland() { return SessionBackend::X(XBackend::new()); }
+    if opusdm_wayland::wayfire::under_wayfire() { return SessionBackend::Wayfire(crate::wayfire::WayfireBackend::new()); }
+    SessionBackend::Labwc(crate::labwc::LabwcBackend::new())
 }
 
 impl Backend for SessionBackend {
     /// Ask the backend of the session.
     fn status(&self) -> Status {
-        match self { SessionBackend::X(b) => b.status(), SessionBackend::Labwc(b) => b.status() }
+        match self { SessionBackend::X(b) => b.status(), SessionBackend::Labwc(b) => b.status(), SessionBackend::Wayfire(b) => b.status() }
     }
 
     /// Ask the backend of the session.
     fn read_current(&self) -> InputSettings {
-        match self { SessionBackend::X(b) => b.read_current(), SessionBackend::Labwc(b) => b.read_current() }
+        match self { SessionBackend::X(b) => b.read_current(), SessionBackend::Labwc(b) => b.read_current(), SessionBackend::Wayfire(b) => b.read_current() }
     }
 
     /// Ask the backend of the session.
     fn apply(&self, change: &Change) -> Result<(), InputError> {
-        match self { SessionBackend::X(b) => b.apply(change), SessionBackend::Labwc(b) => b.apply(change) }
+        match self { SessionBackend::X(b) => b.apply(change), SessionBackend::Labwc(b) => b.apply(change), SessionBackend::Wayfire(b) => b.apply(change) }
     }
 
     /// Ask the backend of the session.
     fn signature(&self) -> String {
-        match self { SessionBackend::X(b) => b.signature(), SessionBackend::Labwc(b) => b.signature() }
+        match self { SessionBackend::X(b) => b.signature(), SessionBackend::Labwc(b) => b.signature(), SessionBackend::Wayfire(b) => b.signature() }
     }
 
     /// Ask the backend of the session.
     fn refresh(&self) {
-        match self { SessionBackend::X(b) => b.refresh(), SessionBackend::Labwc(b) => b.refresh() }
+        match self { SessionBackend::X(b) => b.refresh(), SessionBackend::Labwc(b) => b.refresh(), SessionBackend::Wayfire(b) => b.refresh() }
     }
 }
 
@@ -306,7 +310,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_display_or_wayland_without_labwc_is_a_problem() {
+    fn no_display_or_an_unknown_wayland_compositor_is_a_problem() {
         use opusdm_ipc::session::WindowSystem;
         assert!(session_problem_from(WindowSystem::None, false).is_some());
         assert!(session_problem_from(WindowSystem::Wayland, false).is_some());

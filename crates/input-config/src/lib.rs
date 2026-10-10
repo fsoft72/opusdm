@@ -13,6 +13,7 @@ pub mod model;
 pub mod parse;
 pub mod session;
 pub mod store;
+pub mod wayfire;
 
 pub use error::InputError;
 pub use model::*;

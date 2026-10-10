@@ -683,7 +683,11 @@ window is open, so you can try it.
 - **Wayland:** under labwc the settings are written into labwc's configuration (a `<libinput>`
   block and the key repeat in `~/.config/labwc/rc.xml`, the layouts as `XKB_DEFAULT_*` lines of
   `~/.config/labwc/environment`, each in a block marked as OpusDM's; the rest is never touched)
-  and labwc reloads them. Other Wayland compositors keep their own input settings: the window
+  and labwc reloads them. Under Wayfire they go into the `[input]` section of the `wayfire.ini`
+  Wayfire runs with (`$WAYFIRE_CONFIG_FILE`, for the OpusDM session `~/.config/opusdm/wayfire.ini`)
+  as a block marked as OpusDM's, after the user's own lines so its values win; Wayfire reloads the
+  file by itself. Wayfire has one left handed switch for every pointer, so **Left handed** also
+  swaps the touchpad buttons. Other Wayland compositors keep their own input settings: the window
   only says so.
 - **Limits:** with no display the window only says so. The double
   click time is not an X setting and is not offered. There are no per-device settings: one group

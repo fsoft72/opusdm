@@ -51,15 +51,16 @@ pub fn xml_markers(name: &str) -> (String, String) {
     (format!("<!-- OpusDM {name}: begin (written by OpusDM, do not edit) -->"), format!("<!-- OpusDM {name}: end -->"))
 }
 
-/// The shell comments that open and close the OpusDM block `name`.
-fn env_markers(name: &str) -> (String, String) {
+/// The shell comments that open and close the OpusDM block `name` (also
+/// the markers of a block in Wayfire's INI file).
+pub(crate) fn env_markers(name: &str) -> (String, String) {
     (format!("# OpusDM {name}: begin (written by OpusDM, do not edit)"), format!("# OpusDM {name}: end"))
 }
 
 /// `text` with the whole lines from the one holding `begin` to the one
 /// holding `end` replaced by `replacement`. `None` when the markers are not
 /// both there, in that order.
-fn replace_marked(text: &str, begin: &str, end: &str, replacement: &str) -> Option<String> {
+pub(crate) fn replace_marked(text: &str, begin: &str, end: &str, replacement: &str) -> Option<String> {
     let (b, e) = (text.find(begin)?, text.find(end)?);
     if b > e { return None; }
     let start = text[..b].rfind('\n').map_or(0, |i| i + 1);

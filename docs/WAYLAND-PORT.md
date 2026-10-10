@@ -186,7 +186,7 @@ for the screen settings.
 | Full screen pause, Start in Tray | EWMH | foreign-toplevel | no | no |
 | Global hotkeys | `XGrabKey` | labwc keybinds (`rc.xml` block); sway: bind `opusdm-hub --run` by hand | GlobalShortcuts portal | GlobalShortcuts portal |
 | Screen settings, hot plug | `xrandr` | `wlr-randr` | no | no |
-| Input settings | `xinput`, `setxkbmap`, `xset` | labwc only (`rc.xml`, `environment`) | no | no |
+| Input settings | `xinput`, `setxkbmap`, `xset` | labwc (`rc.xml`, `environment`) and Wayfire (`wayfire.ini`) | no | no |
 | Screenshots | `GetImage` | wlr-screencopy | no | no |
 | XEmbed tray | yes | no (SNI only) | no (SNI only) | no (SNI only) |
 | Window snapping (`opusdm-snap`) | yes | compositor's own | compositor's own | compositor's own |
