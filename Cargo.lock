@@ -2173,6 +2173,7 @@ dependencies = [
  "image",
  "opusdm-ipc",
  "opusdm-ui",
+ "opusdm-wayland",
  "opusdm-x11",
  "serde",
  "tempfile",
