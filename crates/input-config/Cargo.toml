@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
 opusdm-ui = { path = "../ui" }
+opusdm-wayland = { path = "../wayland" }
 gtk4.workspace = true
 serde.workspace = true
 serde_json.workspace = true

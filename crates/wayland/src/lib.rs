@@ -9,6 +9,7 @@
 
 mod client;
 mod model;
+pub mod labwc;
 pub mod screencopy;
 
 pub use client::{shared, Session};

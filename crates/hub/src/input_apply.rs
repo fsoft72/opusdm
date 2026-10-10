@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use opusdm_input_config::apply::reapply_if_changed;
-use opusdm_input_config::backend::{Backend, XBackend};
+use opusdm_input_config::backend::{for_session, session_problem, Backend};
 use opusdm_input_config::{store, InputError};
 
 /// Seconds between two looks at the pointer list.
@@ -19,8 +19,10 @@ pub(crate) fn tick(backend: &impl Backend, last: &mut Option<String>, path: &Pat
 /// Start the thread that keeps the saved input settings applied. A failure
 /// is logged and never stops the hub.
 pub(crate) fn start() {
+    // Wayland without labwc: the compositor owns the input settings.
+    if session_problem().is_some() { return; }
     let spawned = std::thread::Builder::new().name("input-apply".to_string()).spawn(|| {
-        let backend = XBackend::new();
+        let backend = for_session();
         let path = store::input_path();
         let mut last = None;
         loop {

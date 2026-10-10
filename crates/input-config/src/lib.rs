@@ -8,6 +8,7 @@ pub mod change;
 pub mod commands;
 pub mod error;
 pub mod fake;
+pub mod labwc;
 pub mod model;
 pub mod parse;
 pub mod session;

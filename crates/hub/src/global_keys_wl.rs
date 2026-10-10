@@ -4,10 +4,8 @@
 //! - **labwc** (it sets `LABWC_PID` for its children): the global hotkeys
 //!   become labwc keybinds that start `opusdm-hub --run FUNCTION` (see
 //!   `remote`). They live in a marked block inside `<keyboard>` of labwc's
-//!   `rc.xml`, rewritten when the hotkeys change, after which labwc is told
-//!   to reload (`SIGHUP`, what `labwc --reconfigure` does). Nothing else in
-//!   the file is touched. `OPUSDM_LABWC_RC` names another `rc.xml` (the
-//!   sandbox of `run-wayland.sh` uses its own).
+//!   `rc.xml` (see `opusdm_wayland::labwc`), rewritten when the hotkeys
+//!   change, after which labwc reloads it.
 //! - **other compositors**: the `org.freedesktop.portal.GlobalShortcuts`
 //!   portal (KDE Plasma, GNOME 48+, Hyprland), which asks the user once to
 //!   confirm the shortcuts and then reports each press.
@@ -23,15 +21,8 @@ use std::sync::{Arc, Mutex};
 use opusdm_ipc::bindings::{parse_key, Hotkey};
 use opusdm_ipc::function::FunctionId;
 
-/// First line of the block of `rc.xml` that belongs to OpusDM.
-pub const BLOCK_BEGIN: &str = "<!-- OpusDM global hotkeys: begin (written by opusdm-hub, do not edit) -->";
-
-/// Last line of the block of `rc.xml` that belongs to OpusDM.
-pub const BLOCK_END: &str = "<!-- OpusDM global hotkeys: end -->";
-
-/// Environment variable naming the `rc.xml` to keep in sync instead of
-/// labwc's default one.
-pub const ENV_LABWC_RC: &str = "OPUSDM_LABWC_RC";
+/// Name of the OpusDM block of labwc's `rc.xml` that holds the hotkeys.
+pub const BLOCK_NAME: &str = "global hotkeys";
 
 /// Called with the function of each global hotkey pressed.
 pub type OnHit = Box<dyn Fn(FunctionId) + Send + Sync>;
@@ -48,9 +39,9 @@ impl GlobalKeysWl {
     /// Pick the backend: labwc when the hub runs under it, else the portal.
     /// `None` (logged) when there is none.
     pub fn start(on_hit: OnHit) -> Option<GlobalKeysWl> {
-        if std::env::var_os("LABWC_PID").is_some() {
+        if opusdm_wayland::labwc::under_labwc() {
             let hub = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("opusdm-hub"));
-            return Some(GlobalKeysWl::Labwc { rc: labwc_rc_path(), hub, sock: opusdm_ipc::sockpath::hub_sock_path() });
+            return Some(GlobalKeysWl::Labwc { rc: opusdm_wayland::labwc::rc_path(), hub, sock: opusdm_ipc::sockpath::hub_sock_path() });
         }
         match portal::start(on_hit) {
             Ok(tx) => Some(GlobalKeysWl::Portal(tx)),
@@ -80,14 +71,6 @@ impl GlobalKeysWl {
 // labwc
 // --------------------------------------------------------------------------
 
-/// labwc's `rc.xml`: `$OPUSDM_LABWC_RC`, else `$XDG_CONFIG_HOME/labwc/rc.xml`.
-pub fn labwc_rc_path() -> PathBuf {
-    if let Some(path) = std::env::var_os(ENV_LABWC_RC).filter(|p| !p.is_empty()) {
-        return PathBuf::from(path);
-    }
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config")).join("labwc").join("rc.xml")
-}
-
 /// A hotkey text (`Ctrl+Alt+u`) as a labwc key (`C-A-u`): `S`, `C`, `A`, `W`
 /// for Shift, Ctrl, Alt, Super, then the XKB key name (the same names GDK
 /// uses). `None` when the text does not parse.
@@ -107,14 +90,9 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// `text` escaped for an XML attribute value.
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
-}
-
-/// The OpusDM block of `rc.xml` for `globals` (markers included): one
-/// keybind per hotkey running `hub --run FUNCTION --sock SOCK`. Empty when
-/// there are no global hotkeys. The second value lists the key texts that
+/// The content of the OpusDM block of `rc.xml` for `globals`: one keybind
+/// per hotkey running `hub --run FUNCTION --sock SOCK`. Empty when there are
+/// no global hotkeys. The second value lists the key texts that
 /// do not parse, for the log.
 pub fn labwc_block(globals: &[Hotkey], hub: &Path, sock: &Path) -> (String, Vec<String>) {
     let mut lines = Vec::new();
@@ -132,70 +110,27 @@ pub fn labwc_block(globals: &[Hotkey], hub: &Path, sock: &Path) -> (String, Vec<
         );
         lines.push(format!(
             "    <keybind key=\"{}\">\n      <action name=\"Execute\" command=\"{}\" />\n    </keybind>\n",
-            xml_escape(&key),
-            xml_escape(&command)
+            opusdm_wayland::labwc::xml_escape(&key),
+            opusdm_wayland::labwc::xml_escape(&command)
         ));
     }
-    if lines.is_empty() { return (String::new(), bad); }
-    (format!("    {BLOCK_BEGIN}\n{}    {BLOCK_END}\n", lines.concat()), bad)
-}
-
-/// `rc` (the current `rc.xml`, `None` when there is none) with the OpusDM
-/// block replaced by `block`: an existing block is replaced in place (or
-/// removed when `block` is empty), otherwise `block` goes at the end of
-/// `<keyboard>`, which is created (with labwc's default keybinds) when
-/// missing. Fails on a file with no `labwc_config` element.
-pub fn with_block(rc: Option<&str>, block: &str) -> Result<String, String> {
-    let Some(rc) = rc else {
-        if block.is_empty() { return Ok(String::new()); }
-        return Ok(format!("<?xml version=\"1.0\"?>\n<labwc_config>\n  <keyboard>\n    <default />\n{block}  </keyboard>\n</labwc_config>\n"));
-    };
-    if let (Some(begin), Some(end)) = (rc.find(BLOCK_BEGIN), rc.find(BLOCK_END)) {
-        if begin < end {
-            // Take the whole lines of the markers, indentation included.
-            let start = rc[..begin].rfind('\n').map_or(0, |i| i + 1);
-            let stop = rc[end..].find('\n').map_or(rc.len(), |i| end + i + 1);
-            return Ok(format!("{}{block}{}", &rc[..start], &rc[stop..]));
-        }
-    }
-    if block.is_empty() { return Ok(rc.to_string()); }
-    if let Some(close) = rc.find("</keyboard>") {
-        let start = rc[..close].rfind('\n').map_or(close, |i| i + 1);
-        return Ok(format!("{}{block}{}", &rc[..start], &rc[start..]));
-    }
-    let Some(close) = rc.rfind("</labwc_config>") else { return Err("not a labwc configuration (no labwc_config element)".to_string()) };
-    Ok(format!("{}  <keyboard>\n    <default />\n{block}  </keyboard>\n{}", &rc[..close], &rc[close..]))
+    (lines.concat(), bad)
 }
 
 /// Bring the OpusDM block of `rc` in line with `globals` and have labwc
 /// reload it when the file changed.
 fn sync_labwc(rc: &Path, globals: &[Hotkey], hub: &Path, sock: &Path) -> Result<(), String> {
+    use opusdm_wayland::labwc;
     let (block, bad) = labwc_block(globals, hub, sock);
     for key in bad {
         opusdm_ipc::err_log!("opusdm-hub", "global hotkey '{key}' cannot be written as a labwc keybind");
     }
-    let current = match std::fs::read_to_string(rc) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.to_string()),
-    };
-    let updated = with_block(current.as_deref(), &block)?;
-    if current.as_deref().unwrap_or("") == updated { return Ok(()); }
-    if let Some(dir) = rc.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
-    let tmp = rc.with_extension("xml.opusdm-tmp");
-    std::fs::write(&tmp, &updated).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, rc).map_err(|e| e.to_string())?;
-    reload_labwc();
-    Ok(())
-}
-
-/// Tell the labwc this hub runs under to reload its configuration.
-fn reload_labwc() {
-    let Some(pid) = std::env::var("LABWC_PID").ok().and_then(|p| p.parse::<libc::pid_t>().ok()) else { return };
-    // SAFETY: `kill` takes plain integers and has no memory-safety contract.
-    if unsafe { libc::kill(pid, libc::SIGHUP) } != 0 {
-        opusdm_ipc::err_log!("opusdm-hub", "cannot ask labwc ({pid}) to reload: {}", std::io::Error::last_os_error());
+    let current = labwc::read(rc)?;
+    let updated = labwc::with_block(current.as_deref(), labwc::Section::Keyboard, BLOCK_NAME, &block)?;
+    if labwc::write_if_changed(rc, current.as_deref(), &updated)? {
+        labwc::reload()?;
     }
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -363,37 +298,9 @@ mod tests {
     fn the_block_runs_the_hub_with_quoted_arguments() {
         let (block, bad) = labwc_block(&[hotkey("Ctrl+Print", "exec:opusdm-shot"), hotkey("bad+key", "x")], Path::new("/opt/o dm/opusdm-hub"), Path::new("/run/h.sock"));
         assert_eq!(bad, ["bad+key"]);
-        assert!(block.starts_with(&format!("    {BLOCK_BEGIN}\n")));
-        assert!(block.contains("<keybind key=\"C-Print\">"));
+        assert!(block.starts_with("    <keybind key=\"C-Print\">\n"));
         assert!(block.contains("command=\"&apos;/opt/o dm/opusdm-hub&apos; --run &apos;exec:opusdm-shot&apos; --sock &apos;/run/h.sock&apos;\""));
-        assert!(block.ends_with(&format!("    {BLOCK_END}\n")));
+        assert!(block.ends_with("    </keybind>\n"));
         assert_eq!(labwc_block(&[], Path::new("h"), Path::new("s")).0, "");
-    }
-
-    #[test]
-    fn the_block_goes_at_the_end_of_the_keyboard_section() {
-        let rc = "<labwc_config>\n  <keyboard>\n    <default />\n  </keyboard>\n</labwc_config>\n";
-        let out = with_block(Some(rc), "    BLOCK\n").unwrap();
-        assert_eq!(out, "<labwc_config>\n  <keyboard>\n    <default />\n    BLOCK\n  </keyboard>\n</labwc_config>\n");
-    }
-
-    #[test]
-    fn an_existing_block_is_replaced_or_removed() {
-        let rc = format!("<labwc_config>\n  <keyboard>\n    {BLOCK_BEGIN}\n    old\n    {BLOCK_END}\n    <keybind key=\"W-x\" />\n  </keyboard>\n</labwc_config>\n");
-        let out = with_block(Some(&rc), "    NEW\n").unwrap();
-        assert_eq!(out, "<labwc_config>\n  <keyboard>\n    NEW\n    <keybind key=\"W-x\" />\n  </keyboard>\n</labwc_config>\n");
-        let gone = with_block(Some(&rc), "").unwrap();
-        assert_eq!(gone, "<labwc_config>\n  <keyboard>\n    <keybind key=\"W-x\" />\n  </keyboard>\n</labwc_config>\n");
-    }
-
-    #[test]
-    fn a_missing_keyboard_section_or_file_is_created_with_the_defaults() {
-        let out = with_block(Some("<labwc_config>\n</labwc_config>\n"), "    B\n").unwrap();
-        assert_eq!(out, "<labwc_config>\n  <keyboard>\n    <default />\n    B\n  </keyboard>\n</labwc_config>\n");
-        let fresh = with_block(None, "    B\n").unwrap();
-        assert!(fresh.contains("<keyboard>\n    <default />\n    B\n  </keyboard>"));
-        assert_eq!(with_block(None, "").unwrap(), "");
-        assert_eq!(with_block(Some("<labwc_config></labwc_config>"), "").unwrap(), "<labwc_config></labwc_config>", "nothing to add, nothing changes");
-        assert!(with_block(Some("<openbox_config/>"), "    B\n").is_err());
     }
 }

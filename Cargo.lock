@@ -2041,6 +2041,7 @@ dependencies = [
  "libc",
  "opusdm-ipc",
  "opusdm-ui",
+ "opusdm-wayland",
  "serde",
  "serde_json",
  "tempfile",

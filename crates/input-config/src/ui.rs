@@ -7,7 +7,7 @@ use std::time::Duration;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_input_config::backend::{GroupStatus, XBackend};
+use opusdm_input_config::backend::{GroupStatus, SessionBackend};
 use opusdm_input_config::parse::{load_xkb_lists, XkbLists};
 use opusdm_input_config::session::Session;
 use opusdm_input_config::{
@@ -32,7 +32,7 @@ type Edit = Box<dyn FnOnce(&mut InputSettings)>;
 
 /// What every callback of the window shares.
 struct State {
-    session: RefCell<Session<XBackend>>,
+    session: RefCell<Session<SessionBackend>>,
     status: gtk::Label,
     pending: RefCell<Option<Edit>>,
     timer: RefCell<Option<glib::SourceId>>,
@@ -330,7 +330,7 @@ fn keyboard_page(state: &Rc<State>, status: &GroupStatus, lists: Rc<XkbLists>) -
 }
 
 /// Open the Input window on `backend`.
-pub fn open(app: &gtk::Application, backend: XBackend) {
+pub fn open(app: &gtk::Application, backend: SessionBackend) {
     let session = Session::open(backend);
     let status = session.status();
     let status_label = gtk::Label::new(None);

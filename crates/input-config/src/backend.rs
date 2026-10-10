@@ -63,20 +63,62 @@ pub trait Backend {
     fn refresh(&self);
 }
 
-/// Why the session cannot be configured, or `None`.
-pub fn session_problem_from(display: Option<&str>, session_type: Option<&str>) -> Option<String> {
-    if display.map(str::is_empty).unwrap_or(true) {
-        return Some("No X display: run opusdm-input-config inside the OpusDM session.".to_string());
+/// Why the session cannot be configured, or `None`. On Wayland the
+/// settings belong to the compositor, and OpusDM can write them for labwc
+/// only.
+pub fn session_problem_from(window_system: opusdm_ipc::session::WindowSystem, under_labwc: bool) -> Option<String> {
+    use opusdm_ipc::session::WindowSystem;
+    match window_system {
+        WindowSystem::None => Some("No display: run opusdm-input-config inside the OpusDM session.".to_string()),
+        WindowSystem::Wayland if !under_labwc => {
+            Some("On Wayland the input settings belong to the compositor: OpusDM can set them under labwc only.".to_string())
+        }
+        _ => None,
     }
-    if session_type == Some("wayland") {
-        return Some("Input settings work on X11 sessions only.".to_string());
-    }
-    None
 }
 
 /// `session_problem_from` for the current environment.
 pub fn session_problem() -> Option<String> {
-    session_problem_from(std::env::var("DISPLAY").ok().as_deref(), std::env::var("XDG_SESSION_TYPE").ok().as_deref())
+    session_problem_from(opusdm_ipc::session::current(), opusdm_wayland::labwc::under_labwc())
+}
+
+/// The real backend of this session: labwc's configuration on Wayland, the
+/// X tools otherwise.
+pub enum SessionBackend {
+    X(XBackend),
+    Labwc(crate::labwc::LabwcBackend),
+}
+
+/// The backend for this session (see [`session_problem`] first).
+pub fn for_session() -> SessionBackend {
+    if opusdm_ipc::session::is_wayland() { SessionBackend::Labwc(crate::labwc::LabwcBackend::new()) } else { SessionBackend::X(XBackend::new()) }
+}
+
+impl Backend for SessionBackend {
+    /// Ask the backend of the session.
+    fn status(&self) -> Status {
+        match self { SessionBackend::X(b) => b.status(), SessionBackend::Labwc(b) => b.status() }
+    }
+
+    /// Ask the backend of the session.
+    fn read_current(&self) -> InputSettings {
+        match self { SessionBackend::X(b) => b.read_current(), SessionBackend::Labwc(b) => b.read_current() }
+    }
+
+    /// Ask the backend of the session.
+    fn apply(&self, change: &Change) -> Result<(), InputError> {
+        match self { SessionBackend::X(b) => b.apply(change), SessionBackend::Labwc(b) => b.apply(change) }
+    }
+
+    /// Ask the backend of the session.
+    fn signature(&self) -> String {
+        match self { SessionBackend::X(b) => b.signature(), SessionBackend::Labwc(b) => b.signature() }
+    }
+
+    /// Ask the backend of the session.
+    fn refresh(&self) {
+        match self { SessionBackend::X(b) => b.refresh(), SessionBackend::Labwc(b) => b.refresh() }
+    }
 }
 
 /// The Debian package that holds `tool`, for the error message.
@@ -264,12 +306,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_display_or_wayland_is_a_problem() {
-        assert!(session_problem_from(None, None).is_some());
-        assert!(session_problem_from(Some(""), None).is_some());
-        assert!(session_problem_from(Some(":0"), Some("wayland")).is_some());
-        assert_eq!(session_problem_from(Some(":0"), Some("x11")), None);
-        assert_eq!(session_problem_from(Some(":0"), None), None);
+    fn no_display_or_wayland_without_labwc_is_a_problem() {
+        use opusdm_ipc::session::WindowSystem;
+        assert!(session_problem_from(WindowSystem::None, false).is_some());
+        assert!(session_problem_from(WindowSystem::Wayland, false).is_some());
+        assert_eq!(session_problem_from(WindowSystem::Wayland, true), None);
+        assert_eq!(session_problem_from(WindowSystem::X11, false), None);
     }
 
     #[test]
