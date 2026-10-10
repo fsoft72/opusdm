@@ -12,6 +12,7 @@ pub mod compositor;
 mod model;
 pub mod labwc;
 pub mod screencopy;
+pub mod wayfire;
 
 pub use client::{shared, Session};
 pub use model::{apply_states, pager_order, parse_coordinates, wrapped_index, Snapshot, Toplevel, ToplevelId, Workspace};

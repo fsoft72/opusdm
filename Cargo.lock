@@ -2123,6 +2123,7 @@ dependencies = [
  "opusdm-ui",
  "opusdm-wayland",
  "opusdm-x11",
+ "serde_json",
  "tempfile",
  "x11rb",
  "zbus",
@@ -2275,6 +2276,7 @@ version = "0.7.0"
 dependencies = [
  "libc",
  "opusdm-ipc",
+ "serde_json",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",

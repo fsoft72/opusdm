@@ -5,10 +5,11 @@
 #   bin/      opusdm-hub, opusdm-lister, opusdm-settings, opusdm-dock, opusdm-run,
 #             opusdm-shot, opusdm-terminal, opusdm-player, opusdm-viewer, opusdm-input-config, opusdm-screen, opusdm-apps-editor
 #             (the hub finds opusdm-lister next to itself, keep them together)
-#   config/   openbox-rc.xml, picom.conf, labwc-rc.xml
+#   config/   openbox-rc.xml, picom.conf, labwc-rc.xml, wayfire.ini
 #   themes/   <slug>.zip theme packages
 #   opusdm-session            X11 session script (Openbox + picom + opusdm-hub)
-#   opusdm-session-wayland    Wayland session script (labwc + opusdm-hub)
+#   opusdm-session-wayland    Wayland session script (Wayfire if installed,
+#                             else labwc, + opusdm-hub)
 #   opusdm.desktop            "OpusDM (X11)" xsession entry template
 #   opusdm-wayland.desktop    "OpusDM (Wayland)" wayland-session entry template
 #                             (Exec of both is set by install.sh)
@@ -45,7 +46,7 @@ done
 cp "$REPO_ROOT/scripts/opusdm-open-folder" "$DIST/bin/opusdm-open-folder"
 cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.desktop"
 
-cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$REPO_ROOT/labwc-rc.xml" "$DIST/config/"
+cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$REPO_ROOT/labwc-rc.xml" "$REPO_ROOT/wayfire.ini" "$DIST/config/"
 cp "$REPO_ROOT"/target/themes/*.zip "$DIST/themes/"
 
 # X11 session script: resolves its own location, so dist can live anywhere
@@ -71,10 +72,13 @@ exec openbox --config-file "$HERE/config/openbox-rc.xml"
 SESSION
 chmod +x "$DIST/opusdm-session"
 
-# Wayland session script: labwc as the compositor, the hub started by it.
+# Wayland session script: Wayfire or labwc as the compositor, the hub
+# started by it.
 cat > "$DIST/opusdm-session-wayland" <<'SESSION'
 #!/bin/sh
-# OpusDM Wayland session: labwc as the compositor, opusdm-hub started by it.
+# OpusDM Wayland session: opusdm-hub started by the compositor. The
+# compositor is Wayfire when it is installed (its IPC gives the pager the
+# window positions), else labwc. OPUSDM_COMPOSITOR=wayfire|labwc forces one.
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
@@ -82,6 +86,34 @@ export PATH="$HERE/bin:$PATH"
 export XDG_SESSION_TYPE=wayland
 # GTK must not be pushed onto XWayland by a leftover setting.
 unset GDK_BACKEND
+
+COMPOSITOR="${OPUSDM_COMPOSITOR:-}"
+if [ -z "$COMPOSITOR" ]; then
+    if command -v wayfire >/dev/null 2>&1; then COMPOSITOR=wayfire; else COMPOSITOR=labwc; fi
+fi
+
+if [ "$COMPOSITOR" = "wayfire" ]; then
+    # Wayfire reads a per-user copy of the OpusDM wayfire.ini (made the first
+    # time, then left to the user), not ~/.config/wayfire.ini: a Wayfire
+    # setup of the user's own stays untouched. It starts $OPUSDM_HUB.
+    WAYFIRE_INI="${XDG_CONFIG_HOME:-$HOME/.config}/opusdm/wayfire.ini"
+    if [ ! -f "$WAYFIRE_INI" ]; then
+        mkdir -p "$(dirname "$WAYFIRE_INI")"
+        cp "$HERE/config/wayfire.ini" "$WAYFIRE_INI"
+    fi
+    export OPUSDM_HUB="$HERE/bin/opusdm-hub"
+    # Wayfire's output goes to its own log (the previous run's is kept as
+    # wayfire.log.1). OPUSDM_WAYFIRE_DEBUG=1, or the file wayfire-debug next
+    # to wayfire.ini (a login manager sets no variables), adds -d.
+    LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/opusdm"
+    mkdir -p "$LOG_DIR"
+    [ -f "$LOG_DIR/wayfire.log" ] && mv -f "$LOG_DIR/wayfire.log" "$LOG_DIR/wayfire.log.1"
+    WAYFIRE_DEBUG=""
+    if [ "${OPUSDM_WAYFIRE_DEBUG:-0}" = "1" ] || [ -f "$(dirname "$WAYFIRE_INI")/wayfire-debug" ]; then
+        WAYFIRE_DEBUG="-d"
+    fi
+    exec wayfire $WAYFIRE_DEBUG -c "$WAYFIRE_INI" >"$LOG_DIR/wayfire.log" 2>&1
+fi
 
 # labwc reads ~/.config/labwc/rc.xml. The first time, start from the OpusDM
 # one; the hub then keeps its own marked blocks in it (global hotkeys, input
@@ -109,10 +141,10 @@ DESKTOP
 cat > "$DIST/opusdm-wayland.desktop" <<'DESKTOP'
 [Desktop Entry]
 Name=OpusDM (Wayland)
-Comment=OpusDM desktop on labwc
+Comment=OpusDM desktop on Wayfire or labwc
 Exec=@PREFIX@/opusdm-session-wayland
 Type=Application
-DesktopNames=OpusDM;labwc;wlroots
+DesktopNames=OpusDM;wlroots
 DESKTOP
 
 cat > "$DIST/install.sh" <<'INSTALL'
@@ -121,7 +153,8 @@ cat > "$DIST/install.sh" <<'INSTALL'
 # manager (SDDM, GDM, LightDM...).
 # Usage: ./install.sh --x11|--wayland [--x11|--wayland] [prefix]
 #   --x11       register "OpusDM (X11)" (Openbox + picom) in /usr/share/xsessions
-#   --wayland   register "OpusDM (Wayland)" (labwc) in /usr/share/wayland-sessions
+#   --wayland   register "OpusDM (Wayland)" (Wayfire if installed, else labwc)
+#               in /usr/share/wayland-sessions
 #   At least one of the two is required; both can be given.
 #   prefix      default /opt/opusdm (needs sudo)
 set -eu
@@ -131,7 +164,7 @@ X11=0
 WAYLAND=0
 
 usage() {
-    sed -n '4,8p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '4,9p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -152,7 +185,13 @@ if [ "$X11" -eq 1 ] && ! command -v openbox >/dev/null 2>&1; then
     echo "install: warning: openbox is not installed, the X11 session needs it (package: openbox)" >&2
 fi
 if [ "$WAYLAND" -eq 1 ]; then
-    command -v labwc >/dev/null 2>&1 || echo "install: warning: labwc is not installed, the Wayland session needs it (package: labwc)" >&2
+    if command -v wayfire >/dev/null 2>&1; then
+        echo "install: the Wayland session uses Wayfire"
+    elif command -v labwc >/dev/null 2>&1; then
+        echo "install: the Wayland session uses labwc (install wayfire to get window boxes in the pager)"
+    else
+        echo "install: warning: neither wayfire nor labwc is installed, the Wayland session needs one (package: wayfire or labwc)" >&2
+    fi
     command -v wlr-randr >/dev/null 2>&1 || echo "install: warning: wlr-randr is not installed, the screen settings need it (package: wlr-randr)" >&2
 fi
 

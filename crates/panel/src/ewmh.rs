@@ -430,8 +430,7 @@ pub fn iconify_window(xid: u32) {
 
 /// Move `xid` to virtual desktop `index` (pager source indication).
 pub fn move_window_to_desktop(xid: u32, index: u32) {
-    // No Wayland protocol moves another client's window to a workspace.
-    if !opusdm_ipc::session::is_x11() { return; }
+    if crate::wl_windows::move_window_to_desktop(xid, index) { return; }
     with_root(|x11| x11.send_to_root(xid, "_NET_WM_DESKTOP", [index, 2, 0, 0, 0]));
 }
 
