@@ -6,7 +6,7 @@ use crate::config::{CursorShape, TerminalConfig, MAX_SCROLLBACK_LINES};
 use crate::shared::Shared;
 use crate::theme::user_themes_dir;
 use gtk4 as gtk;
-use gtk::{gio, pango};
+use gtk::{gdk, gio, glib, pango};
 use gtk::prelude::*;
 use std::rc::Rc;
 
@@ -30,7 +30,7 @@ struct Form {
 pub fn open(shared: &Rc<Shared>, parent: &gtk::Window) {
     shared.reload_themes();
     let config = shared.config();
-    let shell = opusdm_ui::DialogShell::new(parent, "Terminal Preferences").size(560, 640).scrolled();
+    let shell = opusdm_ui::DialogShell::new(parent, "Terminal Preferences").size(560, 640);
     let form = Rc::new(build_form(shared, &config, shell.content()));
 
     let themes_btn = shell.button("Themes Folder");
@@ -83,9 +83,32 @@ fn row(grid: &gtk::Grid, index: i32, label: &str, widget: &impl IsA<gtk::Widget>
     grid.attach(widget, 1, index, 1, 1);
 }
 
-/// Build the form widgets into `content`, filled from `config`.
+/// The padded vertical box of one notebook page.
+fn page_box() -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, GRID_SPACING);
+    page.set_margin_start(GRID_SPACING);
+    page.set_margin_end(GRID_SPACING);
+    page.set_margin_top(GRID_SPACING);
+    page.set_margin_bottom(GRID_SPACING);
+    page
+}
+
+/// `page` inside a vertical scroller, so a long page never grows the dialog.
+fn scrolled(page: &gtk::Box) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .child(page)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .build()
+}
+
+/// Build the form widgets into `content`, filled from `config`: a
+/// notebook with the General page (appearance, scrolling) and the Hotkeys
+/// page.
 fn build_form(shared: &Shared, config: &TerminalConfig, content: &gtk::Box) -> Form {
-    content.append(&heading("Appearance"));
+    let general = page_box();
+    let keys_page = page_box();
+    general.append(&heading("Appearance"));
     let look = grid();
     let theme_names: Vec<String> = shared.themes().into_iter().map(|t| t.name).collect();
     let name_refs: Vec<&str> = theme_names.iter().map(String::as_str).collect();
@@ -103,7 +126,7 @@ fn build_form(shared: &Shared, config: &TerminalConfig, content: &gtk::Box) -> F
     let shape_index = CursorShape::ALL.iter().position(|s| *s == config.cursor_shape).unwrap_or(0);
     cursor_shape.set_selected(shape_index as u32);
     row(&look, 2, "Cursor", &cursor_shape);
-    content.append(&look);
+    general.append(&look);
 
     let cursor_blink = gtk::CheckButton::with_label("Blinking cursor");
     cursor_blink.set_active(config.cursor_blink);
@@ -111,23 +134,23 @@ fn build_form(shared: &Shared, config: &TerminalConfig, content: &gtk::Box) -> F
     bold_is_bright.set_active(config.bold_is_bright);
     let audible_bell = gtk::CheckButton::with_label("Audible bell");
     audible_bell.set_active(config.audible_bell);
-    content.append(&cursor_blink);
-    content.append(&bold_is_bright);
-    content.append(&audible_bell);
+    general.append(&cursor_blink);
+    general.append(&bold_is_bright);
+    general.append(&audible_bell);
 
-    content.append(&heading("Scrolling"));
+    general.append(&heading("Scrolling"));
     let scroll = grid();
     let scrollback = gtk::SpinButton::with_range(0.0, f64::from(MAX_SCROLLBACK_LINES), 100.0);
     scrollback.set_value(f64::from(config.scrollback_lines));
     scrollback.set_tooltip_text(Some("0 keeps every line (unlimited)"));
     row(&scroll, 0, "Scrollback lines (0 = unlimited)", &scrollback);
-    content.append(&scroll);
+    general.append(&scroll);
 
-    content.append(&heading("Hotkeys"));
-    let hint = gtk::Label::new(Some("GTK syntax, e.g. <Ctrl><Shift>e. Leave empty to disable."));
+    let hint = gtk::Label::new(Some("Grab... records a key combination; or type it in GTK syntax, e.g. <Ctrl><Shift>e. Leave empty to disable."));
+    hint.set_wrap(true);
     hint.set_xalign(0.0);
     hint.add_css_class("dim-label");
-    content.append(&hint);
+    keys_page.append(&hint);
     let keys = grid();
     let hotkeys: Vec<(Action, gtk::Entry)> = Action::ALL
         .into_iter()
@@ -136,11 +159,29 @@ fn build_form(shared: &Shared, config: &TerminalConfig, content: &gtk::Box) -> F
             let entry = gtk::Entry::new();
             entry.set_text(&config.hotkey(action));
             entry.set_placeholder_text(Some("(none)"));
-            row(&keys, i as i32, action.label(), &entry);
+            entry.set_hexpand(true);
+            let grab = gtk::Button::with_label("Grab...");
+            grab.set_tooltip_text(Some("Press the key combination to bind"));
+            {
+                let entry = entry.clone();
+                grab.connect_clicked(move |b| grab_key(b, &entry));
+            }
+            let cell = gtk::Box::new(gtk::Orientation::Horizontal, GRID_SPACING);
+            cell.append(&entry);
+            cell.append(&grab);
+            row(&keys, i as i32, action.label(), &cell);
             (action, entry)
         })
         .collect();
-    content.append(&keys);
+    keys_page.append(&keys);
+
+
+    let notebook = gtk::Notebook::new();
+    notebook.set_vexpand(true);
+    notebook.append_page(&scrolled(&general), Some(&gtk::Label::new(Some("General"))));
+    notebook.append_page(&scrolled(&keys_page), Some(&gtk::Label::new(Some("Hotkeys"))));
+    content.set_vexpand(true);
+    content.append(&notebook);
 
     Form { theme, theme_names, font, scrollback, cursor_shape, cursor_blink, audible_bell, bold_is_bright, hotkeys }
 }
@@ -160,18 +201,71 @@ fn read_form(form: &Form, mut config: TerminalConfig) -> Result<TerminalConfig, 
     config.audible_bell = form.audible_bell.is_active();
     config.bold_is_bright = form.bold_is_bright.is_active();
     config.hotkeys.clear();
+    let mut used: Vec<(Action, gdk::Key, gdk::ModifierType)> = Vec::new();
     for (action, entry) in &form.hotkeys {
         let accel = entry.text().trim().to_string();
-        if !accel.is_empty() && gtk::accelerator_parse(&accel).is_none() {
-            return Err(format!("The hotkey \"{accel}\" of \"{}\" is not valid.", action.label()));
+        if accel.is_empty() {
+            config.hotkeys.insert(action.id().to_string(), accel);
+            continue;
         }
+        let Some((key, mods)) = gtk::accelerator_parse(&accel) else {
+            return Err(format!("The hotkey \"{accel}\" of \"{}\" is not valid.", action.label()));
+        };
+        if let Some((other, _, _)) = used.iter().find(|(_, k, m)| *k == key && *m == mods) {
+            return Err(format!("\"{}\" and \"{}\" use the same hotkey {accel}.", other.label(), action.label()));
+        }
+        used.push((*action, key, mods));
         // Only the changed hotkeys are stored, so new defaults still reach
-        // the actions the user never touched.
-        if accel != action.default_hotkey() {
+        // the actions the user never touched. Compared by key, not text:
+        // a grabbed "<Shift><Control>e" equals the default "<Ctrl><Shift>e".
+        if gtk::accelerator_parse(action.default_hotkey()) != Some((key, mods)) {
             config.hotkeys.insert(action.id().to_string(), accel);
         }
     }
     Ok(config)
+}
+
+/// Ask for a key combination in a small modal window and write it into
+/// `entry` in GTK accelerator syntax. Escape cancels (so Escape itself
+/// cannot be bound), as in the hotkey editor of the Lister.
+fn grab_key(button: &gtk::Button, entry: &gtk::Entry) {
+    let Some(parent) = button.root().and_downcast::<gtk::Window>() else { return };
+    let shell = opusdm_ui::DialogShell::new(&parent, "Press a key combination").size(340, 120).resizable(false);
+    shell.content().append(&gtk::Label::new(Some("Press the key combination now.\nLetters and digits need Ctrl, Alt or Super.\nEscape cancels.")));
+    shell.close_button("Cancel");
+    let window = shell.window().clone();
+
+    let controller = gtk::EventControllerKey::new();
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let entry = entry.clone();
+        let window = window.clone();
+        controller.connect_key_pressed(move |_, key, _, state| {
+            if key == gdk::Key::Escape {
+                window.close();
+                return glib::Propagation::Stop;
+            }
+            let Some(accel) = grabbed_accel(key, state) else { return glib::Propagation::Stop };
+            entry.set_text(&accel);
+            window.close();
+            glib::Propagation::Stop
+        });
+    }
+    window.add_controller(controller);
+    shell.present();
+}
+
+/// The accelerator text for a key press. `None` for a modifier-only press
+/// and for a printable key without Ctrl, Alt or Super, which would steal
+/// that character from the shell. Lock keys (Caps Lock, Num Lock) are
+/// dropped from the modifiers.
+fn grabbed_accel(key: gdk::Key, state: gdk::ModifierType) -> Option<String> {
+    let mods = state & gtk::accelerator_get_default_mod_mask();
+    if !gtk::accelerator_valid(key, mods) { return None; }
+    let chord = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK;
+    let printable = key.to_unicode().is_some_and(|c| !c.is_control());
+    if printable && !mods.intersects(chord) { return None; }
+    Some(gtk::accelerator_name(key.to_lower(), mods).to_string())
 }
 
 /// Create the user themes folder if needed and open it.

@@ -831,10 +831,17 @@ split panes in the style of Terminator.
   directory of the shell).
 - **Other keys:** `Ctrl+Shift+C` / `Ctrl+Shift+V` copy and paste, `Ctrl+Shift+A` select all,
   `Ctrl++` / `Ctrl+-` / `Ctrl+0` zoom, `Ctrl+Shift+G` reset and clear, `Ctrl+,` Preferences.
-- **Preferences** (right-click menu or `Ctrl+,`): theme, font, cursor shape and blinking, bold in
-  bright colours, audible bell, **Scrollback lines** (default 2000, **0 = unlimited**) and every
-  hotkey (GTK syntax such as `<Ctrl><Shift>e`; empty disables it). **Save** applies the options to
-  all open terminals of that window's process and writes `~/.config/opusdm/terminal.json`.
+- **Preferences** (right-click menu or `Ctrl+,`), two tabs:
+  - **General:** theme, font, cursor shape and blinking, bold in bright colours, audible bell and
+    **Scrollback lines** (default 2000, **0 = unlimited**).
+  - **Hotkeys:** one row per action. **Grab...** opens "Press a key combination": press the keys
+    and they are written in the field (Escape cancels, so Escape cannot be bound; a letter or digit
+    needs Ctrl, Alt or Super, otherwise it would be taken away from the shell). The field can also
+    be typed in GTK syntax such as `<Ctrl><Shift>e`; empty disables the hotkey. Saving refuses an
+    invalid hotkey and two actions on the same keys.
+
+  **Save** applies the options to all open terminals of that window's process and writes
+  `~/.config/opusdm/terminal.json`.
 - **Themes:** separate from the Lister and desktop themes. Built in: OpusDM Dark (default), Tango
   Dark, Tango Light, Solarized Dark, Solarized Light, Dracula, Gruvbox Dark, Nord, One Dark and
   Classic Amiga. Add your own as one JSON file per theme in `~/.config/opusdm/terminal-themes/`
