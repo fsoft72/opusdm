@@ -42,14 +42,15 @@ pub const TRAY_WAIT_LIMIT: Duration = Duration::from_secs(20);
 fn launch_after_wait(app: &StartupApp) {
     std::thread::sleep(Duration::from_secs(u64::from(app.wait_secs)));
     // Watch before launching, so a window that appears at once is not missed.
-    let watch = if app.start_in_tray && opusdm_ipc::session::is_x11() {
-        crate::tray_start::Watch::new()
-            .inspect_err(|e| opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': cannot watch its windows: {e}", app.command))
-            .ok()
-    } else {
-        None
+    let watch = if app.start_in_tray { TrayWatch::new(app) } else { None };
+    let argv = match argv_for(app) {
+        Ok(argv) => argv,
+        Err(e) => {
+            opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': {e}", app.command);
+            return;
+        }
     };
-    let pid = match argv_for(app).and_then(|argv| spawn_detached(&argv)) {
+    let pid = match spawn_detached(&argv) {
         Ok(pid) => pid,
         Err(e) => {
             opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': {e}", app.command);
@@ -57,10 +58,45 @@ fn launch_after_wait(app: &StartupApp) {
         }
     };
     let Some(watch) = watch else { return };
-    match watch.close_first_window(pid) {
-        Ok(Some(_)) => {}
-        Ok(None) => opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': no window to send to the tray", app.command),
+    match watch.close_first_window(pid, &argv[0]) {
+        Ok(true) => {}
+        Ok(false) => opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': no window to send to the tray", app.command),
         Err(e) => opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': start in tray failed: {e}", app.command),
+    }
+}
+
+/// The window watch of a "start in tray" app, for the session's window
+/// system.
+enum TrayWatch {
+    X11(crate::tray_start::Watch),
+    Wayland(crate::tray_start_wl::Watch),
+}
+
+impl TrayWatch {
+    /// Remember the windows open now; `None` (logged) when the windows of
+    /// other apps cannot be watched.
+    fn new(app: &StartupApp) -> Option<Self> {
+        if opusdm_ipc::session::is_wayland() {
+            let watch = crate::tray_start_wl::Watch::new().map(TrayWatch::Wayland);
+            if watch.is_none() {
+                opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': the compositor does not list windows, cannot start it in the tray", app.command);
+            }
+            return watch;
+        }
+        crate::tray_start::Watch::new()
+            .inspect_err(|e| opusdm_ipc::err_log!("opusdm-hub", "startup app '{}': cannot watch its windows: {e}", app.command))
+            .ok()
+            .map(TrayWatch::X11)
+    }
+
+    /// Close the first window of the launch: process `pid` on X11, the
+    /// window whose app id fits `program` on Wayland. `true` once it went
+    /// to the tray.
+    fn close_first_window(self, pid: u32, program: &str) -> Result<bool, opusdm_x11::X11Error> {
+        match self {
+            TrayWatch::X11(watch) => Ok(watch.close_first_window(pid)?.is_some()),
+            TrayWatch::Wayland(watch) => Ok(watch.close_first_window(program).is_some()),
+        }
     }
 }
 

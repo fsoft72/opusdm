@@ -18,6 +18,7 @@ pub mod roles;
 pub mod server;
 pub mod startup_apps;
 pub mod tray_start;
+pub mod tray_start_wl;
 pub mod settings;
 pub mod snap;
 pub mod global_keys;

@@ -31,6 +31,7 @@ gtk4.workspace = true
 gdk4-x11 = "0.10"
 x11rb = { version = "0.13", features = ["randr"] }
 opusdm-x11 = { path = "../x11" }
+opusdm-wayland = { path = "../wayland" }
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true

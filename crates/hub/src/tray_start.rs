@@ -38,13 +38,13 @@ pub const WATCH_TIME: Duration = Duration::from_secs(30);
 /// requests. The window manager lists a window before the app has finished
 /// showing it, and a close that arrives then is often ignored (measured
 /// with a GTK3 app under Openbox: 2 runs out of 3).
-const SETTLE_TIME: Duration = Duration::from_millis(300);
+pub(crate) const SETTLE_TIME: Duration = Duration::from_millis(300);
 
 /// How long a closed window gets to disappear before it is asked again.
-const CLOSE_CHECK_TIME: Duration = Duration::from_secs(1);
+pub(crate) const CLOSE_CHECK_TIME: Duration = Duration::from_secs(1);
 
 /// Close requests sent to one window before giving up.
-const MAX_CLOSE_TRIES: u32 = 3;
+pub(crate) const MAX_CLOSE_TRIES: u32 = 3;
 
 /// ICCCM `IconicState`: the `WM_CHANGE_STATE` value that minimizes a window.
 const ICONIC_STATE: u32 = 3;

@@ -42,8 +42,10 @@ const ALL_DESKTOPS: u32 = 0xFFFF_FFFF;
 
 /// The geometry of every visible full screen window of the current virtual
 /// desktop (minimized ones are left out). Reads the window manager's EWMH
-/// properties on the shared X connection.
+/// properties on the shared X connection, or the compositor's window list
+/// on Wayland.
 pub fn fullscreen_windows() -> Result<Vec<Rect>, X11Error> {
+    if opusdm_ipc::session::is_wayland() { return Ok(wayland_fullscreen_windows()); }
     opusdm_ui::with_x11(|x11| {
         let conn = x11.conn();
         let root = x11.root();
@@ -77,11 +79,55 @@ pub fn fullscreen_windows() -> Result<Vec<Rect>, X11Error> {
     })
 }
 
+/// [`fullscreen_windows`] on Wayland. A full screen window covers the
+/// monitors it is on; the window list does not tell the workspace of a
+/// window, so one on another workspace counts too.
+fn wayland_fullscreen_windows() -> Vec<Rect> {
+    let Some(session) = opusdm_wayland::shared() else { return Vec::new() };
+    fullscreen_rects(&session.snapshot(), &monitor_rects())
+}
+
+/// The rectangles of the monitors named in `outputs` (connector name and
+/// rect) that a visible full screen window of `snapshot` is on.
+pub fn fullscreen_rects(snapshot: &opusdm_wayland::Snapshot, outputs: &[(String, Rect)]) -> Vec<Rect> {
+    snapshot
+        .toplevels
+        .iter()
+        .filter(|t| t.fullscreen && !t.minimized)
+        .flat_map(|t| t.outputs.iter())
+        .filter_map(|name| outputs.iter().find(|(n, _)| n == name).map(|(_, r)| *r))
+        .collect()
+}
+
+/// Every GDK monitor by connector name, with its rectangle.
+fn monitor_rects() -> Vec<(String, Rect)> {
+    use gtk4::prelude::*;
+    let Some(display) = gtk4::gdk::Display::default() else { return Vec::new() };
+    let monitors = display.monitors();
+    (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i).and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok()))
+        .filter_map(|m| {
+            let g = m.geometry();
+            Some((m.connector()?.to_string(), Rect { x: g.x(), y: g.y(), w: g.width(), h: g.height() }))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SCREEN: Rect = Rect { x: 0, y: 0, w: 1920, h: 1080 };
+
+    #[test]
+    fn wayland_full_screen_windows_cover_their_outputs() {
+        use opusdm_wayland::{Snapshot, Toplevel};
+        let right = Rect { x: 1920, y: 0, w: 1280, h: 1024 };
+        let outputs = vec![("eDP-1".to_string(), SCREEN), ("HDMI-A-1".to_string(), right)];
+        let t = |fullscreen, minimized, output: &str| Toplevel { fullscreen, minimized, outputs: vec![output.to_string()], ..Default::default() };
+        let snapshot = Snapshot { toplevels: vec![t(true, false, "HDMI-A-1"), t(false, false, "eDP-1"), t(true, true, "eDP-1"), t(true, false, "gone")], workspaces: vec![] };
+        assert_eq!(fullscreen_rects(&snapshot, &outputs), vec![right]);
+    }
 
     #[test]
     fn a_full_screen_window_hides_the_monitor() {

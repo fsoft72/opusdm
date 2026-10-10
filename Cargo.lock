@@ -2011,6 +2011,7 @@ dependencies = [
  "opusdm-screen",
  "opusdm-snap",
  "opusdm-ui",
+ "opusdm-wayland",
  "opusdm-x11",
  "serde",
  "serde_json",
