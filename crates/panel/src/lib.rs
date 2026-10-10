@@ -110,6 +110,8 @@ fn build_bar_window(
         .default_width(place.mon_w)
         .default_height(window::PANEL_HEIGHT)
         .build();
+    // Wayland: a top layer surface reserving its strip (a no-op on X11).
+    opusdm_ui::layer::init(&win, &window::layer_spec(place));
     let place = Rc::new(Cell::new(place));
 
     // Built before `connect_map` so the reposition call below can capture it;

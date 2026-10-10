@@ -68,6 +68,8 @@ pub fn open(app: &gtk::Application, entries: Vec<Entry>, panel: PanelPosition) {
         .default_width(WINDOW_WIDTH)
         .build();
     window.add_css_class(WINDOW_CLASS);
+    // Wayland: an overlay layer surface (a no-op on X11).
+    opusdm_ui::layer::init(&window, &layer_spec());
 
     let input = gtk::Entry::new();
     input.add_css_class("run-input");
@@ -249,6 +251,23 @@ fn run(state: &Rc<State>, index: Option<usize>) {
     }
 }
 
+/// Layer shell placement of the Run window: centered at the top of the
+/// monitor the compositor picks (the focused one), under a top panel since
+/// it stays out of the panel's exclusive zone, above every window, holding
+/// the keyboard while it is open.
+fn layer_spec() -> opusdm_ui::layer::LayerSpec {
+    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
+    LayerSpec {
+        layer: Layer::Overlay,
+        namespace: "opusdm-run",
+        anchors: Anchors { top: true, ..Anchors::default() },
+        margins: Margins::default(),
+        exclusive: Exclusive::None,
+        keyboard: KeyboardMode::Exclusive,
+        monitor: None,
+    }
+}
+
 /// Fetch the X11 window id backing `window`, if it runs under X11.
 fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
     let surface = window.surface()?;
@@ -260,6 +279,7 @@ fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
 /// keep it above the others. The window manager places a window after map and
 /// drops early state messages, so this is repeated for a second.
 fn place_on_map(window: &gtk::ApplicationWindow, panel: PanelPosition) {
+    if opusdm_ui::layer::is_layer(window) { return; }
     window.connect_map(move |window| {
         let window = window.clone();
         opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {

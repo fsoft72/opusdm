@@ -3,12 +3,32 @@
 //! window (`_NET_WM_STATE_BELOW`) and shown on every virtual desktop
 //! (`_NET_WM_DESKTOP` = all, `_NET_WM_STATE_STICKY`). No struts - the desktop
 //! is the background, Listers float on top of it.
+//!
+//! On Wayland the same window is a layer surface in the BACKGROUND layer
+//! instead, anchored to every edge of its monitor (see [`layer_spec`]).
 
 use gtk4 as gtk;
 use gtk::prelude::*;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
+
+/// Layer shell placement of the desktop window of the monitor `rect`: the
+/// whole monitor, below everything, ignoring the panel's exclusive zone
+/// (the panel covers the desktop, as on X11). The keyboard comes on demand,
+/// for the icon field and its rename entry.
+pub fn layer_spec(rect: opusdm_ui::MonitorRect) -> opusdm_ui::layer::LayerSpec {
+    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
+    LayerSpec {
+        layer: Layer::Background,
+        namespace: "opusdm-desktop",
+        anchors: Anchors::ALL,
+        margins: Margins::default(),
+        exclusive: Exclusive::Ignore,
+        keyboard: KeyboardMode::OnDemand,
+        monitor: Some(rect),
+    }
+}
 
 /// Apply the desktop window type, the keep-below and sticky states, the
 /// all-desktops membership, and a fixed full-monitor geometry - placed at `(x, y)`, `width` x `height` - to the
@@ -17,8 +37,12 @@ use x11rb::wrapper::ConnectionExt as _;
 /// Errors are logged and swallowed - the window still shows without the
 /// hints, it just may not sit flush or stay below other windows.
 pub fn make_desktop_window(window: &gtk::ApplicationWindow, x: i32, y: i32, width: i32, height: i32) {
+    if opusdm_ui::layer::is_layer(window) {
+        opusdm_ui::layer::update(window, &layer_spec((x, y, width, height)));
+        return;
+    }
     let Some(xid) = x11_window_id(window) else {
-        opusdm_ipc::err_log!("opusdm-hub", "window is not on X11; skipping desktop setup");
+        opusdm_ipc::debug_log!("opusdm-hub", "window is neither X11 nor a layer surface; skipping desktop setup");
         return;
     };
     if let Err(e) = apply(xid, x, y, width, height) {

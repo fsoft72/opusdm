@@ -2,6 +2,10 @@
 //! monitor-wide strip marked `_NET_WM_WINDOW_TYPE_DOCK`, kept above other
 //! windows, shown on every virtual desktop, and reserving screen space through `_NET_WM_STRUT_PARTIAL` so
 //! maximised windows do not draw under it. Mirrors `opusdm-hub`'s `desktop.rs`.
+//!
+//! On Wayland the bar is a layer surface in the TOP layer instead, anchored
+//! to its edge and stretched across the monitor, with an exclusive zone in
+//! place of the struts (see [`layer_spec`]).
 
 use gtk4 as gtk;
 use gtk::prelude::*;
@@ -40,6 +44,22 @@ impl Placement {
     }
 }
 
+/// Layer shell placement of a bar placed by `place`: across its monitor on
+/// the docked edge, above windows, reserving its own height.
+pub fn layer_spec(place: Placement) -> opusdm_ui::layer::LayerSpec {
+    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
+    let top = place.position == PanelPosition::Top;
+    LayerSpec {
+        layer: Layer::Top,
+        namespace: "opusdm-panel",
+        anchors: Anchors { top, right: true, bottom: !top, left: true },
+        margins: Margins::default(),
+        exclusive: Exclusive::Auto,
+        keyboard: KeyboardMode::OnDemand,
+        monitor: Some((place.mon_x, place.mon_y, place.mon_w, place.mon_h)),
+    }
+}
+
 /// The `_NET_WM_STRUT_PARTIAL` 12-tuple for a panel of `height` docked to
 /// `position` on a monitor at horizontal offset `mon_x`, `mon_w` wide. Only
 /// the slots of the docked edge are non-zero. The strut's `start_x`/`end_x`
@@ -69,8 +89,12 @@ pub fn strut_partial(position: PanelPosition, height: i32, mon_x: i32, mon_w: i3
 /// monitor `place` describes. Safe to call more than once (realize and map).
 /// Errors are logged and swallowed.
 pub fn make_panel_window(window: &gtk::ApplicationWindow, place: Placement) {
+    if opusdm_ui::layer::is_layer(window) {
+        opusdm_ui::layer::update(window, &layer_spec(place));
+        return;
+    }
     let Some(xid) = x11_window_id(window) else {
-        opusdm_ipc::err_log!("opusdm-panel", "window is not on X11; skipping dock setup");
+        opusdm_ipc::debug_log!("opusdm-panel", "window is neither X11 nor a layer surface; skipping dock setup");
         return;
     };
     if let Err(e) = apply(xid, place) {
@@ -194,6 +218,16 @@ mod tests {
         let s = strut_partial(PanelPosition::Bottom, 40, 1920, 1280, 0);
         assert_eq!(s[10], 1920, "bottom_start_x");
         assert_eq!(s[11], 3199, "bottom_end_x");
+    }
+
+    #[test]
+    fn the_layer_spec_anchors_the_bar_across_its_edge() {
+        let place = |position| Placement { position, mon_x: 1920, mon_y: 0, mon_w: 1280, mon_h: 1024 };
+        let top = layer_spec(place(PanelPosition::Top));
+        assert!(top.anchors.top && top.anchors.left && top.anchors.right && !top.anchors.bottom);
+        assert_eq!(top.monitor, Some((1920, 0, 1280, 1024)));
+        let bottom = layer_spec(place(PanelPosition::Bottom));
+        assert!(bottom.anchors.bottom && !bottom.anchors.top);
     }
 
     #[test]

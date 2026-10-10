@@ -23,6 +23,7 @@ md-5 = "0.10"
 sha2 = "0.10"
 x11rb = "0.13"
 gdk4-x11 = "0.10"
+gtk4-layer-shell = "0.7"
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 zip = "2"
 tar = "0.4"

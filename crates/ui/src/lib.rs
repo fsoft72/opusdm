@@ -2,6 +2,7 @@
 //! requesters and the skeleton the larger dialogs are built on.
 
 mod fonts;
+pub mod layer;
 mod look_css;
 mod reference_picker;
 mod requester;

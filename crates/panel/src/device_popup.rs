@@ -44,6 +44,8 @@ pub fn show(center: &Rc<DeviceCenter>, device: &Device) {
         .default_width(POPUP_W)
         .default_height(POPUP_H)
         .build();
+    // Wayland: an overlay layer surface in the corner (a no-op on X11).
+    opusdm_ui::layer::init(&window, &layer_spec(center.position() != PanelPosition::Bottom));
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     content.add_css_class("opusdm-panel");
     content.set_margin_top(12);
@@ -115,8 +117,25 @@ fn close() {
     if let Some((_, w)) = current { w.close(); }
 }
 
+/// Layer shell placement of the popup: the corner next to the panel's right
+/// end, `MARGIN` from the edges (the panel's exclusive zone keeps it clear
+/// of the panel), above every window.
+fn layer_spec(panel_top: bool) -> opusdm_ui::layer::LayerSpec {
+    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
+    LayerSpec {
+        layer: Layer::Overlay,
+        namespace: "opusdm-device-popup",
+        anchors: Anchors { top: panel_top, right: true, bottom: !panel_top, left: false },
+        margins: Margins { top: MARGIN, right: MARGIN, bottom: MARGIN, left: 0 },
+        exclusive: Exclusive::None,
+        keyboard: KeyboardMode::OnDemand,
+        monitor: None,
+    }
+}
+
 /// Put the mapped popup in its corner and above the other windows.
 fn place(window: &gtk::Window, panel_top: bool) {
+    if opusdm_ui::layer::is_layer(window) { return; }
     let Some(surface) = window.surface() else { return };
     let Ok(x11_surface) = surface.downcast::<gdk4_x11::X11Surface>() else { return };
     let xid = x11_surface.xid() as u32;

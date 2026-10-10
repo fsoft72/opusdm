@@ -146,6 +146,8 @@ pub(crate) fn build_one_desktop_window(
         .default_width(w)
         .default_height(h)
         .build();
+    // Wayland: a background layer surface (a no-op on X11).
+    opusdm_ui::layer::init(&window, &crate::desktop::layer_spec(rect));
 
     // Turn the window into the WM desktop once its surface exists, then
     // re-assert the geometry after the WM has run its placement policy.

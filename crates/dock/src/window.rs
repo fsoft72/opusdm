@@ -7,6 +7,10 @@
 //! maximised windows cover the dock as intended. It reserves NO screen space
 //! (no strut), so it stays visible only over the desktop. It is sticky, shown
 //! on every virtual desktop.
+//!
+//! On Wayland the dock is a layer surface in the BOTTOM layer instead: above
+//! the desktop, below normal windows, anchored to its edge only so the
+//! compositor centers it there (see [`layer_spec`]).
 
 use crate::placement::Placement;
 use gtk4 as gtk;
@@ -15,12 +19,42 @@ use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
 
+/// Layer shell placement of the dock placed by `place`: anchored to its own
+/// edge, `EDGE_MARGIN` away from it, inside the space the panel leaves free,
+/// with no exclusive zone (maximised windows cover it, as on X11).
+pub fn layer_spec(place: Placement) -> opusdm_ui::layer::LayerSpec {
+    use crate::placement::EDGE_MARGIN;
+    use opusdm_ipc::DockPosition;
+    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
+    let mut anchors = Anchors::default();
+    let mut margins = Margins::default();
+    match place.position() {
+        DockPosition::Top => (anchors.top, margins.top) = (true, EDGE_MARGIN),
+        DockPosition::Bottom => (anchors.bottom, margins.bottom) = (true, EDGE_MARGIN),
+        DockPosition::Left => (anchors.left, margins.left) = (true, EDGE_MARGIN),
+        DockPosition::Right => (anchors.right, margins.right) = (true, EDGE_MARGIN),
+    }
+    LayerSpec {
+        layer: Layer::Bottom,
+        namespace: "opusdm-dock",
+        anchors,
+        margins,
+        exclusive: Exclusive::None,
+        keyboard: KeyboardMode::None,
+        monitor: Some((place.mon_x, place.mon_y, place.mon_w, place.mon_h)),
+    }
+}
+
 /// Apply the DOCK window type and a fixed geometry to the realized `window`.
 /// Safe to call more than once (realize and map). Errors are logged and
 /// swallowed.
 pub fn make_dock_window(window: &gtk::ApplicationWindow, place: Placement, count: usize) {
+    if opusdm_ui::layer::is_layer(window) {
+        opusdm_ui::layer::update(window, &layer_spec(place));
+        return;
+    }
     let Some(xid) = x11_window_id(window) else {
-        opusdm_ipc::err_log!("opusdm-dock", "window is not on X11; skipping dock setup");
+        opusdm_ipc::debug_log!("opusdm-dock", "window is neither X11 nor a layer surface; skipping dock setup");
         return;
     };
     if let Err(e) = apply(xid, place, count) {

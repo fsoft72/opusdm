@@ -88,6 +88,8 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
         config_monitor: RefCell::new(None),
     });
 
+    // Wayland: a bottom layer surface on its edge (a no-op on X11).
+    opusdm_ui::layer::init(&win, &window::layer_spec(dock.placement()));
     {
         let dock = dock.clone();
         win.connect_realize(move |_| dock.apply_geometry());
