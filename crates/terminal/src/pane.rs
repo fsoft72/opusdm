@@ -209,7 +209,9 @@ fn show_context_menu(shared: &Rc<Shared>, term: &vte4::Terminal, has_link: bool,
     menu.append_section(None, &section(&[Action::Copy, Action::Paste, Action::SelectAll]));
     menu.append_section(None, &section(&[Action::SplitHorizontal, Action::SplitVertical, Action::NewTab, Action::NewWindow]));
     menu.append_section(None, &section(&[Action::ZoomIn, Action::ZoomOut, Action::ZoomReset]));
-    menu.append_section(None, &section(&[Action::Export, Action::ResetClear, Action::Preferences]));
+    menu.append_section(None, &section(&[Action::Export, Action::ResetClear]));
+    // A section of its own: a separator line above and below Preferences.
+    menu.append_section(None, &section(&[Action::Preferences]));
     menu.append_section(None, &section(&[Action::ClosePane]));
 
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
