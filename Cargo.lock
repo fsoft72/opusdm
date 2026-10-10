@@ -2270,6 +2270,7 @@ dependencies = [
 name = "opusdm-wayland"
 version = "0.7.0"
 dependencies = [
+ "libc",
  "opusdm-ipc",
  "wayland-client",
  "wayland-protocols",
