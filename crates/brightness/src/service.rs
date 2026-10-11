@@ -19,20 +19,42 @@ pub enum Event {
     Unavailable(String),
     /// The last value was applied.
     Applied(u8),
+    /// The brightness read back on request (see [`Controller::read`]).
+    Current(u8),
     /// The last value could not be applied; the text says why.
     Failed(String),
+}
+
+/// What the controller asks the worker for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Command {
+    /// Apply this brightness.
+    Set(u8),
+    /// Read the brightness again: another program or a key may have changed it.
+    Read,
 }
 
 /// The handle used by the window to ask for a brightness. Dropping it stops
 /// the worker.
 pub struct Controller {
-    tx: mpsc::Sender<u8>,
+    tx: mpsc::Sender<Command>,
 }
 
 impl Controller {
     /// Ask the worker to set `percent` (limited to the allowed range).
     pub fn set(&self, percent: u8) -> Result<(), BrightnessError> {
-        self.tx.send(clamp_percent(percent)).map_err(|_| BrightnessError::Unavailable("the brightness worker has stopped".to_string()))
+        self.send(Command::Set(clamp_percent(percent)))
+    }
+
+    /// Ask the worker to read the brightness again; the answer comes back as
+    /// [`Event::Current`].
+    pub fn read(&self) -> Result<(), BrightnessError> {
+        self.send(Command::Read)
+    }
+
+    /// Hand one command to the worker.
+    fn send(&self, command: Command) -> Result<(), BrightnessError> {
+        self.tx.send(command).map_err(|_| BrightnessError::Unavailable("the brightness worker has stopped".to_string()))
     }
 }
 
@@ -45,9 +67,9 @@ pub fn spawn(detect: impl FnOnce() -> Result<Detected, BrightnessError> + Send +
     (Controller { tx }, events_rx)
 }
 
-/// The worker loop: detect, then apply the last pending value until the
-/// controller is dropped.
-fn run(detect: impl FnOnce() -> Result<Detected, BrightnessError>, rx: mpsc::Receiver<u8>, events: async_channel::Sender<Event>) {
+/// The worker loop: detect, then apply the last pending value and answer
+/// reads until the controller is dropped.
+fn run(detect: impl FnOnce() -> Result<Detected, BrightnessError>, rx: mpsc::Receiver<Command>, events: async_channel::Sender<Event>) {
     // A closed events channel means the window is gone: nobody to tell.
     let send = |event: Event| {
         let _ = events.send_blocking(event);
@@ -58,12 +80,31 @@ fn run(detect: impl FnOnce() -> Result<Detected, BrightnessError>, rx: mpsc::Rec
     };
     send(Event::Ready { method: backend.name(), percent });
     while let Ok(first) = rx.recv() {
-        let latest = rx.try_iter().last().unwrap_or(first);
-        match backend.set(latest) {
-            Ok(()) => send(Event::Applied(latest)),
-            Err(e) => send(Event::Failed(e.to_string())),
+        let batch: Vec<Command> = std::iter::once(first).chain(rx.try_iter()).collect();
+        let (latest, read) = squash(&batch);
+        if let Some(percent) = latest {
+            match backend.set(percent) {
+                Ok(()) => send(Event::Applied(percent)),
+                Err(e) => send(Event::Failed(e.to_string())),
+            }
+        }
+        if read {
+            match backend.get() {
+                Ok(percent) => send(Event::Current(clamp_percent(percent))),
+                Err(e) => send(Event::Failed(e.to_string())),
+            }
         }
     }
+}
+
+/// Collapse a burst of commands: the last value to set, and whether a read
+/// was asked for. The read runs after the set, so it sees the new value.
+fn squash(batch: &[Command]) -> (Option<u8>, bool) {
+    let latest = batch.iter().rev().find_map(|c| match c {
+        Command::Set(percent) => Some(*percent),
+        Command::Read => None,
+    });
+    (latest, batch.contains(&Command::Read))
 }
 
 #[cfg(test)]
@@ -118,6 +159,25 @@ mod tests {
             }
         }
         assert_eq!(applied.lock().unwrap().as_slice(), &[crate::MIN_PERCENT]);
+    }
+
+    #[test]
+    fn a_read_reports_the_current_value() {
+        let (controller, events) = spawn(|| detected(FakeBackend::new(64)));
+        controller.read().unwrap();
+        loop {
+            if let Event::Current(v) = events.recv_blocking().unwrap() {
+                assert_eq!(v, 64);
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn a_burst_keeps_the_last_set_and_any_read() {
+        assert_eq!(squash(&[Command::Set(20), Command::Read, Command::Set(30)]), (Some(30), true));
+        assert_eq!(squash(&[Command::Read, Command::Read]), (None, true));
+        assert_eq!(squash(&[Command::Set(20)]), (Some(20), false));
     }
 
     #[test]

@@ -118,6 +118,15 @@ impl BatteryCenter {
         }
     }
 
+    /// Ask the brightness worker to read the brightness again, since a key or
+    /// another program may have changed it. Quiet when there is no worker.
+    pub fn reread_brightness(&self) {
+        let Some(controller) = self.brightness.borrow().as_ref().map(|c| c.read()) else { return };
+        if let Err(e) = controller {
+            opusdm_ipc::err_log!("opusdm-panel", "battery tray: brightness: {e}");
+        }
+    }
+
     /// Hand a request to the worker thread; the GTK thread never waits for it.
     pub fn send(self: &Rc<Self>, request: Request) {
         let sent = self.requests.borrow().as_ref().is_some_and(|tx| tx.send(request).is_ok());
@@ -154,7 +163,7 @@ impl BatteryCenter {
         glib::spawn_future_local(async move {
             while let Ok(event) = events.recv().await {
                 match event {
-                    opusdm_brightness::Event::Ready { percent, .. } => {
+                    opusdm_brightness::Event::Ready { percent, .. } | opusdm_brightness::Event::Current(percent) => {
                         center.brightness_percent.set(Some(opusdm_brightness::clamp_percent(percent)));
                         center.notify();
                     }

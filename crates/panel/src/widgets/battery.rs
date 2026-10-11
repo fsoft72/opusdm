@@ -121,6 +121,16 @@ impl BatteryButton {
         let popover = gtk::Popover::new();
         popover.set_child(Some(&content));
         button.set_popover(Some(&popover));
+        {
+            // The brightness may have changed (keys, another program) since
+            // the popover was last open: read it again each time it opens.
+            let center = center.clone();
+            popover.connect_visible_notify(move |p| {
+                if p.is_visible() {
+                    center.reread_brightness();
+                }
+            });
+        }
 
         root.append(&button);
         Rc::new(Self {

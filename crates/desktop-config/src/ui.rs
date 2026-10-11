@@ -415,7 +415,7 @@ impl BrightnessSection {
                         status.set_text(&method);
                     }
                     opusdm_brightness::Event::Unavailable(reason) => status.set_text(&reason),
-                    opusdm_brightness::Event::Applied(_) => status.set_text(&method),
+                    opusdm_brightness::Event::Applied(_) | opusdm_brightness::Event::Current(_) => status.set_text(&method),
                     opusdm_brightness::Event::Failed(reason) => status.set_text(&reason),
                 }
             }
