@@ -1,8 +1,8 @@
 //! The picture area: a scrolled `gtk::Picture` with wheel zoom and drag pan.
 
 use crate::loader::RawImage;
-use crate::nearest::NearestPaintable;
-use crate::zoom::{content_box, fit_scale, rotate_point, rotated_size, unrotate_point, Mode, Zoom};
+use crate::view_paintable::ViewPaintable;
+use crate::zoom::{content_box, fit_scale, rotate_point, rotated_size, screen_size, unrotate_point, Mode, Zoom};
 use gtk4 as gtk;
 use gtk::{gdk, glib};
 use gtk::prelude::*;
@@ -195,15 +195,14 @@ impl ImageView {
         fit_scale(size, view, self.zoom.get().rotation)
     }
 
-    /// Give the picture the current texture, smooth or with sharp pixels.
+    /// Give the picture the current texture at its size on screen, smooth or
+    /// with sharp pixels.
     fn _show_texture(&self) {
         let texture = self.texture.borrow();
         let Some(texture) = texture.as_ref() else { return };
-        if self.smooth.get() {
-            self.picture.set_paintable(Some(texture));
-        } else {
-            self.picture.set_paintable(Some(&NearestPaintable::new(texture)));
-        }
+        let Some(size) = self.size() else { return };
+        let shown = screen_size(size, self.zoom.get());
+        self.picture.set_paintable(Some(&ViewPaintable::new(texture, shown, !self.smooth.get())));
     }
 
     /// Put texture, size and scroll policy in line with the zoom state.
@@ -214,8 +213,8 @@ impl ImageView {
         if self.shown_rotation.get() != Some(zoom.rotation) {
             *self.texture.borrow_mut() = Some(raw.texture(zoom.rotation));
             self.shown_rotation.set(Some(zoom.rotation));
-            self._show_texture();
         }
+        self._show_texture();
         match zoom.mode {
             Mode::Fit => {
                 self.picture.set_content_fit(gtk::ContentFit::ScaleDown);
@@ -224,12 +223,12 @@ impl ImageView {
                 self.picture.set_size_request(-1, -1);
                 self.root.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
             }
-            Mode::Scale(s) => {
-                let (w, h) = rotated_size(raw.width, raw.height, zoom.rotation);
+            Mode::Scale(_) => {
+                let (w, h) = screen_size((raw.width, raw.height), zoom);
                 self.picture.set_content_fit(gtk::ContentFit::Fill);
                 self.picture.set_halign(gtk::Align::Center);
                 self.picture.set_valign(gtk::Align::Center);
-                self.picture.set_size_request(((w as f64 * s).round() as i32).max(1), ((h as f64 * s).round() as i32).max(1));
+                self.picture.set_size_request(w, h);
                 self.root.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
             }
         }

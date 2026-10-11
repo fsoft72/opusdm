@@ -9,7 +9,7 @@ mod image_view;
 mod keys;
 mod kind;
 mod loader;
-mod nearest;
+mod view_paintable;
 mod pdf;
 mod pdf_bar;
 mod pdf_links;

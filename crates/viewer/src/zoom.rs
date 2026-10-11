@@ -77,6 +77,17 @@ pub fn content_box(shown: (u32, u32), widget: (f64, f64), mode: Mode) -> (f64, f
     (scale, (widget.0 - w * scale) / 2.0, (widget.1 - h * scale) / 2.0)
 }
 
+/// Size on screen of a `picture` (unturned pixels): the turned size when
+/// fitting (the widget scales it down), the scaled size otherwise; at least 1 x 1.
+pub fn screen_size(picture: (u32, u32), zoom: Zoom) -> (i32, i32) {
+    let (w, h) = rotated_size(picture.0, picture.1, zoom.rotation);
+    let s = match zoom.mode {
+        Mode::Fit => 1.0,
+        Mode::Scale(s) => s,
+    };
+    (((w as f64 * s).round() as i32).max(1), ((h as f64 * s).round() as i32).max(1))
+}
+
 impl Zoom {
     /// The scale in use; `fit` is what the fit mode would use right now.
     pub fn scale(&self, fit: f64) -> f64 {
@@ -128,6 +139,14 @@ impl Zoom {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_size_follows_zoom_and_rotation() {
+        assert_eq!(screen_size((1224, 1584), Zoom::default()), (1224, 1584));
+        assert_eq!(screen_size((1224, 1584), Zoom { mode: Mode::Scale(0.25), rotation: 0 }), (306, 396));
+        assert_eq!(screen_size((1224, 1584), Zoom { mode: Mode::Scale(0.5), rotation: 90 }), (792, 612));
+        assert_eq!(screen_size((10, 10), Zoom { mode: Mode::Scale(0.05), rotation: 0 }), (1, 1));
+    }
 
     #[test]
     fn rotate_and_unrotate_points() {
