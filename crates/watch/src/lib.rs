@@ -80,16 +80,25 @@ pub fn drain_burst(rx: &Receiver<()>, quiet: Duration) -> bool {
 /// Forward every signal sent by the bus name `sender` as a tick, from a reader
 /// thread that ends when the bus drops or the receiver does.
 pub fn signal_ticks(conn: &Connection, sender: &'static str) -> Result<Receiver<()>, String> {
-    let rule = MatchRule::builder().msg_type(Type::Signal).sender(sender).map_err(|e| e.to_string())?.build();
-    let iter = MessageIterator::for_match_rule(rule, conn, Some(SIGNAL_QUEUE)).map_err(|e| e.to_string())?;
+    signal_ticks_any(conn, &[sender])
+}
+
+/// [`signal_ticks`] for several bus names at once: a signal from any of them
+/// is a tick on the one returned channel.
+pub fn signal_ticks_any(conn: &Connection, senders: &[&'static str]) -> Result<Receiver<()>, String> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for msg in iter {
-            if msg.is_err() || tx.send(()).is_err() {
-                return;
+    for &sender in senders {
+        let rule = MatchRule::builder().msg_type(Type::Signal).sender(sender).map_err(|e| e.to_string())?.build();
+        let iter = MessageIterator::for_match_rule(rule, conn, Some(SIGNAL_QUEUE)).map_err(|e| e.to_string())?;
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for msg in iter {
+                if msg.is_err() || tx.send(()).is_err() {
+                    return;
+                }
             }
-        }
-    });
+        });
+    }
     Ok(rx)
 }
 

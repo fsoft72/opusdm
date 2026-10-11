@@ -24,6 +24,8 @@ zbus = { version = "5.19.0", features = ["blocking"] }
 opusdm-devices = { path = "../devices" }
 opusdm-audio = { path = "../audio" }
 opusdm-network = { path = "../network" }
+opusdm-power = { path = "../power" }
+opusdm-brightness = { path = "../brightness" }
 
 [dev-dependencies]
 tempfile.workspace = true

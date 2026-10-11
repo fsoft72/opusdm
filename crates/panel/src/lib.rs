@@ -17,6 +17,8 @@ mod device_popup;
 mod devices_center;
 mod audio_center;
 mod audio_model;
+mod battery_center;
+mod battery_model;
 mod network_center;
 mod network_model;
 mod devices_model;
@@ -75,7 +77,7 @@ struct BarWindow {
     sni: Option<Rc<widgets::sni::SniStrip>>,
 }
 
-/// Pixels between the device, audio and network tray buttons.
+/// Pixels between the device, audio, battery and network tray buttons.
 const TRAY_SPACING: i32 = 2;
 
 /// The shared services one bar is wired to.
@@ -84,10 +86,11 @@ struct BarServices {
     sni_cmd_tx: std::sync::mpsc::Sender<sni::SniCmd>,
     devices: Rc<devices_center::DeviceCenter>,
     audio: Rc<audio_center::AudioCenter>,
+    battery: Rc<battery_center::BatteryCenter>,
     network: Rc<network_center::NetworkCenter>,
 }
 
-/// Build one full bar (menu, pager, quick apps, tasklist, device, audio and network trays, sysmon, clock) on the monitor
+/// Build one full bar (menu, pager, quick apps, tasklist, device, audio, battery and network trays, sysmon, clock) on the monitor
 /// and edge `place` describes, and present it. `state` seeds the pager
 /// and tasklist immediately, so a bar created after startup (monitor plugged
 /// in later) doesn't show empty widgets until the next EWMH event.
@@ -98,7 +101,7 @@ fn build_bar_window(
     is_primary: bool,
     services: BarServices,
 ) -> BarWindow {
-    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, network } = services;
+    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -204,13 +207,14 @@ fn build_bar_window(
     if tray.is_some() || sni.is_some() {
         right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
-    // The device, audio and network trays sit right before the CPU and network
+    // The device, audio, battery and network trays sit right before the CPU and network
     // monitors, close together, on the primary bar only (a device must not be
     // listed twice). The network tray draws the separator that closes the group.
     if is_primary {
         let trays = gtk::Box::new(gtk::Orientation::Horizontal, TRAY_SPACING);
         trays.append(&devices.button());
         trays.append(&audio.button());
+        trays.append(&battery.button());
         trays.append(&network.button());
         right.append(&trays);
     }
@@ -263,6 +267,7 @@ pub fn attach(
     let position = Rc::new(Cell::new(position));
     let devices = devices_center::DeviceCenter::new(on_open_folder, position.clone());
     let audio = audio_center::AudioCenter::new();
+    let battery = battery_center::BatteryCenter::new();
     let network = network_center::NetworkCenter::new();
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
@@ -278,6 +283,7 @@ pub fn attach(
         let position = position.clone();
         let devices = devices.clone();
         let audio = audio.clone();
+        let battery = battery.clone();
         let network = network.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
@@ -296,6 +302,7 @@ pub fn attach(
                         sni_cmd_tx: sni_cmd_tx.clone(),
                         devices: devices.clone(),
                         audio: audio.clone(),
+                        battery: battery.clone(),
                         network: network.clone(),
                     };
                     build_bar_window(&app, place, &state, i == 0, services)

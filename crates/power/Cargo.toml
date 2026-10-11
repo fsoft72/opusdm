@@ -1,0 +1,14 @@
+[package]
+name = "opusdm-power"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_power"
+path = "src/lib.rs"
+
+[dependencies]
+zbus = { version = "5.19.0", features = ["blocking"] }
+async-channel.workspace = true
+opusdm-watch = { path = "../watch" }
