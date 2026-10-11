@@ -845,12 +845,45 @@ mod tests {
     /// All widget behaviour in one test: GTK panics if `gtk::init` runs on two
     /// threads, and libtest gives every `#[test]` its own thread, so the crate
     /// keeps exactly one GTK test.
+    /// Every GTK scenario below, run one after the other on this thread:
+    /// GTK may only be used from the thread that initialized it, so they
+    /// cannot be separate tests. A failing scenario does not hide the others;
+    /// each failure prints its own panic message.
     #[test]
     fn gtk_widget_behavior() {
         if gtk::init().is_err() {
             return;
         }
+        // Theme lookups read the config folder: keep them in a scratch one.
+        let _env_guard = ENV_LOCK.lock().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+        let scenarios: &[(&str, fn())] = &[
+            ("icon_item_basics", icon_item_basics),
+            ("icon_item_tall_thumbnail", icon_item_tall_thumbnail),
+            ("icon_item_left_out_badge", icon_item_left_out_badge),
+            ("field_entries_and_modes", field_entries_and_modes),
+            ("field_icon_set_switch", field_icon_set_switch),
+            ("field_selection", field_selection),
+            ("field_rubber_band_and_cursor", field_rubber_band_and_cursor),
+            ("field_drop", field_drop),
+            ("field_reposition_selection", field_reposition_selection),
+            ("field_refresh_keeps_view_state", field_refresh_keeps_view_state),
+            ("field_thumbnail_wiring", field_thumbnail_wiring),
+            ("field_inter_window_drag_and_reposition", field_inter_window_drag_and_reposition),
+            ("field_grid_spacing", field_grid_spacing),
+            ("field_pinned_positions", field_pinned_positions),
+            ("field_reload_cancels_drag", field_reload_cancels_drag),
+            ("field_group_entry", field_group_entry),
+            ("field_virtualization", field_virtualization),
+        ];
+        let failed: Vec<&str> =
+            scenarios.iter().filter(|(_, run)| std::panic::catch_unwind(*run).is_err()).map(|(name, _)| *name).collect();
+        assert!(failed.is_empty(), "failed GTK scenarios: {failed:?}");
+    }
 
+    /// IconItem selection, edit commit, long names and the thumbnail slot.
+    fn icon_item_basics() {
         // --- IconItem: selected class toggles ---
         let it = IconItem::new(&entries(1)[0], 64, &no_icons());
         assert!(!it.widget().has_css_class("selected"));
@@ -906,7 +939,10 @@ mod tests {
         );
         it.set_thumbnail(tex.upcast_ref::<gtk::gdk::Texture>());
         it.clear_thumbnail();
+    }
 
+    /// A tall thumbnail keeps the item size.
+    fn icon_item_tall_thumbnail() {
         // --- IconItem: a tall thumbnail does not change the item's size ---
         // The thumbnail is a `gtk::Image` at `pixel_size`, so a portrait
         // texture measures the same as the glyph. Otherwise a thumbnail
@@ -923,7 +959,10 @@ mod tests {
         );
         plain.set_thumbnail(tall.upcast_ref::<gtk::gdk::Texture>());
         assert_eq!(plain.measure(), before);
+    }
 
+    /// The left-out badge keeps the item size.
+    fn icon_item_left_out_badge() {
         // --- IconItem: a left-out entry shows the badge without changing size ---
         let mut left = entries(1).remove(0);
         left.left_out = true;
@@ -932,7 +971,10 @@ mod tests {
         assert!(badged.shows_badge());
         assert!(!unbadged.shows_badge());
         assert_eq!(badged.measure(), unbadged.measure());
+    }
 
+    /// Background activation, entry count, mode and size changes.
+    fn field_entries_and_modes() {
         // --- IconField: background double-click fires connect_background_activate ---
         let f = IconField::new();
         let bg_hits = Rc::new(Cell::new(0));
@@ -953,12 +995,15 @@ mod tests {
         f.set_icon_size(96);
         f.set_mode(LayoutMode::Grid);
         f.set_icon_size(64);
+    }
 
+    /// Switching icon sets keeps the view state; a theme icon shows as an image.
+    fn field_icon_set_switch() {
+        let f = IconField::new();
+        f.set_entries(&entries(3));
         // --- IconField: set_icon_set rebuilds with real icons ---
-        let _env_guard = ENV_LOCK.lock().unwrap();
-        let td = tempfile::tempdir().unwrap();
-        std::env::set_var("XDG_CONFIG_HOME", td.path());
-        let icons_dir = td.path().join("opusdm").join("themes").join("test-theme").join("icons");
+        let config = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("set by the runner"));
+        let icons_dir = config.join("opusdm").join("themes").join("test-theme").join("icons");
         std::fs::create_dir_all(&icons_dir).unwrap();
         std::fs::write(icons_dir.join("text.png"), TEST_PNG_1X1).unwrap();
         let custom = opusdm_ipc::IconSetId::Custom("test-theme".to_string());
@@ -980,7 +1025,11 @@ mod tests {
         assert!(themed.shows_image());
         let blank = IconItem::new(&entries(1)[0], 64, &no_icons());
         assert!(!blank.shows_image());
+    }
 
+    /// Selection helpers, the changed signal and selected paths.
+    fn field_selection() {
+        let f = IconField::new();
         // --- IconField: selection helpers and the changed signal ---
         f.set_entries(&entries(5));
         let count = Rc::new(Cell::new(0));
@@ -1004,7 +1053,11 @@ mod tests {
         f.set_entries(&entries(3));
         f.select_exclusive(2);
         assert_eq!(f.selected_paths(), vec![PathBuf::from("/tmp/file2.txt")]);
+    }
 
+    /// Rubber-band selection and cursor steps.
+    fn field_rubber_band_and_cursor() {
+        let f = IconField::new();
         // --- IconField: rubber-band uses the cached rectangles ---
         f.set_entries(&entries(6));
         f.inner.layout.scroller.set_size_request(400, 400);
@@ -1018,7 +1071,11 @@ mod tests {
         f.set_cursor(0);
         f.move_cursor(1, 0, false, true);
         assert_eq!(f.cursor(), Some(1));
+    }
 
+    /// A dropped uri-list is parsed and forwarded.
+    fn field_drop() {
+        let f = IconField::new();
         // --- IconField: drop parses the uri-list and forwards it ---
         f.set_entries(&entries(2));
         let got = Rc::new(RefCell::new(None::<(Vec<PathBuf>, i32, bool)>));
@@ -1029,7 +1086,11 @@ mod tests {
         assert_eq!(paths, vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b c.txt")]);
         assert_eq!(target, -1);
         assert!(shift);
+    }
 
+    /// Dragging moves the whole selection and fires move-icons.
+    fn field_reposition_selection() {
+        let f = IconField::new();
         // --- IconField: reposition moves the selection and fires move-icons ---
         f.set_mode(LayoutMode::Free);
         f.set_entries(&entries(3));
@@ -1049,7 +1110,11 @@ mod tests {
         assert!(pos.contains_key(&2));
         assert!(!pos.contains_key(&1));
         assert_eq!(fired.get(), 1);
+    }
 
+    /// refresh_entries keeps selection, cursor and positions by path.
+    fn field_refresh_keeps_view_state() {
+        let f = IconField::new();
         // --- IconField: refresh_entries keeps view state, keyed by path ---
         f.set_mode(LayoutMode::Free);
         f.set_entries(&entries(4));
@@ -1071,7 +1136,10 @@ mod tests {
         assert!(f.selected_indices().is_empty());
         assert!(f.cursor().is_none());
         assert!(f.free_positions().is_empty());
+    }
 
+    /// Thumbnail wiring with the pool on and off.
+    fn field_thumbnail_wiring() {
         // --- IconField: thumbnail wiring is safe with the pool on and off ---
         std::env::set_var("OPUSDM_NO_THUMBS", "1");
         let f_off = IconField::new();
@@ -1092,7 +1160,10 @@ mod tests {
         }]);
         // "rs" is not previewable, so no job is queued and nothing panics.
         f_on.set_icon_size(200);
+    }
 
+    /// Inter-window drag rules and moving one icon.
+    fn field_inter_window_drag_and_reposition() {
         // --- IconField: inter-window drag is off in Free mode unless Ctrl ---
         let fd = IconField::new();
         assert!(fd.inter_window_drag_enabled(false)); // Grid default
@@ -1113,7 +1184,10 @@ mod tests {
         fd.end_reposition(50.0, 30.0);
         let moved = fd.free_positions();
         assert_eq!(moved.get(&0).copied(), Some((start.0 + 50.0, start.1 + 30.0)));
+    }
 
+    /// Grid spacing changes the Free auto-slot pitch.
+    fn field_grid_spacing() {
         // --- IconField: set_grid_spacing changes the Free auto-slot pitch ---
         // The headless scroller reports no width, so the auto-slot grid is a
         // single column: a larger `grid_spacing` shows up as a taller row
@@ -1129,7 +1203,10 @@ mod tests {
         fs.relayout();
         let narrow_y = fs.inner.layout.item_rects.borrow()[1].1;
         assert!(wide_y > narrow_y, "row pitch should track grid spacing ({wide_y} vs {narrow_y})");
+    }
 
+    /// Pinned positions follow left-out entries by path.
+    fn field_pinned_positions() {
         // --- IconField: pinned positions follow left-out entries by path ---
         let mk_left = |n: usize| {
             let mut e = entries(n);
@@ -1172,7 +1249,10 @@ mod tests {
         fp.begin_reposition(r1.0 + 2.0, r1.1 + 2.0);
         fp.end_reposition(1.0, 1.0);
         assert!(moved_log.borrow().is_empty());
+    }
 
+    /// A reload during a drag cancels it.
+    fn field_reload_cancels_drag() {
         // --- IconField: a reload during a drag cancels it (no wrong pin is reported) ---
         let all_left = || {
             let mut e = entries(3);
@@ -1203,7 +1283,10 @@ mod tests {
         fr.refresh_entries(&all_left());
         fr.end_reposition(50.0, 30.0);
         assert!(stray.borrow().is_empty(), "the drag must be cancelled by refresh_entries: {:?}", stray.borrow());
+    }
 
+    /// A group entry shows a badge and reports its pinned move.
+    fn field_group_entry() {
         // --- IconField: a group entry shows a badge and reports its pinned move ---
         let mut grp = entries(1).remove(0);
         grp.group = true;
@@ -1229,7 +1312,10 @@ mod tests {
         fg.update_reposition(40.0, 20.0);
         fg.end_reposition(40.0, 20.0);
         assert_eq!(*group_log.borrow(), vec![(PathBuf::from("group:tools"), (340.0, 220.0))]);
+    }
 
+    /// Only the visible items of a big field have widgets.
+    fn field_virtualization() {
         // --- IconField: virtualization above VIRTUALIZE_THRESHOLD ---
         let big = entries(VIRTUALIZE_THRESHOLD + 100);
         let v = IconField::new();

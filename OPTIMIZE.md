@@ -65,8 +65,9 @@
   - File(s): `crates/viewer/src/main.rs`, `crates/lister/src/viewer.rs`, `crates/shot/src/editor.rs`, `crates/hub/src/desktop_windows.rs`
   - Done: `chrome_css` defines `@opusdm_accent` (`opusdm_ui::ACCENT_COLOR_NAME`); the viewer thumbnail outline and the screenshot editor toggles / swatch use it. Left as is on purpose: the Lister search highlight colours (yellow / orange are not the accent), error reds, and the desktop / panel / dock palette (their own fixed desktop palette, a separate change).
 
-- [ ] **419-line single GTK test** - `iconview::field::tests::gtk_widget_behavior` packs a dozen unrelated scenarios into one test, so the first failure hides the rest; split per scenario behind a shared `gtk_ready()` guard.
+- [x] **419-line single GTK test** - `iconview::field::tests::gtk_widget_behavior` packs a dozen unrelated scenarios into one test, so the first failure hides the rest; split per scenario behind a shared `gtk_ready()` guard.
   - File(s): `crates/iconview/src/field.rs`
+  - Done differently: GTK may only be used from the thread that initialized it, so separate `#[test]`s cannot work. The test is now 17 named scenario functions run by one runner test with `catch_unwind`, which reports every failing scenario by name.
 
 - [ ] **Duplicated `show_message` / `show_error` in panel centers** - audio, devices, network and battery centers each implement the same status-message helper; pull it into a shared center base widget in `crates/panel/src/`.
   - File(s): `crates/panel/src/audio_center.rs`, `crates/panel/src/devices_center.rs`, `crates/panel/src/network_center.rs`, `crates/panel/src/battery_center.rs`
