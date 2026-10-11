@@ -2144,6 +2144,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-polkit"
+version = "0.7.0"
+dependencies = [
+ "async-channel",
+ "gdk4-x11",
+ "gtk4",
+ "libc",
+ "opusdm-ipc",
+ "opusdm-ui",
+ "tempfile",
+ "zbus",
+]
+
+[[package]]
 name = "opusdm-power"
 version = "0.7.0"
 dependencies = [

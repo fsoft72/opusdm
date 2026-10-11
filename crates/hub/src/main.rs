@@ -71,6 +71,12 @@ fn main() {
     // Put the saved screen layout back when monitors are plugged or unplugged.
     screen_hotplug::start();
 
+    // The polkit agent: password dialogs for pkexec and the other programs
+    // that need administrator rights. A second one (restarted hub) exits.
+    if let Err(e) = children::spawn_tool("opusdm-polkit") {
+        opusdm_ipc::err_log!("opusdm-hub", "cannot start opusdm-polkit: {e}");
+    }
+
     // Launch the Startup Apps of Settings, each after its own wait time.
     let desktop_settings = opusdm_hub::desktop_settings::load();
     opusdm_hub::startup_apps::start(&desktop_settings.startup_apps);

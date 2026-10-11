@@ -1,0 +1,21 @@
+[package]
+name = "opusdm-polkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-polkit"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ui = { path = "../ui" }
+opusdm-ipc = { path = "../ipc" }
+gtk4.workspace = true
+gdk4-x11.workspace = true
+async-channel.workspace = true
+libc.workspace = true
+zbus = { version = "5.19.0", features = ["blocking"] }
+
+[dev-dependencies]
+tempfile.workspace = true

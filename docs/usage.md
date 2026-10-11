@@ -893,6 +893,20 @@ split panes in the style of Terminator.
   needs exactly 16 colours (`#rgb` or `#rrggbb`). A file with an error is skipped (the reason is
   written to the log).
 
+### 3.36 Password dialog for administrator rights (`opusdm-polkit`)
+
+Programs that need administrator rights through polkit (`pkexec`, Synaptic, GParted, disk and
+network tools) ask for the password in an OpusDM dialog.
+
+- **Started by:** the hub, once at login. A second copy exits at once, so restarting the hub is safe.
+- **The dialog:** what the program wants to do, the user who authenticates (a choice when several
+  users are administrators, you first), the prompt PAM asks (usually **Password:**) and a
+  **Details** section with the polkit action. **Authenticate** or Enter sends the answer,
+  **Cancel** or Escape refuses. A wrong password keeps the dialog open for another try.
+- **Where:** centered above every window; on Wayland it holds the keyboard while it is open.
+- **Not working?** Another polkit agent may already be registered for the session (for example one
+  added to Startup Apps): `opusdm-polkit` then logs "polkitd refused the agent" and exits.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter
