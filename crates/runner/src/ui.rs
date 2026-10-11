@@ -268,12 +268,6 @@ fn layer_spec() -> opusdm_ui::layer::LayerSpec {
     }
 }
 
-/// Fetch the X11 window id backing `window`, if it runs under X11.
-fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
-    let surface = window.surface()?;
-    let x11_surface = surface.downcast::<gdk4_x11::X11Surface>().ok()?;
-    Some(x11_surface.xid() as u32)
-}
 
 /// Put the window at the top of the primary monitor once it is mapped, and
 /// keep it above the others. The window manager places a window after map and
@@ -283,7 +277,7 @@ fn place_on_map(window: &gtk::ApplicationWindow, panel: PanelPosition) {
     window.connect_map(move |window| {
         let window = window.clone();
         opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {
-            let Some(xid) = x11_window_id(&window) else { return };
+            let Some(xid) = opusdm_ui::x11_window_id(&window) else { return };
             let monitor = gtk::gdk::Display::default()
                 .as_ref()
                 .map(opusdm_ui::list_monitors)

@@ -8,7 +8,6 @@
 //! place of the struts (see [`layer_spec`]).
 
 use gtk4 as gtk;
-use gtk::prelude::*;
 use opusdm_ipc::PanelPosition;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{AtomEnum, PropMode};
@@ -93,7 +92,7 @@ pub fn make_panel_window(window: &gtk::ApplicationWindow, place: Placement) {
         opusdm_ui::layer::update(window, &layer_spec(place));
         return;
     }
-    let Some(xid) = x11_window_id(window) else {
+    let Some(xid) = opusdm_ui::x11_window_id(window) else {
         opusdm_ipc::debug_log!("opusdm-panel", "window is neither X11 nor a layer surface; skipping dock setup");
         return;
     };
@@ -105,7 +104,7 @@ pub fn make_panel_window(window: &gtk::ApplicationWindow, place: Placement) {
 /// Re-assert position and size only. Cheap; used on `map` after the window
 /// manager has run its placement policy.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement) {
-    let Some(xid) = x11_window_id(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     let (x, y, w, h) = (place.mon_x, place.bar_y(), place.mon_w.max(1) as u32, PANEL_HEIGHT.max(1) as u32);
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.configure(xid, x, y, w, h)) {
         opusdm_ipc::err_log!("opusdm-panel", "cannot pin panel geometry: {e}");
@@ -118,18 +117,12 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement) {
 /// `ClientMessage` and an explicit restack. Used on `map`, after the desktop
 /// window has finished asserting its own geometry.
 pub fn raise_above(window: &gtk::ApplicationWindow) {
-    let Some(xid) = x11_window_id(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.raise_above(xid)) {
         opusdm_ipc::err_log!("opusdm-panel", "cannot raise panel: {e}");
     }
 }
 
-/// Fetch the X11 window id backing a GTK window, if running under X11.
-fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
-    let surface = window.surface()?;
-    let x11_surface = surface.downcast::<gdk4_x11::X11Surface>().ok()?;
-    Some(x11_surface.xid() as u32)
-}
 
 fn apply(xid: u32, place: Placement) -> Result<(), opusdm_ui::X11Error> {
     let (mon_x, mon_y) = (place.mon_x, place.bar_y());

@@ -8,7 +8,6 @@
 //! instead, anchored to every edge of its monitor (see [`layer_spec`]).
 
 use gtk4 as gtk;
-use gtk::prelude::*;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
@@ -41,7 +40,7 @@ pub fn make_desktop_window(window: &gtk::ApplicationWindow, x: i32, y: i32, widt
         opusdm_ui::layer::update(window, &layer_spec((x, y, width, height)));
         return;
     }
-    let Some(xid) = x11_window_id(window) else {
+    let Some(xid) = opusdm_ui::x11_window_id(window) else {
         opusdm_ipc::debug_log!("opusdm-hub", "window is neither X11 nor a layer surface; skipping desktop setup");
         return;
     };
@@ -60,18 +59,12 @@ pub fn make_desktop_window(window: &gtk::ApplicationWindow, x: i32, y: i32, widt
 /// origin - openbox otherwise parks the desktop at the work area origin,
 /// which sits below the panel's strut.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, x: i32, y: i32, width: i32, height: i32) {
-    let Some(xid) = x11_window_id(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.pin_geometry(xid, x, y, width.max(1) as u32, height.max(1) as u32)) {
         opusdm_ipc::err_log!("opusdm-hub", "cannot pin desktop geometry: {e}");
     }
 }
 
-/// Fetch the X11 window id backing a GTK window, if running under X11.
-fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
-    let surface = window.surface()?;
-    let x11_surface = surface.downcast::<gdk4_x11::X11Surface>().ok()?;
-    Some(x11_surface.xid() as u32)
-}
 
 fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), opusdm_ui::X11Error> {
     let width = width.max(1) as u32;

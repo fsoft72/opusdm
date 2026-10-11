@@ -2,22 +2,13 @@
 //! and pager, and reading or setting its position. Every function is a no-op
 //! (with a log line for real errors) when the session is not X11.
 
-use gdk4_x11::X11Surface;
 use gtk4 as gtk;
-use gtk::prelude::*;
 use x11rb::protocol::xproto::{self, ConnectionExt};
-
-/// The X11 window id behind a GTK window, if it runs under X11 and is mapped.
-fn xid(window: &gtk::Window) -> Option<u32> {
-    let surface = window.surface()?;
-    let x11 = surface.downcast::<X11Surface>().ok()?;
-    Some(x11.xid() as u32)
-}
 
 /// Ask the window manager to keep `window` out of the taskbar (window list)
 /// and the pager. One `ClientMessage` per state, like the dock does.
 pub fn set_skip_taskbar(window: &gtk::Window) {
-    let Some(xid) = xid(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.add_wm_states(xid, &["_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"])) {
         opusdm_ipc::err_log!("buttonbank", "cannot hide a bank window from the taskbar: {e}");
     }
@@ -26,7 +17,7 @@ pub fn set_skip_taskbar(window: &gtk::Window) {
 /// Ask the window manager to show `window` on every virtual desktop when
 /// `on`, or only on the current one when not.
 pub fn set_all_desktops(window: &gtk::Window, on: bool) {
-    let Some(xid) = xid(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     let result = opusdm_ui::with_x11(|x11| if on { x11.stick_to_all_desktops(xid) } else { x11.unstick_to_current_desktop(xid) });
     if let Err(e) = result {
         opusdm_ipc::err_log!("buttonbank", "cannot change the desktops of a bank window: {e}");
@@ -41,7 +32,7 @@ const MOVE_FLAGS: u32 = 1 | (1 << 8) | (1 << 9) | (1 << 12);
 /// screen. The request goes to the window manager, which ignores a plain
 /// `ConfigureWindow` from another client.
 pub fn move_to(window: &gtk::Window, x: i32, y: i32) {
-    let Some(xid) = xid(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.move_resize(xid, MOVE_FLAGS, x, y, 0, 0)) {
         opusdm_ipc::err_log!("buttonbank", "cannot move a bank window: {e}");
     }
@@ -51,7 +42,7 @@ pub fn move_to(window: &gtk::Window, x: i32, y: i32) {
 /// screen (the same point [`move_to`] takes), or `None` when it cannot be
 /// read (not X11, not mapped).
 pub fn position(window: &gtk::Window) -> Option<(i32, i32)> {
-    let xid = xid(window)?;
+    let xid = opusdm_ui::x11_window_id(window)?;
     opusdm_ui::with_x11(|x11| {
         let conn = x11.conn();
         let reply = conn.translate_coordinates(xid, x11.root(), 0, 0)?.reply()?;

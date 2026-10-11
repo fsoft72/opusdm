@@ -136,9 +136,7 @@ fn layer_spec(panel_top: bool) -> opusdm_ui::layer::LayerSpec {
 /// Put the mapped popup in its corner and above the other windows.
 fn place(window: &gtk::Window, panel_top: bool) {
     if opusdm_ui::layer::is_layer(window) { return; }
-    let Some(surface) = window.surface() else { return };
-    let Ok(x11_surface) = surface.downcast::<gdk4_x11::X11Surface>() else { return };
-    let xid = x11_surface.xid() as u32;
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     let mon = gtk::gdk::Display::default()
         .as_ref()
         .map(opusdm_ui::list_monitors)

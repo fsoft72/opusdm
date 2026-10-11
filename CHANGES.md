@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-11
+- Refactor (ui): `opusdm_ui::x11_window_id(&impl IsA<gtk::Native>)` replaces the seven private copies of the surface to X11 xid downcast (hub, panel window and device popup, dock, runner, polkit, buttonbank); `gdk4-x11` is now a dependency of `opusdm-ui` only. 1 new unit test.
 - Refactor (ui): new `opusdm_ui::app_css` / `install_app_css(app_name, extra_css)`; the nine stand-alone programs (player, runner, shot, viewer, apps-editor, input-config, screen, terminal, polkit) call it instead of each building its own CssProvider from `chrome_css` + `ui_look_css`. 1 new unit test.
 - Fix (Lister): opening a file inside an archive no longer freezes the Lister while `unzip` / `tar` / `7z` runs. New `archive::extract_single_file_in_background` runs `extract_single_file_temp` on a worker thread and hands the result over an `async_channel`; `activate_row` awaits it and now flashes extraction and launch errors (before they were dropped silently). 1 new unit test (OPTIMIZE.md item).
 - Docs: new `OPTIMIZE.md`, a prioritised optimization / refactoring checklist (1 critical, 4 high, 7 medium, 6 low items) from a codebase review. No code changed.

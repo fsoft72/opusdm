@@ -13,7 +13,6 @@ opusdm-ui = { path = "../ui" }
 opusdm-ipc = { path = "../ipc" }
 opusdm-dock = { path = "../dock" }
 gtk4.workspace = true
-gdk4-x11.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -14,7 +14,6 @@
 
 use crate::placement::Placement;
 use gtk4 as gtk;
-use gtk::prelude::*;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
@@ -53,7 +52,7 @@ pub fn make_dock_window(window: &gtk::ApplicationWindow, place: Placement, count
         opusdm_ui::layer::update(window, &layer_spec(place));
         return;
     }
-    let Some(xid) = x11_window_id(window) else {
+    let Some(xid) = opusdm_ui::x11_window_id(window) else {
         opusdm_ipc::debug_log!("opusdm-dock", "window is neither X11 nor a layer surface; skipping dock setup");
         return;
     };
@@ -72,7 +71,7 @@ pub fn make_dock_window(window: &gtk::ApplicationWindow, place: Placement, count
 /// the middle of the screen with `<center>yes</center>`); only the EWMH
 /// message moves the frame itself.
 pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement, count: usize) {
-    let Some(xid) = x11_window_id(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     let (x, y, w, h) = place.rect(count);
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.pin_geometry(xid, x, y, w.max(1) as u32, h.max(1) as u32)) {
         opusdm_ipc::err_log!("opusdm-dock", "cannot pin dock geometry: {e}");
@@ -85,19 +84,13 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, place: Placement, count: us
 /// openbox once it has adopted the window, so this goes through one
 /// `ClientMessage` per state (each message carries at most two atoms).
 pub fn set_below(window: &gtk::ApplicationWindow) {
-    let Some(xid) = x11_window_id(window) else { return };
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
     let states = ["_NET_WM_STATE_BELOW", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"];
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.add_wm_states(xid, &states)) {
         opusdm_ipc::err_log!("opusdm-dock", "cannot lower dock: {e}");
     }
 }
 
-/// Fetch the X11 window id backing a GTK window, if running under X11.
-fn x11_window_id(window: &gtk::ApplicationWindow) -> Option<u32> {
-    let surface = window.surface()?;
-    let x11_surface = surface.downcast::<gdk4_x11::X11Surface>().ok()?;
-    Some(x11_surface.xid() as u32)
-}
 
 fn apply(xid: u32, place: Placement, count: usize) -> Result<(), opusdm_ui::X11Error> {
     let (x, y, w, h) = place.rect(count);

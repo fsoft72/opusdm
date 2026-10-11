@@ -2158,7 +2158,6 @@ dependencies = [
 name = "opusdm-buttonbank"
 version = "0.7.0"
 dependencies = [
- "gdk4-x11",
  "gtk4",
  "opusdm-ipc",
  "opusdm-ui",
@@ -2194,7 +2193,6 @@ name = "opusdm-dock"
 version = "0.7.0"
 dependencies = [
  "freedesktop-desktop-entry",
- "gdk4-x11",
  "gtk4",
  "opusdm-ipc",
  "opusdm-ui",
@@ -2237,7 +2235,6 @@ dependencies = [
  "async-channel",
  "dirs",
  "enumflags2",
- "gdk4-x11",
  "gtk4",
  "libc",
  "opusdm-buttonbank",
@@ -2352,7 +2349,6 @@ version = "0.7.0"
 dependencies = [
  "async-channel",
  "dirs",
- "gdk4-x11",
  "gtk4",
  "libc",
  "opusdm-audio",
@@ -2388,7 +2384,6 @@ name = "opusdm-polkit"
 version = "0.7.0"
 dependencies = [
  "async-channel",
- "gdk4-x11",
  "gtk4",
  "libc",
  "opusdm-ipc",
@@ -2410,7 +2405,6 @@ dependencies = [
 name = "opusdm-run"
 version = "0.7.0"
 dependencies = [
- "gdk4-x11",
  "gtk4",
  "opusdm-dock",
  "opusdm-ipc",
@@ -2506,6 +2500,7 @@ name = "opusdm-ui"
 version = "0.7.0"
 dependencies = [
  "async-channel",
+ "gdk4-x11",
  "gtk4",
  "gtk4-layer-shell",
  "opusdm-ipc",

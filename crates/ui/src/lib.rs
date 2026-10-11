@@ -20,4 +20,4 @@ pub use screen::{list_monitors, MonitorRect, watch_monitors, watch_screen_size};
 pub use shell::DialogShell;
 pub use theme_mode::{app_css, apply_theme_mode, chrome_css, install_app_css};
 pub use version::VERSION;
-pub use x11::{retry_after_map, with_x11, wrapped_desktop, x11_sync, X11Error, PLACEMENT_RETRY_MS, X11};
+pub use x11::{retry_after_map, with_x11, x11_window_id, wrapped_desktop, x11_sync, X11Error, PLACEMENT_RETRY_MS, X11};
