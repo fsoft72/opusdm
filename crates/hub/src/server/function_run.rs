@@ -68,9 +68,7 @@ impl Hub {
     /// the Lister for its selection.
     pub(super) fn query_selection(&mut self, cid: u64, run_id: u64) {
         self.runs.wait_selection(cid, run_id);
-        if let Some(c) = self.conns.get_mut(&cid) {
-            let _ = c.tx.send(ToLister::QuerySelection.into());
-        }
+        self.send_to(cid, ToLister::QuerySelection);
     }
 
     /// Run the inline command `id` names (`bash:`, `exec:`), else load the
@@ -148,9 +146,7 @@ impl Hub {
             opusdm_ipc::err_log!("hub", "function run failed: {error}");
             return;
         };
-        if let Some(c) = self.conns.get_mut(&requester) {
-            let _ = c.tx.send(ToLister::FunctionFailed { step_idx: 0, error }.into());
-        }
+        self.send_to(requester, ToLister::FunctionFailed { step_idx: 0, error });
     }
 
     /// `ToHub::SelectionReply` from `cid`: fill in whichever slot (source or
@@ -268,9 +264,7 @@ impl Hub {
             crate::functions::FnEvent::Failed { step_idx, error } => ToLister::FunctionFailed { step_idx, error },
             crate::functions::FnEvent::AllDone => ToLister::FunctionDone,
         };
-        if let Some(c) = self.conns.get_mut(&requester) {
-            let _ = c.tx.send(msg.into());
-        }
+        self.send_to(requester, msg);
     }
 
     /// A file-operation step of run `run_id` wants `spec` run: submit it to
@@ -340,9 +334,7 @@ impl Hub {
         let req_id = self.next_req;
         self.next_req += 1;
         self.confirms.insert(req_id, (reply, cid));
-        if let Some(c) = self.conns.get_mut(&cid) {
-            let _ = c.tx.send(ToLister::ConfirmPrompt { req_id, message }.into());
-        }
+        self.send_to(cid, ToLister::ConfirmPrompt { req_id, message });
     }
 
     /// Clean up any Function-run bookkeeping referencing `cid`, called when

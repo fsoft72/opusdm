@@ -409,9 +409,7 @@ impl Hub {
     fn lister_msg(&mut self, cid: u64, msg: ToHub) {
         match msg {
             ToHub::Ping => {
-                if let Some(c) = self.conns.get_mut(&cid) {
-                    let _ = c.tx.send(ToLister::Pong.into());
-                }
+                self.send_to(cid, ToLister::Pong);
             }
 
             ToHub::RaiseToolbar => {
@@ -451,9 +449,7 @@ impl Hub {
             }
 
             ToHub::JumpTo { lister, path } => {
-                if let Some(c) = self.conns.get(&lister.0).filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::GoTo { path }.into());
-                }
+                self.send_to_lister(lister.0, ToLister::GoTo { path });
             }
 
             ToHub::Register { pid, initial_path } => self.register_lister(cid, pid, initial_path),
@@ -514,9 +510,7 @@ impl Hub {
 
             // Tab in a Lister: raise the pane holding the opposite role.
             ToHub::PresentLister(target) => {
-                if let Some(c) = self.conns.get_mut(&target.0).filter(|c| c.registered) {
-                    let _ = c.tx.send(ToLister::Present.into());
-                }
+                self.send_to_lister(target.0, ToLister::Present);
             }
 
             ToHub::ConfirmReply { req_id, ok } => {
@@ -575,9 +569,24 @@ impl Hub {
 
     /// `ToHub::QueryConfig`: send `cid` the bindings and Functions in force.
     fn query_config(&mut self, cid: u64) {
-        let Some(c) = self.conns.get_mut(&cid) else { return };
-        let _ = c.tx.send(ToLister::BindingsUpdate(self.current_bindings.clone()).into());
-        let _ = c.tx.send(ToLister::FunctionsUpdate(self.current_functions.clone()).into());
+        self.send_to(cid, ToLister::BindingsUpdate(self.current_bindings.clone()));
+        self.send_to(cid, ToLister::FunctionsUpdate(self.current_functions.clone()));
+    }
+
+    /// Send `msg` to connection `cid`. A connection that is gone or closing
+    /// is skipped: its reader reports the end and the hub cleans up then.
+    fn send_to(&self, cid: u64, msg: ToLister) {
+        let Some(c) = self.conns.get(&cid) else { return };
+        if c.tx.send(msg.into()).is_err() {
+            opusdm_ipc::debug_log!("hub", "connection {cid} is closing: message dropped");
+        }
+    }
+
+    /// [`Self::send_to`], only when `cid` is a registered Lister.
+    fn send_to_lister(&self, cid: u64, msg: ToLister) {
+        if self.conns.get(&cid).is_some_and(|c| c.registered) {
+            self.send_to(cid, msg);
+        }
     }
 
     /// Answer `cid` with the cache folders every registered Lister reported.
@@ -593,9 +602,7 @@ impl Hub {
                     .map(move |p| opusdm_ipc::CacheEntry { lister: ListerId(*id), path: p.clone() })
             })
             .collect();
-        if let Some(c) = self.conns.get(&cid) {
-            let _ = c.tx.send(ToLister::CacheList(entries).into());
-        }
+        self.send_to(cid, ToLister::CacheList(entries));
     }
 
     /// `cid` registered: send its `Welcome`, announce it, share the roles and,
@@ -635,8 +642,8 @@ impl Hub {
             if self.hidden {
                 if requested {
                     self.set_hidden_with(false, false);
-                } else if let Some(c) = self.conns.get_mut(&cid) {
-                    let _ = c.tx.send(ToLister::SetHidden(true).into());
+                } else {
+                    self.send_to(cid, ToLister::SetHidden(true));
                 }
             }
             self.emit_script_event(ScriptEvent::ListerOpened);
@@ -882,9 +889,7 @@ impl Hub {
             return;
         }
         if let Some(source) = self.roles.source() {
-            if let Some(c) = self.conns.get_mut(&source.0) {
-                let _ = c.tx.send(ToLister::Present.into());
-            }
+            self.send_to(source.0, ToLister::Present);
         }
     }
 
@@ -968,9 +973,7 @@ impl Hub {
             // Remote locations are the Lister's business: hand the job back
             // with the destination resolved.
             if std::iter::once(dest_dir.as_path()).chain(srcs.iter().map(PathBuf::as_path)).any(crate::jobs::is_remote_path) {
-                if let Some(c) = self.conns.get_mut(&cid) {
-                    let _ = c.tx.send(ToLister::RemoteTransfer { op: op.clone(), srcs: srcs.clone(), dest_dir }.into());
-                }
+                self.send_to(cid, ToLister::RemoteTransfer { op: op.clone(), srcs: srcs.clone(), dest_dir });
                 continue;
             }
             if let Err(msg) = validate_op(&op, &srcs, &dest_dir) {
@@ -1033,9 +1036,7 @@ impl Hub {
             HubCmd::ToggleHidden => self.set_hidden(!self.hidden),
 
             HubCmd::PresentLister(id) => {
-                if let Some(c) = self.conns.get_mut(&id.0) {
-                    let _ = c.tx.send(ToLister::Present.into());
-                }
+                self.send_to(id.0, ToLister::Present);
             }
 
             HubCmd::EmitScriptEvent(event) => self.emit_script_event(event),
@@ -1099,7 +1100,8 @@ impl Hub {
                     };
                     let _ = waiter.send(result);
                 }
-                if let Some(c) = requester.and_then(|r| self.conns.get_mut(&r)) {
+                // `meta` still borrows `self.jobs`: send through the field.
+                if let Some(c) = requester.and_then(|r| self.conns.get(&r)) {
                     let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
                 }
                 let _ = self.evt_tx.send(HubEvent::JobFinished {
@@ -1140,8 +1142,8 @@ impl Hub {
                             file_bytes_total: *file_bytes_total,
                         });
                     }
-                    if let Some(c) = requester.and_then(|r| self.conns.get_mut(&r)) {
-                        let _ = c.tx.send(msg.into());
+                    if let Some(r) = requester {
+                        self.send_to(r, msg);
                     }
                 }
             }

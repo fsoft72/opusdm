@@ -54,7 +54,7 @@
 - [x] **Identical forwarder threads in `owner_loop`** - the job-progress and function-event forwarders are the same 15-line "recv, wrap in `OwnerMsg`, send" thread; extract `spawn_forwarder(name, rx, wrap)` to shorten `owner_loop` (122 lines).
   - File(s): `crates/hub/src/server.rs`
 
-- [ ] **Repeated "send to connection" boilerplate** - `lister_msg` and friends repeat `if let Some(c) = self.conns.get_mut(&cid) { let _ = c.tx.send(...) }`; a `Hub::send_to(cid, msg)` helper would cut noise and give one spot to log dead connections.
+- [x] **Repeated "send to connection" boilerplate** - `lister_msg` and friends repeat `if let Some(c) = self.conns.get_mut(&cid) { let _ = c.tx.send(...) }`; a `Hub::send_to(cid, msg)` helper would cut noise and give one spot to log dead connections.
   - File(s): `crates/hub/src/server.rs`
 
 - [ ] **`eprintln!` bypassing `err_log!`** - a few non-example call sites print directly (`hotkey_editor.rs`, `filetypes_ui.rs`, `network/src/watch.rs`, `terminal/src/main.rs` outside the usage message), skipping the shared `[tag:pid]` prefix the rest of the workspace uses.
