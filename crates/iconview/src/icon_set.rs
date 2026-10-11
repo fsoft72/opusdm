@@ -122,13 +122,10 @@ pub fn icon_texture_for(kind: IconKind, mode: u32, ext: Option<&str>, set: &Icon
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
-
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
     #[test]
     fn default_set_is_installed_on_demand_and_has_a_dir_icon() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env_lock();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         assert!(icon_bytes_for(IconKind::Dir, 0, None, &IconSetId::default()).is_some());
@@ -136,7 +133,7 @@ mod tests {
 
     #[test]
     fn custom_set_returns_bytes_for_a_present_icon_and_none_for_an_absent_one() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env_lock();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         let icons_dir = td.path().join("opusdm").join("themes").join("mytheme").join("icons");
@@ -153,7 +150,7 @@ mod tests {
 
     #[test]
     fn custom_set_with_no_theme_dir_returns_none_for_everything() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_env_lock();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", td.path());
         let set = IconSetId::Custom("does-not-exist".to_string());

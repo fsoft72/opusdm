@@ -144,6 +144,7 @@ mod tests {
 
     #[test]
     fn pool_serves_a_cached_image_without_a_generator() {
+        let _env_guard = crate::test_env_lock();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CACHE_HOME", td.path().join("cache"));
         let src = td.path().join("pic.png");

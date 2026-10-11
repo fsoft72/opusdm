@@ -807,9 +807,6 @@ mod tests {
     use crate::item::IconItem;
     use crate::types::IconKind;
     use std::path::PathBuf;
-    use std::sync::Mutex as StdMutex;
-
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
     /// A minimal valid 1x1 PNG, needed wherever a test decodes the bytes
     /// through `gtk::gdk::Texture::from_bytes` (unlike `icon_set.rs`'s own
@@ -855,7 +852,7 @@ mod tests {
             return;
         }
         // Theme lookups read the config folder: keep them in a scratch one.
-        let _env_guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = crate::test_env_lock();
         let config = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", config.path());
         let scenarios: &[(&str, fn())] = &[

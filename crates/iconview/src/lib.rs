@@ -18,6 +18,17 @@ pub mod style;
 pub mod thumbs;
 pub mod types;
 
+/// Serializes the tests that change process-wide environment variables
+/// (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `OPUSDM_NO_THUMBS`): libtest runs
+/// tests on parallel threads, and one test's `remove_var` would otherwise
+/// pull the folder from under another. A panicking holder does not block
+/// the others.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub use field::IconField;
 pub use item::IconItem;
 pub use types::{

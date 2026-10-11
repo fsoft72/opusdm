@@ -104,6 +104,7 @@ mod tests {
 
     #[test]
     fn store_then_load_valid_round_trips_and_detects_staleness() {
+        let _env_guard = crate::test_env_lock();
         let td = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CACHE_HOME", td.path().join("cache"));
         let src = td.path().join("pic.png");
