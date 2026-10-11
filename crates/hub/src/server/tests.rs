@@ -1679,3 +1679,22 @@ fn an_unchanged_apply_emits_no_event() {
     });
     assert!(again.is_none(), "an identical apply must not reach the GTK side");
 }
+
+#[test]
+fn a_forwarder_wraps_every_message_for_the_owner_loop() {
+    let (tx, rx) = channel::<(u64, Progress)>();
+    let (owner_tx, owner_rx) = channel::<OwnerMsg>();
+    spawn_forwarder("test-forwarder", rx, owner_tx, |(id, ev)| OwnerMsg::JobProgress(id, ev));
+    for id in [3, 4] {
+        tx.send((id, Progress::Done { copied: 0, skipped: 0, cancelled: false, errors: Vec::new() })).unwrap();
+    }
+    drop(tx);
+    let ids: Vec<u64> = owner_rx
+        .iter()
+        .map(|msg| match msg {
+            OwnerMsg::JobProgress(id, _) => id,
+            _ => panic!("unexpected message"),
+        })
+        .collect();
+    assert_eq!(ids, vec![3, 4], "in order, and the thread ends with its input");
+}

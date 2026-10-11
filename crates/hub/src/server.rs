@@ -1160,36 +1160,9 @@ fn owner_loop(
     let persist_tx = persist::spawn_persist_thread();
 
     let (jp_tx, jp_rx) = channel::<(u64, Progress)>();
-    {
-        let owner_tx = owner_tx.clone();
-        std::thread::Builder::new()
-            .name("opusdm-job-progress".into())
-            .spawn(move || {
-                for (id, ev) in jp_rx {
-                    if owner_tx.send(OwnerMsg::JobProgress(id, ev)).is_err() {
-                        break;
-                    }
-                }
-                opusdm_ipc::debug_log!("hub", "job progress forwarder exiting");
-            })
-            .expect("spawn job progress forwarder thread");
-    }
-
+    spawn_forwarder("opusdm-job-progress", jp_rx, owner_tx.clone(), |(id, ev)| OwnerMsg::JobProgress(id, ev));
     let (fe_tx, fe_rx) = channel::<(u64, crate::functions::FnEvent)>();
-    {
-        let owner_tx = owner_tx.clone();
-        std::thread::Builder::new()
-            .name("opusdm-function-events".into())
-            .spawn(move || {
-                for (id, ev) in fe_rx {
-                    if owner_tx.send(OwnerMsg::FunctionEvent(id, ev)).is_err() {
-                        break;
-                    }
-                }
-                opusdm_ipc::debug_log!("hub", "function event forwarder exiting");
-            })
-            .expect("spawn function event forwarder thread");
-    }
+    spawn_forwarder("opusdm-function-events", fe_rx, owner_tx.clone(), |(id, ev)| OwnerMsg::FunctionEvent(id, ev));
 
     let current_desktop = desktop_settings::load();
     opusdm_ipc::debug_log!(
@@ -1266,6 +1239,23 @@ fn owner_loop(
             return;
         }
     }
+}
+
+/// Start thread `name`, which wraps every message of `rx` with `wrap` and
+/// passes it to the owner loop, until either side closes.
+fn spawn_forwarder<T: Send + 'static>(name: &str, rx: Receiver<T>, owner_tx: Sender<OwnerMsg>, wrap: fn(T) -> OwnerMsg) {
+    let thread_name = name.to_string();
+    std::thread::Builder::new()
+        .name(thread_name.clone())
+        .spawn(move || {
+            for msg in rx {
+                if owner_tx.send(wrap(msg)).is_err() {
+                    break;
+                }
+            }
+            opusdm_ipc::debug_log!("hub", "{thread_name} forwarder exiting");
+        })
+        .unwrap_or_else(|e| panic!("spawn {name} forwarder thread: {e}"));
 }
 
 fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
