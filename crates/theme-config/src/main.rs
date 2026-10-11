@@ -54,6 +54,203 @@ fn build_editor_only(app: &gtk::Application) {
     editor::open(app, None, Rc::new(|_| {}));
 }
 
+/// The controls of the Settings window whose values Apply reads back.
+struct Sections {
+    theme_mode: Rc<ui::ThemeModeSection>,
+    /// Replaced by a new picker when a theme is imported or edited.
+    icon_set: Rc<RefCell<Rc<ui::IconSetSection>>>,
+    grid: Rc<GridSection>,
+    folder: Rc<FolderSection>,
+    panel: Rc<PanelSection>,
+    screens: Rc<VirtualScreensSection>,
+    startup_apps: Rc<StartupAppsSection>,
+    windows: Rc<WindowsSection>,
+    bg: Rc<BackgroundSection>,
+    dock: Rc<DockSection>,
+    dock_apps: Rc<DockAppsSection>,
+    behavior: Rc<ui::BehaviorSection>,
+}
+
+impl Sections {
+    /// The preferences shown by the controls. The look fields are left at
+    /// their defaults: Apply resolves them from the theme.
+    fn read(&self) -> (opusdm_ipc::Settings, opusdm_ipc::DesktopSettings) {
+        let prefs = opusdm_ipc::Settings {
+            theme: opusdm_ipc::Theme { background: self.bg.read(), ..Default::default() },
+            appearance: opusdm_ipc::Appearance { theme_mode: self.theme_mode.value(), ..Default::default() },
+            behavior: self.behavior.read(),
+            ..Default::default()
+        };
+        let desktop = opusdm_ipc::DesktopSettings {
+            icon_size: self.grid.icon_size(),
+            grid_spacing: self.grid.grid_spacing(),
+            grid_gap: self.grid.grid_gap(),
+            desktop_dir: self.folder.override_dir(),
+            panel_position: self.panel.position(),
+            dock_position: self.dock.position(),
+            dock_icon_size: self.dock.icon_size(),
+            virtual_screens: self.screens.count(),
+            transparency_enabled: self.windows.enabled(),
+            inactive_opacity: self.windows.inactive_opacity(),
+            active_opacity: self.windows.active_opacity(),
+            startup_apps: self.startup_apps.apps(),
+            open_lister_at_start: self.startup_apps.open_lister_at_start(),
+            snap_enabled: self.windows.snap_enabled(),
+        }
+        .sanitized();
+        (prefs, desktop)
+    }
+}
+
+/// The Edit / Import / Export theme buttons of the Desktop tab.
+struct ThemeButtons {
+    edit: gtk::Button,
+    import: gtk::Button,
+    export: gtk::Button,
+}
+
+/// The Desktop tab and the controls on it.
+struct DesktopTab {
+    page: gtk::Box,
+    theme_mode: Rc<ui::ThemeModeSection>,
+    icon_set: Rc<RefCell<Rc<ui::IconSetSection>>>,
+    buttons: ThemeButtons,
+    grid: Rc<GridSection>,
+    folder: Rc<FolderSection>,
+    panel: Rc<PanelSection>,
+    screens: Rc<VirtualScreensSection>,
+}
+
+/// A vertical page box with the standard 12 px spacing and margins.
+fn page_box() -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    page.set_margin_top(12);
+    page.set_margin_bottom(12);
+    page.set_margin_start(12);
+    page.set_margin_end(12);
+    page
+}
+
+/// `page` inside a scrolled window.
+fn scrolled(page: &gtk::Box) -> gtk::ScrolledWindow {
+    let outer = gtk::ScrolledWindow::new();
+    outer.set_child(Some(page));
+    outer
+}
+
+/// Install the shared chrome and look CSS for the default display and return
+/// the provider, so a theme mode change can reload it.
+fn install_chrome(mode: opusdm_ipc::ThemeMode, look_css: &str) -> gtk::CssProvider {
+    // Same fixed dark/light chrome palette as opusdm-lister
+    // (`opusdm_ui::chrome_css`), so this window matches the rest of
+    // OpusDM regardless of what GTK theme is or isn't installed.
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(&format!("{}{look_css}", opusdm_ui::chrome_css(mode)));
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().expect("no default GDK display: cannot run without one"),
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    provider
+}
+
+/// Desktop tab: theme mode, icon set and theme buttons, grid, folder, panel,
+/// virtual screens and brightness.
+fn build_desktop_page(
+    settings: &opusdm_ipc::Settings,
+    desktop: &opusdm_ipc::DesktopSettings,
+    chrome: &gtk::CssProvider,
+    look_css: &str,
+) -> DesktopTab {
+    let page = page_box();
+    let theme_mode = Rc::new(ui::ThemeModeSection::new(settings.appearance.theme_mode));
+    page.append(&theme_mode.root);
+    {
+        let chrome = chrome.clone();
+        let look_css = look_css.to_string();
+        theme_mode.connect_mode_changed(move |mode| {
+            opusdm_ui::apply_theme_mode(mode);
+            chrome.load_from_data(&format!("{}{look_css}", opusdm_ui::chrome_css(mode)));
+        });
+    }
+
+    let icon_set = Rc::new(RefCell::new(Rc::new(ui::IconSetSection::new(&settings.theme.icon_set))));
+    page.append(&icon_set.borrow().root);
+
+    let buttons = ThemeButtons {
+        edit: gtk::Button::with_label("Edit themes..."),
+        import: gtk::Button::with_label("Import theme..."),
+        export: gtk::Button::with_label("Export theme..."),
+    };
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.append(&buttons.edit);
+    row.append(&buttons.import);
+    row.append(&buttons.export);
+    page.append(&row);
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let grid = Rc::new(GridSection::new(desktop.icon_size, desktop.grid_spacing, desktop.grid_gap));
+    let folder = Rc::new(FolderSection::new(desktop.desktop_dir.as_deref()));
+    let panel = Rc::new(PanelSection::new(desktop.panel_position));
+    let screens = Rc::new(VirtualScreensSection::new(desktop.virtual_screens));
+    for root in [&grid.root, &folder.root, &panel.root, &screens.root] {
+        page.append(root);
+        page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    }
+
+    // Applied live by its own worker: it is not part of desktop.json.
+    let brightness = BrightnessSection::new();
+    page.append(&brightness.root);
+    DesktopTab { page, theme_mode, icon_set, buttons, grid, folder, panel, screens }
+}
+
+/// Desktop Background tab: the rotating list of backgrounds, which can also
+/// pick the pictures of the theme selected in `icon_set`.
+fn build_background_page(window: &gtk::ApplicationWindow, theme: &opusdm_ipc::Theme, icon_set: &Rc<RefCell<Rc<ui::IconSetSection>>>) -> (gtk::Box, Rc<BackgroundSection>) {
+    let page = page_box();
+    let bg = Rc::new(BackgroundSection::new(window, &theme.background));
+    {
+        let icon_set = icon_set.clone();
+        bg.connect_theme_pictures(window, move || {
+            let IconSetId::Custom(slug) = icon_set.borrow().value();
+            opusdm_ipc::themes::theme_wallpapers(&slug)
+        });
+    }
+    page.append(&bg.root);
+    (page, bg)
+}
+
+/// Dock tab: edge, icon size and pinned apps.
+fn build_dock_page(window: &gtk::ApplicationWindow, desktop: &opusdm_ipc::DesktopSettings) -> (gtk::ScrolledWindow, Rc<DockSection>, Rc<DockAppsSection>) {
+    let page = page_box();
+    let dock = DockSection::new(desktop.dock_position, desktop.dock_icon_size, desktop.panel_position);
+    page.append(&dock.root);
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let apps = opusdm_ipc::dock::load_dock_config().map(|c| c.apps).unwrap_or_default();
+    let dock_apps = Rc::new(DockAppsSection::new(window, apps));
+    page.append(&dock_apps.root);
+    (scrolled(&page), dock, dock_apps)
+}
+
+/// The note line under the tabs, showing `text` when there is one.
+fn build_note(text: Option<&str>) -> gtk::Label {
+    let note = gtk::Label::new(None);
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    note.set_visible(false);
+    if let Some(text) = text {
+        note.set_text(text);
+        note.set_visible(true);
+    }
+    note
+}
+
+/// Show `text` in the note line.
+fn show_note(note: &gtk::Label, text: &str) {
+    note.set_text(text);
+    note.set_visible(true);
+}
+
 fn build_window(app: &gtk::Application) {
     let desktop_data = opusdm_desktop_config::model::load();
     let (settings_data, migration_note) = migrated_settings(model::load_settings(), &desktop_data);
@@ -61,7 +258,6 @@ fn build_window(app: &gtk::Application) {
     opusdm_ui::register_theme_fonts(active_slug);
     let look_css = opusdm_ui::ui_look_css(&settings_data);
     opusdm_ui::apply_theme_mode(settings_data.appearance.theme_mode);
-    let theme = settings_data.theme.clone();
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -69,93 +265,19 @@ fn build_window(app: &gtk::Application) {
         .default_width(480)
         .default_height(680)
         .build();
-
-    // Same fixed dark/light chrome palette as opusdm-lister
-    // (`opusdm_ui::chrome_css`), so this window matches the rest of
-    // OpusDM regardless of what GTK theme is or isn't installed.
-    let chrome_provider = gtk::CssProvider::new();
-    chrome_provider.load_from_data(&format!("{}{look_css}", opusdm_ui::chrome_css(settings_data.appearance.theme_mode)));
-    gtk::style_context_add_provider_for_display(
-        &gtk::gdk::Display::default().expect("no default GDK display: cannot run without one"),
-        &chrome_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-
-    let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    outer.set_margin_top(12);
-    outer.set_margin_bottom(12);
-    outer.set_margin_start(12);
-    outer.set_margin_end(12);
+    let chrome = install_chrome(settings_data.appearance.theme_mode, &look_css);
 
     let notebook = gtk::Notebook::new();
     notebook.set_vexpand(true);
+    let tab = |page: &gtk::Widget, title: &str| {
+        notebook.append_page(page, Some(&gtk::Label::new(Some(title))));
+    };
 
-    // --- Desktop tab: icon set, grid, folder, panel ---
-    let desktop_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    desktop_page.set_margin_top(12);
-    desktop_page.set_margin_bottom(12);
-    desktop_page.set_margin_start(12);
-    desktop_page.set_margin_end(12);
+    let DesktopTab { page: desktop_page, theme_mode, icon_set, buttons: theme_buttons, grid, folder, panel, screens } =
+        build_desktop_page(&settings_data, &desktop_data, &chrome, &look_css);
+    tab(desktop_page.upcast_ref(), "Desktop");
 
-    let theme_mode_section = Rc::new(ui::ThemeModeSection::new(settings_data.appearance.theme_mode));
-    desktop_page.append(&theme_mode_section.root);
-    {
-        let chrome_provider = chrome_provider.clone();
-        let look_css = look_css.clone();
-        theme_mode_section.connect_mode_changed(move |mode| {
-            opusdm_ui::apply_theme_mode(mode);
-            chrome_provider.load_from_data(&format!("{}{look_css}", opusdm_ui::chrome_css(mode)));
-        });
-    }
-
-    let icon_set = Rc::new(RefCell::new(Rc::new(ui::IconSetSection::new(&theme.icon_set))));
-    desktop_page.append(&icon_set.borrow().root);
-
-    let theme_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let edit_btn = gtk::Button::with_label("Edit themes...");
-    let import_btn = gtk::Button::with_label("Import theme...");
-    let export_btn = gtk::Button::with_label("Export theme...");
-    theme_buttons.append(&edit_btn);
-    theme_buttons.append(&import_btn);
-    theme_buttons.append(&export_btn);
-    desktop_page.append(&theme_buttons);
-    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    let grid = Rc::new(GridSection::new(
-        desktop_data.icon_size,
-        desktop_data.grid_spacing,
-        desktop_data.grid_gap,
-    ));
-    desktop_page.append(&grid.root);
-    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    let folder = Rc::new(FolderSection::new(desktop_data.desktop_dir.as_deref()));
-    desktop_page.append(&folder.root);
-    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    let panel = Rc::new(PanelSection::new(desktop_data.panel_position));
-    desktop_page.append(&panel.root);
-    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    let screens = Rc::new(VirtualScreensSection::new(desktop_data.virtual_screens));
-    desktop_page.append(&screens.root);
-    desktop_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    let startup_apps = Rc::new(StartupAppsSection::new(&desktop_data.startup_apps, desktop_data.open_lister_at_start));
-
-    // Applied live by its own worker: it is not part of desktop.json.
-    let brightness = BrightnessSection::new();
-    desktop_page.append(&brightness.root);
-
-    notebook.append_page(&desktop_page, Some(&gtk::Label::new(Some("Desktop"))));
-
-    // --- Windows tab: transparency of the active and inactive windows ---
-    let windows_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    windows_page.set_margin_top(12);
-    windows_page.set_margin_bottom(12);
-    windows_page.set_margin_start(12);
-    windows_page.set_margin_end(12);
-
+    let windows_page = page_box();
     let windows = Rc::new(WindowsSection::new(
         desktop_data.transparency_enabled,
         desktop_data.inactive_opacity,
@@ -163,97 +285,35 @@ fn build_window(app: &gtk::Application) {
         desktop_data.snap_enabled,
     ));
     windows_page.append(&windows.root);
-    notebook.append_page(&windows_page, Some(&gtk::Label::new(Some("Windows"))));
+    tab(windows_page.upcast_ref(), "Windows");
 
-    // --- Desktop Background tab: the rotating list of backgrounds ---
-    let background_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    background_page.set_margin_top(12);
-    background_page.set_margin_bottom(12);
-    background_page.set_margin_start(12);
-    background_page.set_margin_end(12);
+    let (background_page, bg) = build_background_page(&window, &settings_data.theme, &icon_set);
+    tab(background_page.upcast_ref(), "Desktop Background");
 
-    let bg = Rc::new(BackgroundSection::new(&window, &theme.background));
-    {
-        let icon_set = icon_set.clone();
-        bg.connect_theme_pictures(&window, move || {
-            let IconSetId::Custom(slug) = icon_set.borrow().value();
-            opusdm_ipc::themes::theme_wallpapers(&slug)
-        });
-    }
-    background_page.append(&bg.root);
-    notebook.append_page(&background_page, Some(&gtk::Label::new(Some("Desktop Background"))));
-
-    // --- Dock tab: edge, icon size, pinned apps ---
-    let dock_page_outer = gtk::ScrolledWindow::new();
-    let dock_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    dock_page.set_margin_top(12);
-    dock_page.set_margin_bottom(12);
-    dock_page.set_margin_start(12);
-    dock_page.set_margin_end(12);
-
-    let dock_section = DockSection::new(
-        desktop_data.dock_position,
-        desktop_data.dock_icon_size,
-        desktop_data.panel_position,
-    );
-    dock_page.append(&dock_section.root);
-    dock_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    let dock_apps = opusdm_ipc::dock::load_dock_config().map(|c| c.apps).unwrap_or_default();
-    let dock_apps_section = Rc::new(DockAppsSection::new(&window, dock_apps));
-    dock_page.append(&dock_apps_section.root);
-
-    dock_page_outer.set_child(Some(&dock_page));
-    notebook.append_page(&dock_page_outer, Some(&gtk::Label::new(Some("Dock"))));
-
+    let (dock_page, dock, dock_apps) = build_dock_page(&window, &desktop_data);
+    tab(dock_page.upcast_ref(), "Dock");
     // The panel edge and dock edge stay mutually exclusive live.
     {
-        let dock_section = dock_section.clone();
-        panel.connect_position_changed(move |position| dock_section.set_panel(position));
+        let dock = dock.clone();
+        panel.connect_position_changed(move |position| dock.set_panel(position));
     }
 
-    // --- Lister tab: behaviour (the colours belong to the theme) ---
-    let lister_page_outer = gtk::ScrolledWindow::new();
-    let lister_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    lister_page.set_margin_top(12);
-    lister_page.set_margin_bottom(12);
-    lister_page.set_margin_start(12);
-    lister_page.set_margin_end(12);
+    // Lister tab: behaviour (the colours belong to the theme).
+    let lister_page = page_box();
+    let behavior = Rc::new(ui::BehaviorSection::new(&settings_data.behavior));
+    lister_page.append(&behavior.root);
+    tab(scrolled(&lister_page).upcast_ref(), "Lister");
 
-    let behavior_section = Rc::new(ui::BehaviorSection::new(&settings_data.behavior));
-    lister_page.append(&behavior_section.root);
-
-    lister_page_outer.set_child(Some(&lister_page));
-
-    notebook.append_page(&lister_page_outer, Some(&gtk::Label::new(Some("Lister"))));
-
-    // --- Startup Apps tab ---
-    let startup_page_outer = gtk::ScrolledWindow::new();
-    let startup_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    startup_page.set_margin_top(12);
-    startup_page.set_margin_bottom(12);
-    startup_page.set_margin_start(12);
-    startup_page.set_margin_end(12);
+    let startup_page = page_box();
+    let startup_apps = Rc::new(StartupAppsSection::new(&desktop_data.startup_apps, desktop_data.open_lister_at_start));
     startup_page.append(&startup_apps.root);
-    startup_page_outer.set_child(Some(&startup_page));
-    notebook.append_page(&startup_page_outer, Some(&gtk::Label::new(Some("Startup Apps"))));
+    tab(scrolled(&startup_page).upcast_ref(), "Startup Apps");
 
-    // --- Advanced and System tabs: buttons that open the other tools ---
-    notebook.append_page(&tools::build_advanced_page(), Some(&gtk::Label::new(Some("Advanced"))));
-    notebook.append_page(&tools::build_system_page(), Some(&gtk::Label::new(Some("System"))));
+    // Advanced and System tabs: buttons that open the other tools.
+    tab(tools::build_advanced_page().upcast_ref(), "Advanced");
+    tab(tools::build_system_page().upcast_ref(), "System");
 
-    outer.append(&notebook);
-
-    let note = gtk::Label::new(None);
-    note.set_xalign(0.0);
-    note.set_wrap(true);
-    note.set_visible(false);
-    if let Some(text) = &migration_note {
-        note.set_text(text);
-        note.set_visible(true);
-    }
-    outer.append(&note);
-
+    let note = build_note(migration_note.as_deref());
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     buttons.set_halign(gtk::Align::End);
     buttons.set_margin_top(6);
@@ -261,165 +321,119 @@ fn build_window(app: &gtk::Application) {
     let apply = gtk::Button::with_label("Apply");
     buttons.append(&cancel);
     buttons.append(&apply);
-    outer.append(&buttons);
 
+    let outer = page_box();
+    outer.append(&notebook);
+    outer.append(&note);
+    outer.append(&buttons);
     window.set_child(Some(&outer));
 
+    let sections = Rc::new(Sections { theme_mode, icon_set, grid, folder, panel, screens, startup_apps, windows, bg, dock, dock_apps, behavior });
+    let select_theme = theme_selector(&sections.icon_set, &desktop_page);
     {
         let window = window.clone();
         cancel.connect_clicked(move |_| window.close());
     }
-    // Reads the preferences back from the controls, shared by Apply. The look
-    // fields are left at their defaults: Apply resolves them from the theme.
-    let read_ui: Rc<dyn Fn() -> (opusdm_ipc::Settings, opusdm_ipc::DesktopSettings)> = {
-        let bg = bg.clone();
-        let grid = grid.clone();
-        let folder = folder.clone();
-        let panel = panel.clone();
-        let screens = screens.clone();
-        let startup_apps = startup_apps.clone();
-        let windows = windows.clone();
-        let dock_section = dock_section.clone();
-        let behavior_section = behavior_section.clone();
-        let theme_mode_section = theme_mode_section.clone();
-        Rc::new(move || {
-            let prefs = opusdm_ipc::Settings {
-                theme: opusdm_ipc::Theme { background: bg.read(), ..Default::default() },
-                appearance: opusdm_ipc::Appearance { theme_mode: theme_mode_section.value(), ..Default::default() },
-                behavior: behavior_section.read(),
-                ..Default::default()
-            };
-            let desktop = opusdm_ipc::DesktopSettings {
-                icon_size: grid.icon_size(),
-                grid_spacing: grid.grid_spacing(),
-                grid_gap: grid.grid_gap(),
-                desktop_dir: folder.override_dir(),
-                panel_position: panel.position(),
-                dock_position: dock_section.position(),
-                dock_icon_size: dock_section.icon_size(),
-                virtual_screens: screens.count(),
-                transparency_enabled: windows.enabled(),
-                inactive_opacity: windows.inactive_opacity(),
-                active_opacity: windows.active_opacity(),
-                startup_apps: startup_apps.apps(),
-                open_lister_at_start: startup_apps.open_lister_at_start(),
-                snap_enabled: windows.snap_enabled(),
-            }
-            .sanitized();
-            (prefs, desktop)
-        })
-    };
-
-    // Rebuilds the icon-set picker with `slug` selected, keeping its place above the theme buttons.
-    let select_theme: Rc<dyn Fn(String)> = {
-        let icon_set = icon_set.clone();
-        let desktop_page = desktop_page.clone();
-        Rc::new(move |slug: String| {
-            let old_root = icon_set.borrow().root.clone();
-            let new_section = Rc::new(ui::IconSetSection::new(&opusdm_ipc::IconSetId::Custom(slug)));
-            desktop_page.insert_child_after(&new_section.root, Some(&old_root));
-            desktop_page.remove(&old_root);
-            *icon_set.borrow_mut() = new_section;
-        })
-    };
-
-    {
-        let icon_set = icon_set.clone();
-        let read_ui = read_ui.clone();
-        let dock_apps_section = dock_apps_section.clone();
-        let note = note.clone();
-        apply.connect_clicked(move |_| {
-            let selected = icon_set.borrow().value();
-            let (prefs, desktop) = read_ui();
-            if let Err(e) = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig {
-                apps: dock_apps_section.apps(),
-            }) {
-                opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
-            }
-            let settings = model::resolve_selected(&selected, &prefs);
-            match model::apply_full(&settings, &desktop) {
-                model::ApplyOutcome::SentToHub => {
-                    note.set_text("Applied to the running desktop.");
-                    note.set_visible(true);
-                }
-                model::ApplyOutcome::WroteFile => {
-                    note.set_text("No hub running - saved, effective on next login.");
-                    note.set_visible(true);
-                }
-                model::ApplyOutcome::Failed(e) => {
-                    note.set_text(&format!("Could not apply: {e}"));
-                    note.set_visible(true);
-                }
-            }
-        });
-    }
+    connect_apply(&apply, &sections, &note);
+    connect_import(&theme_buttons.import, &window, &select_theme, &note);
+    connect_export(&theme_buttons.export, &window, &sections.icon_set, &note);
     {
         let window = window.clone();
-        let select_theme = select_theme.clone();
-        let note = note.clone();
-        import_btn.connect_clicked(move |_| {
-            let filter = gtk::FileFilter::new();
-            filter.add_pattern("*.zip");
-            filter.add_pattern("*.tar.gz");
-            filter.add_pattern("*.tgz");
-            filter.add_pattern("*.tar.bz2");
-            filter.set_name(Some("Theme archives"));
-            let filters = gio::ListStore::new::<gtk::FileFilter>();
-            filters.append(&filter);
-
-            let dialog = gtk::FileDialog::builder().title("Import Theme").filters(&filters).build();
-            let select_theme = select_theme.clone();
-            let note = note.clone();
-            dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-                let Ok(file) = result else { return };
-                let Some(path) = file.path() else { return };
-                match crate::importer::import_theme_archive(&path) {
-                    Ok(slug) => {
-                        note.set_text(&format!("Imported theme \"{slug}\". Select it above and click Apply."));
-                        note.set_visible(true);
-                        select_theme(slug.clone());
-                    }
-                    Err(e) => {
-                        note.set_text(&format!("Import failed: {e}"));
-                        note.set_visible(true);
-                    }
-                }
-            });
-        });
-    }
-
-    {
-        let window = window.clone();
-        let select_theme = select_theme.clone();
-        edit_btn.connect_clicked(move |_| {
+        theme_buttons.edit.connect_clicked(move |_| {
             let Some(app) = window.application() else { return };
             editor::open(&app, Some(&window), select_theme.clone());
         });
     }
-    {
-        let window = window.clone();
-        let icon_set = icon_set.clone();
-        let note = note.clone();
-        export_btn.connect_clicked(move |_| {
-            let opusdm_ipc::IconSetId::Custom(slug) = icon_set.borrow().value();
-            let dialog = gtk::FileDialog::builder().title("Export Theme").initial_name(format!("{slug}.zip")).build();
-            let note = note.clone();
-            dialog.save(Some(&window), gio::Cancellable::NONE, move |result| {
-                let Ok(file) = result else { return };
-                let Some(mut path) = file.path() else { return };
-                if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("zip")) {
-                    path.set_extension("zip");
-                }
-                match exporter::export_theme(&slug, &path) {
-                    Ok(()) => note.set_text(&format!("Exported to {}.", path.display())),
-                    Err(e) => note.set_text(&format!("Export failed: {e}")),
-                }
-                note.set_visible(true);
-            });
-        });
-    }
-
     window.present();
+}
+
+/// A function that rebuilds the icon-set picker with `slug` selected,
+/// keeping its place in `page` above the theme buttons.
+fn theme_selector(icon_set: &Rc<RefCell<Rc<ui::IconSetSection>>>, page: &gtk::Box) -> Rc<dyn Fn(String)> {
+    let icon_set = icon_set.clone();
+    let page = page.clone();
+    Rc::new(move |slug: String| {
+        let old_root = icon_set.borrow().root.clone();
+        let new_section = Rc::new(ui::IconSetSection::new(&opusdm_ipc::IconSetId::Custom(slug)));
+        page.insert_child_after(&new_section.root, Some(&old_root));
+        page.remove(&old_root);
+        *icon_set.borrow_mut() = new_section;
+    })
+}
+
+/// Apply: save the dock apps, then apply the selected theme with the
+/// preferences of the controls and tell how it went in `note`.
+fn connect_apply(apply: &gtk::Button, sections: &Rc<Sections>, note: &gtk::Label) {
+    let sections = sections.clone();
+    let note = note.clone();
+    apply.connect_clicked(move |_| {
+        let selected = sections.icon_set.borrow().value();
+        let (prefs, desktop) = sections.read();
+        if let Err(e) = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig { apps: sections.dock_apps.apps() }) {
+            opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
+        }
+        let settings = model::resolve_selected(&selected, &prefs);
+        match model::apply_full(&settings, &desktop) {
+            model::ApplyOutcome::SentToHub => show_note(&note, "Applied to the running desktop."),
+            model::ApplyOutcome::WroteFile => show_note(&note, "No hub running - saved, effective on next login."),
+            model::ApplyOutcome::Failed(e) => show_note(&note, &format!("Could not apply: {e}")),
+        }
+    });
+}
+
+/// Import theme: pick an archive, unpack it as a theme and select it.
+fn connect_import(button: &gtk::Button, window: &gtk::ApplicationWindow, select_theme: &Rc<dyn Fn(String)>, note: &gtk::Label) {
+    let window = window.clone();
+    let select_theme = select_theme.clone();
+    let note = note.clone();
+    button.connect_clicked(move |_| {
+        let filter = gtk::FileFilter::new();
+        filter.add_pattern("*.zip");
+        filter.add_pattern("*.tar.gz");
+        filter.add_pattern("*.tgz");
+        filter.add_pattern("*.tar.bz2");
+        filter.set_name(Some("Theme archives"));
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+
+        let dialog = gtk::FileDialog::builder().title("Import Theme").filters(&filters).build();
+        let select_theme = select_theme.clone();
+        let note = note.clone();
+        dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
+            let Ok(file) = result else { return };
+            let Some(path) = file.path() else { return };
+            match crate::importer::import_theme_archive(&path) {
+                Ok(slug) => {
+                    show_note(&note, &format!("Imported theme \"{slug}\". Select it above and click Apply."));
+                    select_theme(slug.clone());
+                }
+                Err(e) => show_note(&note, &format!("Import failed: {e}")),
+            }
+        });
+    });
+}
+
+/// Export theme: save the theme selected in `icon_set` as a zip file.
+fn connect_export(button: &gtk::Button, window: &gtk::ApplicationWindow, icon_set: &Rc<RefCell<Rc<ui::IconSetSection>>>, note: &gtk::Label) {
+    let window = window.clone();
+    let icon_set = icon_set.clone();
+    let note = note.clone();
+    button.connect_clicked(move |_| {
+        let opusdm_ipc::IconSetId::Custom(slug) = icon_set.borrow().value();
+        let dialog = gtk::FileDialog::builder().title("Export Theme").initial_name(format!("{slug}.zip")).build();
+        let note = note.clone();
+        dialog.save(Some(&window), gio::Cancellable::NONE, move |result| {
+            let Ok(file) = result else { return };
+            let Some(mut path) = file.path() else { return };
+            if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("zip")) {
+                path.set_extension("zip");
+            }
+            match exporter::export_theme(&slug, &path) {
+                Ok(()) => show_note(&note, &format!("Exported to {}.", path.display())),
+                Err(e) => show_note(&note, &format!("Export failed: {e}")),
+            }
+        });
+    });
 }
 
 /// Run the one-time look migration on `settings` (see [`migrate::migrate_look`])
