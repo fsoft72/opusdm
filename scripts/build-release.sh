@@ -9,13 +9,13 @@
 #             opusdm-portals.conf
 #   themes/   <slug>.zip theme packages
 #   opusdm-session            X11 session script (Openbox + picom + opusdm-hub)
-#   opusdm-session-wayland    Wayland session script (Wayfire if installed,
-#                             else labwc, + opusdm-hub)
+#   opusdm-session-wayland    Wayland session script (labwc|wayfire as its
+#                             argument, + opusdm-hub)
 #   opusdm.desktop            "OpusDM (X11)" xsession entry template
-#   opusdm-wayland.desktop    "OpusDM (Wayland)" wayland-session entry template
-#                             (Exec of both is set by install.sh)
+#   opusdm-wayland.desktop    "OpusDM (<compositor>)" wayland-session entry
+#                             template (prefix and compositor set by install.sh)
 #   install.sh                copies dist to a prefix and registers the
-#                             session(s): install.sh --x11 | --wayland [prefix]
+#                             session(s): install.sh --x11 | --wayland labwc|wayfire [prefix]
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -77,9 +77,11 @@ chmod +x "$DIST/opusdm-session"
 # started by it.
 cat > "$DIST/opusdm-session-wayland" <<'SESSION'
 #!/bin/sh
-# OpusDM Wayland session: opusdm-hub started by the compositor. The
-# compositor is Wayfire when it is installed (its IPC gives the pager the
-# window positions), else labwc. OPUSDM_COMPOSITOR=wayfire|labwc forces one.
+# OpusDM Wayland session: opusdm-hub started by the compositor.
+# Usage: opusdm-session-wayland labwc|wayfire
+# The login entry written by install.sh names the compositor. Without the
+# argument, OPUSDM_COMPOSITOR=wayfire|labwc is used, else Wayfire when it is
+# installed (its IPC gives the pager the window positions), else labwc.
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # "--hub": run by Wayfire's autostart, inside the compositor. Wayfire, unlike
@@ -96,6 +98,15 @@ if [ "${1:-}" = "--hub" ]; then
     exec "$HERE/bin/opusdm-hub"
 fi
 
+case "${1:-}" in
+    labwc|wayfire) COMPOSITOR="$1" ;;
+    "") COMPOSITOR="${OPUSDM_COMPOSITOR:-}" ;;
+    *) echo "opusdm-session-wayland: unknown compositor $1 (labwc or wayfire)" >&2; exit 2 ;;
+esac
+if [ -z "$COMPOSITOR" ]; then
+    if command -v wayfire >/dev/null 2>&1; then COMPOSITOR=wayfire; else COMPOSITOR=labwc; fi
+fi
+
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
 export PATH="$HERE/bin:$PATH"
 export XDG_SESSION_TYPE=wayland
@@ -108,11 +119,6 @@ PORTALS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/opusdm-portal
 if [ ! -f "$PORTALS_CONF" ]; then
     mkdir -p "$(dirname "$PORTALS_CONF")"
     cp "$HERE/config/opusdm-portals.conf" "$PORTALS_CONF"
-fi
-
-COMPOSITOR="${OPUSDM_COMPOSITOR:-}"
-if [ -z "$COMPOSITOR" ]; then
-    if command -v wayfire >/dev/null 2>&1; then COMPOSITOR=wayfire; else COMPOSITOR=labwc; fi
 fi
 
 if [ "$COMPOSITOR" = "wayfire" ]; then
@@ -164,9 +170,9 @@ DESKTOP
 
 cat > "$DIST/opusdm-wayland.desktop" <<'DESKTOP'
 [Desktop Entry]
-Name=OpusDM (Wayland)
-Comment=OpusDM desktop on Wayfire or labwc
-Exec=@PREFIX@/opusdm-session-wayland
+Name=OpusDM (@COMPOSITOR@)
+Comment=OpusDM desktop on @COMPOSITOR@
+Exec=@PREFIX@/opusdm-session-wayland @COMPOSITOR@
 Type=Application
 DesktopNames=OpusDM;wlroots
 DESKTOP
@@ -175,17 +181,18 @@ cat > "$DIST/install.sh" <<'INSTALL'
 #!/bin/sh
 # Copy this dist to a prefix and register the OpusDM session(s) for the login
 # manager (SDDM, GDM, LightDM...).
-# Usage: ./install.sh --x11|--wayland [--x11|--wayland] [prefix]
-#   --x11       register "OpusDM (X11)" (Openbox + picom) in /usr/share/xsessions
-#   --wayland   register "OpusDM (Wayland)" (Wayfire if installed, else labwc)
-#               in /usr/share/wayland-sessions
-#   At least one of the two is required; both can be given.
-#   prefix      default /opt/opusdm (needs sudo)
+# Usage: ./install.sh --x11|--wayland labwc|wayfire [--wayland labwc|wayfire] [prefix]
+#   --x11              register "OpusDM (X11)" (Openbox + picom) in /usr/share/xsessions
+#   --wayland labwc    register "OpusDM (labwc)" in /usr/share/wayland-sessions
+#   --wayland wayfire  register "OpusDM (wayfire)" in /usr/share/wayland-sessions
+#   At least one session is required; --wayland can be given once per compositor.
+#   prefix             default /opt/opusdm (needs sudo)
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PREFIX=/opt/opusdm
 X11=0
-WAYLAND=0
+# Space separated Wayland compositors to register a session for
+COMPOSITORS=""
 
 usage() {
     sed -n '4,9p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -195,7 +202,17 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --x11) X11=1 ;;
-        --wayland) WAYLAND=1 ;;
+        --wayland)
+            [ $# -ge 2 ] || { echo "install: --wayland needs the compositor: labwc or wayfire" >&2; usage; }
+            case "$2" in
+                labwc|wayfire) ;;
+                *) echo "install: unknown compositor $2 (labwc or wayfire)" >&2; usage ;;
+            esac
+            case " $COMPOSITORS " in
+                *" $2 "*) ;;
+                *) COMPOSITORS="${COMPOSITORS:+$COMPOSITORS }$2" ;;
+            esac
+            shift ;;
         -h|--help) usage ;;
         -*) echo "install: unknown option $1" >&2; usage ;;
         *) PREFIX="$1" ;;
@@ -204,18 +221,14 @@ while [ $# -gt 0 ]; do
 done
 
 # Exit conditions up front
-[ "$X11" -eq 1 ] || [ "$WAYLAND" -eq 1 ] || { echo "install: choose the session: --x11 and/or --wayland" >&2; usage; }
+[ "$X11" -eq 1 ] || [ -n "$COMPOSITORS" ] || { echo "install: choose the session: --x11 and/or --wayland labwc|wayfire" >&2; usage; }
+for COMPOSITOR in $COMPOSITORS; do
+    command -v "$COMPOSITOR" >/dev/null 2>&1 || { echo "install: $COMPOSITOR is not installed, the \"OpusDM ($COMPOSITOR)\" session needs it (package: $COMPOSITOR)" >&2; exit 1; }
+done
 if [ "$X11" -eq 1 ] && ! command -v openbox >/dev/null 2>&1; then
     echo "install: warning: openbox is not installed, the X11 session needs it (package: openbox)" >&2
 fi
-if [ "$WAYLAND" -eq 1 ]; then
-    if command -v wayfire >/dev/null 2>&1; then
-        echo "install: the Wayland session uses Wayfire"
-    elif command -v labwc >/dev/null 2>&1; then
-        echo "install: the Wayland session uses labwc (install wayfire to get window boxes in the pager)"
-    else
-        echo "install: warning: neither wayfire nor labwc is installed, the Wayland session needs one (package: wayfire or labwc)" >&2
-    fi
+if [ -n "$COMPOSITORS" ]; then
     command -v wlr-randr >/dev/null 2>&1 || echo "install: warning: wlr-randr is not installed, the screen settings need it (package: wlr-randr)" >&2
 fi
 
@@ -235,10 +248,15 @@ if [ "$X11" -eq 1 ]; then
     sed "s|@PREFIX@|$PREFIX|" "$HERE/opusdm.desktop" | $SUDO tee /usr/share/xsessions/opusdm.desktop >/dev/null
     echo "Session \"OpusDM (X11)\": /usr/share/xsessions/opusdm.desktop"
 fi
-if [ "$WAYLAND" -eq 1 ]; then
+if [ -n "$COMPOSITORS" ]; then
     $SUDO mkdir -p /usr/share/wayland-sessions
-    sed "s|@PREFIX@|$PREFIX|" "$HERE/opusdm-wayland.desktop" | $SUDO tee /usr/share/wayland-sessions/opusdm-wayland.desktop >/dev/null
-    echo "Session \"OpusDM (Wayland)\": /usr/share/wayland-sessions/opusdm-wayland.desktop"
+    # The single "OpusDM (Wayland)" entry of earlier versions is replaced by one per compositor
+    $SUDO rm -f /usr/share/wayland-sessions/opusdm-wayland.desktop
+    for COMPOSITOR in $COMPOSITORS; do
+        ENTRY="/usr/share/wayland-sessions/opusdm-$COMPOSITOR.desktop"
+        sed -e "s|@PREFIX@|$PREFIX|" -e "s|@COMPOSITOR@|$COMPOSITOR|g" "$HERE/opusdm-wayland.desktop" | $SUDO tee "$ENTRY" >/dev/null
+        echo "Session \"OpusDM ($COMPOSITOR)\": $ENTRY"
+    done
 fi
 echo "Folders open in OpusDM by default: opusdm-hub sets opusdm-lister.desktop for inode/directory at every start"
 INSTALL
