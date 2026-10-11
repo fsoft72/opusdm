@@ -23,7 +23,6 @@ mod window;
 mod zoom;
 
 use gtk4 as gtk;
-use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
 use std::path::PathBuf;
@@ -38,13 +37,7 @@ const VIEWER_CSS: &str = ".viewer-stage, scrolledwindow.viewer-stage, scrolledwi
 
 /// Load the shared OpusDM look (theme mode, fonts).
 fn apply_theme() {
-    let settings = opusdm_ipc::settings::load_settings("opusdm-viewer");
-    opusdm_ui::apply_theme_mode(settings.appearance.theme_mode);
-    let Some(display) = gdk::Display::default() else { return };
-    let provider = gtk::CssProvider::new();
-    let css = format!("{} {} {VIEWER_CSS}", opusdm_ui::chrome_css(settings.appearance.theme_mode), opusdm_ui::ui_look_css(&settings));
-    provider.load_from_data(&css);
-    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    opusdm_ui::install_app_css("opusdm-viewer", VIEWER_CSS);
 }
 
 fn main() -> ExitCode {

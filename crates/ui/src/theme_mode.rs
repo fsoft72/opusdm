@@ -1,7 +1,7 @@
 //! GTK-wide dark/light theme preference.
 
 use gtk4 as gtk;
-use opusdm_ipc::ThemeMode;
+use opusdm_ipc::{Settings, ThemeMode};
 
 /// Force GTK's own built-in "Adwaita" theme (compiled into libgtk4 itself,
 /// always available, no external theme files needed) instead of whatever
@@ -116,9 +116,37 @@ pub fn chrome_css(mode: ThemeMode) -> String {
     )
 }
 
+/// The full stylesheet of a stand-alone OpusDM program: the chrome for the
+/// theme mode, the user's look (fonts, surfaces) and the program's own
+/// `extra_css`, in that order so the program rules win.
+pub fn app_css(settings: &Settings, extra_css: &str) -> String {
+    format!("{} {} {extra_css}", chrome_css(settings.appearance.theme_mode), crate::ui_look_css(settings))
+}
+
+/// Load the settings of `app_name`, apply its theme mode and install
+/// [`app_css`] for the default display. Every stand-alone program calls this
+/// once at start-up instead of building its own provider.
+pub fn install_app_css(app_name: &str, extra_css: &str) {
+    let settings = opusdm_ipc::settings::load_settings(app_name);
+    apply_theme_mode(settings.appearance.theme_mode);
+    let Some(display) = gtk::gdk::Display::default() else { return };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(&app_css(&settings, extra_css));
+    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_css_puts_the_program_rules_after_chrome_and_look() {
+        let settings = Settings::default();
+        let css = app_css(&settings, ".mine { color: red; }");
+        assert!(css.starts_with(&chrome_css(settings.appearance.theme_mode)));
+        assert!(css.contains(&crate::ui_look_css(&settings)));
+        assert!(css.ends_with(".mine { color: red; }"));
+    }
 
     #[test]
     fn dark_and_light_chrome_css_use_different_window_backgrounds() {

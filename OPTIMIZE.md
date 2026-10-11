@@ -9,7 +9,7 @@
 
 ## High
 
-- [ ] **Shared `apply_theme()` copied into 9 binaries** - player, runner, shot, viewer, apps-editor, input-config, screen, terminal and polkit each repeat the same "load settings, apply theme mode, build CssProvider from `chrome_css` + `ui_look_css` + local CSS" body; add `opusdm_ui::install_app_css(app_id, extra_css)` so a theming change lands in one place.
+- [x] **Shared `apply_theme()` copied into 9 binaries** - player, runner, shot, viewer, apps-editor, input-config, screen, terminal and polkit each repeat the same "load settings, apply theme mode, build CssProvider from `chrome_css` + `ui_look_css` + local CSS" body; add `opusdm_ui::install_app_css(app_id, extra_css)` so a theming change lands in one place.
   - File(s): `crates/{player,runner,shot,viewer,apps-editor,input-config,screen,terminal,polkit}/src/main.rs`, `crates/ui/src/`
 
 - [ ] **`x11_window_id` duplicated 5 times** - the same surface -> `X11Surface` -> xid downcast lives in hub, panel, dock, runner and polkit; move it into `opusdm_ui` (next to `with_x11`), taking `&impl IsA<gtk::Native>` so both `Window` and `ApplicationWindow` callers use it.

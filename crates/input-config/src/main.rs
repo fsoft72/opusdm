@@ -11,13 +11,7 @@ use opusdm_input_config::backend::{for_session, session_problem};
 
 /// Load the shared OpusDM look (theme mode, fonts).
 fn apply_theme() {
-    let settings = opusdm_ipc::settings::load_settings("opusdm-input-config");
-    opusdm_ui::apply_theme_mode(settings.appearance.theme_mode);
-    let Some(display) = gtk::gdk::Display::default() else { return };
-    let provider = gtk::CssProvider::new();
-    let css = format!("{} {}", opusdm_ui::chrome_css(settings.appearance.theme_mode), opusdm_ui::ui_look_css(&settings));
-    provider.load_from_data(&css);
-    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    opusdm_ui::install_app_css("opusdm-input-config", "");
 }
 
 fn main() -> gtk::glib::ExitCode {
