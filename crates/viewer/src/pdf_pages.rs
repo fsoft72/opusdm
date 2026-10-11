@@ -3,7 +3,7 @@
 //! is shown, and a new document stops the worker of the old one.
 
 use crate::loader::RawImage;
-use crate::pdf::{open, render_page};
+use crate::pdf::{open, render_page_cached};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
@@ -152,11 +152,12 @@ fn _render_thumbs(path: &Path, count: usize, first: usize, generation: u64, flag
         Ok(pdf) => pdf,
         Err(e) => return opusdm_ipc::err_log!("viewer", "page thumbnails of {}: {e}", path.display()),
     };
+    let cache = hayro::RenderCache::new();
     for index in _render_order(count, first) {
         if flag.load(Ordering::SeqCst) != generation { return; }
         let Some(page) = pdf.pages().get(index) else { return };
         let scale = THUMB_WIDTH as f32 / page.render_dimensions().0.max(1.0);
-        let result = render_page(&pdf, index, scale).map(|p| p.raw);
+        let result = render_page_cached(&pdf, index, scale, &cache).map(|p| p.raw);
         if answers.send_blocking((generation, index, result)).is_err() { return; }
     }
 }

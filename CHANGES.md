@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-11
+- Perf (viewer): the PDF page worker and the page-panel thumbnail worker keep one hayro `RenderCache` per open document (`render_page_cached`), so fonts and outlines are not decoded again at every page turn. The page worker is now a loop per document (`_serve_document`) because the cache borrows the document. 1 new unit test (cached and fresh renders give the same pixels), the worker test also covers switching documents.
 - Fix (Lister): the archive preview of a damaged zip or tar showed an empty listing. `listing_text` now checks the exit status of `unzip -l` / `tar -tf` and shows the tool's error (or the status) instead. 2 new unit tests.
 - Fix (Lister, fsops): browsing, previewing and extracting from 7z archives in the Lister now work on systems with only `7zz` or `7za`; the Lister ran a literal `7z`. New `opusdm_fsops::tools` (`SEVEN_Z_TOOLS`, `find_in_path`, `seven_z_tool`, `seven_z_program`) replaces the two private resolvers of `compress.rs` and `extract.rs`, and the Lister uses it. 3 new unit tests.
 - Perf (Lister): browsing the folders of an archive no longer runs `zipinfo` / `tar -t` / `7z l` over the whole file at every step. `archive::ListingCache` keeps the parsed listings of the last 4 archives, valid while the size and mtime of the file are unchanged; `read_archive_rows` filters the cached listing by folder. 2 new unit tests.

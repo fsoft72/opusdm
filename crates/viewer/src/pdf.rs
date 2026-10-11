@@ -50,15 +50,20 @@ pub fn open(path: &Path) -> Result<Pdf, String> {
 
 /// Render page `index` (0-based) of `pdf` at `scale` pixels per point.
 pub fn render_page(pdf: &Pdf, index: usize, scale: f32) -> Result<RenderedPage, String> {
+    render_page_cached(pdf, index, scale, &RenderCache::new())
+}
+
+/// [`render_page`] reusing `cache`, which keeps the fonts and outlines decoded
+/// for the earlier pages of the same document.
+pub fn render_page_cached<'a>(pdf: &'a Pdf, index: usize, scale: f32, cache: &RenderCache<'a>) -> Result<RenderedPage, String> {
     let pages = pdf.pages();
     let count = pages.len();
     if count == 0 { return Err("the document has no pages".to_string()); }
     let Some(page) = pages.get(index) else { return Err(format!("page {} does not exist ({count} pages)", index + 1)) };
     let (width, height) = page.render_dimensions();
     let scale = _clamped_scale(width, height, scale);
-    let cache = RenderCache::new();
     let settings = PixmapSettings { x_scale: scale, y_scale: scale, bg_color: WHITE };
-    let pixmap = render(page, &cache, &InterpreterSettings::default(), &RenderSettings::default(), &settings);
+    let pixmap = render(page, cache, &InterpreterSettings::default(), &RenderSettings::default(), &settings);
     let (w, h) = (pixmap.width() as u32, pixmap.height() as u32);
     if w == 0 || h == 0 { return Err(format!("page {} is empty", index + 1)); }
     let raw = RawImage { width: w, height: h, rowstride: (w * 4) as i32, has_alpha: true, bytes: pixmap.take_rgba8(ImageAlphaType::Alpha) };
@@ -80,30 +85,47 @@ fn _clamped_scale(width: f32, height: f32, scale: f32) -> f32 {
     scale.min(MAX_EDGE / edge)
 }
 
-/// Start the page worker. It keeps the last opened document, skips requests
-/// that a newer one already replaced, and stops when the sender is dropped.
+/// Start the page worker. It keeps the last opened document and its render
+/// cache, skips requests that a newer one already replaced, and stops when
+/// the sender is dropped.
 pub fn start_worker(answers: async_channel::Sender<PageAnswer>) -> mpsc::Sender<PageRequest> {
     let (tx, rx) = mpsc::channel::<PageRequest>();
     std::thread::spawn(move || {
-        let mut open_doc: Option<(PathBuf, Pdf)> = None;
-        while let Ok(mut request) = rx.recv() {
-            // Only the newest request matters: the older pages are no longer on screen.
-            while let Ok(newer) = rx.try_recv() { request = newer; }
-            let result = _render_request(&mut open_doc, &request);
-            if answers.send_blocking((request.generation, result)).is_err() { break; }
+        let mut next = rx.recv().ok();
+        while let Some(request) = next.take() {
+            next = _serve_document(request, &rx, &answers);
         }
     });
     tx
 }
 
-/// Render one request, reusing the document in `open_doc` when the path matches.
-fn _render_request(open_doc: &mut Option<(PathBuf, Pdf)>, request: &PageRequest) -> Result<RenderedPage, String> {
-    if open_doc.as_ref().is_none_or(|(p, _)| *p != request.path) {
-        *open_doc = None;
-        *open_doc = Some((request.path.clone(), open(&request.path)?));
+/// The newest request waiting after `request`: only it matters, the older
+/// pages are no longer on screen.
+fn _newest(mut request: PageRequest, rx: &mpsc::Receiver<PageRequest>) -> PageRequest {
+    while let Ok(newer) = rx.try_recv() { request = newer; }
+    request
+}
+
+/// Open the document of `request` and answer every request for it, sharing
+/// one render cache. Returns the first request for another document, or
+/// `None` when the channels close.
+fn _serve_document(request: PageRequest, rx: &mpsc::Receiver<PageRequest>, answers: &async_channel::Sender<PageAnswer>) -> Option<PageRequest> {
+    let mut request = _newest(request, rx);
+    let pdf = match open(&request.path) {
+        Ok(pdf) => pdf,
+        Err(e) => {
+            answers.send_blocking((request.generation, Err(e))).ok()?;
+            return rx.recv().ok();
+        }
+    };
+    let cache = RenderCache::new();
+    loop {
+        let result = render_page_cached(&pdf, request.index, PAGE_SCALE, &cache);
+        answers.send_blocking((request.generation, result)).ok()?;
+        let next = _newest(rx.recv().ok()?, rx);
+        if next.path != request.path { return Some(next); }
+        request = next;
     }
-    let (_, pdf) = open_doc.as_ref().expect("document opened above");
-    render_page(pdf, request.index, PAGE_SCALE)
 }
 
 #[cfg(test)]
@@ -225,5 +247,25 @@ pub(crate) mod tests {
         let (generation, result) = answer_rx.recv_blocking().unwrap();
         assert_eq!(generation, 8);
         assert!(result.is_err());
+        // Back to the first document, then another one: each is opened anew.
+        let other = dir.path().join("other.pdf");
+        std::fs::write(&other, make_pdf(3)).unwrap();
+        for (generation, path, count) in [(9, &path, 2), (10, &path, 2), (11, &other, 3)] {
+            requests.send(PageRequest { generation, path: path.clone(), index: 0 }).unwrap();
+            let (got, result) = answer_rx.recv_blocking().unwrap();
+            assert_eq!((got, result.unwrap().count), (generation, count));
+        }
+    }
+
+    #[test]
+    fn a_shared_cache_renders_the_same_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = open(&write_pdf(dir.path(), 2)).unwrap();
+        let cache = RenderCache::new();
+        for index in [0, 1, 0] {
+            let cached = render_page_cached(&pdf, index, 1.0, &cache).unwrap();
+            let fresh = render_page(&pdf, index, 1.0).unwrap();
+            assert_eq!(cached.raw.bytes, fresh.raw.bytes, "page {index}");
+        }
     }
 }
