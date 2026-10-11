@@ -27,6 +27,7 @@ pub fn attach(ui: &Rc<Ui>) {
     let row = &ui.button_row;
     let icon_size = 18;
 
+    let parent_btn = crate::icons::icon_button(crate::icons::SVG_PARENT, "Parent Directory", icon_size);
     let copy_btn = crate::icons::icon_button(crate::icons::SVG_COPY, "Copy (Source -> Dest). Right click: Copy As...", icon_size);
     let move_btn = crate::icons::icon_button(crate::icons::SVG_MOVE, "Move (Source -> Dest). Right click: Move As...", icon_size);
     let delete_btn = crate::icons::icon_button(crate::icons::SVG_DELETE, "Delete", icon_size);
@@ -51,6 +52,7 @@ pub fn attach(ui: &Rc<Ui>) {
     term_btn.set_tooltip_text(Some("Terminal Drawer (F4 / `)"));
     term_btn.add_css_class("opus-btn");
 
+    row.append(&parent_btn);
     row.append(&copy_btn);
     row.append(&move_btn);
     row.append(&delete_btn);
@@ -62,6 +64,11 @@ pub fn attach(ui: &Rc<Ui>) {
     row.append(&preview_btn);
     row.append(&term_btn);
     row.append(&ui.user_menu_btn);
+
+    {
+        let ui = ui.clone();
+        parent_btn.connect_clicked(move |_| crate::commands::go_parent(&ui));
+    }
 
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);
