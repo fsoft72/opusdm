@@ -653,8 +653,9 @@ Shows pictures, PDF documents and videos: the files and folders named on the com
   on pixel art; the info bar says `pixels` while it is on, and the choice stays for the
   next pictures.
 - **PDF documents:** one page at a time, shown like a picture (zoom, drag, rotate as above).
-  **Page Down** / **Page Up** go to the next / previous page, **Home** / **End** to the first /
-  last one; zoom and rotation stay when the page changes. The page is drawn at 144 dpi, so
+  **Right** / **Down** / **Page Down** go to the next page, **Left** / **Up** / **Page Up** to
+  the previous one, **Home** / **End** to the first / last one (on a PDF the arrows turn pages:
+  **Space**, **n** and **p** move to the other files); zoom and rotation stay when the page changes. The page is drawn at 144 dpi, so
   100% means twice the PDF size and zooming far in gets soft. The thumbnail is the first page.
   A bar over the page holds:
   - **Pages** (or **F9**): opens and closes the page panel on the left, one thumbnail per page
@@ -668,8 +669,9 @@ Shows pictures, PDF documents and videos: the files and folders named on the com
     goes to the page (links inside the document) or opens the address with the default
     application (web, mail).
   Text cannot be selected, and password protected files are not supported.
-- **Moving:** **Left** / **Right**, **Space** or **n** go to the next file, **p** or **Left**
-  to the previous one; the gallery wraps around. Click a thumbnail in the strip to jump to it.
+- **Moving:** **Right**, **Space** or **n** go to the next file, **Left** or **p** to the
+  previous one (on a PDF the arrows turn pages, use **Space**, **n** and **p**); the gallery
+  wraps around. Click a thumbnail in the strip to jump to it.
 - **Videos:** the video starts playing. **Space** plays / pauses and **Left** / **Right** seek
   5 seconds back / forward; **Up** / **Down** change the volume, **m** mutes, and **n** and **p** still move through the
   gallery. The bar is the one of the player (play, seek slider, time, mute, volume), without Loop.

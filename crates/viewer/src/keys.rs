@@ -49,6 +49,8 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
         Key::r if !video => Action::RotateCw,
         Key::R if !video => Action::RotateCcw,
         Key::period | Key::KP_Decimal if !video => Action::Interpolation,
+        Key::Left | Key::KP_Left | Key::Up | Key::KP_Up if pdf => Action::PrevPage,
+        Key::Right | Key::KP_Right | Key::Down | Key::KP_Down if pdf => Action::NextPage,
         Key::Left | Key::KP_Left => if video { Action::SeekBack } else { Action::Prev },
         Key::Right | Key::KP_Right => if video { Action::SeekForward } else { Action::Next },
         Key::space => if video { Action::TogglePlay } else { Action::Next },
@@ -157,13 +159,22 @@ mod tests {
     }
 
     #[test]
+    fn arrows_turn_the_pages_of_a_pdf() {
+        for key in [Key::Left, Key::KP_Left, Key::Up, Key::KP_Up] {
+            assert_eq!(map(key, Pdf), Some(Action::PrevPage));
+        }
+        for key in [Key::Right, Key::KP_Right, Key::Down, Key::KP_Down] {
+            assert_eq!(map(key, Pdf), Some(Action::NextPage));
+        }
+    }
+
+    #[test]
     fn a_pdf_moves_zooms_and_rotates_like_a_picture() {
-        assert_eq!(map(Key::Left, Pdf), Some(Action::Prev));
-        assert_eq!(map(Key::Right, Pdf), Some(Action::Next));
         assert_eq!(map(Key::space, Pdf), Some(Action::Next));
+        assert_eq!(map(Key::n, Pdf), Some(Action::Next));
+        assert_eq!(map(Key::p, Pdf), Some(Action::Prev));
         assert_eq!(map(Key::plus, Pdf), Some(Action::ZoomIn));
         assert_eq!(map(Key::r, Pdf), Some(Action::RotateCw));
-        assert_eq!(map(Key::Up, Pdf), None);
     }
 
     #[test]
