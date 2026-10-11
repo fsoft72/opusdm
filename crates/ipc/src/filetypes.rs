@@ -272,6 +272,8 @@ const AUDIO_PATTERN: &str = "*.mp3;*.flac;*.ogg;*.oga;*.opus;*.wav;*.m4a;*.aac;*
 const VIDEO_PATTERN: &str = "*.mp4;*.mkv;*.webm;*.avi;*.mov;*.m4v;*.mpg;*.mpeg;*.wmv;*.flv;*.ogv";
 /// Extensions of the picture files the default type opens with `opusdm-viewer`.
 const IMAGE_PATTERN: &str = "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg;*.bmp;*.ico;*.tiff";
+/// Extension of the documents the default type opens with `opusdm-viewer`.
+const PDF_PATTERN: &str = "*.pdf";
 /// Double click: view the picture.
 const VIEWER_OPEN: &str = "exec:opusdm-viewer {f}";
 /// Double click: play the file.
@@ -280,7 +282,7 @@ const PLAYER_OPEN: &str = "exec:opusdm-player {f}";
 const PLAYER_LOOP: &str = "exec:opusdm-player --loop {f}";
 
 /// The types a new installation starts with: audio and video files open with
-/// `opusdm-player`, pictures with `opusdm-viewer`. They use inline `exec:` references, so no saved Function is
+/// `opusdm-player`, pictures and PDF documents with `opusdm-viewer`. They use inline `exec:` references, so no saved Function is
 /// needed.
 pub fn default_filetypes() -> FileTypes {
     let player_type = |name: &str, pattern: &str| FileType {
@@ -288,12 +290,12 @@ pub fn default_filetypes() -> FileTypes {
         rule: MatchRule::Glob { pattern: pattern.to_string() },
         actions: Actions { dblclick: Some(PLAYER_OPEN.to_string()), drop: None, menu: vec![PLAYER_LOOP.to_string()] },
     };
-    let image_type = FileType {
-        name: "Image file".to_string(),
-        rule: MatchRule::Glob { pattern: IMAGE_PATTERN.to_string() },
+    let viewer_type = |name: &str, pattern: &str| FileType {
+        name: name.to_string(),
+        rule: MatchRule::Glob { pattern: pattern.to_string() },
         actions: Actions { dblclick: Some(VIEWER_OPEN.to_string()), drop: None, menu: vec![] },
     };
-    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), image_type] }
+    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), viewer_type("Image file", IMAGE_PATTERN), viewer_type("PDF file", PDF_PATTERN)] }
 }
 
 /// Write [`default_filetypes`] to the standard path when `filetypes.json` does
@@ -536,6 +538,7 @@ mod tests {
         assert_eq!(list.find(&facts("film.mkv", 1, b"")).unwrap().name, "Video file");
         assert!(list.find(&facts("notes.txt", 1, b"")).is_none());
         assert_eq!(list.find(&facts("photo.PNG", 1, b"")).unwrap().name, "Image file");
+        assert_eq!(list.find(&facts("manual.Pdf", 1, b"")).unwrap().name, "PDF file");
     }
 
     #[test]
@@ -546,7 +549,7 @@ mod tests {
             for r in refs {
                 let FuncRef::Exec { line } = parse(&r) else { panic!("{}: {r} is not an exec reference", t.name) };
                 let words = crate::cli::tokenize(&line).unwrap();
-                let program = if t.name == "Image file" { "opusdm-viewer" } else { "opusdm-player" };
+                let program = if t.name == "Image file" || t.name == "PDF file" { "opusdm-viewer" } else { "opusdm-player" };
                 assert_eq!(words.first().map(String::as_str), Some(program), "{r}");
                 assert_eq!(words.last().map(String::as_str), Some("{f}"), "{r}");
             }

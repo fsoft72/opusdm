@@ -1,4 +1,4 @@
-//! `opusdm-viewer`: shows one picture or video and the others of its folder.
+//! `opusdm-viewer`: shows one picture, PDF or video and the others of its folder.
 //! See `docs/superpowers/specs/2026-10-05-viewer-gallery-design.md`.
 
 mod args;
@@ -9,6 +9,7 @@ mod keys;
 mod kind;
 mod loader;
 mod nearest;
+mod pdf;
 mod slideshow;
 mod strip;
 mod video_view;

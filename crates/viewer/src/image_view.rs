@@ -74,6 +74,15 @@ impl ImageView {
         self._apply();
     }
 
+    /// Show another page of the same document: zoom and rotation stay, the
+    /// view goes back to the top.
+    pub fn replace_image(&self, raw: RawImage) {
+        *self.raw.borrow_mut() = Some(raw);
+        self.shown_rotation.set(None);
+        self._apply();
+        self.root.vadjustment().set_value(0.0);
+    }
+
     /// Size of the picture as decoded, if one is shown.
     pub fn size(&self) -> Option<(u32, u32)> {
         self.raw.borrow().as_ref().map(|r| (r.width, r.height))

@@ -5,7 +5,7 @@ members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/
 [workspace.package]
 version = "0.7.0"
 edition = "2021"
-rust-version = "1.91"
+rust-version = "1.92"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

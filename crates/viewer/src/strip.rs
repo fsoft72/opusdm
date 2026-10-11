@@ -2,6 +2,7 @@
 
 use crate::kind::{kind_or_image, MediaKind};
 use crate::loader::{load_thumb, RawImage};
+use crate::pdf::render_thumb;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
@@ -127,7 +128,10 @@ fn _start_worker() -> (mpsc::Sender<PathBuf>, async_channel::Receiver<ThumbResul
     let (res_tx, res_rx) = async_channel::unbounded::<ThumbResult>();
     std::thread::spawn(move || {
         for path in req_rx {
-            let result = load_thumb(&path, THUMB_PX);
+            let result = match kind_or_image(&path) {
+                MediaKind::Pdf => render_thumb(&path, THUMB_PX),
+                _ => load_thumb(&path, THUMB_PX),
+            };
             if res_tx.send_blocking((path, result)).is_err() { break; }
         }
     });

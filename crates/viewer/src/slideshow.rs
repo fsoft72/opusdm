@@ -23,9 +23,10 @@ impl Slideshow {
         self.on
     }
 
-    /// A timer is needed only for pictures; a video advances at its end.
+    /// A timer is needed only for pictures and PDF files (their first page); a
+    /// video advances at its end.
     pub fn wants_timer(&self, kind: MediaKind) -> bool {
-        self.on && kind == MediaKind::Image
+        self.on && kind != MediaKind::Video
     }
 
     /// A video that reached its end moves on when the slideshow runs.
@@ -48,11 +49,12 @@ mod tests {
     }
 
     #[test]
-    fn timer_only_for_pictures_while_on() {
+    fn timer_only_for_pictures_and_pdf_while_on() {
         let mut s = Slideshow::default();
         assert!(!s.wants_timer(MediaKind::Image));
         s.toggle();
         assert!(s.wants_timer(MediaKind::Image));
+        assert!(s.wants_timer(MediaKind::Pdf));
         assert!(!s.wants_timer(MediaKind::Video));
     }
 

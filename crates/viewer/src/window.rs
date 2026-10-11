@@ -6,7 +6,9 @@ use crate::gallery::Gallery;
 use crate::image_view::ImageView;
 use crate::keys::{map, Action};
 use crate::kind::{kind_or_image, MediaKind};
+use crate::keys::page_after;
 use crate::loader::{load_raw, RawImage};
+use crate::pdf::{start_worker, PageAnswer, PageRequest};
 use crate::slideshow::{Slideshow, SLIDESHOW_SECS};
 use crate::strip::Strip;
 use crate::video_view::{VideoNotice, VideoView};
@@ -17,6 +19,7 @@ use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 /// Seconds a Left / Right key moves a video.
@@ -42,6 +45,14 @@ struct State {
     /// Bumped for every shown file; an answer for an older one is dropped.
     generation: Cell<u64>,
     load_tx: async_channel::Sender<Loaded>,
+    /// Requests to the PDF page worker.
+    page_tx: mpsc::Sender<PageRequest>,
+    /// Page on screen (0-based) and page count of a PDF; the count is 0 until
+    /// the first page arrives.
+    page: Cell<usize>,
+    pages: Cell<usize>,
+    /// The next picture is another page of the same PDF: keep zoom and rotation.
+    keep_zoom: Cell<bool>,
 }
 
 /// Open the window on the gallery of `start` and show `start`.
@@ -50,6 +61,8 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     let (load_tx, load_rx) = async_channel::unbounded();
     let (video_tx, video_rx) = async_channel::unbounded();
     let (pick_tx, pick_rx) = async_channel::unbounded();
+    let (answer_tx, answer_rx) = async_channel::unbounded();
+    let page_tx = start_worker(answer_tx);
 
     let image = ImageView::new();
     let video = VideoView::new(video_tx);
@@ -90,20 +103,32 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         slide_timer: RefCell::new(None),
         generation: Cell::new(0),
         load_tx,
+        page_tx,
+        page: Cell::new(0),
+        pages: Cell::new(0),
+        keep_zoom: Cell::new(false),
     });
     state._wire_keys();
     state._wire_fullscreen();
-    _spawn_loops(&state, load_rx, video_rx, pick_rx);
+    _spawn_loops(&state, load_rx, answer_rx, video_rx, pick_rx);
     window.present();
     state.show_current();
 }
 
 /// Handle what the worker threads and the other widgets send, on the main thread.
-fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, video_rx: async_channel::Receiver<VideoNotice>, pick_rx: async_channel::Receiver<PathBuf>) {
+fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, answer_rx: async_channel::Receiver<PageAnswer>, video_rx: async_channel::Receiver<VideoNotice>, pick_rx: async_channel::Receiver<PathBuf>) {
     let s = state.clone();
     glib::spawn_future_local(async move {
         while let Ok((generation, result)) = load_rx.recv().await {
             if generation == s.generation.get() { s._picture_loaded(result); }
+        }
+    });
+    let s = state.clone();
+    glib::spawn_future_local(async move {
+        while let Ok((generation, result)) = answer_rx.recv().await {
+            if generation != s.generation.get() { continue; }
+            let result = result.map(|page| { s.pages.set(page.count); page.raw });
+            s._picture_loaded(result);
         }
     });
     let s = state.clone();
@@ -138,14 +163,17 @@ impl State {
         Some((path, kind))
     }
 
-    /// Show the gallery's current file: start the decoding of a picture or the
-    /// playback of a video.
+    /// Show the gallery's current file: start the decoding of a picture, the
+    /// rendering of the first page of a PDF or the playback of a video.
     fn show_current(self: &Rc<Self>) {
         let Some((path, kind)) = self._current() else { return };
         self.generation.set(self.generation.get() + 1);
         self._cancel_timer();
         self.window.set_title(Some(&_name(&path)));
         self.strip.set_current(&path);
+        self.page.set(0);
+        self.pages.set(0);
+        self.keep_zoom.set(false);
         match kind {
             MediaKind::Image => {
                 self.video.stop();
@@ -153,6 +181,10 @@ impl State {
                 std::thread::spawn(move || {
                     let _ = tx.send_blocking((generation, load_raw(&path)));
                 });
+            }
+            MediaKind::Pdf => {
+                self.video.stop();
+                self._request_page(&path);
             }
             MediaKind::Video => match self.video.open(&path) {
                 Ok(()) => self.stack.set_visible_child_name("video"),
@@ -162,11 +194,29 @@ impl State {
         self._update_info();
     }
 
-    /// A decoding thread finished for the file on screen.
+    /// Ask the page worker for the current page of the PDF on screen.
+    fn _request_page(&self, path: &Path) {
+        let request = PageRequest { generation: self.generation.get(), path: path.to_path_buf(), index: self.page.get() };
+        if self.page_tx.send(request).is_err() { self._show_error("The PDF renderer stopped"); }
+    }
+
+    /// Move to another page of the PDF on screen.
+    fn _turn_page(self: &Rc<Self>, action: Action) {
+        let Some((path, MediaKind::Pdf)) = self._current() else { return };
+        let Some(index) = page_after(action, self.page.get(), self.pages.get()) else { return };
+        self.generation.set(self.generation.get() + 1);
+        self._cancel_timer();
+        self.page.set(index);
+        self.keep_zoom.set(true);
+        self._request_page(&path);
+        self._update_info();
+    }
+
+    /// A decoding thread (or the page worker) finished for the file on screen.
     fn _picture_loaded(self: &Rc<Self>, result: Result<RawImage, String>) {
         match result {
             Ok(raw) => {
-                self.image.set_image(raw);
+                if self.keep_zoom.get() { self.image.replace_image(raw); } else { self.image.set_image(raw); }
                 self.stack.set_visible_child_name("image");
             }
             Err(e) => {
@@ -208,20 +258,27 @@ impl State {
         self.show_current();
     }
 
-    /// `name - 3/12 - 1920x1080 - 125%`, plus a slideshow mark.
+    /// `name - 3/12 - 1920x1080 - 125%` (with `page 2/10` for a PDF), plus a slideshow mark.
     fn _update_info(&self) {
         let Some((path, kind)) = self._current() else { return };
         let (index, len) = { let g = self.gallery.borrow(); (g.index() + 1, g.len()) };
         let detail = match (kind, self.stack.visible_child_name().as_deref()) {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
-            (MediaKind::Image, _) => match self.image.size() {
-                Some((w, h)) => format!("{w}x{h}  -  {}{}", self.image.zoom_label(), if self.image.is_smooth() { "" } else { "  -  pixels" }),
+            (MediaKind::Pdf, _) if self.pages.get() == 0 => "loading".to_string(),
+            (MediaKind::Image | MediaKind::Pdf, _) => match self.image.size() {
+                Some((w, h)) => format!("{}{w}x{h}  -  {}{}", self._page_label(kind), self.image.zoom_label(), if self.image.is_smooth() { "" } else { "  -  pixels" }),
                 None => "loading".to_string(),
             },
         };
         let mark = if self.slideshow.borrow().is_on() { "  -  slideshow" } else { "" };
         self.info.set_text(&format!("{}  -  {index}/{len}  -  {detail}{mark}", _name(&path)));
+    }
+
+    /// `page 2/10  -  ` for a PDF, nothing for a picture.
+    fn _page_label(&self, kind: MediaKind) -> String {
+        if kind != MediaKind::Pdf { return String::new(); }
+        format!("page {}/{}  -  ", self.page.get() + 1, self.pages.get())
     }
 
     /// Stop the slideshow timer, if one is running.
@@ -268,6 +325,7 @@ impl State {
             Action::RotateCw => self.image.rotate_cw(),
             Action::RotateCcw => self.image.rotate_ccw(),
             Action::Interpolation => self.image.toggle_smooth(),
+            Action::NextPage | Action::PrevPage | Action::FirstPage | Action::LastPage => return self._turn_page(action),
             Action::Next => return self._step(true),
             Action::Prev => return self._step(false),
             Action::SeekBack => self.video.skip(-SKIP_SECS),

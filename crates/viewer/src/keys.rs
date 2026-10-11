@@ -1,4 +1,4 @@
-//! Key bindings: what a key does depends on whether a picture or a video shows.
+//! Key bindings: what a key does depends on whether a picture, a PDF or a video shows.
 
 use crate::kind::MediaKind;
 use gtk4::gdk::Key;
@@ -20,6 +20,11 @@ pub enum Action {
     Mute,
     RotateCw,
     RotateCcw,
+    /// PDF pages.
+    NextPage,
+    PrevPage,
+    FirstPage,
+    LastPage,
     /// Smooth (interpolated) or sharp pixels when zoomed.
     Interpolation,
     Slideshow,
@@ -33,6 +38,7 @@ pub enum Action {
 /// The action of `key` while `kind` is on screen; `None` when the key is unused.
 pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
     let video = kind == MediaKind::Video;
+    let pdf = kind == MediaKind::Pdf;
     let action = match key {
         Key::plus | Key::KP_Add | Key::equal if !video => Action::ZoomIn,
         Key::minus | Key::KP_Subtract if !video => Action::ZoomOut,
@@ -47,6 +53,10 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
         Key::Up | Key::KP_Up if video => Action::VolumeUp,
         Key::Down | Key::KP_Down if video => Action::VolumeDown,
         Key::m | Key::M if video => Action::Mute,
+        Key::Page_Down | Key::KP_Page_Down if pdf => Action::NextPage,
+        Key::Page_Up | Key::KP_Page_Up if pdf => Action::PrevPage,
+        Key::Home | Key::KP_Home if pdf => Action::FirstPage,
+        Key::End | Key::KP_End if pdf => Action::LastPage,
         Key::n | Key::N => Action::Next,
         Key::p | Key::P => Action::Prev,
         Key::s | Key::S => Action::Slideshow,
@@ -59,10 +69,25 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
     Some(action)
 }
 
+/// Page index (0-based) a page action leads to in a document of `count` pages,
+/// from page `current`; `None` when the page does not change.
+pub fn page_after(action: Action, current: usize, count: usize) -> Option<usize> {
+    if count == 0 { return None; }
+    let last = count - 1;
+    let target = match action {
+        Action::NextPage => (current + 1).min(last),
+        Action::PrevPage => current.saturating_sub(1),
+        Action::FirstPage => 0,
+        Action::LastPage => last,
+        _ => return None,
+    };
+    (target != current).then_some(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use MediaKind::{Image, Video};
+    use MediaKind::{Image, Pdf, Video};
 
     #[test]
     fn arrows_move_on_pictures_and_seek_on_videos() {
@@ -114,8 +139,45 @@ mod tests {
     }
 
     #[test]
-    fn common_keys() {
+    fn page_keys_are_for_pdf_only() {
+        assert_eq!(map(Key::Page_Down, Pdf), Some(Action::NextPage));
+        assert_eq!(map(Key::KP_Page_Down, Pdf), Some(Action::NextPage));
+        assert_eq!(map(Key::Page_Up, Pdf), Some(Action::PrevPage));
+        assert_eq!(map(Key::Home, Pdf), Some(Action::FirstPage));
+        assert_eq!(map(Key::End, Pdf), Some(Action::LastPage));
         for kind in [Image, Video] {
+            for key in [Key::Page_Down, Key::Page_Up, Key::Home, Key::End] {
+                assert_eq!(map(key, kind), None);
+            }
+        }
+    }
+
+    #[test]
+    fn a_pdf_moves_zooms_and_rotates_like_a_picture() {
+        assert_eq!(map(Key::Left, Pdf), Some(Action::Prev));
+        assert_eq!(map(Key::Right, Pdf), Some(Action::Next));
+        assert_eq!(map(Key::space, Pdf), Some(Action::Next));
+        assert_eq!(map(Key::plus, Pdf), Some(Action::ZoomIn));
+        assert_eq!(map(Key::r, Pdf), Some(Action::RotateCw));
+        assert_eq!(map(Key::Up, Pdf), None);
+    }
+
+    #[test]
+    fn page_after_stays_inside_the_document() {
+        assert_eq!(page_after(Action::NextPage, 0, 3), Some(1));
+        assert_eq!(page_after(Action::NextPage, 2, 3), None);
+        assert_eq!(page_after(Action::PrevPage, 1, 3), Some(0));
+        assert_eq!(page_after(Action::PrevPage, 0, 3), None);
+        assert_eq!(page_after(Action::FirstPage, 2, 3), Some(0));
+        assert_eq!(page_after(Action::LastPage, 0, 3), Some(2));
+        assert_eq!(page_after(Action::LastPage, 2, 3), None);
+        assert_eq!(page_after(Action::NextPage, 0, 0), None);
+        assert_eq!(page_after(Action::ZoomIn, 0, 3), None);
+    }
+
+    #[test]
+    fn common_keys() {
+        for kind in [Image, Video, Pdf] {
             assert_eq!(map(Key::s, kind), Some(Action::Slideshow));
             assert_eq!(map(Key::f, kind), Some(Action::Fullscreen));
             assert_eq!(map(Key::Delete, kind), Some(Action::Delete));
