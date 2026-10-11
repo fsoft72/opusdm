@@ -353,20 +353,29 @@ fn text_view_scroller(text: &str, wrap_mode: gtk::WrapMode) -> gtk::ScrolledWind
 /// List an archive's contents via an external tool. Pure function (no I/O
 /// beyond the subprocess itself), safe to call off the GTK thread.
 fn archive_listing(path: &Path, ext: &str) -> String {
-    if ext == "zip" {
-        Command::new("unzip")
-            .arg("-l")
-            .arg(path)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_else(|_| "Cannot run unzip to inspect archive".into())
+    let (tool, mut cmd) = if ext == "zip" {
+        let mut cmd = Command::new("unzip");
+        cmd.arg("-l").arg(path);
+        ("unzip", cmd)
     } else {
-        Command::new("tar")
-            .arg("-tf")
-            .arg(path)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_else(|_| "Cannot run tar to inspect archive".into())
+        let mut cmd = Command::new("tar");
+        cmd.arg("-tf").arg(path);
+        ("tar", cmd)
+    };
+    listing_text(tool, cmd.output())
+}
+
+/// The preview text for the result of running `tool`: its listing on
+/// success, otherwise why it failed (spawn error or the tool's stderr).
+fn listing_text(tool: &str, output: std::io::Result<std::process::Output>) -> String {
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let err = err.trim();
+            if err.is_empty() { format!("{tool} cannot read the archive ({})", o.status) } else { format!("{tool} cannot read the archive:\n{err}") }
+        }
+        Err(e) => format!("Cannot run {tool} to inspect archive: {e}"),
     }
 }
 
@@ -445,6 +454,28 @@ fn load_off_thread(path: &Path, file_size: u64) -> Loaded {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_listing_shows_the_tool_error_not_an_empty_preview() {
+        let td = tempfile::tempdir().unwrap();
+        let bad = td.path().join("bad.tar");
+        std::fs::write(&bad, "this is not a tar file").unwrap();
+        let text = super::archive_listing(&bad, "tar");
+        assert!(text.starts_with("tar cannot read the archive"), "{text}");
+        let good_src = td.path().join("f.txt");
+        std::fs::write(&good_src, "x").unwrap();
+        let good = td.path().join("good.tar");
+        let made = std::process::Command::new("tar").arg("cf").arg(&good).arg("-C").arg(td.path()).arg("f.txt").status();
+        if made.is_ok_and(|s| s.success()) {
+            assert_eq!(super::archive_listing(&good, "tar").trim(), "f.txt");
+        }
+    }
+
+    #[test]
+    fn a_missing_tool_is_reported() {
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        assert!(super::listing_text("unzip", Err(err)).starts_with("Cannot run unzip"));
+    }
+
     use super::*;
 
     #[test]

@@ -30,7 +30,7 @@
 - [x] **Lister hardcodes `7z` while fsops resolves the binary** - `fsops::compress` uses `seven_z_tool()` (7z / 7za / 7zz) but `lister/src/archive.rs` calls `Command::new("7z")` in three places, so systems with only `7zz` can create 7z archives but not browse or extract them; reuse the fsops resolver.
   - File(s): `crates/lister/src/archive.rs`, `crates/fsops/src/compress.rs`
 
-- [ ] **Archive preview ignores the tool exit status** - `archive_listing` returns stdout even when `unzip -l` / `tar -tf` fails, so a corrupt archive shows an empty preview instead of the error; check `status.success()` and show stderr.
+- [x] **Archive preview ignores the tool exit status** - `archive_listing` returns stdout even when `unzip -l` / `tar -tf` fails, so a corrupt archive shows an empty preview instead of the error; check `status.success()` and show stderr.
   - File(s): `crates/lister/src/preview.rs`
 
 - [ ] **PDF `RenderCache` rebuilt for every page** - `render_page` creates a fresh `RenderCache` on each call although the page worker already keeps the document open; keep the cache next to the open `Pdf` in the worker so fonts and images are not re-decoded on every page turn.
