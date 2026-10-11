@@ -1,4 +1,5 @@
-//! `opusdm-viewer`: shows one picture, PDF or video and the others of its folder.
+//! `opusdm-viewer`: shows the pictures, PDF files and videos given on the
+//! command line, files and whole folders.
 //! See `docs/superpowers/specs/2026-10-05-viewer-gallery-design.md`.
 
 mod args;
@@ -25,7 +26,7 @@ use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Stage and strip look, on top of the shared OpusDM style.
@@ -47,17 +48,18 @@ fn apply_theme() {
 }
 
 fn main() -> ExitCode {
-    let target = match args::parse(std::env::args().skip(1)).and_then(|t| args::check_target(&t).map(|_| t)) {
-        Ok(t) => t,
+    let targets = match args::parse(std::env::args().skip(1)).and_then(|ts| ts.iter().try_for_each(|t| args::check_target(t)).map(|_| ts)) {
+        Ok(ts) => ts,
         Err(msg) => {
             opusdm_ipc::err_log!("viewer", "{msg}");
             return ExitCode::from(1);
         }
     };
-    let gallery = match gallery::Gallery::build(Path::new(&target)) {
+    let targets: Vec<PathBuf> = targets.iter().map(PathBuf::from).collect();
+    let gallery = match gallery::Gallery::from_targets(&targets) {
         Ok(g) => g,
         Err(e) => {
-            opusdm_ipc::err_log!("viewer", "{target}: cannot read the folder: {e}");
+            opusdm_ipc::err_log!("viewer", "{e}");
             return ExitCode::from(1);
         }
     };

@@ -1,23 +1,24 @@
 //! Command line of `opusdm-viewer`.
 
 /// Usage text, shown on a bad command line.
-pub const USAGE: &str = "usage: opusdm-viewer <picture or video file>";
+pub const USAGE: &str = "usage: opusdm-viewer <file or folder>...";
 
-/// Parse the arguments after the program name: exactly one file.
-pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<String, String> {
-    let mut target = None;
+/// Parse the arguments after the program name: one or more files and folders.
+pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Vec<String>, String> {
+    let mut targets = Vec::new();
     for arg in args {
         if arg.starts_with("--") { return Err(format!("unknown option {arg}\n{USAGE}")); }
-        if target.replace(arg).is_some() { return Err(format!("only one file can be opened\n{USAGE}")); }
+        targets.push(arg);
     }
-    target.ok_or_else(|| USAGE.to_string())
+    if targets.is_empty() { return Err(USAGE.to_string()); }
+    Ok(targets)
 }
 
-/// Fail early with a clear message when `target` is not a regular file.
+/// Fail early with a clear message when `target` is neither a regular file nor a folder.
 pub fn check_target(target: &str) -> Result<(), String> {
     let path = std::path::Path::new(target);
-    if !path.exists() { return Err(format!("{target}: no such file")); }
-    if !path.is_file() { return Err(format!("{target}: not a regular file")); }
+    if !path.exists() { return Err(format!("{target}: no such file or folder")); }
+    if !path.is_file() && !path.is_dir() { return Err(format!("{target}: not a regular file or a folder")); }
     Ok(())
 }
 
@@ -25,29 +26,30 @@ pub fn check_target(target: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn p(a: &[&str]) -> Result<String, String> {
+    fn p(a: &[&str]) -> Result<Vec<String>, String> {
         parse(a.iter().map(|s| s.to_string()))
     }
 
     #[test]
-    fn a_file_alone() {
-        assert_eq!(p(&["a.png"]).unwrap(), "a.png");
+    fn files_and_folders_in_order() {
+        assert_eq!(p(&["a.png"]).unwrap(), ["a.png"]);
+        assert_eq!(p(&["b.png", "/pics", "a.pdf"]).unwrap(), ["b.png", "/pics", "a.pdf"]);
     }
 
     #[test]
     fn errors_carry_the_usage() {
         assert_eq!(p(&[]).unwrap_err(), USAGE);
-        assert!(p(&["a", "b"]).unwrap_err().contains("only one file"));
         assert!(p(&["--x", "a"]).unwrap_err().contains("unknown option --x"));
     }
 
     #[test]
-    fn target_must_be_a_regular_file() {
+    fn target_must_be_a_file_or_a_folder() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.png");
         std::fs::write(&file, b"x").unwrap();
         assert!(check_target(file.to_str().unwrap()).is_ok());
-        assert!(check_target(dir.path().to_str().unwrap()).unwrap_err().contains("not a regular file"));
+        assert!(check_target(dir.path().to_str().unwrap()).is_ok());
         assert!(check_target(dir.path().join("nope").to_str().unwrap()).unwrap_err().contains("no such file"));
+        assert!(check_target("/dev/null").unwrap_err().contains("not a regular file"));
     }
 }

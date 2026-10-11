@@ -1,11 +1,12 @@
-//! The gallery: the pictures and videos of one folder, in natural order.
+//! The gallery: the files given on the command line and the pictures, PDF
+//! files and videos of the folders given with them.
 
 use crate::kind::kind_of;
 use std::cmp::Ordering;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Sorted files plus the index of the one on screen. Never empty until the last
+/// The files plus the index of the one on screen. Never empty until the last
 /// file is removed.
 #[derive(Debug)]
 pub struct Gallery {
@@ -48,27 +49,25 @@ fn _cmp_chunk(x: &str, y: &str) -> Ordering {
 }
 
 impl Gallery {
-    /// Build the gallery of the folder that holds `start`. `start` is always part
-    /// of it, even when its extension is not a known one.
-    pub fn build(start: &Path) -> io::Result<Gallery> {
-        let dir = match start.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p,
-            _ => Path::new("."),
-        };
-        let mut items = Vec::new();
-        for entry in std::fs::read_dir(dir)? {
-            let path = entry?.path();
-            let hidden = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
-            if hidden || kind_of(&path).is_none() || !path.is_file() { continue; }
-            items.push(path);
+    /// Build the gallery of the command line: a file is shown as it is (even
+    /// with an extension the viewer does not know), a folder brings every
+    /// picture, PDF and video it holds (not the hidden ones, not its sub
+    /// folders) in natural order. The order of the arguments is kept, a file
+    /// met twice is shown once, and the first file is the one on screen.
+    pub fn from_targets(targets: &[PathBuf]) -> io::Result<Gallery> {
+        let mut items: Vec<PathBuf> = Vec::new();
+        for target in targets {
+            let found = if target.is_dir() { _folder_items(target)? } else { vec![target.clone()] };
+            for path in found {
+                if !items.contains(&path) { items.push(path); }
+            }
         }
-        // `start` may come as a relative path: compare the way read_dir joined it.
-        let start = dir.join(start.file_name().unwrap_or_default());
-        if !items.contains(&start) { items.push(start.clone()); }
-        Ok(Gallery::from_paths(items, &start))
+        if items.is_empty() { return Err(io::Error::new(io::ErrorKind::NotFound, "nothing to show: no picture, PDF or video found")); }
+        Ok(Gallery { items, index: 0 })
     }
 
     /// Sort `items` and put the index on `start` (the first item when absent).
+    #[cfg(test)]
     pub fn from_paths(mut items: Vec<PathBuf>, start: &Path) -> Gallery {
         items.sort_by(|a, b| _name_cmp(a, b));
         let index = items.iter().position(|p| p == start).unwrap_or(0);
@@ -132,6 +131,19 @@ impl Gallery {
         if self.index >= self.items.len() { self.index = self.items.len().saturating_sub(1); }
         Some(removed)
     }
+}
+
+/// The pictures, PDF files and videos of `dir`, in natural order.
+fn _folder_items(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut items = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let hidden = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
+        if hidden || kind_of(&path).is_none() || !path.is_file() { continue; }
+        items.push(path);
+    }
+    items.sort_by(|a, b| _name_cmp(a, b));
+    Ok(items)
 }
 
 /// Natural order of two paths by file name.
@@ -226,31 +238,52 @@ mod tests {
         g.prev();
     }
 
-    #[test]
-    fn build_filters_the_folder() {
+    /// A folder with `names` in it (empty files).
+    fn folder(names: &[&str]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        for n in ["b2.png", "b10.JPG", "clip.mp4", "notes.txt", ".hidden.png", "odd.xyz"] {
+        for n in names {
             std::fs::write(dir.path().join(n), b"x").unwrap();
         }
+        dir
+    }
+
+    #[test]
+    fn a_single_file_is_shown_alone() {
+        let dir = folder(&["a.png", "b.png", "odd.xyz"]);
+        let g = Gallery::from_targets(&[dir.path().join("b.png")]).unwrap();
+        assert_eq!(names(&g), ["b.png"]);
+        let g = Gallery::from_targets(&[dir.path().join("odd.xyz")]).unwrap();
+        assert_eq!(names(&g), ["odd.xyz"]);
+    }
+
+    #[test]
+    fn several_files_keep_their_order_and_nothing_else_is_added() {
+        let dir = folder(&["a.png", "b.png", "c.pdf"]);
+        let g = Gallery::from_targets(&[dir.path().join("c.pdf"), dir.path().join("a.png"), dir.path().join("c.pdf")]).unwrap();
+        assert_eq!(names(&g), ["c.pdf", "a.png"]);
+        assert_eq!(g.index(), 0);
+    }
+
+    #[test]
+    fn a_folder_brings_what_can_be_shown() {
+        let dir = folder(&["b2.png", "b10.JPG", "clip.mp4", "doc.pdf", "notes.txt", ".hidden.png", "odd.xyz"]);
         std::fs::create_dir(dir.path().join("sub.png")).unwrap();
-        let g = Gallery::build(&dir.path().join("b10.JPG")).unwrap();
-        let got = names(&g);
-        assert_eq!(got, ["b2.png", "b10.JPG", "clip.mp4"]);
-        assert_eq!(g.current().unwrap().file_name().unwrap(), "b10.JPG");
+        let g = Gallery::from_targets(&[dir.path().to_path_buf()]).unwrap();
+        assert_eq!(names(&g), ["b2.png", "b10.JPG", "clip.mp4", "doc.pdf"]);
     }
 
     #[test]
-    fn build_always_includes_the_start_file() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.png"), b"x").unwrap();
-        std::fs::write(dir.path().join("odd.xyz"), b"x").unwrap();
-        let g = Gallery::build(&dir.path().join("odd.xyz")).unwrap();
-        assert_eq!(names(&g), ["a.png", "odd.xyz"]);
-        assert_eq!(g.index(), 1);
+    fn files_and_folders_together() {
+        let pics = folder(&["p2.png", "p1.png"]);
+        let other = folder(&["x.pdf"]);
+        let targets = [other.path().join("x.pdf"), pics.path().to_path_buf(), pics.path().join("p1.png")];
+        let g = Gallery::from_targets(&targets).unwrap();
+        assert_eq!(names(&g), ["x.pdf", "p1.png", "p2.png"]);
     }
 
     #[test]
-    fn build_reports_an_unreadable_folder() {
-        assert!(Gallery::build(Path::new("/nonexistent-dir-for-test/a.png")).is_err());
+    fn nothing_to_show_is_an_error() {
+        let dir = folder(&["notes.txt"]);
+        assert!(Gallery::from_targets(&[dir.path().to_path_buf()]).is_err());
     }
 }

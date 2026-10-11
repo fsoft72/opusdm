@@ -58,7 +58,7 @@ struct State {
     pdf: PdfUi,
 }
 
-/// Open the window on the gallery of `start` and show `start`.
+/// Open the window on `gallery` and show its current file.
 pub fn open(app: &gtk::Application, gallery: Gallery) {
     let window = gtk::ApplicationWindow::builder().application(app).default_width(DEFAULT_WIDTH).default_height(DEFAULT_HEIGHT).build();
     let (load_tx, load_rx) = async_channel::unbounded();
@@ -120,6 +120,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     });
     state._wire_keys();
     state._wire_pdf(pdf_channels);
+    state._sync_strip();
     state._wire_fullscreen();
     _spawn_loops(&state, load_rx, answer_rx, video_rx, pick_rx);
     window.present();
@@ -260,6 +261,7 @@ impl State {
     fn _update_info(&self) {
         let Some((path, kind)) = self._current() else { return };
         let (index, len) = { let g = self.gallery.borrow(); (g.index() + 1, g.len()) };
+        let position = if len > 1 { format!("{index}/{len}  -  ") } else { String::new() };
         let detail = match (kind, self.stack.visible_child_name().as_deref()) {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
@@ -270,13 +272,19 @@ impl State {
             },
         };
         let mark = if self.slideshow.borrow().is_on() { "  -  slideshow" } else { "" };
-        self.info.set_text(&format!("{}  -  {index}/{len}  -  {detail}{mark}", _name(&path)));
+        self.info.set_text(&format!("{}  -  {position}{detail}{mark}", _name(&path)));
     }
 
     /// `page 2/10  -  ` for a PDF, nothing for a picture.
     fn _page_label(&self, kind: MediaKind) -> String {
         if kind != MediaKind::Pdf { return String::new(); }
         format!("page {}/{}  -  ", self.page.get() + 1, self.pages.get())
+    }
+
+    /// The thumbnail strip shows when there is more than one file, out of full screen.
+    fn _sync_strip(&self) {
+        let several = self.gallery.borrow().len() > 1;
+        self.strip.root.set_visible(several && !self.window.is_fullscreen());
     }
 
     /// Stop the slideshow timer, if one is running.
@@ -357,7 +365,7 @@ impl State {
         let this = self.clone();
         self.window.connect_fullscreened_notify(move |w| {
             let visible = !w.is_fullscreen();
-            this.strip.root.set_visible(visible);
+            this._sync_strip();
             this.info.set_visible(visible);
             this.video.bar.set_visible(visible);
             this._sync_pdf_panels();
@@ -406,6 +414,7 @@ impl State {
             g.is_empty()
         };
         if empty { return self.window.close(); }
+        self._sync_strip();
         self.show_current();
     }
 }

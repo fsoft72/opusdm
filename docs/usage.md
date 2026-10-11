@@ -630,14 +630,22 @@ Plays one audio or video file in a small window.
 
 ### 3.28 Image, PDF and Video Viewer (`opusdm-viewer`)
 
-Shows one picture, PDF document or video and lets you move through the others in the same folder.
+Shows pictures, PDF documents and videos: the files and folders named on the command line.
 
-- **Open it:** run `opusdm-viewer <file>`. In a Lister a double click on a picture or a PDF
-  opens it: the first time OpusDM starts it creates the file types **Image file** and
-  **PDF file** for that (see 3.10h; an older `filetypes.json` has no **PDF file**, add it with
-  **Edit File Types...**, glob `*.pdf`, double click `exec:opusdm-viewer {f}`).
-  The **gallery** is every picture, PDF and video of the folder of that file, in natural order
-  (`img2` before `img10`), built when the window opens.
+- **Open it:** run `opusdm-viewer <file or folder>...`. In a Lister a double click on a
+  picture or a PDF opens it: the first time OpusDM starts it creates the file types
+  **Image file** and **PDF file** for that (see 3.10h; an older `filetypes.json` has no
+  **PDF file**, add it with **Edit File Types...**, glob `*.pdf`, double click
+  `exec:opusdm-viewer {f}`).
+  The **gallery** is what the command line names, in the order given:
+  - a **file** is shown as it is (even with an extension the viewer does not know); a single
+    file is shown alone, without the thumbnail strip;
+  - several files show only those files, not the rest of their folders;
+  - a **folder** brings every picture, PDF and video it holds (not hidden files, not sub
+    folders), in natural order (`img2` before `img10`).
+  Files and folders can be mixed; a file named twice is shown once and the first one opens.
+  A name that does not exist stops the viewer with status 1, as does a command line with
+  nothing to show.
 - **Pictures:** the picture starts fitted to the window (never enlarged). **+** / **-** or the
   mouse wheel zoom (5% to 1600%), dragging moves a zoomed picture, **0** fits the window,
   **1** shows it at 100%, **r** / **R** rotate it right / left (the file is not changed).
@@ -671,7 +679,8 @@ Shows one picture, PDF document or video and lets you move through the others in
   hidden; **Esc** leaves it. **Esc** or **q** otherwise close the window.
 - **Delete:** **Del** asks and moves the file to the trash. When there is no trash for that
   file system a second question offers to delete it permanently.
-- **Info bar:** file name, position in the gallery, page (PDF), size and zoom.
+- **Info bar:** file name, position in the gallery (when there is more than one file), page
+  (PDF), size and zoom.
 - **Errors:** a picture, PDF or video that cannot be loaded shows the reason in the window and the
   keys keep working; a bad command line exits with status 1. GIFs show their first frame.
 - **Requires** the GStreamer packages of 3.27 for videos.
