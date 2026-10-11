@@ -286,7 +286,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.theme.colors.file_bg = "#1A1B26".into();
         settings.theme.colors.file_fg = "#C0CAF5".into();
-        assert!(!generate_css(&settings).contains("@define-color"));
+        assert!(!generate_css(&settings).contains("@define-color theme_bg_color"));
 
         settings.appearance.theme_window = true;
         let css = generate_css(&settings);

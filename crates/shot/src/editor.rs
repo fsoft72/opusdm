@@ -47,8 +47,8 @@ pub fn editor_css() -> String {
         ".shot-error { color: #e5484d; } .shot-info { opacity: 0.8; } \
          .shot-canvas { background: #404040; } \
          button.shot-swatch { min-width: 20px; min-height: 20px; padding: 0; background-image: none; } \
-         button.toggle:checked:not(.shot-swatch) { background-image: none; background-color: alpha(#4a90ff, 0.55); } \
-         button.shot-swatch:checked { outline: 2px solid #4a90ff; outline-offset: 1px; }",
+         button.toggle:checked:not(.shot-swatch) { background-image: none; background-color: alpha(@opusdm_accent, 0.55); } \
+         button.shot-swatch:checked { outline: 2px solid @opusdm_accent; outline-offset: 1px; }",
     );
     for (i, (_, c)) in PALETTE.iter().enumerate() {
         let to_byte = |v: f64| (v * 255.0).round() as u8;

@@ -61,8 +61,9 @@
   - File(s): `crates/lister/src/hotkey_editor.rs`, `crates/lister/src/filetypes_ui.rs`, `crates/network/src/watch.rs`
   - Done: Lister call sites use `err_log!` (the Edit Hotkeys one went with the QueryConfig change). Left as is: `network/src/watch.rs` already prints the same `[tag:pid]` format and the crate does not depend on `opusdm-ipc`; `terminal/src/main.rs` prints a command line usage error for the user; the other hits are test skip notes.
 
-- [ ] **Hardcoded accent colors outside the theme** - `#3584e4` and other literals in `viewer/src/main.rs`, `lister/src/viewer.rs`, `shot/src/editor.rs` and `hub/src/desktop_windows.rs` ignore the theme accent; use the theme's CSS variables (`@accent_color` / chrome tokens) so dark and custom themes match.
+- [x] **Hardcoded accent colors outside the theme** - `#3584e4` and other literals in `viewer/src/main.rs`, `lister/src/viewer.rs`, `shot/src/editor.rs` and `hub/src/desktop_windows.rs` ignore the theme accent; use the theme's CSS variables (`@accent_color` / chrome tokens) so dark and custom themes match.
   - File(s): `crates/viewer/src/main.rs`, `crates/lister/src/viewer.rs`, `crates/shot/src/editor.rs`, `crates/hub/src/desktop_windows.rs`
+  - Done: `chrome_css` defines `@opusdm_accent` (`opusdm_ui::ACCENT_COLOR_NAME`); the viewer thumbnail outline and the screenshot editor toggles / swatch use it. Left as is on purpose: the Lister search highlight colours (yellow / orange are not the accent), error reds, and the desktop / panel / dock palette (their own fixed desktop palette, a separate change).
 
 - [ ] **419-line single GTK test** - `iconview::field::tests::gtk_widget_behavior` packs a dozen unrelated scenarios into one test, so the first failure hides the rest; split per scenario behind a shared `gtk_ready()` guard.
   - File(s): `crates/iconview/src/field.rs`

@@ -33,7 +33,7 @@ const VIEWER_CSS: &str = ".viewer-stage, scrolledwindow.viewer-stage, scrolledwi
     .viewer-error { color: #dddddd; padding: 24px; } \
     .viewer-info { padding: 4px 8px; } \
     .viewer-pdf-bar { padding: 4px 8px; } \
-    .viewer-thumb-current { outline: 2px solid #3584e4; outline-offset: -2px; }";
+    .viewer-thumb-current { outline: 2px solid @opusdm_accent; outline-offset: -2px; }";
 
 /// Load the shared OpusDM look (theme mode, fonts).
 fn apply_theme() {

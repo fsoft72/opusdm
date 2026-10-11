@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-11
+- Change (ui, viewer, shot): `chrome_css` now starts with `@define-color opusdm_accent` (name in `opusdm_ui::ACCENT_COLOR_NAME`); the viewer's current-thumbnail outline and the screenshot editor's checked toggles and colour swatch use it instead of the literals `#3584e4` / `#4a90ff` (the screenshot editor blue changes to the OpusDM accent). 1 new unit test; the Lister theme test now checks only its own `theme_bg_color` definition.
 - Change (Lister): the File Types window opened on its own reports its save result through `err_log!` (`[opusdm-lister:pid] File Types: ...`) instead of a bare `eprintln!`. Build only, no test (log format).
 - Refactor (hub): `Hub::send_to(cid, msg)` and `send_to_lister(cid, msg)` replace 15 copies of "look up the connection, send, ignore the error"; a message to a closing connection is now logged at debug level. One send stays on the field (the job progress path still borrows `self.jobs`). Covered by the existing server tests (Pong, JumpTo, Present, function prompts, QueryConfig).
 - Refactor (hub): the job-progress and function-event forwarder threads of `owner_loop` are one `spawn_forwarder(name, rx, owner_tx, wrap)`. 1 new unit test.

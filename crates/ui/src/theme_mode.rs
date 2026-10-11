@@ -26,6 +26,10 @@ pub fn apply_theme_mode(mode: ThemeMode) {
     }
 }
 
+/// Name of the accent colour [`chrome_css`] defines, for program CSS that
+/// follows it: `outline: 2px solid @opusdm_accent;`.
+pub const ACCENT_COLOR_NAME: &str = "opusdm_accent";
+
 /// Fixed background/foreground palette for [`chrome_css`]. Not
 /// user-configurable (unlike `opusdm_ipc::ColorSettings`, which colours the
 /// Lister's own file-list rows and status bar) - this only has to look
@@ -71,7 +75,8 @@ pub fn chrome_css(mode: ThemeMode) -> String {
         ThemeMode::Light => &LIGHT,
     };
     format!(
-        "window {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
+        "@define-color {ACCENT_COLOR_NAME} {accent}; \
+         window {{ background-color: {wbg}; background-image: none; color: {fg}; }} \
          entry, dropdown, dropdown > button, spinbutton, button {{ \
              background-color: {sbg}; background-image: none; color: {fg}; \
              border: 1px solid {border}; border-radius: 4px; \
@@ -146,6 +151,14 @@ mod tests {
         assert!(css.starts_with(&chrome_css(settings.appearance.theme_mode)));
         assert!(css.contains(&crate::ui_look_css(&settings)));
         assert!(css.ends_with(".mine { color: red; }"));
+    }
+
+    #[test]
+    fn chrome_css_defines_the_accent_before_anything_uses_it() {
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let css = chrome_css(mode);
+            assert!(css.starts_with(&format!("@define-color {ACCENT_COLOR_NAME} ")), "{css}");
+        }
     }
 
     #[test]
