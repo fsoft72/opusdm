@@ -57,8 +57,9 @@
 - [x] **Repeated "send to connection" boilerplate** - `lister_msg` and friends repeat `if let Some(c) = self.conns.get_mut(&cid) { let _ = c.tx.send(...) }`; a `Hub::send_to(cid, msg)` helper would cut noise and give one spot to log dead connections.
   - File(s): `crates/hub/src/server.rs`
 
-- [ ] **`eprintln!` bypassing `err_log!`** - a few non-example call sites print directly (`hotkey_editor.rs`, `filetypes_ui.rs`, `network/src/watch.rs`, `terminal/src/main.rs` outside the usage message), skipping the shared `[tag:pid]` prefix the rest of the workspace uses.
+- [x] **`eprintln!` bypassing `err_log!`** - a few non-example call sites print directly (`hotkey_editor.rs`, `filetypes_ui.rs`, `network/src/watch.rs`, `terminal/src/main.rs` outside the usage message), skipping the shared `[tag:pid]` prefix the rest of the workspace uses.
   - File(s): `crates/lister/src/hotkey_editor.rs`, `crates/lister/src/filetypes_ui.rs`, `crates/network/src/watch.rs`
+  - Done: Lister call sites use `err_log!` (the Edit Hotkeys one went with the QueryConfig change). Left as is: `network/src/watch.rs` already prints the same `[tag:pid]` format and the crate does not depend on `opusdm-ipc`; `terminal/src/main.rs` prints a command line usage error for the user; the other hits are test skip notes.
 
 - [ ] **Hardcoded accent colors outside the theme** - `#3584e4` and other literals in `viewer/src/main.rs`, `lister/src/viewer.rs`, `shot/src/editor.rs` and `hub/src/desktop_windows.rs` ignore the theme accent; use the theme's CSS variables (`@accent_color` / chrome tokens) so dark and custom themes match.
   - File(s): `crates/viewer/src/main.rs`, `crates/lister/src/viewer.rs`, `crates/shot/src/editor.rs`, `crates/hub/src/desktop_windows.rs`

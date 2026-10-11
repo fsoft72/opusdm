@@ -117,7 +117,7 @@ pub fn open_standalone(app: &gtk::Application) {
                 opusdm_ipc::function::load_functions()
             }
         };
-        build_editor(shell, functions, None, Rc::new(|text| eprintln!("opusdm-lister: {text}")));
+        build_editor(shell, functions, None, Rc::new(|text| opusdm_ipc::err_log!("opusdm-lister", "File Types: {text}")));
     });
 }
 

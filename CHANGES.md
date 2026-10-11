@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-11
+- Change (Lister): the File Types window opened on its own reports its save result through `err_log!` (`[opusdm-lister:pid] File Types: ...`) instead of a bare `eprintln!`. Build only, no test (log format).
 - Refactor (hub): `Hub::send_to(cid, msg)` and `send_to_lister(cid, msg)` replace 15 copies of "look up the connection, send, ignore the error"; a message to a closing connection is now logged at debug level. One send stays on the field (the job progress path still borrows `self.jobs`). Covered by the existing server tests (Pong, JumpTo, Present, function prompts, QueryConfig).
 - Refactor (hub): the job-progress and function-event forwarder threads of `owner_loop` are one `spawn_forwarder(name, rx, owner_tx, wrap)`. 1 new unit test.
 - Refactor (ipc, Lister, panel, devices): new `opusdm_ipc::size` with the one scaling loop (`scale`) and the three unit styles in use: `binary_size` (Lister free-space gauge), `decimal_size` (device names, `opusdm_devices::human_size`) and `rate` (panel network meter); the Lister size column reuses `scale`. Same texts as before. `opusdm-devices` now depends on `opusdm-ipc`. 4 new unit tests.
