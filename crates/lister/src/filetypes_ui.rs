@@ -105,10 +105,27 @@ pub fn open_editor(ui: &Rc<Ui>, sample: Option<(String, std::path::PathBuf)>) {
 }
 
 /// Open the File Types editor on its own, without a Lister window. The
-/// functions come from disk and the save result is reported on stderr.
+/// functions come from the hub (from disk when no hub answers) and the save
+/// result is reported on stderr.
 pub fn open_standalone(app: &gtk::Application) {
     let shell = opusdm_ui::DialogShell::standalone(app, "File Types");
-    build_editor(shell, opusdm_ipc::function::load_functions(), None, Rc::new(|text| eprintln!("opusdm-lister: {text}")));
+    gtk::glib::spawn_future_local(async move {
+        let functions = match hub_functions().await {
+            Ok(functions) => functions,
+            Err(e) => {
+                opusdm_ipc::err_log!("opusdm-lister", "File Types: {e}; using the Functions on disk");
+                opusdm_ipc::function::load_functions()
+            }
+        };
+        build_editor(shell, functions, None, Rc::new(|text| eprintln!("opusdm-lister: {text}")));
+    });
+}
+
+/// The saved Functions as the hub holds them.
+async fn hub_functions() -> Result<Vec<Function>, String> {
+    let mut client = crate::client::Client::connect_tool(&opusdm_ipc::sockpath::hub_sock_path()).map_err(|e| format!("cannot reach the OpusDM hub: {e}"))?;
+    let inbox = client.take_inbox();
+    crate::client::fetch_config(&client, &inbox).await.map(|(_, functions)| functions)
 }
 
 /// Fill `shell` with the File Types editor. `report` receives the outcome of

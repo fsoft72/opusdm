@@ -135,28 +135,33 @@ pub fn open_standalone(app: &gtk::Application) {
         }
     };
     let inbox = client.take_inbox();
-    let host = Rc::new(Host {
-        client,
-        functions: RefCell::new(function::load_functions()),
-        log: RefCell::new(None),
-        window: shell.window().clone(),
-    });
-    {
-        let host = host.clone();
-        gtk::glib::spawn_future_local(async move {
-            while let Ok(inbound) = inbox.recv().await {
-                match inbound {
-                    Inbound::Msg(msg) => host.handle(msg),
-                    Inbound::HubGone => {
-                        // The hub quit: nothing could be saved any more.
-                        host.window.destroy();
-                        return;
-                    }
+    // Start from the hub's copy of the Functions: it owns `functions.json`.
+    gtk::glib::spawn_future_local(async move {
+        let functions = match crate::client::fetch_config(&client, &inbox).await {
+            Ok((_, functions)) => functions,
+            Err(e) => {
+                let window = shell.window().clone();
+                shell.present();
+                let to_close = window.clone();
+                opusdm_ui::requester(&window, "Manage Functions", &format!("cannot read the Functions from the hub: {e}"), None, &[("OK", ())], move |_| {
+                    to_close.destroy();
+                });
+                return;
+            }
+        };
+        let host = Rc::new(Host { client, functions: RefCell::new(functions), log: RefCell::new(None), window: shell.window().clone() });
+        build_manager(&host, shell);
+        while let Ok(inbound) = inbox.recv().await {
+            match inbound {
+                Inbound::Msg(msg) => host.handle(msg),
+                Inbound::HubGone => {
+                    // The hub quit: nothing could be saved any more.
+                    host.window.destroy();
+                    return;
                 }
             }
-        });
-    }
-    build_manager(&host, shell);
+        }
+    });
 }
 
 /// Fill `shell` with the function list and its New/Edit/Delete buttons.

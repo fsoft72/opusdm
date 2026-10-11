@@ -115,6 +115,43 @@ impl Client {
     }
 }
 
+/// Collects the hub's answer to `ToHub::QueryConfig`: one `BindingsUpdate`
+/// and one `FunctionsUpdate`, in any order.
+#[derive(Default)]
+pub struct ConfigReply {
+    bindings: Option<Bindings>,
+    functions: Option<Vec<Function>>,
+}
+
+impl ConfigReply {
+    /// Take `msg` into account; returns the bindings and Functions once both
+    /// arrived. Other messages are ignored.
+    pub fn feed(&mut self, msg: ToLister) -> Option<(Bindings, Vec<Function>)> {
+        match msg {
+            ToLister::BindingsUpdate(b) => self.bindings = Some(b),
+            ToLister::FunctionsUpdate(f) => self.functions = Some(f),
+            _ => {}
+        }
+        if self.bindings.is_none() || self.functions.is_none() { return None; }
+        Some((self.bindings.take()?, self.functions.take()?))
+    }
+}
+
+/// Ask the hub for the bindings and saved Functions in force (the hub owns
+/// those files, so a tool window starts from its copy, not from disk).
+pub async fn fetch_config(client: &Client, inbox: &async_channel::Receiver<Inbound>) -> Result<(Bindings, Vec<Function>), String> {
+    client.send(&ToHub::QueryConfig).map_err(|e| format!("lost the connection to the hub: {e}"))?;
+    let mut reply = ConfigReply::default();
+    loop {
+        match inbox.recv().await {
+            Ok(Inbound::Msg(msg)) => {
+                if let Some(config) = reply.feed(msg) { return Ok(config); }
+            }
+            Ok(Inbound::HubGone) | Err(_) => return Err("the hub closed the connection".to_string()),
+        }
+    }
+}
+
 /// Spawn the reader thread for `stream`; returns the channel it feeds.
 pub fn start_reader(mut stream: UnixStream) -> async_channel::Receiver<Inbound> {
     let (tx, rx) = async_channel::unbounded::<Inbound>();
@@ -143,6 +180,37 @@ mod tests {
     use opusdm_ipc::frame::{recv, send};
     use opusdm_ipc::{ListerId, ToHub, ToLister, Welcome};
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn config_reply_waits_for_both_parts_in_any_order() {
+        let mut reply = ConfigReply::default();
+        assert!(reply.feed(ToLister::FunctionsUpdate(vec![Function::new("f")])).is_none());
+        assert!(reply.feed(ToLister::Pong).is_none(), "other messages are ignored");
+        let (bindings, functions) = reply.feed(ToLister::BindingsUpdate(Bindings::default())).expect("complete");
+        assert_eq!(bindings, Bindings::default());
+        assert_eq!(functions[0].name, "f");
+    }
+
+    #[test]
+    fn fetch_config_asks_the_hub_and_returns_its_answer() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("hub.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let got: ToHub = recv(&mut s).unwrap().unwrap();
+            assert!(matches!(got, ToHub::QueryConfig));
+            send(&mut s, &ToLister::BindingsUpdate(Bindings::default())).unwrap();
+            send(&mut s, &ToLister::FunctionsUpdate(vec![Function::new("hub copy")])).unwrap();
+        });
+        let mut client = Client::connect_tool(&path).unwrap();
+        let inbox = client.take_inbox();
+        let (_, functions) = gtk4::glib::MainContext::default().block_on(fetch_config(&client, &inbox)).unwrap();
+        assert_eq!(functions[0].name, "hub copy");
+        server.join().unwrap();
+        // The hub going away is an error, not a hang.
+        assert!(gtk4::glib::MainContext::default().block_on(fetch_config(&client, &inbox)).is_err());
+    }
 
     #[test]
     fn next_role_cycles_source_dest_none() {

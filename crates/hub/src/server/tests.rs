@@ -722,6 +722,29 @@ fn set_bindings_from_an_unregistered_tool_connection_is_persisted() {
 }
 
 #[test]
+fn query_config_answers_an_unregistered_tool_with_the_bindings_and_functions_in_force() {
+    let (_td, listener, path) = bind_temp();
+    let hotkeys = vec![opusdm_ipc::bindings::Hotkey { key: "Ctrl+u".into(), function: "f".into(), global: false }];
+    let functions = vec![opusdm_ipc::function::Function::new("in memory")];
+    let opts = ServerOptions {
+        initial_bindings: Some(opusdm_ipc::Bindings { hotkeys: hotkeys.clone(), ..opusdm_ipc::Bindings::default() }),
+        initial_functions: Some(functions.clone()),
+        ..ServerOptions::default()
+    };
+    let _handle = spawn_server_with(listener, Box::new(|_p| {}), opts);
+    let mut tool = connect(&path);
+    send(&mut tool, &ToHub::QueryConfig).unwrap();
+    match recv::<_, ToLister>(&mut tool).unwrap() {
+        Some(ToLister::BindingsUpdate(b)) => assert_eq!(b.hotkeys, hotkeys),
+        other => panic!("expected BindingsUpdate, got {other:?}"),
+    }
+    match recv::<_, ToLister>(&mut tool).unwrap() {
+        Some(ToLister::FunctionsUpdate(f)) => assert_eq!(f, functions),
+        other => panic!("expected FunctionsUpdate, got {other:?}"),
+    }
+}
+
+#[test]
 fn set_functions_persists_and_broadcasts_to_every_lister() {
     let _guard = ENV_LOCK.lock().unwrap();
     let cfg = tempfile::tempdir().unwrap();

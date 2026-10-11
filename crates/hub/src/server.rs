@@ -428,6 +428,8 @@ impl Hub {
 
             ToHub::SetFunctions(new_functions) => self.set_functions(new_functions),
 
+            ToHub::QueryConfig => self.query_config(cid),
+
             ToHub::CacheReport(paths) => {
                 if let Some(c) = self.conns.get_mut(&cid) {
                     c.cache_paths = paths;
@@ -569,6 +571,13 @@ impl Hub {
         let _ = self.persist_tx.send(PersistMsg::Functions(self.current_functions.clone()));
         self.broadcast(ToLister::FunctionsUpdate(self.current_functions.clone()));
         let _ = self.evt_tx.send(HubEvent::FunctionsChanged(self.current_functions.clone()));
+    }
+
+    /// `ToHub::QueryConfig`: send `cid` the bindings and Functions in force.
+    fn query_config(&mut self, cid: u64) {
+        let Some(c) = self.conns.get_mut(&cid) else { return };
+        let _ = c.tx.send(ToLister::BindingsUpdate(self.current_bindings.clone()).into());
+        let _ = c.tx.send(ToLister::FunctionsUpdate(self.current_functions.clone()).into());
     }
 
     /// Answer `cid` with the cache folders every registered Lister reported.

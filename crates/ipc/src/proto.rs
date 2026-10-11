@@ -227,6 +227,10 @@ pub enum ToHub {
     /// Replace the saved Functions. The hub persists `functions.json` and
     /// broadcasts `ToLister::FunctionsUpdate`. No reply.
     SetFunctions(Vec<crate::function::Function>),
+    /// A tool window (editor) asks for the hub's current bindings and saved
+    /// Functions. The hub answers this connection only, registered or not,
+    /// with `ToLister::BindingsUpdate` followed by `ToLister::FunctionsUpdate`.
+    QueryConfig,
     /// The directories this Lister has cached, most recent first. Replaces the
     /// previous report. No reply.
     CacheReport(Vec<PathBuf>),
@@ -635,6 +639,7 @@ mod tests {
         roundtrip_tohub(ToHub::RunFunctionById { id: "fn-1".into() });
         roundtrip_tohub(ToHub::RunFunctionHeadless { id: "exec:opusdm-run".into() });
         roundtrip_tohub(ToHub::SetFunctions(vec![crate::function::Function::new("f")]));
+        roundtrip_tohub(ToHub::QueryConfig);
         roundtrip_tohub(ToHub::SetBindings(crate::bindings::Bindings {
             hotkeys: vec![crate::bindings::Hotkey { key: "Ctrl+u".into(), function: "f".into(), global: true }],
             ..crate::bindings::Bindings::default()

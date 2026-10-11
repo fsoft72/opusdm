@@ -36,7 +36,7 @@
 - [x] **PDF `RenderCache` rebuilt for every page** - `render_page` creates a fresh `RenderCache` on each call although the page worker already keeps the document open; keep the cache next to the open `Pdf` in the worker so fonts and images are not re-decoded on every page turn.
   - File(s): `crates/viewer/src/pdf.rs`, `crates/viewer/src/pdf_pages.rs`
 
-- [ ] **Lister editors read config straight from disk** - the Function, Hotkey and Filetype editors call `load_functions()` / `load_bindings()` themselves while the hub holds the authoritative `current_functions` / `current_bindings`; an editor opened right after another Lister saves (persist thread still writing) can start from stale data. Fetch the current copy from the hub instead.
+- [x] **Lister editors read config straight from disk** - the Function, Hotkey and Filetype editors call `load_functions()` / `load_bindings()` themselves while the hub holds the authoritative `current_functions` / `current_bindings`; an editor opened right after another Lister saves (persist thread still writing) can start from stale data. Fetch the current copy from the hub instead.
   - File(s): `crates/lister/src/function_editor.rs`, `crates/lister/src/hotkey_editor.rs`, `crates/lister/src/filetypes_ui.rs`
 
 - [ ] **`layer_spec` rebuilt in 6 places** - hub, panel (x2), dock, runner and polkit each assemble a `LayerSpec` by hand; add a small set of constructors (`LayerSpec::desktop(rect)`, `::bar(place)`, `::overlay()`) in `opusdm_ui::layer` so layer, anchor and keyboard-mode choices stay consistent.
