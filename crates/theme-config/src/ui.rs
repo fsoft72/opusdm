@@ -57,7 +57,7 @@ fn color_section(window: &gtk::ApplicationWindow, bg_hex: &str, fg_hex: &str) ->
     ColorSection { bg: ColorRow::new(window, None, bg_hex), fg: ColorRow::new(window, None, fg_hex) }
 }
 
-/// A named colour combination the preset dropdown can fill the ten entries
+/// A named colour combination the preset dropdown can fill the twelve entries
 /// with in one click. Purely a fill-in convenience: nothing about the choice
 /// is persisted, only the resulting `ColorSettings` values are.
 fn presets() -> Vec<(&'static str, ColorSettings)> {
@@ -76,6 +76,8 @@ fn presets() -> Vec<(&'static str, ColorSettings)> {
                 file_fg: "#FF8800".into(),
                 selected_bg: "#FF8800".into(),
                 selected_fg: "#000000".into(),
+                toolbar_button_bg: "#0055AA".into(),
+                toolbar_button_fg: "#FFFFFF".into(),
             },
         ),
         (
@@ -91,6 +93,8 @@ fn presets() -> Vec<(&'static str, ColorSettings)> {
                 file_fg: "#000000".into(),
                 selected_bg: "#000080".into(),
                 selected_fg: "#FFFFFF".into(),
+                toolbar_button_bg: "#B4B4B4".into(),
+                toolbar_button_fg: "#000000".into(),
             },
         ),
         (
@@ -106,6 +110,8 @@ fn presets() -> Vec<(&'static str, ColorSettings)> {
                 file_fg: "#C0CAF5".into(),
                 selected_bg: "#BB9AF7".into(),
                 selected_fg: "#1A1B26".into(),
+                toolbar_button_bg: "#24283B".into(),
+                toolbar_button_fg: "#7DCFFF".into(),
             },
         ),
         (
@@ -121,6 +127,8 @@ fn presets() -> Vec<(&'static str, ColorSettings)> {
                 file_fg: "#33FF33".into(),
                 selected_bg: "#33FF33".into(),
                 selected_fg: "#0A1A0A".into(),
+                toolbar_button_bg: "#0F2A0F".into(),
+                toolbar_button_fg: "#33FF33".into(),
             },
         ),
         (
@@ -136,12 +144,14 @@ fn presets() -> Vec<(&'static str, ColorSettings)> {
                 file_fg: "#FFB000".into(),
                 selected_bg: "#FFB000".into(),
                 selected_fg: "#1A1000".into(),
+                toolbar_button_bg: "#2A1C00".into(),
+                toolbar_button_fg: "#FFB000".into(),
             },
         ),
     ]
 }
 
-/// All ten colour rows, grouped into their five sections, plus the preset
+/// All twelve colour rows, grouped into their six sections, plus the preset
 /// dropdown that fills them in one click.
 pub struct ColorsSection {
     pub root: gtk::Box,
@@ -150,6 +160,8 @@ pub struct ColorsSection {
     dir: ColorSection,
     file: ColorSection,
     selected: ColorSection,
+    /// Toolbar buttons: background and icon colour.
+    toolbar_button: ColorSection,
 }
 
 impl ColorsSection {
@@ -178,6 +190,8 @@ impl ColorsSection {
         let dir = color_section(window, &c.dir_bg, &c.dir_fg);
         let file = color_section(window, &c.file_bg, &c.file_fg);
         let selected = color_section(window, &c.selected_bg, &c.selected_fg);
+        let toolbar_button = color_section(window, &c.toolbar_button_bg, &c.toolbar_button_fg);
+        toolbar_button.fg.root.set_tooltip_text(Some("Icon colour"));
 
         for (row, (title, section)) in [
             ("SOURCE", &source),
@@ -185,6 +199,7 @@ impl ColorsSection {
             ("DIRECTORY", &dir),
             ("FILE", &file),
             ("SELECTION", &selected),
+            ("TOOLBAR BUTTON", &toolbar_button),
         ]
         .into_iter()
         .enumerate()
@@ -199,7 +214,7 @@ impl ColorsSection {
 
         outer.append(&grid);
 
-        Self { root: outer, source, dest, dir, file, selected }
+        Self { root: outer, source, dest, dir, file, selected, toolbar_button }
     }
 
     pub fn read(&self) -> ColorSettings {
@@ -214,6 +229,8 @@ impl ColorsSection {
             file_fg: self.file.fg.hex(),
             selected_bg: self.selected.bg.hex(),
             selected_fg: self.selected.fg.hex(),
+            toolbar_button_bg: self.toolbar_button.bg.hex(),
+            toolbar_button_fg: self.toolbar_button.fg.hex(),
         }
     }
 
@@ -229,6 +246,8 @@ impl ColorsSection {
         self.file.fg.set_hex(&c.file_fg);
         self.selected.bg.set_hex(&c.selected_bg);
         self.selected.fg.set_hex(&c.selected_fg);
+        self.toolbar_button.bg.set_hex(&c.toolbar_button_bg);
+        self.toolbar_button.fg.set_hex(&c.toolbar_button_fg);
     }
 }
 

@@ -928,5 +928,6 @@ impl Ui {
         opusdm_ui::register_theme_fonts(slug);
         let css_data = crate::theme::generate_css(&s);
         self.css_provider.load_from_data(&css_data);
+        crate::icons::set_icon_colour(&s.theme.colors.toolbar_button_fg);
     }
 }

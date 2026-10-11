@@ -248,10 +248,10 @@ pub enum ToHub {
 }
 
 /// Background/text colors for the things a Lister paints: the SOURCE and DEST
-/// role stat bar, directory/file rows in the file list, and the selection
-/// highlight. Hex strings (e.g. "#90EE90"), persisted in the hub's
-/// settings.json and distributed to every Lister on connect and on every
-/// settings change.
+/// role stat bar, directory/file rows in the file list, the selection
+/// highlight and the toolbar buttons. Hex strings (e.g. "#90EE90"), persisted
+/// in the hub's settings.json and distributed to every Lister on connect and
+/// on every settings change.
 ///
 /// `#[serde(default)]` fills in fields absent from an older settings.json from
 /// [`Default`], so adding a colour never invalidates a user's config file.
@@ -268,6 +268,10 @@ pub struct ColorSettings {
     pub file_fg: String,
     pub selected_bg: String,
     pub selected_fg: String,
+    /// Background of the Lister's toolbar buttons (`button.opus-btn`).
+    pub toolbar_button_bg: String,
+    /// Colour the toolbar buttons' SVG icons are drawn in.
+    pub toolbar_button_fg: String,
 }
 
 impl Default for ColorSettings {
@@ -287,6 +291,9 @@ impl Default for ColorSettings {
             file_fg: "#e3e3e3".to_string(),
             selected_bg: "#3584E4".to_string(),
             selected_fg: "#FFFFFF".to_string(),
+            // The dark chrome's surface and text colours (`opusdm_ui::chrome_css`).
+            toolbar_button_bg: "#2b2d31".to_string(),
+            toolbar_button_fg: "#e3e3e3".to_string(),
         }
     }
 }

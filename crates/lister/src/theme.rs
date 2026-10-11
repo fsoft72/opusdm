@@ -14,9 +14,10 @@ pub fn generate_css(settings: &Settings) -> String {
     let shared_chrome_css = opusdm_ui::chrome_css(settings.appearance.theme_mode);
     // Opt-in: carry the file colours into the window chrome as well, so a dark
     // preset does not leave a light toolbar around a dark list. Redefining the
-    // two named colours also reaches the button gradients, which are written in
-    // terms of @theme_bg_color. Must come first: GTK resolves @name against
-    // definitions seen earlier in the stylesheet.
+    // two named colours also reaches the filter bar and the preview, which are
+    // written in terms of @theme_bg_color (the toolbar buttons have their own
+    // theme colours). Must come first: GTK resolves @name against definitions
+    // seen earlier in the stylesheet.
     let chrome_css = if settings.appearance.theme_window {
         format!(
             "@define-color theme_bg_color {bg}; @define-color theme_fg_color {fg}; \
@@ -56,11 +57,12 @@ pub fn generate_css(settings: &Settings) -> String {
              padding: 3px 6px; \
              margin: 1px 2px; \
              border-radius: 3px; \
+             color: {btn_fg}; \
              border-top: 1px solid rgba(255, 255, 255, 0.4); \
              border-left: 1px solid rgba(255, 255, 255, 0.4); \
              border-right: 1px solid rgba(0, 0, 0, 0.6); \
              border-bottom: 1px solid rgba(0, 0, 0, 0.6); \
-             background: linear-gradient(to bottom, alpha(@theme_bg_color, 0.95), alpha(@theme_bg_color, 0.75)); \
+             background: linear-gradient(to bottom, alpha({btn_bg}, 0.95), alpha({btn_bg}, 0.75)); \
              box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.2); \
          }} \
          button.opus-btn:hover {{ \
@@ -68,14 +70,14 @@ pub fn generate_css(settings: &Settings) -> String {
              border-left: 1px solid rgba(255, 255, 255, 0.7); \
              border-right: 1px solid rgba(0, 0, 0, 0.7); \
              border-bottom: 1px solid rgba(0, 0, 0, 0.7); \
-             background: linear-gradient(to bottom, alpha(@theme_bg_color, 1.0), alpha(@theme_bg_color, 0.85)); \
+             background: linear-gradient(to bottom, alpha({btn_bg}, 1.0), alpha({btn_bg}, 0.85)); \
          }} \
          button.opus-btn:active, button.opus-btn:checked {{ \
              border-top: 1px solid rgba(0, 0, 0, 0.7); \
              border-left: 1px solid rgba(0, 0, 0, 0.7); \
              border-right: 1px solid rgba(255, 255, 255, 0.5); \
              border-bottom: 1px solid rgba(255, 255, 255, 0.5); \
-             background: linear-gradient(to bottom, alpha(@theme_bg_color, 0.6), alpha(@theme_bg_color, 0.85)); \
+             background: linear-gradient(to bottom, alpha({btn_bg}, 0.6), alpha({btn_bg}, 0.85)); \
              box-shadow: inset 1px 1px 2px rgba(0, 0, 0, 0.4); \
          }} \
          columnview > listview > row {{ padding: 0; margin: 0; border: none; min-height: 0; }} \
@@ -108,11 +110,12 @@ pub fn generate_css(settings: &Settings) -> String {
         dir_bg = c.dir_bg, dir_fg = c.dir_fg,
         file_bg = c.file_bg, file_fg = c.file_fg,
         sel_bg = c.selected_bg, sel_fg = c.selected_fg,
+        btn_bg = c.toolbar_button_bg, btn_fg = c.toolbar_button_fg,
     );
     // `chrome_css` (the opt-in `theme_window` block) must stay first when
     // present: its `@define-color` statements have to precede any use of
     // `@theme_bg_color`/`@theme_fg_color` later in this same stylesheet
-    // (the `button.opus-btn` gradients), and GTK's CSS parser enforces that
+    // (the filter bar and the preview), and GTK's CSS parser enforces that
     // ordering strictly.
     let look = opusdm_ui::ui_look_css(settings);
     let list_look = list_look_css(settings);
@@ -171,7 +174,7 @@ mod tests {
     #[test]
     fn without_a_picture_rows_keep_their_solid_colours() {
         let css = generate_css(&Settings::default());
-        assert!(!css.contains("alpha(#"));
+        assert!(!css.contains(".row-file { background-color: alpha("));
         assert!(!css.contains("background-image: url("));
     }
 
@@ -227,6 +230,8 @@ mod tests {
             file_fg: "#888888".into(),
             selected_bg: "#999999".into(),
             selected_fg: "#aaaaaa".into(),
+            toolbar_button_bg: "#bbbbbb".into(),
+            toolbar_button_fg: "#cccccc".into(),
         };
         let css = generate_css(&settings);
         let c = &settings.theme.colors;
@@ -234,12 +239,25 @@ mod tests {
             &c.source_bg, &c.source_fg, &c.dest_bg, &c.dest_fg,
             &c.dir_bg, &c.dir_fg, &c.file_bg, &c.file_fg,
             &c.selected_bg, &c.selected_fg,
+            &c.toolbar_button_bg, &c.toolbar_button_fg,
         ] {
             assert!(css.contains(hex.as_str()), "{hex} missing");
         }
         // The list ground must be painted, or a dark theme shows the GTK
         // theme's light background below the last row.
         assert!(css.contains("columnview, columnview > listview"));
+    }
+
+    #[test]
+    fn toolbar_buttons_use_the_theme_button_colours() {
+        let mut settings = Settings::default();
+        settings.theme.colors.toolbar_button_bg = "#102030".into();
+        settings.theme.colors.toolbar_button_fg = "#405060".into();
+        let css = generate_css(&settings);
+        assert!(css.contains("alpha(#102030, 0.95)"));
+        assert!(css.contains("color: #405060;"));
+        let buttons = &css[css.find("button.opus-btn {").unwrap()..css.find("columnview > listview > row {").unwrap()];
+        assert!(!buttons.contains("@theme_bg_color"));
     }
 
     #[test]
