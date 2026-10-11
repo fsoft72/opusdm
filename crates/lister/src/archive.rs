@@ -230,7 +230,7 @@ fn read_7z_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
 
 /// Read rows for the given inner prefix within an archive.
 pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec<Row>> {
-    let items = read_archive_entries(arch_path)?;
+    let items = LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).get(arch_path, read_archive_entries)?;
 
     let prefix = if inner_prefix.is_empty() {
         String::new()
@@ -241,7 +241,7 @@ pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec
     let mut seen_dirs = HashSet::new();
     let mut rows = Vec::new();
 
-    for item in items {
+    for item in items.iter() {
         if !item.path.starts_with(&prefix) && !prefix.is_empty() {
             continue;
         }
@@ -280,6 +280,56 @@ pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec
     }
 
     Ok(rows)
+}
+
+/// How many archive listings [`LISTINGS`] keeps.
+const LISTING_CACHE_SIZE: usize = 4;
+
+/// Parsed listings of the archives browsed last, so moving between the
+/// folders of one archive does not run the external tool again.
+static LISTINGS: Mutex<ListingCache> = Mutex::new(ListingCache::new(LISTING_CACHE_SIZE));
+
+/// What identifies one version of an archive file: its size and mtime.
+type Stamp = (u64, Option<std::time::SystemTime>);
+
+/// The stamp of `path` now.
+fn _stamp(path: &Path) -> io::Result<Stamp> {
+    let m = std::fs::metadata(path)?;
+    Ok((m.len(), m.modified().ok()))
+}
+
+/// The parsed listings of the last `capacity` archives, most recent last.
+/// An entry is valid while the archive's size and mtime are unchanged.
+pub struct ListingCache {
+    capacity: usize,
+    entries: Vec<(PathBuf, Stamp, std::sync::Arc<Vec<ArchiveItem>>)>,
+}
+
+impl ListingCache {
+    /// An empty cache holding at most `capacity` listings.
+    pub const fn new(capacity: usize) -> Self {
+        Self { capacity, entries: Vec::new() }
+    }
+
+    /// The listing of `arch`: the cached one when the file did not change,
+    /// otherwise a fresh one read with `load` and remembered.
+    pub fn get(&mut self, arch: &Path, load: impl FnOnce(&Path) -> io::Result<Vec<ArchiveItem>>) -> io::Result<std::sync::Arc<Vec<ArchiveItem>>> {
+        let stamp = _stamp(arch)?;
+        if let Some(i) = self.entries.iter().position(|(p, _, _)| p == arch) {
+            let entry = self.entries.remove(i);
+            if entry.1 == stamp {
+                let items = entry.2.clone();
+                self.entries.push(entry);
+                return Ok(items);
+            }
+        }
+        let items = std::sync::Arc::new(load(arch)?);
+        if self.entries.len() >= self.capacity {
+            self.entries.remove(0);
+        }
+        self.entries.push((arch.to_path_buf(), stamp, items.clone()));
+        Ok(items)
+    }
 }
 
 /// Archive formats the extraction commands know how to handle.
@@ -566,6 +616,48 @@ mod tests {
         remove_preview_of(&path);
         let rx = extract_single_file_in_background(td.path().join("a.zip"), "nope.txt".to_string());
         assert!(rx.recv_blocking().unwrap().is_err());
+    }
+
+    #[test]
+    fn listing_cache_reads_each_archive_version_once() {
+        let td = tempfile::tempdir().unwrap();
+        let arch = td.path().join("a.zip");
+        std::fs::write(&arch, "one").unwrap();
+        let loads = std::cell::Cell::new(0);
+        let load = |_: &Path| {
+            loads.set(loads.get() + 1);
+            Ok(vec![ArchiveItem { path: "f".into(), is_dir: false, size: 1, mode: 0o644 }])
+        };
+        let mut cache = ListingCache::new(2);
+        cache.get(&arch, load).unwrap();
+        cache.get(&arch, load).unwrap();
+        assert_eq!(loads.get(), 1, "unchanged archive: cached");
+        std::fs::write(&arch, "changed size").unwrap();
+        cache.get(&arch, load).unwrap();
+        assert_eq!(loads.get(), 2, "a changed archive is read again");
+    }
+
+    #[test]
+    fn listing_cache_drops_the_oldest_archive() {
+        let td = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = (0..3).map(|i| td.path().join(format!("{i}.zip"))).collect();
+        for p in &paths {
+            std::fs::write(p, "x").unwrap();
+        }
+        let loads = std::cell::Cell::new(0);
+        let load = |_: &Path| {
+            loads.set(loads.get() + 1);
+            Ok(Vec::new())
+        };
+        let mut cache = ListingCache::new(2);
+        for p in &paths {
+            cache.get(p, load).unwrap();
+        }
+        cache.get(&paths[2], load).unwrap();
+        assert_eq!(loads.get(), 3);
+        cache.get(&paths[0], load).unwrap();
+        assert_eq!(loads.get(), 4, "the first archive was evicted");
+        assert!(cache.get(&td.path().join("missing.zip"), load).is_err());
     }
 
     #[test]

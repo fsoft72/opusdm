@@ -24,7 +24,7 @@
 
 ## Medium
 
-- [ ] **Archive listing re-runs the external tool on every navigation** - `navigate_from` skips the dir cache for archive paths, so each step into a sub-folder of an archive re-runs `zipinfo`/`tar -t`/`7z l` over the whole file; cache the parsed `Vec<ArchiveItem>` keyed by archive path + mtime and filter per prefix.
+- [x] **Archive listing re-runs the external tool on every navigation** - `navigate_from` skips the dir cache for archive paths, so each step into a sub-folder of an archive re-runs `zipinfo`/`tar -t`/`7z l` over the whole file; cache the parsed `Vec<ArchiveItem>` keyed by archive path + mtime and filter per prefix.
   - File(s): `crates/lister/src/nav_cache.rs`, `crates/lister/src/archive.rs`
 
 - [ ] **Lister hardcodes `7z` while fsops resolves the binary** - `fsops::compress` uses `seven_z_tool()` (7z / 7za / 7zz) but `lister/src/archive.rs` calls `Command::new("7z")` in three places, so systems with only `7zz` can create 7z archives but not browse or extract them; reuse the fsops resolver.
