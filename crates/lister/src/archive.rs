@@ -363,6 +363,16 @@ pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<Pat
     extracted
 }
 
+/// [`extract_single_file_temp`] on a worker thread, so the external tool never
+/// blocks the GTK main loop. The returned channel yields the one result.
+pub fn extract_single_file_in_background(arch: PathBuf, inner_file: String) -> async_channel::Receiver<io::Result<PathBuf>> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking(extract_single_file_temp(&arch, &inner_file));
+    });
+    rx
+}
+
 /// Extract `inner_file` of `arch` under `temp_dir` and return its path.
 fn _extract_one(kind: ArchiveKind, arch: &Path, inner_file: &str, temp_dir: &Path) -> io::Result<PathBuf> {
     match kind {
@@ -542,6 +552,20 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested", "{name}");
             remove_preview_of(&path);
         }
+    }
+
+    #[test]
+    fn background_extraction_sends_the_result_through_the_channel() {
+        let td = tempfile::tempdir().unwrap();
+        if fixture(td.path()).is_none() {
+            return;
+        }
+        let rx = extract_single_file_in_background(td.path().join("a.zip"), "sub/a.txt".to_string());
+        let path = rx.recv_blocking().unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested");
+        remove_preview_of(&path);
+        let rx = extract_single_file_in_background(td.path().join("a.zip"), "nope.txt".to_string());
+        assert!(rx.recv_blocking().unwrap().is_err());
     }
 
     #[test]

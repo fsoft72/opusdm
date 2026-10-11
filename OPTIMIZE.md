@@ -4,7 +4,7 @@
 
 ## Critical
 
-- [ ] **Archive file open blocks the GTK thread** - `activate_row` calls `extract_single_file_temp` (spawns `unzip`/`tar`/`7z` and waits on `.output()`) directly on the main loop, so opening a file inside a large or compressed archive freezes the whole Lister; move it to a worker thread with an `async_channel` like `navigate_from` already does for listings.
+- [x] **Archive file open blocks the GTK thread** - `activate_row` calls `extract_single_file_temp` (spawns `unzip`/`tar`/`7z` and waits on `.output()`) directly on the main loop, so opening a file inside a large or compressed archive freezes the whole Lister; move it to a worker thread with an `async_channel` like `navigate_from` already does for listings.
   - File(s): `crates/lister/src/window.rs`, `crates/lister/src/archive.rs`
 
 ## High

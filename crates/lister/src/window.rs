@@ -764,12 +764,23 @@ impl Ui {
             };
             if row.is_dir {
                 self.navigate_to(&crate::archive::make_archive_path(&arch, &next_inner));
-            } else if let Ok(temp_path) =
-                crate::archive::extract_single_file_temp(&arch, &next_inner)
-            {
-                let uri = format!("file://{}", temp_path.to_string_lossy());
-                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                return;
             }
+            // The external tool can take long on a big archive: run it off the GTK thread.
+            let rx = crate::archive::extract_single_file_in_background(arch, next_inner);
+            let ui = self.clone();
+            glib::spawn_future_local(async move {
+                let Ok(result) = rx.recv().await else { return };
+                match result {
+                    Ok(temp_path) => {
+                        let uri = format!("file://{}", temp_path.to_string_lossy());
+                        if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
+                            crate::actions::flash(&ui, &format!("cannot open {}: {e}", temp_path.display()));
+                        }
+                    }
+                    Err(e) => crate::actions::flash(&ui, &format!("cannot extract from the archive: {e}")),
+                }
+            });
             return;
         }
         let target = cwd.join(&row.name);
