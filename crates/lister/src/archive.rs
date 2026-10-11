@@ -196,7 +196,7 @@ fn read_tar_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
 }
 
 fn read_7z_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
-    let output = Command::new("7z")
+    let output = Command::new(opusdm_fsops::tools::seven_z_program())
         .arg("l")
         .arg(arch_path)
         .output()?;
@@ -450,7 +450,7 @@ fn _extract_one(kind: ArchiveKind, arch: &Path, inner_file: &str, temp_dir: &Pat
             Ok(extracted)
         }
         ArchiveKind::SevenZ => {
-            let output = Command::new("7z")
+            let output = Command::new(opusdm_fsops::tools::seven_z_program())
                 .args(["x", "-y", "-spd", "-bso0", "-bsp0"])
                 .arg(format!("-o{}", temp_dir.display()))
                 .arg("--")
@@ -525,7 +525,7 @@ pub fn extract_items_to_dir(
             _check_status(cmd.status()?, "tar")?;
         }
         ArchiveKind::SevenZ => {
-            let mut cmd = Command::new("7z");
+            let mut cmd = Command::new(opusdm_fsops::tools::seven_z_program());
             cmd.args(["x", "-y", "-spd", "-bso0", "-bsp0"]).arg(format!("-o{}", dest_dir.display()));
             cmd.arg("--").arg(arch);
             cmd.args(items);

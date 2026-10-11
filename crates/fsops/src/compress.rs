@@ -3,6 +3,7 @@
 
 use crate::cancel::CancelToken;
 use crate::types::Progress;
+use crate::tools::{find_in_path, seven_z_program, seven_z_tool};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,9 +16,6 @@ const LOG_TAG: &str = "compress";
 
 /// How often the running tool is polled for exit, cancel and progress.
 const POLL_GAP: Duration = Duration::from_millis(50);
-
-/// Names under which the 7-Zip command line is installed, in order of preference.
-const SEVEN_Z_TOOLS: &[&str] = &["7z", "7zz", "7za"];
 
 /// An archive format `Compress` can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,20 +97,6 @@ impl CompressFormat {
     pub fn available(single_file: bool) -> Vec<Self> {
         Self::ALL.into_iter().filter(|f| (single_file || !f.is_single_file()) && f.is_available()).collect()
     }
-}
-
-/// The first 7-Zip executable found in `PATH`.
-fn seven_z_tool() -> Option<&'static str> {
-    SEVEN_Z_TOOLS.iter().copied().find(|t| find_in_path(t).is_some())
-}
-
-/// Whether an executable file called `name` exists in a `PATH` directory.
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
 /// A `Done` for a job that failed as a whole.
@@ -244,7 +228,7 @@ fn spawn_tool(format: CompressFormat, plan: &Plan, out_path: &Path, out: File) -
         CompressFormat::SevenZ => {
             drop(out);
             std::fs::remove_file(out_path)?;
-            cmd = Command::new(seven_z_tool().unwrap_or("7z"));
+            cmd = Command::new(seven_z_program());
             cmd.args(["a", "-bd", "-y"]).arg(out_path).args(&names).stdout(Stdio::null());
         }
         CompressFormat::TarGz | CompressFormat::TarBz2 | CompressFormat::TarXz | CompressFormat::TarZst => {

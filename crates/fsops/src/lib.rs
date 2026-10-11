@@ -18,6 +18,7 @@ pub mod moveop;
 pub mod pool;
 pub mod rename;
 pub mod scan;
+pub mod tools;
 pub mod types;
 
 pub use cancel::CancelToken;

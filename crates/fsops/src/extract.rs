@@ -14,9 +14,6 @@ const LOG_TAG: &str = "extract";
 /// How often the running tool is polled for exit and cancel.
 const POLL_GAP: Duration = Duration::from_millis(50);
 
-/// Names under which the 7-Zip command line is installed, in order of preference.
-const SEVEN_Z_TOOLS: &[&str] = &["7z", "7zz", "7za"];
-
 /// Suffixes read by `tar`.
 const TAR_SUFFIXES: &[&str] = &[".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst"];
 
@@ -52,16 +49,6 @@ fn _failed(path: &Path, msg: String) -> Progress {
     Progress::Done { copied: 0, skipped: 0, cancelled: false, errors: vec![(path.to_path_buf(), msg)] }
 }
 
-/// The first 7-Zip executable found in `PATH`.
-fn _seven_z_tool() -> &'static str {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    SEVEN_Z_TOOLS
-        .iter()
-        .copied()
-        .find(|t| std::env::split_paths(&path).any(|d| d.join(t).is_file()))
-        .unwrap_or("7z")
-}
-
 /// The command that unpacks `src` into `dest_dir` without overwriting.
 fn _command(kind: Kind, src: &Path, dest_dir: &Path) -> Command {
     let mut cmd;
@@ -75,7 +62,7 @@ fn _command(kind: Kind, src: &Path, dest_dir: &Path) -> Command {
             cmd.args(["--keep-old-files", "--no-same-owner", "-xf"]).arg(src).arg("-C").arg(dest_dir);
         }
         Kind::SevenZ => {
-            cmd = Command::new(_seven_z_tool());
+            cmd = Command::new(crate::tools::seven_z_program());
             let mut out = std::ffi::OsString::from("-o");
             out.push(dest_dir);
             cmd.args(["x", "-bd", "-aos", "-spd"]).arg(out).arg("--").arg(src);
