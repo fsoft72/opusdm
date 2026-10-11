@@ -27,8 +27,7 @@ impl Hub {
     /// ask: the run starts at once with an empty selection in `$HOME`.
     /// Returns the run id.
     pub(super) fn start_function_run(&mut self, requester: Option<u64>, source: Option<u64>, steps: Vec<FnStep>) -> u64 {
-        let run_id = self.next_run_id;
-        self.next_run_id += 1;
+        let run_id = self.runs.next_id();
         let Some(source_cid) = source else {
             let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
             self.spawn_run(run_id, requester, steps, empty);
@@ -40,7 +39,7 @@ impl Hub {
         // (the two branches are `if`/`else if` on the same `cid`), so
         // `dest_sel` - and the run - could never complete.
         let dest_cid = self.roles.dests().iter().map(|d| d.0).find(|&d| d != source_cid);
-        self.pending_functions.insert(
+        self.runs.add_pending(
             run_id,
             PendingFunctionRun {
                 requester_cid: requester,
@@ -61,16 +60,14 @@ impl Hub {
     /// Start the executor of run `run_id` at once, on `selection` and with no
     /// DEST.
     fn spawn_run(&mut self, run_id: u64, requester: Option<u64>, steps: Vec<FnStep>, selection: SelectionCtx) {
-        self.function_requesters.insert(run_id, requester);
-        let cancel = CancelToken::new();
-        self.function_cancels.insert(run_id, cancel.clone());
-        crate::functions::spawn_executor(run_id, steps, selection, None, self.function_events_tx.clone(), cancel);
+        let cancel = self.runs.start(run_id, requester);
+        crate::functions::spawn_executor(run_id, steps, selection, None, self.runs.events_tx(), cancel);
     }
 
     /// Queue `run_id` on `cid`'s FIFO of pending selection requests and ask
     /// the Lister for its selection.
     pub(super) fn query_selection(&mut self, cid: u64, run_id: u64) {
-        self.selection_waiters.entry(cid).or_default().push_back(run_id);
+        self.runs.wait_selection(cid, run_id);
         if let Some(c) = self.conns.get_mut(&cid) {
             let _ = c.tx.send(ToLister::QuerySelection.into());
         }
@@ -92,8 +89,7 @@ impl Hub {
     pub(super) fn run_on_paths(&mut self, id: &str, paths: Vec<PathBuf>) -> Option<u64> {
         let steps = self.steps_for(None, id)?;
         let cwd = paths.first().and_then(|p| p.parent()).map(PathBuf::from).unwrap_or_else(home_dir);
-        let run_id = self.next_run_id;
-        self.next_run_id += 1;
+        let run_id = self.runs.next_id();
         self.spawn_run(run_id, None, steps, SelectionCtx { paths, cwd });
         Some(run_id)
     }
@@ -161,34 +157,10 @@ impl Hub {
     /// dest) of its pending run this answers, and start execution once every
     /// slot the run needs is filled.
     pub(super) fn selection_reply(&mut self, cid: u64, paths: Vec<PathBuf>, cwd: PathBuf) {
-        let Some(queue) = self.selection_waiters.get_mut(&cid) else { return };
-        let Some(run_id) = queue.pop_front() else { return };
-        if queue.is_empty() {
-            self.selection_waiters.remove(&cid);
-        }
-        let Some(run) = self.pending_functions.get_mut(&run_id) else { return };
-        let sel = SelectionCtx { paths, cwd };
-        if cid == run.source_cid {
-            run.source_sel = Some(sel);
-        } else if Some(cid) == run.dest_cid {
-            run.dest_sel = Some(sel);
-        }
-        let ready = run.source_sel.is_some() && (run.dest_cid.is_none() || run.dest_sel.is_some());
-        if !ready {
-            return;
-        }
-        let run = self.pending_functions.remove(&run_id).unwrap();
-        self.function_requesters.insert(run_id, run.requester_cid);
-        let cancel = CancelToken::new();
-        self.function_cancels.insert(run_id, cancel.clone());
-        crate::functions::spawn_executor(
-            run_id,
-            run.steps,
-            run.source_sel.unwrap(),
-            run.dest_sel,
-            self.function_events_tx.clone(),
-            cancel,
-        );
+        let Some((run_id, run)) = self.runs.take_selection(cid, paths, cwd) else { return };
+        let Some(source_sel) = run.source_sel else { return };
+        let cancel = self.runs.start(run_id, run.requester_cid);
+        crate::functions::spawn_executor(run_id, run.steps, source_sel, run.dest_sel, self.runs.events_tx(), cancel);
     }
 
     /// A `FnEvent` arrived from a running Function's executor thread; turn
@@ -208,11 +180,10 @@ impl Hub {
             self.function_confirm(run_id, message, reply);
             return;
         }
-        let Some(&requester) = self.function_requesters.get(&run_id) else { return };
+        let Some(requester) = self.runs.requester(run_id) else { return };
         let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
         if terminal {
-            self.function_requesters.remove(&run_id);
-            self.function_cancels.remove(&run_id);
+            self.runs.finish(run_id);
             self.event_guard.finish(run_id);
         }
         // A background change applies for every requester, hub-originated
@@ -308,7 +279,7 @@ impl Hub {
     /// answer the step on `done` when the job ends. A run nobody owns any more
     /// drops `done`, which fails the step.
     pub(super) fn function_job(&mut self, run_id: u64, spec: opusdm_fsops::JobSpec, done: Sender<crate::functions::JobResult>) {
-        let Some(&requester) = self.function_requesters.get(&run_id) else { return };
+        let Some(requester) = self.runs.requester(run_id) else { return };
         self.submit_job(requester, spec, Some(done));
     }
 
@@ -322,7 +293,7 @@ impl Hub {
         if msg == WindowMsg::Open {
             // A run the hub started on its own (global hotkey, script event)
             // has no requester: its window goes to the SOURCE Lister, if any.
-            let owner = self.function_requesters.get(&run_id).copied().flatten().or_else(|| {
+            let owner = self.runs.requester(run_id).flatten().or_else(|| {
                 self.roles.source().map(|l| l.0).filter(|cid| self.conns.get(cid).is_some_and(|c| c.registered))
             });
             match owner {
@@ -358,9 +329,8 @@ impl Hub {
     /// not a yes.
     pub(super) fn function_confirm(&mut self, run_id: u64, message: String, reply: Sender<bool>) {
         let owner = self
-            .function_requesters
-            .get(&run_id)
-            .copied()
+            .runs
+            .requester(run_id)
             .flatten()
             .filter(|cid| self.conns.contains_key(cid));
         let Some(cid) = owner else {
@@ -381,31 +351,11 @@ impl Hub {
     /// otherwise wait forever); a running Function's events for a
     /// since-dropped requester are also dropped instead of accumulating.
     pub(super) fn drop_function_state(&mut self, cid: u64) {
-        let doomed: Vec<u64> = self
-            .pending_functions
-            .iter()
-            .filter(|(_, run)| run.source_cid == cid || run.dest_cid == Some(cid))
-            .map(|(run_id, _)| *run_id)
-            .collect();
-        for run_id in doomed {
-            self.pending_functions.remove(&run_id);
+        // Pending runs waiting on `cid` are dropped; the runs of a closed
+        // Lister stop at their next step, and the jobs they started are cancelled.
+        for run_id in self.runs.forget_connection(cid) {
             self.event_guard.finish(run_id);
-            for queue in self.selection_waiters.values_mut() {
-                queue.retain(|&r| r != run_id);
-            }
         }
-        self.selection_waiters.remove(&cid);
-        self.selection_waiters.retain(|_, queue| !queue.is_empty());
-        // The runs of a closed Lister stop at their next step, and the jobs
-        // they started are cancelled.
-        for (run_id, requester) in &self.function_requesters {
-            if *requester == Some(cid) {
-                if let Some(cancel) = self.function_cancels.remove(run_id) {
-                    cancel.cancel();
-                }
-            }
-        }
-        self.function_requesters.retain(|_, requester| *requester != Some(cid));
         let orphaned_jobs: Vec<u64> = self
             .jobs
             .iter()

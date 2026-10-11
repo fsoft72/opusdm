@@ -13,16 +13,18 @@ use opusdm_ipc::format::{self, FormatStore};
 use opusdm_ipc::frame::{recv, send};
 use opusdm_ipc::function::{FnStep, FunctionId, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Instant;
 
 mod function_run;
+mod function_runs;
 mod persist;
 
-use function_run::{PendingFunctionRun, NO_SOURCE_ERROR};
+use function_run::NO_SOURCE_ERROR;
+use function_runs::FunctionRuns;
 use persist::PersistMsg;
 
 /// Called when a Lister or the toolbar asks for a new Lister window.
@@ -360,19 +362,8 @@ struct Hub {
     next_req: u64,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
-    /// Function runs waiting on `SelectionReply` from SOURCE and/or DEST.
-    pending_functions: HashMap<u64, PendingFunctionRun>,
-    /// Which pending runs a Lister connection's next `SelectionReply`s are
-    /// for, oldest first: a Lister answers `QuerySelection`s in order, so two
-    /// runs waiting on it at once are matched by a FIFO, not a single slot.
-    selection_waiters: HashMap<u64, VecDeque<u64>>,
-    /// Which connection to route a running Function's events back to, kept
-    /// alive from the moment execution starts until `FunctionDone`/`Failed`.
-    function_requesters: HashMap<u64, Option<u64>>,
-    /// Set when a run's requester goes away: the run stops at its next step.
-    function_cancels: HashMap<u64, CancelToken>,
-    next_run_id: u64,
-    function_events_tx: Sender<(u64, crate::functions::FnEvent)>,
+    /// Function runs: pending selections, requesters and cancel tokens.
+    runs: FunctionRuns,
 }
 
 impl Hub {
@@ -717,8 +708,7 @@ impl Hub {
                     }
                 }
             };
-            let run_id = self.next_run_id;
-            self.next_run_id += 1;
+            let run_id = self.runs.next_id();
             let (tx, rx) = channel();
             let empty = SelectionCtx { paths: Vec::new(), cwd: home_dir() };
             crate::functions::spawn_executor(run_id, steps, empty, None, tx, CancelToken::new());
@@ -1234,12 +1224,7 @@ fn owner_loop(
         next_req: 1,
         evt_tx,
         on_spawn,
-        pending_functions: HashMap::new(),
-        selection_waiters: HashMap::new(),
-        function_requesters: HashMap::new(),
-        function_cancels: HashMap::new(),
-        next_run_id: 1,
-        function_events_tx: fe_tx,
+        runs: FunctionRuns::new(fe_tx),
     };
 
     hub.apply_global_keys();
