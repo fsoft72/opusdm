@@ -39,7 +39,7 @@
 - [x] **Lister editors read config straight from disk** - the Function, Hotkey and Filetype editors call `load_functions()` / `load_bindings()` themselves while the hub holds the authoritative `current_functions` / `current_bindings`; an editor opened right after another Lister saves (persist thread still writing) can start from stale data. Fetch the current copy from the hub instead.
   - File(s): `crates/lister/src/function_editor.rs`, `crates/lister/src/hotkey_editor.rs`, `crates/lister/src/filetypes_ui.rs`
 
-- [ ] **`layer_spec` rebuilt in 6 places** - hub, panel (x2), dock, runner and polkit each assemble a `LayerSpec` by hand; add a small set of constructors (`LayerSpec::desktop(rect)`, `::bar(place)`, `::overlay()`) in `opusdm_ui::layer` so layer, anchor and keyboard-mode choices stay consistent.
+- [x] **`layer_spec` rebuilt in 6 places** - hub, panel (x2), dock, runner and polkit each assemble a `LayerSpec` by hand; add a small set of constructors (`LayerSpec::desktop(rect)`, `::bar(place)`, `::overlay()`) in `opusdm_ui::layer` so layer, anchor and keyboard-mode choices stay consistent.
   - File(s): `crates/hub/src/desktop.rs`, `crates/panel/src/window.rs`, `crates/panel/src/device_popup.rs`, `crates/dock/src/window.rs`, `crates/runner/src/ui.rs`, `crates/polkit/src/dialog.rs`
 
 - [ ] **Very long UI builder functions** - `theme-config::build_window` (366 lines), `lister::show_context_menu` (249), `lister::actions::attach` (162), `theme-config::editor::open` (165) and `hub::toolbar::apply_event` (144) mix widget creation, signal wiring and business logic; split them into per-section builders like `lister/src/build.rs` already does with its `*Widgets` structs.

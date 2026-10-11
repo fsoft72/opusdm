@@ -348,16 +348,7 @@ fn details(request: &Request) -> gtk::Expander {
 /// Layer shell placement: an overlay centered on the monitor the compositor
 /// picks, above every window, holding the keyboard while it is open.
 fn layer_spec() -> opusdm_ui::layer::LayerSpec {
-    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
-    LayerSpec {
-        layer: Layer::Overlay,
-        namespace: "opusdm-polkit",
-        anchors: Anchors::default(),
-        margins: Margins::default(),
-        exclusive: Exclusive::None,
-        keyboard: KeyboardMode::Exclusive,
-        monitor: None,
-    }
+    opusdm_ui::layer::LayerSpec::modal_overlay("opusdm-polkit")
 }
 
 /// Top left corner that centers a `size` window on `monitor` (x, y, width,

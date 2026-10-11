@@ -256,16 +256,8 @@ fn run(state: &Rc<State>, index: Option<usize>) {
 /// it stays out of the panel's exclusive zone, above every window, holding
 /// the keyboard while it is open.
 fn layer_spec() -> opusdm_ui::layer::LayerSpec {
-    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
-    LayerSpec {
-        layer: Layer::Overlay,
-        namespace: "opusdm-run",
-        anchors: Anchors { top: true, ..Anchors::default() },
-        margins: Margins::default(),
-        exclusive: Exclusive::None,
-        keyboard: KeyboardMode::Exclusive,
-        monitor: None,
-    }
+    use opusdm_ui::layer::{Anchors, LayerSpec};
+    LayerSpec::modal_overlay("opusdm-run").anchors(Anchors { top: true, ..Anchors::default() })
 }
 
 

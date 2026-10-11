@@ -71,6 +71,56 @@ pub struct LayerSpec {
     pub monitor: Option<MonitorRect>,
 }
 
+impl LayerSpec {
+    /// A surface in `layer` named `namespace`: not anchored, no margins,
+    /// reserving nothing, keyboard on demand, monitor picked by the compositor.
+    /// Chain the setters below for the rest.
+    pub fn new(layer: Layer, namespace: &'static str) -> Self {
+        Self { layer, namespace, anchors: Anchors::default(), margins: Margins::default(), exclusive: Exclusive::None, keyboard: KeyboardMode::OnDemand, monitor: None }
+    }
+
+    /// The desktop background of the monitor `rect`: fills it, under every
+    /// other window, ignoring what panels reserve.
+    pub fn background(namespace: &'static str, rect: MonitorRect) -> Self {
+        Self::new(Layer::Background, namespace).anchors(Anchors::ALL).exclusive(Exclusive::Ignore).monitor(rect)
+    }
+
+    /// A modal overlay that takes the keyboard (Run window, password dialog).
+    pub fn modal_overlay(namespace: &'static str) -> Self {
+        Self::new(Layer::Overlay, namespace).keyboard(KeyboardMode::Exclusive)
+    }
+
+    /// The same spec anchored to `anchors`.
+    pub fn anchors(mut self, anchors: Anchors) -> Self {
+        self.anchors = anchors;
+        self
+    }
+
+    /// The same spec with `margins` from its anchored edges.
+    pub fn margins(mut self, margins: Margins) -> Self {
+        self.margins = margins;
+        self
+    }
+
+    /// The same spec treating reserved space as `exclusive` says.
+    pub fn exclusive(mut self, exclusive: Exclusive) -> Self {
+        self.exclusive = exclusive;
+        self
+    }
+
+    /// The same spec with keyboard mode `keyboard`.
+    pub fn keyboard(mut self, keyboard: KeyboardMode) -> Self {
+        self.keyboard = keyboard;
+        self
+    }
+
+    /// The same spec shown on the monitor `rect`.
+    pub fn monitor(mut self, rect: MonitorRect) -> Self {
+        self.monitor = Some(rect);
+        self
+    }
+}
+
 /// Whether windows can become layer surfaces here: a Wayland session whose
 /// compositor offers `wlr-layer-shell`.
 pub fn available() -> bool {
@@ -137,4 +187,25 @@ fn monitor_at(rect: MonitorRect) -> Option<gdk::Monitor> {
             let g = m.geometry();
             (g.x(), g.y(), g.width(), g.height()) == rect
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_starts_from_neutral_defaults() {
+        let spec = LayerSpec::new(Layer::Top, "x");
+        assert_eq!((spec.layer, spec.namespace), (Layer::Top, "x"));
+        assert_eq!((spec.anchors, spec.margins), (Anchors::default(), Margins::default()));
+        assert_eq!((spec.exclusive, spec.keyboard, spec.monitor), (Exclusive::None, KeyboardMode::OnDemand, None));
+    }
+
+    #[test]
+    fn presets_and_setters() {
+        let bg = LayerSpec::background("bg", (0, 0, 10, 20));
+        assert_eq!((bg.layer, bg.anchors, bg.exclusive, bg.monitor), (Layer::Background, Anchors::ALL, Exclusive::Ignore, Some((0, 0, 10, 20))));
+        let modal = LayerSpec::modal_overlay("m").margins(Margins { top: 3, ..Margins::default() });
+        assert_eq!((modal.layer, modal.keyboard, modal.margins.top), (Layer::Overlay, KeyboardMode::Exclusive, 3));
+    }
 }

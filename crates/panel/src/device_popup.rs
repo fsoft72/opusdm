@@ -121,16 +121,10 @@ fn close() {
 /// end, `MARGIN` from the edges (the panel's exclusive zone keeps it clear
 /// of the panel), above every window.
 fn layer_spec(panel_top: bool) -> opusdm_ui::layer::LayerSpec {
-    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
-    LayerSpec {
-        layer: Layer::Overlay,
-        namespace: "opusdm-device-popup",
-        anchors: Anchors { top: panel_top, right: true, bottom: !panel_top, left: false },
-        margins: Margins { top: MARGIN, right: MARGIN, bottom: MARGIN, left: 0 },
-        exclusive: Exclusive::None,
-        keyboard: KeyboardMode::OnDemand,
-        monitor: None,
-    }
+    use opusdm_ui::layer::{Anchors, Layer, LayerSpec, Margins};
+    LayerSpec::new(Layer::Overlay, "opusdm-device-popup")
+        .anchors(Anchors { top: panel_top, right: true, bottom: !panel_top, left: false })
+        .margins(Margins { top: MARGIN, right: MARGIN, bottom: MARGIN, left: 0 })
 }
 
 /// Put the mapped popup in its corner and above the other windows.

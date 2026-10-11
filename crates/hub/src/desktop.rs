@@ -17,16 +17,7 @@ use x11rb::wrapper::ConnectionExt as _;
 /// (the panel covers the desktop, as on X11). The keyboard comes on demand,
 /// for the icon field and its rename entry.
 pub fn layer_spec(rect: opusdm_ui::MonitorRect) -> opusdm_ui::layer::LayerSpec {
-    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
-    LayerSpec {
-        layer: Layer::Background,
-        namespace: "opusdm-desktop",
-        anchors: Anchors::ALL,
-        margins: Margins::default(),
-        exclusive: Exclusive::Ignore,
-        keyboard: KeyboardMode::OnDemand,
-        monitor: Some(rect),
-    }
+    opusdm_ui::layer::LayerSpec::background("opusdm-desktop", rect)
 }
 
 /// Apply the desktop window type, the keep-below and sticky states, the

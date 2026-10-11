@@ -46,17 +46,12 @@ impl Placement {
 /// Layer shell placement of a bar placed by `place`: across its monitor on
 /// the docked edge, above windows, reserving its own height.
 pub fn layer_spec(place: Placement) -> opusdm_ui::layer::LayerSpec {
-    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
+    use opusdm_ui::layer::{Anchors, Exclusive, Layer, LayerSpec};
     let top = place.position == PanelPosition::Top;
-    LayerSpec {
-        layer: Layer::Top,
-        namespace: "opusdm-panel",
-        anchors: Anchors { top, right: true, bottom: !top, left: true },
-        margins: Margins::default(),
-        exclusive: Exclusive::Auto,
-        keyboard: KeyboardMode::OnDemand,
-        monitor: Some((place.mon_x, place.mon_y, place.mon_w, place.mon_h)),
-    }
+    LayerSpec::new(Layer::Top, "opusdm-panel")
+        .anchors(Anchors { top, right: true, bottom: !top, left: true })
+        .exclusive(Exclusive::Auto)
+        .monitor((place.mon_x, place.mon_y, place.mon_w, place.mon_h))
 }
 
 /// The `_NET_WM_STRUT_PARTIAL` 12-tuple for a panel of `height` docked to

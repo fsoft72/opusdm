@@ -24,7 +24,7 @@ use x11rb::wrapper::ConnectionExt as _;
 pub fn layer_spec(place: Placement) -> opusdm_ui::layer::LayerSpec {
     use crate::placement::EDGE_MARGIN;
     use opusdm_ipc::DockPosition;
-    use opusdm_ui::layer::{Anchors, Exclusive, KeyboardMode, Layer, LayerSpec, Margins};
+    use opusdm_ui::layer::{Anchors, KeyboardMode, Layer, LayerSpec, Margins};
     let mut anchors = Anchors::default();
     let mut margins = Margins::default();
     match place.position() {
@@ -33,15 +33,11 @@ pub fn layer_spec(place: Placement) -> opusdm_ui::layer::LayerSpec {
         DockPosition::Left => (anchors.left, margins.left) = (true, EDGE_MARGIN),
         DockPosition::Right => (anchors.right, margins.right) = (true, EDGE_MARGIN),
     }
-    LayerSpec {
-        layer: Layer::Bottom,
-        namespace: "opusdm-dock",
-        anchors,
-        margins,
-        exclusive: Exclusive::None,
-        keyboard: KeyboardMode::None,
-        monitor: Some((place.mon_x, place.mon_y, place.mon_w, place.mon_h)),
-    }
+    LayerSpec::new(Layer::Bottom, "opusdm-dock")
+        .anchors(anchors)
+        .margins(margins)
+        .keyboard(KeyboardMode::None)
+        .monitor((place.mon_x, place.mon_y, place.mon_w, place.mon_h))
 }
 
 /// Apply the DOCK window type and a fixed geometry to the realized `window`.
