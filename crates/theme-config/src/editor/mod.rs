@@ -117,6 +117,92 @@ struct Editor {
     on_saved: Rc<dyn Fn(String)>,
 }
 
+/// The buttons of the Theme Editor window.
+struct Buttons {
+    new: gtk::Button,
+    duplicate: gtk::Button,
+    delete: gtk::Button,
+    save: gtk::Button,
+    save_copy: gtk::Button,
+    revert: gtk::Button,
+    apply: gtk::Button,
+    close: gtk::Button,
+}
+
+/// The widgets [`build_layout`] creates.
+struct Layout {
+    list: gtk::ListBox,
+    right: gtk::Box,
+    status: gtk::Label,
+    buttons: Buttons,
+}
+
+/// Fill `window`: the theme list with New / Duplicate / Delete on the left,
+/// the editing area, status line and action buttons on the right.
+fn build_layout(window: &gtk::ApplicationWindow) -> Layout {
+    let buttons = Buttons {
+        new: gtk::Button::with_label("New..."),
+        duplicate: gtk::Button::with_label("Duplicate..."),
+        delete: gtk::Button::with_label("Delete..."),
+        save: gtk::Button::with_label("Save"),
+        save_copy: gtk::Button::with_label("Save as copy..."),
+        revert: gtk::Button::with_label("Revert"),
+        apply: gtk::Button::with_label("Save & Apply"),
+        close: gtk::Button::with_label("Close"),
+    };
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::Single);
+    let list_scroll = gtk::ScrolledWindow::builder().child(&list).vexpand(true).min_content_width(200).build();
+    let list_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    for b in [&buttons.new, &buttons.duplicate, &buttons.delete] {
+        list_buttons.append(b);
+    }
+    let left = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    left.append(&list_scroll);
+    left.append(&list_buttons);
+
+    let right = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    right.set_vexpand(true);
+    right.set_hexpand(true);
+    let status = gtk::Label::builder().xalign(0.0).wrap(true).build();
+    let action_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    action_row.set_halign(gtk::Align::End);
+    for b in [&buttons.save_copy, &buttons.revert, &buttons.apply, &buttons.save, &buttons.close] {
+        action_row.append(b);
+    }
+    let right_outer = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    right_outer.append(&right);
+    right_outer.append(&status);
+    right_outer.append(&action_row);
+
+    let outer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    for side in [&left, &right_outer] {
+        side.set_margin_top(12);
+        side.set_margin_bottom(12);
+    }
+    left.set_margin_start(12);
+    right_outer.set_margin_end(12);
+    outer.append(&left);
+    outer.append(&right_outer);
+    window.set_child(Some(&outer));
+    Layout { list, right, status, buttons }
+}
+
+/// Run `action` on `editor` when `btn` is clicked.
+fn on_click(editor: &Rc<Editor>, btn: &gtk::Button, action: impl Fn(&Rc<Editor>) + 'static) {
+    let editor = editor.clone();
+    btn.connect_clicked(move |_| action(&editor));
+}
+
+/// Run `action` on `editor` when `btn` is clicked, once unsaved changes are
+/// saved or discarded.
+fn on_click_after_discard(editor: &Rc<Editor>, btn: &gtk::Button, action: fn(&Rc<Editor>)) {
+    on_click(editor, btn, move |editor| {
+        let go = editor.clone();
+        editor.confirm_discard(move || action(&go), || {});
+    });
+}
+
 /// Open the Theme Editor of `app`, over `parent` when there is one (it is
 /// standalone otherwise). `on_saved` is called with the slug of
 /// every theme that was saved or created, so the caller can refresh its theme
@@ -129,50 +215,7 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
         .default_height(720)
         .build();
     window.set_transient_for(parent);
-
-    let list = gtk::ListBox::new();
-    list.set_selection_mode(gtk::SelectionMode::Single);
-    let list_scroll = gtk::ScrolledWindow::builder().child(&list).vexpand(true).min_content_width(200).build();
-    let new_btn = gtk::Button::with_label("New...");
-    let dup_btn = gtk::Button::with_label("Duplicate...");
-    let del_btn = gtk::Button::with_label("Delete...");
-    let list_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    list_buttons.append(&new_btn);
-    list_buttons.append(&dup_btn);
-    list_buttons.append(&del_btn);
-    let left = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    left.append(&list_scroll);
-    left.append(&list_buttons);
-
-    let right = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    right.set_vexpand(true);
-    right.set_hexpand(true);
-    let status = gtk::Label::builder().xalign(0.0).wrap(true).build();
-    let save_btn = gtk::Button::with_label("Save");
-    let copy_btn = gtk::Button::with_label("Save as copy...");
-    let revert_btn = gtk::Button::with_label("Revert");
-    let apply_btn = gtk::Button::with_label("Save & Apply");
-    let close_btn = gtk::Button::with_label("Close");
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    buttons.set_halign(gtk::Align::End);
-    for b in [&copy_btn, &revert_btn, &apply_btn, &save_btn, &close_btn] {
-        buttons.append(b);
-    }
-    let right_outer = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    right_outer.append(&right);
-    right_outer.append(&status);
-    right_outer.append(&buttons);
-
-    let outer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    for side in [&left, &right_outer] {
-        side.set_margin_top(12);
-        side.set_margin_bottom(12);
-    }
-    left.set_margin_start(12);
-    right_outer.set_margin_end(12);
-    outer.append(&left);
-    outer.append(&right_outer);
-    window.set_child(Some(&outer));
+    let Layout { list, right, status, buttons } = build_layout(&window);
 
     let baseline = load_settings();
     let editor = Rc::new(Editor {
@@ -181,7 +224,7 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
         slugs: RefCell::new(Vec::new()),
         right,
         status,
-        edit_buttons: vec![save_btn.clone(), revert_btn.clone(), apply_btn.clone(), del_btn.clone()],
+        edit_buttons: vec![buttons.save.clone(), buttons.revert.clone(), buttons.apply.clone(), buttons.delete.clone()],
         current: RefCell::new(None),
         preview: RefCell::new(Preview { sent: baseline.clone(), baseline, ended: false }),
         programmatic: Cell::new(false),
@@ -189,96 +232,22 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
         on_saved,
     });
 
-    {
-        let editor = editor.clone();
-        editor.list.clone().connect_row_selected(move |_, row| {
-            let Some(row) = row else { return };
-            if editor.programmatic.get() {
-                return;
+    wire_list_selection(&editor);
+    on_click(&editor, &buttons.save, |e| e.save(false));
+    on_click(&editor, &buttons.apply, |e| e.save(true));
+    on_click(&editor, &buttons.save_copy, |e| e.save_as_copy());
+    on_click(&editor, &buttons.revert, |e| {
+        if let Some(slug) = e.current_slug() {
+            if e.reload(&slug) {
+                e.status.set_text("Reverted to the saved theme.");
             }
-            let Some(slug) = editor.slugs.borrow().get(row.index() as usize).cloned() else { return };
-            if editor.current_slug().as_deref() == Some(slug.as_str()) {
-                return;
-            }
-            let go = editor.clone();
-            let back = editor.clone();
-            editor.confirm_discard(move || {
-                go.reload(&slug);
-            },
-            move || back.refresh_list(back.current_slug().as_deref()));
-        });
-    }
-    {
-        let editor = editor.clone();
-        save_btn.connect_clicked(move |_| editor.save(false));
-    }
-    {
-        let editor = editor.clone();
-        apply_btn.connect_clicked(move |_| editor.save(true));
-    }
-    {
-        let editor = editor.clone();
-        copy_btn.connect_clicked(move |_| editor.save_as_copy());
-    }
-    {
-        let editor = editor.clone();
-        revert_btn.connect_clicked(move |_| {
-            if let Some(slug) = editor.current_slug() {
-                if editor.reload(&slug) {
-                    editor.status.set_text("Reverted to the saved theme.");
-                }
-            }
-        });
-    }
-    {
-        let window = window.clone();
-        close_btn.connect_clicked(move |_| window.close());
-    }
-    {
-        let editor = editor.clone();
-        new_btn.connect_clicked(move |_| {
-            let go = editor.clone();
-            editor.confirm_discard(move || go.prompt_new(), || {});
-        });
-    }
-    {
-        let editor = editor.clone();
-        dup_btn.connect_clicked(move |_| {
-            let go = editor.clone();
-            editor.confirm_discard(move || go.prompt_duplicate(), || {});
-        });
-    }
-    {
-        let editor = editor.clone();
-        del_btn.connect_clicked(move |_| {
-            let go = editor.clone();
-            editor.confirm_discard(move || go.prompt_delete(), || {});
-        });
-    }
-    {
-        let editor = editor.clone();
-        window.connect_close_request(move |_| {
-            if editor.closing.get() || !editor.is_dirty() {
-                editor.end_preview();
-                return glib::Propagation::Proceed;
-            }
-            let again = editor.clone();
-            opusdm_ui::requester(
-                &editor.window,
-                "Unsaved Changes",
-                "This theme has unsaved changes. Close without saving?",
-                None,
-                &[("Close", true), ("Cancel", false)],
-                move |close| {
-                    if close {
-                        again.closing.set(true);
-                        again.window.close();
-                    }
-                },
-            );
-            glib::Propagation::Stop
-        });
-    }
+        }
+    });
+    on_click(&editor, &buttons.close, |e| e.window.close());
+    on_click_after_discard(&editor, &buttons.new, |e| e.prompt_new());
+    on_click_after_discard(&editor, &buttons.duplicate, |e| e.prompt_duplicate());
+    on_click_after_discard(&editor, &buttons.delete, |e| e.prompt_delete());
+    wire_close_guard(&editor);
 
     editor.open_active();
     {
@@ -286,6 +255,57 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
         glib::timeout_add_local(PREVIEW_INTERVAL, move || editor.update_preview());
     }
     window.present();
+}
+
+/// Selecting a theme in the list opens it, once unsaved changes of the open
+/// one are saved or discarded; a refused discard puts the selection back.
+fn wire_list_selection(editor: &Rc<Editor>) {
+    let list = editor.list.clone();
+    let editor = editor.clone();
+    list.connect_row_selected(move |_, row| {
+        let Some(row) = row else { return };
+        if editor.programmatic.get() {
+            return;
+        }
+        let Some(slug) = editor.slugs.borrow().get(row.index() as usize).cloned() else { return };
+        if editor.current_slug().as_deref() == Some(slug.as_str()) {
+            return;
+        }
+        let go = editor.clone();
+        let back = editor.clone();
+        editor.confirm_discard(move || {
+            go.reload(&slug);
+        },
+        move || back.refresh_list(back.current_slug().as_deref()));
+    });
+}
+
+/// Closing the window with unsaved changes asks first; a close that goes
+/// through ends the live preview.
+fn wire_close_guard(editor: &Rc<Editor>) {
+    let window = editor.window.clone();
+    let editor = editor.clone();
+    window.connect_close_request(move |_| {
+        if editor.closing.get() || !editor.is_dirty() {
+            editor.end_preview();
+            return glib::Propagation::Proceed;
+        }
+        let again = editor.clone();
+        opusdm_ui::requester(
+            &editor.window,
+            "Unsaved Changes",
+            "This theme has unsaved changes. Close without saving?",
+            None,
+            &[("Close", true), ("Cancel", false)],
+            move |close| {
+                if close {
+                    again.closing.set(true);
+                    again.window.close();
+                }
+            },
+        );
+        glib::Propagation::Stop
+    });
 }
 
 impl Editor {
