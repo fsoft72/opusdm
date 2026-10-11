@@ -12,3 +12,4 @@ path = "src/lib.rs"
 zbus = { version = "5.19.0", features = ["blocking"] }
 async-channel.workspace = true
 opusdm-watch = { path = "../watch" }
+opusdm-ipc = { path = "../ipc" }

@@ -238,12 +238,7 @@ fn scaled(size: u64, base: f64, units: &[&str]) -> String {
     if (size as f64) < base {
         return format!("{size} B");
     }
-    let mut value = size as f64;
-    let mut unit = 0usize;
-    while value >= base && unit < units.len() - 1 {
-        value /= base;
-        unit += 1;
-    }
+    let (value, unit) = opusdm_ipc::size::scale(size as f64, base, units.len());
     format!("{value:.1}{}", units[unit])
 }
 

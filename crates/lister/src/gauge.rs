@@ -38,14 +38,7 @@ pub fn used_fraction(total: u64, free: u64) -> f64 {
 
 /// Human readable size for the tooltip (binary units).
 fn human(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+    opusdm_ipc::size::binary_size(bytes)
 }
 
 impl Ui {

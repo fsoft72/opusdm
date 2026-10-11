@@ -34,19 +34,7 @@ pub struct Device {
 /// Size with decimal units, one decimal only when it is not a round number
 /// (`"32 GB"`, `"1.5 TB"`, `"0 B"`).
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
-        unit += 1;
-    }
-    let rounded = (value * 10.0).round() / 10.0;
-    if unit == 0 || rounded.fract() == 0.0 {
-        format!("{} {}", rounded as u64, UNITS[unit])
-    } else {
-        format!("{:.1} {}", rounded, UNITS[unit])
-    }
+    opusdm_ipc::size::decimal_size(bytes)
 }
 
 #[cfg(test)]

@@ -2184,6 +2184,7 @@ name = "opusdm-devices"
 version = "0.7.0"
 dependencies = [
  "async-channel",
+ "opusdm-ipc",
  "opusdm-watch",
  "zbus",
 ]

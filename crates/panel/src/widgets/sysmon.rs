@@ -70,16 +70,7 @@ pub fn parse_net_dev(text: &str) -> (u64, u64) {
 
 /// Human-readable transfer rate, e.g. `1.2M/s`, `340K/s`, `0B/s`.
 pub fn human_rate(bytes_per_s: f64) -> String {
-    let b = bytes_per_s.max(0.0);
-    if b < 1024.0 {
-        format!("{:.0}B/s", b)
-    } else if b < 1024.0 * 1024.0 {
-        format!("{:.1}K/s", b / 1024.0)
-    } else if b < 1024.0 * 1024.0 * 1024.0 {
-        format!("{:.1}M/s", b / (1024.0 * 1024.0))
-    } else {
-        format!("{:.1}G/s", b / (1024.0 * 1024.0 * 1024.0))
-    }
+    opusdm_ipc::size::rate(bytes_per_s)
 }
 
 fn read(path: &str) -> String {

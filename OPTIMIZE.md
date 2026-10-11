@@ -45,7 +45,8 @@
 - [x] **Very long UI builder functions** - `theme-config::build_window` (366 lines), `lister::show_context_menu` (249), `lister::actions::attach` (162), `theme-config::editor::open` (165) and `hub::toolbar::apply_event` (144) mix widget creation, signal wiring and business logic; split them into per-section builders like `lister/src/build.rs` already does with its `*Widgets` structs.
   - File(s): `crates/theme-config/src/main.rs`, `crates/lister/src/context_menu.rs`, `crates/lister/src/actions.rs`, `crates/theme-config/src/editor/mod.rs`, `crates/hub/src/toolbar.rs`
 
-- [ ] **Three size formatters with different rules** - `lister::model::format_size_as` (1024 base, "1.5K"), `devices::model::human_size` (1000 base, "1.5 GB") plus ad hoc math in `lister/src/gauge.rs` and `panel/src/widgets/sysmon.rs`; move one formatter with a `SizeFormat` argument into `opusdm_ipc` so the panel, devices popup and Lister agree.
+- [x] **Three size formatters with different rules** - `lister::model::format_size_as` (1024 base, "1.5K"), `devices::model::human_size` (1000 base, "1.5 GB") plus ad hoc math in `lister/src/gauge.rs` and `panel/src/widgets/sysmon.rs`; move one formatter with a `SizeFormat` argument into `opusdm_ipc` so the panel, devices popup and Lister agree.
+  - Done: one scaling rule in `opusdm_ipc::size` (`scale`, `binary_size`, `decimal_size`, `rate`); each place keeps its unit style (drives in SI, free space in IEC, Lister columns per `SizeFormat`), so no visible text changed.
   - File(s): `crates/lister/src/model.rs`, `crates/devices/src/model.rs`, `crates/lister/src/gauge.rs`, `crates/panel/src/widgets/sysmon.rs`
 
 ## Low / Nice to have
