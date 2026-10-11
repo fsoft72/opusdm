@@ -6,6 +6,7 @@
 
 use opusdm_ipc::look::{SurfaceImage, Surfaces, ThemeSurface};
 use opusdm_ipc::themes::CustomThemeData;
+use crate::writer::ThemeDraft;
 use opusdm_ipc::{IconSetId, Settings, Theme, CURRENT_LOOK_VERSION};
 
 /// `prefs` with every theme-owned field replaced by what theme `slug`
@@ -33,6 +34,27 @@ pub fn resolve_look(slug: &str, data: &CustomThemeData, prefs: &Settings) -> Set
         surfaces,
         look_version: CURRENT_LOOK_VERSION,
     }
+}
+
+/// The look the Theme Editor's unsaved `draft` of theme `slug` gives, for the
+/// live preview: like [`resolve_look`], but the pictures come straight from
+/// the draft, where they are already absolute paths (possibly outside the
+/// theme folder, before Save copies them in).
+pub fn resolve_draft(slug: &str, draft: &ThemeDraft, prefs: &Settings) -> Settings {
+    let data = CustomThemeData {
+        colors: draft.colors.clone(),
+        appearance: draft.appearance.clone(),
+        fonts: draft.fonts.clone(),
+        ..CustomThemeData::default()
+    };
+    let mut settings = resolve_look(slug, &data, prefs);
+    if let Some(lister) = &draft.lister {
+        settings.surfaces.lister = lister.clone();
+    }
+    if let Some(requester) = &draft.requester {
+        settings.surfaces.requester = requester.clone();
+    }
+    settings
 }
 
 /// Whether `a` and `b` look the same: equal colours, fonts, surfaces and
@@ -135,6 +157,25 @@ mod tests {
         };
         let s = resolve_look("t", &data, &Settings::default());
         assert_eq!(s.surfaces.lister.image_path, None);
+    }
+
+    #[test]
+    fn a_draft_resolves_like_its_theme_with_its_pictures_taken_as_they_are() {
+        let draft = ThemeDraft {
+            colors: Some(ColorSettings { file_fg: "#123456".to_string(), ..ColorSettings::default() }),
+            lister: Some(SurfaceImage { image_path: Some("/elsewhere/l.png".into()), fit: ImageFit::Tile }),
+            ..ThemeDraft::default()
+        };
+        let p = prefs();
+        let s = resolve_draft("t", &draft, &p);
+        assert_eq!(s.theme.icon_set, IconSetId::Custom("t".to_string()));
+        assert_eq!(s.theme.colors.file_fg, "#123456");
+        assert_eq!(s.surfaces.lister.image_path, Some("/elsewhere/l.png".into()));
+        assert_eq!(s.surfaces.lister.fit, ImageFit::Tile);
+        assert_eq!(s.surfaces.requester, SurfaceImage::default());
+        assert_eq!(s.fonts, Fonts::default());
+        assert_eq!(s.behavior, p.behavior);
+        assert_eq!(s.appearance.theme_mode, ThemeMode::Light);
     }
 
     #[test]

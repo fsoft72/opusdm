@@ -51,6 +51,22 @@ pub fn apply_full(settings: &Settings, desktop: &DesktopSettings) -> ApplyOutcom
     }
 }
 
+/// Send `settings` to a running hub as a live preview. Unlike [`apply_full`]
+/// nothing is written to disk when no hub runs. Returns whether the hub got it.
+pub fn send_preview(settings: &Settings) -> bool {
+    use std::os::unix::net::UnixStream;
+    let sock = opusdm_ipc::sockpath::hub_sock_path();
+    if !opusdm_ipc::sockpath::probe_live_hub(&sock) {
+        return false;
+    }
+    let sent = UnixStream::connect(&sock)
+        .and_then(|mut stream| opusdm_ipc::frame::send(&mut stream, &opusdm_ipc::ToHub::SetSettings(Box::new(settings.clone()))));
+    if let Err(e) = &sent {
+        opusdm_ipc::err_log!("opusdm-settings", "preview send failed: {e}");
+    }
+    sent.is_ok()
+}
+
 /// Connect to the hub socket and send one `SetSettings` frame followed by
 /// one `SetDesktopSettings` frame.
 fn send_to_hub(sock: &std::path::Path, settings: &Settings, desktop: &DesktopSettings) -> std::io::Result<()> {
