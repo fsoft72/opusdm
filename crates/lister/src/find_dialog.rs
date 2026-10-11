@@ -276,7 +276,7 @@ impl Dialog {
             return;
         }
         let opts = ViewerOptions { initial_search: self.searched_text.borrow().clone() };
-        crate::viewer::open(&self.ui, vec![found.path], Mode::Smart, false, opts);
+        crate::viewer::open(&self.ui, vec![found.path], Mode::Smart, opts);
     }
 }
 

@@ -1,11 +1,12 @@
-//! The Viewer window (F-16 / F-17): Read, AnsiRead, HexRead, SmartRead and
-//! Show. Loading and every decision live in the pure modules; this file only
+//! The Viewer window (F-16): Read, AnsiRead, HexRead and SmartRead. Pictures
+//! (Show, F-17, and SmartRead on an image) open in `opusdm-viewer` instead,
+//! see [`crate::image_viewer`]. Loading and every decision live in the pure modules; this file only
 //! builds widgets and wires keys.
 
 use crate::ansi::{AnsiDoc, PALETTE};
-use crate::slideshow::Marks;
 use crate::viewer_load::{load, ViewData};
 use crate::viewer_mode::{image_files, viewer_files, Mode};
+use crate::image_viewer::split_images;
 use crate::viewer_search::{find_matches, step};
 use crate::window::Ui;
 use gtk4 as gtk;
@@ -30,28 +31,22 @@ enum ViewerKey {
     Prev,
     /// Switch the mode.
     SetMode(Mode),
-    /// Mark or unmark the picture (Show only).
-    ToggleMark,
 }
 
 /// Map a key to its Viewer action. Chords with Ctrl or Alt are never ours, so
-/// select-all and copy keep working. `image` is true while a picture is shown
-/// (arrows page then, and scroll text otherwise); mode keys are off in Show,
-/// marking is Show only. Letters work in either case.
-fn viewer_key(key: gdk::Key, modified: bool, show: bool, image: bool) -> Option<ViewerKey> {
+/// select-all and copy keep working; arrows scroll the text. Letters work in
+/// either case.
+fn viewer_key(key: gdk::Key, modified: bool) -> Option<ViewerKey> {
     if modified {
         return None;
     }
     match key {
         gdk::Key::n | gdk::Key::N => Some(ViewerKey::Next),
         gdk::Key::p | gdk::Key::P => Some(ViewerKey::Prev),
-        gdk::Key::Right if image => Some(ViewerKey::Next),
-        gdk::Key::Left if image => Some(ViewerKey::Prev),
-        gdk::Key::Delete | gdk::Key::KP_Delete | gdk::Key::m | gdk::Key::M if show => Some(ViewerKey::ToggleMark),
-        gdk::Key::t | gdk::Key::T if !show => Some(ViewerKey::SetMode(Mode::Text)),
-        gdk::Key::a | gdk::Key::A if !show => Some(ViewerKey::SetMode(Mode::Ansi)),
-        gdk::Key::x | gdk::Key::X if !show => Some(ViewerKey::SetMode(Mode::Hex)),
-        gdk::Key::s | gdk::Key::S if !show => Some(ViewerKey::SetMode(Mode::Smart)),
+        gdk::Key::t | gdk::Key::T => Some(ViewerKey::SetMode(Mode::Text)),
+        gdk::Key::a | gdk::Key::A => Some(ViewerKey::SetMode(Mode::Ansi)),
+        gdk::Key::x | gdk::Key::X => Some(ViewerKey::SetMode(Mode::Hex)),
+        gdk::Key::s | gdk::Key::S => Some(ViewerKey::SetMode(Mode::Smart)),
         _ => None,
     }
 }
@@ -65,12 +60,10 @@ pub struct ViewerOptions {
 
 /// One open Viewer.
 struct Viewer {
-    ui: Rc<Ui>,
     window: gtk::Window,
     files: Vec<PathBuf>,
     index: Cell<usize>,
     mode: Cell<Mode>,
-    show: bool,
     generation: Cell<u64>,
     title: gtk::Label,
     meta: gtk::Label,
@@ -81,39 +74,59 @@ struct Viewer {
     search_count: gtk::Label,
     matches: RefCell<Vec<(usize, usize)>>,
     current: Cell<Option<usize>>,
-    marks: RefCell<Marks>,
-    /// Set once the delete question was answered, so the close goes through.
-    closing: Cell<bool>,
-    marked: gtk::Label,
 }
 
-/// Open the Viewer on the files selected in `ui` (or the cursor file). For
-/// `show`, only the pictures among them.
-pub fn open_from_selection(ui: &Rc<Ui>, mode: Mode, show: bool) {
-    let cursor = ui.row_at(ui.view.cursor.get()).map(|r| ui.cwd_path().join(&r.name));
-    let mut files = viewer_files(&ui.selected_paths(), cursor.as_deref());
-    if show {
-        files = image_files(&files);
-        if files.is_empty() {
-            crate::actions::flash(ui, "no images selected");
-            return;
-        }
-    }
+/// Open the Viewer on the files selected in `ui` (or the cursor file).
+pub fn open_from_selection(ui: &Rc<Ui>, mode: Mode) {
+    let files = selection_files(ui);
     if files.is_empty() {
         crate::actions::flash(ui, "no file selected");
         return;
     }
-    open(ui, files, mode, show, ViewerOptions::default());
+    open(ui, files, mode, ViewerOptions::default());
 }
 
-/// Open a Viewer on `files`.
-pub fn open(ui: &Rc<Ui>, files: Vec<PathBuf>, mode: Mode, show: bool, opts: ViewerOptions) {
+/// Show (F-17): the pictures among the selected files (or the cursor file)
+/// in `opusdm-viewer`.
+pub fn show_images(ui: &Rc<Ui>) {
+    let images = image_files(&selection_files(ui));
+    if images.is_empty() {
+        crate::actions::flash(ui, "no images selected");
+        return;
+    }
+    launch_image_viewer(ui, &images);
+}
+
+/// The selected files, or the file under the cursor when nothing is selected.
+fn selection_files(ui: &Rc<Ui>) -> Vec<PathBuf> {
+    let cursor = ui.row_at(ui.view.cursor.get()).map(|r| ui.cwd_path().join(&r.name));
+    viewer_files(&ui.selected_paths(), cursor.as_deref())
+}
+
+/// Start `opusdm-viewer` on `images`, flashing the error when it cannot start.
+fn launch_image_viewer(ui: &Rc<Ui>, images: &[PathBuf]) {
+    if let Err(e) = crate::image_viewer::launch(images) {
+        crate::actions::flash(ui, &format!("cannot start {}: {e}", crate::image_viewer::VIEWER_BIN));
+    }
+}
+
+/// Open a Viewer on `files`. In `Smart` mode the pictures go to
+/// `opusdm-viewer` and only the other files open here.
+pub fn open(ui: &Rc<Ui>, files: Vec<PathBuf>, mode: Mode, opts: ViewerOptions) {
+    let files = if mode == Mode::Smart {
+        let (images, others) = split_images(files);
+        if !images.is_empty() {
+            launch_image_viewer(ui, &images);
+        }
+        others
+    } else {
+        files
+    };
     if files.is_empty() {
         return;
     }
-    let viewer = Viewer::new(ui, files, mode, show);
+    let viewer = Viewer::new(ui, files, mode);
     viewer.install_keys();
-    viewer.install_close_guard();
     if let Some(query) = opts.initial_search {
         viewer.search_entry.set_text(&query);
         viewer.search_bar.set_visible(true);
@@ -124,9 +137,9 @@ pub fn open(ui: &Rc<Ui>, files: Vec<PathBuf>, mode: Mode, show: bool, opts: View
 
 impl Viewer {
     /// Build the window and its widgets.
-    fn new(ui: &Rc<Ui>, files: Vec<PathBuf>, mode: Mode, show: bool) -> Rc<Self> {
+    fn new(ui: &Rc<Ui>, files: Vec<PathBuf>, mode: Mode) -> Rc<Self> {
         let window = gtk::Window::builder()
-            .title(if show { "Show" } else { "Viewer" })
+            .title("Viewer")
             .transient_for(&ui.window)
             .default_width(820)
             .default_height(620)
@@ -145,8 +158,6 @@ impl Viewer {
         let meta = gtk::Label::new(None);
         meta.set_xalign(1.0);
         meta.add_css_class("dim-label");
-        let marked = gtk::Label::new(None);
-        marked.add_css_class("dim-label");
         let close = gtk::Button::with_label("\u{2715}");
         close.add_css_class("flat");
         {
@@ -155,7 +166,6 @@ impl Viewer {
         }
         header.append(&title);
         header.append(&meta);
-        header.append(&marked);
         header.append(&close);
         root.append(&header);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -186,12 +196,10 @@ impl Viewer {
         window.set_child(Some(&root));
 
         let viewer = Rc::new(Self {
-            ui: ui.clone(),
             window,
             files,
             index: Cell::new(0),
             mode: Cell::new(mode),
-            show,
             generation: Cell::new(0),
             title,
             meta,
@@ -202,9 +210,6 @@ impl Viewer {
             search_count,
             matches: RefCell::new(Vec::new()),
             current: Cell::new(None),
-            marks: RefCell::new(Marks::new()),
-            closing: Cell::new(false),
-            marked,
         });
 
         // The entry is owned by the Viewer, so its handlers hold only a weak
@@ -280,69 +285,15 @@ impl Viewer {
                 return glib::Propagation::Proceed;
             }
             let modified = with_ctrl || state.contains(gdk::ModifierType::ALT_MASK);
-            match viewer_key(key, modified, v.show, v.showing_image()) {
+            match viewer_key(key, modified) {
                 Some(ViewerKey::Next) => v.go(1),
                 Some(ViewerKey::Prev) => v.go(-1),
                 Some(ViewerKey::SetMode(mode)) => v.set_mode(mode),
-                Some(ViewerKey::ToggleMark) => v.toggle_mark(),
                 None => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
         });
         self.window.add_controller(ctrl);
-    }
-
-    /// Refresh the `MARKED` label and the count in the header (Show only).
-    fn update_marks(&self) {
-        if !self.show {
-            return;
-        }
-        let marks = self.marks.borrow();
-        let path = &self.files[self.index.get()];
-        let prefix = if marks.is_marked(path) { "MARKED  \u{2022}  " } else { "" };
-        self.marked.set_text(&format!("{prefix}{} marked", marks.len()));
-    }
-
-    /// Mark or unmark the current picture.
-    fn toggle_mark(&self) {
-        if !self.show {
-            return;
-        }
-        self.marks.borrow_mut().toggle(self.files[self.index.get()].clone());
-        self.update_marks();
-    }
-
-    /// Ask before closing a slideshow that has marked pictures. Nothing is
-    /// deleted unless the user picks Delete.
-    fn install_close_guard(self: &Rc<Self>) {
-        let v = self.clone();
-        self.window.connect_close_request(move |_| {
-            if v.closing.get() || v.marks.borrow().is_empty() {
-                return glib::Propagation::Proceed;
-            }
-            let files = v.marks.borrow().list();
-            let message = format!("Delete {} marked file(s)?", files.len());
-            let (viewer, ui) = (v.clone(), v.ui.clone());
-            opusdm_ui::requester(&v.window, "Show", &message, None, &[("Delete", true), ("Keep", false)], move |delete| {
-                if delete {
-                    crate::job_submit::submit_job(
-                        &ui,
-                        opusdm_ipc::Op::Delete,
-                        files.clone(),
-                        Some(ui.cwd_path()),
-                        opusdm_ipc::JobOptions::default(),
-                    );
-                }
-                viewer.closing.set(true);
-                viewer.window.close();
-            });
-            glib::Propagation::Stop
-        });
-    }
-
-    /// True when the current file is shown as a picture (no text view).
-    fn showing_image(&self) -> bool {
-        self.text_view.borrow().is_none()
     }
 
     /// Move `delta` files, wrapping around.
@@ -364,9 +315,8 @@ impl Viewer {
         let path = self.files[self.index.get()].clone();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.title.set_text(&format!("{}/{}  {}", self.index.get() + 1, self.files.len(), name));
-        self.window.set_title(Some(&format!("{}: {name}", if self.show { "Show" } else { "Viewer" })));
+        self.window.set_title(Some(&format!("Viewer: {name}")));
         self.meta.set_text("Loading\u{2026}");
-        self.update_marks();
         self.clear_content();
 
         let gen = self.generation.get() + 1;
@@ -411,7 +361,6 @@ impl Viewer {
                 self.meta.set_text(&meta);
                 self.render_text(&text, None, gtk::WrapMode::None);
             }
-            ViewData::Image { bytes, meta } => self.render_image(&bytes, &meta),
             ViewData::Error { message } => {
                 self.meta.set_text("Error");
                 let label = gtk::Label::new(Some(&message));
@@ -448,25 +397,6 @@ impl Viewer {
             view.grab_focus();
         }
         *self.text_view.borrow_mut() = Some(view);
-    }
-
-    /// Show a picture, falling back to its name and size if it cannot decode.
-    fn render_image(&self, bytes: &[u8], meta: &str) {
-        let picture = gtk::Picture::new();
-        picture.set_can_shrink(true);
-        picture.set_content_fit(gtk::ContentFit::Contain);
-        picture.set_vexpand(true);
-        picture.set_hexpand(true);
-        let text = match gdk::Texture::from_bytes(&glib::Bytes::from(bytes)) {
-            Ok(texture) => {
-                let t = format!("{} \u{D7} {} px  \u{2022}  {meta}", texture.width(), texture.height());
-                picture.set_paintable(Some(&texture));
-                t
-            }
-            Err(_) => meta.to_string(),
-        };
-        self.meta.set_text(&text);
-        self.content.append(&picture);
     }
 
     /// Highlight every match of the search text and move to the first.
@@ -555,7 +485,7 @@ mod tests {
     use super::*;
 
     fn key(k: gdk::Key) -> Option<ViewerKey> {
-        viewer_key(k, false, false, false)
+        viewer_key(k, false)
     }
 
     #[test]
@@ -571,24 +501,15 @@ mod tests {
 
     #[test]
     fn ctrl_or_alt_chords_are_left_alone_so_select_all_and_copy_work() {
-        for k in [gdk::Key::a, gdk::Key::x, gdk::Key::s, gdk::Key::n, gdk::Key::p, gdk::Key::m] {
-            assert_eq!(viewer_key(k, true, false, false), None, "{k:?} with a modifier");
+        for k in [gdk::Key::a, gdk::Key::x, gdk::Key::s, gdk::Key::n, gdk::Key::p] {
+            assert_eq!(viewer_key(k, true), None, "{k:?} with a modifier");
         }
     }
 
     #[test]
-    fn arrows_page_only_while_a_picture_is_shown() {
-        assert_eq!(viewer_key(gdk::Key::Right, false, false, true), Some(ViewerKey::Next));
-        assert_eq!(viewer_key(gdk::Key::Left, false, false, true), Some(ViewerKey::Prev));
-        assert_eq!(viewer_key(gdk::Key::Right, false, false, false), None, "arrows scroll text");
-    }
-
-    #[test]
-    fn mode_keys_are_ignored_in_show_and_marking_only_works_there() {
-        assert_eq!(viewer_key(gdk::Key::a, false, true, true), None);
-        assert_eq!(viewer_key(gdk::Key::m, false, true, true), Some(ViewerKey::ToggleMark));
-        assert_eq!(viewer_key(gdk::Key::Delete, false, true, true), Some(ViewerKey::ToggleMark));
-        assert_eq!(viewer_key(gdk::Key::m, false, false, false), None);
-        assert_eq!(viewer_key(gdk::Key::Delete, false, false, false), None);
+    fn arrows_and_delete_are_left_to_the_text_view() {
+        for k in [gdk::Key::Right, gdk::Key::Left, gdk::Key::Delete, gdk::Key::m] {
+            assert_eq!(key(k), None, "{k:?}");
+        }
     }
 }

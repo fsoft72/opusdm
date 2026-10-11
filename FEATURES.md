@@ -276,6 +276,10 @@ navigate, `Del` marks for deletion, on close a confirmation requester offers
 to delete marked files. Acceptance: mark 2 of 5 images, confirm, files
 deleted.
 
+**Now**: Show opens the selected pictures in `opusdm-viewer`, the only image
+viewer of OpusDM (its Delete moves the picture to the trash); the Lister's
+Viewer window no longer shows pictures.
+
 ### F-18 Play (sound files) + sound feedback commands
 **Original** (`Play`, `Beep`, `Alarm`, `Flash`): internal audio player with
 status requester, volume, WAIT; Beep/Alarm/Flash used as function-end

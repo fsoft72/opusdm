@@ -528,7 +528,8 @@ per leggere davvero uno o più file.
 
 1. Seleziona `documento_01.txt`, `documento_02.txt` e `prova.c`.
 2. `Ctrl+P` > **Read (SmartRead)**: il Viewer sceglie da solo la modalità
-   (testo, ANSI, hex, immagine).
+   (testo, ANSI, hex). Le immagini selezionate si aprono invece in
+   `opusdm-viewer`.
 3. Tasti nel Viewer:
    - `n` / `p`: file successivo / precedente (con giro completo);
    - `t`, `a`, `x`, `s`: passa a modalità Testo / ANSI / Hex / Smart;
@@ -551,12 +552,11 @@ Selezionalo e usa **Read (SmartRead)**: si apre in modalità ANSI con i colori.
 ### Step 9.2 - Show (slideshow di immagini)
 
 1. Vai in `~/opusdm-tour/immagini` e seleziona più immagini (`Ctrl+A`).
-2. `Ctrl+P` > **Show (image slideshow)**.
+2. `Ctrl+P` > **Show (image slideshow)**: le immagini selezionate si aprono in
+   `opusdm-viewer`, l'unico visualizzatore di immagini di OpusDM.
 3. `Freccia destra` / `Freccia sinistra` scorrono le immagini.
-4. `Delete` (oppure `m`) marca o smarca l'immagine corrente: in alto compare
-   `MARKED` con un contatore.
-5. Chiudi la finestra: viene chiesto "Delete N marked file(s)?". Se rispondi
-   **Delete** i file marcati vengono eliminati, altrimenti non succede nulla.
+4. `Delete` sposta l'immagine corrente nel cestino (chiede conferma prima di
+   una cancellazione definitiva).
 
 ---
 

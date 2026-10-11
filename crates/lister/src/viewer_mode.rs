@@ -22,7 +22,6 @@ pub enum Mode {
 /// What a file is actually shown as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resolved {
-    Image,
     Text,
     Ansi,
     Hex,
@@ -34,7 +33,7 @@ fn has_csi(head: &[u8]) -> bool {
 }
 
 /// Decide how to show a file. Explicit modes are obeyed; `Smart` chooses
-/// picture, ANSI (art extension, or an `ESC [` in the first `SNIFF_LEN` bytes
+/// ANSI (art extension, or an `ESC [` in the first `SNIFF_LEN` bytes
 /// of a file without NUL bytes; checked before the text probe because CP437
 /// art is not valid UTF-8, and after archives and binaries, which can contain
 /// `ESC [` by chance), text or hex.
@@ -46,9 +45,9 @@ pub fn resolve(mode: Mode, ext: &str, head: &[u8]) -> Resolved {
         Mode::Smart => {
             let ext = ext.to_lowercase();
             let head = &head[..head.len().min(SNIFF_LEN)];
-            if IMAGE_EXTS.contains(&ext.as_str()) {
-                Resolved::Image
-            } else if kind_of(&ext, &[]) == FileKind::Archive {
+            // Pictures never get here in Smart mode (they open in
+            // `opusdm-viewer`); one asked for by name is shown as bytes.
+            if IMAGE_EXTS.contains(&ext.as_str()) || kind_of(&ext, &[]) == FileKind::Archive {
                 Resolved::Hex
             } else if ANSI_EXTS.contains(&ext.as_str()) || (has_csi(head) && !head.contains(&0)) {
                 Resolved::Ansi
@@ -97,9 +96,9 @@ mod tests {
     }
 
     #[test]
-    fn smart_picks_images_by_extension() {
-        assert_eq!(resolve(Mode::Smart, "PNG", b""), Resolved::Image);
-        assert_eq!(resolve(Mode::Smart, "jpg", b"\xff\xd8"), Resolved::Image);
+    fn smart_shows_images_as_hex() {
+        assert_eq!(resolve(Mode::Smart, "PNG", b""), Resolved::Hex);
+        assert_eq!(resolve(Mode::Smart, "jpg", b"\xff\xd8"), Resolved::Hex);
     }
 
     #[test]

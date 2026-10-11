@@ -20,7 +20,6 @@ pub enum ViewData {
     Text { meta: String, text: String },
     Ansi { meta: String, doc: AnsiDoc },
     Hex { meta: String, text: String },
-    Image { bytes: Vec<u8>, meta: String },
     Error { message: String },
 }
 
@@ -56,10 +55,6 @@ pub fn load_with_caps(path: &Path, mode: Mode, text_cap: u64, hex_cap: u64) -> V
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let size_str = format_size(false, size);
     match resolve(mode, &ext, &head) {
-        Resolved::Image => match std::fs::read(path) {
-            Ok(bytes) => ViewData::Image { bytes, meta: format!("{size_str}  \u{2022}  {}", ext.to_uppercase()) },
-            Err(e) => error(e),
-        },
         Resolved::Text => match read_prefix(path, text_cap) {
             Ok(buf) => {
                 let text = String::from_utf8_lossy(&buf).into_owned();
@@ -172,19 +167,6 @@ mod tests {
                 assert!(meta.contains("showing the first"), "{meta}");
             }
             other => panic!("expected Hex, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_image_returns_its_bytes() {
-        let td = tempfile::tempdir().unwrap();
-        let p = write(&td, "p.png", b"not really a png");
-        match load(&p, Mode::Smart) {
-            ViewData::Image { bytes, meta } => {
-                assert_eq!(bytes, b"not really a png");
-                assert!(meta.contains("PNG"), "{meta}");
-            }
-            other => panic!("expected Image, got {other:?}"),
         }
     }
 

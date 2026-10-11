@@ -19,7 +19,7 @@
   - Done: `FunctionRuns` (`crates/hub/src/server/function_runs.rs`, 5 unit tests). Not done: the `Jobs` grouping (jobs, replies, conflict owners, confirms share `next_req` with function prompts; left for a later pass).
   - File(s): `crates/hub/src/server.rs`, `crates/hub/src/server/function_run.rs`
 
-- [ ] **Two separate image viewers** - the Lister's "Show" mode (picture display, prev/next, mark-for-delete) overlaps with the standalone `opusdm-viewer` crate (gallery, zoom, slideshow, trash-first delete); decide which one owns image viewing and make the other delegate, otherwise every image feature has to be built and fixed twice.
+- [x] **Two separate image viewers** - the Lister's "Show" mode (picture display, prev/next, mark-for-delete) overlaps with the standalone `opusdm-viewer` crate (gallery, zoom, slideshow, trash-first delete); decide which one owns image viewing and make the other delegate, otherwise every image feature has to be built and fixed twice.
   - File(s): `crates/lister/src/viewer.rs`, `crates/lister/src/slideshow.rs`, `crates/lister/src/viewer_mode.rs`, `crates/viewer/src/`
 
 ## Medium
