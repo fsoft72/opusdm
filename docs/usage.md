@@ -648,7 +648,18 @@ Shows one picture, PDF document or video and lets you move through the others in
   **Page Down** / **Page Up** go to the next / previous page, **Home** / **End** to the first /
   last one; zoom and rotation stay when the page changes. The page is drawn at 144 dpi, so
   100% means twice the PDF size and zooming far in gets soft. The thumbnail is the first page.
-  Text cannot be selected or searched, and password protected files are not supported.
+  A bar over the page holds:
+  - **Pages** (or **F9**): opens and closes the page panel on the left, one thumbnail per page
+    (made in the background once the panel opens); a click goes to that page.
+  - The **search field** (**Ctrl+F**): every match in the document is tinted yellow, the
+    current one orange, with `3/17` next to the field. **Enter** / **F3** or the down arrow go to
+    the next match (turning the page when needed), **Shift+Enter** / **Shift+F3** or the up arrow
+    to the previous one; **Esc** clears the search. While the field has the focus the keys go to
+    it. The case is ignored. Text drawn as pictures (scanned pages) cannot be found.
+  - **Links:** over a link the pointer becomes a hand and a tooltip says where it goes; a click
+    goes to the page (links inside the document) or opens the address with the default
+    application (web, mail).
+  Text cannot be selected, and password protected files are not supported.
 - **Moving:** **Left** / **Right**, **Space** or **n** go to the next file, **p** or **Left**
   to the previous one; the gallery wraps around. Click a thumbnail in the strip to jump to it.
 - **Videos:** the video starts playing. **Space** plays / pauses and **Left** / **Right** seek

@@ -10,6 +10,11 @@ mod kind;
 mod loader;
 mod nearest;
 mod pdf;
+mod pdf_bar;
+mod pdf_links;
+mod pdf_pages;
+mod pdf_search;
+mod pdf_text;
 mod slideshow;
 mod strip;
 mod video_view;
@@ -27,6 +32,7 @@ use std::process::ExitCode;
 const VIEWER_CSS: &str = ".viewer-stage, scrolledwindow.viewer-stage, scrolledwindow.viewer-stage viewport, picture.viewer-stage { background: black; } \
     .viewer-error { color: #dddddd; padding: 24px; } \
     .viewer-info { padding: 4px 8px; } \
+    .viewer-pdf-bar { padding: 4px 8px; } \
     .viewer-thumb-current { outline: 2px solid #3584e4; outline-offset: -2px; }";
 
 /// Load the shared OpusDM look (theme mode, fonts).

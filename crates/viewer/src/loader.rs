@@ -7,8 +7,11 @@ use gtk4::gdk_pixbuf::{Colorspace, Pixbuf, PixbufRotation};
 use gtk4::glib;
 use std::path::Path;
 
+/// A box `(x0, y0, x1, y1)` in pixels and the colour it is tinted with.
+pub type Mark = ((f64, f64, f64, f64), [u8; 3]);
+
 /// Decoded pixels of one picture.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RawImage {
     pub width: u32,
     pub height: u32,
@@ -39,6 +42,28 @@ impl RawImage {
             has_alpha: pixbuf.has_alpha(),
             bytes: pixbuf.read_pixel_bytes().to_vec(),
         }
+    }
+
+    /// A copy with each box `(x0, y0, x1, y1)` (pixels) tinted with its colour,
+    /// multiplied so that dark text stays readable. Boxes are clipped to the picture.
+    pub fn highlighted(&self, marks: &[Mark]) -> RawImage {
+        let mut out = self.clone();
+        let channels = if self.has_alpha { 4 } else { 3 };
+        for &((x0, y0, x1, y1), color) in marks {
+            let clip = |v: f64, max: u32| v.max(0.0).min(max as f64) as usize;
+            let (x0, x1) = (clip(x0.floor(), self.width), clip(x1.ceil(), self.width));
+            let (y0, y1) = (clip(y0.floor(), self.height), clip(y1.ceil(), self.height));
+            for y in y0..y1 {
+                let row = y * self.rowstride as usize;
+                for x in x0..x1 {
+                    let at = row + x * channels;
+                    for (c, tint) in color.iter().enumerate() {
+                        out.bytes[at + c] = (out.bytes[at + c] as u16 * *tint as u16 / 255) as u8;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Build a pixbuf over a copy of the pixels (main thread).
@@ -115,6 +140,16 @@ mod tests {
         assert_eq!(half.pixel_bytes_at(3, 1), [255, 0, 0]);
         let none = raw.rotated_pixbuf(0);
         assert_eq!(none.pixel_bytes_at(0, 0), [255, 0, 0]);
+    }
+
+    #[test]
+    fn highlight_multiplies_the_colour_inside_the_clipped_box() {
+        let raw = RawImage { width: 3, height: 2, rowstride: 12, has_alpha: true, bytes: vec![255; 24] };
+        let marked = raw.highlighted(&[((-5.0, 0.0, 1.0, 1.0), [255, 128, 0]), ((2.0, 1.0, 99.0, 99.0), [0, 0, 0])]);
+        assert_eq!(&marked.bytes[0..4], &[255, 128, 0, 255]);
+        assert_eq!(&marked.bytes[4..8], &[255, 255, 255, 255]);
+        assert_eq!(&marked.bytes[20..24], &[0, 0, 0, 255]);
+        assert_eq!(raw.bytes, vec![255; 24], "the original is not touched");
     }
 
     #[test]

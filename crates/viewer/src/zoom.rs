@@ -41,6 +41,42 @@ pub fn fit_scale(picture: (u32, u32), view: (u32, u32), rotation: u16) -> f64 {
     scale.clamp(ZOOM_MIN, 1.0)
 }
 
+/// Where a point of the unturned picture (`size` pixels) lands once the picture
+/// is turned clockwise by `rotation` degrees.
+pub fn rotate_point(p: (f64, f64), size: (u32, u32), rotation: u16) -> (f64, f64) {
+    let (w, h) = (size.0 as f64, size.1 as f64);
+    match rotation % 360 {
+        90 => (h - p.1, p.0),
+        180 => (w - p.0, h - p.1),
+        270 => (p.1, w - p.0),
+        _ => p,
+    }
+}
+
+/// The opposite of [`rotate_point`]: from the turned picture back to the unturned one.
+pub fn unrotate_point(p: (f64, f64), size: (u32, u32), rotation: u16) -> (f64, f64) {
+    let (w, h) = (size.0 as f64, size.1 as f64);
+    match rotation % 360 {
+        90 => (p.1, h - p.0),
+        180 => (w - p.0, h - p.1),
+        270 => (w - p.1, p.0),
+        _ => p,
+    }
+}
+
+/// Scale and top-left offset of the content inside the picture widget: a
+/// turned picture of `shown` pixels in a widget of `widget` pixels. Fit mode
+/// scales down only and centres; a fixed scale fills the widget, which has
+/// exactly the scaled size.
+pub fn content_box(shown: (u32, u32), widget: (f64, f64), mode: Mode) -> (f64, f64, f64) {
+    let (w, h) = (shown.0.max(1) as f64, shown.1.max(1) as f64);
+    let scale = match mode {
+        Mode::Fit => (widget.0 / w).min(widget.1 / h).min(1.0),
+        Mode::Scale(_) => widget.0 / w,
+    };
+    (scale, (widget.0 - w * scale) / 2.0, (widget.1 - h * scale) / 2.0)
+}
+
 impl Zoom {
     /// The scale in use; `fit` is what the fit mode would use right now.
     pub fn scale(&self, fit: f64) -> f64 {
@@ -92,6 +128,28 @@ impl Zoom {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotate_and_unrotate_points() {
+        let size = (4, 2);
+        // Clockwise: the top-left corner goes to the top-right one (as the pixbuf rotation).
+        assert_eq!(rotate_point((0.0, 0.0), size, 90), (2.0, 0.0));
+        assert_eq!(rotate_point((0.0, 0.0), size, 180), (4.0, 2.0));
+        assert_eq!(rotate_point((0.0, 0.0), size, 270), (0.0, 4.0));
+        for rotation in [0, 90, 180, 270] {
+            let p = (1.0, 0.5);
+            assert_eq!(unrotate_point(rotate_point(p, size, rotation), size, rotation), p, "{rotation}");
+        }
+    }
+
+    #[test]
+    fn content_box_centres_in_fit_and_fills_at_a_scale() {
+        // 200 x 100 picture in a 400 x 400 widget: not enlarged, centred.
+        assert_eq!(content_box((200, 100), (400.0, 400.0), Mode::Fit), (1.0, 100.0, 150.0));
+        // Too big: scaled down to the width.
+        assert_eq!(content_box((800, 100), (400.0, 400.0), Mode::Fit), (0.5, 0.0, 175.0));
+        assert_eq!(content_box((200, 100), (400.0, 200.0), Mode::Scale(2.0)), (2.0, 0.0, 0.0));
+    }
 
     #[test]
     fn steps_start_from_the_fit_scale() {

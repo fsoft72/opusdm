@@ -25,6 +25,8 @@ pub enum Action {
     PrevPage,
     FirstPage,
     LastPage,
+    /// Open or close the page panel of a PDF.
+    TogglePages,
     /// Smooth (interpolated) or sharp pixels when zoomed.
     Interpolation,
     Slideshow,
@@ -57,6 +59,7 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
         Key::Page_Up | Key::KP_Page_Up if pdf => Action::PrevPage,
         Key::Home | Key::KP_Home if pdf => Action::FirstPage,
         Key::End | Key::KP_End if pdf => Action::LastPage,
+        Key::F9 if pdf => Action::TogglePages,
         Key::n | Key::N => Action::Next,
         Key::p | Key::P => Action::Prev,
         Key::s | Key::S => Action::Slideshow,
@@ -145,8 +148,9 @@ mod tests {
         assert_eq!(map(Key::Page_Up, Pdf), Some(Action::PrevPage));
         assert_eq!(map(Key::Home, Pdf), Some(Action::FirstPage));
         assert_eq!(map(Key::End, Pdf), Some(Action::LastPage));
+        assert_eq!(map(Key::F9, Pdf), Some(Action::TogglePages));
         for kind in [Image, Video] {
-            for key in [Key::Page_Down, Key::Page_Up, Key::Home, Key::End] {
+            for key in [Key::Page_Down, Key::Page_Up, Key::Home, Key::End, Key::F9] {
                 assert_eq!(map(key, kind), None);
             }
         }

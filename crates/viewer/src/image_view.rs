@@ -2,7 +2,7 @@
 
 use crate::loader::RawImage;
 use crate::nearest::NearestPaintable;
-use crate::zoom::{fit_scale, rotated_size, Mode, Zoom};
+use crate::zoom::{content_box, fit_scale, rotate_point, rotated_size, unrotate_point, Mode, Zoom};
 use gtk4 as gtk;
 use gtk::{gdk, glib};
 use gtk::prelude::*;
@@ -74,13 +74,49 @@ impl ImageView {
         self._apply();
     }
 
-    /// Show another page of the same document: zoom and rotation stay, the
-    /// view goes back to the top.
-    pub fn replace_image(&self, raw: RawImage) {
+    /// Show another page of the same document (or the same page with other
+    /// marks): zoom and rotation stay; `to_top` scrolls back to the top.
+    pub fn replace_image(&self, raw: RawImage, to_top: bool) {
         *self.raw.borrow_mut() = Some(raw);
         self.shown_rotation.set(None);
         self._apply();
-        self.root.vadjustment().set_value(0.0);
+        if to_top { self.root.vadjustment().set_value(0.0); }
+    }
+
+    /// The picture widget, for the controllers of the PDF links.
+    pub fn picture(&self) -> &gtk::Picture {
+        &self.picture
+    }
+
+    /// The pixel of the unturned picture under the point `(x, y)` of the
+    /// picture widget; `None` outside the picture.
+    pub fn image_point(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let size = self.size()?;
+        let zoom = self.zoom.get();
+        let shown = rotated_size(size.0, size.1, zoom.rotation);
+        let widget = (self.picture.width() as f64, self.picture.height() as f64);
+        let (scale, ox, oy) = content_box(shown, widget, zoom.mode);
+        let p = ((x - ox) / scale, (y - oy) / scale);
+        if p.0 < 0.0 || p.1 < 0.0 || p.0 > shown.0 as f64 || p.1 > shown.1 as f64 { return None; }
+        Some(unrotate_point(p, size, zoom.rotation))
+    }
+
+    /// Scroll so that the box `(x0, y0, x1, y1)` (pixels of the unturned
+    /// picture) is in the middle of the view; nothing to do when fitting.
+    pub fn reveal(&self, rect: (f64, f64, f64, f64)) {
+        let Some(size) = self.size() else { return };
+        let zoom = self.zoom.get();
+        let Mode::Scale(scale) = zoom.mode else { return };
+        let (a, b) = (rotate_point((rect.0, rect.1), size, zoom.rotation), rotate_point((rect.2, rect.3), size, zoom.rotation));
+        let centre = ((a.0 + b.0) / 2.0 * scale, (a.1 + b.1) / 2.0 * scale);
+        let shown = rotated_size(size.0, size.1, zoom.rotation);
+        let (hadj, vadj) = (self.root.hadjustment(), self.root.vadjustment());
+        // The adjustments learn the new size only after the next layout.
+        let full = (shown.0 as f64 * scale, shown.1 as f64 * scale);
+        glib::idle_add_local_once(move || {
+            _center_on(&hadj, centre.0, full.0);
+            _center_on(&vadj, centre.1, full.1);
+        });
     }
 
     /// Size of the picture as decoded, if one is shown.
@@ -198,4 +234,13 @@ impl ImageView {
             }
         }
     }
+}
+
+/// Put `pos` (of a content `full` long, centred in the view when smaller) in
+/// the middle of the view of `adj`.
+fn _center_on(adj: &gtk::Adjustment, pos: f64, full: f64) {
+    let page = adj.page_size();
+    let offset = ((adj.upper() - full) / 2.0).max(0.0);
+    let target = offset + pos - page / 2.0;
+    adj.set_value(target.clamp(adj.lower(), (adj.upper() - page).max(adj.lower())));
 }

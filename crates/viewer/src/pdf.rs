@@ -3,6 +3,7 @@
 //! the file again; it answers with plain bytes (`RawImage`), like the picture loader.
 
 use crate::loader::RawImage;
+use crate::pdf_links::{page_links, Link};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::{LoadPdfError, Pdf};
 use hayro::vello_cpu::color::palette::css::WHITE;
@@ -18,11 +19,14 @@ pub const PAGE_SCALE: f32 = 2.0;
 /// a poster-sized page would take gigabytes).
 const MAX_EDGE: f32 = 8192.0;
 
-/// One rendered page and the number of pages of its document.
+/// One rendered page, the number of pages of its document, the pixels per
+/// point it was rendered at and its links.
 #[derive(Debug)]
 pub struct RenderedPage {
     pub raw: RawImage,
     pub count: usize,
+    pub scale: f32,
+    pub links: Vec<Link>,
 }
 
 /// A page the window wants: tagged with the generation it was asked for.
@@ -58,7 +62,7 @@ pub fn render_page(pdf: &Pdf, index: usize, scale: f32) -> Result<RenderedPage, 
     let (w, h) = (pixmap.width() as u32, pixmap.height() as u32);
     if w == 0 || h == 0 { return Err(format!("page {} is empty", index + 1)); }
     let raw = RawImage { width: w, height: h, rowstride: (w * 4) as i32, has_alpha: true, bytes: pixmap.take_rgba8(ImageAlphaType::Alpha) };
-    Ok(RenderedPage { raw, count })
+    Ok(RenderedPage { raw, count, scale, links: page_links(pdf, index) })
 }
 
 /// The first page scaled to fit a `px` x `px` box, for the thumbnail strip.
@@ -103,17 +107,27 @@ fn _render_request(open_doc: &mut Option<(PathBuf, Pdf)>, request: &PageRequest)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// A PDF of `pages` pages, 200 x 100 points, each with a 10 x 10 black square
-    /// in the bottom-left corner.
-    fn make_pdf(pages: usize) -> Vec<u8> {
-        let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", 3 + i * 2)).collect();
-        let mut objects = vec!["<< /Type /Catalog /Pages 2 0 R >>".to_string(), format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" "))];
-        let content = "0 0 0 rg 0 0 10 10 re f";
-        for i in 0..pages {
-            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents {} 0 R >>", 4 + i * 2));
+    /// Object number of page `index` (0-based) in the PDFs of [`build_pdf`].
+    pub(crate) fn page_obj(index: usize) -> usize {
+        4 + index * 2
+    }
+
+    /// A PDF with one 200 x 100 point page per content stream. Object 3 is the
+    /// font `/F1` (Helvetica), page `i` is object [`page_obj`]`(i)`; `annots[i]`
+    /// is put as is in the `/Annots` array of page `i` and `catalog_extra` in the catalog.
+    pub(crate) fn build_pdf(contents: &[&str], annots: &[&str], catalog_extra: &str) -> Vec<u8> {
+        let kids: Vec<String> = (0..contents.len()).map(|i| format!("{} 0 R", page_obj(i))).collect();
+        let mut objects = vec![
+            format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>"),
+            format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), contents.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        for (i, content) in contents.iter().enumerate() {
+            let annots = annots.get(i).map(|a| format!("/Annots [{a}]")).unwrap_or_default();
+            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R {annots} >>", page_obj(i) + 1));
             objects.push(format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()));
         }
         let mut out = b"%PDF-1.4\n".to_vec();
@@ -129,6 +143,16 @@ mod tests {
         }
         out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
         out
+    }
+
+    /// A PDF with one page per content stream and nothing else.
+    pub(crate) fn pdf_with_contents(contents: &[&str]) -> Vec<u8> {
+        build_pdf(contents, &[], "")
+    }
+
+    /// A PDF of `pages` pages, each with a 10 x 10 black square in the bottom-left corner.
+    fn make_pdf(pages: usize) -> Vec<u8> {
+        pdf_with_contents(&vec!["0 0 0 rg 0 0 10 10 re f"; pages])
     }
 
     /// Write a test PDF into `dir` and return its path.

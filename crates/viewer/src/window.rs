@@ -1,14 +1,16 @@
 //! The viewer window: stage, thumbnail strip and info bar; keys, full screen,
-//! slideshow and delete.
+//! slideshow and delete. The PDF bar, page panel, search and links are in `pdf`.
+
+mod pdf;
 
 use crate::delete::{remove_permanently, try_trash, SystemRemover, TrashStep};
 use crate::gallery::Gallery;
 use crate::image_view::ImageView;
 use crate::keys::{map, Action};
 use crate::kind::{kind_or_image, MediaKind};
-use crate::keys::page_after;
 use crate::loader::{load_raw, RawImage};
 use crate::pdf::{start_worker, PageAnswer, PageRequest};
+use pdf::PdfUi;
 use crate::slideshow::{Slideshow, SLIDESHOW_SECS};
 use crate::strip::Strip;
 use crate::video_view::{VideoNotice, VideoView};
@@ -53,6 +55,7 @@ struct State {
     pages: Cell<usize>,
     /// The next picture is another page of the same PDF: keep zoom and rotation.
     keep_zoom: Cell<bool>,
+    pdf: PdfUi,
 }
 
 /// Open the window on the gallery of `start` and show `start`.
@@ -63,6 +66,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     let (pick_tx, pick_rx) = async_channel::unbounded();
     let (answer_tx, answer_rx) = async_channel::unbounded();
     let page_tx = start_worker(answer_tx);
+    let (pdf_ui, pdf_channels) = pdf::build();
 
     let image = ImageView::new();
     let video = VideoView::new(video_tx);
@@ -84,8 +88,13 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     info.set_xalign(0.0);
     info.add_css_class("viewer-info");
 
+    let middle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    middle.append(&pdf_ui.panel.root);
+    middle.append(&stack);
+    stack.set_hexpand(true);
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    vbox.append(&stack);
+    vbox.append(&pdf_ui.bar.root);
+    vbox.append(&middle);
     vbox.append(&strip.root);
     vbox.append(&info);
     window.set_child(Some(&vbox));
@@ -107,8 +116,10 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         page: Cell::new(0),
         pages: Cell::new(0),
         keep_zoom: Cell::new(false),
+        pdf: pdf_ui,
     });
     state._wire_keys();
+    state._wire_pdf(pdf_channels);
     state._wire_fullscreen();
     _spawn_loops(&state, load_rx, answer_rx, video_rx, pick_rx);
     window.present();
@@ -126,9 +137,7 @@ fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, ans
     let s = state.clone();
     glib::spawn_future_local(async move {
         while let Ok((generation, result)) = answer_rx.recv().await {
-            if generation != s.generation.get() { continue; }
-            let result = result.map(|page| { s.pages.set(page.count); page.raw });
-            s._picture_loaded(result);
+            if generation == s.generation.get() { s._pdf_page_loaded(result); }
         }
     });
     let s = state.clone();
@@ -174,6 +183,7 @@ impl State {
         self.page.set(0);
         self.pages.set(0);
         self.keep_zoom.set(false);
+        self._pdf_file_changed();
         match kind {
             MediaKind::Image => {
                 self.video.stop();
@@ -200,23 +210,11 @@ impl State {
         if self.page_tx.send(request).is_err() { self._show_error("The PDF renderer stopped"); }
     }
 
-    /// Move to another page of the PDF on screen.
-    fn _turn_page(self: &Rc<Self>, action: Action) {
-        let Some((path, MediaKind::Pdf)) = self._current() else { return };
-        let Some(index) = page_after(action, self.page.get(), self.pages.get()) else { return };
-        self.generation.set(self.generation.get() + 1);
-        self._cancel_timer();
-        self.page.set(index);
-        self.keep_zoom.set(true);
-        self._request_page(&path);
-        self._update_info();
-    }
-
     /// A decoding thread (or the page worker) finished for the file on screen.
     fn _picture_loaded(self: &Rc<Self>, result: Result<RawImage, String>) {
         match result {
             Ok(raw) => {
-                if self.keep_zoom.get() { self.image.replace_image(raw); } else { self.image.set_image(raw); }
+                if self.keep_zoom.get() { self.image.replace_image(raw, true); } else { self.image.set_image(raw); }
                 self.stack.set_visible_child_name("image");
             }
             Err(e) => {
@@ -306,6 +304,7 @@ impl State {
         key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = self.clone();
         key.connect_key_pressed(move |_, k, _, mods| {
+            if let Some(propagation) = this._pdf_key(k, mods) { return propagation; }
             if mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) { return glib::Propagation::Proceed; }
             let Some((_, kind)) = this._current() else { return glib::Propagation::Proceed };
             let Some(action) = map(k, kind) else { return glib::Propagation::Proceed };
@@ -326,6 +325,7 @@ impl State {
             Action::RotateCcw => self.image.rotate_ccw(),
             Action::Interpolation => self.image.toggle_smooth(),
             Action::NextPage | Action::PrevPage | Action::FirstPage | Action::LastPage => return self._turn_page(action),
+            Action::TogglePages => self._toggle_pages(),
             Action::Next => return self._step(true),
             Action::Prev => return self._step(false),
             Action::SeekBack => self.video.skip(-SKIP_SECS),
@@ -360,6 +360,7 @@ impl State {
             this.strip.root.set_visible(visible);
             this.info.set_visible(visible);
             this.video.bar.set_visible(visible);
+            this._sync_pdf_panels();
         });
     }
 
