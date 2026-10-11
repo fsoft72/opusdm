@@ -22,169 +22,135 @@ pub fn resolve_copy_target(roles: &Roles, me: ListerId) -> Result<(), String> {
     Ok(())
 }
 
+/// Size of the button row icons, in pixels.
+const ROW_ICON_SIZE: i32 = 18;
+
 /// Build the button row and wire every control. Call once during window build.
 pub fn attach(ui: &Rc<Ui>) {
+    use crate::icons::{icon_button, SVG_COPY, SVG_DELETE, SVG_MKDIR, SVG_MOVE, SVG_NEWFILE, SVG_PARENT, SVG_RENAME};
     let row = &ui.button_row;
-    let icon_size = 18;
 
-    let parent_btn = crate::icons::icon_button(crate::icons::SVG_PARENT, "Parent Directory", icon_size);
-    let copy_btn = crate::icons::icon_button(crate::icons::SVG_COPY, "Copy (Source -> Dest). Right click: Copy As...", icon_size);
-    let move_btn = crate::icons::icon_button(crate::icons::SVG_MOVE, "Move (Source -> Dest). Right click: Move As...", icon_size);
-    let delete_btn = crate::icons::icon_button(crate::icons::SVG_DELETE, "Delete", icon_size);
-    let mkdir_btn = crate::icons::icon_button(crate::icons::SVG_MKDIR, "Make Directory", icon_size);
-    let newfile_btn = crate::icons::icon_button(crate::icons::SVG_NEWFILE, "New File", icon_size);
-    let rename_btn = crate::icons::icon_button(crate::icons::SVG_RENAME, "Rename", icon_size);
-    
-    let is_hidden_active = ui.view.show_hidden.get();
-    let hidden_btn = crate::icons::icon_toggle_button(
-        hidden_icon(is_hidden_active),
-        "Toggle Hidden Files",
-        icon_size,
-    );
-    hidden_btn.set_active(is_hidden_active);
-    *ui.hidden_btn.borrow_mut() = Some(hidden_btn.clone());
+    let parent_btn = icon_button(SVG_PARENT, "Parent Directory", ROW_ICON_SIZE);
+    let copy_btn = icon_button(SVG_COPY, "Copy (Source -> Dest). Right click: Copy As...", ROW_ICON_SIZE);
+    let move_btn = icon_button(SVG_MOVE, "Move (Source -> Dest). Right click: Move As...", ROW_ICON_SIZE);
+    let delete_btn = icon_button(SVG_DELETE, "Delete", ROW_ICON_SIZE);
+    let mkdir_btn = icon_button(SVG_MKDIR, "Make Directory", ROW_ICON_SIZE);
+    let newfile_btn = icon_button(SVG_NEWFILE, "New File", ROW_ICON_SIZE);
+    let rename_btn = icon_button(SVG_RENAME, "Rename", ROW_ICON_SIZE);
+    let hidden_btn = hidden_toggle(ui);
+    let preview_btn = text_button("👁", "Quick Look Preview (F3 / Space)");
+    let term_btn = text_button(">_", "Terminal Drawer (F4 / `)");
 
-    let preview_btn = gtk::Button::with_label("👁");
-    preview_btn.set_tooltip_text(Some("Quick Look Preview (F3 / Space)"));
-    preview_btn.add_css_class("opus-btn");
-
-    let term_btn = gtk::Button::with_label(">_");
-    term_btn.set_tooltip_text(Some("Terminal Drawer (F4 / `)"));
-    term_btn.add_css_class("opus-btn");
-
-    row.append(&parent_btn);
-    row.append(&copy_btn);
-    row.append(&move_btn);
-    row.append(&delete_btn);
-    row.append(&mkdir_btn);
-    row.append(&newfile_btn);
-    row.append(&rename_btn);
+    for btn in [&parent_btn, &copy_btn, &move_btn, &delete_btn, &mkdir_btn, &newfile_btn, &rename_btn] {
+        row.append(btn);
+    }
     row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     row.append(&hidden_btn);
     row.append(&preview_btn);
     row.append(&term_btn);
     row.append(&ui.user_menu_btn);
 
-    {
-        let ui = ui.clone();
-        parent_btn.connect_clicked(move |_| crate::commands::go_parent(&ui));
-    }
-
+    on_click(ui, &parent_btn, crate::commands::go_parent);
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);
-
-    {
-        let ui = ui.clone();
-        preview_btn.connect_clicked(move |_| {
-            ui.toggle_preview();
-        });
-    }
-
-    {
-        let ui = ui.clone();
-        term_btn.connect_clicked(move |_| {
-            ui.toggle_terminal();
-        });
-    }
-
-    {
-        let ui = ui.clone();
-        hidden_btn.connect_toggled(move |btn| {
-            let active = btn.is_active();
-            ui.view.show_hidden.set(active);
-            btn.set_child(Some(&crate::icons::svg_image(hidden_icon(active), icon_size)));
-            ui.reload();
-        });
-    }
-
-    {
-        let ui = ui.clone();
-        delete_btn.connect_clicked(move |_| {
-            let paths = ui.selected_paths();
-            if paths.is_empty() {
-                flash(&ui, "nothing selected");
-                return;
-            }
-            confirm_delete(
-                &ui,
-                &format!("Delete {} item(s) permanently?", paths.len()),
-                paths,
-            );
-        });
-    }
-
-    {
-        let ui = ui.clone();
-        mkdir_btn.connect_clicked(move |_| {
-            let ui = ui.clone();
-            let win = ui.window.clone();
-            prompt(&win, "New directory name", "", move |name| {
-                let _ = ui.hub.client.send(&ToHub::RunJob {
-                    op: Op::MakeDir { name },
-                    srcs: Vec::new(),
-                    dest_dir: Some(ui.cwd_path()),
-                    options: opusdm_ipc::JobOptions::default(),
-                });
-            });
-        });
-    }
-
-    {
-        let ui = ui.clone();
-        newfile_btn.connect_clicked(move |_| {
-            let ui = ui.clone();
-            let win = ui.window.clone();
-            prompt(&win, "New file name", "", move |name| {
-                let _ = ui.hub.client.send(&ToHub::RunJob {
-                    op: Op::NewFile { name },
-                    srcs: Vec::new(),
-                    dest_dir: Some(ui.cwd_path()),
-                    options: opusdm_ipc::JobOptions::default(),
-                });
-            });
-        });
-    }
-
-    {
-        let ui = ui.clone();
-        rename_btn.connect_clicked(move |_| {
-            let sel = ui.selected_paths();
-            if sel.is_empty() {
-                flash(&ui, "nothing selected to rename");
-                return;
-            }
-            if sel.len() > 1 {
-                crate::batch_rename::open_batch_rename_dialog(&ui);
-                return;
-            }
-            let old = sel.into_iter().next().unwrap();
-            let old_name = old
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let ui = ui.clone();
-            let win = ui.window.clone();
-            prompt_rename(&win, &old_name, old.is_dir(), move |new_name| rename_and_reload(&ui, &old, &new_name));
-        });
-    }
-
-    // Pin: locks this Lister's role against focus changes. Role itself is
-    // set by clicking the stat-bar badge (see build::build_window), which
-    // cycles SOURCE -> DEST -> NONE.
-    {
-        let ui = ui.clone();
-        let btn = ui.status_bar.role_lock_btn.clone();
-        btn.connect_toggled(move |b| {
-            if ui.status_bar.role_guard.get() {
-                return;
-            }
-            let msg = if b.is_active() { ToHub::LockRole } else { ToHub::UnlockRole };
-            let _ = ui.hub.client.send(&msg);
-        });
-    }
+    on_click(ui, &preview_btn, |ui| ui.toggle_preview());
+    on_click(ui, &term_btn, |ui| ui.toggle_terminal());
+    on_click(ui, &delete_btn, delete_selection);
+    on_click(ui, &mkdir_btn, |ui| make_in_cwd(ui, "New directory name", |name| Op::MakeDir { name }));
+    on_click(ui, &newfile_btn, |ui| make_in_cwd(ui, "New file name", |name| Op::NewFile { name }));
+    on_click(ui, &rename_btn, rename_selected);
+    wire_role_lock(ui);
 
     // Reflect the initial role state (pin starts disabled with no role).
     sync_role_buttons(ui);
+}
+
+/// A row button showing `label` (an emoji or short text) with `tooltip`.
+fn text_button(label: &str, tooltip: &str) -> gtk::Button {
+    let btn = gtk::Button::with_label(label);
+    btn.set_tooltip_text(Some(tooltip));
+    btn.add_css_class("opus-btn");
+    btn
+}
+
+/// Run `action` on `ui` when `btn` is clicked.
+fn on_click(ui: &Rc<Ui>, btn: &gtk::Button, action: impl Fn(&Rc<Ui>) + 'static) {
+    let ui = ui.clone();
+    btn.connect_clicked(move |_| action(&ui));
+}
+
+/// The show-hidden toggle: its icon follows its state and a change reloads
+/// the listing. Also stored in `ui.hidden_btn` for the keyboard command.
+fn hidden_toggle(ui: &Rc<Ui>) -> gtk::ToggleButton {
+    let active = ui.view.show_hidden.get();
+    let btn = crate::icons::icon_toggle_button(hidden_icon(active), "Toggle Hidden Files", ROW_ICON_SIZE);
+    btn.set_active(active);
+    *ui.hidden_btn.borrow_mut() = Some(btn.clone());
+    let ui = ui.clone();
+    btn.connect_toggled(move |btn| {
+        let active = btn.is_active();
+        ui.view.show_hidden.set(active);
+        btn.set_child(Some(&crate::icons::svg_image(hidden_icon(active), ROW_ICON_SIZE)));
+        ui.reload();
+    });
+    btn
+}
+
+/// Ask before deleting the selected entries.
+fn delete_selection(ui: &Rc<Ui>) {
+    let paths = ui.selected_paths();
+    if paths.is_empty() {
+        flash(ui, "nothing selected");
+        return;
+    }
+    confirm_delete(ui, &format!("Delete {} item(s) permanently?", paths.len()), paths);
+}
+
+/// Ask for a name, then have the hub create `op(name)` in the current folder.
+fn make_in_cwd(ui: &Rc<Ui>, title: &str, op: fn(String) -> Op) {
+    let ui = ui.clone();
+    let win = ui.window.clone();
+    prompt(&win, title, "", move |name| {
+        let job = ToHub::RunJob { op: op(name), srcs: Vec::new(), dest_dir: Some(ui.cwd_path()), options: opusdm_ipc::JobOptions::default() };
+        if let Err(e) = ui.hub.client.send(&job) {
+            flash(&ui, &format!("lost the connection to the hub: {e}"));
+        }
+    });
+}
+
+/// Rename the one selected entry, or open Batch Rename for several.
+fn rename_selected(ui: &Rc<Ui>) {
+    let mut sel = ui.selected_paths();
+    if sel.is_empty() {
+        flash(ui, "nothing selected to rename");
+        return;
+    }
+    if sel.len() > 1 {
+        crate::batch_rename::open_batch_rename_dialog(ui);
+        return;
+    }
+    let old = sel.remove(0);
+    let old_name = old.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let ui = ui.clone();
+    let win = ui.window.clone();
+    prompt_rename(&win, &old_name, old.is_dir(), move |new_name| rename_and_reload(&ui, &old, &new_name));
+}
+
+/// Pin: locks this Lister's role against focus changes. The role itself is
+/// set by clicking the stat-bar badge (see build::build_window), which
+/// cycles SOURCE -> DEST -> NONE.
+fn wire_role_lock(ui: &Rc<Ui>) {
+    let btn = ui.status_bar.role_lock_btn.clone();
+    let ui = ui.clone();
+    btn.connect_toggled(move |b| {
+        if ui.status_bar.role_guard.get() {
+            return;
+        }
+        let msg = if b.is_active() { ToHub::LockRole } else { ToHub::UnlockRole };
+        if let Err(e) = ui.hub.client.send(&msg) {
+            flash(&ui, &format!("lost the connection to the hub: {e}"));
+        }
+    });
 }
 
 /// The "As..." command a right click on the Copy / Move button runs.
