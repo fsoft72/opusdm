@@ -306,22 +306,10 @@ pub(crate) fn request_quit(widgets: &Rc<Widgets>) {
     );
 }
 
+/// Apply one hub event to the GTK side.
 fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     match ev {
-        HubEvent::RaiseToolbar => {
-            // Re-assert every desktop window's type and geometry, not
-            // present(): a redundant hub invocation hands this off to a
-            // possibly stale instance whose windows may have lost their
-            // desktop role or size (WM/session restart). The desktop stays
-            // below the Listers, so there is nothing to raise.
-            for dw in widgets.windows.borrow().iter() {
-                crate::desktop::make_desktop_window(&dw.window, dw.x, dw.y, dw.w, dw.h);
-                let (window, x, y, w, h) = (dw.window.clone(), dw.x, dw.y, dw.w, dw.h);
-                glib::timeout_add_local_once(std::time::Duration::from_millis(WM_PLACEMENT_SETTLE_DELAY_MS), move || {
-                    crate::desktop::pin_geometry(&window, x, y, w, h);
-                });
-            }
-        }
+        HubEvent::RaiseToolbar => reassert_desktop_windows(widgets),
         HubEvent::ThemeChanged(theme) => {
             // `install` and `set_icon_set` do nothing for an unchanged value.
             crate::background::install(&theme.background);
@@ -345,109 +333,104 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             }
         }
         HubEvent::OpenBankManager => open_bank_manager(widgets),
-        HubEvent::LeftOutAdd(paths) => {
-            {
-                let mut left = widgets.desktop.leftout.borrow_mut();
-                left.add(&paths);
-                save_leftout(&left);
-            }
-            reload_desktop_field(widgets);
+        HubEvent::LeftOutAdd(paths) => update_leftout(widgets, |left| left.add(&paths)),
+        HubEvent::LeftOutRemove(paths) => update_leftout(widgets, |left| left.remove(&paths)),
+        HubEvent::AppearanceChanged(appearance) => opusdm_ui::apply_theme_mode(appearance.theme_mode),
+        HubEvent::DesktopSettingsChanged(ds) => apply_desktop_settings(widgets, ds),
+        HubEvent::JobUpdate { job_id, current_file, files_done, files_total, file_bytes_done, file_bytes_total } => {
+            widgets.progress_window.update(job_id, &current_file, files_done, files_total, file_bytes_done, file_bytes_total);
         }
-        HubEvent::LeftOutRemove(paths) => {
-            {
-                let mut left = widgets.desktop.leftout.borrow_mut();
-                left.remove(&paths);
-                save_leftout(&left);
-            }
-            reload_desktop_field(widgets);
-        }
-        HubEvent::AppearanceChanged(appearance) => {
-            opusdm_ui::apply_theme_mode(appearance.theme_mode);
-        }
-        HubEvent::DesktopSettingsChanged(ds) => {
-            // Redo only what changed: re-applying an untouched part (the
-            // compositor above all) makes the whole desktop flicker.
-            let changes = opusdm_hub::desktop_diff::diff(&widgets.desktop.settings.borrow(), &ds);
-            if !changes.any() {
-                return;
-            }
-            *widgets.desktop.settings.borrow_mut() = ds.clone();
-            if changes.virtual_screens {
-                apply_virtual_screens(ds.virtual_screens);
-            }
-            if changes.transparency {
-                opusdm_hub::compositor::apply(&ds);
-            }
-            if changes.snap {
-                opusdm_hub::snap::set_enabled(ds.snap_enabled);
-            }
-            let field = widgets.desktop.field.borrow().clone();
-            if let Some(field) = field.as_ref() {
-                if changes.icon_size {
-                    field.set_icon_size(ds.icon_size);
-                }
-                if changes.grid {
-                    field.set_grid_spacing(ds.grid_spacing);
-                    field.set_grid_gap(ds.grid_gap);
-                }
-                if changes.panel_position {
-                    keep_clear_of_panel(field.widget(), ds.panel_position);
-                }
-            }
-            if changes.panel_position {
-                if let Some(set_position) = widgets.set_panel_position.borrow().as_ref() {
-                    set_position(ds.panel_position);
-                }
-            }
-            if changes.dock_layout {
-                if let Some(set_layout) = widgets.set_dock_layout.borrow().as_ref() {
-                    set_layout(dock_layout(&ds));
-                }
-            }
-
-            if !changes.desktop_dir {
-                return;
-            }
-            let wanted =
-                opusdm_hub::desktop_files::effective_desktop_dir(ds.desktop_dir.as_deref());
-            *widgets.desktop.desired_dir.borrow_mut() = wanted.clone();
-            if *widgets.desktop.dir.borrow() != wanted {
-                *widgets.desktop.dir.borrow_mut() = wanted.clone();
-                // A desktop that started with no directory has no icon field to
-                // populate; that only comes back on the next hub start.
-                if let (Some(field), Some(dir)) = (field.as_ref(), wanted.as_ref()) {
-                    let field = field.clone();
-                    let dir = dir.clone();
-                    reload_desktop_field(widgets);
-                    spawn_desktop_watch(widgets, &field, &dir);
-                }
-            }
-        }
-        HubEvent::JobUpdate {
-            job_id,
-            current_file,
-            files_done,
-            files_total,
-            file_bytes_done,
-            file_bytes_total,
-        } => {
-            widgets.progress_window.update(
-                job_id,
-                &current_file,
-                files_done,
-                files_total,
-                file_bytes_done,
-                file_bytes_total,
-            );
-        }
-        HubEvent::JobFinished { job_id, .. } => {
-            widgets.progress_window.finish(job_id);
-        }
+        HubEvent::JobFinished { job_id, .. } => widgets.progress_window.finish(job_id),
         // Roles no longer have a home in the hub chrome (they moved out with
         // the old toolbar strip); the server still emits them.
         HubEvent::ListerRegistered { .. }
         | HubEvent::ListerGone(_)
         | HubEvent::AllListersGone
         | HubEvent::Roles { .. } => {}
+    }
+}
+
+/// Re-assert every desktop window's type and geometry, not present(): a
+/// redundant hub invocation hands this off to a possibly stale instance
+/// whose windows may have lost their desktop role or size (WM/session
+/// restart). The desktop stays below the Listers, so there is nothing to raise.
+fn reassert_desktop_windows(widgets: &Rc<Widgets>) {
+    for dw in widgets.windows.borrow().iter() {
+        crate::desktop::make_desktop_window(&dw.window, dw.x, dw.y, dw.w, dw.h);
+        let (window, x, y, w, h) = (dw.window.clone(), dw.x, dw.y, dw.w, dw.h);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(WM_PLACEMENT_SETTLE_DELAY_MS), move || {
+            crate::desktop::pin_geometry(&window, x, y, w, h);
+        });
+    }
+}
+
+/// Change the left-out icons with `edit`, save them and reload the desktop.
+fn update_leftout(widgets: &Rc<Widgets>, edit: impl FnOnce(&mut opusdm_ipc::LeftOut)) {
+    {
+        let mut left = widgets.desktop.leftout.borrow_mut();
+        edit(&mut left);
+        save_leftout(&left);
+    }
+    reload_desktop_field(widgets);
+}
+
+/// New desktop settings: redo only what changed, since re-applying an
+/// untouched part (the compositor above all) makes the whole desktop flicker.
+fn apply_desktop_settings(widgets: &Rc<Widgets>, ds: opusdm_ipc::DesktopSettings) {
+    let changes = opusdm_hub::desktop_diff::diff(&widgets.desktop.settings.borrow(), &ds);
+    if !changes.any() {
+        return;
+    }
+    *widgets.desktop.settings.borrow_mut() = ds.clone();
+    if changes.virtual_screens {
+        apply_virtual_screens(ds.virtual_screens);
+    }
+    if changes.transparency {
+        opusdm_hub::compositor::apply(&ds);
+    }
+    if changes.snap {
+        opusdm_hub::snap::set_enabled(ds.snap_enabled);
+    }
+    let field = widgets.desktop.field.borrow().clone();
+    if let Some(field) = field.as_ref() {
+        if changes.icon_size {
+            field.set_icon_size(ds.icon_size);
+        }
+        if changes.grid {
+            field.set_grid_spacing(ds.grid_spacing);
+            field.set_grid_gap(ds.grid_gap);
+        }
+        if changes.panel_position {
+            keep_clear_of_panel(field.widget(), ds.panel_position);
+        }
+    }
+    if changes.panel_position {
+        if let Some(set_position) = widgets.set_panel_position.borrow().as_ref() {
+            set_position(ds.panel_position);
+        }
+    }
+    if changes.dock_layout {
+        if let Some(set_layout) = widgets.set_dock_layout.borrow().as_ref() {
+            set_layout(dock_layout(&ds));
+        }
+    }
+    if changes.desktop_dir {
+        follow_desktop_dir(widgets, field.as_ref(), ds.desktop_dir.as_deref());
+    }
+}
+
+/// The desktop folder setting changed: show and watch the new folder.
+fn follow_desktop_dir(widgets: &Rc<Widgets>, field: Option<&opusdm_iconview::IconField>, setting: Option<&std::path::Path>) {
+    let wanted = opusdm_hub::desktop_files::effective_desktop_dir(setting);
+    *widgets.desktop.desired_dir.borrow_mut() = wanted.clone();
+    if *widgets.desktop.dir.borrow() == wanted {
+        return;
+    }
+    *widgets.desktop.dir.borrow_mut() = wanted.clone();
+    // A desktop that started with no directory has no icon field to
+    // populate; that only comes back on the next hub start.
+    if let (Some(field), Some(dir)) = (field, wanted.as_ref()) {
+        reload_desktop_field(widgets);
+        spawn_desktop_watch(widgets, field, dir);
     }
 }
