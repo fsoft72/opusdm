@@ -3,16 +3,15 @@
 //! monitor-hotplug rebuild of the bars never loses the state.
 
 use crate::network_model::{coalesce, IconState, Model, Request};
+use crate::transient_message::TransientMessage;
 use crate::widgets::network::NetworkButton;
 use gtk4 as gtk;
 use gtk::glib;
 use opusdm_network::{watch, Backend, NetError, NetState, WatchMsg};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 
-/// How long an error line stays in the popover.
-const MESSAGE_SECS: u32 = 5;
 
 /// What the worker thread reports back.
 enum Done {
@@ -32,8 +31,8 @@ pub struct NetworkCenter {
     buttons: RefCell<Vec<Rc<NetworkButton>>>,
     /// Feeds the worker thread; `None` while NetworkManager is not reachable.
     requests: RefCell<Option<mpsc::Sender<Request>>>,
-    message: RefCell<Option<String>>,
-    message_gen: Cell<u32>,
+    /// The error line shown for a few seconds.
+    message: TransientMessage,
     /// The network a connect is in progress for.
     connecting: RefCell<Option<String>>,
     /// Where the worker thread reports back.
@@ -48,8 +47,7 @@ impl NetworkCenter {
             model: RefCell::new(Model::default()),
             buttons: RefCell::new(Vec::new()),
             requests: RefCell::new(None),
-            message: RefCell::new(None),
-            message_gen: Cell::new(0),
+            message: TransientMessage::default(),
             connecting: RefCell::new(None),
             done_tx,
         });
@@ -103,7 +101,7 @@ impl NetworkCenter {
 
     /// The error line to show, if any.
     pub fn message(&self) -> Option<String> {
-        self.message.borrow().clone()
+        self.message.get()
     }
 
     /// The network a connect is in progress for, if any.
@@ -178,18 +176,7 @@ impl NetworkCenter {
 
     /// Show an error line for a few seconds.
     fn show_message(self: &Rc<Self>, text: String) {
-        *self.message.borrow_mut() = Some(text);
-        let gen = self.message_gen.get() + 1;
-        self.message_gen.set(gen);
-        self.notify();
-        let center = self.clone();
-        glib::timeout_add_seconds_local_once(MESSAGE_SECS, move || {
-            if center.message_gen.get() != gen {
-                return;
-            }
-            *center.message.borrow_mut() = None;
-            center.notify();
-        });
+        TransientMessage::show(self, |c| &c.message, Self::notify, text);
     }
 
     /// Redraw every live button.

@@ -3,16 +3,15 @@
 //! so a monitor-hotplug rebuild of the bars never loses the state.
 
 use crate::audio_model::{coalesce, should_show, IconLevel, Model, Request};
+use crate::transient_message::TransientMessage;
 use crate::widgets::audio::AudioButton;
 use gtk4 as gtk;
 use gtk::glib;
 use opusdm_audio::{watch, AudioDevice, AudioError, Backend, Kind, WatchMsg};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 
-/// How long an error line stays in the popover.
-const MESSAGE_SECS: u32 = 5;
 
 /// Shared state of the audio tray.
 pub struct AudioCenter {
@@ -22,8 +21,8 @@ pub struct AudioCenter {
     buttons: RefCell<Vec<Rc<AudioButton>>>,
     /// Feeds the worker thread; `None` while the server is not reachable.
     requests: RefCell<Option<mpsc::Sender<Request>>>,
-    message: RefCell<Option<String>>,
-    message_gen: Cell<u32>,
+    /// The error line shown for a few seconds.
+    message: TransientMessage,
     /// Where the worker thread reports a failed request.
     error_tx: async_channel::Sender<AudioError>,
 }
@@ -36,8 +35,7 @@ impl AudioCenter {
             model: RefCell::new(Model::default()),
             buttons: RefCell::new(Vec::new()),
             requests: RefCell::new(None),
-            message: RefCell::new(None),
-            message_gen: Cell::new(0),
+            message: TransientMessage::default(),
             error_tx,
         });
         let watch_rx = watch::spawn();
@@ -92,7 +90,7 @@ impl AudioCenter {
 
     /// The error line to show, if any.
     pub fn message(&self) -> Option<String> {
-        self.message.borrow().clone()
+        self.message.get()
     }
 
     /// Hand a request to the worker thread; the GTK thread never waits for it.
@@ -121,18 +119,7 @@ impl AudioCenter {
 
     /// Show an error line for a few seconds.
     fn show_message(self: &Rc<Self>, text: String) {
-        *self.message.borrow_mut() = Some(text);
-        let gen = self.message_gen.get() + 1;
-        self.message_gen.set(gen);
-        self.notify();
-        let center = self.clone();
-        glib::timeout_add_seconds_local_once(MESSAGE_SECS, move || {
-            if center.message_gen.get() != gen {
-                return;
-            }
-            *center.message.borrow_mut() = None;
-            center.notify();
-        });
+        TransientMessage::show(self, |c| &c.message, Self::notify, text);
     }
 
     /// Redraw every live button.

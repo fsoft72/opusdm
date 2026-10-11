@@ -25,6 +25,7 @@ mod devices_model;
 mod ewmh;
 mod sni;
 mod systray;
+mod transient_message;
 pub mod tray_ready;
 mod window;
 mod wl_windows;

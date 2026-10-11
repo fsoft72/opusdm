@@ -69,5 +69,5 @@
   - File(s): `crates/iconview/src/field.rs`
   - Done differently: GTK may only be used from the thread that initialized it, so separate `#[test]`s cannot work. The test is now 17 named scenario functions run by one runner test with `catch_unwind`, which reports every failing scenario by name.
 
-- [ ] **Duplicated `show_message` / `show_error` in panel centers** - audio, devices, network and battery centers each implement the same status-message helper; pull it into a shared center base widget in `crates/panel/src/`.
+- [x] **Duplicated `show_message` / `show_error` in panel centers** - audio, devices, network and battery centers each implement the same status-message helper; pull it into a shared center base widget in `crates/panel/src/`.
   - File(s): `crates/panel/src/audio_center.rs`, `crates/panel/src/devices_center.rs`, `crates/panel/src/network_center.rs`, `crates/panel/src/battery_center.rs`

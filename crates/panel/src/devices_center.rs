@@ -3,6 +3,7 @@
 //! rebuild of the bars never loses the state.
 
 use crate::devices_model::{Model, Row};
+use crate::transient_message::TransientMessage;
 use crate::device_popup;
 use crate::widgets::devices::DeviceButton;
 use gtk4 as gtk;
@@ -14,8 +15,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// How long an error line stays in the drop-down.
-const MESSAGE_SECS: u32 = 5;
 
 /// What the user asked for; the payload is the object path of the volume.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,8 +50,8 @@ pub struct DeviceCenter {
     on_open: Rc<dyn Fn(&Path)>,
     position: Rc<Cell<PanelPosition>>,
     result_tx: async_channel::Sender<OpResult>,
-    message: RefCell<Option<String>>,
-    message_gen: Cell<u32>,
+    /// The error line shown for a few seconds.
+    message: TransientMessage,
 }
 
 impl DeviceCenter {
@@ -67,8 +66,7 @@ impl DeviceCenter {
             on_open,
             position,
             result_tx,
-            message: RefCell::new(None),
-            message_gen: Cell::new(0),
+            message: TransientMessage::default(),
         });
         let watch_rx = watch::spawn();
         {
@@ -111,7 +109,7 @@ impl DeviceCenter {
 
     /// The error line to show, if any.
     pub fn message(&self) -> Option<String> {
-        self.message.borrow().clone()
+        self.message.get()
     }
 
     /// The folder opener the hub gave us.
@@ -195,16 +193,7 @@ impl DeviceCenter {
 
     /// Show an error line for a few seconds.
     fn show_message(self: &Rc<Self>, text: String) {
-        *self.message.borrow_mut() = Some(text);
-        let gen = self.message_gen.get() + 1;
-        self.message_gen.set(gen);
-        self.notify();
-        let center = self.clone();
-        glib::timeout_add_seconds_local_once(MESSAGE_SECS, move || {
-            if center.message_gen.get() != gen { return; }
-            *center.message.borrow_mut() = None;
-            center.notify();
-        });
+        TransientMessage::show(self, |c| &c.message, Self::notify, text);
     }
 
     /// Redraw every live button and drop popups of devices that are gone or mounted.
