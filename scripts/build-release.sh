@@ -234,8 +234,15 @@ fi
 
 if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
-$SUDO mkdir -p "$PREFIX"
-$SUDO cp -r "$HERE/bin" "$HERE/config" "$HERE/themes" "$HERE/opusdm-session" "$HERE/opusdm-session-wayland" "$PREFIX/"
+$SUDO mkdir -p "$PREFIX/bin"
+$SUDO cp -r "$HERE/config" "$HERE/themes" "$PREFIX/"
+# Binaries and session scripts of a running OpusDM cannot be overwritten in
+# place ("Text file busy"): copy each next to it, then rename it over the old one.
+for f in "$HERE"/bin/* "$HERE/opusdm-session" "$HERE/opusdm-session-wayland"; do
+    case "$f" in "$HERE"/bin/*) DEST="$PREFIX/bin/$(basename "$f")" ;; *) DEST="$PREFIX/$(basename "$f")" ;; esac
+    $SUDO install -m 755 "$f" "$DEST.new"
+    $SUDO mv -f "$DEST.new" "$DEST"
+done
 # The folder handler needs opusdm-open-folder on the PATH of the programs that call it
 $SUDO mkdir -p /usr/local/bin
 $SUDO ln -sf "$PREFIX/bin/opusdm-open-folder" /usr/local/bin/opusdm-open-folder
