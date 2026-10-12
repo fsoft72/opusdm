@@ -2328,15 +2328,18 @@ dependencies = [
  "gtk4",
  "libc",
  "md-5",
+ "opusdm-archive",
  "opusdm-fsops",
  "opusdm-ftp",
  "opusdm-iconview",
  "opusdm-ipc",
  "opusdm-ui",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "vte4",
  "walkdir",
+ "zip",
 ]
 
 [[package]]

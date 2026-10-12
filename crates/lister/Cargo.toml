@@ -14,6 +14,7 @@ opusdm-ui = { path = "../ui" }
 opusdm-iconview = { path = "../iconview" }
 opusdm-ftp = { path = "../ftp" }
 opusdm-fsops = { path = "../fsops" }
+opusdm-archive = { path = "../archive" }
 async-channel.workspace = true
 libc.workspace = true
 gtk4.workspace = true
@@ -22,3 +23,7 @@ sha2.workspace = true
 md-5.workspace = true
 vte4 = "0.9"
 tempfile.workspace = true
+
+[dev-dependencies]
+tar.workspace = true
+zip.workspace = true
