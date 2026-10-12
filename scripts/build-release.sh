@@ -60,6 +60,11 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
 export PATH="$HERE/bin:$PATH"
 
+# The login also starts KDE's wallet daemons (pam_kwallet5), which compete with
+# gnome-keyring for org.freedesktop.secrets. OpusDM keeps its secrets in
+# gnome-keyring: stop them so only one Secret Service answers.
+pkill -u "$(id -u)" -x 'ksecretd|kwalletd5|kwalletd6' || true
+
 # Name the desktop (the portals and apps such as Brave read it) and hand it to
 # D-Bus and systemd, so apps started by activation (portals, keyring prompts)
 # see the same environment as the session.
@@ -115,6 +120,11 @@ esac
 if [ -z "$COMPOSITOR" ]; then
     if command -v wayfire >/dev/null 2>&1; then COMPOSITOR=wayfire; else COMPOSITOR=labwc; fi
 fi
+
+# The login also starts KDE's wallet daemons (pam_kwallet5), which compete with
+# gnome-keyring for org.freedesktop.secrets. OpusDM keeps its secrets in
+# gnome-keyring: stop them so only one Secret Service answers.
+pkill -u "$(id -u)" -x 'ksecretd|kwalletd5|kwalletd6' || true
 
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
 export PATH="$HERE/bin:$PATH"
