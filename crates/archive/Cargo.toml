@@ -1,0 +1,20 @@
+[package]
+name = "opusdm-archive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_archive"
+path = "src/lib.rs"
+
+[dependencies]
+libarchive3-sys.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tar.workspace = true
+zip.workspace = true
+flate2.workspace = true
+zstd = "0.13"

@@ -1763,6 +1763,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libarchive3-sys"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cd3beae8f59a4c7a806523269b5392037577c150446e88d684dfa6de6031ca7"
+dependencies = [
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2134,6 +2144,19 @@ dependencies = [
  "opusdm-dock",
  "opusdm-ipc",
  "opusdm-ui",
+]
+
+[[package]]
+name = "opusdm-archive"
+version = "0.7.0"
+dependencies = [
+ "flate2",
+ "libarchive3-sys",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.20",
+ "zip",
+ "zstd",
 ]
 
 [[package]]
