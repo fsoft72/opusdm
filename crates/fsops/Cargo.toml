@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
+opusdm-archive = { path = "../archive" }
 walkdir.workspace = true
 filetime.workspace = true
 thiserror.workspace = true
@@ -20,3 +21,4 @@ getrandom = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+tar.workspace = true
