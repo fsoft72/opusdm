@@ -160,7 +160,9 @@ impl IpConfig {
             out.push((format!("{g}.addresses"), "Manual needs at least one address".to_string()));
         }
         for a in &self.addresses {
-            if !family.parses(a.address.trim()) {
+            if a.address.trim().is_empty() {
+                out.push((format!("{g}.addresses"), "Write the address or remove its line".to_string()));
+            } else if !family.parses(a.address.trim()) {
                 out.push((format!("{g}.addresses"), format!("{} is not a valid address", a.address)));
             }
             if a.prefix == 0 || a.prefix > family.max_prefix() {

@@ -2416,6 +2416,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-network-config"
+version = "0.7.0"
+dependencies = [
+ "async-channel",
+ "gtk4",
+ "opusdm-ipc",
+ "opusdm-network",
+ "opusdm-ui",
+ "opusdm-watch",
+]
+
+[[package]]
 name = "opusdm-panel"
 version = "0.7.0"
 dependencies = [

@@ -536,6 +536,7 @@ impl Profile {
                 if w.peers.is_empty() { err("wireguard.peers", "Add at least one peer"); }
                 for p in &w.peers {
                     if !crate::wgkey::is_key(&p.public_key) { err("wireguard.peers", "A peer public key is not a WireGuard key"); }
+                    if !p.endpoint.trim().is_empty() && !is_endpoint(p.endpoint.trim()) { err("wireguard.endpoint", "Write the endpoint as host:port"); }
                     if !p.preshared_key.is_empty() && !crate::wgkey::is_key(p.preshared_key.as_str()) {
                         err("wireguard.peers", "A preshared key is not a WireGuard key");
                     }
@@ -553,6 +554,9 @@ impl Profile {
                 if auth.uses_certificate() && o.get(ovpn_key::CERT).is_empty() { err("openvpn.cert", "Choose the user certificate"); }
                 if auth.uses_certificate() && o.get(ovpn_key::KEY).is_empty() { err("openvpn.key", "Choose the private key"); }
                 if auth.uses_password() && o.get(ovpn_key::USERNAME).is_empty() { err("openvpn.username", "The user name cannot be empty"); }
+                if auth.uses_password() && !o.ask_password && o.password.is_empty() {
+                    err("openvpn.password", "Write the password, or ask for it at every connect");
+                }
                 if auth == OpenVpnAuth::StaticKey && o.get(ovpn_key::STATIC_KEY).is_empty() { err("openvpn.static-key", "Choose the static key"); }
             }
             Detail::Other { .. } => {}
@@ -566,6 +570,12 @@ impl Profile {
 /// The keyring key of the preshared key of the peer `public_key`.
 pub fn peer_secret_key(public_key: &str) -> SecretKey {
     SecretKey::new(TYPE_WIREGUARD, &format!("peers.{public_key}.preshared-key"))
+}
+
+/// Whether `text` is a WireGuard endpoint: `host:port` or `[v6 address]:port`.
+fn is_endpoint(text: &str) -> bool {
+    let Some((host, port)) = text.rsplit_once(':') else { return false };
+    !host.is_empty() && !host.ends_with(':') && port.parse::<u16>().is_ok_and(|p| p > 0)
 }
 
 /// Whether `text` is a MAC address like `12:34:56:78:9a:bc`.
@@ -920,6 +930,33 @@ mod tests {
             w.security = WifiSecurity::Other("wpa-eap".into());
         }
         assert!(!wifi.manages_secrets());
+    }
+
+    #[test]
+    fn endpoints_need_a_host_and_a_port() {
+        assert!(is_endpoint("vpn.example.com:51820"));
+        assert!(is_endpoint("[fd00::1]:51820"));
+        assert!(!is_endpoint("vpn.example.com"));
+        assert!(!is_endpoint(":51820"));
+        assert!(!is_endpoint("host:0"));
+        assert!(!is_endpoint("host:port"));
+        let mut wg = wireguard();
+        if let Detail::WireGuard(w) = &mut wg.detail {
+            w.peers[0].endpoint = "a:1:2:x".into();
+        }
+        assert_eq!(wg.validate()[0].0, "wireguard.endpoint");
+    }
+
+    #[test]
+    fn an_openvpn_password_is_needed_unless_it_is_asked() {
+        let mut p = Profile::new(ProfileKind::OpenVpn).unwrap();
+        let Detail::OpenVpn(o) = &mut p.detail else { unreachable!() };
+        o.put(ovpn_key::CONNECTION_TYPE, "password");
+        let has = |p: &Profile| p.validate().iter().any(|(f, _)| f == "openvpn.password");
+        assert!(has(&p));
+        let Detail::OpenVpn(o) = &mut p.detail else { unreachable!() };
+        o.ask_password = true;
+        assert!(!has(&p));
     }
 
     #[test]

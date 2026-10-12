@@ -54,3 +54,41 @@ fn connect_and_follow(tx: &async_channel::Sender<WatchMsg>, outage: &mut Outage)
     }
     Err("lost the connection to the system bus".to_string())
 }
+
+/// What the profiles worker sends to the network manager program.
+pub enum ProfilesMsg {
+    /// The backend to use; sent once per session, before the first `Changed`.
+    Backend(Arc<NmBackend>),
+    /// The secret agent could not be registered: connections that need a
+    /// secret from the keyring will fail.
+    AgentFailed(String),
+    /// Profiles or connections may have changed: read them again.
+    Changed,
+    /// The bus or NetworkManager is not available (sent once per outage).
+    Unavailable(String),
+}
+
+/// Start the worker of the network manager program: it registers a secret
+/// agent under `identifier` and reports every burst of NetworkManager
+/// signals. Messages arrive on the returned channel until it is dropped.
+pub fn spawn_profiles(identifier: &'static str) -> async_channel::Receiver<ProfilesMsg> {
+    let (tx, rx) = async_channel::unbounded();
+    std::thread::spawn(move || run_with_retry(&tx, ProfilesMsg::Unavailable, |outage| follow_profiles(&tx, outage, identifier)));
+    rx
+}
+
+/// One session: `Ok` when the receiver is gone, `Err` when NetworkManager failed.
+fn follow_profiles(tx: &async_channel::Sender<ProfilesMsg>, outage: &mut Outage, identifier: &str) -> Result<(), String> {
+    let backend = Arc::new(NmBackend::connect().map_err(|e| e.text())?);
+    let ticks = signal_ticks(backend.connection(), NM_BUS_NAME)?;
+    let send = |m: ProfilesMsg| tx.send_blocking(m).is_ok();
+    if let Err(e) = backend.register_agent(identifier) {
+        if !send(ProfilesMsg::AgentFailed(e.text())) { return Ok(()); }
+    }
+    if !send(ProfilesMsg::Backend(backend.clone())) || !send(ProfilesMsg::Changed) { return Ok(()); }
+    outage.recovered();
+    while drain_burst(&ticks, Duration::from_millis(COALESCE_MS)) {
+        if !send(ProfilesMsg::Changed) { return Ok(()); }
+    }
+    Err("lost the connection to the system bus".to_string())
+}

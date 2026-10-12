@@ -27,4 +27,4 @@ pub use error::NetError;
 pub use model::{AccessPoint, NetState, Security, VpnEntry};
 pub use profiles::{FakeProfiles, Loaded, ProfileBackend, ProfileSummary};
 pub use nm::NmBackend;
-pub use watch::WatchMsg;
+pub use watch::{ProfilesMsg, WatchMsg};

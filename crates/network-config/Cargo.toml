@@ -1,0 +1,21 @@
+[package]
+name = "opusdm-network-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_network_config"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-network-manager"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-network = { path = "../network" }
+opusdm-ui = { path = "../ui" }
+opusdm-watch = { path = "../watch" }
+async-channel.workspace = true
+gtk4.workspace = true
