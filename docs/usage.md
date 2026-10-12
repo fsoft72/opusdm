@@ -788,13 +788,14 @@ Like the KDE Audio Volume applet: volume, mute and default device of the sound o
 
 ### 3.33 Network tray (panel)
 
-Like the KDE Networks applet: Wi-Fi and Ethernet switches and the list of the Wi-Fi networks in range.
+Like the KDE Networks applet: Wi-Fi and Ethernet switches, the list of the Wi-Fi networks in range
+and the VPN connections.
 
 - **Icon:** on the right side of the panel, after the audio tray (primary bar only; the device,
   audio and network buttons sit close together). It shows a plug when Ethernet is connected, Wi-Fi
   arcs (one to three, by signal) when connected to a network, and dimmed arcs with a slash when
-  nothing is connected. The tooltip says what is connected. It is hidden while NetworkManager is
-  not reachable.
+  nothing is connected. A small lock over the icon means a VPN is up. The tooltip says what is
+  connected (and *VPN: name* while a VPN is up). It is hidden while NetworkManager is not reachable.
 - **Popover (click the icon):** an **Ethernet** and a **Wi-Fi** switch (a row is hidden when the
   machine has no such device; the Ethernet switch is greyed out without a cable), then the networks
   sorted by signal, the connected one first with a check mark and a lock on protected ones. The
@@ -805,10 +806,16 @@ Like the KDE Networks applet: Wi-Fi and Ethernet switches and the list of the Wi
   connects the popover says *Connecting to ...*; a failure shows as one red line for 5 seconds.
 - **Ethernet switch:** *off* disconnects the device and NetworkManager does not reconnect it by
   itself; *on* connects with the best saved connection.
+- **VPN:** a row with a switch for each WireGuard and OpenVPN connection (the section is hidden when
+  there is none); the connected one has a check mark. An OpenVPN connection set to ask for its
+  password at every connect opens the password window first; the password is used for that connect
+  only and never saved. A failure shows as a red line.
+- **Configure connections...** at the bottom opens **Network Connections** (`opusdm-network-manager`,
+  section 3.37).
 - **Needs:** NetworkManager on the system bus. Without it the icon stays hidden and the panel tries
   again every 30 seconds.
-- **Not included:** VPN, hotspot, IP settings, hidden networks, WEP and enterprise (802.1X) networks
-  (clicking one shows a message).
+- **Not included here:** hotspot, WEP and enterprise (802.1X) networks (clicking one shows a
+  message). IP settings, hidden networks and new VPNs are set in Network Connections.
 
 ### 3.34 Screens (`opusdm-screen`)
 
@@ -935,6 +942,59 @@ network tools) ask for the password in an OpusDM dialog.
 - **Where:** centered above every window; on Wayland it holds the keyboard while it is open.
 - **Not working?** Another polkit agent may already be registered for the session (for example one
   added to Startup Apps): `opusdm-polkit` then logs "polkitd refused the agent" and exits.
+
+### 3.37 Network Connections (`opusdm-network-manager`)
+
+Lists and edits the NetworkManager connections, like the Connections page of KDE Plasma System
+Settings: Wi-Fi, Ethernet, WireGuard and OpenVPN, with their IPv4 and IPv6 settings. VPN files can
+be imported.
+
+- **Open it:** **Configure connections...** at the bottom of the network tray, the **Network**
+  button in the **System** tab of OpusDM Settings, or run `opusdm-network-manager`. A second launch
+  only raises the open window.
+- **List (left):** every connection, grouped as Ethernet, Wi-Fi, VPN and Other, with
+  *Connected* / *Connecting...* next to the active ones; the search field filters by name. The
+  list follows NetworkManager: changes made elsewhere show up at once.
+- **Editor (right):** the name and the tabs **General** (connect automatically, priority, the
+  device to use or, for WireGuard, the interface name, and for Wi-Fi and Ethernet a VPN to start
+  with the connection), then **Wi-Fi** (network name, mode, hidden network, security: none,
+  WPA/WPA2 or WPA3 Personal, password), **Ethernet** (cloned MAC address, MTU), **WireGuard**
+  (private key with **Generate** and the public key to copy, listen port, MTU, the peers with
+  public key, endpoint `host:port`, allowed IPs, preshared key and keepalive) or **OpenVPN**
+  (gateway, authentication: certificates, password, password with certificates or static key,
+  the certificate and key files, the user name and password, *Ask for the password at every
+  connect*; **Advanced...** has port, TCP, device type, MTU, compression, cipher, HMAC, server name
+  check, TLS auth and TLS crypt), and **IPv4** / **IPv6** (method: automatic, manual, link-local,
+  shared or disabled; addresses with their prefix, gateway, DNS servers separated by commas, *Use
+  only these DNS servers*, and *Never use as the default route*, for a VPN *Use only for
+  resources on its network*).
+- **Save** is active when something changed and nothing is wrong: a wrong field is outlined in
+  red and its tooltip (and the one of Save) says why. **Revert** drops the changes. Choosing
+  another connection, adding one or closing the window with unsaved changes asks **Save**,
+  **Discard** or **Cancel**. Settings this program does not show are kept as they are.
+- **Connect / Disconnect** brings the selected connection up or down (save the changes first). An
+  OpenVPN connection that asks for its password asks for it here too.
+- **+** asks the kind (Ethernet, Wi-Fi, WireGuard, OpenVPN) and opens a new connection, not saved
+  until **Save**. **-** deletes the selected connection after asking, with its saved passwords
+  and imported files.
+- **Import...** reads a WireGuard `.conf` (wg-quick format: addresses, DNS, keys, port, MTU,
+  firewall mark, peers) or an OpenVPN `.ovpn` (remotes, port and protocol, device, certificate and
+  key files or inline `<ca>`, `<cert>`, `<key>`, `<tls-auth>`, `<tls-crypt>`, `<secret>` blocks,
+  `auth-user-pass`, PKCS#12, cipher, HMAC, compression, server checks, MTU, ping and renegotiation)
+  and opens the result as a new connection to check and save. A line above the editor lists what
+  was left out (for example `route-nopull`, `PostUp`). Inline blocks become files in
+  `~/.local/share/opusdm/vpn/<connection id>/`, readable only by you, written when you save.
+- **Passwords and keys** (Wi-Fi password, WireGuard private and preshared keys, OpenVPN password and
+  key password) are kept in the `login` keyring, with the same entries `nm-applet` writes, never in
+  the NetworkManager files. The panel answers NetworkManager when it needs them; the program does it
+  too while it is open, so a connection started from it works without the panel. A VPN key that the
+  server refuses is kept: change it in the editor.
+- **Other** connections (bridges, loopback, VPN types other than WireGuard and OpenVPN such as
+  OpenConnect or PPTP) are listed and can be connected, disconnected or deleted, not edited. Wi-Fi
+  with enterprise (802.1X) or WEP security keeps its security settings untouched.
+- **Needs:** NetworkManager; for OpenVPN the `network-manager-openvpn` package. WireGuard is built
+  into NetworkManager. Changing a connection shared by all users may ask for the administrator
+  password.
 
 ## 4. Keyboard Shortcuts Reference
 

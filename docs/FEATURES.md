@@ -308,6 +308,10 @@ Everything you expect from a modern volume applet.
 - **Ethernet and Wi-Fi switches**, and a list of nearby networks sorted by signal.
 - Click to connect, with lock icons for protected networks and a **password prompt with show/hide**.
 - Wrong password? The half-saved connection is cleaned up for you.
+- **VPN switches** for WireGuard and OpenVPN, a lock on the icon while a VPN is up.
+- **Network Connections** (`opusdm-network-manager`), like the KDE Connections page: edit Wi-Fi,
+  Ethernet, WireGuard and OpenVPN connections with their IPv4 and IPv6 settings, and **import
+  `.conf` and `.ovpn` files**. Passwords and keys stay in the login keyring.
 - Powered by **NetworkManager**.
 
 ### 7.5 Device notifier
@@ -438,7 +442,7 @@ One click and the whole desktop changes.
 - **Edge snapping**: KDE-style tiling for every window.
 - **Rotating backgrounds**: Pictures, videos and gradients.
 - **Themes**: From Amiga blue to Tokyo neon.
-- **Audio and network tray**: Volume and Wi-Fi in the panel.
+- **Audio and network tray**: Volume, Wi-Fi and VPN in the panel.
 - **Device notifier**: USB sticks, mounted in one click.
 - **Screenshot tool**: Capture, annotate, share.
 - **Viewer and player**: Pictures, video and music built in.
@@ -497,6 +501,6 @@ Useful for the download page, and for building trust.
 
 - **Linux with an X11 session.** Global hotkeys, snapping and some window features need X11.
 - Compositor (picom) recommended for window transparency and the snap preview.
-- Optional system pieces by feature: **GStreamer** (video and audio playback), **udisks2** (device notifier), **PulseAudio or PipeWire with pipewire-pulse** (audio tray), **NetworkManager** (network tray), **xinput, setxkbmap and xset** (input settings), **7z** (creating 7z archives; reading any archive is built in through libarchive, which also needs `libarchive13` at run time).
+- Optional system pieces by feature: **GStreamer** (video and audio playback), **udisks2** (device notifier), **PulseAudio or PipeWire with pipewire-pulse** (audio tray), **NetworkManager** (network tray and connections; `network-manager-openvpn` for OpenVPN), **xinput, setxkbmap and xset** (input settings), **7z** (creating 7z archives; reading any archive is built in through libarchive, which also needs `libarchive13` at run time).
 - Remote folders do not support rename, permissions or links (the server decides).
-- Network tray does not manage VPNs, hotspots or enterprise Wi-Fi yet.
+- Network Connections edits WireGuard and OpenVPN only among the VPN types; hotspots and enterprise Wi-Fi are not managed yet.
