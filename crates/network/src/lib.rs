@@ -7,11 +7,15 @@
 pub mod agent;
 pub mod backend;
 pub mod error;
+pub mod ipconfig;
 pub mod keystore;
 pub mod model;
 pub mod nm;
 pub mod parse;
+pub mod profile;
+pub mod settings;
 pub mod watch;
+pub mod wgkey;
 
 pub use backend::{Backend, FakeBackend};
 pub use error::NetError;
