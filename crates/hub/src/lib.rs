@@ -1,6 +1,7 @@
 //! Library face of opusdm-hub so integration tests can drive the server
 //! layer without the GTK toolbar.
 
+pub mod activation_follow;
 pub mod bg_sequence;
 pub mod children;
 pub mod compositor;

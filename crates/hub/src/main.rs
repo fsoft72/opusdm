@@ -71,6 +71,10 @@ fn main() {
     // Put the saved screen layout back when monitors are plugged or unplugged.
     screen_hotplug::start();
 
+    // A program asking to bring its window forward (a browser tab opened for
+    // a login, an app clicked in the tray) gets it, even on another desktop.
+    opusdm_hub::activation_follow::start();
+
     // The polkit agent: password dialogs for pkexec and the other programs
     // that need administrator rights. A second one (restarted hub) exits.
     if let Err(e) = children::spawn_tool("opusdm-polkit") {
