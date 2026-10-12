@@ -95,7 +95,7 @@ if [ -n "$START_WM" ]; then
             WM_ARGS=(--config-file "$OPENBOX_CONFIG")
             echo "  using config: $OPENBOX_CONFIG"
         fi
-        DISPLAY="$DISPLAY_NUM" "$START_WM" "${WM_ARGS[@]}" &
+        DISPLAY="$DISPLAY_NUM" XDG_DATA_DIRS="$(pwd)/assets/openbox-share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" "$START_WM" "${WM_ARGS[@]}" &
         CHILD_PIDS+=("$!")
     else
         echo "Window manager '$START_WM' not found, skipping"

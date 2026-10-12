@@ -6,7 +6,7 @@
 #             opusdm-shot, opusdm-terminal, opusdm-player, opusdm-viewer, opusdm-input-config, opusdm-screen, opusdm-apps-editor,
 #             opusdm-network-manager, opusdm-polkit
 #             (the hub finds opusdm-lister next to itself, keep them together)
-#   config/   openbox-rc.xml, picom.conf, labwc-rc.xml, wayfire.ini,
+#   config/   openbox-rc.xml, share/themes (Openbox theme), picom.conf, labwc-rc.xml, wayfire.ini,
 #             opusdm-portals.conf
 #   themes/   <slug>.zip theme packages
 #   opusdm-session            X11 session script (Openbox + picom + opusdm-hub)
@@ -50,6 +50,8 @@ cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.deskto
 
 cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$REPO_ROOT/labwc-rc.xml" "$REPO_ROOT/wayfire.ini" "$REPO_ROOT/opusdm-portals.conf" "$DIST/config/"
 cp "$REPO_ROOT"/target/themes/*.zip "$DIST/themes/"
+# Openbox theme (OpusDMTheme), found through XDG_DATA_DIRS set by the session script
+cp -r "$REPO_ROOT/assets/openbox-share" "$DIST/config/share"
 
 # X11 session script: resolves its own location, so dist can live anywhere
 cat > "$DIST/opusdm-session" <<'SESSION'
@@ -59,6 +61,9 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
 export PATH="$HERE/bin:$PATH"
+
+# Openbox finds the OpusDMTheme window theme in config/share/themes.
+export XDG_DATA_DIRS="$HERE/config/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 # The login also starts KDE's wallet daemons (pam_kwallet5), which compete with
 # gnome-keyring for org.freedesktop.secrets. OpusDM keeps its secrets in

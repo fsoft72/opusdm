@@ -45,7 +45,7 @@ Xephyr "$DISPLAY_NUM" -screen "$RESOLUTION" -ac > /dev/null 2>&1 &
 CHILD_PIDS+=("$!")
 _wait_for_server
 
-DISPLAY="$DISPLAY_NUM" openbox --config-file "$ROOT_DIR/openbox-rc.xml" > /dev/null 2>&1 &
+DISPLAY="$DISPLAY_NUM" XDG_DATA_DIRS="$ROOT_DIR/assets/openbox-share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" openbox --config-file "$ROOT_DIR/openbox-rc.xml" > /dev/null 2>&1 &
 CHILD_PIDS+=("$!")
 
 if command -v picom > /dev/null 2>&1; then
