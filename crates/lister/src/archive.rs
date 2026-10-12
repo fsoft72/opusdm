@@ -1,10 +1,10 @@
-//! Virtual archive filesystem support for navigating and extracting Zip, Tar, 7z.
+//! Virtual archive filesystem support for navigating and extracting archives
+//! (every format libarchive reads, see `opusdm-archive`).
 
 use crate::model::{Row, RowAttrs};
-use std::collections::{HashSet, VecDeque};
-use std::io::{self, BufRead};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
@@ -13,6 +13,8 @@ pub struct ArchiveItem {
     pub is_dir: bool,
     pub size: u64,
     pub mode: u32,
+    /// Modification time as Unix seconds, 0 when the archive stores none.
+    pub mtime: i64,
 }
 
 /// Single-extension markers recognized as archive-like content, for icon and
@@ -22,30 +24,9 @@ pub struct ArchiveItem {
 pub const ARCHIVE_EXTS: &[&str] =
     &["zip", "tar", "tgz", "7z", "gz", "bz2", "tbz2", "xz", "txz", "zst", "rar"];
 
-/// Check if a path points to a supported archive file.
+/// Check if a path points to a supported archive file, by its name.
 pub fn is_archive_file(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if name.ends_with(".tar.gz")
-        || name.ends_with(".tar.bz2")
-        || name.ends_with(".tar.xz")
-        || name.ends_with(".tar.zst")
-        || name.ends_with(".tgz")
-    {
-        return true;
-    }
-
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    matches!(ext.as_str(), "zip" | "tar" | "tgz" | "7z")
+    path.file_name().is_some_and(|n| opusdm_archive::is_archive_name(&n.to_string_lossy()))
 }
 
 /// Parse a virtual archive path formatted like `/path/to/archive.zip#sub/dir`.
@@ -73,213 +54,77 @@ pub fn make_archive_path(arch_path: &Path, inner: &str) -> PathBuf {
 
 /// Read all items contained in an archive.
 pub fn read_archive_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
-    let ext = arch_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let name = arch_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if ext == "zip" {
-        read_zip_entries(arch_path)
-    } else if name.ends_with(".tar.gz")
-        || name.ends_with(".tgz")
-        || name.ends_with(".tar.bz2")
-        || name.ends_with(".tar.xz")
-        || name.ends_with(".tar.zst")
-        || ext == "tar"
-    {
-        read_tar_entries(arch_path)
-    } else if ext == "7z" {
-        read_7z_entries(arch_path)
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Unsupported archive format",
-        ))
-    }
+    _check_supported(arch_path)?;
+    let entries = opusdm_archive::list(arch_path)?;
+    Ok(entries.into_iter().map(ArchiveItem::from).collect())
 }
 
-fn read_zip_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
-    let output = Command::new("zipinfo")
-        .arg("-s")
-        .arg(arch_path)
-        .output()?;
-
-    if !output.status.success() {
-        // Fallback to unzip -Z -1
-        let out2 = Command::new("unzip")
-            .arg("-Z")
-            .arg("-1")
-            .arg(arch_path)
-            .output()?;
-        let mut items = Vec::new();
-        for line in out2.stdout.lines().map_while(Result::ok) {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let is_dir = trimmed.ends_with('/');
-            items.push(ArchiveItem {
-                path: trimmed.trim_end_matches('/').to_string(),
-                is_dir,
-                size: 0,
-                mode: if is_dir { 0o755 } else { 0o644 },
-            });
-        }
-        return Ok(items);
-    }
-
-    let mut items = Vec::new();
-    for line in output.stdout.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.starts_with("Archive:")
-            || trimmed.starts_with("Zip file size:")
-            || trimmed.ends_with("compressed:")
-            || trimmed.is_empty()
-        {
-            continue;
-        }
-
-        // Example: -rw-rw-r--  3.0 unx        5 tx stor 26-Sep-03 15:27 file.txt
-        let is_dir = trimmed.starts_with('d');
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if parts.len() >= 7 {
-            let size = parts.get(3).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-            let path = parts[7..].join(" ");
-            let clean_path = path.trim_end_matches('/').to_string();
-            items.push(ArchiveItem {
-                path: clean_path,
-                is_dir: is_dir || path.ends_with('/'),
-                size,
-                mode: if is_dir { 0o755 } else { 0o644 },
-            });
+impl From<opusdm_archive::Entry> for ArchiveItem {
+    /// The listing item of an archive entry.
+    fn from(entry: opusdm_archive::Entry) -> Self {
+        let is_dir = entry.kind == opusdm_archive::EntryKind::Dir;
+        ArchiveItem {
+            is_dir,
+            path: entry.path,
+            size: entry.size,
+            mode: if entry.mode != 0 { entry.mode } else if is_dir { 0o755 } else { 0o644 },
+            mtime: entry.mtime.unwrap_or(0),
         }
     }
-
-    Ok(items)
-}
-
-fn read_tar_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
-    let output = Command::new("tar")
-        .arg("-tvf")
-        .arg(arch_path)
-        .output()?;
-
-    let mut items = Vec::new();
-    for line in output.stdout.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Example: -rw-rw-r-- fabio/fabio 6 2026-09-03 15:27 hello.txt
-        let is_dir = trimmed.starts_with('d');
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if parts.len() >= 6 {
-            let size = parts.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-            let path = parts[5..].join(" ");
-            let clean_path = path.trim_end_matches('/').to_string();
-            items.push(ArchiveItem {
-                path: clean_path,
-                is_dir: is_dir || path.ends_with('/'),
-                size,
-                mode: if is_dir { 0o755 } else { 0o644 },
-            });
-        }
-    }
-
-    Ok(items)
-}
-
-fn read_7z_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
-    let output = Command::new(opusdm_fsops::tools::seven_z_program())
-        .arg("l")
-        .arg(arch_path)
-        .output()?;
-
-    let mut items = Vec::new();
-    let mut in_files = false;
-    for line in output.stdout.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.starts_with("-------------------") {
-            in_files = !in_files;
-            continue;
-        }
-        if in_files && trimmed.len() > 53 {
-            let is_dir = trimmed.chars().nth(20) == Some('D');
-            let size_str = &trimmed[26..38].trim();
-            let size = size_str.parse::<u64>().unwrap_or(0);
-            let path = trimmed[53..].trim().trim_end_matches('/').to_string();
-            if !path.is_empty() {
-                items.push(ArchiveItem {
-                    path,
-                    is_dir,
-                    size,
-                    mode: if is_dir { 0o755 } else { 0o644 },
-                });
-            }
-        }
-    }
-
-    Ok(items)
 }
 
 /// Read rows for the given inner prefix within an archive.
 pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec<Row>> {
     let items = LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).get(arch_path, read_archive_entries)?;
+    Ok(_rows_in(&items, inner_prefix))
+}
 
+/// The rows of the folder `inner_prefix` of an archive holding `items`: one row
+/// per direct child. A folder shows once however it appears (its own entry,
+/// the parent of other entries, or both) and takes its date from its own
+/// entry, else from its newest content.
+fn _rows_in(items: &[ArchiveItem], inner_prefix: &str) -> Vec<Row> {
     let prefix = if inner_prefix.is_empty() {
         String::new()
     } else {
         format!("{}/", inner_prefix.trim_matches('/'))
     };
 
-    let mut seen_dirs = HashSet::new();
-    let mut rows = Vec::new();
+    let mut slots: Vec<(String, RowAttrs)> = Vec::new();
+    let mut dir_slot: HashMap<String, usize> = HashMap::new();
+    let mut own_entry: HashSet<String> = HashSet::new();
 
-    for item in items.iter() {
-        if !item.path.starts_with(&prefix) && !prefix.is_empty() {
-            continue;
-        }
-        let rel = if prefix.is_empty() {
-            &item.path[..]
-        } else {
-            &item.path[prefix.len()..]
-        };
-
+    for item in items {
+        let Some(rel) = item.path.strip_prefix(&prefix) else { continue };
         if rel.is_empty() {
             continue;
         }
-
-        if let Some((dir_name, _)) = rel.split_once('/') {
-            if seen_dirs.insert(dir_name.to_string()) {
-                rows.push(Row::new(
-                    dir_name.to_string(),
-                    RowAttrs { is_dir: true, uid: 1000, gid: 1000, mode: 0o755, ..Default::default() },
-                ));
-            }
-        } else {
-            let is_dir = item.is_dir;
-            let name = rel.to_string();
-            rows.push(Row::new(
-                name,
-                RowAttrs {
-                    is_dir,
-                    size: if is_dir { 0 } else { item.size },
-                    uid: 1000,
-                    gid: 1000,
-                    mode: item.mode,
-                    ..Default::default()
-                },
+        let (name, nested) = match rel.split_once('/') {
+            Some((dir_name, _)) => (dir_name, true),
+            None => (rel, false),
+        };
+        if !nested && !item.is_dir {
+            slots.push((
+                name.to_string(),
+                RowAttrs { size: item.size, modified_unix: item.mtime, uid: 1000, gid: 1000, mode: item.mode, ..Default::default() },
             ));
+            continue;
+        }
+        let slot = *dir_slot.entry(name.to_string()).or_insert_with(|| {
+            slots.push((name.to_string(), RowAttrs { is_dir: true, uid: 1000, gid: 1000, mode: 0o755, ..Default::default() }));
+            slots.len() - 1
+        });
+        let attrs = &mut slots[slot].1;
+        if !nested {
+            attrs.modified_unix = item.mtime;
+            attrs.mode = item.mode;
+            own_entry.insert(name.to_string());
+        } else if !own_entry.contains(name) {
+            attrs.modified_unix = attrs.modified_unix.max(item.mtime);
         }
     }
 
-    Ok(rows)
+    slots.into_iter().map(|(name, attrs)| Row::new(name, attrs)).collect()
 }
 
 /// How many archive listings [`LISTINGS`] keeps.
@@ -332,51 +177,15 @@ impl ListingCache {
     }
 }
 
-/// Archive formats the extraction commands know how to handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArchiveKind {
-    Zip,
-    Tar,
-    SevenZ,
-}
-
-/// Classify `arch` by its name, or fail with `Unsupported` for any other format.
-fn _archive_kind(arch: &Path) -> io::Result<ArchiveKind> {
-    let name = arch.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
-    let tar_suffixes = [".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar.zst"];
-    if name.ends_with(".zip") {
-        Ok(ArchiveKind::Zip)
-    } else if tar_suffixes.iter().any(|s| name.ends_with(s)) {
-        Ok(ArchiveKind::Tar)
-    } else if name.ends_with(".7z") {
-        Ok(ArchiveKind::SevenZ)
-    } else {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "Unsupported archive format"))
-    }
-}
-
-/// Escape an entry name for `unzip`, which reads `[`, `*` and `?` as wildcards
-/// and a leading `-` as an option.
-fn _unzip_pattern(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 2);
-    for (i, c) in name.chars().enumerate() {
-        if matches!(c, '[' | ']' | '*' | '?' | '\\') || (i == 0 && c == '-') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// Fail with a descriptive error unless `status` is a success.
-fn _check_status(status: std::process::ExitStatus, what: &str) -> io::Result<()> {
-    if status.success() {
+/// Fail with `Unsupported` unless `arch` has the name of a supported archive.
+fn _check_supported(arch: &Path) -> io::Result<()> {
+    if is_archive_file(arch) {
         return Ok(());
     }
-    Err(io::Error::other(format!("{what} failed ({status})")))
+    Err(io::Error::new(io::ErrorKind::Unsupported, "Unsupported archive format"))
 }
 
-/// Fail unless `path` exists (`7z` exits with success when an entry is not in the archive).
+/// Fail unless `path` exists.
 fn _check_extracted(path: &Path) -> io::Result<()> {
     if path.symlink_metadata().is_ok() {
         return Ok(());
@@ -400,11 +209,11 @@ fn _check_inner_path(inner_file: &str) -> io::Result<()> {
 /// so an external viewer can open the file; [`cleanup_temp_dirs`] removes every
 /// folder created by this process.
 pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<PathBuf> {
-    let kind = _archive_kind(arch)?;
+    _check_supported(arch)?;
     _check_inner_path(inner_file)?;
     let temp_dir = tempfile::Builder::new().prefix("opusdm-preview-").tempdir()?.keep();
     PREVIEW_DIRS.lock().unwrap_or_else(|e| e.into_inner()).push(temp_dir.clone());
-    let extracted = _extract_one(kind, arch, inner_file, &temp_dir);
+    let extracted = _extract_one(arch, inner_file, &temp_dir);
     if extracted.is_err() {
         if let Err(e) = std::fs::remove_dir_all(&temp_dir) {
             opusdm_ipc::err_log!("opusdm-lister", "cannot remove preview folder {}: {e}", temp_dir.display());
@@ -413,7 +222,7 @@ pub fn extract_single_file_temp(arch: &Path, inner_file: &str) -> io::Result<Pat
     extracted
 }
 
-/// [`extract_single_file_temp`] on a worker thread, so the external tool never
+/// [`extract_single_file_temp`] on a worker thread, so reading the archive never
 /// blocks the GTK main loop. The returned channel yields the one result.
 pub fn extract_single_file_in_background(arch: PathBuf, inner_file: String) -> async_channel::Receiver<io::Result<PathBuf>> {
     let (tx, rx) = async_channel::bounded(1);
@@ -423,46 +232,14 @@ pub fn extract_single_file_in_background(arch: PathBuf, inner_file: String) -> a
     rx
 }
 
-/// Extract `inner_file` of `arch` under `temp_dir` and return its path.
-fn _extract_one(kind: ArchiveKind, arch: &Path, inner_file: &str, temp_dir: &Path) -> io::Result<PathBuf> {
-    match kind {
-        ArchiveKind::Zip => {
-            let name = Path::new(inner_file).file_name().unwrap_or_default();
-            let dest_path = temp_dir.join(name);
-            let output = Command::new("unzip").arg("-p").arg(arch).arg(_unzip_pattern(inner_file)).output()?;
-            _check_status(output.status, "unzip")?;
-            std::fs::write(&dest_path, &output.stdout)?;
-            Ok(dest_path)
-        }
-        ArchiveKind::Tar => {
-            let output = Command::new("tar")
-                .arg("-xf")
-                .arg(arch)
-                .arg("--no-wildcards")
-                .arg("-C")
-                .arg(temp_dir)
-                .arg("--")
-                .arg(inner_file)
-                .output()?;
-            _check_status(output.status, "tar")?;
-            let extracted = temp_dir.join(inner_file);
-            _check_extracted(&extracted)?;
-            Ok(extracted)
-        }
-        ArchiveKind::SevenZ => {
-            let output = Command::new(opusdm_fsops::tools::seven_z_program())
-                .args(["x", "-y", "-spd", "-bso0", "-bsp0"])
-                .arg(format!("-o{}", temp_dir.display()))
-                .arg("--")
-                .arg(arch)
-                .arg(inner_file)
-                .output()?;
-            _check_status(output.status, "7z")?;
-            let extracted = temp_dir.join(inner_file);
-            _check_extracted(&extracted)?;
-            Ok(extracted)
-        }
-    }
+/// Extract `inner_file` of `arch` as a file named after it under `temp_dir`
+/// and return its path.
+fn _extract_one(arch: &Path, inner_file: &str, temp_dir: &Path) -> io::Result<PathBuf> {
+    let name = Path::new(inner_file).file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid archive entry: {inner_file:?}")))?;
+    let dest_path = temp_dir.join(name);
+    let mut out = std::fs::File::create(&dest_path)?;
+    opusdm_archive::extract_entry(arch, inner_file, &mut out)?;
+    Ok(dest_path)
 }
 
 /// Preview folders created by [`extract_single_file_temp`] in this process.
@@ -498,41 +275,17 @@ pub fn cleanup_temp_dirs() {
     SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
-/// Extract items from archive into `dest_dir`. Entry names are passed so they
-/// can never be read as options or wildcards.
+/// Extract items from archive into `dest_dir`. Entry names are matched
+/// literally, so they can never be read as options or wildcards. A folder
+/// brings everything below it.
 pub fn extract_items_to_dir(
     arch: &Path,
     items: &[String],
     dest_dir: &Path,
 ) -> io::Result<Vec<PathBuf>> {
-    let kind = _archive_kind(arch)?;
+    _check_supported(arch)?;
     items.iter().try_for_each(|i| _check_inner_path(i))?;
-
-    match kind {
-        ArchiveKind::Zip => {
-            let mut cmd = Command::new("unzip");
-            cmd.arg("-o").arg(arch);
-            for item in items {
-                cmd.arg(_unzip_pattern(item));
-            }
-            cmd.arg("-d").arg(dest_dir);
-            _check_status(cmd.status()?, "unzip")?;
-        }
-        ArchiveKind::Tar => {
-            let mut cmd = Command::new("tar");
-            cmd.arg("-xf").arg(arch).arg("--no-wildcards").arg("-C").arg(dest_dir).arg("--");
-            cmd.args(items);
-            _check_status(cmd.status()?, "tar")?;
-        }
-        ArchiveKind::SevenZ => {
-            let mut cmd = Command::new(opusdm_fsops::tools::seven_z_program());
-            cmd.args(["x", "-y", "-spd", "-bso0", "-bsp0"]).arg(format!("-o{}", dest_dir.display()));
-            cmd.arg("--").arg(arch);
-            cmd.args(items);
-            _check_status(cmd.status()?, "7z")?;
-        }
-    }
-
+    opusdm_archive::extract(arch, dest_dir, Some(items), &|| false)?;
     let extracted: Vec<PathBuf> = items.iter().map(|item| dest_dir.join(item)).collect();
     extracted.iter().try_for_each(|p| _check_extracted(p))?;
     Ok(extracted)
@@ -574,30 +327,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.expect("a preview folder"));
     }
 
-    /// Build `a.zip`, `a.tar` and `a.7z` holding a nested file plus names that
-    /// look like options and wildcards. Returns `None` when a tool is missing.
-    fn fixture(dir: &Path) -> Option<()> {
-        let src = dir.join("src");
-        std::fs::create_dir_all(src.join("sub")).ok()?;
-        std::fs::write(src.join("sub/a.txt"), "nested").ok()?;
-        std::fs::write(src.join("-dash.txt"), "dash").ok()?;
-        std::fs::write(src.join("st[ar]*.txt"), "star").ok()?;
-        let run = |prog: &str, args: &[&str]| {
-            Command::new(prog).current_dir(&src).args(args).output().is_ok_and(|o| o.status.success())
-        };
-        let ok = run("zip", &["-q", "../a.zip", "sub/a.txt", "--", "-dash.txt", "st[ar]*.txt"])
-            && run("tar", &["cf", "../a.tar", "sub/a.txt", "--", "-dash.txt", "st[ar]*.txt"])
-            && run("7z", &["a", "-bso0", "-spd", "../a.7z", "sub/a.txt", "--", "-dash.txt", "st[ar]*.txt"]);
-        ok.then_some(())
+    /// Build `a.zip` and `a.tar` holding a nested file plus names that look
+    /// like options and wildcards.
+    fn fixture(dir: &Path) {
+        use std::io::Write;
+        let files = [("sub/a.txt", "nested"), ("-dash.txt", "dash"), ("st[ar]*.txt", "star")];
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.join("a.zip")).unwrap());
+        let mut tar = tar::Builder::new(std::fs::File::create(dir.join("a.tar")).unwrap());
+        for (name, body) in files {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            tar.append_data(&mut header, name, body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        tar.finish().unwrap();
     }
 
     #[test]
     fn extract_single_file_returns_the_real_nested_path_for_every_format() {
         let td = tempfile::tempdir().unwrap();
-        if fixture(td.path()).is_none() {
-            return;
-        }
-        for name in ["a.zip", "a.tar", "a.7z"] {
+        fixture(td.path());
+        for name in ["a.zip", "a.tar"] {
             let path = extract_single_file_temp(&td.path().join(name), "sub/a.txt").unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested", "{name}");
             remove_preview_of(&path);
@@ -607,9 +360,7 @@ mod tests {
     #[test]
     fn background_extraction_sends_the_result_through_the_channel() {
         let td = tempfile::tempdir().unwrap();
-        if fixture(td.path()).is_none() {
-            return;
-        }
+        fixture(td.path());
         let rx = extract_single_file_in_background(td.path().join("a.zip"), "sub/a.txt".to_string());
         let path = rx.recv_blocking().unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested");
@@ -626,7 +377,7 @@ mod tests {
         let loads = std::cell::Cell::new(0);
         let load = |_: &Path| {
             loads.set(loads.get() + 1);
-            Ok(vec![ArchiveItem { path: "f".into(), is_dir: false, size: 1, mode: 0o644 }])
+            Ok(vec![ArchiveItem { path: "f".into(), is_dir: false, size: 1, mode: 0o644, mtime: 0 }])
         };
         let mut cache = ListingCache::new(2);
         cache.get(&arch, load).unwrap();
@@ -663,10 +414,8 @@ mod tests {
     #[test]
     fn extract_single_file_reports_a_missing_entry_instead_of_an_empty_file() {
         let td = tempfile::tempdir().unwrap();
-        if fixture(td.path()).is_none() {
-            return;
-        }
-        for name in ["a.zip", "a.tar", "a.7z"] {
+        fixture(td.path());
+        for name in ["a.zip", "a.tar"] {
             assert!(extract_single_file_temp(&td.path().join(name), "nope.txt").is_err(), "{name}");
         }
     }
@@ -674,7 +423,7 @@ mod tests {
     #[test]
     fn extract_rejects_unsupported_formats_and_parent_components() {
         let td = tempfile::tempdir().unwrap();
-        let err = extract_single_file_temp(&td.path().join("a.rar"), "x").unwrap_err();
+        let err = extract_single_file_temp(&td.path().join("a.txt"), "x").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);
         let err = extract_items_to_dir(&td.path().join("a.zip"), &["../x".to_string()], td.path()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -683,11 +432,9 @@ mod tests {
     #[test]
     fn extract_items_treats_names_literally() {
         let td = tempfile::tempdir().unwrap();
-        if fixture(td.path()).is_none() {
-            return;
-        }
+        fixture(td.path());
         let items = vec!["-dash.txt".to_string(), "st[ar]*.txt".to_string()];
-        for name in ["a.zip", "a.tar", "a.7z"] {
+        for name in ["a.zip", "a.tar"] {
             let out = td.path().join(format!("out-{name}"));
             std::fs::create_dir(&out).unwrap();
             let paths = extract_items_to_dir(&td.path().join(name), &items, &out).unwrap();
@@ -697,10 +444,50 @@ mod tests {
         }
     }
 
+    /// A listing item for the row tests.
+    fn item(path: &str, is_dir: bool, size: u64, mtime: i64) -> ArchiveItem {
+        ArchiveItem { path: path.into(), is_dir, size, mode: if is_dir { 0o755 } else { 0o644 }, mtime }
+    }
+
     #[test]
-    fn unzip_pattern_escapes_wildcards_and_a_leading_dash() {
-        assert_eq!(_unzip_pattern("-a[1]*?"), "\\-a\\[1\\]\\*\\?");
-        assert_eq!(_unzip_pattern("dir/-a"), "dir/-a");
+    fn a_folder_with_its_own_entry_and_content_is_listed_once() {
+        let items = [item("sub", true, 0, 100), item("sub/b.txt", false, 6, 200), item("a.txt", false, 6, 300)];
+        let rows = _rows_in(&items, "");
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["sub", "a.txt"]);
+        assert!(rows[0].is_dir);
+    }
+
+    #[test]
+    fn a_folder_entry_after_its_content_is_still_listed_once() {
+        let items = [item("sub/b.txt", false, 6, 200), item("sub", true, 0, 100)];
+        let rows = _rows_in(&items, "");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].modified_unix, 100, "its own entry wins, wherever it is");
+    }
+
+    #[test]
+    fn rows_carry_the_dates_of_the_archive() {
+        let items = [item("sub", true, 0, 100), item("sub/b.txt", false, 6, 200), item("a.txt", false, 6, 300)];
+        let rows = _rows_in(&items, "");
+        assert_eq!(rows[0].modified_unix, 100, "a folder with an entry shows the date of the entry");
+        assert_eq!(rows[1].modified_unix, 300);
+        assert_eq!(_rows_in(&items, "sub")[0].modified_unix, 200);
+    }
+
+    #[test]
+    fn a_folder_without_an_entry_takes_the_newest_date_of_its_content() {
+        let items = [item("d/old.txt", false, 1, 10), item("d/new.txt", false, 1, 90), item("d/sub/x.txt", false, 1, 50)];
+        let rows = _rows_in(&items, "");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].modified_unix, 90);
+    }
+
+    #[test]
+    fn a_nested_folder_is_listed_once_inside_its_parent() {
+        let items = [item("p", true, 0, 1), item("p/q", true, 0, 2), item("p/q/f", false, 3, 4), item("p/g", false, 1, 5)];
+        let names: Vec<String> = _rows_in(&items, "p").into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["q", "g"]);
     }
 
     #[test]

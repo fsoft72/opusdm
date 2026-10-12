@@ -87,7 +87,7 @@ Inspect files without launching heavy external applications:
 - Select any file and press **`Space`** or **`F3`** (or click `👁`).
 - **Images**: Crisp rendering of `.png`, `.jpg`, `.svg`, `.webp`, `.gif`, with dimension and resolution info.
 - **Text & Code**: Syntax-friendly monospace viewer with line numbering, total line counts, and byte counters.
-- **Archives**: Interactive listing of archive entries inside `.zip`, `.tar.gz`, `.7z`.
+- **Archives**: Interactive listing of archive entries inside any supported archive (`.zip`, `.tar.gz`, `.7z`, ...).
 - **Binaries**: Formatted 16-byte hex dump with printable ASCII column and file offset markers.
 - **Directories**: Quick inspection of folder contents.
 - **Live Updating**: Leaving the Quick Look window open while moving the selection cursor in the Lister automatically updates the preview to the newly focused item.
@@ -102,9 +102,9 @@ An embedded console drawer located directly at the bottom of the Lister:
   - Navigating in the Lister automatically updates the terminal's working directory (`$CWD`) and prompt.
 - **External Launcher**: Click the "External" button in the drawer header to spawn a full detached terminal emulator (`xterm`) at the current directory.
 
-### 3.5 Virtual Archive Filesystem (`.zip`, `.tar`, `.tgz`, `.7z`)
+### 3.5 Virtual Archive Filesystem (`.zip`, `.tar`, `.tgz`, `.7z`, `.rar`, `.iso`, ...)
 Browse and extract archives as if they were native folders:
-- **Double-click** any supported archive (`.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.7z`) to step inside it.
+- **Double-click** any supported archive (`.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.tar.lz4`, `.7z`, `.rar`, `.iso`, `.cpio`) to step inside it. Archives are read with libarchive, no external `zip`, `tar` or `7z` program is needed.
 - Seamlessly navigate subdirectories within the archive.
 - Breadcrumb paths are represented as `archive.zip#sub/dir`.
 - Press **Parent** (`Backspace`) to navigate up through archive folders and back out to the filesystem.

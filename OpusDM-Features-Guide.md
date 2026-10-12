@@ -592,7 +592,7 @@ terminali comuni).
 4. `Backspace` sale di un livello e, dall'alto, esce dall'archivio.
 
 Formati supportati: `.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`,
-`.tar.zst`, `.7z`.
+`.tar.zst`, `.7z`, `.rar`, `.iso`, `.cpio`.
 
 ### Step 11.2 - Estrazione selettiva
 

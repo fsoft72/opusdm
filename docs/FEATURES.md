@@ -147,7 +147,7 @@ Press **Space** and see the file, right now, without opening a heavy app.
 
 ### 4.1 Archives are just folders
 
-Double click a **ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, TAR.ZST or 7Z** and walk inside.
+Double click a **ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, TAR.ZST, 7Z, RAR, ISO or CPIO** and walk inside.
 Select what you want and copy it out to the destination window. No extract
 dialog, no temporary clutter: scratch folders are private and cleaned up for you.
 
@@ -425,7 +425,7 @@ One click and the whole desktop changes.
 - **SOURCE / DEST roles**: Any number of windows, always clear where files go.
 - **Command Palette**: Every command, one shortcut away.
 - **Batch Renamer**: Regex, numbering and case, with live preview.
-- **Archive browsing**: ZIP, TAR, 7Z open like folders.
+- **Archive browsing**: ZIP, TAR, 7Z, RAR, ISO open like folders.
 - **FTP / FTPS / SFTP**: Servers are just folders.
 - **Encryption**: XChaCha20-Poly1305, built in.
 - **Quick Look**: Images, code, hex and archives on Space.
@@ -497,6 +497,6 @@ Useful for the download page, and for building trust.
 
 - **Linux with an X11 session.** Global hotkeys, snapping and some window features need X11.
 - Compositor (picom) recommended for window transparency and the snap preview.
-- Optional system pieces by feature: **GStreamer** (video and audio playback), **udisks2** (device notifier), **PulseAudio or PipeWire with pipewire-pulse** (audio tray), **NetworkManager** (network tray), **xinput, setxkbmap and xset** (input settings), **7z** (7z archives).
+- Optional system pieces by feature: **GStreamer** (video and audio playback), **udisks2** (device notifier), **PulseAudio or PipeWire with pipewire-pulse** (audio tray), **NetworkManager** (network tray), **xinput, setxkbmap and xset** (input settings), **7z** (creating 7z archives; reading any archive is built in through libarchive, which also needs `libarchive13` at run time).
 - Remote folders do not support rename, permissions or links (the server decides).
 - Network tray does not manage VPNs, hotspots or enterprise Wi-Fi yet.
