@@ -2,7 +2,7 @@
 //! (every format libarchive reads, see `opusdm-archive`).
 
 use crate::model::{Row, RowAttrs};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -13,6 +13,8 @@ pub struct ArchiveItem {
     pub is_dir: bool,
     pub size: u64,
     pub mode: u32,
+    /// Modification time as Unix seconds, 0 when the archive stores none.
+    pub mtime: i64,
 }
 
 /// Single-extension markers recognized as archive-like content, for icon and
@@ -60,11 +62,13 @@ pub fn read_archive_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
 impl From<opusdm_archive::Entry> for ArchiveItem {
     /// The listing item of an archive entry.
     fn from(entry: opusdm_archive::Entry) -> Self {
+        let is_dir = entry.kind == opusdm_archive::EntryKind::Dir;
         ArchiveItem {
-            is_dir: entry.kind == opusdm_archive::EntryKind::Dir,
+            is_dir,
             path: entry.path,
             size: entry.size,
-            mode: entry.mode,
+            mode: if entry.mode != 0 { entry.mode } else if is_dir { 0o755 } else { 0o644 },
+            mtime: entry.mtime.unwrap_or(0),
         }
     }
 }
@@ -72,55 +76,55 @@ impl From<opusdm_archive::Entry> for ArchiveItem {
 /// Read rows for the given inner prefix within an archive.
 pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec<Row>> {
     let items = LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).get(arch_path, read_archive_entries)?;
+    Ok(_rows_in(&items, inner_prefix))
+}
 
+/// The rows of the folder `inner_prefix` of an archive holding `items`: one row
+/// per direct child. A folder shows once however it appears (its own entry,
+/// the parent of other entries, or both) and takes its date from its own
+/// entry, else from its newest content.
+fn _rows_in(items: &[ArchiveItem], inner_prefix: &str) -> Vec<Row> {
     let prefix = if inner_prefix.is_empty() {
         String::new()
     } else {
         format!("{}/", inner_prefix.trim_matches('/'))
     };
 
-    let mut seen_dirs = HashSet::new();
-    let mut rows = Vec::new();
+    let mut slots: Vec<(String, RowAttrs)> = Vec::new();
+    let mut dir_slot: HashMap<String, usize> = HashMap::new();
+    let mut own_entry: HashSet<String> = HashSet::new();
 
-    for item in items.iter() {
-        if !item.path.starts_with(&prefix) && !prefix.is_empty() {
-            continue;
-        }
-        let rel = if prefix.is_empty() {
-            &item.path[..]
-        } else {
-            &item.path[prefix.len()..]
-        };
-
+    for item in items {
+        let Some(rel) = item.path.strip_prefix(&prefix) else { continue };
         if rel.is_empty() {
             continue;
         }
-
-        if let Some((dir_name, _)) = rel.split_once('/') {
-            if seen_dirs.insert(dir_name.to_string()) {
-                rows.push(Row::new(
-                    dir_name.to_string(),
-                    RowAttrs { is_dir: true, uid: 1000, gid: 1000, mode: 0o755, ..Default::default() },
-                ));
-            }
-        } else {
-            let is_dir = item.is_dir;
-            let name = rel.to_string();
-            rows.push(Row::new(
-                name,
-                RowAttrs {
-                    is_dir,
-                    size: if is_dir { 0 } else { item.size },
-                    uid: 1000,
-                    gid: 1000,
-                    mode: item.mode,
-                    ..Default::default()
-                },
+        let (name, nested) = match rel.split_once('/') {
+            Some((dir_name, _)) => (dir_name, true),
+            None => (rel, false),
+        };
+        if !nested && !item.is_dir {
+            slots.push((
+                name.to_string(),
+                RowAttrs { size: item.size, modified_unix: item.mtime, uid: 1000, gid: 1000, mode: item.mode, ..Default::default() },
             ));
+            continue;
+        }
+        let slot = *dir_slot.entry(name.to_string()).or_insert_with(|| {
+            slots.push((name.to_string(), RowAttrs { is_dir: true, uid: 1000, gid: 1000, mode: 0o755, ..Default::default() }));
+            slots.len() - 1
+        });
+        let attrs = &mut slots[slot].1;
+        if !nested {
+            attrs.modified_unix = item.mtime;
+            attrs.mode = item.mode;
+            own_entry.insert(name.to_string());
+        } else if !own_entry.contains(name) {
+            attrs.modified_unix = attrs.modified_unix.max(item.mtime);
         }
     }
 
-    Ok(rows)
+    slots.into_iter().map(|(name, attrs)| Row::new(name, attrs)).collect()
 }
 
 /// How many archive listings [`LISTINGS`] keeps.
@@ -373,7 +377,7 @@ mod tests {
         let loads = std::cell::Cell::new(0);
         let load = |_: &Path| {
             loads.set(loads.get() + 1);
-            Ok(vec![ArchiveItem { path: "f".into(), is_dir: false, size: 1, mode: 0o644 }])
+            Ok(vec![ArchiveItem { path: "f".into(), is_dir: false, size: 1, mode: 0o644, mtime: 0 }])
         };
         let mut cache = ListingCache::new(2);
         cache.get(&arch, load).unwrap();
@@ -438,6 +442,52 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&paths[1]).unwrap(), "star", "{name}");
             assert_eq!(std::fs::read_dir(&out).unwrap().count(), 2, "{name}: nothing else extracted");
         }
+    }
+
+    /// A listing item for the row tests.
+    fn item(path: &str, is_dir: bool, size: u64, mtime: i64) -> ArchiveItem {
+        ArchiveItem { path: path.into(), is_dir, size, mode: if is_dir { 0o755 } else { 0o644 }, mtime }
+    }
+
+    #[test]
+    fn a_folder_with_its_own_entry_and_content_is_listed_once() {
+        let items = [item("sub", true, 0, 100), item("sub/b.txt", false, 6, 200), item("a.txt", false, 6, 300)];
+        let rows = _rows_in(&items, "");
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["sub", "a.txt"]);
+        assert!(rows[0].is_dir);
+    }
+
+    #[test]
+    fn a_folder_entry_after_its_content_is_still_listed_once() {
+        let items = [item("sub/b.txt", false, 6, 200), item("sub", true, 0, 100)];
+        let rows = _rows_in(&items, "");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].modified_unix, 100, "its own entry wins, wherever it is");
+    }
+
+    #[test]
+    fn rows_carry_the_dates_of_the_archive() {
+        let items = [item("sub", true, 0, 100), item("sub/b.txt", false, 6, 200), item("a.txt", false, 6, 300)];
+        let rows = _rows_in(&items, "");
+        assert_eq!(rows[0].modified_unix, 100, "a folder with an entry shows the date of the entry");
+        assert_eq!(rows[1].modified_unix, 300);
+        assert_eq!(_rows_in(&items, "sub")[0].modified_unix, 200);
+    }
+
+    #[test]
+    fn a_folder_without_an_entry_takes_the_newest_date_of_its_content() {
+        let items = [item("d/old.txt", false, 1, 10), item("d/new.txt", false, 1, 90), item("d/sub/x.txt", false, 1, 50)];
+        let rows = _rows_in(&items, "");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].modified_unix, 90);
+    }
+
+    #[test]
+    fn a_nested_folder_is_listed_once_inside_its_parent() {
+        let items = [item("p", true, 0, 1), item("p/q", true, 0, 2), item("p/q/f", false, 3, 4), item("p/g", false, 1, 5)];
+        let names: Vec<String> = _rows_in(&items, "p").into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["q", "g"]);
     }
 
     #[test]
