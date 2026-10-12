@@ -9,7 +9,6 @@ use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,32 +349,15 @@ fn text_view_scroller(text: &str, wrap_mode: gtk::WrapMode) -> gtk::ScrolledWind
     gtk::ScrolledWindow::builder().child(&text_view).vexpand(true).hexpand(true).build()
 }
 
-/// List an archive's contents via an external tool. Pure function (no I/O
-/// beyond the subprocess itself), safe to call off the GTK thread.
-fn archive_listing(path: &Path, ext: &str) -> String {
-    let (tool, mut cmd) = if ext == "zip" {
-        let mut cmd = Command::new("unzip");
-        cmd.arg("-l").arg(path);
-        ("unzip", cmd)
-    } else {
-        let mut cmd = Command::new("tar");
-        cmd.arg("-tf").arg(path);
-        ("tar", cmd)
-    };
-    listing_text(tool, cmd.output())
-}
-
-/// The preview text for the result of running `tool`: its listing on
-/// success, otherwise why it failed (spawn error or the tool's stderr).
-fn listing_text(tool: &str, output: std::io::Result<std::process::Output>) -> String {
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            let err = err.trim();
-            if err.is_empty() { format!("{tool} cannot read the archive ({})", o.status) } else { format!("{tool} cannot read the archive:\n{err}") }
-        }
-        Err(e) => format!("Cannot run {tool} to inspect archive: {e}"),
+/// List an archive's contents, one entry per line (folders end with `/`), or
+/// say why it cannot be read. Safe to call off the GTK thread.
+fn archive_listing(path: &Path) -> String {
+    match opusdm_archive::list(path) {
+        Ok(entries) => entries
+            .iter()
+            .map(|e| if e.kind == opusdm_archive::EntryKind::Dir { format!("{}/\n", e.path) } else { format!("{}\n", e.path) })
+            .collect(),
+        Err(e) => format!("Cannot read the archive:\n{e}"),
     }
 }
 
@@ -438,7 +420,7 @@ fn load_off_thread(path: &Path, file_size: u64) -> Loaded {
             Loaded::Text { meta, numbered_text }
         }
         FileKind::Archive => {
-            let listing = archive_listing(path, &ext);
+            let listing = archive_listing(path);
             let meta = format!("Archive ({})  •  {size_str}", ext.to_uppercase());
             Loaded::Archive { meta, listing }
         }
@@ -455,25 +437,30 @@ fn load_off_thread(path: &Path, file_size: u64) -> Loaded {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_failed_listing_shows_the_tool_error_not_an_empty_preview() {
+    fn a_failed_listing_shows_the_error_not_an_empty_preview() {
         let td = tempfile::tempdir().unwrap();
         let bad = td.path().join("bad.tar");
         std::fs::write(&bad, "this is not a tar file").unwrap();
-        let text = super::archive_listing(&bad, "tar");
-        assert!(text.starts_with("tar cannot read the archive"), "{text}");
-        let good_src = td.path().join("f.txt");
-        std::fs::write(&good_src, "x").unwrap();
-        let good = td.path().join("good.tar");
-        let made = std::process::Command::new("tar").arg("cf").arg(&good).arg("-C").arg(td.path()).arg("f.txt").status();
-        if made.is_ok_and(|s| s.success()) {
-            assert_eq!(super::archive_listing(&good, "tar").trim(), "f.txt");
-        }
+        let text = super::archive_listing(&bad);
+        assert!(text.starts_with("Cannot read the archive"), "{text}");
     }
 
     #[test]
-    fn a_missing_tool_is_reported() {
-        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
-        assert!(super::listing_text("unzip", Err(err)).starts_with("Cannot run unzip"));
+    fn a_listing_has_one_line_per_entry() {
+        let td = tempfile::tempdir().unwrap();
+        let good = td.path().join("good.tar");
+        let mut builder = tar::Builder::new(std::fs::File::create(&good).unwrap());
+        let mut dir = tar::Header::new_gnu();
+        dir.set_entry_type(tar::EntryType::Directory);
+        dir.set_mode(0o755);
+        dir.set_size(0);
+        builder.append_data(&mut dir, "d/", std::io::empty()).unwrap();
+        let mut file = tar::Header::new_gnu();
+        file.set_size(1);
+        file.set_mode(0o644);
+        builder.append_data(&mut file, "d/f.txt", &b"x"[..]).unwrap();
+        builder.finish().unwrap();
+        assert_eq!(super::archive_listing(&good), "d/\nd/f.txt\n");
     }
 
     use super::*;
