@@ -100,6 +100,16 @@ impl TrayWatch {
     }
 }
 
+/// Command line flag that keeps the hub from launching the Startup Apps: a
+/// hub restarted by `scripts/live-update.sh --all` or started in the
+/// `run-x11.sh` sandbox must not open them a second time.
+pub const NO_STARTUP_APPS_ARG: &str = "--no-startup-apps";
+
+/// True when `args` (without the program name) ask to skip the Startup Apps.
+pub fn skipped_by_args(args: &[String]) -> bool {
+    args.iter().any(|a| a == NO_STARTUP_APPS_ARG)
+}
+
 /// Start every app after its own wait, counted from the moment the panel's
 /// tray exists (at most `TRAY_WAIT_LIMIT` from this call), so a tray app
 /// with a wait of 0 finds the tray. Each app has its own thread, so the
@@ -158,6 +168,13 @@ mod tests {
     fn argv_reports_an_unclosed_quote_and_an_empty_command() {
         assert!(argv_for(&app("sh -c 'oops", 0)).is_err());
         assert!(argv_for(&app("   ", 0)).is_err());
+    }
+
+    #[test]
+    fn the_flag_skips_the_startup_apps() {
+        assert!(skipped_by_args(&["--no-startup-apps".to_string()]));
+        assert!(!skipped_by_args(&[]));
+        assert!(!skipped_by_args(&["--run".to_string(), "exec:foot".to_string()]));
     }
 
     #[test]

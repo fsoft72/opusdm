@@ -145,12 +145,13 @@ if [ "$GRID_DEBUG" = "1" ]; then
     echo "Grid debug overlay: on"
     export GRID_DEBUG=1
 fi
+# The sandbox never launches the Startup Apps: they belong to the real session
 if [ "$DEBUG" = "1" ]; then
     LOG=/ramdisk/opusdm.log
     echo "Debug log: $LOG"
-    OPUSDM_DEBUG=1 DISPLAY="$DISPLAY_NUM" "$HUB_BIN" >"$LOG" 2>&1 &
+    OPUSDM_DEBUG=1 DISPLAY="$DISPLAY_NUM" "$HUB_BIN" --no-startup-apps >"$LOG" 2>&1 &
 else
-    DISPLAY="$DISPLAY_NUM" "$HUB_BIN" &
+    DISPLAY="$DISPLAY_NUM" "$HUB_BIN" --no-startup-apps &
 fi
 CHILD_PIDS+=("$!")
 

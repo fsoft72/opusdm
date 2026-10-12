@@ -81,9 +81,14 @@ fn main() {
         opusdm_ipc::err_log!("opusdm-hub", "cannot start opusdm-polkit: {e}");
     }
 
-    // Launch the Startup Apps of Settings, each after its own wait time.
+    // Launch the Startup Apps of Settings, each after its own wait time,
+    // unless the hub was restarted with --no-startup-apps.
     let desktop_settings = opusdm_hub::desktop_settings::load();
-    opusdm_hub::startup_apps::start(&desktop_settings.startup_apps);
+    if opusdm_hub::startup_apps::skipped_by_args(&args) {
+        opusdm_ipc::debug_log!("opusdm-hub", "startup apps skipped ({})", opusdm_hub::startup_apps::NO_STARTUP_APPS_ARG);
+    } else {
+        opusdm_hub::startup_apps::start(&desktop_settings.startup_apps);
+    }
 
     let _ = handle.cmd_tx.send(server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup));
 

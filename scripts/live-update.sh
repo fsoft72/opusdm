@@ -11,7 +11,8 @@
 #              manager of the running session (Openbox or labwc) to reload.
 #   --all      terminate every OpusDM process of the current user (hub, lister,
 #              dock, ...) and start the hub again, so everything runs the new
-#              binaries. Open OpusDM windows are closed.
+#              binaries. Open OpusDM windows are closed. The new hub does not
+#              launch the Startup Apps again (--no-startup-apps).
 #   --prefix   installation prefix, default /opt/opusdm.
 #
 # Works in the X11 and in the Wayland session: the restarted hub gets the
@@ -145,5 +146,9 @@ mkdir -p "$LOG_DIR"
 # setsid detaches the new hub from this terminal. RUST_BACKTRACE puts the stack
 # of a panic in the log.
 echo "Starting opusdm-hub (log: $HUB_LOG)"
-PATH="$PREFIX/bin:$PATH" RUST_BACKTRACE=1 setsid "$PREFIX/bin/opusdm-hub" >"$HUB_LOG" 2>&1 < /dev/null &
+# With --all the Startup Apps are still running (only OpusDM processes were
+# stopped), so the new hub must not launch them again.
+HUB_ARGS=""
+[ "$RESTART_ALL" -eq 1 ] && HUB_ARGS="--no-startup-apps"
+PATH="$PREFIX/bin:$PATH" RUST_BACKTRACE=1 setsid "$PREFIX/bin/opusdm-hub" $HUB_ARGS >"$HUB_LOG" 2>&1 < /dev/null &
 echo "Done"
