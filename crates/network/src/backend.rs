@@ -19,6 +19,11 @@ pub trait Backend: Send + Sync {
     fn connect(&self, ssid: &str, password: Option<&str>) -> Result<(), NetError>;
     /// Disconnect the Wi-Fi device.
     fn disconnect_wifi(&self) -> Result<(), NetError>;
+    /// Bring the VPN `uuid` up; `password` is asked from the user and used
+    /// for this connect only. Returns when it is up or has failed.
+    fn activate_vpn(&self, uuid: &str, password: Option<&str>) -> Result<(), NetError>;
+    /// Bring the VPN `uuid` down.
+    fn deactivate_vpn(&self, uuid: &str) -> Result<(), NetError>;
 }
 
 /// A backend for tests: records every call (never the password).
@@ -70,6 +75,19 @@ impl Backend for FakeBackend {
 
     fn disconnect_wifi(&self) -> Result<(), NetError> {
         self.record("disconnect".to_string());
+        Ok(())
+    }
+
+    fn activate_vpn(&self, uuid: &str, password: Option<&str>) -> Result<(), NetError> {
+        self.record(format!("vpn up {uuid} password={}", password.is_some()));
+        match self.fail_connect.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    fn deactivate_vpn(&self, uuid: &str) -> Result<(), NetError> {
+        self.record(format!("vpn down {uuid}"));
         Ok(())
     }
 }

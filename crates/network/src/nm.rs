@@ -4,8 +4,12 @@ use crate::agent;
 use crate::backend::Backend;
 use crate::error::NetError;
 use crate::keystore::{psk_key, KeyStore, OneShotSecrets, SecretServiceStore, SECURITY_GROUP};
-use crate::model::{NetState, Security};
+use crate::import;
+use crate::model::{NetState, Security, VpnEntry};
 use crate::parse::{self, RawAp, DEVICE_ETHERNET, DEVICE_WIFI};
+use crate::profile::{Profile, ProfileKind, SecretKey};
+use crate::profiles::{Loaded, ProfileBackend, ProfileSummary};
+use crate::settings::{self as nmsettings, Settings};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +29,8 @@ const ACTIVE_IFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const PROPERTIES_IFACE: &str = "org.freedesktop.DBus.Properties";
 const NO_OBJECT: &str = "/";
 
+/// `NM_ACTIVE_CONNECTION_STATE_ACTIVATING`.
+const ACTIVE_ACTIVATING: u32 = 1;
 /// `NM_ACTIVE_CONNECTION_STATE_ACTIVATED`.
 const ACTIVE_ACTIVATED: u32 = 2;
 /// `NM_ACTIVE_CONNECTION_STATE_DEACTIVATED`.
@@ -40,8 +46,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_POLL: Duration = Duration::from_millis(250);
 
 type Props = HashMap<String, OwnedValue>;
-/// `a{sa{sv}}`: a connection profile.
-type Settings = HashMap<String, Props>;
 /// `a{sv}` with no entries: the options of the calls that take none.
 type NoOptions<'a> = HashMap<&'a str, Value<'a>>;
 
@@ -116,19 +120,73 @@ impl NmBackend {
         Ok(out)
     }
 
-    /// The Wi-Fi profiles: object path and network name.
-    fn saved_profiles(&self) -> Result<Vec<(OwnedObjectPath, String)>, NetError> {
+    /// Every profile: object path and settings (without secrets). A profile
+    /// removed between the two calls is skipped.
+    fn all_settings(&self) -> Result<Vec<(OwnedObjectPath, Settings)>, NetError> {
         let proxy = self.proxy(SETTINGS_PATH, SETTINGS_IFACE)?;
         let paths: Vec<OwnedObjectPath> = proxy.call("ListConnections", &()).map_err(|e| NetError::from_zbus(&e))?;
         let mut out = Vec::new();
         for path in paths {
             let Ok(conn) = self.proxy(path.as_str(), CONNECTION_IFACE) else { continue };
             let Ok(settings) = conn.call::<_, _, Settings>("GetSettings", &()) else { continue };
-            let Some(wifi) = settings.get("802-11-wireless") else { continue };
-            let Some(ssid) = wifi.get("ssid").and_then(|v| Vec::<u8>::try_from(v.clone()).ok()) else { continue };
-            out.push((path, String::from_utf8_lossy(&ssid).into_owned()));
+            out.push((path, settings));
         }
         Ok(out)
+    }
+
+    /// The Wi-Fi profiles among `all`: object path and network name.
+    fn wifi_profiles(all: &[(OwnedObjectPath, Settings)]) -> Vec<(OwnedObjectPath, String)> {
+        all.iter()
+            .filter_map(|(path, s)| Some((path.clone(), String::from_utf8_lossy(&nmsettings::bytes(s, "802-11-wireless", "ssid")?).into_owned())))
+            .collect()
+    }
+
+    /// The Wi-Fi profiles: object path and network name.
+    fn saved_profiles(&self) -> Result<Vec<(OwnedObjectPath, String)>, NetError> {
+        Ok(Self::wifi_profiles(&self.all_settings()?))
+    }
+
+    /// The active connections: object path, profile UUID and state.
+    fn active_connections(&self) -> Result<Vec<(OwnedObjectPath, String, u32)>, NetError> {
+        let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
+        let paths: Vec<OwnedObjectPath> = nm.get_property("ActiveConnections").map_err(|e| NetError::from_zbus(&e))?;
+        let mut out = Vec::new();
+        for path in paths {
+            // An active connection can vanish between the calls.
+            let Ok(active) = self.proxy(path.as_str(), ACTIVE_IFACE) else { continue };
+            let Ok(uuid) = active.get_property::<String>("Uuid") else { continue };
+            let state = active.get_property::<u32>("State").unwrap_or(ACTIVE_DEACTIVATED);
+            out.push((path, uuid, state));
+        }
+        Ok(out)
+    }
+
+    /// The summaries of `all`, marked with the active connections.
+    fn summaries(all: &[(OwnedObjectPath, Settings)], active: &[(OwnedObjectPath, String, u32)]) -> Vec<ProfileSummary> {
+        let mut out: Vec<ProfileSummary> = all
+            .iter()
+            .filter_map(|(_, s)| Profile::from_settings(s).ok())
+            .map(|p| {
+                let state = active.iter().find(|(_, u, _)| *u == p.uuid).map(|(_, _, st)| *st);
+                ProfileSummary { active: state == Some(ACTIVE_ACTIVATED), activating: state == Some(ACTIVE_ACTIVATING), ..ProfileSummary::of(&p) }
+            })
+            .collect();
+        out.sort_by_key(|p| p.name.to_lowercase());
+        out
+    }
+
+    /// The object path of the profile `uuid`.
+    fn profile_path(&self, uuid: &str) -> Result<OwnedObjectPath, NetError> {
+        let proxy = self.proxy(SETTINGS_PATH, SETTINGS_IFACE)?;
+        proxy.call("GetConnectionByUuid", &(uuid,)).map_err(|e| NetError::from_zbus(&e))
+    }
+
+    /// The secrets NetworkManager keeps itself for one setting of a profile
+    /// (flag 0). Asking may fail for a setting with no secrets, which only
+    /// means there are none, so a failure reads as an empty answer.
+    fn stored_secrets(&self, path: &OwnedObjectPath, setting: &str) -> Settings {
+        let Ok(conn) = self.proxy(path.as_str(), CONNECTION_IFACE) else { return Settings::new() };
+        conn.call::<_, _, Settings>("GetSecrets", &(setting,)).unwrap_or_default()
     }
 
     /// Wait until the active connection is up. Returns the failure text otherwise.
@@ -210,7 +268,9 @@ impl Backend for NmBackend {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
         let wifi_enabled: bool = nm.get_property("WirelessEnabled").map_err(|e| NetError::from_zbus(&e))?;
         let devices = self.devices()?;
-        let mut state = NetState { wifi_enabled, ..NetState::default() };
+        let all = self.all_settings()?;
+        let vpns = vpn_entries(&Self::summaries(&all, &self.active_connections()?));
+        let mut state = NetState { wifi_enabled, vpns, ..NetState::default() };
         if let Some(eth) = devices.iter().find(|d| d.kind == DEVICE_ETHERNET) {
             let (available, on, connected) = parse::eth_flags(eth.state);
             state.eth_present = true;
@@ -227,7 +287,7 @@ impl Backend for NmBackend {
             .get_property("ActiveAccessPoint")
             .map_err(|e| NetError::from_zbus(&e))?;
         let active = (active.as_str() != NO_OBJECT).then(|| active.to_string());
-        let saved: HashSet<String> = self.saved_profiles()?.into_iter().map(|(_, ssid)| ssid).collect();
+        let saved: HashSet<String> = Self::wifi_profiles(&all).into_iter().map(|(_, ssid)| ssid).collect();
         state.aps = parse::build_aps(&raws, active.as_deref(), &saved);
         Ok(state)
     }
@@ -304,6 +364,108 @@ impl Backend for NmBackend {
         let wifi = self.device_of(DEVICE_WIFI, "Wi-Fi")?;
         let dev = self.proxy(wifi.path.as_str(), DEVICE_IFACE)?;
         dev.call::<_, _, ()>("Disconnect", &()).map_err(|e| NetError::from_zbus(&e))
+    }
+
+    fn activate_vpn(&self, uuid: &str, password: Option<&str>) -> Result<(), NetError> {
+        ProfileBackend::activate(self, uuid, password)
+    }
+
+    fn deactivate_vpn(&self, uuid: &str) -> Result<(), NetError> {
+        ProfileBackend::deactivate(self, uuid)
+    }
+}
+
+/// The VPN rows of the panel, from the profile summaries.
+fn vpn_entries(summaries: &[ProfileSummary]) -> Vec<VpnEntry> {
+    summaries
+        .iter()
+        .filter(|p| p.kind.is_vpn())
+        .map(|p| VpnEntry { uuid: p.uuid.clone(), name: p.name.clone(), active: p.active, activating: p.activating, ask_password: p.ask_password })
+        .collect()
+}
+
+/// The setting that holds the secrets of `profile`, if it has any.
+fn secret_setting(profile: &Profile) -> Option<&'static str> {
+    match profile.kind() {
+        ProfileKind::Wifi => Some(SECURITY_GROUP),
+        ProfileKind::OpenVpn => Some("vpn"),
+        ProfileKind::WireGuard => Some(crate::profile::TYPE_WIREGUARD),
+        ProfileKind::Ethernet | ProfileKind::Other => None,
+    }
+}
+
+impl ProfileBackend for NmBackend {
+    fn list(&self) -> Result<Vec<ProfileSummary>, NetError> {
+        Ok(Self::summaries(&self.all_settings()?, &self.active_connections()?))
+    }
+
+    fn load(&self, uuid: &str) -> Result<Loaded, NetError> {
+        let path = self.profile_path(uuid)?;
+        let conn = self.proxy(path.as_str(), CONNECTION_IFACE)?;
+        let base: Settings = conn.call("GetSettings", &()).map_err(|e| NetError::from_zbus(&e))?;
+        let mut profile = Profile::from_settings(&base)?;
+        if let Some(setting) = secret_setting(&profile) {
+            profile.fill_secrets(&self.stored_secrets(&path, setting));
+        }
+        // A keyring error stops the load: saving a profile whose secrets
+        // could not be read would forget them.
+        let missing: Vec<SecretKey> = profile.secret_slots().into_iter().filter(|(_, v)| v.is_empty()).map(|(k, _)| k).collect();
+        for key in missing {
+            if let Some(found) = self.keys.get(uuid, &key)? {
+                profile.set_secret(&key, &found);
+            }
+        }
+        Ok(Loaded { profile, base })
+    }
+
+    fn save(&self, profile: &Profile, base: Option<&Settings>) -> Result<(), NetError> {
+        let settings = profile.to_settings(base.unwrap_or(&Settings::new()));
+        match base {
+            None => {
+                let proxy = self.proxy(SETTINGS_PATH, SETTINGS_IFACE)?;
+                proxy.call::<_, _, OwnedObjectPath>("AddConnection", &(settings,)).map_err(|e| NetError::from_zbus(&e))?;
+            }
+            Some(_) => {
+                let conn = self.proxy(self.profile_path(&profile.uuid)?.as_str(), CONNECTION_IFACE)?;
+                conn.call::<_, _, ()>("Update", &(settings,)).map_err(|e| NetError::from_zbus(&e))?;
+            }
+        }
+        if !profile.manages_secrets() { return Ok(()); }
+        self.keys.delete_all(&profile.uuid)?;
+        for (key, value) in profile.secrets() {
+            self.keys.set(&profile.uuid, &profile.id, &key, value.as_str())?;
+        }
+        Ok(())
+    }
+
+    fn delete(&self, uuid: &str) -> Result<(), NetError> {
+        let conn = self.proxy(self.profile_path(uuid)?.as_str(), CONNECTION_IFACE)?;
+        conn.call::<_, _, ()>("Delete", &()).map_err(|e| NetError::from_zbus(&e))?;
+        self.keys.delete_all(uuid)?;
+        import::remove_files(uuid)
+    }
+
+    fn activate(&self, uuid: &str, password: Option<&str>) -> Result<(), NetError> {
+        let path = self.profile_path(uuid)?;
+        if let Some(password) = password {
+            self.once.put(uuid, &SecretKey::new("vpn", crate::profile::ovpn_key::PASSWORD), password);
+        }
+        // "/" for the device and the specific object lets NetworkManager choose.
+        let none = ObjectPath::try_from(NO_OBJECT).map_err(|e| NetError::other(e.to_string()))?;
+        let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
+        let result = nm
+            .call::<_, _, OwnedObjectPath>("ActivateConnection", &(&path, &none, &none))
+            .map_err(|e| NetError::from_zbus(&e))
+            .and_then(|active| self.wait_active(&active).map_err(NetError::other));
+        self.once.clear(uuid);
+        result
+    }
+
+    fn deactivate(&self, uuid: &str) -> Result<(), NetError> {
+        let active = self.active_connections()?;
+        let (path, _, _) = active.iter().find(|(_, u, _)| u == uuid).ok_or_else(|| NetError::other("The connection is not active"))?;
+        let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
+        nm.call::<_, _, ()>("DeactivateConnection", &(path,)).map_err(|e| NetError::from_zbus(&e))
     }
 }
 

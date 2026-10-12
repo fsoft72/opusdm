@@ -39,6 +39,19 @@ pub struct AccessPoint {
     pub saved: bool,
 }
 
+/// One VPN profile, as the tray shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VpnEntry {
+    pub uuid: String,
+    pub name: String,
+    /// The VPN is up.
+    pub active: bool,
+    /// The VPN is coming up.
+    pub activating: bool,
+    /// The password is asked at every connect.
+    pub ask_password: bool,
+}
+
 /// Everything the tray shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NetState {
@@ -52,11 +65,18 @@ pub struct NetState {
     pub eth_connected: bool,
     /// Networks in range: the active one first, then by signal.
     pub aps: Vec<AccessPoint>,
+    /// The VPN profiles, by name.
+    pub vpns: Vec<VpnEntry>,
 }
 
 impl NetState {
     /// The network the Wi-Fi device is connected to.
     pub fn active_ap(&self) -> Option<&AccessPoint> {
         self.aps.iter().find(|a| a.active)
+    }
+
+    /// The VPN that is up, if any.
+    pub fn active_vpn(&self) -> Option<&VpnEntry> {
+        self.vpns.iter().find(|v| v.active)
     }
 }

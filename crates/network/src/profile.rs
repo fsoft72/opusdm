@@ -431,6 +431,24 @@ impl Profile {
     /// The secrets to keep, with where they belong. Empty ones are left out,
     /// and so is an OpenVPN password that is asked every time.
     pub fn secrets(&self) -> Vec<(SecretKey, &Secret)> {
+        let mut out = self.secret_slots();
+        out.retain(|(_, v)| !v.is_empty());
+        out
+    }
+
+    /// Whether saving this profile manages its secrets in the keyring. Not
+    /// for kinds (or Wi-Fi security) this program does not edit: their
+    /// secrets, such as 802.1X passwords, belong to other tools.
+    pub fn manages_secrets(&self) -> bool {
+        match &self.detail {
+            Detail::Wifi(w) => !matches!(w.security, WifiSecurity::Other(_)),
+            Detail::WireGuard(_) | Detail::OpenVpn(_) => true,
+            Detail::Ethernet(_) | Detail::Other { .. } => false,
+        }
+    }
+
+    /// Every secret this profile can hold, empty or not, with its key.
+    pub fn secret_slots(&self) -> Vec<(SecretKey, &Secret)> {
         let mut out = Vec::new();
         match &self.detail {
             Detail::Wifi(w) if matches!(w.security, WifiSecurity::WpaPsk | WifiSecurity::Sae) => {
@@ -450,8 +468,25 @@ impl Profile {
             }
             _ => {}
         }
-        out.retain(|(_, v)| !v.is_empty());
         out
+    }
+
+    /// Fill the secrets found in `s`, an answer of NetworkManager's
+    /// `GetSecrets` (the ones it keeps itself).
+    pub fn fill_secrets(&mut self, s: &Settings) {
+        if let Some(psk) = settings::text(s, WIFI_SECURITY, "psk") {
+            self.set_secret(&SecretKey::new(WIFI_SECURITY, "psk"), &psk);
+        }
+        for (k, v) in settings::text_map(s, VPN, "secrets") {
+            self.set_secret(&SecretKey::new(VPN, &k), &v);
+        }
+        if let Some(private) = settings::text(s, TYPE_WIREGUARD, "private-key") {
+            self.set_secret(&SecretKey::new(TYPE_WIREGUARD, "private-key"), &private);
+        }
+        for peer in settings::dicts(s, TYPE_WIREGUARD, "peers") {
+            let (Some(public), Some(psk)) = (peer.get("public-key").and_then(as_text), peer.get("preshared-key").and_then(as_text)) else { continue };
+            self.set_secret(&peer_secret_key(&public), &psk);
+        }
     }
 
     /// Fill one secret read from the keyring or from NetworkManager. A key
@@ -851,6 +886,40 @@ mod tests {
             e.cloned_mac = "12:34".into();
         }
         assert_eq!(fields(&eth), vec!["general.id", "ethernet.mac"]);
+    }
+
+    #[test]
+    fn secrets_kept_by_networkmanager_are_filled() {
+        let mut p = wireguard();
+        let Detail::WireGuard(w) = &mut p.detail else { unreachable!() };
+        w.private_key = Secret::default();
+        w.peers[0].preshared_key = Secret::default();
+        let mut answer = Settings::new();
+        settings::set(&mut answer, TYPE_WIREGUARD, "private-key", KEY_A);
+        let peers: Vec<HashMap<String, Value>> =
+            vec![HashMap::from([("public-key".to_string(), Value::from(KEY_B)), ("preshared-key".to_string(), Value::from(KEY_B))])];
+        settings::set(&mut answer, TYPE_WIREGUARD, "peers", peers);
+        p.fill_secrets(&answer);
+        let Detail::WireGuard(w) = &p.detail else { unreachable!() };
+        assert_eq!(w.private_key.as_str(), KEY_A);
+        assert_eq!(w.peers[0].preshared_key.as_str(), KEY_B);
+        let mut vpn = Profile::new(ProfileKind::OpenVpn).unwrap();
+        let mut answer = Settings::new();
+        settings::set(&mut answer, VPN, "secrets", HashMap::from([("cert-pass".to_string(), "pp".to_string())]));
+        vpn.fill_secrets(&answer);
+        assert!(matches!(&vpn.detail, Detail::OpenVpn(o) if o.cert_pass.as_str() == "pp"));
+    }
+
+    #[test]
+    fn only_edited_kinds_manage_their_secrets() {
+        assert!(wireguard().manages_secrets());
+        assert!(Profile::new(ProfileKind::Wifi).unwrap().manages_secrets());
+        assert!(!Profile::new(ProfileKind::Ethernet).unwrap().manages_secrets());
+        let mut wifi = Profile::new(ProfileKind::Wifi).unwrap();
+        if let Detail::Wifi(w) = &mut wifi.detail {
+            w.security = WifiSecurity::Other("wpa-eap".into());
+        }
+        assert!(!wifi.manages_secrets());
     }
 
     #[test]
