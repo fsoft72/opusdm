@@ -3,7 +3,7 @@
 use crate::agent;
 use crate::backend::Backend;
 use crate::error::NetError;
-use crate::keystore::{KeyStore, SecretServiceStore, SECURITY_GROUP};
+use crate::keystore::{psk_key, KeyStore, OneShotSecrets, SecretServiceStore, SECURITY_GROUP};
 use crate::model::{NetState, Security};
 use crate::parse::{self, RawAp, DEVICE_ETHERNET, DEVICE_WIFI};
 use std::collections::{HashMap, HashSet};
@@ -50,19 +50,22 @@ pub struct NmBackend {
     conn: Connection,
     /// Where the keys of the profiles that keep them out of NetworkManager live.
     keys: Arc<dyn KeyStore>,
+    /// Secrets given for one connect (a VPN password asked every time).
+    once: Arc<OneShotSecrets>,
 }
 
 impl NmBackend {
     /// Connect to the system bus. Does not need NetworkManager to be running yet.
     pub fn connect() -> Result<Self, NetError> {
         let conn = Connection::system().map_err(|e| NetError::from_zbus(&e))?;
-        Ok(Self { conn, keys: Arc::new(SecretServiceStore) })
+        Ok(Self { conn, keys: Arc::new(SecretServiceStore), once: Arc::new(OneShotSecrets::default()) })
     }
 
-    /// Serve the secret agent and register it; NetworkManager must be running.
-    /// Without it a profile that keeps its key out of NetworkManager cannot join.
-    pub fn register_agent(&self) -> Result<(), NetError> {
-        agent::register(&self.conn, self.keys.clone())
+    /// Serve the secret agent and register it under `identifier`;
+    /// NetworkManager must be running. Without it a profile that keeps its
+    /// key out of NetworkManager cannot join.
+    pub fn register_agent(&self, identifier: &str) -> Result<(), NetError> {
+        agent::register(&self.conn, agent::SecretSources { keys: self.keys.clone(), once: self.once.clone() }, identifier)
     }
 
     /// The connection, for the signal watcher.
@@ -157,13 +160,13 @@ impl NmBackend {
         if !key_not_stored(&settings) { return Ok(None); }
         let uuid = text_of(&settings, "connection", "uuid").ok_or_else(|| NetError::other("The profile has no uuid"))?;
         let Some(password) = password else {
-            return match self.keys.get(&uuid)? {
+            return match self.keys.get(&uuid, &psk_key())? {
                 Some(_) => Ok(None),
                 None => Err(NetError::password_needed()),
             };
         };
         let name = text_of(&settings, "connection", "id").unwrap_or_else(|| uuid.clone());
-        self.keys.set(&uuid, &name, password)?;
+        self.keys.set(&uuid, &name, &psk_key(), password)?;
         Ok(Some(uuid))
     }
 
@@ -275,7 +278,7 @@ impl Backend for NmBackend {
             return self.wait_active(&active).map_err(|why| {
                 // A key that did not work must not stay in the keyring.
                 if let Some(uuid) = &kept {
-                    let _ = self.keys.delete(uuid);
+                    let _ = self.keys.delete(uuid, &psk_key());
                 }
                 NetError::other(if kept.is_some() { format!("{why}, wrong password?") } else { why })
             });

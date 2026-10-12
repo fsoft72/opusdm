@@ -39,7 +39,7 @@ fn connect_and_follow(tx: &async_channel::Sender<WatchMsg>, outage: &mut Outage)
     let mut known = backend.state().map_err(|e| e.text())?;
     // Not fatal: the tray works, only a profile that keeps its key out of
     // NetworkManager cannot join.
-    if let Err(e) = backend.register_agent() {
+    if let Err(e) = backend.register_agent(crate::agent::PANEL_IDENTIFIER) {
         eprintln!("[opusdm-network:{}] secret agent: {}", std::process::id(), e.text());
     }
     let send = |m: WatchMsg| tx.send_blocking(m).is_ok();
