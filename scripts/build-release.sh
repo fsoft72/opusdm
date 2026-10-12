@@ -60,6 +60,14 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name.
 export PATH="$HERE/bin:$PATH"
 
+# Name the desktop (the portals and apps such as Brave read it) and hand it to
+# D-Bus and systemd, so apps started by activation (portals, keyring prompts)
+# see the same environment as the session.
+export XDG_CURRENT_DESKTOP=OpusDM
+export XDG_SESSION_TYPE=x11
+dbus-update-activation-environment --systemd DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE \
+    || echo "opusdm-session: cannot update the D-Bus activation environment" >&2
+
 # picom runs on a per-user copy of its config: the hub rewrites the opacity
 # keys of that copy (Settings, Windows tab) and signals picom to reload it.
 export OPUSDM_PICOM_BASE="$HERE/config/picom.conf"

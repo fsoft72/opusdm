@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-12
+- Fix (session, X11): `opusdm-session` now exports `XDG_CURRENT_DESKTOP=OpusDM` and `XDG_SESSION_TYPE=x11` and runs `dbus-update-activation-environment --systemd` with them and `DISPLAY`, like the Wayland session. Before, apps such as Brave started in a session with no desktop name, so they could not tell which keyring to use for their "Safe Storage" key (passwords and cookies). Found while looking at Brave forgetting logins: the keyrings hold four different `Brave Safe Storage` keys (`Default_Keyring`, `Default_Keyring_1`, `Default_12`, `Default_keyring`) and the `default` alias pointed to `Default_Keyring`, which gnome-keyring cannot load. The alias was moved to `login` by hand (`SetAlias`, backup in `~/.local/share/keyrings/default.bak-2026-10-12`). NOT done: choosing and removing the extra Brave keys (which one decrypts the current `Login Data` is not checked). NOT checked: a fresh login with the new script, and that the desktop name changes Brave's choice of password store.
 - Feature (panel): middle-click on a window in the window list closes it, like its close button (Ctrl+F4); the right-click menu has a new "Close Window" entry before "Force kill". X11 sends `_NET_CLOSE_WINDOW` to the window manager, Wayfire uses `window-rules/close-view` (new `opusdm_wayland::wayfire::close`), other Wayland compositors the foreign-toplevel close request (`Session::close`). Existing tests pass; NOT checked by eye.
 
 ## 2026-10-11
