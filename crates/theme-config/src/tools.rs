@@ -1,5 +1,5 @@
 //! The tabs of buttons that open the other OpusDM configuration tools (Hotkeys, File
-//! Types, Functions, Apps, Input, Screens), each as its own process, and the
+//! Types, Functions, Apps, Input, Screens, Network), each as its own process, and the
 //! Button Banks manager, which lives in the hub.
 
 use gtk4 as gtk;
@@ -24,9 +24,10 @@ const ADVANCED_TOOLS: [(&str, Action); 5] = [
 ];
 
 /// The buttons of the System tab: label and action.
-const SYSTEM_TOOLS: [(&str, Action); 2] = [
+const SYSTEM_TOOLS: [(&str, Action); 3] = [
     ("Input", Action::Spawn("opusdm-input-config", &[])),
     ("Screens", Action::Spawn("opusdm-screen", &[])),
+    ("Network", Action::Spawn("opusdm-network-manager", &[])),
 ];
 
 /// Build the page of the Advanced tab.

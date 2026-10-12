@@ -1,6 +1,8 @@
 //! The network state as the panel sees it: pure logic, no GTK.
 
 use opusdm_network::{AccessPoint, NetState, Security, WatchMsg};
+#[cfg(test)]
+use opusdm_network::VpnEntry;
 
 /// Signals below this are drawn with one arc.
 const LOW_BELOW: u8 = 34;
@@ -58,13 +60,25 @@ impl Model {
         }
     }
 
-    /// The icon tooltip: what is connected, or why nothing is.
+    /// Whether a VPN is up: the icon gets a lock.
+    pub fn vpn_active(&self) -> bool {
+        self.state.active_vpn().is_some()
+    }
+
+    /// The icon tooltip: what is connected, or why nothing is, and the VPN.
     pub fn tooltip(&self) -> String {
         if !self.available { return "No network manager".to_string(); }
-        if self.state.eth_connected { return "Ethernet connected".to_string(); }
-        match self.state.active_ap() {
-            Some(ap) => format!("{} ({}%)", ap.ssid, ap.signal),
-            None => "Not connected".to_string(),
+        let link = if self.state.eth_connected {
+            "Ethernet connected".to_string()
+        } else {
+            match self.state.active_ap() {
+                Some(ap) => format!("{} ({}%)", ap.ssid, ap.signal),
+                None => "Not connected".to_string(),
+            }
+        };
+        match self.state.active_vpn() {
+            Some(vpn) => format!("{link}\nVPN: {}", vpn.name),
+            None => link,
         }
     }
 }
@@ -87,6 +101,9 @@ pub enum Request {
     Scan,
     Connect { ssid: String, password: Option<String> },
     DisconnectWifi,
+    /// Bring a VPN up; `password` is asked from the user for this connect only.
+    VpnUp { uuid: String, password: Option<String> },
+    VpnDown(String),
 }
 
 // The password must never reach a log through `{:?}`.
@@ -98,6 +115,8 @@ impl std::fmt::Debug for Request {
             Request::Scan => write!(f, "Scan"),
             Request::Connect { ssid, password } => write!(f, "Connect({ssid}, password: {})", password.is_some()),
             Request::DisconnectWifi => write!(f, "DisconnectWifi"),
+            Request::VpnUp { uuid, password } => write!(f, "VpnUp({uuid}, password: {})", password.is_some()),
+            Request::VpnDown(uuid) => write!(f, "VpnDown({uuid})"),
         }
     }
 }
@@ -154,7 +173,7 @@ mod tests {
     }
 
     fn state(eth_connected: bool, aps: Vec<AccessPoint>) -> NetState {
-        NetState { wifi_present: true, wifi_enabled: true, eth_present: true, eth_available: true, eth_on: eth_connected, eth_connected, aps }
+        NetState { wifi_present: true, wifi_enabled: true, eth_present: true, eth_available: true, eth_on: eth_connected, eth_connected, aps, vpns: Vec::new() }
     }
 
     #[test]
@@ -237,6 +256,33 @@ mod tests {
         assert_eq!(row_action(&ap("a", 50, Security::Sae, false, false)), RowAction::AskPassword);
         assert!(matches!(row_action(&ap("a", 50, Security::Enterprise, false, true)), RowAction::Unsupported(_)));
         assert!(matches!(row_action(&ap("a", 50, Security::Wep, false, false)), RowAction::Unsupported(_)));
+    }
+
+    fn vpn(name: &str, active: bool) -> VpnEntry {
+        VpnEntry { uuid: name.to_string(), name: name.to_string(), active, activating: false, ask_password: false }
+    }
+
+    #[test]
+    fn an_active_vpn_is_in_the_tooltip_and_locks_the_icon() {
+        let mut m = Model::default();
+        let mut s = state(true, vec![]);
+        s.vpns = vec![vpn("home", false), vpn("work", true)];
+        m.apply(WatchMsg::State(s));
+        assert!(m.vpn_active());
+        assert_eq!(m.tooltip(), "Ethernet connected\nVPN: work");
+        let mut s = state(true, vec![]);
+        s.vpns = vec![vpn("home", false)];
+        m.apply(WatchMsg::State(s));
+        assert!(!m.vpn_active());
+        assert_eq!(m.tooltip(), "Ethernet connected");
+    }
+
+    #[test]
+    fn vpn_requests_are_never_merged_and_hide_the_password() {
+        let up = Request::VpnUp { uuid: "u".into(), password: Some("hunter2".into()) };
+        assert!(!format!("{up:?}").contains("hunter2"));
+        let batch = vec![up.clone(), Request::VpnDown("u".into()), up.clone()];
+        assert_eq!(coalesce(batch.clone()), batch);
     }
 
     #[test]

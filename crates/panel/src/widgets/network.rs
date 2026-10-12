@@ -4,10 +4,16 @@ use crate::network_center::NetworkCenter;
 use crate::network_model::{is_locked, row_action, IconState, Request, RowAction};
 use gtk4 as gtk;
 use gtk::prelude::*;
-use opusdm_network::{AccessPoint, NetState, Security};
+use opusdm_network::{AccessPoint, NetState, Security, VpnEntry};
 use std::cell::Cell;
 use std::f64::consts::PI;
+use std::path::PathBuf;
 use std::rc::Rc;
+
+/// The program that edits the connections, started by "Configure connections".
+const MANAGER_BIN: &str = "opusdm-network-manager";
+/// Size of the VPN lock drawn over the icon, as a part of the icon size.
+const VPN_LOCK_SCALE: f64 = 0.5;
 
 /// Size of the panel icon in pixels.
 const ICON_SIZE: i32 = 20;
@@ -70,6 +76,8 @@ pub struct NetworkButton {
     root: gtk::Box,
     icon: gtk::DrawingArea,
     shown: Rc<Cell<IconState>>,
+    /// A VPN is up: the icon gets a small lock.
+    vpn_shown: Rc<Cell<bool>>,
     button: gtk::MenuButton,
     popover: gtk::Popover,
     message: gtk::Label,
@@ -78,6 +86,9 @@ pub struct NetworkButton {
     wifi: SwitchRow,
     list: gtk::Box,
     scroll: gtk::ScrolledWindow,
+    /// The VPN heading and rows; hidden without VPN profiles.
+    vpn_section: gtk::Box,
+    vpn_rows: gtk::Box,
 }
 
 impl NetworkButton {
@@ -88,12 +99,16 @@ impl NetworkButton {
         root.set_visible(false);
 
         let shown = Rc::new(Cell::new(IconState::Disconnected));
+        let vpn_shown = Rc::new(Cell::new(false));
         let icon = gtk::DrawingArea::new();
         icon.set_content_width(ICON_SIZE);
         icon.set_content_height(ICON_SIZE);
         {
-            let shown = shown.clone();
-            icon.set_draw_func(move |area, cr, w, h| draw_icon(area, cr, w, h, shown.get()));
+            let (shown, vpn_shown) = (shown.clone(), vpn_shown.clone());
+            icon.set_draw_func(move |area, cr, w, h| {
+                draw_icon(area, cr, w, h, shown.get());
+                if vpn_shown.get() { draw_vpn_lock(area, cr, w, h); }
+            });
         }
         let button = gtk::MenuButton::new();
         button.add_css_class("flat");
@@ -130,11 +145,25 @@ impl NetworkButton {
         scroll.set_max_content_height(LIST_MAX_HEIGHT);
         scroll.set_child(Some(&list));
 
+        let vpn_section = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        let vpn_heading = gtk::Label::new(Some("VPN"));
+        vpn_heading.set_xalign(0.0);
+        vpn_heading.add_css_class("heading");
+        let vpn_rows = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        vpn_section.append(&vpn_heading);
+        vpn_section.append(&vpn_rows);
+        vpn_section.set_visible(false);
+        let configure = gtk::Button::with_label("Configure connections...");
+        configure.add_css_class("flat");
+
         content.append(&message);
         content.append(&status);
         content.append(&eth.root);
         content.append(&wifi.root);
         content.append(&scroll);
+        content.append(&vpn_section);
+        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        content.append(&configure);
         let popover = gtk::Popover::new();
         popover.set_child(Some(&content));
         button.set_popover(Some(&popover));
@@ -148,9 +177,17 @@ impl NetworkButton {
             });
         }
 
+        {
+            let popover = popover.clone();
+            configure.connect_clicked(move |_| {
+                popover.popdown();
+                open_manager();
+            });
+        }
+
         root.append(&button);
         root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        Rc::new(Self { root, icon, shown, button, popover, message, status, eth, wifi, list, scroll })
+        Rc::new(Self { root, icon, shown, vpn_shown, button, popover, message, status, eth, wifi, list, scroll, vpn_section, vpn_rows })
     }
 
     /// The widget to put in the bar.
@@ -172,6 +209,7 @@ impl NetworkButton {
     pub fn refresh(&self, center: &Rc<NetworkCenter>) {
         self.root.set_visible(center.is_available());
         self.shown.set(center.icon_state());
+        self.vpn_shown.set(center.vpn_active());
         self.icon.queue_draw();
         self.button.set_tooltip_text(Some(&center.tooltip()));
         let msg = center.message();
@@ -183,6 +221,18 @@ impl NetworkButton {
         let state = center.state();
         self.show_switches(&state);
         self.show_list(center, &state);
+        self.show_vpns(center, &state);
+    }
+
+    /// Rebuild the VPN rows; the section is hidden without VPN profiles.
+    fn show_vpns(&self, center: &Rc<NetworkCenter>, state: &NetState) {
+        self.vpn_section.set_visible(!state.vpns.is_empty());
+        while let Some(child) = self.vpn_rows.first_child() {
+            self.vpn_rows.remove(&child);
+        }
+        for vpn in &state.vpns {
+            self.vpn_rows.append(&vpn_row(center, &self.popover, &self.button, vpn));
+        }
     }
 
     /// The two switches follow the state; a missing device hides its row.
@@ -266,17 +316,62 @@ fn ask_and_connect(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &
     });
 }
 
+/// One VPN row: a check on the active one, the name and a switch.
+fn vpn_row(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::MenuButton, vpn: &VpnEntry) -> gtk::Box {
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let check = gtk::Label::new(Some(if vpn.active { "\u{2713}" } else { "" }));
+    check.set_width_chars(2);
+    let name = gtk::Label::new(Some(&vpn.name));
+    name.set_xalign(0.0);
+    name.set_hexpand(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    // Set before the handler, so showing the state sends nothing.
+    switch.set_active(vpn.active || vpn.activating);
+    let (center, popover, button, vpn) = (center.clone(), popover.clone(), button.clone(), vpn.clone());
+    switch.connect_active_notify(move |s| {
+        if !s.is_active() { return center.send(Request::VpnDown(vpn.uuid.clone())); }
+        if !vpn.ask_password { return center.send(Request::VpnUp { uuid: vpn.uuid.clone(), password: None }); }
+        popover.popdown();
+        let parent = button.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+        let (center, uuid) = (center.clone(), vpn.uuid.clone());
+        ask_secret(parent.as_ref(), "VPN password", &format!("Password for {}", vpn.name), move |password| {
+            center.send(Request::VpnUp { uuid: uuid.clone(), password: Some(password) });
+        });
+    });
+    line.append(&check);
+    line.append(&name);
+    line.append(&switch);
+    line
+}
+
+/// Start the network manager program, from the folder of the panel first.
+fn open_manager() {
+    let sibling = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(MANAGER_BIN)));
+    let path = sibling.filter(|p| p.exists()).unwrap_or_else(|| PathBuf::from(MANAGER_BIN));
+    if let Err(e) = std::process::Command::new(&path).spawn() {
+        opusdm_ipc::err_log!("opusdm-panel", "cannot start {}: {e}", path.display());
+    }
+}
+
 /// A small modal window that asks for the password of `ssid`.
 /// `on_submit` gets the password when the user confirms.
 fn ask_password(parent: Option<&gtk::Window>, ssid: &str, security: Security, on_submit: impl Fn(String) + 'static) {
-    let window = gtk::Window::builder().title("Wi-Fi password").modal(true).resizable(false).build();
+    let kind = if security == Security::Sae { "WPA3" } else { "WPA" };
+    ask_secret(parent, "Wi-Fi password", &format!("Password for {ssid} ({kind})"), on_submit);
+}
+
+/// A small modal window titled `title` that asks for a password with the
+/// line `prompt`. `on_submit` gets the password when the user confirms.
+fn ask_secret(parent: Option<&gtk::Window>, title: &str, prompt: &str, on_submit: impl Fn(String) + 'static) {
+    let window = gtk::Window::builder().title(title).modal(true).resizable(false).build();
     window.set_transient_for(parent);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
     for set in [gtk::Widget::set_margin_top, gtk::Widget::set_margin_bottom, gtk::Widget::set_margin_start, gtk::Widget::set_margin_end] {
         set(content.upcast_ref(), 12);
     }
-    let kind = if security == Security::Sae { "WPA3" } else { "WPA" };
-    let label = gtk::Label::new(Some(&format!("Password for {ssid} ({kind})")));
+    let label = gtk::Label::new(Some(prompt));
     label.set_xalign(0.0);
     let entry = gtk::PasswordEntry::new();
     entry.set_show_peek_icon(true);
@@ -366,6 +461,15 @@ fn draw_plug(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: f64, h: f64) 
         cr.line_to(x, h * 0.85);
     }
     let _ = cr.stroke();
+}
+
+/// A small padlock in the lower right corner of the icon: a VPN is up.
+fn draw_vpn_lock(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
+    let size = f64::from(w.min(h)) * VPN_LOCK_SCALE;
+    let _ = cr.save();
+    cr.translate(f64::from(w) - size, f64::from(h) - size);
+    draw_lock(area, cr, size as i32, size as i32);
+    let _ = cr.restore();
 }
 
 /// A closed padlock in the text colour.

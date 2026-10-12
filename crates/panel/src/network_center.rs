@@ -94,6 +94,11 @@ impl NetworkCenter {
         self.model.borrow().icon_state()
     }
 
+    /// Whether a VPN is up.
+    pub fn vpn_active(&self) -> bool {
+        self.model.borrow().vpn_active()
+    }
+
     /// The icon tooltip.
     pub fn tooltip(&self) -> String {
         self.model.borrow().tooltip()
@@ -215,6 +220,8 @@ fn run_request(backend: &dyn Backend, request: &Request, done: &async_channel::S
         Request::SetEth(on) => backend.set_eth_enabled(*on),
         Request::DisconnectWifi => backend.disconnect_wifi(),
         Request::Connect { ssid, password } => backend.connect(ssid, password.as_deref()),
+        Request::VpnUp { uuid, password } => backend.activate_vpn(uuid, password.as_deref()),
+        Request::VpnDown(uuid) => backend.deactivate_vpn(uuid),
         Request::Scan => {
             // NetworkManager refuses a scan that follows another too closely;
             // that is not worth a line in the popover.
@@ -266,6 +273,17 @@ mod tests {
         *backend.fail_connect.lock().unwrap() = Some(NetError::password_needed());
         let done = reports(&backend, &connect("os3", None));
         assert!(matches!(done.as_slice(), [Done::NeedsPassword(s), Done::Connected(c)] if s == "os3" && c == "os3"));
+    }
+
+    #[test]
+    fn a_vpn_request_reaches_the_backend_and_its_failure_is_shown() {
+        let backend = FakeBackend::default();
+        assert!(reports(&backend, &Request::VpnUp { uuid: "u".into(), password: Some("pw".into()) }).is_empty());
+        assert!(reports(&backend, &Request::VpnDown("u".into())).is_empty());
+        assert_eq!(backend.calls(), vec!["vpn up u password=true".to_string(), "vpn down u".to_string()]);
+        *backend.fail_connect.lock().unwrap() = Some(NetError::other("Could not connect"));
+        let done = reports(&backend, &Request::VpnUp { uuid: "u".into(), password: None });
+        assert!(matches!(done.as_slice(), [Done::Failed(e)] if e.text() == "Could not connect"));
     }
 
     #[test]
