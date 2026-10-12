@@ -286,6 +286,11 @@ pub fn focus(id: u32) -> Result<(), String> {
     call("window-rules/focus-view", json!({ "id": id })).map(drop)
 }
 
+/// Ask window `id` to close, like its close button.
+pub fn close(id: u32) -> Result<(), String> {
+    call("window-rules/close-view", json!({ "id": id })).map(drop)
+}
+
 /// Minimize (or restore) window `id`.
 pub fn set_minimized(id: u32, minimized: bool) -> Result<(), String> {
     call("wm-actions/set-minimized", json!({ "view_id": id, "state": minimized })).map(drop)

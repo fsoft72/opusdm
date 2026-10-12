@@ -1,5 +1,5 @@
 //! Window list for the current desktop: icon + title per window, click to
-//! activate, click the active window to minimise it. Rebuilt wholesale on
+//! activate, click the active window to minimise it, middle-click to close. Rebuilt wholesale on
 //! every snapshot - the window count is small.
 
 use gtk4 as gtk;
@@ -62,7 +62,7 @@ impl Tasklist {
     }
 
     /// One window button: `[icon] title`, click activates or (if already the
-    /// shown active window) minimises.
+    /// shown active window) minimises, middle-click closes.
     fn button(&self, c: &ClientWin, is_active: bool) -> gtk::Button {
         let inner = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         inner.append(&icon_image(c));
@@ -93,6 +93,11 @@ impl Tasklist {
                 ewmh::activate_window(xid);
             }
         });
+
+        let middle = gtk::GestureClick::new();
+        middle.set_button(gtk::gdk::BUTTON_MIDDLE);
+        middle.connect_released(move |_, _, _, _| ewmh::close_window(xid));
+        btn.add_controller(middle);
         btn
     }
 }
@@ -106,7 +111,7 @@ fn desktop_label(index: u32, names: &[String]) -> String {
 }
 
 /// Attach the right-click menu to `btn`: "Move to desktop" with one entry per
-/// desktop, and "Force kill" (SIGKILL on the window's process) when the
+/// desktop, "Close Window" (polite close request), and "Force kill" (SIGKILL on the window's process) when the
 /// client published its pid. Returns the popover so the caller can release it.
 fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) -> gtk::PopoverMenu {
     let menu = gio::Menu::new();
@@ -118,6 +123,7 @@ fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) 
         }
         menu.append_submenu(Some("Move to desktop"), &desktops);
     }
+    menu.append(Some("Close Window"), Some("win.close"));
     if c.pid.is_some() {
         menu.append(Some("Force kill"), Some("win.kill"));
     }
@@ -130,6 +136,9 @@ fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) 
         ewmh::move_window_to_desktop(xid, index.max(0) as u32);
     });
     actions.add_action(&move_action);
+    let close_action = gio::SimpleAction::new("close", None);
+    close_action.connect_activate(move |_, _| ewmh::close_window(xid));
+    actions.add_action(&close_action);
     if let Some(pid) = c.pid {
         let kill_action = gio::SimpleAction::new("kill", None);
         kill_action.connect_activate(move |_, _| ewmh::force_kill(pid));

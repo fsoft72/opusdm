@@ -1,5 +1,8 @@
 # Changes
 
+## 2026-10-12
+- Feature (panel): middle-click on a window in the window list closes it, like its close button (Ctrl+F4); the right-click menu has a new "Close Window" entry before "Force kill". X11 sends `_NET_CLOSE_WINDOW` to the window manager, Wayfire uses `window-rules/close-view` (new `opusdm_wayland::wayfire::close`), other Wayland compositors the foreign-toplevel close request (`Session::close`). Existing tests pass; NOT checked by eye.
+
 ## 2026-10-11
 - Refactor (panel): the audio, devices, network and battery tray centers share `TransientMessage` (`transient_message.rs`): the error line, its generation token and the 5 s timer that clears it unless a newer message replaced it. Each center keeps a one-line `show_message`. 1 new unit test.
 - Test (iconview): the tests that change `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` / `OPUSDM_NO_THUMBS` share one crate-wide lock (`test_env_lock`); before, `icon_set` and `field` had separate locks and the two thumbnail tests none, so `thumbs::cache::store_then_load...` could fail when `thumbs::pool`'s test removed `XDG_CACHE_HOME` mid-run (seen once). 6 runs in a row pass.

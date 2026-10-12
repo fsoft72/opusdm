@@ -137,6 +137,13 @@ pub fn iconify_window(id: u32) -> bool {
     with_session(|s| s.minimize(id))
 }
 
+/// Ask window `id` to close, like its close button; `false` when not on
+/// Wayland.
+pub fn close_window(id: u32) -> bool {
+    if wayfire::under_wayfire() { return with_wayfire("close window", || wayfire::close(id)); }
+    with_session(|s| s.close(id))
+}
+
 /// Move window `id` to desktop `index`; `false` when not on Wayland. Only
 /// Wayfire can do it: no Wayland protocol moves another client's window.
 pub fn move_window_to_desktop(id: u32, index: u32) -> bool {

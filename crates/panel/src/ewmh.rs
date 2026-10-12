@@ -428,6 +428,13 @@ pub fn iconify_window(xid: u32) {
     with_root(|x11| x11.send_to_root(xid, "WM_CHANGE_STATE", [ICONIC_STATE, 0, 0, 0, 0]));
 }
 
+/// Ask `xid` to close via `_NET_CLOSE_WINDOW`, like its close button (pager
+/// source indication; the window manager sends `WM_DELETE_WINDOW`).
+pub fn close_window(xid: u32) {
+    if crate::wl_windows::close_window(xid) { return; }
+    with_root(|x11| x11.send_to_root(xid, "_NET_CLOSE_WINDOW", [CURRENT_TIME, 2, 0, 0, 0]));
+}
+
 /// Move `xid` to virtual desktop `index` (pager source indication).
 pub fn move_window_to_desktop(xid: u32, index: u32) {
     if crate::wl_windows::move_window_to_desktop(xid, index) { return; }
