@@ -93,6 +93,7 @@ done
 if [ "$WITH_CONFIG" -eq 1 ]; then
     echo "Installing config"
     $SUDO cp -r "$DIST/config/." "$PREFIX/config/"
+    $SUDO cp -r "$DIST/share/themes/." /usr/share/themes/
     $SUDO install -m 755 "$DIST/opusdm-session" "$PREFIX/opusdm-session"
     $SUDO install -m 755 "$DIST/opusdm-session-wayland" "$PREFIX/opusdm-session-wayland"
     if [ "$SESSION" = wayland ]; then
