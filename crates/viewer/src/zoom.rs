@@ -88,6 +88,19 @@ pub fn screen_size(picture: (u32, u32), zoom: Zoom) -> (i32, i32) {
     (((w as f64 * s).round() as i32).max(1), ((h as f64 * s).round() as i32).max(1))
 }
 
+/// Scroll value along one axis that keeps the content point under `pointer`
+/// (view coordinate) under it when the content changes from `old_full` to
+/// `new_full` long, in a view `page` long scrolled to `value`. Content shorter
+/// than the view is centred, as the picture is; the result is kept in range.
+pub fn anchored_scroll(value: f64, pointer: f64, page: f64, old_full: f64, new_full: f64) -> f64 {
+    if old_full <= 0.0 || new_full <= 0.0 { return 0.0; }
+    let old_offset = ((page - old_full) / 2.0).max(0.0);
+    let fraction = ((value + pointer - old_offset) / old_full).clamp(0.0, 1.0);
+    let new_offset = ((page - new_full) / 2.0).max(0.0);
+    let target = fraction * new_full + new_offset - pointer;
+    target.clamp(0.0, (new_full - page).max(0.0))
+}
+
 impl Zoom {
     /// The scale in use; `fit` is what the fit mode would use right now.
     pub fn scale(&self, fit: f64) -> f64 {
@@ -232,6 +245,34 @@ mod tests {
         assert_eq!(fit_scale((0, 10), (100, 100), 0), 1.0);
         assert_eq!(fit_scale((10, 10), (0, 100), 0), 1.0);
         assert_eq!(fit_scale((100000, 10), (100, 100), 0), ZOOM_MIN);
+    }
+
+    #[test]
+    fn anchored_scroll_keeps_the_point_under_the_pointer() {
+        // 1000 long content scrolled to 200 in a 400 view, pointer at 100:
+        // content point 300 doubles to 600, so 600 - 100 = 500.
+        assert_eq!(anchored_scroll(200.0, 100.0, 400.0, 1000.0, 2000.0), 500.0);
+        // Halving brings it back.
+        assert_eq!(anchored_scroll(500.0, 100.0, 400.0, 2000.0, 1000.0), 200.0);
+    }
+
+    #[test]
+    fn anchored_scroll_from_centred_content() {
+        // 200 long content centred in a 400 view (offset 100), pointer on its
+        // middle (200): at 800 long the middle (400) goes under the pointer.
+        assert_eq!(anchored_scroll(0.0, 200.0, 400.0, 200.0, 800.0), 200.0);
+        // Pointer left of the content anchors its left edge.
+        assert_eq!(anchored_scroll(0.0, 10.0, 400.0, 200.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn anchored_scroll_stays_in_range() {
+        // Near the end: never past the last page.
+        assert_eq!(anchored_scroll(600.0, 400.0, 400.0, 1000.0, 1100.0), 700.0);
+        assert_eq!(anchored_scroll(600.0, 400.0, 400.0, 1000.0, 500.0), 100.0);
+        // Content shorter than the view: no scrolling.
+        assert_eq!(anchored_scroll(300.0, 100.0, 400.0, 1000.0, 300.0), 0.0);
+        assert_eq!(anchored_scroll(0.0, 100.0, 400.0, 0.0, 300.0), 0.0);
     }
 
     #[test]

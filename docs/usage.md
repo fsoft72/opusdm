@@ -657,7 +657,9 @@ Lister preview, the Icon View thumbnails and the background picker.
   A name that does not exist stops the viewer with status 1, as does a command line with
   nothing to show.
 - **Pictures:** the picture starts fitted to the window (never enlarged). **+** / **-** or the
-  mouse wheel zoom (5% to 1600%), dragging moves a zoomed picture, **0** fits the window,
+  mouse wheel zoom (5% to 1600%) around the mouse pointer: the point under it stays in place
+  (with the pointer outside the picture, around the middle of the window). Dragging moves a
+  zoomed picture, **0** fits the window,
   **1** shows it at 100%, **r** / **R** rotate it right / left (the file is not changed).
   **.** switches between smooth scaling (the default) and sharp pixels, handy when zoomed in
   on pixel art; the info bar says `pixels` while it is on, and the choice stays for the

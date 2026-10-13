@@ -2,7 +2,7 @@
 
 use crate::loader::RawImage;
 use crate::view_paintable::ViewPaintable;
-use crate::zoom::{content_box, fit_scale, rotate_point, rotated_size, screen_size, unrotate_point, Mode, Zoom};
+use crate::zoom::{anchored_scroll, content_box, fit_scale, rotate_point, rotated_size, screen_size, unrotate_point, Mode, Zoom};
 use gtk4 as gtk;
 use gtk::{gdk, glib};
 use gtk::prelude::*;
@@ -21,6 +21,8 @@ pub struct ImageView {
     texture: RefCell<Option<gdk::Texture>>,
     /// Interpolated (smooth) scaling; off shows sharp pixels.
     smooth: Cell<bool>,
+    /// Pointer position over the view, the point a zoom step keeps in place.
+    pointer: Cell<Option<(f64, f64)>>,
 }
 
 impl ImageView {
@@ -33,10 +35,23 @@ impl ImageView {
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.add_css_class("viewer-stage");
-        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true) });
+        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None) });
+        this._wire_pointer();
         this._wire_wheel();
         this._wire_drag();
         this
+    }
+
+    /// Remember where the pointer is over the view; zooming keeps that point in place.
+    fn _wire_pointer(self: &Rc<Self>) {
+        let motion = gtk::EventControllerMotion::new();
+        let this = self.clone();
+        motion.connect_enter(move |_, x, y| this.pointer.set(Some((x, y))));
+        let this = self.clone();
+        motion.connect_motion(move |_, x, y| this.pointer.set(Some((x, y))));
+        let this = self.clone();
+        motion.connect_leave(move |_| this.pointer.set(None));
+        self.root.add_controller(motion);
     }
 
     /// Wheel up zooms in, wheel down zooms out; the scrolled window never scrolls with it.
@@ -124,18 +139,18 @@ impl ImageView {
         self.raw.borrow().as_ref().map(|r| (r.width, r.height))
     }
 
-    /// One zoom step in.
+    /// One zoom step in, around the pointer (the middle of the view when it is outside).
     pub fn zoom_in(&self) {
         let mut z = self.zoom.get();
         z.zoom_in(self._fit());
-        self._set_zoom(z);
+        self._set_zoom_anchored(z);
     }
 
-    /// One zoom step out.
+    /// One zoom step out, around the pointer (the middle of the view when it is outside).
     pub fn zoom_out(&self) {
         let mut z = self.zoom.get();
         z.zoom_out(self._fit());
-        self._set_zoom(z);
+        self._set_zoom_anchored(z);
     }
 
     /// Fit the window.
@@ -188,6 +203,37 @@ impl ImageView {
         self._apply();
     }
 
+    /// Store a new zoom and scroll so the picture point under the pointer (or
+    /// in the middle of the view) stays where it is.
+    fn _set_zoom_anchored(&self, zoom: Zoom) {
+        let Some(old_full) = self._full_size() else { return self._set_zoom(zoom) };
+        let page = (self.root.width() as f64, self.root.height() as f64);
+        let anchor = self.pointer.get().unwrap_or((page.0 / 2.0, page.1 / 2.0));
+        let (hadj, vadj) = (self.root.hadjustment(), self.root.vadjustment());
+        let value = (hadj.value(), vadj.value());
+        self._set_zoom(zoom);
+        let Some(new_full) = self._full_size() else { return };
+        let target = (anchored_scroll(value.0, anchor.0, page.0, old_full.0, new_full.0), anchored_scroll(value.1, anchor.1, page.1, old_full.1, new_full.1));
+        // The adjustments learn the new size only at the next layout: give it
+        // to them now so the first frame is already in place, and again after
+        // the layout in case it moved the value.
+        _scroll_to(&hadj, target.0, new_full.0.max(page.0));
+        _scroll_to(&vadj, target.1, new_full.1.max(page.1));
+        glib::idle_add_local_once(move || {
+            hadj.set_value(target.0);
+            vadj.set_value(target.1);
+        });
+    }
+
+    /// Size on screen of the turned picture at the current zoom, in pixels.
+    fn _full_size(&self) -> Option<(f64, f64)> {
+        let size = self.size()?;
+        let zoom = self.zoom.get();
+        let shown = rotated_size(size.0, size.1, zoom.rotation);
+        let scale = zoom.scale(self._fit());
+        Some((shown.0 as f64 * scale, shown.1 as f64 * scale))
+    }
+
     /// Scale the fit mode has right now.
     fn _fit(&self) -> f64 {
         let Some(size) = self.size() else { return 1.0 };
@@ -233,6 +279,12 @@ impl ImageView {
             }
         }
     }
+}
+
+/// Scroll `adj` to `value` in a content now `upper` long.
+fn _scroll_to(adj: &gtk::Adjustment, value: f64, upper: f64) {
+    if adj.upper() < upper { adj.set_upper(upper); }
+    adj.set_value(value);
 }
 
 /// Put `pos` (of a content `full` long, centred in the view when smaller) in
