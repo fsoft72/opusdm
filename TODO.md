@@ -13,7 +13,7 @@
   Add:  "Open in Viewer" for one or more files selected in folder
   It launches `opusdm-viewer` with all selected files / dirs as arguments
 
-- [ ] opusdm-hub CPU and Network applet details window
+- [x] opusdm-hub CPU and Network applet details window
  
   When the user clicks on CPU or Network applet a small borderless window should appear BELOW the CPU / Network applet
   showing in more details the CPU or Network operations

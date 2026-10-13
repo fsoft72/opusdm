@@ -21,6 +21,7 @@ mod battery_center;
 mod battery_model;
 mod network_center;
 mod network_model;
+mod sysmon_model;
 mod devices_model;
 mod ewmh;
 mod sni;

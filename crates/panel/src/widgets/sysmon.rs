@@ -1,72 +1,23 @@
 //! CPU and network monitors: a small text readout plus a sparkline of the
 //! last minute, sampled from `/proc/stat` and `/proc/net/dev` once a second.
+//! A click on either meter opens a borderless details popup below it.
 
+use crate::sysmon_model::{self as model, CpuTimes, IfaceBytes, IfaceRate, LoadAvg, ProcUsage};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
 /// Sample interval and sparkline history length.
 const TICK: Duration = Duration::from_secs(1);
 const HISTORY: usize = 60;
-
-/// Aggregate CPU times from the `cpu` line of `/proc/stat`.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct CpuTimes {
-    pub idle: u64,
-    pub total: u64,
-}
-
-/// Parse the summary `cpu` line of `/proc/stat`. `idle` is `idle + iowait`;
-/// `total` is the sum of every field. Returns `None` if the line is missing
-/// or malformed.
-pub fn parse_proc_stat(text: &str) -> Option<CpuTimes> {
-    let line = text.lines().find(|l| l.starts_with("cpu "))?;
-    let nums: Vec<u64> = line
-        .split_whitespace()
-        .skip(1)
-        .filter_map(|t| t.parse().ok())
-        .collect();
-    if nums.len() < 4 {
-        return None;
-    }
-    let idle = nums[3] + nums.get(4).copied().unwrap_or(0);
-    let total: u64 = nums.iter().sum();
-    Some(CpuTimes { idle, total })
-}
-
-/// Busy percentage between two samples. Zero when the totals did not advance.
-pub fn cpu_percent(prev: CpuTimes, now: CpuTimes) -> f64 {
-    let dt = now.total.saturating_sub(prev.total);
-    if dt == 0 {
-        return 0.0;
-    }
-    let di = now.idle.saturating_sub(prev.idle);
-    let busy = dt.saturating_sub(di) as f64;
-    (busy / dt as f64 * 100.0).clamp(0.0, 100.0)
-}
-
-/// Sum received and transmitted bytes across every interface in
-/// `/proc/net/dev` except loopback. Returns `(rx, tx)`.
-pub fn parse_net_dev(text: &str) -> (u64, u64) {
-    let mut rx = 0u64;
-    let mut tx = 0u64;
-    for line in text.lines() {
-        let Some((name, rest)) = line.split_once(':') else { continue };
-        let name = name.trim();
-        if name == "lo" || name.is_empty() {
-            continue;
-        }
-        let cols: Vec<u64> = rest.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-        // Columns: rx bytes .. (0), then 8 more rx fields, then tx bytes (8).
-        if cols.len() >= 9 {
-            rx += cols[0];
-            tx += cols[8];
-        }
-    }
-    (rx, tx)
-}
+/// Busiest processes listed in the CPU details.
+const TOP_PROCESSES: usize = 5;
+/// Size of the graph in the details popups.
+const DETAILS_GRAPH_W: i32 = 300;
+const DETAILS_GRAPH_H: i32 = 80;
 
 /// Human-readable transfer rate, e.g. `1.2M/s`, `340K/s`, `0B/s`.
 pub fn human_rate(bytes_per_s: f64) -> String {
@@ -139,7 +90,12 @@ fn install_sparkline(
 
 struct State {
     cpu_prev: CpuTimes,
+    cores_prev: Vec<CpuTimes>,
     net_prev: (u64, u64),
+    ifaces_prev: Vec<IfaceBytes>,
+    /// CPU ticks per pid at the previous sample; filled only while the CPU
+    /// details are open, since reading every process costs more.
+    procs_prev: HashMap<u32, u64>,
     cpu_trace: Rc<RefCell<Trace>>,
     rx_trace: Rc<RefCell<Trace>>,
     tx_trace: Rc<RefCell<Trace>>,
@@ -179,6 +135,179 @@ fn meter_label(align: gtk::Align, extra_class: Option<&str>) -> gtk::Label {
     label
 }
 
+/// Load average as shown in the CPU details.
+pub fn format_load(load: &LoadAvg) -> String {
+    format!("Load {:.2}  {:.2}  {:.2}    Tasks {}/{}", load.one, load.five, load.fifteen, load.running, load.total)
+}
+
+/// Highest value of a trace, zero when empty.
+fn peak(trace: &Trace) -> f64 {
+    trace.samples.iter().copied().fold(0.0, f64::max)
+}
+
+/// A small left aligned label, optionally with a CSS class.
+fn text_label(text: &str, class: Option<&str>) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    if let Some(c) = class { label.add_css_class(c); }
+    label
+}
+
+/// A borderless popup below `anchor`, opened by a left click on it. Its
+/// content is `content`.
+fn details_popover(anchor: &gtk::Overlay, content: &gtk::Box) -> gtk::Popover {
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_start(8);
+    content.set_margin_end(8);
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(false);
+    popover.set_position(gtk::PositionType::Bottom);
+    popover.set_child(Some(content));
+    popover.set_parent(anchor);
+    let click = gtk::GestureClick::new();
+    click.set_button(gtk::gdk::BUTTON_PRIMARY);
+    let p = popover.clone();
+    click.connect_released(move |_, _, _, _| p.popup());
+    anchor.add_controller(click);
+    // A popover is not a child the anchor drops by itself.
+    let p = popover.clone();
+    anchor.connect_destroy(move |_| p.unparent());
+    popover
+}
+
+/// The CPU details popup: graph, per core usage, load and busiest processes.
+struct CpuDetails {
+    popover: gtk::Popover,
+    graph: gtk::DrawingArea,
+    summary: gtk::Label,
+    cores: gtk::Grid,
+    load: gtk::Label,
+    procs: gtk::Grid,
+}
+
+impl CpuDetails {
+    /// Build the popup under `anchor`, drawing `trace`.
+    fn new(anchor: &gtk::Overlay, trace: &Rc<RefCell<Trace>>) -> Self {
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let graph = gtk::DrawingArea::new();
+        graph.set_content_width(DETAILS_GRAPH_W);
+        graph.set_content_height(DETAILS_GRAPH_H);
+        graph.add_css_class("opusdm-panel-meter");
+        install_sparkline(&graph, vec![(trace.clone(), CPU_RGB)], Some(100.0));
+        let summary = text_label("CPU --%", Some("heading"));
+        let cores = gtk::Grid::new();
+        cores.set_column_spacing(8);
+        cores.set_row_spacing(2);
+        let load = text_label("", None);
+        let procs = gtk::Grid::new();
+        procs.set_column_spacing(12);
+        content.append(&summary);
+        content.append(&graph);
+        content.append(&cores);
+        content.append(&load);
+        content.append(&text_label("Busiest processes", Some("heading")));
+        content.append(&procs);
+        let popover = details_popover(anchor, &content);
+        Self { popover, graph, summary, cores, load, procs }
+    }
+
+    /// Show one sample: the total, each core, the load and the processes
+    /// (`None` while they are still being measured).
+    fn update(&self, total: f64, cores: &[f64], load: Option<LoadAvg>, procs: Option<&[ProcUsage]>) {
+        self.summary.set_text(&format!("CPU {total:.0}%  ({} cores)", cores.len()));
+        self.graph.queue_draw();
+        _clear_grid(&self.cores);
+        for (i, pct) in cores.iter().enumerate() {
+            let (col, row) = ((i % 2) as i32 * 3, (i / 2) as i32);
+            let bar = gtk::LevelBar::for_interval(0.0, 100.0);
+            bar.set_value(*pct);
+            bar.set_hexpand(true);
+            bar.set_valign(gtk::Align::Center);
+            self.cores.attach(&text_label(&format!("cpu{i}"), Some("dim-label")), col, row, 1, 1);
+            self.cores.attach(&bar, col + 1, row, 1, 1);
+            self.cores.attach(&text_label(&format!("{pct:>3.0}%"), Some("monospace")), col + 2, row, 1, 1);
+        }
+        self.load.set_text(&load.map(|l| format_load(&l)).unwrap_or_default());
+        _clear_grid(&self.procs);
+        let Some(procs) = procs else {
+            self.procs.attach(&text_label("measuring...", Some("dim-label")), 0, 0, 1, 1);
+            return;
+        };
+        for (row, p) in procs.iter().enumerate() {
+            let row = row as i32;
+            self.procs.attach(&text_label(&format!("{:.1}%", p.percent), Some("monospace")), 0, row, 1, 1);
+            self.procs.attach(&text_label(&p.pid.to_string(), Some("dim-label")), 1, row, 1, 1);
+            self.procs.attach(&text_label(&p.name, None), 2, row, 1, 1);
+        }
+    }
+}
+
+/// The network details popup: graph, rates and totals per interface, peaks.
+struct NetDetails {
+    popover: gtk::Popover,
+    graph: gtk::DrawingArea,
+    summary: gtk::Label,
+    ifaces: gtk::Grid,
+    peaks: gtk::Label,
+}
+
+impl NetDetails {
+    /// Build the popup under `anchor`, drawing the download and upload traces.
+    fn new(anchor: &gtk::Overlay, rx: &Rc<RefCell<Trace>>, tx: &Rc<RefCell<Trace>>) -> Self {
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let graph = gtk::DrawingArea::new();
+        graph.set_content_width(DETAILS_GRAPH_W);
+        graph.set_content_height(DETAILS_GRAPH_H);
+        graph.add_css_class("opusdm-panel-meter");
+        install_sparkline(&graph, vec![(rx.clone(), NET_IN_RGB), (tx.clone(), NET_OUT_RGB)], None);
+        let summary = text_label("Network", Some("heading"));
+        let ifaces = gtk::Grid::new();
+        ifaces.set_column_spacing(12);
+        ifaces.set_row_spacing(2);
+        let peaks = text_label("", Some("dim-label"));
+        content.append(&summary);
+        content.append(&graph);
+        content.append(&ifaces);
+        content.append(&peaks);
+        let popover = details_popover(anchor, &content);
+        Self { popover, graph, summary, ifaces, peaks }
+    }
+
+    /// Show one sample: the totals, every interface and the peaks of the
+    /// last minute.
+    fn update(&self, rx: f64, tx: f64, ifaces: &[IfaceRate], peaks: (f64, f64)) {
+        self.summary.set_text(&format!("Network  \u{2193} {}  \u{2191} {}", human_rate(rx), human_rate(tx)));
+        self.graph.queue_draw();
+        _clear_grid(&self.ifaces);
+        let header = ["Interface", "\u{2193} rate", "\u{2191} rate", "\u{2193} total", "\u{2191} total"];
+        for (col, title) in header.iter().enumerate() {
+            self.ifaces.attach(&text_label(title, Some("dim-label")), col as i32, 0, 1, 1);
+        }
+        for (row, i) in ifaces.iter().enumerate() {
+            let row = row as i32 + 1;
+            let cells = [
+                (i.name.clone(), None),
+                (human_rate(i.rx_rate), Some("opusdm-panel-net-in")),
+                (human_rate(i.tx_rate), Some("opusdm-panel-net-out")),
+                (opusdm_ipc::size::binary_size(i.rx_total), None),
+                (opusdm_ipc::size::binary_size(i.tx_total), None),
+            ];
+            for (col, (text, class)) in cells.iter().enumerate() {
+                self.ifaces.attach(&text_label(text, *class), col as i32, row, 1, 1);
+            }
+        }
+        self.peaks.set_text(&format!("Peak last minute  \u{2193} {}  \u{2191} {}", human_rate(peaks.0), human_rate(peaks.1)));
+    }
+}
+
+/// Remove every child of `grid`.
+fn _clear_grid(grid: &gtk::Grid) {
+    while let Some(child) = grid.first_child() {
+        grid.remove(&child);
+    }
+}
+
 /// Build the combined CPU + network widget.
 pub fn build() -> gtk::Widget {
     let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -189,6 +318,7 @@ pub fn build() -> gtk::Widget {
     let cpu_label = meter_label(gtk::Align::End, None);
     cpu_label.set_text("--%");
     cpu_box.add_overlay(&cpu_label);
+    cpu_box.set_tooltip_text(Some("CPU - click for details"));
 
     // Network: two traces (green download, blue upload); the rates sit inside
     // the graph, download top-left, upload top-right.
@@ -199,6 +329,7 @@ pub fn build() -> gtk::Widget {
     net_out.set_text("\u{2191} --");
     net_box.add_overlay(&net_in);
     net_box.add_overlay(&net_out);
+    net_box.set_tooltip_text(Some("Network - click for details"));
 
     root.append(&cpu_box);
     root.append(&net_box);
@@ -216,26 +347,62 @@ pub fn build() -> gtk::Widget {
         None,
     );
 
+    let cpu_details = CpuDetails::new(&cpu_box, &cpu_trace);
+    let net_details = NetDetails::new(&net_box, &rx_trace, &tx_trace);
+
+    let stat = read("/proc/stat");
+    let net = read("/proc/net/dev");
     let state = Rc::new(RefCell::new(State {
-        cpu_prev: parse_proc_stat(&read("/proc/stat")).unwrap_or_default(),
-        net_prev: parse_net_dev(&read("/proc/net/dev")),
+        cpu_prev: model::parse_proc_stat(&stat).unwrap_or_default(),
+        cores_prev: model::parse_proc_stat_cores(&stat),
+        net_prev: model::parse_net_dev(&net),
+        ifaces_prev: model::parse_net_ifaces(&net),
+        procs_prev: HashMap::new(),
         cpu_trace,
         rx_trace,
         tx_trace,
     }));
 
+    // Opening the CPU details takes a first process sample, so the next tick
+    // can tell the busiest ones; closing drops it.
+    {
+        let state = state.clone();
+        cpu_details.popover.connect_show(move |_| {
+            state.borrow_mut().procs_prev = ticks_by_pid(&model::read_processes());
+        });
+    }
+    {
+        let state = state.clone();
+        cpu_details.popover.connect_closed(move |_| state.borrow_mut().procs_prev.clear());
+    }
+
     gtk::glib::timeout_add_local(TICK, move || {
         let mut s = state.borrow_mut();
 
-        if let Some(now) = parse_proc_stat(&read("/proc/stat")) {
-            let pct = cpu_percent(s.cpu_prev, now);
+        let stat = read("/proc/stat");
+        if let Some(now) = model::parse_proc_stat(&stat) {
+            let pct = model::cpu_percent(s.cpu_prev, now);
+            let total_delta = now.total.saturating_sub(s.cpu_prev.total);
             s.cpu_prev = now;
             s.cpu_trace.borrow_mut().push(pct);
             cpu_label.set_text(&format!("{pct:.0}%"));
             cpu_spark.queue_draw();
+
+            let cores = model::parse_proc_stat_cores(&stat);
+            if cpu_details.popover.is_visible() {
+                let procs_now = model::read_processes();
+                let top = model::top_processes(&s.procs_prev, &procs_now, total_delta, TOP_PROCESSES);
+                let measured = !s.procs_prev.is_empty();
+                s.procs_prev = ticks_by_pid(&procs_now);
+                let load = model::parse_loadavg(&read("/proc/loadavg"));
+                let per_core = model::cores_percent(&s.cores_prev, &cores);
+                cpu_details.update(pct, &per_core, load, measured.then_some(top.as_slice()));
+            }
+            s.cores_prev = cores;
         }
 
-        let now = parse_net_dev(&read("/proc/net/dev"));
+        let net = read("/proc/net/dev");
+        let now = model::parse_net_dev(&net);
         let rx = now.0.saturating_sub(s.net_prev.0) as f64 / TICK.as_secs_f64();
         let tx = now.1.saturating_sub(s.net_prev.1) as f64 / TICK.as_secs_f64();
         s.net_prev = now;
@@ -245,57 +412,28 @@ pub fn build() -> gtk::Widget {
         net_out.set_text(&format!("\u{2191} {}", human_rate(tx)));
         net_spark.queue_draw();
 
+        let ifaces = model::parse_net_ifaces(&net);
+        if net_details.popover.is_visible() {
+            let rates = model::iface_rates(&s.ifaces_prev, &ifaces, TICK.as_secs_f64());
+            let peaks = (peak(&s.rx_trace.borrow()), peak(&s.tx_trace.borrow()));
+            net_details.update(rx, tx, &rates, peaks);
+        }
+        s.ifaces_prev = ifaces;
+
         gtk::glib::ControlFlow::Continue
     });
 
     root.upcast()
 }
 
+/// Keep only the CPU ticks of each process.
+fn ticks_by_pid(procs: &HashMap<u32, (String, u64)>) -> HashMap<u32, u64> {
+    procs.iter().map(|(pid, (_, ticks))| (*pid, *ticks)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_proc_stat_reads_the_summary_line() {
-        let text = "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 10 0 5 80 5 0 0 0\n";
-        let t = parse_proc_stat(text).unwrap();
-        assert_eq!(t.idle, 850); // idle 800 + iowait 50
-        assert_eq!(t.total, 1000); // 100 + 50 + 800 + 50
-    }
-
-    #[test]
-    fn parse_proc_stat_rejects_garbage() {
-        assert!(parse_proc_stat("nothing here").is_none());
-        assert!(parse_proc_stat("cpu 1 2").is_none());
-    }
-
-    #[test]
-    fn cpu_percent_is_busy_over_total() {
-        let prev = CpuTimes { idle: 800, total: 1000 };
-        let now = CpuTimes { idle: 900, total: 1200 };
-        // total advanced 200, idle advanced 100 -> 50% busy
-        assert!((cpu_percent(prev, now) - 50.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn cpu_percent_zero_when_stalled() {
-        let s = CpuTimes { idle: 10, total: 20 };
-        assert_eq!(cpu_percent(s, s), 0.0);
-    }
-
-    #[test]
-    fn parse_net_dev_sums_non_loopback() {
-        let text = "\
-Inter-|   Receive                                                |  Transmit
- face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets
-    lo: 1000       10    0    0    0     0          0         0    1000       10
-  eth0: 5000       50    0    0    0     0          0         0    2000       20
-  wlan0: 100        1    0    0    0     0          0         0     50         1
-";
-        let (rx, tx) = parse_net_dev(text);
-        assert_eq!(rx, 5100); // eth0 + wlan0, lo excluded
-        assert_eq!(tx, 2050);
-    }
 
     #[test]
     fn trace_keeps_the_last_history_samples_oldest_first() {
@@ -307,6 +445,26 @@ Inter-|   Receive                                                |  Transmit
         let got: Vec<f64> = t.samples.iter().copied().collect();
         let want: Vec<f64> = (10..(HISTORY + 10)).map(|i| i as f64).collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn load_is_formatted_with_two_decimals_and_tasks() {
+        let load = LoadAvg { one: 0.5, five: 1.25, fifteen: 2.0, running: 3, total: 400 };
+        assert_eq!(format_load(&load), "Load 0.50  1.25  2.00    Tasks 3/400");
+    }
+
+    #[test]
+    fn peak_is_the_highest_sample() {
+        let mut t = Trace::new();
+        assert_eq!(peak(&t), 0.0);
+        for v in [3.0, 9.0, 1.0] { t.push(v); }
+        assert_eq!(peak(&t), 9.0);
+    }
+
+    #[test]
+    fn ticks_keep_the_pid() {
+        let procs = HashMap::from([(7, ("x".to_string(), 42))]);
+        assert_eq!(ticks_by_pid(&procs), HashMap::from([(7, 42)]));
     }
 
     #[test]
