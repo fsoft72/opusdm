@@ -82,6 +82,10 @@ impl State {
             s.source.set_dark(sw.is_active());
         });
         let s = self.clone();
+        bar.zoom_out.connect_clicked(move |_| s._zoom_document(false));
+        let s = self.clone();
+        bar.zoom_in.connect_clicked(move |_| s._zoom_document(true));
+        let s = self.clone();
         bar.entry.connect_search_changed(move |_| s._start_search());
         let s = self.clone();
         bar.entry.connect_activate(move |_| s._step_hit(true));
@@ -201,6 +205,16 @@ impl State {
         let panel = pdf && !full && self.pdf.bar.pages.is_active();
         self.pdf.panel.root.set_visible(panel);
         if panel { self.pdf.panel.start_thumbnails(); }
+    }
+
+    /// The zoom buttons of the bar: the page of a PDF, the font of a text.
+    fn _zoom_document(&self, bigger: bool) {
+        match (self._is_pdf(), bigger) {
+            (true, true) => self.image.zoom_in(),
+            (true, false) => self.image.zoom_out(),
+            (false, _) => self.font.change(bigger),
+        }
+        self._update_info();
     }
 
     /// F9 / the Pages button: open or close the page panel.

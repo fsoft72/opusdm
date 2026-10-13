@@ -4,6 +4,7 @@
 
 mod args;
 mod delete;
+mod font_scale;
 mod gallery;
 mod highlight;
 mod image_view;

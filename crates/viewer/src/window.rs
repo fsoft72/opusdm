@@ -4,6 +4,7 @@
 mod pdf;
 
 use crate::delete::{remove_permanently, try_trash, SystemRemover, TrashStep};
+use crate::font_scale::FontScale;
 use crate::gallery::Gallery;
 use crate::image_view::ImageView;
 use crate::keys::{map, Action};
@@ -43,6 +44,8 @@ struct State {
     video: Rc<VideoView>,
     markdown: Rc<MarkdownView>,
     source: Rc<SourceView>,
+    /// Font size of the Markdown and source texts.
+    font: FontScale,
     error: gtk::Label,
     info: gtk::Label,
     strip: Rc<Strip>,
@@ -115,6 +118,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         video,
         markdown,
         source,
+        font: FontScale::new(),
         error,
         info,
         strip,
@@ -300,8 +304,8 @@ impl State {
         let detail = match (kind, self.stack.visible_child_name().as_deref()) {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
-            (MediaKind::Markdown, _) => "markdown".to_string(),
-            (MediaKind::Source, _) => self.source.detail(),
+            (MediaKind::Markdown, _) => format!("markdown{}", self.font.label()),
+            (MediaKind::Source, _) => format!("{}{}", self.source.detail(), self.font.label()),
             (MediaKind::Pdf, _) if self.pages.get() == 0 => "loading".to_string(),
             (MediaKind::Image | MediaKind::Pdf, _) => match self.image.size() {
                 Some((w, h)) => format!("{}{w}x{h}  -  {}{}", self._page_label(kind), self.image.zoom_label(), if self.image.is_smooth() { "" } else { "  -  pixels" }),

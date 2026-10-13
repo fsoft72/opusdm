@@ -1,5 +1,6 @@
 //! The bar over a PDF: the button that opens and closes the page panel and the
-//! search field with its previous / next buttons and the match count.
+//! search field with its previous / next buttons and the match count; the
+//! zoom buttons and the dark switch of a text document.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
@@ -12,6 +13,9 @@ pub struct PdfBar {
     pub prev: gtk::Button,
     pub next: gtk::Button,
     pub status: gtk::Label,
+    /// Font size of a text document, zoom of a PDF page.
+    pub zoom_out: gtk::Button,
+    pub zoom_in: gtk::Button,
     /// Dark / light switch of a text document; shown for Markdown and source texts only.
     pub dark_box: gtk::Box,
     pub dark: gtk::Switch,
@@ -35,6 +39,12 @@ impl PdfBar {
         let status = gtk::Label::new(None);
         status.set_width_chars(10);
         status.set_xalign(0.0);
+        let zoom_out = gtk::Button::from_icon_name("zoom-out-symbolic");
+        zoom_out.set_focusable(false);
+        zoom_out.set_tooltip_text(Some("Smaller text, or zoom out of the page"));
+        let zoom_in = gtk::Button::from_icon_name("zoom-in-symbolic");
+        zoom_in.set_focusable(false);
+        zoom_in.set_tooltip_text(Some("Bigger text, or zoom in on the page"));
         let dark = gtk::Switch::new();
         dark.set_focusable(false);
         dark.set_valign(gtk::Align::Center);
@@ -47,11 +57,11 @@ impl PdfBar {
         spacer.set_hexpand(true);
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         root.add_css_class("viewer-pdf-bar");
-        for widget in [pages.upcast_ref::<gtk::Widget>(), spacer.upcast_ref(), dark_box.upcast_ref(), entry.upcast_ref(), prev.upcast_ref(), next.upcast_ref(), status.upcast_ref()] {
+        for widget in [pages.upcast_ref::<gtk::Widget>(), spacer.upcast_ref(), zoom_out.upcast_ref(), zoom_in.upcast_ref(), dark_box.upcast_ref(), entry.upcast_ref(), prev.upcast_ref(), next.upcast_ref(), status.upcast_ref()] {
             root.append(widget);
         }
         root.set_visible(false);
-        PdfBar { root, pages, entry, prev, next, status, dark_box, dark }
+        PdfBar { root, pages, entry, prev, next, status, zoom_out, zoom_in, dark_box, dark }
     }
 
     /// True while the keyboard focus is in the search field.

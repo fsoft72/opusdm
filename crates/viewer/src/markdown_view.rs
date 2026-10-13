@@ -1,5 +1,6 @@
 //! The Markdown area: a read-only text view that shows the rendered file.
 
+use crate::font_scale::DOC_TEXT_CLASS;
 use crate::markdown::{indent_tag, parse};
 use crate::text_doc::{create_match_tags, create_syntax_tags, set_doc_dark, TextDoc, TextSearch};
 use gtk4 as gtk;
@@ -53,6 +54,7 @@ impl MarkdownView {
         view.set_editable(false);
         view.set_cursor_visible(false);
         view.set_wrap_mode(gtk::WrapMode::WordChar);
+        view.add_css_class(DOC_TEXT_CLASS);
         view.set_left_margin(PAGE_MARGIN);
         view.set_right_margin(PAGE_MARGIN);
         view.set_top_margin(PAGE_MARGIN);

@@ -3,6 +3,7 @@
 //! the colours are applied as they arrive, so a big file can be read while
 //! the rest is still being coloured.
 
+use crate::font_scale::DOC_TEXT_CLASS;
 use crate::highlight::{highlight_in_batches, syntax_for, CharSpan};
 use crate::line_numbers::LineNumbers;
 use crate::text_doc::{create_match_tags, create_syntax_tags, set_doc_dark, TextDoc, TextSearch};
@@ -152,6 +153,7 @@ fn _text_view() -> gtk::TextView {
     view.set_editable(false);
     view.set_cursor_visible(false);
     view.set_monospace(true);
+    view.add_css_class(DOC_TEXT_CLASS);
     view.set_wrap_mode(gtk::WrapMode::None);
     view.set_top_margin(PAGE_MARGIN);
     view.set_bottom_margin(PAGE_MARGIN);

@@ -675,7 +675,10 @@ Lister preview, the Icon View thumbnails and the background picker.
   **Shift+F3** to the previous one (wrapping around), **Esc** clears the search. The case is
   ignored; the text of a picture is not searched. The **Dark** switch next to the search field
   makes the document dark or light without changing the window (it starts as the window is, and
-  is not remembered). Code blocks with a language (` ```rust `, ` ```py `, ` ```sh `...) are
+  is not remembered). The two zoom buttons before it make the text smaller or bigger, 10% a press
+  from 50% to 300%; the size is kept for the other texts of the gallery, shown in the info bar
+  when it is not 100%, and not remembered. On a PDF the same buttons zoom the page like **-** /
+  **+**. Code blocks with a language (` ```rust `, ` ```py `, ` ```sh `...) are
   syntax coloured like the source texts below. The arrows Up / Down, **Page Up** / **Page Down**, **Home** / **End**
   and the mouse wheel scroll; **Left** / **Right**, **Space**, **n** and **p** move to the other
   files; text can be selected and copied with **Ctrl+C**. A click on a link opens it with the
@@ -690,7 +693,7 @@ Lister preview, the Icon View thumbnails and the background picker.
   and extension, then from the first line (`<?xml`); a text with none is shown plain. The text shows
   at once and is coloured in the background 500 lines at a time, so a big file can be read while the
   rest is coloured; a line over 16 KiB (minified files) stops the colouring there. The info bar
-  shows the language and the line count. Search (**Ctrl+F**), the **Dark** switch, scrolling,
+  shows the language and the line count. Search (**Ctrl+F**), the zoom buttons (line numbers follow), the **Dark** switch, scrolling,
   moving to the other files and copying work as for Markdown. A new `filetypes.json` has a
   **Source file** type for these extensions and names; an older one needs it added with
   **Edit File Types...**. Files over 8 MiB are not shown.
