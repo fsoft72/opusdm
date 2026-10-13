@@ -18,7 +18,7 @@ pub struct ArchiveItem {
 }
 
 /// Single-extension markers recognized as archive-like content, for icon and
-/// preview classification (`preview::detect_file_kind`). A narrower subset -
+/// file classification (`file_kind::kind_of`). A narrower subset -
 /// what this app can actually extract/browse - is checked by
 /// [`is_archive_file`], which also recognizes `.tar.<ext>` compound suffixes.
 pub const ARCHIVE_EXTS: &[&str] =

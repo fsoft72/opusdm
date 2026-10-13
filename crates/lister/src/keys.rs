@@ -50,7 +50,8 @@ pub struct CommandMeta {
 
 commands! {
     Filter => ("Filter Files in Current View", "View", Some("/")),
-    Preview => ("Quick Look File Preview", "View", Some("F3 / Space")),
+    /// Open the selection (files and folders) in `opusdm-viewer`.
+    OpenViewer => ("Open in Viewer", "View", Some("F3")),
     SelectAll => ("Select All", "Selection", Some("Ctrl+A")),
     DeselectAll => ("Deselect All", "Selection", Some("Esc")),
     InvertSelection => ("Invert Selection", "Selection", Some("*")),
@@ -205,8 +206,6 @@ pub enum Action {
     FocusPath,
     /// Show or hide the terminal drawer.
     ToggleTerminal,
-    /// Quick Look, or recursive size when a directory is selected.
-    PreviewOrSize,
     /// Context-dependent dismiss (filter, terminal, then selection).
     Escape,
 }
@@ -277,8 +276,7 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         // Roles and panels.
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab => Some(Action::SwapRoleFocus),
         gdk::Key::grave => Some(Action::ToggleTerminal),
-        gdk::Key::F3 => Some(Action::PreviewOrSize),
-        gdk::Key::space | gdk::Key::KP_Space => Some(Action::PreviewOrSize),
+        gdk::Key::F3 => Some(Action::Command(CommandId::OpenViewer)),
         gdk::Key::slash => Some(Action::RevealFilter),
 
         _ => None,
@@ -377,6 +375,13 @@ mod tests {
         ] {
             assert_eq!(editing(key), None, "{key:?} must reach the text field");
         }
+    }
+
+    #[test]
+    fn f3_opens_the_viewer_and_space_is_unbound() {
+        assert_eq!(list(gdk::Key::F3), Some(Action::Command(CommandId::OpenViewer)));
+        assert_eq!(list(gdk::Key::space), None);
+        assert_eq!(list(gdk::Key::KP_Space), None);
     }
 
     #[test]

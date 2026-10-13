@@ -186,8 +186,6 @@ pub struct Ui {
     pub path_entry: gtk::Entry,
     /// Empty box the button row is built into by `actions::attach`.
     pub button_row: gtk::Box,
-    /// Active Quick Look preview window, if open.
-    pub preview_win: RefCell<Option<Rc<crate::preview::PreviewWindow>>>,
     /// Quake-style dropdown terminal drawer.
     pub terminal: Rc<crate::terminal::TerminalDrawer>,
     /// Single stylesheet for settings-driven colors; reloaded in place on
@@ -244,45 +242,6 @@ impl Ui {
     /// Dismiss and reset the filter bar.
     pub fn dismiss_filter(&self) {
         self.view.filter_bar.dismiss();
-    }
-
-    /// Toggle or open Quick Look preview for the currently selected item.
-    pub fn toggle_preview(self: &Rc<Self>) {
-        let mut p_guard = self.preview_win.borrow_mut();
-        if let Some(prev) = p_guard.take() {
-            prev.window.close();
-            return;
-        }
-
-        let paths = self.selected_paths();
-        let target = if let Some(p) = paths.first() {
-            p.clone()
-        } else {
-            self.cwd_path()
-        };
-
-        let prev = crate::preview::PreviewWindow::new(&self.window);
-        prev.load_file(&target);
-
-        let ui_clone = self.clone();
-        prev.window.connect_close_request(move |_| {
-            ui_clone.preview_win.borrow_mut().take();
-            glib::Propagation::Proceed
-        });
-
-        prev.window.present();
-        *p_guard = Some(prev);
-    }
-
-    /// If preview window is open, update it with the current selection.
-    pub fn update_preview_if_open(&self) {
-        let guard = self.preview_win.borrow();
-        if let Some(prev) = guard.as_ref() {
-            let paths = self.selected_paths();
-            if let Some(target) = paths.first() {
-                prev.load_file(target);
-            }
-        }
     }
 
     /// Toggle the Quake-style dropdown terminal drawer.
@@ -723,15 +682,6 @@ impl Ui {
             Action::RevealFilter => self.reveal_filter(),
             Action::FocusPath => self.focus_path_entry(),
             Action::ToggleTerminal => self.toggle_terminal(),
-            Action::PreviewOrSize => {
-                // A directory selection means "how big is this?", anything else
-                // means "show me what is inside".
-                if self.selected_paths().iter().any(|p| p.is_dir()) {
-                    crate::tools::calculate_dir_sizes_async(self, false);
-                } else {
-                    self.toggle_preview();
-                }
-            }
             Action::Escape => self.dismiss_topmost(),
         }
     }

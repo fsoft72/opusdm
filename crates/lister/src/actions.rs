@@ -38,7 +38,6 @@ pub fn attach(ui: &Rc<Ui>) {
     let newfile_btn = icon_button(SVG_NEWFILE, "New File", ROW_ICON_SIZE);
     let rename_btn = icon_button(SVG_RENAME, "Rename", ROW_ICON_SIZE);
     let hidden_btn = hidden_toggle(ui);
-    let preview_btn = text_button("👁", "Quick Look Preview (F3 / Space)");
     let term_btn = text_button(">_", "Terminal Drawer (F4 / `)");
 
     for btn in [&parent_btn, &copy_btn, &move_btn, &delete_btn, &mkdir_btn, &newfile_btn, &rename_btn] {
@@ -46,14 +45,12 @@ pub fn attach(ui: &Rc<Ui>) {
     }
     row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     row.append(&hidden_btn);
-    row.append(&preview_btn);
     row.append(&term_btn);
     row.append(&ui.user_menu_btn);
 
     on_click(ui, &parent_btn, crate::commands::go_parent);
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);
-    on_click(ui, &preview_btn, |ui| ui.toggle_preview());
     on_click(ui, &term_btn, |ui| ui.toggle_terminal());
     on_click(ui, &delete_btn, delete_selection);
     on_click(ui, &mkdir_btn, |ui| make_in_cwd(ui, "New directory name", |name| Op::MakeDir { name }));

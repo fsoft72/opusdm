@@ -1,6 +1,6 @@
 //! Viewer modes, SmartRead and the file list.
 
-use crate::preview::{kind_of, FileKind, IMAGE_EXTS};
+use crate::file_kind::{kind_of, FileKind, IMAGE_EXTS};
 use std::path::{Path, PathBuf};
 
 /// How many leading bytes SmartRead looks at.

@@ -508,7 +508,6 @@ fn assemble_ui(
         },
         path_entry: nav.path_entry,
         button_row,
-        preview_win: RefCell::new(None),
         terminal,
         css_provider,
         nav_generation: Cell::new(0),
@@ -700,7 +699,6 @@ fn wire_selection(ui: &Rc<Ui>) {
         ui.view.selection.clone().connect_selection_changed(move |_, _, _| {
             ui.sync_cursor_from_selection();
             ui.update_status();
-            ui.update_preview_if_open();
         });
     }
 }

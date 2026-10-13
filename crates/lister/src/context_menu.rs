@@ -115,7 +115,7 @@ pub fn viewer_targets(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
 }
 
 /// Start `opusdm-viewer` with `paths` (files and folders) as its arguments.
-fn open_in_viewer(ui: &Rc<Ui>, paths: Vec<PathBuf>) {
+pub fn open_in_viewer(ui: &Rc<Ui>, paths: Vec<PathBuf>) {
     let paths = match viewer_targets(paths) {
         Ok(paths) => paths,
         Err(msg) => return crate::actions::flash(ui, &msg),
@@ -234,7 +234,6 @@ pub fn show_context_menu(
     menu.separator();
     let tg = targets.clone();
     menu.item("Open in Viewer", move |ui| open_in_viewer(ui, tg(ui)));
-    menu.item("Quick Look (Preview)", |ui| ui.toggle_preview());
     if !row.is_dir && opusdm_ipc::is_background_media(&target) {
         let t = target.clone();
         menu.item("Set as Desktop Background", move |ui| set_background(ui, &t));

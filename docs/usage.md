@@ -54,7 +54,6 @@ Click any column header to sort ascending or descending.
   - If a single item is selected: opens an inline prompt to rename it.
   - If multiple items are selected: opens the **Batch Renamer**.
 - **Hidden Files Toggle (`Ctrl+H`)**: Toggles visibility of dotfiles (`.git`, `.config`, etc.).
-- **Quick Look (`👁` / `F3`)**: Opens the instant file previewer.
 - **Terminal Drawer (`>_` / `F4`)**: Drops down the embedded console drawer.
 
 ### Bottom Navigation
@@ -82,15 +81,13 @@ A modal HUD dialog providing keyboard-driven access to all OpusDM commands:
 - Includes quick selection tools (*Invert Selection*, *Select by Pattern*, *Deselect All*), filesystem operations, directory comparison, checksum calculations, and role configuration.
 - Press **`Esc`** to dismiss.
 
-### 3.3 Instant Quick Look Previewer (`F3` or `Space`)
-Inspect files without launching heavy external applications:
-- Select any file and press **`Space`** or **`F3`** (or click `👁`).
-- **Images**: Crisp rendering of `.png`, `.jpg`, `.svg`, `.webp`, `.gif`, with dimension and resolution info.
-- **Text & Code**: Syntax-friendly monospace viewer with line numbering, total line counts, and byte counters.
-- **Archives**: Interactive listing of archive entries inside any supported archive (`.zip`, `.tar.gz`, `.7z`, ...).
-- **Binaries**: Formatted 16-byte hex dump with printable ASCII column and file offset markers.
-- **Directories**: Quick inspection of folder contents.
-- **Live Updating**: Leaving the Quick Look window open while moving the selection cursor in the Lister automatically updates the preview to the newly focused item.
+### 3.3 Open in Viewer (`F3`)
+Select files and folders and press **`F3`** (or right click a row, **Open in Viewer**) to open them
+in `opusdm-viewer` (pictures, PDF, Markdown, source texts and videos; a folder brings its files in
+as a gallery, see 3.28). Entries inside an archive or on a remote server cannot be opened there: the
+Lister says so in its status line. With nothing selected **`F3`** says *nothing selected*. The old
+Quick Look preview window (and its `👁` button and **Space** key) is gone; folder sizes are on the
+row menu (**Checksums & Dimensioni cartelle**).
 
 ### 3.4 Quake-Style Dropdown Terminal Drawer (`F4` or `` ` ``)
 An embedded console drawer located directly at the bottom of the Lister:
@@ -185,7 +182,7 @@ Open **Lister Format...** from the command palette (`Ctrl+P`).
 - **Select** adds the matching entries to the selection, **Deselect** removes them. Entries hidden by the filter bar or a Show / Hide pattern are not touched. A wrong value is reported next to the field and the requester stays open. `+` and `-` keep working as the quick single-pattern versions.
 
 ### 3.10f Viewer and slideshow
-Quick Look (`F3` / `Space`) is still the light preview that follows the selection. For real reading, select one or more files and use the command palette (`Ctrl+P`):
+`F3` opens the selection in `opusdm-viewer` (3.3). For reading in the Lister's own Viewer, select one or more files and use the command palette (`Ctrl+P`):
 - **Read (SmartRead)** picks the mode: pictures by extension, ANSI art for `.ans` / `.diz` / `.asc` files or when the first 4 KiB hold a colour escape sequence, text for readable files, hex for everything else. **Read as Text**, **Read as ANSI** and **Read as Hex** force a mode.
 - The Viewer pages through the selected files (directories are skipped; with nothing selected it opens the file under the cursor). Keys: `n` / `p` next / previous file (wrapping), `t` `a` `x` `s` switch to Text / ANSI / Hex / Smart, `Ctrl+F` opens the search bar, `Esc` closes the search bar and then the window.
 - **Search**: type to highlight every match (case-insensitive) with a `3/17` counter; `Enter` / `F3` jump to the next match, `Shift+Enter` / `Shift+F3` to the previous, both wrapping around. In hex mode the search runs on the dump text.
@@ -648,7 +645,7 @@ Lister preview, the Icon View thumbnails and the background picker.
   picture or a PDF opens it: the first time OpusDM starts it creates the file types
   **Image file** and **PDF file** for that (see 3.10h; an older `filetypes.json` has no
   **PDF file**, add it with **Edit File Types...**, glob `*.pdf`, double click
-  `exec:opusdm-viewer {f}`).
+  `exec:opusdm-viewer {f}`). **F3** in a Lister opens the selection here (see 3.3).
   The **gallery** is what the command line names, in the order given:
   - a **file** is shown as it is (even with an extension the viewer does not know: one that
     starts with `#!` or holds text is shown as source, anything else is tried as a picture); a single
@@ -1077,8 +1074,7 @@ There are no single-letter commands in OpusDM.
 | **`/`** or **`Ctrl+F`** | Open inline Fuzzy File Filter |
 | **`Esc`** | Close filter bar, close terminal drawer, or deselect all items |
 | **`Ctrl+P`** / **`Ctrl+Shift+P`** | Open Command Palette HUD |
-| **`F3`** | Toggle Quick Look file preview |
-| **`Space`** | Quick Look preview (on files) / Calculate recursive size (on directories) |
+| **`F3`** | Open the selection in `opusdm-viewer` |
 | **`F4`** or **`` ` ``** | Toggle Quake-style dropdown terminal drawer |
 | **`F5`** | Copy selected items from SOURCE to DEST |
 | **`F6`** | Move selected items from SOURCE to DEST |

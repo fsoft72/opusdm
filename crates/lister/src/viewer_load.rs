@@ -2,7 +2,7 @@
 
 use crate::ansi::{parse_ansi, AnsiDoc};
 use crate::model::format_size;
-use crate::preview::generate_hex_dump;
+use crate::file_kind::generate_hex_dump;
 use crate::viewer_mode::{resolve, Mode, Resolved, SNIFF_LEN};
 use std::fs::File;
 use std::io::{self, Read};
