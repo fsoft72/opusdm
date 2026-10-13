@@ -167,6 +167,9 @@ where
         // Fill the rest of the cell so right-click and drag work on the
         // whole width, as they do in the other columns.
         label.set_hexpand(true);
+        // Ellipsize long names: an unbounded label makes one very long
+        // file name set the column width and push the others off screen.
+        label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         cell.append(&icon);
         cell.append(&label);
         item.set_child(Some(&cell));
