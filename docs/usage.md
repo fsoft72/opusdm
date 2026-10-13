@@ -490,6 +490,10 @@ Two internal commands of the Function Editor act on the desktop instead of on fi
   function stops. It also moves the working directory of every later step: after
   `Change Directory  ~/Projects`, a `Make Directory` step creates its folder in `~/Projects` and an
   external program with "run in the SOURCE folder" starts there.
+- **New Lister** opens a new lister window. The optional **Directory** field takes the same kind of
+  path as **Change Directory** (it must be an existing folder, otherwise the step fails); empty
+  opens the lister on its default folder. It does not move the working directory of later steps.
+  CLI word: `NewLister` (or `new-lister`).
 - **Set Background** makes a picture or a video the one desktop background, replacing the whole
   list (the interval, fade and shuffle settings stay). **Image or video file** takes the same
   kind of path (`png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `mp4`, `mkv`, `webm`, `avi`, `mov`,

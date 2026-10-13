@@ -28,6 +28,9 @@ pub enum FnEvent {
     /// or a new Lister must open there (`new_lister`). `select` names an entry
     /// to select, `mode` is `details` or `icons`.
     ChangeDir { path: PathBuf, select: Option<String>, mode: Option<String>, new_lister: bool },
+    /// A `NewLister` step: the hub must open a Lister on `path`, or on its
+    /// default folder when `None`.
+    NewLister { path: Option<PathBuf> },
     /// A `SetBackground` step validated `path` (canonical): the hub must
     /// install it as the desktop background. `fit` is `None` to keep the
     /// current one.
@@ -164,6 +167,7 @@ fn run_steps_cancellable(
             // it is dispatched here.
             FnStep::Internal { cmd, args } => match *cmd {
                 InternalCmd::ChangeDir => run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx),
+                InternalCmd::NewLister => run_new_lister(run_id, step_idx, args, &source, dest, events_tx),
                 InternalCmd::Run => run_run(run_id, step_idx, args, &source, dest, events_tx),
                 InternalCmd::Confirm => run_confirm(run_id, step_idx, args, &source, dest, events_tx),
                 InternalCmd::SetBackground => run_set_background(run_id, step_idx, args, &source, dest, events_tx),
@@ -262,6 +266,35 @@ fn run_change_dir(
     source.cwd = target.clone();
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("cd {}", target.display()) }));
     let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target, select, mode, new_lister: args.flag("new") }));
+    let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
+    Ok(())
+}
+
+/// Run a `NewLister` step: with a `path` (template, `~` and relative paths
+/// resolved like `ChangeDir`) it must be an existing directory; without one
+/// the hub opens the Lister on its default folder.
+fn run_new_lister(
+    run_id: u64,
+    step_idx: usize,
+    args: &InternalArgs,
+    source: &SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+) -> Result<(), String> {
+    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = text.trim();
+    let path = if text.is_empty() {
+        None
+    } else {
+        let target = source.cwd.join(expand_home(text, "New Lister")?);
+        let target = std::fs::canonicalize(&target).map_err(|e| format!("New Lister: cannot open {}: {e}", target.display()))?;
+        if !target.is_dir() {
+            return Err(format!("New Lister: {} is not a directory", target.display()));
+        }
+        Some(target)
+    };
+    let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: InternalCmd::NewLister.label().to_string() }));
+    let _ = events_tx.send((run_id, FnEvent::NewLister { path }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
 }

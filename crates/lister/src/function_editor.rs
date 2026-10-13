@@ -619,6 +619,7 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::MoveAs,
     InternalCmd::Duplicate,
     InternalCmd::ChangeDir,
+    InternalCmd::NewLister,
     InternalCmd::SetBackground,
     InternalCmd::LeaveOut,
     InternalCmd::PutAway,

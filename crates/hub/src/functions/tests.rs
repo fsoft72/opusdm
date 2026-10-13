@@ -600,6 +600,37 @@ fn changedir_carries_the_new_lister_flag_and_a_checked_view_mode() {
     assert!(events.iter().any(|e| matches!(e, FnEvent::ChangeDir { new_lister: false, mode: None, .. })));
 }
 
+fn new_lister_events(args: &[(&str, &str)], cwd: &Path) -> Vec<FnEvent> {
+    let map: BTreeMap<String, String> = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let steps = vec![FnStep::Internal { cmd: InternalCmd::NewLister, args: InternalArgs(map) }];
+    let (tx, rx) = channel();
+    run_steps(1, &steps, &ctx(&[], cwd.to_str().unwrap()), None, &tx);
+    drop(tx);
+    drain(rx)
+}
+
+#[test]
+fn new_lister_without_a_path_uses_the_default_folder() {
+    let td = tempfile::tempdir().unwrap();
+    let events = new_lister_events(&[], td.path());
+    assert!(events.iter().any(|e| matches!(e, FnEvent::NewLister { path: None })));
+    assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+}
+
+#[test]
+fn new_lister_with_a_path_checks_it_is_a_directory() {
+    let td = tempfile::tempdir().unwrap();
+    std::fs::create_dir(td.path().join("d")).unwrap();
+    std::fs::write(td.path().join("f.txt"), b"x").unwrap();
+    let want = std::fs::canonicalize(td.path().join("d")).unwrap();
+    let events = new_lister_events(&[("path", "d")], td.path());
+    assert!(events.iter().any(|e| matches!(e, FnEvent::NewLister { path: Some(p) } if *p == want)));
+    let events = new_lister_events(&[("path", "f.txt")], td.path());
+    assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
+    let events = new_lister_events(&[("path", "missing")], td.path());
+    assert!(matches!(events.last(), Some(FnEvent::Failed { .. })));
+}
+
 fn run_args(command: &str, flags: &[&str]) -> Vec<FnStep> {
     let mut map = BTreeMap::new();
     map.insert("command".to_string(), command.to_string());

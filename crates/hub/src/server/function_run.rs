@@ -194,6 +194,10 @@ impl Hub {
                 self.spawn_lister(Some(path.clone()));
                 return;
             }
+            crate::functions::FnEvent::NewLister { path } => {
+                self.spawn_lister(path.clone());
+                return;
+            }
             crate::functions::FnEvent::LeaveOut { paths } => {
                 self.leave_out(paths.clone());
                 return;
@@ -249,6 +253,7 @@ impl Hub {
             crate::functions::FnEvent::SetBackground { .. }
             | crate::functions::FnEvent::Job { .. }
             | crate::functions::FnEvent::Confirm { .. }
+            | crate::functions::FnEvent::NewLister { .. }
             | crate::functions::FnEvent::Window { .. } => return,
             crate::functions::FnEvent::LeaveOut { .. }
             | crate::functions::FnEvent::PutAway { .. }

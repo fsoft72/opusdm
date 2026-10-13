@@ -73,6 +73,8 @@ pub enum InternalCmd {
     Duplicate,
     /// Navigate the SOURCE Lister to a directory; later steps run from it.
     ChangeDir,
+    /// Open a new Lister, optionally on a given directory.
+    NewLister,
     /// Install an image as the desktop background.
     SetBackground,
     /// Leave the SOURCE selection out on the desktop.
@@ -108,7 +110,7 @@ pub enum InternalCmd {
 
 impl InternalCmd {
     /// Every internal command, in the order the editor offers them.
-    pub const ALL: [InternalCmd; 25] = [
+    pub const ALL: [InternalCmd; 26] = [
         InternalCmd::Copy,
         InternalCmd::Move,
         InternalCmd::Delete,
@@ -119,6 +121,7 @@ impl InternalCmd {
         InternalCmd::MoveAs,
         InternalCmd::Duplicate,
         InternalCmd::ChangeDir,
+        InternalCmd::NewLister,
         InternalCmd::SetBackground,
         InternalCmd::LeaveOut,
         InternalCmd::PutAway,
@@ -161,6 +164,7 @@ impl InternalCmd {
             InternalCmd::MoveAs => "Move As",
             InternalCmd::Duplicate => "Duplicate",
             InternalCmd::ChangeDir => "Change Directory",
+            InternalCmd::NewLister => "New Lister",
             InternalCmd::SetBackground => "Set Background",
             InternalCmd::LeaveOut => "Leave Out",
             InternalCmd::PutAway => "Put Away",
@@ -312,6 +316,12 @@ pub mod schema {
                 },
                 ParamSpec { key: "mode", label: "View: details or icons (empty = keep)", required: false, kind: ParamKind::Text },
             ],
+            InternalCmd::NewLister => &[ParamSpec {
+                key: "path",
+                label: "Directory (absolute, ~ or relative to the current one; empty = default)",
+                required: false,
+                kind: ParamKind::PathTemplate,
+            }],
             InternalCmd::LeaveOut
             | InternalCmd::PutAway
             | InternalCmd::Hide
