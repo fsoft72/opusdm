@@ -71,6 +71,15 @@ impl Gallery {
         Gallery { items: Vec::new(), index: 0 }
     }
 
+    /// Choose the file on screen after the files changed from `old`: the same
+    /// file when it is still here, the same position when files were only
+    /// taken away (the one on screen was deleted), else the first.
+    pub fn keep_place(&mut self, old: &Gallery) {
+        if let Some(i) = old.current().and_then(|p| self.position(p)) { self.index = i; return; }
+        let only_removed = !self.items.is_empty() && self.items.iter().all(|p| old.items.contains(p));
+        self.index = if only_removed { old.index.min(self.items.len() - 1) } else { 0 };
+    }
+
     /// Sort `items` and put the index on `start` (the first item when absent).
     #[cfg(test)]
     pub fn from_paths(mut items: Vec<PathBuf>, start: &Path) -> Gallery {
@@ -241,6 +250,24 @@ mod tests {
         assert_eq!(g.remove_current(), None);
         g.next();
         g.prev();
+    }
+
+    #[test]
+    fn keep_place_follows_the_file_then_the_position() {
+        let mut old = Gallery::from_paths(paths(&["a.png", "b.png", "c.png"]), Path::new("/d/b.png"));
+        let mut g = Gallery::from_paths(paths(&["b.png", "c.png", "z.png"]), Path::new("/d/z.png"));
+        g.keep_place(&old);
+        assert_eq!(g.current(), Some(Path::new("/d/b.png")), "same file");
+        let mut g = Gallery::from_paths(paths(&["a.png", "c.png"]), Path::new("/d/a.png"));
+        g.keep_place(&old);
+        assert_eq!(g.current(), Some(Path::new("/d/c.png")), "b deleted: the next one");
+        old.jump_to(2);
+        let mut g = Gallery::from_paths(paths(&["a.png", "b.png"]), Path::new("/d/a.png"));
+        g.keep_place(&old);
+        assert_eq!(g.current(), Some(Path::new("/d/b.png")), "last deleted: the new last");
+        let mut g = Gallery::from_paths(paths(&["x.png", "y.png"]), Path::new("/d/y.png"));
+        g.keep_place(&old);
+        assert_eq!(g.index(), 0, "other files: the first");
     }
 
     /// A folder with `names` in it (empty files).

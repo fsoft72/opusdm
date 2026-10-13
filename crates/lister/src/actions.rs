@@ -286,6 +286,7 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
     // A job changes sizes: forget the ones calculated before.
     ui.caches.sizes.borrow_mut().clear();
     ui.reload();
+    crate::sidecar::job_done(ui);
 }
 
 fn show_error_dialog(ui: &Rc<Ui>, errors: &[(PathBuf, String)]) {

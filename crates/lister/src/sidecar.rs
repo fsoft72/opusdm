@@ -1,13 +1,16 @@
 //! Sidecar: an `opusdm-viewer --sidecar` that follows this Lister. Every
 //! change of the selection (or of the cursor row when nothing is selected)
 //! writes the new paths to the viewer's standard input. Closing the pipe, by
-//! toggling it off or by closing the Lister, closes the viewer.
+//! toggling it off or by closing the Lister, closes the viewer. The viewer
+//! writes back the file on screen, which Delete takes instead of the selection.
 
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_ipc::sidecar::{encode, SIDECAR_FLAG};
+use opusdm_ipc::sidecar::{encode, read_update, SIDECAR_FLAG};
+use opusdm_ipc::{JobOptions, Op};
+use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
@@ -24,6 +27,11 @@ pub struct Sidecar {
     stdin: ChildStdin,
     /// The paths of the last update, so an unchanged selection is not resent.
     last: Option<Vec<PathBuf>>,
+    /// The file the viewer last said is on screen.
+    shown: Rc<RefCell<Option<PathBuf>>>,
+    /// Send the paths again when the running delete is done: the file went
+    /// from a folder the viewer shows, which the Lister does not list.
+    resend_after_job: bool,
 }
 
 impl Sidecar {
@@ -79,11 +87,11 @@ pub fn follow(ui: &Ui) {
     }
 }
 
-/// Launch the viewer with a pipe on its stdin and send it the selection.
+/// Launch the viewer with pipes on its stdin and stdout and send it the selection.
 fn start(ui: &Rc<Ui>) {
     let exe = std::env::current_exe().ok();
     let mut cmd = crate::image_viewer::viewer_command(exe.as_deref().and_then(Path::parent), &[]);
-    cmd.arg(SIDECAR_FLAG).stdin(Stdio::piped());
+    cmd.arg(SIDECAR_FLAG).stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => return crate::actions::flash(ui, &format!("cannot start {}: {e}", crate::image_viewer::VIEWER_BIN)),
@@ -93,10 +101,101 @@ fn start(ui: &Rc<Ui>) {
         let _ = child.wait();
         return crate::actions::flash(ui, "cannot talk to the Sidecar: no stdin pipe");
     };
-    *ui.sidecar.borrow_mut() = Some(Sidecar { child, stdin, last: None });
+    let shown = Rc::new(RefCell::new(None));
+    if let Some(stdout) = child.stdout.take() { _read_shown(stdout, shown.clone()); }
+    *ui.sidecar.borrow_mut() = Some(Sidecar { child, stdin, last: None, shown, resend_after_job: false });
     follow(ui);
     let window = ui.window.clone();
     glib::timeout_add_local_once(Duration::from_millis(SIDECAR_REFOCUS_MS), move || window.present());
+}
+
+/// Keep `shown` in step with what the viewer reports on its stdout, until it exits.
+fn _read_shown(stdout: std::process::ChildStdout, shown: Rc<RefCell<Option<PathBuf>>>) {
+    let (tx, rx) = async_channel::unbounded::<Option<PathBuf>>();
+    std::thread::spawn(move || {
+        let mut reader = io::BufReader::new(stdout);
+        while let Ok(Some(paths)) = read_update(&mut reader) {
+            if tx.send_blocking(paths.into_iter().next()).is_err() { break; }
+        }
+    });
+    glib::spawn_future_local(async move {
+        while let Ok(path) = rx.recv().await {
+            *shown.borrow_mut() = path;
+        }
+    });
+}
+
+/// The file the Sidecar shows, when it surely belongs to the last update sent
+/// (the viewer may not have answered the newest update yet).
+fn _shown_file(ui: &Ui) -> Option<PathBuf> {
+    let mut slot = ui.sidecar.borrow_mut();
+    let sidecar = slot.as_mut()?;
+    if !sidecar.alive() { return None; }
+    let shown = sidecar.shown.borrow().clone();
+    pick_shown(shown.as_deref(), sidecar.last.as_deref()?)
+}
+
+/// The file to delete: the one the viewer reported when it is one of the
+/// paths `sent` or inside one of them, else the only file sent, else none.
+pub fn pick_shown(shown: Option<&Path>, sent: &[PathBuf]) -> Option<PathBuf> {
+    if let Some(p) = shown.filter(|p| sent.iter().any(|s| s == p || p.parent() == Some(s.as_path()))) {
+        return Some(p.to_path_buf());
+    }
+    match sent {
+        [one] if one.is_file() => Some(one.clone()),
+        _ => None,
+    }
+}
+
+/// Delete with a Sidecar open: only the file the viewer shows, then the
+/// Lister and the viewer move on to the next one. False when there is no
+/// Sidecar or it shows nothing: the caller deletes the selection as usual.
+pub fn delete_shown(ui: &Rc<Ui>) -> bool {
+    let Some(target) = _shown_file(ui) else { return false };
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let this = ui.clone();
+    opusdm_ui::requester(&ui.window, "Request", &format!("Delete \"{name}\" permanently?"), None, &[("Delete", true), ("Cancel", false)], move |confirmed| {
+        if !confirmed { return; }
+        _step_past(&this, &target);
+        crate::job_submit::submit_job(&this, Op::Delete, vec![target.clone()], Some(this.cwd_path()), JobOptions::default());
+    });
+    true
+}
+
+/// Move the Lister off `target` before it is deleted, so the reload after
+/// the job keeps the place: the next row (the previous one at the end) when
+/// it is the only file shown, just its own row out of a bigger selection, and
+/// for a file inside a shown folder a fresh update once the job is done.
+fn _step_past(ui: &Rc<Ui>, target: &Path) {
+    let row = (target.parent() == Some(ui.cwd_path().as_path())).then(|| _row_position(ui, target)).flatten();
+    let Some(pos) = row else {
+        if let Some(sidecar) = ui.sidecar.borrow_mut().as_mut() { sidecar.resend_after_job = true; }
+        return;
+    };
+    if ui.view.selection.is_selected(pos) && ui.selected_paths().len() > 1 {
+        ui.view.selection.unselect_item(pos);
+        return;
+    }
+    let n = ui.view.selection.n_items();
+    let next = if pos + 1 < n { pos + 1 } else if pos > 0 { pos - 1 } else { return };
+    ui.jump_to_row(next);
+}
+
+/// Position of the row of `path` (a file of the current folder) in the list.
+fn _row_position(ui: &Ui, path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_string_lossy();
+    (0..ui.view.selection.n_items()).find(|&i| ui.row_at(i).is_some_and(|r| r.name == name))
+}
+
+/// A job finished: send the paths again when a delete asked for it.
+pub fn job_done(ui: &Ui) {
+    {
+        let mut slot = ui.sidecar.borrow_mut();
+        let Some(sidecar) = slot.as_mut().filter(|s| s.resend_after_job) else { return };
+        sidecar.resend_after_job = false;
+        sidecar.last = None;
+    }
+    follow(ui);
 }
 
 /// What the Sidecar shows: the selected paths, else the cursor row, keeping
@@ -122,5 +221,21 @@ mod tests {
         assert_eq!(sidecar_paths(Vec::new(), Some(b.clone())), vec![b]);
         assert_eq!(sidecar_paths(Vec::new(), Some(gone)), Vec::<PathBuf>::new());
         assert_eq!(sidecar_paths(Vec::new(), None), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn delete_takes_the_shown_file_only_when_it_matches_what_was_sent() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path().join("pics");
+        std::fs::create_dir(&dir).unwrap();
+        let (a, b, inner) = (td.path().join("a.png"), td.path().join("b.png"), dir.join("in.png"));
+        for f in [&a, &b, &inner] { std::fs::write(f, "").unwrap(); }
+        let both = vec![a.clone(), b.clone()];
+        assert_eq!(pick_shown(Some(&b), &both), Some(b.clone()), "shown file in the gallery");
+        assert_eq!(pick_shown(Some(&inner), std::slice::from_ref(&dir)), Some(inner.clone()), "inside a shown folder");
+        assert_eq!(pick_shown(Some(&a), std::slice::from_ref(&b)), Some(b.clone()), "stale answer: the one file sent");
+        assert_eq!(pick_shown(Some(&a), std::slice::from_ref(&dir)), None, "stale answer and a folder sent");
+        assert_eq!(pick_shown(None, &both), None, "no answer and several files");
+        assert_eq!(pick_shown(None, &[]), None);
     }
 }

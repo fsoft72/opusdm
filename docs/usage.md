@@ -95,7 +95,9 @@ Sidecar shows it: walk the list with the arrows and each picture appears in turn
 files become a gallery with the thumbnail strip; a folder shows its files. A file the viewer does not
 know (an archive, a disk image), or an entry inside an archive or on a server, shows *Nothing to
 show*. The Sidecar window keeps its size; the content fits into it. The Lister takes the keyboard back
-right after opening it. **`Shift+F3`** again, or closing the Lister, closes the Sidecar; closing the
+right after opening it. **`Del`** with a Sidecar open deletes only the file the Sidecar shows (after
+a confirmation) and moves on to the next one, in the Lister and in the Sidecar; when the Sidecar shows
+nothing, **`Del`** deletes the selection as usual. **`Shift+F3`** again, or closing the Lister, closes the Sidecar; closing the
 Sidecar window yourself is fine too.
 
 ### 3.4 Quake-Style Dropdown Terminal Drawer (`F4` or `` ` ``)

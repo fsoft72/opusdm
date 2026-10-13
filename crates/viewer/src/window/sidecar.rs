@@ -1,6 +1,7 @@
 //! Sidecar mode: the window follows the paths a Lister writes on stdin. Each
 //! update replaces the gallery; the window keeps its size, only the stage and
-//! the strip change.
+//! the strip change. The file on screen goes back to the Lister on stdout (same
+//! format, one path or none), so its Delete can take exactly that file.
 
 use super::State;
 use crate::gallery::Gallery;
@@ -8,6 +9,7 @@ use crate::kind::kind_of;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
+use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -57,7 +59,8 @@ fn showable(targets: &[PathBuf]) -> Vec<PathBuf> {
 impl State {
     /// Show `targets` (files and folders) in place of the gallery of before.
     fn _replace_gallery(self: &Rc<Self>, targets: &[PathBuf]) {
-        let gallery = Gallery::from_targets(&showable(targets)).unwrap_or_else(|_| Gallery::empty());
+        let mut gallery = Gallery::from_targets(&showable(targets)).unwrap_or_else(|_| Gallery::empty());
+        gallery.keep_place(&self.gallery.borrow());
         self.strip.set_items(gallery.items());
         *self.gallery.borrow_mut() = gallery;
         self._sync_strip();
@@ -74,6 +77,16 @@ impl State {
         self._pdf_file_changed();
         self._show_error(message);
         self.info.set_text(message);
+        self._report_shown();
+    }
+
+    /// Tell the Lister which file is on screen. A Lister gone away is noticed
+    /// on stdin, so a write error is ignored here.
+    pub(super) fn _report_shown(&self) {
+        if !self.sidecar { return; }
+        let shown: Vec<PathBuf> = self.gallery.borrow().current().map(|p| p.to_path_buf()).into_iter().collect();
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(&opusdm_ipc::sidecar::encode(&shown)).and_then(|_| out.flush());
     }
 }
 

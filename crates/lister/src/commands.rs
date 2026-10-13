@@ -99,8 +99,10 @@ pub fn duplicate(ui: &Rc<Ui>) {
     crate::job_submit::submit_job(ui, Op::Duplicate, srcs, dest_dir, JobOptions::default());
 }
 
-/// Delete the selection after asking for confirmation.
+/// Delete the selection after asking for confirmation. With a Sidecar open
+/// only the file it shows is deleted.
 pub fn delete_selection(ui: &Rc<Ui>) {
+    if crate::sidecar::delete_shown(ui) { return; }
     let paths = ui.selected_paths();
     if paths.is_empty() {
         crate::actions::flash(ui, "nothing selected");

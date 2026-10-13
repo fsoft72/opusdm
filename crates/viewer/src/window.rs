@@ -232,6 +232,7 @@ impl State {
             },
         }
         self._update_info();
+        self._report_shown();
     }
 
     /// Show a Markdown or source text; the search of the bar goes on in it.
