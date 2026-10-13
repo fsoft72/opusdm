@@ -103,6 +103,28 @@ fn leave_out(ui: &Rc<Ui>, path: &Path) {
     }
 }
 
+/// The paths `opusdm-viewer` can open: all of `paths` when every one is on
+/// the local disk, else an error naming the first that is not (an entry
+/// inside an archive or on a remote server).
+pub fn viewer_targets(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    if paths.is_empty() { return Err("nothing selected".to_string()); }
+    if let Some(missing) = paths.iter().find(|p| !p.exists()) {
+        return Err(format!("cannot open {} in the viewer: not a local file", missing.display()));
+    }
+    Ok(paths)
+}
+
+/// Start `opusdm-viewer` with `paths` (files and folders) as its arguments.
+fn open_in_viewer(ui: &Rc<Ui>, paths: Vec<PathBuf>) {
+    let paths = match viewer_targets(paths) {
+        Ok(paths) => paths,
+        Err(msg) => return crate::actions::flash(ui, &msg),
+    };
+    if let Err(e) = crate::image_viewer::launch(&paths) {
+        crate::actions::flash(ui, &format!("cannot start {}: {e}", crate::image_viewer::VIEWER_BIN));
+    }
+}
+
 /// Commands offered by the menu on an empty area of the file list.
 pub const EMPTY_AREA_COMMANDS: [CommandId; 2] = [CommandId::Mkdir, CommandId::NewFile];
 
@@ -210,6 +232,8 @@ pub fn show_context_menu(
     }
 
     menu.separator();
+    let tg = targets.clone();
+    menu.item("Open in Viewer", move |ui| open_in_viewer(ui, tg(ui)));
     menu.item("Quick Look (Preview)", |ui| ui.toggle_preview());
     if !row.is_dir && opusdm_ipc::is_background_media(&target) {
         let t = target.clone();
@@ -231,6 +255,24 @@ mod tests {
     fn empty_area_offers_make_dir_and_new_file() {
         assert_eq!(EMPTY_AREA_COMMANDS, [CommandId::Mkdir, CommandId::NewFile]);
         assert!(EMPTY_AREA_COMMANDS.iter().all(|c| c.meta().is_some()));
+    }
+
+    #[test]
+    fn the_viewer_gets_every_local_file_and_folder_in_order() {
+        let td = tempfile::tempdir().unwrap();
+        let file = td.path().join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let paths = vec![file.clone(), td.path().to_path_buf()];
+        assert_eq!(viewer_targets(paths.clone()).unwrap(), paths);
+    }
+
+    #[test]
+    fn the_viewer_refuses_an_empty_selection_or_a_path_not_on_disk() {
+        assert_eq!(viewer_targets(Vec::new()).unwrap_err(), "nothing selected");
+        let td = tempfile::tempdir().unwrap();
+        let inside = td.path().join("a.zip#dir/file");
+        let err = viewer_targets(vec![td.path().to_path_buf(), inside]).unwrap_err();
+        assert!(err.contains("a.zip#dir/file") && err.contains("not a local file"), "{err}");
     }
 
     #[test]

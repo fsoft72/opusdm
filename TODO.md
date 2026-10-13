@@ -8,7 +8,7 @@
     - Make dir
     - New file
 
-- [ ] Lister, new RMB on files and folders
+- [x] Lister, new RMB on files and folders
 
   Add:  "Open in Viewer" for one or more files selected in folder
   It launches `opusdm-viewer` with all selected files / dirs as arguments
