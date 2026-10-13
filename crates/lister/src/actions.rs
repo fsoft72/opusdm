@@ -203,11 +203,22 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
     });
 }
 
+/// Submit `op` on the selection of `ui`. When the Lister shows the inside of
+/// an archive the selection is extracted first (the job runner cannot read
+/// virtual paths), otherwise the job runs on the selected paths as they are.
+pub fn submit_selection(ui: &Rc<Ui>, op: Op) {
+    let cwd = ui.cwd.borrow().clone();
+    match crate::archive::parse_archive_path(&cwd) {
+        Some((arch, inner)) => transfer_from_archive(ui, op, arch, inner),
+        None => crate::job_submit::submit_job(ui, op, ui.selected_paths(), None, opusdm_ipc::JobOptions::default()),
+    }
+}
+
 /// Copy out of an archive: extract the selection into a private scratch folder
 /// on a worker thread (the archive tools can take a long time), then submit the
 /// job on the extracted copies. An archive is read-only, so a Move runs as a
 /// Copy and the user is told. The scratch folder is deleted when the job ends.
-fn transfer_from_archive(ui: &Rc<Ui>, op: Op, arch: PathBuf, inner: String) {
+pub fn transfer_from_archive(ui: &Rc<Ui>, op: Op, arch: PathBuf, inner: String) {
     let names = ui.selected_names();
     if names.is_empty() {
         flash(ui, "nothing selected");
@@ -222,6 +233,7 @@ fn transfer_from_archive(ui: &Rc<Ui>, op: Op, arch: PathBuf, inner: String) {
     };
     let (op, message) = match op {
         Op::Move => (Op::Copy, "an archive is read-only: extracting and copying instead of moving"),
+        Op::MoveAs { new_names } => (Op::CopyAs { new_names }, "an archive is read-only: extracting and copying instead of moving"),
         other => (other, "extracting from the archive..."),
     };
     flash(ui, message);

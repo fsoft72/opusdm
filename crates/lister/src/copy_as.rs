@@ -6,7 +6,7 @@ use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::glob::expand_all;
-use opusdm_ipc::{JobOptions, Op};
+use opusdm_ipc::Op;
 use std::rc::Rc;
 
 /// Pattern the dialog starts with: keep the original names.
@@ -66,7 +66,7 @@ pub fn open(ui: &Rc<Ui>, moving: bool) {
                 Err(msg) => return crate::actions::flash(ui, &msg),
             };
             let op = if moving { Op::MoveAs { new_names } } else { Op::CopyAs { new_names } };
-            crate::job_submit::submit_job(ui, op, ui.selected_paths(), None, JobOptions::default());
+            crate::actions::submit_selection(ui, op);
         });
         crate::batch_rename::open_rules_dialog(ui, title, if moving { "Move" } else { "Copy" }, apply);
         return;
@@ -108,7 +108,7 @@ pub fn open(ui: &Rc<Ui>, moving: bool) {
     ok_btn.connect_clicked(move |_| {
         let Ok(new_names) = expand_all(entry.text().as_str(), &originals) else { return };
         let op = if moving { Op::MoveAs { new_names } } else { Op::CopyAs { new_names } };
-        crate::job_submit::submit_job(&ui, op, ui.selected_paths(), None, JobOptions::default());
+        crate::actions::submit_selection(&ui, op);
         window.close();
     });
     shell.present();
