@@ -99,7 +99,7 @@ enum Step {
 /// abort the rest of the tree: every failure is collected and the walk
 /// continues. An explicit stack replaces call-stack recursion so a very deep
 /// tree can't overflow the worker thread's stack.
-fn remove_recursive(root: &Path) -> Vec<(PathBuf, String)> {
+pub(crate) fn remove_recursive(root: &Path) -> Vec<(PathBuf, String)> {
     let mut errors = Vec::new();
     let mut stack = vec![Step::Visit(root.to_path_buf())];
 

@@ -111,6 +111,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         CommandId::Duplicate => c::duplicate(ui),
         CommandId::Delete => c::delete_selection(ui, false),
         CommandId::DeletePermanent => c::delete_selection(ui, true),
+        CommandId::ShowTrash => crate::trash_ui::open(ui),
         CommandId::Mkdir => c::create_here(ui, false),
         CommandId::NewFile => c::create_here(ui, true),
         CommandId::Rename => c::rename_selection(ui),

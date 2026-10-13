@@ -65,6 +65,7 @@ mod terminal;
 mod theme;
 mod typeahead;
 mod tools;
+mod trash_ui;
 mod user_menu;
 mod watcher;
 mod image_viewer;

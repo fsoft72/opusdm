@@ -94,6 +94,8 @@ commands! {
     Delete => ("Move Selected Items to Trash", "File Ops", Some("Del")),
     /// Delete the selection without the trash.
     DeletePermanent => ("Delete Selected Items Permanently", "File Ops", Some("Shift+Del")),
+    /// Open the Trash dialog (restore, delete, empty).
+    ShowTrash => ("Show Trash", "File Ops", None),
     /// Copy to DEST under names built from a pattern.
     CopyAs => ("Copy As... (Source -> Dest, new names)", "File Ops", None),
     /// Move to DEST under names built from a pattern.

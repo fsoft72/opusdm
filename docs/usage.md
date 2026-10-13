@@ -48,6 +48,7 @@ Click any column header to sort ascending or descending.
 - **Copy (`c`)**: Copies selected items from SOURCE to DEST.
 - **Move (`m`)**: Moves selected items from SOURCE to DEST.
 - **Delete (`Del`)**: Prompts for confirmation and moves the selected items to the trash (freedesktop.org trash: `~/.local/share/Trash` for files on the home disk, `.Trash-<uid>` at the top of other disks, so file managers can restore them). **`Shift+Del`** prompts and deletes them permanently, without the trash. On the button row the Delete button does the same: left click moves to the trash, right click deletes permanently. The row menu **Delete...** still deletes permanently. Remote folders have no trash: use `Shift+Del` there.
+- **Show Trash** (Command Palette): a window listing what is in the trash (the home trash and the trash of every mounted disk), newest first, with the name, the original folder and the deletion date. Select one or more rows (Ctrl / Shift click), then **Restore** puts them back where they were (the folder is created again if it is gone; an existing file there is never overwritten, the item stays in the trash and an error is shown), **Delete** (or `Del`) removes them permanently after a confirmation, **Empty Trash...** removes everything after a confirmation.
 - **MakeDir (`Ctrl+N`)**: Prompts to create a new directory in current view.
 - **NewFile (`Ctrl+Shift+N`)**: Creates a new blank file.
 - **Rename (`F2`)**: 

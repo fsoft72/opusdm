@@ -20,6 +20,7 @@ pub mod rename;
 pub mod scan;
 pub mod tools;
 pub mod trash;
+pub mod trash_items;
 pub mod types;
 
 pub use cancel::CancelToken;
