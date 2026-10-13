@@ -11,6 +11,7 @@ use crate::pdf_bar::PdfBar;
 use crate::pdf_links::{link_at, Link, LinkTarget};
 use crate::pdf_pages::PagePanel;
 use crate::pdf_search::{start_worker, Hits, SearchAnswer, SearchRequest};
+use crate::text_doc::TextDoc;
 use gtk4 as gtk;
 use gtk::{gdk, gio, glib};
 use gtk::prelude::*;

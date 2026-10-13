@@ -1,6 +1,8 @@
 //! Markdown to styled text runs. No GTK here: the view turns the runs into a
 //! text buffer, so the parser can be tested alone.
 
+use crate::highlight::{pieces, syntax_for_token};
+use syntect::parsing::SyntaxReference;
 use unicode_width::UnicodeWidthStr;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -14,7 +16,8 @@ const RULE_TEXT: &str = "──────────────────�
 pub struct Run {
     pub text: String,
     /// Tag names: `h1`..`h6`, `bold`, `italic`, `strike`, `code`, `codeblock`,
-    /// `quote`, `link`, `rule`, `table`, `indent1`..`indent6`.
+    /// `quote`, `link`, `rule`, `table`, `indent1`..`indent6`, and the
+    /// `syn-*` tags of `highlight::Category` in a coloured code block.
     pub tags: Vec<String>,
     /// Target of a link; `None` for plain text.
     pub link: Option<String>,
@@ -36,6 +39,10 @@ struct Builder {
     strike: usize,
     heading: Option<u8>,
     in_code_block: bool,
+    /// Syntax of the code block being read, when its language is known: its
+    /// text collects in `code` and is coloured at the end of the block.
+    code_syntax: Option<&'static SyntaxReference>,
+    code: String,
     quote: usize,
     /// One entry per open list: the next number of an ordered list.
     lists: Vec<Option<u64>>,
@@ -139,6 +146,7 @@ impl Builder {
             Event::Start(tag) => self._start(tag),
             Event::End(tag) => self._end(tag),
             Event::Text(t) if self.image.is_some() => self.alt.push_str(&t),
+            Event::Text(t) if self.code_syntax.is_some() => self.code.push_str(&t),
             Event::Text(t) => self._text(&t),
             Event::Code(t) => self._text_with(&t, &["code"]),
             Event::SoftBreak => self._text(" "),
@@ -160,7 +168,10 @@ impl Builder {
             Tag::BlockQuote(_) => self.quote += 1,
             Tag::CodeBlock(kind) => {
                 self.in_code_block = true;
-                if let CodeBlockKind::Fenced(_) = kind { self._ensure_newline(); }
+                let CodeBlockKind::Fenced(info) = kind else { return };
+                self._ensure_newline();
+                self.code_syntax = syntax_for_token(_language(&info));
+                self.code.clear();
             }
             Tag::List(first) => self.lists.push(first),
             Tag::Item => self._item_start(),
@@ -191,6 +202,7 @@ impl Builder {
                 if self.quote == 0 { self._end_block(); }
             }
             TagEnd::CodeBlock => {
+                self._end_code();
                 self._end_block();
                 self.in_code_block = false;
             }
@@ -227,6 +239,18 @@ impl Builder {
 }
 
 impl Builder {
+    /// A coloured code block closes: write its text cut by category.
+    fn _end_code(&mut self) {
+        let Some(syntax) = self.code_syntax.take() else { return };
+        let code = std::mem::take(&mut self.code);
+        for (text, category) in pieces(&code, syntax) {
+            match category {
+                Some(c) => self._text_with(&text, &[c.tag_name()]),
+                None => self._text(&text),
+            }
+        }
+    }
+
     /// A picture closes: a run with its alt text, or the text `[image: alt]`
     /// inside a table (a picture cannot sit in a cell).
     fn _end_image(&mut self) {
@@ -278,6 +302,12 @@ impl Builder {
         }
         self._text_with("\n", &["table"]);
     }
+}
+
+/// Language of a fenced code block: the first word of its info string
+/// (`python {.numbered}` and `rust,ignore` give `python` and `rust`).
+fn _language(info: &str) -> &str {
+    info.split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("")
 }
 
 /// Number of a heading level, 1 to 6.
@@ -357,9 +387,30 @@ mod tests {
 
     #[test]
     fn code_block_keeps_its_lines() {
-        let runs = parse("```rust\nfn a() {}\nfn b() {}\n```\n");
+        let runs = parse("```\nfn a() {}\nfn b() {}\n```\n");
         assert_eq!(plain(&runs), "fn a() {}\nfn b() {}\n\n");
         assert_eq!(tags_of(&runs, "fn a() {}\nfn b() {}\n"), ["codeblock"]);
+    }
+
+    #[test]
+    fn code_block_with_a_known_language_is_coloured() {
+        let runs = parse("```rust\nlet n = 42; // x\n```\n");
+        assert_eq!(plain(&runs), "let n = 42; // x\n\n");
+        assert_eq!(tags_of(&runs, "let"), ["codeblock", "syn-keyword"]);
+        assert_eq!(tags_of(&runs, "42"), ["codeblock", "syn-number"]);
+        assert_eq!(tags_of(&runs, "// x\n"), ["codeblock", "syn-comment"]);
+    }
+
+    #[test]
+    fn code_block_with_an_unknown_language_is_plain() {
+        let runs = parse("```nosuchlang\nlet n = 42;\n```\n");
+        assert_eq!(tags_of(&runs, "let n = 42;\n"), ["codeblock"]);
+    }
+
+    #[test]
+    fn code_block_language_ignores_attributes() {
+        let runs = parse("```python {.numbered}\npass\n```\n");
+        assert_eq!(tags_of(&runs, "pass"), ["codeblock", "syn-keyword"]);
     }
 
     #[test]

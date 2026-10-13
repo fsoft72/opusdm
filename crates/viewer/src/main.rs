@@ -5,6 +5,7 @@
 mod args;
 mod delete;
 mod gallery;
+mod highlight;
 mod image_view;
 mod keys;
 mod kind;
@@ -20,6 +21,7 @@ mod pdf_search;
 mod pdf_text;
 mod slideshow;
 mod strip;
+mod text_doc;
 mod video_view;
 mod window;
 mod zoom;
