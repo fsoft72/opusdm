@@ -1,5 +1,5 @@
 //! The gallery: the files given on the command line and the pictures, PDF
-//! files and videos of the folders given with them.
+//! files, Markdown texts and videos of the folders given with them.
 
 use crate::kind::kind_of;
 use std::cmp::Ordering;
@@ -62,7 +62,7 @@ impl Gallery {
                 if !items.contains(&path) { items.push(path); }
             }
         }
-        if items.is_empty() { return Err(io::Error::new(io::ErrorKind::NotFound, "nothing to show: no picture, PDF or video found")); }
+        if items.is_empty() { return Err(io::Error::new(io::ErrorKind::NotFound, "nothing to show: no picture, PDF, Markdown or video found")); }
         Ok(Gallery { items, index: 0 })
     }
 
@@ -133,7 +133,7 @@ impl Gallery {
     }
 }
 
-/// The pictures, PDF files and videos of `dir`, in natural order.
+/// The pictures, PDF files, Markdown texts and videos of `dir`, in natural order.
 fn _folder_items(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut items = Vec::new();
     for entry in std::fs::read_dir(dir)? {

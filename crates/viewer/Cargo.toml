@@ -16,6 +16,7 @@ opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
 async-channel.workspace = true
 hayro = "0.8"
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

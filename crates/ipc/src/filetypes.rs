@@ -274,6 +274,8 @@ const VIDEO_PATTERN: &str = "*.mp4;*.mkv;*.webm;*.avi;*.mov;*.m4v;*.mpg;*.mpeg;*
 const IMAGE_PATTERN: &str = "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg;*.bmp;*.ico;*.tiff";
 /// Extension of the documents the default type opens with `opusdm-viewer`.
 const PDF_PATTERN: &str = "*.pdf";
+/// Extensions of the Markdown texts the default type opens with `opusdm-viewer`.
+const MARKDOWN_PATTERN: &str = "*.md;*.markdown";
 /// Double click: view the picture.
 const VIEWER_OPEN: &str = "exec:opusdm-viewer {f}";
 /// Double click: play the file.
@@ -295,7 +297,7 @@ pub fn default_filetypes() -> FileTypes {
         rule: MatchRule::Glob { pattern: pattern.to_string() },
         actions: Actions { dblclick: Some(VIEWER_OPEN.to_string()), drop: None, menu: vec![] },
     };
-    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), viewer_type("Image file", IMAGE_PATTERN), viewer_type("PDF file", PDF_PATTERN)] }
+    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), viewer_type("Image file", IMAGE_PATTERN), viewer_type("PDF file", PDF_PATTERN), viewer_type("Markdown file", MARKDOWN_PATTERN)] }
 }
 
 /// Write [`default_filetypes`] to the standard path when `filetypes.json` does
@@ -539,6 +541,7 @@ mod tests {
         assert!(list.find(&facts("notes.txt", 1, b"")).is_none());
         assert_eq!(list.find(&facts("photo.PNG", 1, b"")).unwrap().name, "Image file");
         assert_eq!(list.find(&facts("manual.Pdf", 1, b"")).unwrap().name, "PDF file");
+        assert_eq!(list.find(&facts("README.MD", 1, b"")).unwrap().name, "Markdown file");
     }
 
     #[test]
@@ -549,7 +552,7 @@ mod tests {
             for r in refs {
                 let FuncRef::Exec { line } = parse(&r) else { panic!("{}: {r} is not an exec reference", t.name) };
                 let words = crate::cli::tokenize(&line).unwrap();
-                let program = if t.name == "Image file" || t.name == "PDF file" { "opusdm-viewer" } else { "opusdm-player" };
+                let program = if matches!(t.name.as_str(), "Image file" | "PDF file" | "Markdown file") { "opusdm-viewer" } else { "opusdm-player" };
                 assert_eq!(words.first().map(String::as_str), Some(program), "{r}");
                 assert_eq!(words.last().map(String::as_str), Some("{f}"), "{r}");
             }

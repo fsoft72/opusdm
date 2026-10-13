@@ -202,7 +202,7 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 - **Show in folder** takes the Lister to the folder that holds the selected result and selects it. **View** opens the file in the Viewer, on the first match of the text. Double click does View for content results and Show in folder for name results.
 
 ### 3.10h File Types
-On the first start (when `filetypes.json` does not exist) OpusDM creates it with two types, **Audio file** (mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, mka) and **Video file** (mp4, mkv, webm, avi, mov, m4v, mpg, mpeg, wmv, flv, ogv). A double click runs `opusdm-player` on the file and Open With adds the same player in a loop. Two more types, **Image file** and **PDF file**, open pictures and PDF documents with `opusdm-viewer`. After that the file is yours: nothing is added back, so a type you delete stays deleted (delete `filetypes.json` to get the defaults again).
+On the first start (when `filetypes.json` does not exist) OpusDM creates it with two types, **Audio file** (mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, mka) and **Video file** (mp4, mkv, webm, avi, mov, m4v, mpg, mpeg, wmv, flv, ogv). A double click runs `opusdm-player` on the file and Open With adds the same player in a loop. Three more types, **Image file**, **PDF file** and **Markdown file**, open pictures, PDF documents and Markdown texts with `opusdm-viewer`. After that the file is yours: nothing is added back, so a type you delete stays deleted (delete `filetypes.json` to get the defaults again).
 
 **Edit File Types...** (command palette) edits the list kept in `~/.config/opusdm/filetypes.json`. The first type (top to bottom) whose rule matches a file wins; use the arrows to reorder.
 - **Match**: one or more conditions combined with "all of" or "any of": file name patterns, bytes at an offset (hex, e.g. `89 50 4E 47`), text in the first N bytes, size range (`10K`, `4M`) and modified-time range (`7d`, `2026-01-01`). Content is read from the first 64 KiB of the file.
@@ -635,9 +635,9 @@ Plays one audio or video file in a small window.
   `gstreamer1.0-libav` for the codecs. To build, also `libgstreamer1.0-dev` and
   `libgstreamer-plugins-base1.0-dev`.
 
-### 3.28 Image, PDF and Video Viewer (`opusdm-viewer`)
+### 3.28 Image, PDF, Markdown and Video Viewer (`opusdm-viewer`)
 
-Shows pictures, PDF documents and videos: the files and folders named on the command line.
+Shows pictures, PDF documents, Markdown texts and videos: the files and folders named on the command line.
 
 - **Open it:** run `opusdm-viewer <file or folder>...`. In a Lister a double click on a
   picture or a PDF opens it: the first time OpusDM starts it creates the file types
@@ -659,6 +659,15 @@ Shows pictures, PDF documents and videos: the files and folders named on the com
   **.** switches between smooth scaling (the default) and sharp pixels, handy when zoomed in
   on pixel art; the info bar says `pixels` while it is on, and the choice stays for the
   next pictures.
+- **Markdown texts** (`.md`, `.markdown`): shown rendered in a read-only text view: headings,
+  bold, italic, strikethrough, inline code, code blocks, bullet / numbered / task lists, quotes,
+  rules, links and tables (as rows of cells separated by `|`). Raw HTML is not shown and an image
+  shows as `[image: alt]`. The arrows Up / Down, **Page Up** / **Page Down**, **Home** / **End**
+  and the mouse wheel scroll; **Left** / **Right**, **Space**, **n** and **p** move to the other
+  files; text can be selected and copied with **Ctrl+C**. A click on a link opens it with the
+  desktop (a relative path from the folder of the file; `#anchor` links do nothing). A new
+  `filetypes.json` has a **Markdown file** type (`*.md;*.markdown`); an older one needs it added
+  with **Edit File Types...**, double click `exec:opusdm-viewer {f}`. Files over 8 MiB are not shown.
 - **PDF documents:** one page at a time, shown like a picture (zoom, drag, rotate as above).
   **Right** / **Down** / **Page Down** go to the next page, **Left** / **Up** / **Page Up** to
   the previous one, **Home** / **End** to the first / last one (on a PDF the arrows turn pages:

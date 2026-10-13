@@ -40,15 +40,16 @@ pub enum Action {
 /// The action of `key` while `kind` is on screen; `None` when the key is unused.
 pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
     let video = kind == MediaKind::Video;
+    let text = kind == MediaKind::Markdown;
     let pdf = kind == MediaKind::Pdf;
     let action = match key {
-        Key::plus | Key::KP_Add | Key::equal if !video => Action::ZoomIn,
-        Key::minus | Key::KP_Subtract if !video => Action::ZoomOut,
-        Key::_0 | Key::KP_0 if !video => Action::Fit,
-        Key::_1 | Key::KP_1 if !video => Action::Actual,
-        Key::r if !video => Action::RotateCw,
-        Key::R if !video => Action::RotateCcw,
-        Key::period | Key::KP_Decimal if !video => Action::Interpolation,
+        Key::plus | Key::KP_Add | Key::equal if !video && !text => Action::ZoomIn,
+        Key::minus | Key::KP_Subtract if !video && !text => Action::ZoomOut,
+        Key::_0 | Key::KP_0 if !video && !text => Action::Fit,
+        Key::_1 | Key::KP_1 if !video && !text => Action::Actual,
+        Key::r if !video && !text => Action::RotateCw,
+        Key::R if !video && !text => Action::RotateCcw,
+        Key::period | Key::KP_Decimal if !video && !text => Action::Interpolation,
         Key::Left | Key::KP_Left | Key::Up | Key::KP_Up if pdf => Action::PrevPage,
         Key::Right | Key::KP_Right | Key::Down | Key::KP_Down if pdf => Action::NextPage,
         Key::Left | Key::KP_Left => if video { Action::SeekBack } else { Action::Prev },
@@ -92,7 +93,7 @@ pub fn page_after(action: Action, current: usize, count: usize) -> Option<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use MediaKind::{Image, Pdf, Video};
+    use MediaKind::{Image, Markdown, Pdf, Video};
 
     #[test]
     fn arrows_move_on_pictures_and_seek_on_videos() {
@@ -130,6 +131,16 @@ mod tests {
         assert_eq!(map(Key::period, Image), Some(Action::Interpolation));
         for key in [Key::plus, Key::minus, Key::_0, Key::_1, Key::r, Key::R, Key::period] {
             assert_eq!(map(key, Video), None);
+        }
+    }
+
+    #[test]
+    fn a_markdown_text_moves_but_does_not_zoom_or_rotate() {
+        assert_eq!(map(Key::Right, Markdown), Some(Action::Next));
+        assert_eq!(map(Key::p, Markdown), Some(Action::Prev));
+        assert_eq!(map(Key::f, Markdown), Some(Action::Fullscreen));
+        for key in [Key::plus, Key::minus, Key::_0, Key::_1, Key::r, Key::R, Key::period, Key::Up, Key::Down, Key::Page_Down] {
+            assert_eq!(map(key, Markdown), None);
         }
     }
 
@@ -192,7 +203,7 @@ mod tests {
 
     #[test]
     fn common_keys() {
-        for kind in [Image, Video, Pdf] {
+        for kind in [Image, Video, Pdf, Markdown] {
             assert_eq!(map(Key::s, kind), Some(Action::Slideshow));
             assert_eq!(map(Key::f, kind), Some(Action::Fullscreen));
             assert_eq!(map(Key::Delete, kind), Some(Action::Delete));

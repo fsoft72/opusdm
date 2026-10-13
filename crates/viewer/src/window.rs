@@ -9,6 +9,7 @@ use crate::image_view::ImageView;
 use crate::keys::{map, Action};
 use crate::kind::{kind_or_image, MediaKind};
 use crate::loader::{load_raw, RawImage};
+use crate::markdown_view::MarkdownView;
 use crate::pdf::{start_worker, PageAnswer, PageRequest};
 use pdf::PdfUi;
 use crate::slideshow::{Slideshow, SLIDESHOW_SECS};
@@ -39,6 +40,7 @@ struct State {
     stack: gtk::Stack,
     image: Rc<ImageView>,
     video: Rc<VideoView>,
+    markdown: Rc<MarkdownView>,
     error: gtk::Label,
     info: gtk::Label,
     strip: Rc<Strip>,
@@ -70,6 +72,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
 
     let image = ImageView::new();
     let video = VideoView::new(video_tx);
+    let markdown = MarkdownView::new();
     let error = gtk::Label::new(None);
     error.set_wrap(true);
     error.set_vexpand(true);
@@ -82,6 +85,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     stack.set_vexpand(true);
     stack.add_named(&image.root, Some("image"));
     stack.add_named(&video_page, Some("video"));
+    stack.add_named(&markdown.root, Some("markdown"));
     stack.add_named(&error, Some("error"));
     let strip = Strip::new(gallery.items(), pick_tx);
     let info = gtk::Label::new(None);
@@ -105,6 +109,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         stack,
         image,
         video,
+        markdown,
         error,
         info,
         strip,
@@ -197,6 +202,19 @@ impl State {
                 self.video.stop();
                 self._request_page(&path);
             }
+            MediaKind::Markdown => {
+                self.video.stop();
+                match self.markdown.show(&path) {
+                    Ok(()) => {
+                        self.stack.set_visible_child_name("markdown");
+                        self._schedule_slideshow();
+                    }
+                    Err(e) => {
+                        opusdm_ipc::err_log!("viewer", "cannot show {}: {e}", path.display());
+                        self._show_error(&format!("Cannot show {}: {e}", _name(&path)));
+                    }
+                }
+            }
             MediaKind::Video => match self.video.open(&path) {
                 Ok(()) => self.stack.set_visible_child_name("video"),
                 Err(e) => self._show_error(&format!("Cannot play {}: {e}", _name(&path))),
@@ -265,6 +283,7 @@ impl State {
         let detail = match (kind, self.stack.visible_child_name().as_deref()) {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
+            (MediaKind::Markdown, _) => "markdown".to_string(),
             (MediaKind::Pdf, _) if self.pages.get() == 0 => "loading".to_string(),
             (MediaKind::Image | MediaKind::Pdf, _) => match self.image.size() {
                 Some((w, h)) => format!("{}{w}x{h}  -  {}{}", self._page_label(kind), self.image.zoom_label(), if self.image.is_smooth() { "" } else { "  -  pixels" }),

@@ -87,7 +87,11 @@ impl Strip {
         let button = gtk::Button::new();
         button.set_focusable(false);
         button.set_size_request(THUMB_PX + 8, THUMB_PX * 3 / 4 + 8);
-        let text = if kind_or_image(path) == MediaKind::Video { "VIDEO" } else { "..." };
+        let text = match kind_or_image(path) {
+            MediaKind::Video => "VIDEO",
+            MediaKind::Markdown => "MD",
+            _ => "...",
+        };
         button.set_child(Some(&gtk::Label::new(Some(text))));
         button.set_tooltip_text(path.file_name().map(|n| n.to_string_lossy()).as_deref());
         let target = path.to_path_buf();
@@ -98,7 +102,7 @@ impl Strip {
 
     /// Ask the worker for a thumbnail, once per picture.
     fn _request(&self, path: &Path) {
-        if kind_or_image(path) == MediaKind::Video { return; }
+        if matches!(kind_or_image(path), MediaKind::Video | MediaKind::Markdown) { return; }
         if !self.requested.borrow_mut().insert(path.to_path_buf()) { return; }
         if self.requests.send(path.to_path_buf()).is_err() { opusdm_ipc::err_log!("viewer", "the thumbnail worker stopped"); }
     }

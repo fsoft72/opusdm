@@ -23,7 +23,7 @@ impl Slideshow {
         self.on
     }
 
-    /// A timer is needed only for pictures and PDF files (their first page); a
+    /// A timer is needed only for pictures, PDF files (their first page) and Markdown texts; a
     /// video advances at its end.
     pub fn wants_timer(&self, kind: MediaKind) -> bool {
         self.on && kind != MediaKind::Video
