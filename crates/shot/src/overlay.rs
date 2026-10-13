@@ -2,7 +2,7 @@
 //! rectangle to keep.
 
 use crate::render::surface_from;
-use crate::selection::{self, Rect};
+use crate::selection::{self, Area, Edges, Rect};
 use gtk4 as gtk;
 use gtk::cairo;
 use gtk::gdk;
@@ -11,9 +11,6 @@ use gtk::prelude::*;
 use image::RgbaImage;
 use std::cell::Cell;
 use std::rc::Rc;
-
-/// A selection rectangle in screen coordinates: x, y, width, height.
-type Selection = (f64, f64, f64, f64);
 
 /// Opacity of the black layer over the part of the screen that is not selected.
 const DIM_ALPHA: f64 = 0.45;
@@ -24,6 +21,9 @@ const BORDER_WIDTH: f64 = 2.0;
 /// Colour of the selection border (the OpusDM accent blue).
 const BORDER_RGB: (f64, f64, f64) = (0.25, 0.55, 1.0);
 
+/// Side of the square grips drawn on the selection sides, in pixels.
+const HANDLE_SIZE: f64 = 8.0;
+
 /// Font size of the "W x H" label near the selection.
 const LABEL_FONT_SIZE: f64 = 14.0;
 
@@ -32,7 +32,8 @@ const LABEL_GAP: f64 = 6.0;
 
 /// Show the overlay on `monitor` with `screen` (the capture of that monitor).
 /// When the user releases a valid selection, `on_selected` gets the cropped
-/// image and the overlay closes; Esc closes it with no call.
+/// image and the overlay closes; Esc closes it with no call. The selection stays
+/// adjustable after the drag: grab any side to resize it, press Enter to keep it.
 pub fn open<F>(app: &gtk::Application, monitor: &gdk::Monitor, screen: RgbaImage, on_selected: F)
 where
     F: Fn(RgbaImage) + 'static,
@@ -48,7 +49,8 @@ where
         }
     };
     let screen = Rc::new(screen);
-    let selection: Rc<Cell<Option<Selection>>> = Rc::new(Cell::new(None));
+    let on_selected = Rc::new(on_selected);
+    let selection: Rc<Cell<Option<Area>>> = Rc::new(Cell::new(None));
 
     let area = gtk::DrawingArea::new();
     area.set_cursor_from_name(Some("crosshair"));
@@ -60,51 +62,78 @@ where
         });
     }
 
+    // `Some((edges, start))` while a side of the selection is being dragged,
+    // `None` while a new rectangle is being drawn.
+    let grab: Rc<Cell<Option<(Edges, Area)>>> = Rc::new(Cell::new(None));
+    let origin = Rc::new(Cell::new((0.0, 0.0)));
+
     let drag = gtk::GestureDrag::new();
     drag.set_button(gdk::BUTTON_PRIMARY);
-    let origin = Rc::new(Cell::new((0.0, 0.0)));
     {
-        let (origin, selection, area) = (origin.clone(), selection.clone(), area.clone());
+        let (origin, selection, grab, area) = (origin.clone(), selection.clone(), grab.clone(), area.clone());
         drag.connect_drag_begin(move |_, x, y| {
-            origin.set((x, y));
-            selection.set(Some((x, y, x, y)));
+            let hit = selection.get().map(|s| (selection::hit_edges(s, (x, y), selection::GRAB), s));
+            match hit {
+                Some((edges, start)) if edges.any() => grab.set(Some((edges, start))),
+                _ => {
+                    grab.set(None);
+                    origin.set((x, y));
+                    selection.set(Some((x, y, x, y)));
+                }
+            }
             area.queue_draw();
         });
     }
     {
-        let (origin, selection, area) = (origin.clone(), selection.clone(), area.clone());
+        let (origin, selection, grab, area) = (origin.clone(), selection.clone(), grab.clone(), area.clone());
         drag.connect_drag_update(move |_, dx, dy| {
-            let (x, y) = origin.get();
-            selection.set(Some((x, y, x + dx, y + dy)));
+            match grab.get() {
+                Some((edges, start)) => selection.set(Some(selection::resize(start, edges, dx, dy))),
+                None => {
+                    let (x, y) = origin.get();
+                    selection.set(Some((x, y, x + dx, y + dy)));
+                }
+            }
             area.queue_draw();
         });
     }
     {
-        let (origin, selection, area, screen, window) = (origin.clone(), selection.clone(), area.clone(), screen.clone(), window.clone());
-        let on_selected = Rc::new(on_selected);
-        drag.connect_drag_end(move |_, dx, dy| {
-            let (x, y) = origin.get();
-            let bounds = (screen.width() as i32, screen.height() as i32);
-            let scale = scale_of(&area, bounds);
-            let rect = selection::from_points((x * scale.0, y * scale.1), ((x + dx) * scale.0, (y + dy) * scale.1), bounds);
-            let Some(rect) = rect else {
-                selection.set(None);
-                area.queue_draw();
-                return;
-            };
-            on_selected(crop(&screen, rect));
-            window.close();
+        // A selection that is too small is a stray click: drop it.
+        let (selection, area, screen) = (selection.clone(), area.clone(), screen.clone());
+        drag.connect_drag_end(move |_, _, _| {
+            if to_rect(&area, &screen, selection.get()).is_none() { selection.set(None); }
+            area.queue_draw();
         });
     }
     area.add_controller(drag);
 
+    // Show the resize cursor of the side under the pointer.
+    let motion = gtk::EventControllerMotion::new();
+    {
+        let (selection, area) = (selection.clone(), area.clone());
+        motion.connect_motion(move |_, x, y| {
+            let edges = selection.get().map(|s| selection::hit_edges(s, (x, y), selection::GRAB)).unwrap_or_default();
+            area.set_cursor_from_name(Some(edges.cursor()));
+        });
+    }
+    area.add_controller(motion);
+
     let keys = gtk::EventControllerKey::new();
     {
-        let (window, app) = (window.clone(), app.clone());
+        let (window, app, area, screen, selection) = (window.clone(), app.clone(), area.clone(), screen.clone(), selection.clone());
         keys.connect_key_pressed(move |_, key, _, _| {
-            if key != gdk::Key::Escape { return glib::Propagation::Proceed; }
-            window.close();
-            app.quit();
+            match key {
+                gdk::Key::Escape => {
+                    window.close();
+                    app.quit();
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    let Some(rect) = to_rect(&area, &screen, selection.get()) else { return glib::Propagation::Stop };
+                    on_selected(crop(&screen, rect));
+                    window.close();
+                }
+                _ => return glib::Propagation::Proceed,
+            }
             glib::Propagation::Stop
         });
     }
@@ -113,6 +142,14 @@ where
     window.set_child(Some(&area));
     window.fullscreen_on_monitor(monitor);
     window.present();
+}
+
+/// The selection in image pixels, or `None` when there is none or it is too small.
+fn to_rect(area: &gtk::DrawingArea, screen: &RgbaImage, selection: Option<Area>) -> Option<Rect> {
+    let (x0, y0, x1, y1) = selection?;
+    let bounds = (screen.width() as i32, screen.height() as i32);
+    let scale = scale_of(area, bounds);
+    selection::from_points((x0 * scale.0, y0 * scale.1), (x1 * scale.0, y1 * scale.1), bounds)
 }
 
 /// The factor from widget coordinates to image pixels, per axis.
@@ -133,7 +170,7 @@ fn paint(
     surface: &cairo::ImageSurface,
     image: (f64, f64),
     widget: (f64, f64),
-    selection: Option<(f64, f64, f64, f64)>,
+    selection: Option<Area>,
 ) -> Result<(), cairo::Error> {
     cr.save()?;
     cr.scale(widget.0 / image.0, widget.1 / image.1);
@@ -156,7 +193,13 @@ fn paint(
     cr.rectangle(x, y, w, h);
     cr.stroke()?;
 
-    let label = format!("{} x {}", (w * image.0 / widget.0).round(), (h * image.1 / widget.1).round());
+    // A grip at the middle of each side, to show they can be dragged.
+    for (hx, hy) in [(x, y + h / 2.0), (x + w, y + h / 2.0), (x + w / 2.0, y), (x + w / 2.0, y + h)] {
+        cr.rectangle(hx - HANDLE_SIZE / 2.0, hy - HANDLE_SIZE / 2.0, HANDLE_SIZE, HANDLE_SIZE);
+    }
+    cr.fill()?;
+
+    let label = format!("{} x {}  (Enter: keep, Esc: cancel)", (w * image.0 / widget.0).round(), (h * image.1 / widget.1).round());
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
     cr.set_font_size(LABEL_FONT_SIZE);
     let ly = if y > LABEL_FONT_SIZE + 2.0 * LABEL_GAP { y - LABEL_GAP } else { y + h + LABEL_FONT_SIZE + LABEL_GAP };

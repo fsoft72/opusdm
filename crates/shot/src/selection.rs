@@ -26,6 +26,74 @@ pub fn from_points(a: (f64, f64), b: (f64, f64), bounds: (i32, i32)) -> Option<R
     Some(rect)
 }
 
+/// How close (in pixels) the pointer must be to a side to grab it.
+pub const GRAB: f64 = 8.0;
+
+/// A selection in widget coordinates: x0, y0, x1, y1 (any corner order).
+pub type Area = (f64, f64, f64, f64);
+
+/// The sides of the selection under the pointer. Two sides at once is a corner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Edges {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+
+impl Edges {
+    /// True when at least one side is grabbed.
+    pub fn any(&self) -> bool {
+        self.left || self.right || self.top || self.bottom
+    }
+
+    /// The CSS cursor name for these sides.
+    pub fn cursor(&self) -> &'static str {
+        match (self.left, self.right, self.top, self.bottom) {
+            (true, _, true, _) => "nw-resize",
+            (_, true, true, _) => "ne-resize",
+            (true, _, _, true) => "sw-resize",
+            (_, true, _, true) => "se-resize",
+            (true, ..) => "w-resize",
+            (_, true, ..) => "e-resize",
+            (_, _, true, _) => "n-resize",
+            (.., true) => "s-resize",
+            _ => "crosshair",
+        }
+    }
+}
+
+/// The corners of `area` ordered as (left, top, right, bottom).
+fn normalized(area: Area) -> Area {
+    (area.0.min(area.2), area.1.min(area.3), area.0.max(area.2), area.1.max(area.3))
+}
+
+/// The sides of `area` within `tol` pixels of the point `p`.
+pub fn hit_edges(area: Area, p: (f64, f64), tol: f64) -> Edges {
+    let (x0, y0, x1, y1) = normalized(area);
+    let in_x = p.0 >= x0 - tol && p.0 <= x1 + tol;
+    let in_y = p.1 >= y0 - tol && p.1 <= y1 + tol;
+    let (dl, dr, dt, db) = ((p.0 - x0).abs(), (p.0 - x1).abs(), (p.1 - y0).abs(), (p.1 - y1).abs());
+    // On a very thin selection both sides can match: the nearest one wins.
+    Edges {
+        left: in_y && dl <= tol && dl <= dr,
+        right: in_y && dr <= tol && dr < dl,
+        top: in_x && dt <= tol && dt <= db,
+        bottom: in_x && db <= tol && db < dt,
+    }
+}
+
+/// `area` with the grabbed `edges` moved by (`dx`, `dy`); the result is
+/// normalized, so dragging a side past the opposite one flips the rectangle.
+pub fn resize(area: Area, edges: Edges, dx: f64, dy: f64) -> Area {
+    let (mut x0, mut y0, mut x1, mut y1) = normalized(area);
+    if edges.left { x0 += dx; }
+    if edges.right { x1 += dx; }
+    if edges.top { y0 += dy; }
+    if edges.bottom { y1 += dy; }
+    normalized((x0, y0, x1, y1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +124,34 @@ mod tests {
     #[test]
     fn rejects_empty_bounds() {
         assert_eq!(from_points((0.0, 0.0), (50.0, 50.0), (0, 0)), None);
+    }
+
+    const AREA: Area = (100.0, 100.0, 200.0, 180.0);
+
+    #[test]
+    fn hits_a_side_and_a_corner() {
+        let e = hit_edges(AREA, (101.0, 140.0), GRAB);
+        assert_eq!(e, Edges { left: true, ..Edges::default() });
+        let c = hit_edges(AREA, (199.0, 181.0), GRAB);
+        assert_eq!(c, Edges { right: true, bottom: true, ..Edges::default() });
+        assert_eq!(c.cursor(), "se-resize");
+    }
+
+    #[test]
+    fn misses_the_inside_and_the_far_outside() {
+        assert!(!hit_edges(AREA, (150.0, 140.0), GRAB).any());
+        assert!(!hit_edges(AREA, (101.0, 400.0), GRAB).any());
+    }
+
+    #[test]
+    fn resizes_only_the_grabbed_sides() {
+        let e = Edges { left: true, bottom: true, ..Edges::default() };
+        assert_eq!(resize(AREA, e, 10.0, 20.0), (110.0, 100.0, 200.0, 200.0));
+    }
+
+    #[test]
+    fn dragging_a_side_past_the_other_flips() {
+        let e = Edges { right: true, ..Edges::default() };
+        assert_eq!(resize(AREA, e, -150.0, 0.0), (50.0, 100.0, 100.0, 180.0));
     }
 }

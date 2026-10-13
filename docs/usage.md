@@ -584,8 +584,11 @@ little and save it.
   **Exec**, tick **Global** to use it from anywhere). Only the primary monitor
   is captured.
 - **Select the area:** the screen is frozen and dimmed. Drag a rectangle (the
-  size is shown next to it) and release. A click or a selection under 4 x 4
-  pixels is ignored; **Esc** quits with no screenshot.
+  size is shown next to it) and release. The rectangle stays: drag any of its
+  four sides (or two at once on a corner; the cursor changes over a side) to
+  resize it, drag outside it to draw a new one, press **Enter** to keep it. A
+  click or a selection under 4 x 4 pixels is ignored; **Esc** quits with no
+  screenshot.
 - **Edit:** the editor has four tools: **Select** (click an annotation to select
   it, drag to move it, **Delete** removes it), **Line**, **Arrow** (drag; hold
   **Shift** to lock the angle to 15 degrees) and **Text** (click, type, **Enter**

@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-13
+- Feature (shot): the selection of `opusdm-shot` is no longer taken on mouse release. It stays on screen with a grip at the middle of each side; dragging a side (or two at once on a corner) resizes it, with the matching resize cursor on hover, dragging outside draws a new one, **Enter** keeps it and **Esc** cancels. New in `selection.rs`: `Edges`, `hit_edges`, `resize` (4 unit tests, 52 pass in the crate). NOT checked by eye in the GUI.
 - Feature (ipc, hub, lister): new internal command **New Lister** (`InternalCmd::NewLister`) with an optional `path` (template, `~` and relative paths like Change Directory, must be a folder). Without a path the hub opens a Lister on its default folder. Offered in the Function Editor; 2 new tests in `functions/tests.rs`. NOT checked by eye in the GUI.
 - Fix (hub): a function or `exec:` command (e.g. `Ctrl+Print` -> `opusdm-shot`) failed with `cannot start 'x': No such file or directory` when the active Lister was inside an archive (`a.zip#dir`), on a remote `sftp://` / `ftp://` folder or in a deleted folder: that path was used as the child's working directory and `spawn` returned ENOENT. `usable_cwd` now walks up to the nearest real folder (else `$HOME`). 4 new tests in `functions/tests.rs`; the regression test fails without the fix. NOT checked by eye with the real hotkey.
 - Feature (lister): `Ctrl+L` focuses the path bar with its whole text selected (`Action::FocusPath`, `Ui::focus_path_entry`), from the list or from any text field. Test added in `keys.rs`. NOT checked by eye in the GUI.

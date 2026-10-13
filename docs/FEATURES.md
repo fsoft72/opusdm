@@ -345,6 +345,7 @@ A fast image and video viewer that knows its way around a folder.
 ### 8.3 Screenshot tool
 
 - **Freeze the screen, drag the area, annotate, save.**
+- **Resizable selection**: grab any side or corner to adjust the area, **Enter** to keep it.
 - **Line, Arrow (with 15 degree lock), Text and Select** tools, six colors, three sizes, **undo and redo**.
 - Save as **PNG, JPG or WebP** (with quality slider and lossless option).
 - **Quick save** to `~/Pictures/Screenshots`, or **Copy** to the clipboard.
