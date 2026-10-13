@@ -275,7 +275,7 @@ pub fn cleanup_temp_dirs() {
     SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
-/// Extract items from archive into `dest_dir`. Entry names are matched
+/// Extract items from archive into `dest_dir`, created when missing. Entry names are matched
 /// literally, so they can never be read as options or wildcards. A folder
 /// brings everything below it.
 pub fn extract_items_to_dir(
@@ -285,6 +285,7 @@ pub fn extract_items_to_dir(
 ) -> io::Result<Vec<PathBuf>> {
     _check_supported(arch)?;
     items.iter().try_for_each(|i| _check_inner_path(i))?;
+    std::fs::create_dir_all(dest_dir)?;
     opusdm_archive::extract(arch, dest_dir, Some(items), &|| false)?;
     let extracted: Vec<PathBuf> = items.iter().map(|item| dest_dir.join(item)).collect();
     extracted.iter().try_for_each(|p| _check_extracted(p))?;
@@ -442,6 +443,16 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&paths[1]).unwrap(), "star", "{name}");
             assert_eq!(std::fs::read_dir(&out).unwrap().count(), 2, "{name}: nothing else extracted");
         }
+    }
+
+    #[test]
+    fn extract_items_creates_the_destination_folder() {
+        let td = tempfile::tempdir().unwrap();
+        fixture(td.path());
+        let out = td.path().join("scratch").join("0");
+        let items = vec!["-dash.txt".to_string()];
+        let paths = extract_items_to_dir(&td.path().join("a.zip"), &items, &out).unwrap();
+        assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "dash");
     }
 
     /// A listing item for the row tests.
