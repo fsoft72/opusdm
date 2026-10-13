@@ -53,6 +53,7 @@ pub fn open(ui: &Rc<Ui>) {
     let selection = gtk::MultiSelection::new(Some(sorted));
     view.set_model(Some(&selection));
     view.set_show_column_separators(true);
+    view.add_css_class("data-table");
     _add_column(&view, "Name", Col::Name, false);
     _add_column(&view, "Original location", Col::Origin, true);
     let deleted = _add_column(&view, "Deleted", Col::Deleted, false);
@@ -103,7 +104,9 @@ fn _on_click(dialog: &Rc<TrashDialog>, btn: &gtk::Button, action: fn(&Rc<TrashDi
 }
 
 /// Add the column `col` titled `title` to `view`, sortable by its text
-/// (the Deleted text sorts by time, as it is `YYYY-MM-DD hh:mm:ss`).
+/// (the Deleted text sorts by time, as it is `YYYY-MM-DD hh:mm:ss`). Cells
+/// carry the Lister's `row-dir` / `row-file` / `cell-selected` classes, so
+/// the list has the Lister's colours.
 fn _add_column(view: &gtk::ColumnView, title: &str, col: Col, expand: bool) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, list_item| {
@@ -112,10 +115,20 @@ fn _add_column(view: &gtk::ColumnView, title: &str, col: Col, expand: bool) -> g
         label.set_xalign(0.0);
         label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         item.set_child(Some(&label));
+        // Selection can change without a rebind.
+        item.connect_selected_notify(|li| {
+            if let Some(cell) = li.child() {
+                crate::columns::apply_selected_class(&cell, li.is_selected());
+            }
+        });
     });
     factory.connect_bind(move |_, list_item| {
         let Some(item) = list_item.downcast_ref::<gtk::ListItem>() else { return };
         let (Some(label), Some(trashed)) = (item.child().and_downcast::<gtk::Label>(), item.item().as_ref().and_then(_item_of)) else { return };
+        label.remove_css_class("row-dir");
+        label.remove_css_class("row-file");
+        label.add_css_class(if trashed.is_dir { "row-dir" } else { "row-file" });
+        crate::columns::apply_selected_class(&label, item.is_selected());
         label.set_text(&col.text(&trashed));
         label.set_tooltip_text(Some(&trashed.original.display().to_string()));
     });
