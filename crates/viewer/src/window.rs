@@ -207,6 +207,8 @@ impl State {
                 match self.markdown.show(&path) {
                     Ok(()) => {
                         self.stack.set_visible_child_name("markdown");
+                        self._sync_pdf_panels();
+                        if !self.pdf.bar.entry.text().is_empty() { self._markdown_search(); }
                         self._schedule_slideshow();
                     }
                     Err(e) => {

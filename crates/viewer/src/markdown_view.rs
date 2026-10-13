@@ -6,7 +6,7 @@ use gtk::gdk;
 use gtk::gio;
 use gtk::pango;
 use gtk::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -22,6 +22,12 @@ const HEADING_SCALES: [f64; 6] = [2.0, 1.6, 1.35, 1.15, 1.0, 0.9];
 const CODE_BG: &str = "rgba(128,128,128,0.22)";
 const LINK_COLOR: &str = "#4a90ff";
 const RULE_COLOR: &str = "#888888";
+/// Shade of a search match and of the current one.
+const MATCH_BG: &str = "#ffeb3c";
+const CURRENT_MATCH_BG: &str = "#ff8c00";
+const MATCH_FG: &str = "#000000";
+/// Widest a picture is drawn, in pixels; a wider one is scaled down.
+const MAX_IMAGE_WIDTH: i32 = 800;
 /// Deepest indent tag created (matches `markdown::indent_tag`).
 const MAX_INDENT: usize = 6;
 
@@ -38,6 +44,9 @@ pub struct MarkdownView {
     pub root: gtk::ScrolledWindow,
     view: gtk::TextView,
     links: RefCell<Vec<LinkRange>>,
+    /// Matches of the search (character ranges) and the current one.
+    matches: RefCell<Vec<(i32, i32)>>,
+    current: Cell<usize>,
     /// Folder of the file on screen, to resolve relative links.
     base: RefCell<PathBuf>,
 }
@@ -57,9 +66,14 @@ impl MarkdownView {
         let root = gtk::ScrolledWindow::new();
         root.set_vexpand(true);
         root.set_child(Some(&view));
-        let this = Rc::new(MarkdownView { root, view, links: RefCell::new(Vec::new()), base: RefCell::new(PathBuf::new()) });
+        let this = Rc::new(MarkdownView { root, view, links: RefCell::new(Vec::new()), matches: RefCell::new(Vec::new()), current: Cell::new(0), base: RefCell::new(PathBuf::new()) });
         this._wire_links();
         this
+    }
+
+    /// Give the keyboard focus to the text (the arrows scroll it).
+    pub fn focus(&self) {
+        self.view.grab_focus();
     }
 
     /// Read and show `path`; the error is a message for the user.
@@ -67,8 +81,8 @@ impl MarkdownView {
         let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
         if size > MAX_BYTES { return Err(format!("the file is too big ({} MiB, the limit is {} MiB)", size / (1024 * 1024), MAX_BYTES / (1024 * 1024))); }
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        self._fill(&String::from_utf8_lossy(&bytes));
         *self.base.borrow_mut() = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        self._fill(&String::from_utf8_lossy(&bytes));
         self.view.grab_focus();
         Ok(())
     }
@@ -77,11 +91,20 @@ impl MarkdownView {
     fn _fill(&self, source: &str) {
         let buffer = self.view.buffer();
         buffer.set_text("");
+        self.matches.borrow_mut().clear();
         let mut links = Vec::new();
         for run in parse(source) {
             let start = buffer.end_iter().offset();
             let mut at = buffer.end_iter();
-            buffer.insert(&mut at, &run.text);
+            let picture = run.image.as_deref().and_then(|url| self._picture(url, &run.text));
+            match &picture {
+                Some(picture) => {
+                    let anchor = buffer.create_child_anchor(&mut at);
+                    self.view.add_child_at_anchor(picture, &anchor);
+                }
+                None if run.image.is_some() => buffer.insert(&mut at, &format!("[image: {}]", run.text)),
+                None => buffer.insert(&mut at, &run.text),
+            }
             let (from, to) = (buffer.iter_at_offset(start), buffer.end_iter());
             for name in &run.tags {
                 if buffer.tag_table().lookup(name).is_none() { opusdm_ipc::err_log!("viewer", "unknown Markdown tag {name}"); continue; }
@@ -92,6 +115,93 @@ impl MarkdownView {
         *self.links.borrow_mut() = links;
         buffer.place_cursor(&buffer.start_iter());
         self.root.vadjustment().set_value(0.0);
+    }
+
+    /// The picture at `url` (a file, from the folder of the text) as a widget;
+    /// `None` for an address on the web or a file that cannot be read.
+    fn _picture(&self, url: &str, alt: &str) -> Option<gtk::Picture> {
+        if url.contains("://") { return None; }
+        let name = gtk::glib::Uri::unescape_string(url, None)?;
+        let path = self.base.borrow().join(name.as_str());
+        let texture = match gdk::Texture::from_filename(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                opusdm_ipc::err_log!("viewer", "cannot load picture {}: {e}", path.display());
+                return None;
+            }
+        };
+        let (w, h) = (texture.width(), texture.height());
+        let (w, h) = if w > MAX_IMAGE_WIDTH { (MAX_IMAGE_WIDTH, (h as i64 * MAX_IMAGE_WIDTH as i64 / w as i64) as i32) } else { (w, h) };
+        let picture = gtk::Picture::for_paintable(&texture);
+        picture.set_can_shrink(true);
+        picture.set_size_request(w, h);
+        picture.set_tooltip_text(Some(alt).filter(|a| !a.is_empty()));
+        Some(picture)
+    }
+
+    /// Mark every match of `query` (case ignored) and make the first one the
+    /// current one; returns how many there are. An empty query clears the marks.
+    pub fn search(&self, query: &str) -> usize {
+        let buffer = self.view.buffer();
+        self._clear_marks();
+        self.current.set(0);
+        if query.is_empty() { return 0; }
+        let mut found = Vec::new();
+        let mut from = buffer.start_iter();
+        while let Some((start, end)) = from.forward_search(query, gtk::TextSearchFlags::CASE_INSENSITIVE | gtk::TextSearchFlags::VISIBLE_ONLY, None) {
+            buffer.apply_tag_by_name("match", &start, &end);
+            found.push((start.offset(), end.offset()));
+            from = end;
+        }
+        *self.matches.borrow_mut() = found;
+        self._mark_current();
+        self.matches.borrow().len()
+    }
+
+    /// Move to the next (or previous) match, wrapping around; `None` without matches.
+    pub fn step(&self, forward: bool) -> Option<()> {
+        let count = self.matches.borrow().len();
+        if count == 0 { return None; }
+        self._unmark_current();
+        let i = self.current.get();
+        self.current.set(if forward { (i + 1) % count } else { (i + count - 1) % count });
+        self._mark_current();
+        Some(())
+    }
+
+    /// `3/17`, or `no match`, for the search bar.
+    pub fn label(&self) -> String {
+        let count = self.matches.borrow().len();
+        if count == 0 { "no match".to_string() } else { format!("{}/{count}", self.current.get() + 1) }
+    }
+
+    /// Remove every mark of the last search.
+    fn _clear_marks(&self) {
+        let buffer = self.view.buffer();
+        let (start, end) = buffer.bounds();
+        buffer.remove_tag_by_name("match", &start, &end);
+        buffer.remove_tag_by_name("current-match", &start, &end);
+        self.matches.borrow_mut().clear();
+    }
+
+    /// Range of the current match as buffer iterators.
+    fn _current_range(&self) -> Option<(gtk::TextIter, gtk::TextIter)> {
+        let (a, b) = *self.matches.borrow().get(self.current.get())?;
+        let buffer = self.view.buffer();
+        Some((buffer.iter_at_offset(a), buffer.iter_at_offset(b)))
+    }
+
+    /// Draw the current match in its own colour and scroll to it.
+    fn _mark_current(&self) {
+        let Some((start, end)) = self._current_range() else { return };
+        self.view.buffer().apply_tag_by_name("current-match", &start, &end);
+        self.view.scroll_to_iter(&mut start.clone(), 0.1, true, 0.0, 0.3);
+    }
+
+    /// Give the current match the colour of the other ones.
+    fn _unmark_current(&self) {
+        let Some((start, end)) = self._current_range() else { return };
+        self.view.buffer().remove_tag_by_name("current-match", &start, &end);
     }
 
     /// Target of the link under the widget point (`x`, `y`), if any.
@@ -149,8 +259,12 @@ fn _create_tags(buffer: &gtk::TextBuffer) {
     buffer.create_tag(Some("codeblock"), &[("family", &"monospace"), ("background", &CODE_BG), ("wrap-mode", &gtk::WrapMode::None)]);
     buffer.create_tag(Some("quote"), &[("style", &pango::Style::Italic), ("foreground", &RULE_COLOR)]);
     buffer.create_tag(Some("link"), &[("foreground", &LINK_COLOR), ("underline", &pango::Underline::Single)]);
+    buffer.create_tag(Some("table"), &[("family", &"monospace"), ("wrap-mode", &gtk::WrapMode::None)]);
     buffer.create_tag(Some("rule"), &[("foreground", &RULE_COLOR)]);
     for level in 1..=MAX_INDENT {
         buffer.create_tag(Some(&indent_tag(level)), &[("left-margin", &(INDENT_PX * level as i32 + PAGE_MARGIN))]);
     }
+    // The match tags are created last: they win over every other tag.
+    buffer.create_tag(Some("match"), &[("background", &MATCH_BG), ("foreground", &MATCH_FG)]);
+    buffer.create_tag(Some("current-match"), &[("background", &CURRENT_MATCH_BG), ("foreground", &MATCH_FG)]);
 }

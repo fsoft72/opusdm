@@ -1,7 +1,7 @@
 //! Markdown to styled text runs. No GTK here: the view turns the runs into a
 //! text buffer, so the parser can be tested alone.
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// Deepest indent level that has its own tag name.
 const MAX_INDENT: usize = 6;
@@ -13,10 +13,12 @@ const RULE_TEXT: &str = "──────────────────�
 pub struct Run {
     pub text: String,
     /// Tag names: `h1`..`h6`, `bold`, `italic`, `strike`, `code`, `codeblock`,
-    /// `quote`, `link`, `rule`, `indent1`..`indent6`.
+    /// `quote`, `link`, `rule`, `table`, `indent1`..`indent6`.
     pub tags: Vec<String>,
     /// Target of a link; `None` for plain text.
     pub link: Option<String>,
+    /// A picture to show instead of the text; the text is its alt text.
+    pub image: Option<String>,
 }
 
 /// Name of the tag that indents a block `level` steps.
@@ -37,6 +39,25 @@ struct Builder {
     /// One entry per open list: the next number of an ordered list.
     lists: Vec<Option<u64>>,
     link: Option<String>,
+    /// Address of the picture being read; its alt text collects in `alt`.
+    image: Option<String>,
+    alt: String,
+    table: Option<Table>,
+}
+
+/// A table being read: the cells are kept until its end, to know the widths.
+struct Table {
+    aligns: Vec<Alignment>,
+    rows: Vec<Vec<Vec<Run>>>,
+    /// Rows that are the header.
+    head_rows: usize,
+    row: Vec<Vec<Run>>,
+    cell: Vec<Run>,
+}
+
+/// Width of a cell in characters.
+fn _cell_width(cell: &[Run]) -> usize {
+    cell.iter().map(|r| r.text.chars().count()).sum()
 }
 
 impl Builder {
@@ -63,7 +84,14 @@ impl Builder {
     fn _text(&mut self, text: &str) {
         if text.is_empty() { return; }
         let (tags, link) = (self._tags(), self.link.clone());
-        self.runs.push(Run { text: text.to_string(), tags, link });
+        self._emit(Run { text: text.to_string(), tags, link, image: None });
+    }
+
+    /// Add a run: in a table it goes to the cell being read (on one line).
+    fn _emit(&mut self, mut run: Run) {
+        let Some(table) = self.table.as_mut() else { return self.runs.push(run) };
+        run.text = run.text.replace('\n', " ");
+        table.cell.push(run);
     }
 
     /// Add text with explicit tags (inline code, rules, markers).
@@ -71,7 +99,7 @@ impl Builder {
         let mut tags = self._tags();
         tags.extend(extra.iter().map(|t| t.to_string()));
         let link = self.link.clone();
-        self.runs.push(Run { text: text.to_string(), tags, link });
+        self._emit(Run { text: text.to_string(), tags, link, image: None });
     }
 
     /// True when the text so far is empty or ends with a new line.
@@ -109,6 +137,7 @@ impl Builder {
         match event {
             Event::Start(tag) => self._start(tag),
             Event::End(tag) => self._end(tag),
+            Event::Text(t) if self.image.is_some() => self.alt.push_str(&t),
             Event::Text(t) => self._text(&t),
             Event::Code(t) => self._text_with(&t, &["code"]),
             Event::SoftBreak => self._text(" "),
@@ -138,7 +167,12 @@ impl Builder {
             Tag::Strong => self.bold += 1,
             Tag::Strikethrough => self.strike += 1,
             Tag::Link { dest_url, .. } => self.link = Some(dest_url.to_string()),
-            Tag::Image { .. } => self._text("[image: "),
+            Tag::Image { dest_url, .. } => {
+                self.image = Some(dest_url.to_string());
+                self.alt.clear();
+            }
+            Tag::Table(aligns) => self.table = Some(Table { aligns, rows: Vec::new(), head_rows: 0, row: Vec::new(), cell: Vec::new() }),
+            Tag::TableHead => self.bold += 1,
             _ => {}
         }
     }
@@ -168,14 +202,80 @@ impl Builder {
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link => self.link = None,
-            TagEnd::Image => self._text("]"),
-            TagEnd::TableCell => self._text("  |  "),
-            TagEnd::TableHead | TagEnd::TableRow => {
-                self._ensure_newline();
+            TagEnd::Image => self._end_image(),
+            TagEnd::TableCell => {
+                if let Some(t) = self.table.as_mut() { t.row.push(std::mem::take(&mut t.cell)); }
             }
-            TagEnd::Table => self._end_block(),
+            TagEnd::TableHead => {
+                self.bold = self.bold.saturating_sub(1);
+                if let Some(t) = self.table.as_mut() {
+                    t.rows.push(std::mem::take(&mut t.row));
+                    t.head_rows = t.rows.len();
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(t) = self.table.as_mut() { t.rows.push(std::mem::take(&mut t.row)); }
+            }
+            TagEnd::Table => {
+                if let Some(table) = self.table.take() { self._write_table(table); }
+                self._end_block();
+            }
             _ => {}
         }
+    }
+}
+
+impl Builder {
+    /// A picture closes: a run with its alt text, or the text `[image: alt]`
+    /// inside a table (a picture cannot sit in a cell).
+    fn _end_image(&mut self) {
+        let Some(url) = self.image.take() else { return };
+        let alt = std::mem::take(&mut self.alt);
+        if self.table.is_some() { return self._text(&format!("[image: {alt}]")); }
+        let (tags, link) = (self._tags(), self.link.clone());
+        self.runs.push(Run { text: alt, tags, link, image: Some(url) });
+    }
+
+    /// Write a finished table as a box of lines with the cells aligned.
+    fn _write_table(&mut self, table: Table) {
+        let columns = table.rows.iter().map(Vec::len).max().unwrap_or(0);
+        if columns == 0 { return; }
+        let widths: Vec<usize> = (0..columns).map(|c| table.rows.iter().filter_map(|r| r.get(c)).map(|cell| _cell_width(cell)).max().unwrap_or(0).max(1)).collect();
+        self._ensure_newline();
+        self._border('┌', '┬', '┐', &widths);
+        for (i, row) in table.rows.iter().enumerate() {
+            self._row_line(row, &widths, &table.aligns);
+            if i + 1 == table.head_rows && i + 1 < table.rows.len() { self._border('├', '┼', '┤', &widths); }
+        }
+        self._border('└', '┴', '┘', &widths);
+    }
+
+    /// One horizontal line of the box.
+    fn _border(&mut self, left: char, middle: char, right: char, widths: &[usize]) {
+        let parts: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
+        self._text_with(&format!("{left}{}{right}\n", parts.join(&middle.to_string())), &["table"]);
+    }
+
+    /// One row of cells between vertical lines, each padded to its column.
+    fn _row_line(&mut self, row: &[Vec<Run>], widths: &[usize], aligns: &[Alignment]) {
+        self._text_with("│", &["table"]);
+        for (c, width) in widths.iter().enumerate() {
+            let cell = row.get(c).map(Vec::as_slice).unwrap_or(&[]);
+            let free = width - _cell_width(cell);
+            let (before, after) = match aligns.get(c) {
+                Some(Alignment::Right) => (free, 0),
+                Some(Alignment::Center) => (free / 2, free - free / 2),
+                _ => (0, free),
+            };
+            self._text_with(&format!(" {}", " ".repeat(before)), &["table"]);
+            for run in cell {
+                let mut run = run.clone();
+                run.tags.push("table".to_string());
+                self.runs.push(run);
+            }
+            self._text_with(&format!("{} │", " ".repeat(after)), &["table"]);
+        }
+        self._text_with("\n", &["table"]);
     }
 }
 
@@ -268,13 +368,44 @@ mod tests {
     }
 
     #[test]
-    fn rule_table_image_and_html() {
-        let runs = parse("---\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n![alt](x.png)\n\n<div>raw</div>\n");
+    fn rule_and_html() {
+        let runs = parse("---\n\n<div>raw</div>\n");
         let text = plain(&runs);
         assert!(text.contains(RULE_TEXT));
-        assert!(text.contains("a  |  b  |  \n1  |  2  |  \n"));
-        assert!(text.contains("[image: alt]"));
         assert!(!text.contains("<div>"));
+    }
+
+    #[test]
+    fn table_is_a_box_with_aligned_cells() {
+        let runs = parse("| name | n |\n|:--|--:|\n| **bob** | 7 |\n| al | 123 |\n");
+        let expected = "┌──────┬─────┐\n│ name │   n │\n├──────┼─────┤\n│ bob  │   7 │\n│ al   │ 123 │\n└──────┴─────┘\n\n";
+        assert_eq!(plain(&runs), expected);
+        assert_eq!(tags_of(&runs, "name"), ["bold", "table"]);
+        assert_eq!(tags_of(&runs, "bob"), ["bold", "table"]);
+        assert_eq!(tags_of(&runs, "al"), ["table"]);
+    }
+
+    #[test]
+    fn table_centers_and_keeps_links() {
+        let runs = parse("| a |\n|:-:|\n| [xxxx](u) |\n");
+        assert_eq!(plain(&runs), "┌──────┐\n│  a   │\n├──────┤\n│ xxxx │\n└──────┘\n\n");
+        assert_eq!(runs.iter().find(|r| r.text == "xxxx").and_then(|r| r.link.as_deref()), Some("u"));
+    }
+
+    #[test]
+    fn image_is_one_run_with_its_address() {
+        let runs = parse("text ![the alt](pics/a%20b.png) end");
+        let image = runs.iter().find(|r| r.image.is_some()).expect("image run");
+        assert_eq!(image.text, "the alt");
+        assert_eq!(image.image.as_deref(), Some("pics/a%20b.png"));
+        assert_eq!(plain(&runs), "text the alt end\n\n");
+    }
+
+    #[test]
+    fn image_in_a_table_cell_is_text() {
+        let runs = parse("| a |\n|---|\n| ![pic](p.png) |\n");
+        assert!(runs.iter().all(|r| r.image.is_none()));
+        assert!(plain(&runs).contains("[image: pic]"));
     }
 
     #[test]

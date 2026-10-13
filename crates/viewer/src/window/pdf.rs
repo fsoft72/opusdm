@@ -88,6 +88,7 @@ impl State {
             e.set_text("");
             gtk::prelude::GtkWindowExt::set_focus(&s.window, None::<&gtk::Widget>);
             s._sync_pdf_panels();
+            if s._is_markdown() { s.markdown.focus(); }
         });
         let s = self.clone();
         bar.next.connect_clicked(move |_| s._step_hit(true));
@@ -140,7 +141,7 @@ impl State {
     /// goes to the search field while it has the focus. `None` when the key is
     /// not one of them.
     pub(super) fn _pdf_key(self: &Rc<Self>, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
-        if !self._is_pdf() { return None; }
+        if !(self._is_pdf() || self._is_markdown()) { return None; }
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl && matches!(key, gdk::Key::f | gdk::Key::F) {
             self.pdf.bar.root.set_visible(true);
@@ -160,6 +161,11 @@ impl State {
         matches!(self._current(), Some((_, MediaKind::Pdf)))
     }
 
+    /// True while a Markdown text is on screen.
+    fn _is_markdown(&self) -> bool {
+        matches!(self._current(), Some((_, MediaKind::Markdown)))
+    }
+
     /// A new file is on screen: reset the PDF side; the bar shows only for a PDF.
     pub(super) fn _pdf_file_changed(&self) {
         self.pdf.panel.clear();
@@ -176,9 +182,11 @@ impl State {
     /// full screen state; start the thumbnails when the panel shows.
     pub(super) fn _sync_pdf_panels(&self) {
         let pdf = self._is_pdf();
+        let searchable = pdf || self._is_markdown();
+        self.pdf.bar.pages.set_visible(pdf);
         let full = self.window.is_fullscreen();
         let searching = !self.pdf.bar.entry.text().is_empty() || self.pdf.bar.entry_has_focus(&self.window);
-        self.pdf.bar.root.set_visible(pdf && (!full || searching));
+        self.pdf.bar.root.set_visible(searchable && (!full || searching));
         let panel = pdf && !full && self.pdf.bar.pages.is_active();
         self.pdf.panel.root.set_visible(panel);
         if panel { self.pdf.panel.start_thumbnails(); }
@@ -268,6 +276,7 @@ impl State {
 
     /// The text of the search field changed: start a new search (or clear the marks).
     fn _start_search(self: &Rc<Self>) {
+        if self._is_markdown() { return self._markdown_search(); }
         let generation = self.pdf.search_generation.get() + 1;
         self.pdf.search_generation.set(generation);
         self.pdf.hits.borrow_mut().clear();
@@ -280,6 +289,13 @@ impl State {
         self.pdf.bar.status.set_text("searching...");
         self._refresh_marks(false);
         if self.pdf.search_tx.send(SearchRequest { generation, path, query }).is_err() { self.pdf.bar.status.set_text("search stopped"); }
+    }
+
+    /// Search the Markdown text on screen for the text of the search field.
+    pub(super) fn _markdown_search(&self) {
+        let query = self.pdf.bar.entry.text().trim().to_string();
+        self.markdown.search(&query);
+        self.pdf.bar.status.set_text(&if query.is_empty() { String::new() } else { self.markdown.label() });
     }
 
     /// The search worker answered for the last search.
@@ -300,6 +316,10 @@ impl State {
 
     /// Move to the next (or previous) match.
     fn _step_hit(self: &Rc<Self>, forward: bool) {
+        if self._is_markdown() {
+            if self.markdown.step(forward).is_some() { self.pdf.bar.status.set_text(&self.markdown.label()); }
+            return;
+        }
         if self.pdf.hits.borrow_mut().step(forward).is_none() { return; }
         self.pdf.bar.status.set_text(&self.pdf.hits.borrow().label());
         self._show_hit();
