@@ -674,3 +674,28 @@ fn run_expands_codes_and_rejects_empty_or_unknown_programs() {
     assert!(matches!(run_events(&run_args("definitely-not-a-program-xyz", &[]), &src).last(), Some(FnEvent::Failed { .. })));
     assert!(matches!(run_events(&run_args("echo 'unclosed", &[]), &src).last(), Some(FnEvent::Failed { .. })));
 }
+
+#[test]
+fn usable_cwd_keeps_an_existing_folder() {
+    assert_eq!(usable_cwd(Path::new("/tmp")), PathBuf::from("/tmp"));
+}
+
+#[test]
+fn usable_cwd_maps_an_archive_path_to_the_folder_holding_it() {
+    assert_eq!(usable_cwd(Path::new("/tmp/nope.zip#sub/dir")), PathBuf::from("/tmp"));
+}
+
+#[test]
+fn usable_cwd_falls_back_for_a_remote_url() {
+    assert!(usable_cwd(Path::new("sftp://host/some/dir")).is_dir());
+}
+
+#[test]
+fn run_step_starts_the_program_when_the_lister_folder_is_virtual() {
+    let (tx, rx) = channel();
+    let steps = vec![FnStep::External { argv: vec!["echo".into(), "ok".into()], cwd_source: true }];
+    let src = ctx(&[], "/tmp/nope.zip#sub");
+    run_steps(1, &steps, &src, None, &tx);
+    drop(tx);
+    assert!(matches!(drain(rx).last(), Some(FnEvent::AllDone)));
+}

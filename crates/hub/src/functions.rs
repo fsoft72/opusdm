@@ -620,7 +620,7 @@ fn run_run(
     }
     let argv = expand_run_argv(&templates, script, source, dest).map_err(|e| format!("Run: {e}"))?;
     let mut command = Command::new(&argv[0]);
-    command.args(&argv[1..]).current_dir(&source.cwd).stdin(Stdio::null());
+    command.args(&argv[1..]).current_dir(usable_cwd(&source.cwd)).stdin(Stdio::null());
     if window {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
     } else {
@@ -692,6 +692,18 @@ fn run_run(
     Ok(())
 }
 
+/// The working directory a child process can really start in. A Lister's
+/// folder may be virtual (`/x/a.zip#dir`, an `sftp://` URL) or gone, and
+/// `spawn` then fails with ENOENT, which reads as "program not found". Walk
+/// up to the nearest existing folder (an archive path lands on the folder
+/// holding the archive), else `$HOME`, else `/`.
+fn usable_cwd(cwd: &Path) -> PathBuf {
+    if let Some(found) = cwd.ancestors().find(|p| !p.as_os_str().is_empty() && p.is_dir()) {
+        return found.to_path_buf();
+    }
+    std::env::var_os("HOME").map(PathBuf::from).filter(|h| h.is_dir()).unwrap_or_else(|| PathBuf::from("/"))
+}
+
 /// [`expand_argv`], except that `script` (the third word of a
 /// `bash -c <script> ...` command) is kept as it is, unexpanded. `bash` and
 /// `-c` come first and expand to themselves, so the script keeps its
@@ -732,7 +744,7 @@ fn run_external(
 
     let mut child = Command::new(&expanded[0])
         .args(&expanded[1..])
-        .current_dir(cwd)
+        .current_dir(usable_cwd(cwd))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
