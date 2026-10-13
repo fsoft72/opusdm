@@ -59,7 +59,7 @@ pub fn plan(op: &Op, srcs: &[PathBuf], dest_dir: &Path) -> Result<Plan, String> 
         (Op::Delete, Some(src), _) => Ok(Plan::Remove { src, paths: paths() }),
         (Op::MakeDir { name }, None, Some(dest)) => Ok(Plan::Create { dest, name: name.clone(), file: false }),
         (Op::NewFile { name }, None, Some(dest)) => Ok(Plan::Create { dest, name: name.clone(), file: true }),
-        _ => Err("this operation is not available on remote locations (Copy, Move, Delete and New Folder / File are)".to_string()),
+        _ => Err("this operation is not available on remote locations (Copy, Move, permanent Delete with Shift+Del and New Folder / File are)".to_string()),
     }
 }
 

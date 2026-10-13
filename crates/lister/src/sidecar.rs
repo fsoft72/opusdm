@@ -147,17 +147,23 @@ pub fn pick_shown(shown: Option<&Path>, sent: &[PathBuf]) -> Option<PathBuf> {
     }
 }
 
-/// Delete with a Sidecar open: only the file the viewer shows, then the
-/// Lister and the viewer move on to the next one. False when there is no
+/// Delete with a Sidecar open: only the file the viewer shows goes to the
+/// trash (or is deleted for good when `permanent`), then the Lister and the
+/// viewer move on to the next one. False when there is no
 /// Sidecar or it shows nothing: the caller deletes the selection as usual.
-pub fn delete_shown(ui: &Rc<Ui>) -> bool {
+pub fn delete_shown(ui: &Rc<Ui>, permanent: bool) -> bool {
     let Some(target) = _shown_file(ui) else { return false };
     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (message, button, op) = if permanent {
+        (format!("Delete \"{name}\" permanently?"), "Delete", Op::Delete)
+    } else {
+        (format!("Move \"{name}\" to the trash?"), "Trash", Op::Trash)
+    };
     let this = ui.clone();
-    opusdm_ui::requester(&ui.window, "Request", &format!("Delete \"{name}\" permanently?"), None, &[("Delete", true), ("Cancel", false)], move |confirmed| {
+    opusdm_ui::requester(&ui.window, "Request", &message, None, &[(button, true), ("Cancel", false)], move |confirmed| {
         if !confirmed { return; }
         _step_past(&this, &target);
-        crate::job_submit::submit_job(&this, Op::Delete, vec![target.clone()], Some(this.cwd_path()), JobOptions::default());
+        crate::job_submit::submit_job(&this, op.clone(), vec![target.clone()], Some(this.cwd_path()), JobOptions::default());
     });
     true
 }

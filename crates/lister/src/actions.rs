@@ -33,7 +33,7 @@ pub fn attach(ui: &Rc<Ui>) {
     let parent_btn = icon_button(SVG_PARENT, "Parent Directory", ROW_ICON_SIZE);
     let copy_btn = icon_button(SVG_COPY, "Copy (Source -> Dest). Right click: Copy As...", ROW_ICON_SIZE);
     let move_btn = icon_button(SVG_MOVE, "Move (Source -> Dest). Right click: Move As...", ROW_ICON_SIZE);
-    let delete_btn = icon_button(SVG_DELETE, "Delete", ROW_ICON_SIZE);
+    let delete_btn = icon_button(SVG_DELETE, "Move to Trash. Right click: Delete permanently", ROW_ICON_SIZE);
     let mkdir_btn = icon_button(SVG_MKDIR, "Make Directory", ROW_ICON_SIZE);
     let newfile_btn = icon_button(SVG_NEWFILE, "New File", ROW_ICON_SIZE);
     let rename_btn = icon_button(SVG_RENAME, "Rename", ROW_ICON_SIZE);
@@ -52,7 +52,7 @@ pub fn attach(ui: &Rc<Ui>) {
     wire_transfer(ui, &copy_btn, Op::Copy);
     wire_transfer(ui, &move_btn, Op::Move);
     on_click(ui, &term_btn, |ui| ui.toggle_terminal());
-    on_click(ui, &delete_btn, delete_selection);
+    wire_delete(ui, &delete_btn);
     on_click(ui, &mkdir_btn, |ui| make_in_cwd(ui, "New directory name", |name| Op::MakeDir { name }));
     on_click(ui, &newfile_btn, |ui| make_in_cwd(ui, "New file name", |name| Op::NewFile { name }));
     on_click(ui, &rename_btn, rename_selected);
@@ -93,14 +93,20 @@ fn hidden_toggle(ui: &Rc<Ui>) -> gtk::ToggleButton {
     btn
 }
 
-/// Ask before deleting the selected entries.
-fn delete_selection(ui: &Rc<Ui>) {
-    let paths = ui.selected_paths();
-    if paths.is_empty() {
-        flash(ui, "nothing selected");
-        return;
-    }
-    confirm_delete(ui, &format!("Delete {} item(s) permanently?", paths.len()), paths);
+/// The Delete button: a left click moves the selection to the trash, a
+/// right click deletes it permanently; both ask first.
+fn wire_delete(ui: &Rc<Ui>, btn: &gtk::Button) {
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+    gesture.connect_pressed(|g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+    });
+    // Ask on release, not on press: a requester opened mid-press swallows
+    // the release and leaves the button stuck down.
+    let ui_right = ui.clone();
+    gesture.connect_released(move |_, _, _, _| crate::commands::delete_selection(&ui_right, true));
+    btn.add_controller(gesture);
+    on_click(ui, btn, |ui| crate::commands::delete_selection(ui, false));
 }
 
 /// Ask for a name, then have the hub create `op(name)` in the current folder.
@@ -361,11 +367,13 @@ pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: Fi
     );
 }
 
-/// Ask the user to confirm a deletion, then hand `srcs` to the hub.
+/// Ask the user to confirm a deletion, then hand `srcs` to the hub: moved to
+/// the trash, or deleted for good when `permanent`.
 ///
 /// `message` is the question shown in the requester; it differs between the
 /// toolbar (a count of selected entries) and the context menu (one name).
-pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>) {
+pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>, permanent: bool) {
+    let (button, op) = if permanent { ("Delete", Op::Delete) } else { ("Trash", Op::Trash) };
     let win = ui.window.clone();
     let ui = ui.clone();
     opusdm_ui::requester(
@@ -373,12 +381,12 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>) {
         "Request",
         message,
         None,
-        &[("Delete", true), ("Cancel", false)],
+        &[(button, true), ("Cancel", false)],
         move |confirmed| {
             if !confirmed {
                 return;
             }
-            crate::job_submit::submit_job(&ui, Op::Delete, srcs.clone(), Some(ui.cwd_path()), opusdm_ipc::JobOptions::default());
+            crate::job_submit::submit_job(&ui, op.clone(), srcs.clone(), Some(ui.cwd_path()), opusdm_ipc::JobOptions::default());
         },
     );
 }

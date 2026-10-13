@@ -90,7 +90,10 @@ commands! {
     SetHidePattern => ("Set Hide Pattern...", "View", None),
     Copy => ("Copy (Source -> Dest)", "File Ops", Some("F5")),
     Move => ("Move (Source -> Dest)", "File Ops", Some("F6")),
-    Delete => ("Delete Selected Items", "File Ops", Some("Del")),
+    /// Move the selection to the trash.
+    Delete => ("Move Selected Items to Trash", "File Ops", Some("Del")),
+    /// Delete the selection without the trash.
+    DeletePermanent => ("Delete Selected Items Permanently", "File Ops", Some("Shift+Del")),
     /// Copy to DEST under names built from a pattern.
     CopyAs => ("Copy As... (Source -> Dest, new names)", "File Ops", None),
     /// Move to DEST under names built from a pattern.
@@ -272,6 +275,7 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         // File operations.
         gdk::Key::F5 => Some(Action::Command(CommandId::Copy)),
         gdk::Key::F6 => Some(Action::Command(CommandId::Move)),
+        gdk::Key::Delete | gdk::Key::KP_Delete if shift => Some(Action::Command(CommandId::DeletePermanent)),
         gdk::Key::Delete | gdk::Key::KP_Delete => Some(Action::Command(CommandId::Delete)),
         gdk::Key::F2 => Some(Action::Command(CommandId::Rename)),
 
@@ -317,6 +321,13 @@ mod tests {
         assert_eq!(list(gdk::Key::F6), Some(Action::Command(CommandId::Move)));
         assert_eq!(list(gdk::Key::F8), None, "F8 is no longer bound");
         assert_eq!(list(gdk::Key::Delete), Some(Action::Command(CommandId::Delete)));
+    }
+
+    #[test]
+    fn shift_delete_deletes_without_the_trash() {
+        let shifted = resolve(gdk::Key::Delete, false, true, Focus::List);
+        assert_eq!(shifted, Some(Action::Command(CommandId::DeletePermanent)));
+        assert_eq!(resolve(gdk::Key::KP_Delete, false, true, Focus::List), shifted);
     }
 
     #[test]

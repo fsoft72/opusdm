@@ -202,7 +202,7 @@ pub fn show_context_menu(
     menu.item("Move (Source -> Dest)", move |ui| transfer(ui, Op::Move, &t));
     let (t, file_name) = (target.clone(), row.name.clone());
     menu.item("Delete...", move |ui| {
-        crate::actions::confirm_delete(ui, &format!("Delete \"{file_name}\" permanently?"), vec![t.to_path_buf()]);
+        crate::actions::confirm_delete(ui, &format!("Delete \"{file_name}\" permanently?"), vec![t.to_path_buf()], true);
     });
 
     // File type "Open With" entries: one per function of the type the file matches.

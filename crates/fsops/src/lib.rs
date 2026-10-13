@@ -1,4 +1,4 @@
-//! Blocking filesystem operations (copy, move, delete, mkdir) with progress
+//! Blocking filesystem operations (copy, move, delete, trash, mkdir) with progress
 //! events and overwrite-conflict resolution. No GTK, no sockets.
 
 pub mod attrs;
@@ -19,6 +19,7 @@ pub mod pool;
 pub mod rename;
 pub mod scan;
 pub mod tools;
+pub mod trash;
 pub mod types;
 
 pub use cancel::CancelToken;
@@ -81,6 +82,7 @@ fn run_job_inner(spec: &JobSpec, tx: &Sender<Progress>, cancel: &CancelToken) ->
             Some(glob) => delete::run_delete_filtered(srcs, glob, tx, cancel),
             None => delete::run_delete(srcs, tx, cancel),
         },
+        Op::Trash => trash::run_trash(srcs, tx, cancel),
         Op::Chmod { mode, recurse } => {
             attrs::run_chmod(srcs, *mode, *recurse, opts.glob.as_ref(), tx, cancel)
         }

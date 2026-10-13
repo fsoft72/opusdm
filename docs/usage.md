@@ -47,7 +47,7 @@ Click any column header to sort ascending or descending.
 ### Action Toolbar
 - **Copy (`c`)**: Copies selected items from SOURCE to DEST.
 - **Move (`m`)**: Moves selected items from SOURCE to DEST.
-- **Delete (`Del`)**: Prompts for confirmation and permanently deletes selected items.
+- **Delete (`Del`)**: Prompts for confirmation and moves the selected items to the trash (freedesktop.org trash: `~/.local/share/Trash` for files on the home disk, `.Trash-<uid>` at the top of other disks, so file managers can restore them). **`Shift+Del`** prompts and deletes them permanently, without the trash. On the button row the Delete button does the same: left click moves to the trash, right click deletes permanently. The row menu **Delete...** still deletes permanently. Remote folders have no trash: use `Shift+Del` there.
 - **MakeDir (`Ctrl+N`)**: Prompts to create a new directory in current view.
 - **NewFile (`Ctrl+Shift+N`)**: Creates a new blank file.
 - **Rename (`F2`)**: 
@@ -95,7 +95,7 @@ Sidecar shows it: walk the list with the arrows and each picture appears in turn
 files become a gallery with the thumbnail strip; a folder shows its files. A file the viewer does not
 know (an archive, a disk image), or an entry inside an archive or on a server, shows *Nothing to
 show*. The Sidecar window keeps its size; the content fits into it. The Lister takes the keyboard back
-right after opening it. **`Del`** with a Sidecar open deletes only the file the Sidecar shows (after
+right after opening it. **`Del`** (trash) or **`Shift+Del`** (permanent) with a Sidecar open acts only on the file the Sidecar shows (after
 a confirmation) and moves on to the next one, in the Lister and in the Sidecar; when the Sidecar shows
 nothing, **`Del`** deletes the selection as usual. **`Shift+F3`** again, or closing the Lister, closes the Sidecar; closing the
 Sidecar window yourself is fine too.
@@ -1091,7 +1091,8 @@ There are no single-letter commands in OpusDM.
 | **`F4`** or **`` ` ``** | Toggle Quake-style dropdown terminal drawer |
 | **`F5`** | Copy selected items from SOURCE to DEST |
 | **`F6`** | Move selected items from SOURCE to DEST |
-| **`Del`** | Delete selected items permanently |
+| **`Del`** | Move selected items to the trash |
+| **`Shift+Del`** | Delete selected items permanently |
 | **`F2`** | Rename single item / Open Batch Renamer on multiple items |
 | **`Ctrl+N`** | Create new directory |
 | **`Ctrl+Shift+N`** | Create new blank file |

@@ -46,6 +46,8 @@ pub enum Op {
     Move,
     /// Permanently delete `srcs` (no trash).
     Delete,
+    /// Move `srcs` to the freedesktop.org trash.
+    Trash,
     /// Create one directory named `name` inside `dest_dir`.
     MakeDir { name: String },
     /// Create one empty file named `name` inside `dest_dir`.

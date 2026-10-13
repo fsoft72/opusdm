@@ -99,16 +99,22 @@ pub fn duplicate(ui: &Rc<Ui>) {
     crate::job_submit::submit_job(ui, Op::Duplicate, srcs, dest_dir, JobOptions::default());
 }
 
-/// Delete the selection after asking for confirmation. With a Sidecar open
-/// only the file it shows is deleted.
-pub fn delete_selection(ui: &Rc<Ui>) {
-    if crate::sidecar::delete_shown(ui) { return; }
+/// Move the selection to the trash, or delete it for good when `permanent`,
+/// after asking for confirmation. With a Sidecar open only the file it shows
+/// is affected.
+pub fn delete_selection(ui: &Rc<Ui>, permanent: bool) {
+    if crate::sidecar::delete_shown(ui, permanent) { return; }
     let paths = ui.selected_paths();
     if paths.is_empty() {
         crate::actions::flash(ui, "nothing selected");
         return;
     }
-    crate::actions::confirm_delete(ui, &format!("Delete {} item(s) permanently?", paths.len()), paths);
+    let message = if permanent {
+        format!("Delete {} item(s) permanently?", paths.len())
+    } else {
+        format!("Move {} item(s) to the trash?", paths.len())
+    };
+    crate::actions::confirm_delete(ui, &message, paths, permanent);
 }
 
 /// Ask for a name, then create a folder (`file == false`) or an empty file in
