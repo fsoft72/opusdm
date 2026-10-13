@@ -19,7 +19,7 @@
   showing in more details the CPU or Network operations
 
 
-- [ ] opusdm-hub RMB Audio applet toggle global audio ON/OFF
+- [x] opusdm-hub RMB Audio applet toggle global audio ON/OFF
 
   When the user clicks on Audio applet with RMB, the audio should be toggled ON / OFF globally
   and the icon should change from Speaker to Blocked Speaker

@@ -815,6 +815,8 @@ Like the KDE Audio Volume applet: volume, mute and default device of the sound o
   volume slider for the default device. A volume raised above 100% by another tool shows its real
   percentage and the slider rests at the top; the panel itself never goes above 100%. A failure
   shows as one red line for 5 seconds.
+- **Right click the icon:** switches the sound off for the whole system (mutes the default output;
+  the icon shows the cross), and on again with a second right click.
 - **Live:** changes made by other tools (a keyboard volume key, `pavucontrol`, plugging in a USB
   headset) show up at once; the slider does not jump while you drag it.
 - **Needs:** PulseAudio, or PipeWire with `pipewire-pulse`. If the server is missing the icon stays

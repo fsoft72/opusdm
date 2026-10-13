@@ -86,6 +86,13 @@ impl Model {
         }
     }
 
+    /// The request that toggles the mute of the default output, the "global"
+    /// audio switch. `None` when there is no default output.
+    pub fn toggle_output_mute(&self) -> Option<Request> {
+        let d = self.default_of(Kind::Output)?;
+        Some(Request::SetMute { kind: Kind::Output, index: d.index, muted: !d.muted })
+    }
+
     /// The icon tooltip: the default output's volume, "Muted", or why there is none.
     pub fn tooltip(&self) -> String {
         if !self.available {
@@ -240,6 +247,21 @@ mod tests {
         let outs: Vec<u32> = m.devices_of(Kind::Output).iter().map(|d| d.index).collect();
         assert_eq!(outs, vec![3, 9]);
         assert_eq!(m.devices_of(Kind::Input).len(), 1);
+    }
+
+    #[test]
+    fn toggling_mutes_and_unmutes_the_default_output() {
+        let mut m = Model::default();
+        assert_eq!(m.toggle_output_mute(), None);
+        m.apply(snapshot(vec![
+            dev(Kind::Input, 1, 50, false, true),
+            dev(Kind::Output, 3, 50, false, false),
+            dev(Kind::Output, 4, 50, false, true),
+        ]));
+        assert_eq!(m.toggle_output_mute(), Some(Request::SetMute { kind: Kind::Output, index: 4, muted: true }));
+        m.apply(WatchMsg::Event(AudioEvent::Changed(dev(Kind::Output, 4, 50, true, true))));
+        assert_eq!(m.toggle_output_mute(), Some(Request::SetMute { kind: Kind::Output, index: 4, muted: false }));
+        assert_eq!(m.icon_level(), IconLevel::Muted);
     }
 
     #[test]

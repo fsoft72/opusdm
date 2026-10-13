@@ -59,6 +59,17 @@ impl AudioButton {
         let button = gtk::MenuButton::new();
         button.add_css_class("flat");
         button.set_child(Some(&icon));
+        // Right click: switch the sound on or off for the whole system.
+        let secondary = gtk::GestureClick::new();
+        secondary.set_button(gtk::gdk::BUTTON_SECONDARY);
+        {
+            let center = center.clone();
+            secondary.connect_pressed(move |g, _, _, _| {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                center.toggle_output_mute();
+            });
+        }
+        button.add_controller(secondary);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
         content.set_margin_top(8);

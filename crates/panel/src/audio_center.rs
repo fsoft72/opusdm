@@ -101,6 +101,16 @@ impl AudioCenter {
         }
     }
 
+    /// Mute the default output, or unmute it when it is muted. The icon
+    /// follows when the server reports the change.
+    pub fn toggle_output_mute(self: &Rc<Self>) {
+        let request = self.model.borrow().toggle_output_mute();
+        match request {
+            Some(request) => self.send(request),
+            None => self.show_message("No output device".to_string()),
+        }
+    }
+
     /// One message of the watcher: the backend, a new list or a change.
     fn on_watch(self: &Rc<Self>, msg: WatchMsg) {
         match msg {
