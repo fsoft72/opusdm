@@ -639,6 +639,11 @@ Plays one audio or video file in a small window.
 
 Shows pictures, PDF documents, Markdown texts, source / plain texts and videos: the files and folders named on the command line.
 
+Pictures are decoded by the gdk-pixbuf loaders installed on the system. PNG and JPEG are
+built in; **WebP** needs the `webp-pixbuf-loader` package (`sudo apt install webp-pixbuf-loader`),
+otherwise a `.webp` file fails with *Couldn't recognize the image file format*. The same loader serves the
+Lister preview, the Icon View thumbnails and the background picker.
+
 - **Open it:** run `opusdm-viewer <file or folder>...`. In a Lister a double click on a
   picture or a PDF opens it: the first time OpusDM starts it creates the file types
   **Image file** and **PDF file** for that (see 3.10h; an older `filetypes.json` has no
