@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-13
+- Feature (lister): `Ctrl+L` focuses the path bar with its whole text selected (`Action::FocusPath`, `Ui::focus_path_entry`), from the list or from any text field. Test added in `keys.rs`. NOT checked by eye in the GUI.
 - Fix (lister): in the path bar, `Enter` with a look-ahead suggestion showing now goes to the completed folder (`/home/fabio/Do` + Enter opens `/home/fabio/Documents`). Before, the suggestion was deleted and the truncated text was not found. NOT checked by eye in the GUI.
 - Feature (lister): the path bar expands a leading `~` (alone or `~/...`) to `$HOME`, both on Enter and in the folder look-ahead (`pathcomplete::expand_tilde`). `~user` is left alone. 1 new unit test, `pathcomplete` tests pass. NOT checked by eye in the GUI.
 

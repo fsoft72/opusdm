@@ -235,6 +235,12 @@ impl Ui {
         self.view.filter_bar.reveal();
     }
 
+    /// Move the keyboard focus to the path bar and select all of its text.
+    pub fn focus_path_entry(&self) {
+        self.path_entry.grab_focus();
+        self.path_entry.select_region(0, -1);
+    }
+
     /// Dismiss and reset the filter bar.
     pub fn dismiss_filter(&self) {
         self.view.filter_bar.dismiss();
@@ -715,6 +721,7 @@ impl Ui {
             Action::SwapRoleFocus => self.swap_role_focus(),
             Action::OpenPalette => crate::palette::open_command_palette(self),
             Action::RevealFilter => self.reveal_filter(),
+            Action::FocusPath => self.focus_path_entry(),
             Action::ToggleTerminal => self.toggle_terminal(),
             Action::PreviewOrSize => {
                 // A directory selection means "how big is this?", anything else

@@ -60,7 +60,7 @@ Click any column header to sort ascending or descending.
 ### Bottom Navigation
 - **Home (`~`)**: Jumps to user's home directory.
 - **Parent (`..` / `Backspace`)**: Navigates to parent directory (or up one level within a virtual archive).
-- **Path Bar**: Editable path field. Press `Enter` to navigate directly to any path or virtual archive. While you type an absolute local path the bar suggests the folder that completes it as selected text (`/r` shows `/ramdisk/`): `Tab` accepts it and stays in the bar, `Enter` accepts it and goes to that folder, keep typing to ignore it.
+- **Path Bar**: Editable path field (`Ctrl+L` focuses it with the whole path selected). Press `Enter` to navigate directly to any path or virtual archive. While you type an absolute local path the bar suggests the folder that completes it as selected text (`/r` shows `/ramdisk/`): `Tab` accepts it and stays in the bar, `Enter` accepts it and goes to that folder, keep typing to ignore it.
 
 ---
 

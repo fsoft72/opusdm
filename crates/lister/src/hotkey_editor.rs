@@ -83,6 +83,7 @@ fn action_title(action: &Action) -> String {
         Action::SwapRoleFocus => "Switch to the SOURCE/DEST Lister".to_string(),
         Action::OpenPalette => "Open the command palette".to_string(),
         Action::RevealFilter => "Show the filter bar".to_string(),
+        Action::FocusPath => "Focus the path bar".to_string(),
         Action::ToggleTerminal => "Toggle the terminal drawer".to_string(),
         Action::PreviewOrSize => "Quick Look, or directory size".to_string(),
         Action::Escape => "Dismiss the filter, terminal or selection".to_string(),

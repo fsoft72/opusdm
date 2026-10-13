@@ -201,6 +201,8 @@ pub enum Action {
     OpenPalette,
     /// Reveal the filter bar.
     RevealFilter,
+    /// Ctrl+L: focus the path bar with its whole text selected.
+    FocusPath,
     /// Show or hide the terminal drawer.
     ToggleTerminal,
     /// Quick Look, or recursive size when a directory is selected.
@@ -228,6 +230,7 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         return match key {
             gdk::Key::p | gdk::Key::P => Some(Action::OpenPalette),
             gdk::Key::f | gdk::Key::F => Some(Action::RevealFilter),
+            gdk::Key::l | gdk::Key::L => Some(Action::FocusPath),
             gdk::Key::a | gdk::Key::A if shift => Some(Action::Command(CommandId::Reselect)),
             gdk::Key::a | gdk::Key::A => Some(Action::Command(CommandId::SelectAll)),
             gdk::Key::r | gdk::Key::R => Some(Action::Command(CommandId::Reload)),
@@ -393,6 +396,7 @@ mod tests {
         for focus in [Focus::List, Focus::Editing] {
             assert_eq!(resolve(gdk::Key::p, true, false, focus), Some(Action::OpenPalette));
             assert_eq!(resolve(gdk::Key::f, true, false, focus), Some(Action::RevealFilter));
+            assert_eq!(resolve(gdk::Key::l, true, false, focus), Some(Action::FocusPath));
             assert_eq!(resolve(gdk::Key::a, true, false, focus), Some(Action::Command(CommandId::SelectAll)));
             assert_eq!(resolve(gdk::Key::r, true, false, focus), Some(Action::Command(CommandId::Reload)));
             assert_eq!(resolve(gdk::Key::h, true, false, focus), Some(Action::Command(CommandId::ToggleHidden)));
