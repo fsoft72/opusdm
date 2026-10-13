@@ -66,6 +66,11 @@ impl Gallery {
         Ok(Gallery { items, index: 0 })
     }
 
+    /// A gallery with nothing in it, for a Sidecar still waiting for its files.
+    pub fn empty() -> Gallery {
+        Gallery { items: Vec::new(), index: 0 }
+    }
+
     /// Sort `items` and put the index on `start` (the first item when absent).
     #[cfg(test)]
     pub fn from_paths(mut items: Vec<PathBuf>, start: &Path) -> Gallery {

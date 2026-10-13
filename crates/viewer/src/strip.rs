@@ -29,6 +29,8 @@ pub struct Strip {
     requested: RefCell<HashSet<PathBuf>>,
     current: RefCell<Option<PathBuf>>,
     requests: mpsc::Sender<PathBuf>,
+    /// Where a click on a thumbnail sends its path.
+    picked: async_channel::Sender<PathBuf>,
 }
 
 impl Strip {
@@ -43,10 +45,8 @@ impl Strip {
         root.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
         root.set_child(Some(&row));
         let (requests, results) = _start_worker();
-        let this = Rc::new(Strip { root, row, buttons: RefCell::new(Vec::new()), requested: RefCell::new(HashSet::new()), current: RefCell::new(None), requests });
-        for path in items {
-            this._add_button(path, picked.clone());
-        }
+        let this = Rc::new(Strip { root, row, buttons: RefCell::new(Vec::new()), requested: RefCell::new(HashSet::new()), current: RefCell::new(None), requests, picked });
+        this.set_items(items);
         let weak = Rc::downgrade(&this);
         glib::spawn_future_local(async move {
             while let Ok((path, result)) = results.recv().await {
@@ -74,6 +74,19 @@ impl Strip {
         let (root, button) = (self.root.clone(), buttons[index].1.clone());
         // The layout is not final yet when the file just changed: centre on idle.
         glib::idle_add_local_once(move || _center(&root, &button));
+    }
+
+    /// Show `items` in place of the files of before.
+    pub fn set_items(&self, items: &[PathBuf]) {
+        for (_, button) in self.buttons.borrow_mut().drain(..) {
+            self.row.remove(&button);
+        }
+        // A file shown again needs its thumbnail asked for again.
+        self.requested.borrow_mut().clear();
+        self.current.borrow_mut().take();
+        for path in items {
+            self._add_button(path, self.picked.clone());
+        }
     }
 
     /// Drop the button of a deleted file.

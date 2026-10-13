@@ -89,6 +89,15 @@ Lister says so in its status line. With nothing selected **`F3`** says *nothing 
 Quick Look preview window (and its `👁` button and **Space** key) is gone; folder sizes are on the
 row menu (**Checksums & Dimensioni cartelle**).
 
+**Sidecar (`Shift+F3`)**: opens an `opusdm-viewer` that follows this Lister (palette: **Toggle
+Sidecar Viewer**). Every time the selection changes (or the cursor row, when nothing is selected) the
+Sidecar shows it: walk the list with the arrows and each picture appears in turn. Several selected
+files become a gallery with the thumbnail strip; a folder shows its files. A file the viewer does not
+know (an archive, a disk image), or an entry inside an archive or on a server, shows *Nothing to
+show*. The Sidecar window keeps its size; the content fits into it. The Lister takes the keyboard back
+right after opening it. **`Shift+F3`** again, or closing the Lister, closes the Sidecar; closing the
+Sidecar window yourself is fine too.
+
 ### 3.4 Quake-Style Dropdown Terminal Drawer (`F4` or `` ` ``)
 An embedded console drawer located directly at the bottom of the Lister:
 - Press **`F4`** or the backtick/tilde key (`` ` `` / `~`) to slide the terminal open or closed.

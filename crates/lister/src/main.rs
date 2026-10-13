@@ -68,6 +68,7 @@ mod tools;
 mod user_menu;
 mod watcher;
 mod image_viewer;
+mod sidecar;
 mod viewer;
 mod viewer_load;
 mod viewer_mode;

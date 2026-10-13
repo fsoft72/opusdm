@@ -69,6 +69,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         // View
         CommandId::Filter => ui.reveal_filter(),
         CommandId::OpenViewer => crate::context_menu::open_in_viewer(ui, ui.selected_paths()),
+        CommandId::ToggleSidecar => crate::sidecar::toggle(ui),
         CommandId::ToggleHidden => c::toggle_hidden(ui),
         CommandId::SizeFormat => crate::size_format::open(ui),
         CommandId::FindFiles => crate::find_dialog::open(ui, false),

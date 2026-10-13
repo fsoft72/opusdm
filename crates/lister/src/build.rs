@@ -530,6 +530,7 @@ fn assemble_ui(
         last_selection: RefCell::new(Vec::new()),
         user_menu_btn,
         ctrl_click: Cell::new(false),
+        sidecar: RefCell::new(None),
     })
 }
 
@@ -688,7 +689,7 @@ fn wire_navigation(ui: &Rc<Ui>, nav: &NavBarWidgets) {
 }
 
 /// Row activation (enter a directory, open an archive or a file) and the
-/// selection-changed handler (status line, active preview).
+/// selection-changed handler (status line, active preview, Sidecar).
 fn wire_selection(ui: &Rc<Ui>) {
     {
         let ui = ui.clone();
@@ -699,6 +700,7 @@ fn wire_selection(ui: &Rc<Ui>) {
         ui.view.selection.clone().connect_selection_changed(move |_, _, _| {
             ui.sync_cursor_from_selection();
             ui.update_status();
+            crate::sidecar::follow(&ui);
         });
     }
 }
@@ -739,6 +741,7 @@ fn wire_window_signals(ui: &Rc<Ui>) {
         ui.window.clone().connect_close_request(move |_| {
             crate::dlog!("close request, sending Goodbye to hub");
             let _ = ui.hub.client.send(&ToHub::Goodbye);
+            crate::sidecar::stop(&ui);
             glib::Propagation::Proceed
         });
     }

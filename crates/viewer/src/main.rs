@@ -1,5 +1,6 @@
 //! `opusdm-viewer`: shows the pictures, PDF files, Markdown texts, source texts and videos given on the
-//! command line, files and whole folders.
+//! command line, files and whole folders. With `--sidecar` it follows the
+//! paths a Lister writes on its standard input instead.
 //! See `docs/superpowers/specs/2026-10-05-viewer-gallery-design.md`.
 
 mod args;
@@ -50,16 +51,19 @@ fn apply_theme() {
 }
 
 fn main() -> ExitCode {
-    let targets = match args::parse(std::env::args().skip(1)).and_then(|ts| ts.iter().try_for_each(|t| args::check_target(t)).map(|_| ts)) {
-        Ok(ts) => ts,
+    let parsed = match args::parse(std::env::args().skip(1)).and_then(|a| a.targets.iter().try_for_each(|t| args::check_target(t)).map(|_| a)) {
+        Ok(a) => a,
         Err(msg) => {
             opusdm_ipc::err_log!("viewer", "{msg}");
             return ExitCode::from(1);
         }
     };
-    let targets: Vec<PathBuf> = targets.iter().map(PathBuf::from).collect();
+    let sidecar = parsed.sidecar;
+    let targets: Vec<PathBuf> = parsed.targets.iter().map(PathBuf::from).collect();
+    // A Sidecar may start empty: the Lister sends what to show on stdin.
     let gallery = match gallery::Gallery::from_targets(&targets) {
         Ok(g) => g,
+        Err(_) if sidecar => gallery::Gallery::empty(),
         Err(e) => {
             opusdm_ipc::err_log!("viewer", "{e}");
             return ExitCode::from(1);
@@ -71,7 +75,7 @@ fn main() -> ExitCode {
     app.connect_activate(move |app| {
         let Some(gallery) = gallery.borrow_mut().take() else { return };
         apply_theme();
-        window::open(app, gallery);
+        window::open(app, gallery, sidecar);
     });
     app.run_with_args::<&str>(&[]);
     ExitCode::SUCCESS

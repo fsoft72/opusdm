@@ -1,7 +1,9 @@
 //! The viewer window: stage, thumbnail strip and info bar; keys, full screen,
-//! slideshow and delete. The PDF bar, page panel, search and links are in `pdf`.
+//! slideshow and delete. The PDF bar, page panel, search and links are in `pdf`,
+//! the Sidecar mode (files sent by a Lister) in `sidecar`.
 
 mod pdf;
+mod sidecar;
 
 use crate::delete::{remove_permanently, try_trash, SystemRemover, TrashStep};
 use crate::font_scale::FontScale;
@@ -63,10 +65,13 @@ struct State {
     /// The next picture is another page of the same PDF: keep zoom and rotation.
     keep_zoom: Cell<bool>,
     pdf: PdfUi,
+    /// Started by a Lister as its Sidecar: emptied, not closed, when the last file goes.
+    sidecar: bool,
 }
 
-/// Open the window on `gallery` and show its current file.
-pub fn open(app: &gtk::Application, gallery: Gallery) {
+/// Open the window on `gallery` and show its current file. A `sidecar` window
+/// also follows the paths written on stdin and may start empty.
+pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
     let window = gtk::ApplicationWindow::builder().application(app).default_width(DEFAULT_WIDTH).default_height(DEFAULT_HEIGHT).build();
     let (load_tx, load_rx) = async_channel::unbounded();
     let (video_tx, video_rx) = async_channel::unbounded();
@@ -131,6 +136,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         pages: Cell::new(0),
         keep_zoom: Cell::new(false),
         pdf: pdf_ui,
+        sidecar,
     });
     let s = state.clone();
     state.image.connect_wheel_zoom(move || s._update_info());
@@ -140,8 +146,10 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     state._sync_strip();
     state._wire_fullscreen();
     _spawn_loops(&state, load_rx, answer_rx, video_rx, pick_rx);
+    if sidecar { sidecar::follow_stdin(&state); }
     window.present();
-    state.show_current();
+    let empty = state.gallery.borrow().is_empty();
+    if empty { state._show_nothing(sidecar::SIDECAR_WAITING); } else { state.show_current(); }
 }
 
 /// Handle what the worker threads and the other widgets send, on the main thread.
@@ -365,7 +373,8 @@ impl State {
         key.connect_key_pressed(move |_, k, _, mods| {
             if let Some(propagation) = this._pdf_key(k, mods) { return propagation; }
             if mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) { return glib::Propagation::Proceed; }
-            let Some((_, kind)) = this._current() else { return glib::Propagation::Proceed };
+            // An empty Sidecar still takes the keys, so Escape can close it.
+            let kind = this._current().map_or(MediaKind::Image, |(_, kind)| kind);
             let Some(action) = map(k, kind) else { return glib::Propagation::Proceed };
             this._run(action);
             glib::Propagation::Stop
@@ -465,6 +474,7 @@ impl State {
             if g.current() == Some(path) { g.remove_current(); }
             g.is_empty()
         };
+        if empty && self.sidecar { return self._show_nothing("Nothing left to show"); }
         if empty { return self.window.close(); }
         self._sync_strip();
         self.show_current();

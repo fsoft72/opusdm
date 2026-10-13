@@ -52,6 +52,8 @@ commands! {
     Filter => ("Filter Files in Current View", "View", Some("/")),
     /// Open the selection (files and folders) in `opusdm-viewer`.
     OpenViewer => ("Open in Viewer", "View", Some("F3")),
+    /// Open or close the Sidecar `opusdm-viewer` that follows the selection.
+    ToggleSidecar => ("Toggle Sidecar Viewer", "View", Some("Shift+F3")),
     SelectAll => ("Select All", "Selection", Some("Ctrl+A")),
     DeselectAll => ("Deselect All", "Selection", Some("Esc")),
     InvertSelection => ("Invert Selection", "Selection", Some("*")),
@@ -276,6 +278,7 @@ pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<A
         // Roles and panels.
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab => Some(Action::SwapRoleFocus),
         gdk::Key::grave => Some(Action::ToggleTerminal),
+        gdk::Key::F3 if shift => Some(Action::Command(CommandId::ToggleSidecar)),
         gdk::Key::F3 => Some(Action::Command(CommandId::OpenViewer)),
         gdk::Key::slash => Some(Action::RevealFilter),
 
@@ -380,6 +383,7 @@ mod tests {
     #[test]
     fn f3_opens_the_viewer_and_space_is_unbound() {
         assert_eq!(list(gdk::Key::F3), Some(Action::Command(CommandId::OpenViewer)));
+        assert_eq!(resolve(gdk::Key::F3, false, true, Focus::List), Some(Action::Command(CommandId::ToggleSidecar)));
         assert_eq!(list(gdk::Key::space), None);
         assert_eq!(list(gdk::Key::KP_Space), None);
     }

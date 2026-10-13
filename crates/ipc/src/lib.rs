@@ -47,6 +47,7 @@ pub mod quickapps;
 pub mod reaped;
 pub mod settings;
 pub mod session;
+pub mod sidecar;
 pub mod size;
 pub mod sockpath;
 pub mod theme;

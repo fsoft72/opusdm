@@ -225,6 +225,8 @@ pub struct Ui {
     /// Ctrl+double click on a folder opens it in a new Lister. Key presses
     /// reset it, so keyboard activation always stays in this Lister.
     pub ctrl_click: Cell<bool>,
+    /// The Sidecar viewer following the selection, while one is open.
+    pub sidecar: RefCell<Option<crate::sidecar::Sidecar>>,
 }
 
 impl Ui {
@@ -322,6 +324,7 @@ impl Ui {
         crate::dlog!("navigate_to {} done: {} items", dir.display(), new_rows.len());
         self.refresh_path_entry();
         self.update_status();
+        crate::sidecar::follow(self);
         self.update_gauge(dir);
         self.refresh_icon_view();
         let _ = self.hub.client.send(&ToHub::PathChanged(dir.to_path_buf()));
