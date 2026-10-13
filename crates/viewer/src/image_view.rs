@@ -23,6 +23,8 @@ pub struct ImageView {
     smooth: Cell<bool>,
     /// Pointer position over the view, the point a zoom step keeps in place.
     pointer: Cell<Option<(f64, f64)>>,
+    /// Called after the wheel changed the zoom, so the window can show it.
+    on_wheel_zoom: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl ImageView {
@@ -35,7 +37,7 @@ impl ImageView {
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.add_css_class("viewer-stage");
-        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None) });
+        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None), on_wheel_zoom: RefCell::new(None) });
         this._wire_pointer();
         this._wire_wheel();
         this._wire_drag();
@@ -61,9 +63,15 @@ impl ImageView {
         let this = self.clone();
         scroll.connect_scroll(move |_, _, dy| {
             if dy < 0.0 { this.zoom_in(); } else if dy > 0.0 { this.zoom_out(); }
+            if let Some(notify) = this.on_wheel_zoom.borrow().as_ref() { notify(); }
             glib::Propagation::Stop
         });
         self.root.add_controller(scroll);
+    }
+
+    /// Run `notify` after every wheel zoom (the keys and buttons go through the window).
+    pub fn connect_wheel_zoom(&self, notify: impl Fn() + 'static) {
+        *self.on_wheel_zoom.borrow_mut() = Some(Box::new(notify));
     }
 
     /// Dragging moves the scroll bars the other way, like grabbing the picture.

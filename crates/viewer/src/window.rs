@@ -132,6 +132,8 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         keep_zoom: Cell::new(false),
         pdf: pdf_ui,
     });
+    let s = state.clone();
+    state.image.connect_wheel_zoom(move || s._update_info());
     state._start_dark();
     state._wire_keys();
     state._wire_pdf(pdf_channels);
