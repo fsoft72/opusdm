@@ -842,6 +842,7 @@ fn wire_icon_view(ui: &Rc<Ui>, view_toggle: &gtk::ToggleButton) {
         let field = icon_field.clone();
         icon_field.connect_context_menu(move |idx, x, y| {
             if idx < 0 {
+                crate::context_menu::show_empty_area_menu(&ui, field.widget(), x, y);
                 return;
             }
             let Some(row) = ui.row_at(idx as u32) else { return };
@@ -959,6 +960,7 @@ fn build_window(
     crate::nav_cache::install_history(&ui, &history_popover);
     button_row.append(&view_toggle);
     crate::dnd::attach(&ui, &column_view);
+    crate::context_menu::attach_empty_area(&ui, &column_view);
     wire_icon_view(&ui, &view_toggle);
 
     ui.update_status();

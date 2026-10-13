@@ -1,5 +1,6 @@
 //! Context menu (right-click / secondary click) on Lister rows.
 
+use crate::keys::CommandId;
 use crate::model::Row;
 use crate::window::Ui;
 use gtk4 as gtk;
@@ -102,6 +103,52 @@ fn leave_out(ui: &Rc<Ui>, path: &Path) {
     }
 }
 
+/// Commands offered by the menu on an empty area of the file list.
+pub const EMPTY_AREA_COMMANDS: [CommandId; 2] = [CommandId::Mkdir, CommandId::NewFile];
+
+/// CSS names of the column view parts that have a menu of their own (rows)
+/// or none at all (the header).
+const NOT_EMPTY_CSS_NAMES: [&str; 2] = ["row", "header"];
+
+/// True when none of `css_names` (the picked widget and its ancestors up to
+/// the column view) is a row or the header, that is, the click landed on
+/// the empty area below the rows.
+pub fn is_empty_area<'a>(mut css_names: impl Iterator<Item = &'a str>) -> bool {
+    !css_names.any(|name| NOT_EMPTY_CSS_NAMES.contains(&name))
+}
+
+/// Show the menu of an empty area of the file list: create a folder or a file
+/// in the current folder.
+pub fn show_empty_area_menu(ui: &Rc<Ui>, anchor: &impl IsA<gtk::Widget>, x: f64, y: f64) {
+    let menu = Menu::new(ui, anchor, x, y);
+    for cmd in EMPTY_AREA_COMMANDS {
+        let Some(meta) = cmd.meta() else { continue };
+        menu.item(meta.title, move |ui| crate::palette::execute_command(ui, cmd.clone()));
+    }
+    menu.popup();
+}
+
+/// Right click on the column view outside any row: the empty area menu.
+/// The cells claim their own clicks, so this only sees the rest.
+pub fn attach_empty_area(ui: &Rc<Ui>, column_view: &gtk::ColumnView) {
+    let click = gtk::GestureClick::new();
+    click.set_button(gdk::BUTTON_SECONDARY);
+    let ui = ui.clone();
+    click.connect_pressed(move |gesture, n_press, x, y| {
+        if n_press != 1 { return; }
+        let Some(view) = gesture.widget() else { return };
+        let Some(picked) = view.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
+        let names: Vec<String> = std::iter::successors(Some(picked), |w| w.parent())
+            .take_while(|w| w != &view)
+            .map(|w| w.css_name().to_string())
+            .collect();
+        if !is_empty_area(names.iter().map(String::as_str)) { return; }
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        show_empty_area_menu(&ui, &view, x, y);
+    });
+    column_view.add_controller(click);
+}
+
 /// Show the context menu for a row.
 pub fn show_context_menu(
     ui: &Rc<Ui>,
@@ -174,4 +221,27 @@ pub fn show_context_menu(
         menu.item("Checksums & Dimensioni cartelle", |ui| crate::tools::calculate_dir_sizes_async(ui, false));
     }
     menu.popup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_area_offers_make_dir_and_new_file() {
+        assert_eq!(EMPTY_AREA_COMMANDS, [CommandId::Mkdir, CommandId::NewFile]);
+        assert!(EMPTY_AREA_COMMANDS.iter().all(|c| c.meta().is_some()));
+    }
+
+    #[test]
+    fn a_click_below_the_rows_is_an_empty_area() {
+        assert!(is_empty_area(["listview"].into_iter()));
+        assert!(is_empty_area(std::iter::empty()));
+    }
+
+    #[test]
+    fn a_click_on_a_row_or_the_header_is_not_an_empty_area() {
+        assert!(!is_empty_area(["cell", "row", "listview"].into_iter()));
+        assert!(!is_empty_area(["button", "header"].into_iter()));
+    }
 }
