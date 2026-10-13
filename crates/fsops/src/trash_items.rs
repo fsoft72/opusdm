@@ -2,8 +2,11 @@
 //! trash and the trash folders at the top of every mounted disk (see
 //! [`crate::trash`] for how entries get there).
 
+use crate::cancel::CancelToken;
+use crate::copy::copy_tree_opts;
 use crate::delete::remove_recursive;
 use crate::trash::home_trash;
+use crate::types::{Progress, TransferOpts};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -47,6 +50,11 @@ impl TrashItem {
     /// Its `.trashinfo` file.
     pub fn info(&self) -> PathBuf {
         self.trash.join("info").join(format!("{}{INFO_SUFFIX}", self.name))
+    }
+
+    /// The name it had before it was trashed.
+    pub fn original_name(&self) -> String {
+        self.original.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.name.clone())
     }
 }
 
@@ -101,16 +109,58 @@ pub fn list_items(trash: &Path) -> Vec<TrashItem> {
 /// Put `item` back where it was (its folder is created when missing) and
 /// return that path. An existing entry there is never overwritten.
 pub fn restore(item: &TrashItem) -> Result<PathBuf, String> {
-    let target = &item.original;
+    put_back(item, &item.original)
+}
+
+/// Restore `item` into the folder `dir` under its original name and return
+/// the new path. `dir` must exist; an existing entry is never overwritten.
+pub fn restore_to(item: &TrashItem, dir: &Path) -> Result<PathBuf, String> {
+    if !dir.is_dir() {
+        return Err(format!("{} is not a folder", dir.display()));
+    }
+    put_back(item, &dir.join(item.original_name()))
+}
+
+/// Move the trashed entry of `item` to `target` (creating its folder), then
+/// drop the info file. Another disk is reached by copy and delete.
+fn put_back(item: &TrashItem, target: &Path) -> Result<PathBuf, String> {
     if fs::symlink_metadata(target).is_ok() {
         return Err(format!("{} already exists", target.display()));
     }
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    let parent = target.parent().ok_or("cannot restore to the root folder")?;
+    fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    match fs::rename(item.file(), target) {
+        Ok(()) => {}
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => move_across(&item.file(), target)?,
+        Err(e) => return Err(format!("cannot restore {}: {e}", target.display())),
     }
-    fs::rename(item.file(), target).map_err(|e| format!("cannot restore {}: {e}", target.display()))?;
     remove_info(item).map_err(|e| format!("restored, but its trash info is left: {e}"))?;
-    Ok(target.clone())
+    Ok(target.to_path_buf())
+}
+
+/// Copy `src` to `target` on another disk with the copy engine, then delete
+/// `src`. `target` does not exist (checked by the caller); a conflict that
+/// still shows up is skipped, never overwritten.
+fn move_across(src: &Path, target: &Path) -> Result<(), String> {
+    let (dir, name) = match (target.parent(), target.file_name()) {
+        (Some(d), Some(n)) => (d, n.to_string_lossy().into_owned()),
+        _ => return Err(format!("cannot restore to {}", target.display())),
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<Progress>();
+    // Dropping a conflict's reply sender makes the engine skip that entry.
+    let drain = std::thread::spawn(move || rx.into_iter().for_each(drop));
+    let opts = TransferOpts { names: Some(vec![name]), ..TransferOpts::default() };
+    let done = copy_tree_opts(&[src.to_path_buf()], dir, &tx, &CancelToken::new(), true, &opts);
+    drop(tx);
+    let _ = drain.join();
+    match done {
+        Progress::Done { errors, .. } if errors.is_empty() && fs::symlink_metadata(target).is_ok() => Ok(()),
+        Progress::Done { errors, .. } => match errors.first() {
+            Some((path, msg)) => Err(format!("{}: {msg}", path.display())),
+            None => Err(format!("{} was not restored", target.display())),
+        },
+        _ => Err(format!("{} was not restored", target.display())),
+    }
 }
 
 /// Delete `item` for good, with its info file.
@@ -306,6 +356,39 @@ mod tests {
 
         restore(&list_items(&trash).remove(0)).unwrap();
         assert!(dir.join("f").exists());
+    }
+
+    #[test]
+    fn restore_to_another_folder_keeps_the_original_name() {
+        let (td, trash, file) = trashed("note.txt");
+        let other = td.path().join("other");
+        fs::create_dir(&other).unwrap();
+        let item = list_items(&trash).remove(0);
+        assert_eq!(restore_to(&item, &other).unwrap(), other.join("note.txt"));
+        assert!(other.join("note.txt").exists());
+        assert!(!file.exists());
+        assert!(!item.info().exists());
+    }
+
+    #[test]
+    fn restore_to_needs_an_existing_folder() {
+        let (td, trash, _) = trashed("note.txt");
+        let item = list_items(&trash).remove(0);
+        assert!(restore_to(&item, &td.path().join("missing")).is_err());
+        assert!(item.file().exists());
+    }
+
+    #[test]
+    fn move_across_copies_then_deletes() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub/f"), "x").unwrap();
+        let target = td.path().join("out/renamed");
+        fs::create_dir(td.path().join("out")).unwrap();
+        move_across(&src, &target).unwrap();
+        assert_eq!(fs::read_to_string(target.join("sub/f")).unwrap(), "x");
+        assert!(!src.exists());
     }
 
     #[test]
