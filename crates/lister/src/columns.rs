@@ -5,9 +5,28 @@ use crate::model::{
     local_tz_offset_secs_at, Row, SortCol,
 };
 use gtk4 as gtk;
-use gtk::glib::BoxedAnyObject;
+use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
+use std::cell::RefCell;
 use std::rc::Rc;
+
+thread_local! {
+    /// The list items of every Name column, to find the row widget showing a
+    /// position: GTK 4.10 has no call that moves a list's keyboard focus.
+    static NAME_ITEMS: RefCell<Vec<glib::WeakRef<gtk::ListItem>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The row widget of `view` showing position `pos`, while one is built (rows
+/// far out of sight have none).
+pub fn row_widget(view: &gtk::ColumnView, pos: u32) -> Option<gtk::Widget> {
+    NAME_ITEMS.with(|items| {
+        let mut items = items.borrow_mut();
+        items.retain(|w| w.upgrade().is_some());
+        let item = items.iter().filter_map(|w| w.upgrade()).find(|i| i.position() == pos && i.child().is_some_and(|c| c.is_ancestor(view)))?;
+        // The Name cell child sits in the cell widget, inside the row widget.
+        item.child()?.parent()?.parent()
+    })
+}
 
 #[derive(Clone, Copy)]
 pub enum ColKind {
@@ -173,6 +192,7 @@ where
         cell.append(&icon);
         cell.append(&label);
         item.set_child(Some(&cell));
+        NAME_ITEMS.with(|items| items.borrow_mut().push(item.downgrade()));
     } else {
         item.set_child(Some(&label));
     }

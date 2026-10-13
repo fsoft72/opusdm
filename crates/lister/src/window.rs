@@ -13,6 +13,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// Milliseconds between the tries to focus the cursor row.
+const FOCUS_ROW_RETRY_MS: u64 = 20;
+/// Tries to focus the cursor row before giving up.
+const FOCUS_ROW_TRIES: u32 = 10;
+
 /// Whether the keyboard focus currently sits in a text field, where a plain
 /// letter is a character rather than a shortcut.
 pub fn is_editing(window: &gtk::ApplicationWindow) -> bool {
@@ -835,6 +840,30 @@ impl Ui {
             .view
             .column_view
             .activate_action("list.scroll-to-item", Some(&pos.to_variant()));
+        self.focus_cursor_row();
+    }
+
+    /// Give the cursor row the list's keyboard focus, so the arrows go on from
+    /// it and not from the row GTK had focused before (the top one once that
+    /// row is deleted). Only while the keyboard is in the list: a text field
+    /// keeps it. The row widget may be built only at the next layout, so a
+    /// few short retries follow.
+    fn focus_cursor_row(&self) {
+        let view = self.view.column_view.clone();
+        let focus = gtk::prelude::RootExt::focus(&self.window);
+        if focus.is_some_and(|w| w != view.clone().upcast::<gtk::Widget>() && !w.is_ancestor(&view)) {
+            return;
+        }
+        let pos = self.view.cursor.get();
+        let tries = Cell::new(FOCUS_ROW_TRIES);
+        glib::timeout_add_local(std::time::Duration::from_millis(FOCUS_ROW_RETRY_MS), move || {
+            if let Some(row) = crate::columns::row_widget(&view, pos) {
+                row.grab_focus();
+                return glib::ControlFlow::Break;
+            }
+            tries.set(tries.get() - 1);
+            if tries.get() == 0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+        });
     }
 
     /// Follow the mouse: a plain click leaves exactly one row selected, and the
