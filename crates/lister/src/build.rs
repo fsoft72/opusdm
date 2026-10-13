@@ -565,7 +565,8 @@ fn ghost_is_active(entry: &gtk::Entry, ghost: &str) -> bool {
 /// Look-ahead for the path bar. While the user types, the folder name that
 /// completes the last component (see `pathcomplete::suggest`) is appended as
 /// selected text. TAB accepts it (cursor to the end, focus stays in the bar),
-/// typing on replaces it, Backspace removes it and Enter ignores it.
+/// typing on replaces it, Backspace removes it and Enter accepts it and goes
+/// to the completed folder.
 fn wire_path_completion(entry: &gtk::Entry) {
     let ghost = Rc::new(RefCell::new(String::new()));
     let typing = Rc::new(Cell::new(false));
@@ -610,12 +611,12 @@ fn wire_path_completion(entry: &gtk::Entry) {
             });
         });
     }
-    // Registered before the navigation handler, so the suggestion is gone
-    // from the text by the time Enter reads it.
+    // Registered before the navigation handler: Enter takes the suggestion
+    // as typed text, so the navigation reads the completed path.
     let entry_for_enter = entry.clone();
     entry.connect_activate(move |_| {
         if ghost_is_active(&entry_for_enter, &ghost.borrow()) {
-            entry_for_enter.delete_selection();
+            entry_for_enter.set_position(-1);
         }
         ghost.borrow_mut().clear();
     });
