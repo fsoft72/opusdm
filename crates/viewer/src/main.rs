@@ -1,4 +1,4 @@
-//! `opusdm-viewer`: shows the pictures, PDF files, Markdown texts and videos given on the
+//! `opusdm-viewer`: shows the pictures, PDF files, Markdown texts, source texts and videos given on the
 //! command line, files and whole folders.
 //! See `docs/superpowers/specs/2026-10-05-viewer-gallery-design.md`.
 
@@ -9,6 +9,7 @@ mod highlight;
 mod image_view;
 mod keys;
 mod kind;
+mod line_numbers;
 mod loader;
 mod markdown;
 mod markdown_view;
@@ -20,6 +21,7 @@ mod pdf_pages;
 mod pdf_search;
 mod pdf_text;
 mod slideshow;
+mod source_view;
 mod strip;
 mod text_doc;
 mod video_view;

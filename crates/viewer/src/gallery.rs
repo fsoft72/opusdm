@@ -1,5 +1,5 @@
 //! The gallery: the files given on the command line and the pictures, PDF
-//! files, Markdown texts and videos of the folders given with them.
+//! files, Markdown texts, source texts and videos of the folders given with them.
 
 use crate::kind::kind_of;
 use std::cmp::Ordering;
@@ -62,7 +62,7 @@ impl Gallery {
                 if !items.contains(&path) { items.push(path); }
             }
         }
-        if items.is_empty() { return Err(io::Error::new(io::ErrorKind::NotFound, "nothing to show: no picture, PDF, Markdown or video found")); }
+        if items.is_empty() { return Err(io::Error::new(io::ErrorKind::NotFound, "nothing to show: no picture, PDF, Markdown, source text or video found")); }
         Ok(Gallery { items, index: 0 })
     }
 
@@ -133,7 +133,7 @@ impl Gallery {
     }
 }
 
-/// The pictures, PDF files, Markdown texts and videos of `dir`, in natural order.
+/// The pictures, PDF files, Markdown texts, source texts and videos of `dir`, in natural order.
 fn _folder_items(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut items = Vec::new();
     for entry in std::fs::read_dir(dir)? {
@@ -269,7 +269,7 @@ mod tests {
         let dir = folder(&["b2.png", "b10.JPG", "clip.mp4", "doc.pdf", "notes.txt", ".hidden.png", "odd.xyz"]);
         std::fs::create_dir(dir.path().join("sub.png")).unwrap();
         let g = Gallery::from_targets(&[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(names(&g), ["b2.png", "b10.JPG", "clip.mp4", "doc.pdf"]);
+        assert_eq!(names(&g), ["b2.png", "b10.JPG", "clip.mp4", "doc.pdf", "notes.txt"]);
     }
 
     #[test]
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn nothing_to_show_is_an_error() {
-        let dir = folder(&["notes.txt"]);
+        let dir = folder(&["data.bin", "odd.xyz"]);
         assert!(Gallery::from_targets(&[dir.path().to_path_buf()]).is_err());
     }
 }

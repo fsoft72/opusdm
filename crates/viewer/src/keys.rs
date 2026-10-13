@@ -1,4 +1,4 @@
-//! Key bindings: what a key does depends on whether a picture, a PDF or a video shows.
+//! Key bindings: what a key does depends on whether a picture, a PDF, a video or a text shows.
 
 use crate::kind::MediaKind;
 use gtk4::gdk::Key;
@@ -29,6 +29,8 @@ pub enum Action {
     TogglePages,
     /// Smooth (interpolated) or sharp pixels when zoomed.
     Interpolation,
+    /// Show or hide the line numbers of a source text.
+    LineNumbers,
     Slideshow,
     Fullscreen,
     Delete,
@@ -40,7 +42,8 @@ pub enum Action {
 /// The action of `key` while `kind` is on screen; `None` when the key is unused.
 pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
     let video = kind == MediaKind::Video;
-    let text = kind == MediaKind::Markdown;
+    let source = kind == MediaKind::Source;
+    let text = kind == MediaKind::Markdown || source;
     let pdf = kind == MediaKind::Pdf;
     let action = match key {
         Key::plus | Key::KP_Add | Key::equal if !video && !text => Action::ZoomIn,
@@ -63,6 +66,7 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
         Key::Home | Key::KP_Home if pdf => Action::FirstPage,
         Key::End | Key::KP_End if pdf => Action::LastPage,
         Key::F9 if pdf => Action::TogglePages,
+        Key::l | Key::L if source => Action::LineNumbers,
         Key::n | Key::N => Action::Next,
         Key::p | Key::P => Action::Prev,
         Key::s | Key::S => Action::Slideshow,
@@ -93,7 +97,7 @@ pub fn page_after(action: Action, current: usize, count: usize) -> Option<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use MediaKind::{Image, Markdown, Pdf, Video};
+    use MediaKind::{Image, Markdown, Pdf, Source, Video};
 
     #[test]
     fn arrows_move_on_pictures_and_seek_on_videos() {
@@ -141,6 +145,20 @@ mod tests {
         assert_eq!(map(Key::f, Markdown), Some(Action::Fullscreen));
         for key in [Key::plus, Key::minus, Key::_0, Key::_1, Key::r, Key::R, Key::period, Key::Up, Key::Down, Key::Page_Down] {
             assert_eq!(map(key, Markdown), None);
+        }
+    }
+
+    #[test]
+    fn a_source_text_moves_like_markdown_and_toggles_line_numbers() {
+        assert_eq!(map(Key::Right, Source), Some(Action::Next));
+        assert_eq!(map(Key::space, Source), Some(Action::Next));
+        assert_eq!(map(Key::p, Source), Some(Action::Prev));
+        for key in [Key::plus, Key::minus, Key::_0, Key::_1, Key::r, Key::R, Key::period, Key::Up, Key::Down, Key::Page_Down] {
+            assert_eq!(map(key, Source), None);
+        }
+        assert_eq!(map(Key::l, Source), Some(Action::LineNumbers));
+        for kind in [Image, Video, Pdf, Markdown] {
+            assert_eq!(map(Key::l, kind), None);
         }
     }
 
@@ -203,7 +221,7 @@ mod tests {
 
     #[test]
     fn common_keys() {
-        for kind in [Image, Video, Pdf, Markdown] {
+        for kind in [Image, Video, Pdf, Markdown, Source] {
             assert_eq!(map(Key::s, kind), Some(Action::Slideshow));
             assert_eq!(map(Key::f, kind), Some(Action::Fullscreen));
             assert_eq!(map(Key::Delete, kind), Some(Action::Delete));

@@ -10,6 +10,8 @@ use std::cell::{Cell, RefCell};
 const MATCH_BG: &str = "#ffeb3c";
 const CURRENT_MATCH_BG: &str = "#ff8c00";
 const MATCH_FG: &str = "#000000";
+/// Mark at the current match, to scroll to.
+const SEARCH_MARK: &str = "search-match";
 
 /// Colour of each `Category` on a dark page (One Dark like).
 const DARK_COLORS: [(Category, &str); 14] = [
@@ -155,10 +157,24 @@ impl TextSearch {
         Some((buffer.iter_at_offset(a), buffer.iter_at_offset(b)))
     }
 
-    /// Draw the current match in its own colour and scroll to it.
+    /// Draw the current match in its own colour and scroll to it, a third down
+    /// the page. A long line is not scrolled sideways when the match fits in
+    /// the page from its left edge.
     fn _mark_current(&self, view: &gtk::TextView) {
         let Some((start, end)) = self._current_range(view) else { return };
-        view.buffer().apply_tag_by_name("current-match", &start, &end);
-        view.scroll_to_iter(&mut start.clone(), 0.1, true, 0.0, 0.3);
+        let buffer = view.buffer();
+        buffer.apply_tag_by_name("current-match", &start, &end);
+        let page = f64::from(view.visible_rect().width().max(1));
+        let (start_x, end_x) = (f64::from(view.iter_location(&start).x()), f64::from(view.iter_location(&end).x()));
+        // With `xalign` = start_x / page the page starts at x 0.
+        let xalign = if end_x < page { (start_x / page).clamp(0.0, 1.0) } else { 0.3 };
+        let mark = match buffer.mark(SEARCH_MARK) {
+            Some(mark) => {
+                buffer.move_mark(&mark, &start);
+                mark
+            }
+            None => buffer.create_mark(Some(SEARCH_MARK), &start, true),
+        };
+        view.scroll_to_mark(&mark, 0.0, true, xalign, 0.3);
     }
 }

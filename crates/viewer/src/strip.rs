@@ -16,6 +16,8 @@ use std::sync::mpsc;
 const THUMB_PX: i32 = 96;
 /// Files on each side of the current one whose thumbnails are requested.
 const THUMB_RADIUS: usize = 12;
+/// Longest extension written on the placeholder of a source text.
+const SOURCE_LABEL_CHARS: usize = 5;
 
 type ThumbResult = (PathBuf, Result<RawImage, String>);
 
@@ -88,11 +90,12 @@ impl Strip {
         button.set_focusable(false);
         button.set_size_request(THUMB_PX + 8, THUMB_PX * 3 / 4 + 8);
         let text = match kind_or_image(path) {
-            MediaKind::Video => "VIDEO",
-            MediaKind::Markdown => "MD",
-            _ => "...",
+            MediaKind::Video => "VIDEO".to_string(),
+            MediaKind::Markdown => "MD".to_string(),
+            MediaKind::Source => _source_label(path),
+            _ => "...".to_string(),
         };
-        button.set_child(Some(&gtk::Label::new(Some(text))));
+        button.set_child(Some(&gtk::Label::new(Some(&text))));
         button.set_tooltip_text(path.file_name().map(|n| n.to_string_lossy()).as_deref());
         let target = path.to_path_buf();
         button.connect_clicked(move |_| { let _ = picked.try_send(target.clone()); });
@@ -102,7 +105,7 @@ impl Strip {
 
     /// Ask the worker for a thumbnail, once per picture.
     fn _request(&self, path: &Path) {
-        if matches!(kind_or_image(path), MediaKind::Video | MediaKind::Markdown) { return; }
+        if matches!(kind_or_image(path), MediaKind::Video | MediaKind::Markdown | MediaKind::Source) { return; }
         if !self.requested.borrow_mut().insert(path.to_path_buf()) { return; }
         if self.requests.send(path.to_path_buf()).is_err() { opusdm_ipc::err_log!("viewer", "the thumbnail worker stopped"); }
     }
@@ -123,6 +126,12 @@ impl Strip {
             }
         }
     }
+}
+
+/// Placeholder of a source text: its extension in capitals (`RS`), or `TEXT`.
+fn _source_label(path: &Path) -> String {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).filter(|e| !e.is_empty() && e.chars().count() <= SOURCE_LABEL_CHARS);
+    ext.unwrap_or_else(|| "TEXT".to_string())
 }
 
 /// The worker thread: makes the thumbnails in the order they are asked and stops
@@ -147,4 +156,16 @@ fn _center(root: &gtk::ScrolledWindow, button: &gtk::Button) {
     let adj = root.hadjustment();
     let target = button.allocation().x() as f64 - (adj.page_size() - button.width() as f64) / 2.0;
     adj.set_value(target.clamp(adj.lower(), (adj.upper() - adj.page_size()).max(adj.lower())));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_source_placeholder_is_its_short_extension() {
+        assert_eq!(_source_label(Path::new("a/main.rs")), "RS");
+        assert_eq!(_source_label(Path::new("Makefile")), "TEXT");
+        assert_eq!(_source_label(Path::new("x.properties")), "TEXT");
+    }
 }

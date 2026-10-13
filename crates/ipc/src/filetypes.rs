@@ -276,6 +276,8 @@ const IMAGE_PATTERN: &str = "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg;*.bmp;*.ico;*
 const PDF_PATTERN: &str = "*.pdf";
 /// Extensions of the Markdown texts the default type opens with `opusdm-viewer`.
 const MARKDOWN_PATTERN: &str = "*.md;*.markdown";
+/// Extensions and names of the source and plain texts the default type opens with `opusdm-viewer`.
+const SOURCE_PATTERN: &str = "*.txt;*.log;*.rs;*.c;*.h;*.cc;*.cpp;*.cxx;*.hh;*.hpp;*.hxx;*.m;*.mm;*.cs;*.java;*.kt;*.kts;*.scala;*.groovy;*.gradle;*.go;*.swift;*.dart;*.zig;*.nim;*.d;*.py;*.pyw;*.rb;*.php;*.pl;*.pm;*.lua;*.tcl;*.r;*.jl;*.hs;*.ml;*.mli;*.clj;*.el;*.lisp;*.erl;*.ex;*.exs;*.js;*.mjs;*.cjs;*.ts;*.jsx;*.tsx;*.vue;*.svelte;*.html;*.htm;*.xml;*.xsl;*.css;*.scss;*.sass;*.less;*.json;*.jsonc;*.toml;*.yaml;*.yml;*.ini;*.conf;*.cfg;*.properties;*.desktop;*.service;*.sh;*.bash;*.zsh;*.fish;*.ps1;*.bat;*.cmd;*.sql;*.diff;*.patch;*.cmake;*.mk;*.tex;Makefile;GNUmakefile;Dockerfile;Containerfile;justfile;PKGBUILD";
 /// Double click: view the picture.
 const VIEWER_OPEN: &str = "exec:opusdm-viewer {f}";
 /// Double click: play the file.
@@ -284,7 +286,7 @@ const PLAYER_OPEN: &str = "exec:opusdm-player {f}";
 const PLAYER_LOOP: &str = "exec:opusdm-player --loop {f}";
 
 /// The types a new installation starts with: audio and video files open with
-/// `opusdm-player`, pictures and PDF documents with `opusdm-viewer`. They use inline `exec:` references, so no saved Function is
+/// `opusdm-player`, pictures, PDF documents, Markdown and source texts with `opusdm-viewer`. They use inline `exec:` references, so no saved Function is
 /// needed.
 pub fn default_filetypes() -> FileTypes {
     let player_type = |name: &str, pattern: &str| FileType {
@@ -297,7 +299,7 @@ pub fn default_filetypes() -> FileTypes {
         rule: MatchRule::Glob { pattern: pattern.to_string() },
         actions: Actions { dblclick: Some(VIEWER_OPEN.to_string()), drop: None, menu: vec![] },
     };
-    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), viewer_type("Image file", IMAGE_PATTERN), viewer_type("PDF file", PDF_PATTERN), viewer_type("Markdown file", MARKDOWN_PATTERN)] }
+    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), viewer_type("Image file", IMAGE_PATTERN), viewer_type("PDF file", PDF_PATTERN), viewer_type("Markdown file", MARKDOWN_PATTERN), viewer_type("Source file", SOURCE_PATTERN)] }
 }
 
 /// Write [`default_filetypes`] to the standard path when `filetypes.json` does
@@ -522,12 +524,12 @@ mod tests {
     #[test]
     fn dblclick_finds_the_action_of_a_matching_regular_file_only() {
         let dir = tempfile::tempdir().unwrap();
-        let (song, txt) = (dir.path().join("a.mp3"), dir.path().join("a.txt"));
+        let (song, bin) = (dir.path().join("a.mp3"), dir.path().join("a.bin"));
         std::fs::write(&song, "x").unwrap();
-        std::fs::write(&txt, "x").unwrap();
+        std::fs::write(&bin, "x").unwrap();
         let types = default_filetypes();
         assert_eq!(dblclick_in(&types, &song).as_deref(), Some("exec:opusdm-player {f}"));
-        assert_eq!(dblclick_in(&types, &txt), None, "no type matches");
+        assert_eq!(dblclick_in(&types, &bin), None, "no type matches");
         assert_eq!(dblclick_in(&types, dir.path()), None, "a folder never matches");
         assert_eq!(dblclick_in(&types, &dir.path().join("missing.mp3")), None);
     }
@@ -538,7 +540,10 @@ mod tests {
         assert!(list.problems().is_empty(), "{:?}", list.problems());
         assert_eq!(list.find(&facts("Song.MP3", 1, b"")).unwrap().name, "Audio file");
         assert_eq!(list.find(&facts("film.mkv", 1, b"")).unwrap().name, "Video file");
-        assert!(list.find(&facts("notes.txt", 1, b"")).is_none());
+        assert!(list.find(&facts("data.bin", 1, b"")).is_none());
+        assert_eq!(list.find(&facts("notes.txt", 1, b"")).unwrap().name, "Source file");
+        assert_eq!(list.find(&facts("main.RS", 1, b"")).unwrap().name, "Source file");
+        assert_eq!(list.find(&facts("Makefile", 1, b"")).unwrap().name, "Source file");
         assert_eq!(list.find(&facts("photo.PNG", 1, b"")).unwrap().name, "Image file");
         assert_eq!(list.find(&facts("manual.Pdf", 1, b"")).unwrap().name, "PDF file");
         assert_eq!(list.find(&facts("README.MD", 1, b"")).unwrap().name, "Markdown file");
@@ -552,7 +557,7 @@ mod tests {
             for r in refs {
                 let FuncRef::Exec { line } = parse(&r) else { panic!("{}: {r} is not an exec reference", t.name) };
                 let words = crate::cli::tokenize(&line).unwrap();
-                let program = if matches!(t.name.as_str(), "Image file" | "PDF file" | "Markdown file") { "opusdm-viewer" } else { "opusdm-player" };
+                let program = if matches!(t.name.as_str(), "Image file" | "PDF file" | "Markdown file" | "Source file") { "opusdm-viewer" } else { "opusdm-player" };
                 assert_eq!(words.first().map(String::as_str), Some(program), "{r}");
                 assert_eq!(words.last().map(String::as_str), Some("{f}"), "{r}");
             }

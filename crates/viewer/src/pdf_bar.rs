@@ -12,7 +12,7 @@ pub struct PdfBar {
     pub prev: gtk::Button,
     pub next: gtk::Button,
     pub status: gtk::Label,
-    /// Dark / light switch of a text document; shown for Markdown only.
+    /// Dark / light switch of a text document; shown for Markdown and source texts only.
     pub dark_box: gtk::Box,
     pub dark: gtk::Switch,
 }

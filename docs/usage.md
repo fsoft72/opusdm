@@ -202,7 +202,7 @@ Quick Look (`F3` / `Space`) is still the light preview that follows the selectio
 - **Show in folder** takes the Lister to the folder that holds the selected result and selects it. **View** opens the file in the Viewer, on the first match of the text. Double click does View for content results and Show in folder for name results.
 
 ### 3.10h File Types
-On the first start (when `filetypes.json` does not exist) OpusDM creates it with two types, **Audio file** (mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, mka) and **Video file** (mp4, mkv, webm, avi, mov, m4v, mpg, mpeg, wmv, flv, ogv). A double click runs `opusdm-player` on the file and Open With adds the same player in a loop. Three more types, **Image file**, **PDF file** and **Markdown file**, open pictures, PDF documents and Markdown texts with `opusdm-viewer`. After that the file is yours: nothing is added back, so a type you delete stays deleted (delete `filetypes.json` to get the defaults again).
+On the first start (when `filetypes.json` does not exist) OpusDM creates it with two types, **Audio file** (mp3, flac, ogg, oga, opus, wav, m4a, aac, wma, mka) and **Video file** (mp4, mkv, webm, avi, mov, m4v, mpg, mpeg, wmv, flv, ogv). A double click runs `opusdm-player` on the file and Open With adds the same player in a loop. Four more types, **Image file**, **PDF file**, **Markdown file** and **Source file**, open pictures, PDF documents, Markdown texts and source / plain texts with `opusdm-viewer`. After that the file is yours: nothing is added back, so a type you delete stays deleted (delete `filetypes.json` to get the defaults again).
 
 **Edit File Types...** (command palette) edits the list kept in `~/.config/opusdm/filetypes.json`. The first type (top to bottom) whose rule matches a file wins; use the arrows to reorder.
 - **Match**: one or more conditions combined with "all of" or "any of": file name patterns, bytes at an offset (hex, e.g. `89 50 4E 47`), text in the first N bytes, size range (`10K`, `4M`) and modified-time range (`7d`, `2026-01-01`). Content is read from the first 64 KiB of the file.
@@ -635,9 +635,9 @@ Plays one audio or video file in a small window.
   `gstreamer1.0-libav` for the codecs. To build, also `libgstreamer1.0-dev` and
   `libgstreamer-plugins-base1.0-dev`.
 
-### 3.28 Image, PDF, Markdown and Video Viewer (`opusdm-viewer`)
+### 3.28 Image, PDF, Markdown, Source and Video Viewer (`opusdm-viewer`)
 
-Shows pictures, PDF documents, Markdown texts and videos: the files and folders named on the command line.
+Shows pictures, PDF documents, Markdown texts, source / plain texts and videos: the files and folders named on the command line.
 
 - **Open it:** run `opusdm-viewer <file or folder>...`. In a Lister a double click on a
   picture or a PDF opens it: the first time OpusDM starts it creates the file types
@@ -645,10 +645,11 @@ Shows pictures, PDF documents, Markdown texts and videos: the files and folders 
   **PDF file**, add it with **Edit File Types...**, glob `*.pdf`, double click
   `exec:opusdm-viewer {f}`).
   The **gallery** is what the command line names, in the order given:
-  - a **file** is shown as it is (even with an extension the viewer does not know); a single
+  - a **file** is shown as it is (even with an extension the viewer does not know: one that
+    starts with `#!` or holds text is shown as source, anything else is tried as a picture); a single
     file is shown alone, without the thumbnail strip;
   - several files show only those files, not the rest of their folders;
-  - a **folder** brings every picture, PDF and video it holds (not hidden files, not sub
+  - a **folder** brings every picture, PDF, Markdown text, source text and video it holds (not hidden files, not sub
     folders), in natural order (`img2` before `img10`).
   Files and folders can be mixed; a file named twice is shown once and the first one opens.
   A name that does not exist stops the viewer with status 1, as does a command line with
@@ -669,12 +670,25 @@ Shows pictures, PDF documents, Markdown texts and videos: the files and folders 
   **Shift+F3** to the previous one (wrapping around), **Esc** clears the search. The case is
   ignored; the text of a picture is not searched. The **Dark** switch next to the search field
   makes the document dark or light without changing the window (it starts as the window is, and
-  is not remembered). The arrows Up / Down, **Page Up** / **Page Down**, **Home** / **End**
+  is not remembered). Code blocks with a language (` ```rust `, ` ```py `, ` ```sh `...) are
+  syntax coloured like the source texts below. The arrows Up / Down, **Page Up** / **Page Down**, **Home** / **End**
   and the mouse wheel scroll; **Left** / **Right**, **Space**, **n** and **p** move to the other
   files; text can be selected and copied with **Ctrl+C**. A click on a link opens it with the
   desktop (a relative path from the folder of the file; `#anchor` links do nothing). A new
   `filetypes.json` has a **Markdown file** type (`*.md;*.markdown`); an older one needs it added
   with **Edit File Types...**, double click `exec:opusdm-viewer {f}`. Files over 8 MiB are not shown.
+- **Source and plain texts** (`.rs`, `.c`, `.py`, `.js`, `.ts`, `.sh`, `.json`, `.toml`, `.yaml`,
+  `.html`, `.css`, `.sql`, `.txt`, `.log` and many more, plus `Makefile`, `Dockerfile`,
+  `Containerfile`, `justfile`, `PKGBUILD`): shown read-only in a monospace font without wrapping,
+  with line numbers on the left (**l** hides / shows them) and syntax colours. The language is
+  found from a `#!` first line (`#!/usr/bin/env python3`, `#!/bin/bash`), then from the file name
+  and extension, then from the first line (`<?xml`); a text with none is shown plain. The text shows
+  at once and is coloured in the background 500 lines at a time, so a big file can be read while the
+  rest is coloured; a line over 16 KiB (minified files) stops the colouring there. The info bar
+  shows the language and the line count. Search (**Ctrl+F**), the **Dark** switch, scrolling,
+  moving to the other files and copying work as for Markdown. A new `filetypes.json` has a
+  **Source file** type for these extensions and names; an older one needs it added with
+  **Edit File Types...**. Files over 8 MiB are not shown.
 - **PDF documents:** one page at a time, shown like a picture (zoom, drag, rotate as above).
   **Right** / **Down** / **Page Down** go to the next page, **Left** / **Up** / **Page Up** to
   the previous one, **Home** / **End** to the first / last one (on a PDF the arrows turn pages:

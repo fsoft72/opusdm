@@ -77,7 +77,10 @@ impl State {
         let s = self.clone();
         bar.pages.connect_toggled(move |_| s._sync_pdf_panels());
         let s = self.clone();
-        bar.dark.connect_active_notify(move |sw| s.markdown.set_dark(sw.is_active()));
+        bar.dark.connect_active_notify(move |sw| {
+            s.markdown.set_dark(sw.is_active());
+            s.source.set_dark(sw.is_active());
+        });
         let s = self.clone();
         bar.entry.connect_search_changed(move |_| s._start_search());
         let s = self.clone();
@@ -91,7 +94,7 @@ impl State {
             e.set_text("");
             gtk::prelude::GtkWindowExt::set_focus(&s.window, None::<&gtk::Widget>);
             s._sync_pdf_panels();
-            if s._is_markdown() { s.markdown.focus(); }
+            if let Some(doc) = s._text_doc() { doc.focus(); }
         });
         let s = self.clone();
         bar.next.connect_clicked(move |_| s._step_hit(true));
@@ -144,7 +147,7 @@ impl State {
     /// goes to the search field while it has the focus. `None` when the key is
     /// not one of them.
     pub(super) fn _pdf_key(self: &Rc<Self>, key: gdk::Key, mods: gdk::ModifierType) -> Option<glib::Propagation> {
-        if !(self._is_pdf() || self._is_markdown()) { return None; }
+        if !self._is_pdf() && self._text_doc().is_none() { return None; }
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl && matches!(key, gdk::Key::f | gdk::Key::F) {
             self.pdf.bar.root.set_visible(true);
@@ -164,9 +167,13 @@ impl State {
         matches!(self._current(), Some((_, MediaKind::Pdf)))
     }
 
-    /// True while a Markdown text is on screen.
-    fn _is_markdown(&self) -> bool {
-        matches!(self._current(), Some((_, MediaKind::Markdown)))
+    /// The Markdown or source text on screen, if one is.
+    fn _text_doc(&self) -> Option<&dyn TextDoc> {
+        match self._current()?.1 {
+            MediaKind::Markdown => Some(self.markdown.as_ref()),
+            MediaKind::Source => Some(self.source.as_ref()),
+            _ => None,
+        }
     }
 
     /// A new file is on screen: reset the PDF side; the bar shows only for a PDF.
@@ -185,7 +192,7 @@ impl State {
     /// full screen state; start the thumbnails when the panel shows.
     pub(super) fn _sync_pdf_panels(&self) {
         let pdf = self._is_pdf();
-        let searchable = pdf || self._is_markdown();
+        let searchable = pdf || self._text_doc().is_some();
         self.pdf.bar.pages.set_visible(pdf);
         self.pdf.bar.dark_box.set_visible(!pdf);
         let full = self.window.is_fullscreen();
@@ -280,7 +287,7 @@ impl State {
 
     /// The text of the search field changed: start a new search (or clear the marks).
     fn _start_search(self: &Rc<Self>) {
-        if self._is_markdown() { return self._markdown_search(); }
+        if self._text_doc().is_some() { return self._text_search(); }
         let generation = self.pdf.search_generation.get() + 1;
         self.pdf.search_generation.set(generation);
         self.pdf.hits.borrow_mut().clear();
@@ -295,11 +302,12 @@ impl State {
         if self.pdf.search_tx.send(SearchRequest { generation, path, query }).is_err() { self.pdf.bar.status.set_text("search stopped"); }
     }
 
-    /// Search the Markdown text on screen for the text of the search field.
-    pub(super) fn _markdown_search(&self) {
+    /// Search the text on screen (Markdown or source) for the text of the search field.
+    pub(super) fn _text_search(&self) {
+        let Some(doc) = self._text_doc() else { return };
         let query = self.pdf.bar.entry.text().trim().to_string();
-        self.markdown.search(&query);
-        self.pdf.bar.status.set_text(&if query.is_empty() { String::new() } else { self.markdown.label() });
+        doc.search(&query);
+        self.pdf.bar.status.set_text(&if query.is_empty() { String::new() } else { doc.label() });
     }
 
     /// The search worker answered for the last search.
@@ -320,8 +328,8 @@ impl State {
 
     /// Move to the next (or previous) match.
     fn _step_hit(self: &Rc<Self>, forward: bool) {
-        if self._is_markdown() {
-            if self.markdown.step(forward).is_some() { self.pdf.bar.status.set_text(&self.markdown.label()); }
+        if let Some(doc) = self._text_doc() {
+            if doc.step(forward).is_some() { self.pdf.bar.status.set_text(&doc.label()); }
             return;
         }
         if self.pdf.hits.borrow_mut().step(forward).is_none() { return; }

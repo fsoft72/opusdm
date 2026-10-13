@@ -10,6 +10,7 @@ use crate::keys::{map, Action};
 use crate::kind::{kind_or_image, MediaKind};
 use crate::loader::{load_raw, RawImage};
 use crate::markdown_view::MarkdownView;
+use crate::source_view::SourceView;
 use crate::pdf::{start_worker, PageAnswer, PageRequest};
 use pdf::PdfUi;
 use crate::slideshow::{Slideshow, SLIDESHOW_SECS};
@@ -41,6 +42,7 @@ struct State {
     image: Rc<ImageView>,
     video: Rc<VideoView>,
     markdown: Rc<MarkdownView>,
+    source: Rc<SourceView>,
     error: gtk::Label,
     info: gtk::Label,
     strip: Rc<Strip>,
@@ -73,6 +75,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     let image = ImageView::new();
     let video = VideoView::new(video_tx);
     let markdown = MarkdownView::new();
+    let source = SourceView::new();
     let error = gtk::Label::new(None);
     error.set_wrap(true);
     error.set_vexpand(true);
@@ -86,6 +89,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
     stack.add_named(&image.root, Some("image"));
     stack.add_named(&video_page, Some("video"));
     stack.add_named(&markdown.root, Some("markdown"));
+    stack.add_named(&source.root, Some("source"));
     stack.add_named(&error, Some("error"));
     let strip = Strip::new(gallery.items(), pick_tx);
     let info = gtk::Label::new(None);
@@ -110,6 +114,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         image,
         video,
         markdown,
+        source,
         error,
         info,
         strip,
@@ -203,20 +208,9 @@ impl State {
                 self.video.stop();
                 self._request_page(&path);
             }
-            MediaKind::Markdown => {
+            MediaKind::Markdown | MediaKind::Source => {
                 self.video.stop();
-                match self.markdown.show(&path) {
-                    Ok(()) => {
-                        self.stack.set_visible_child_name("markdown");
-                        self._sync_pdf_panels();
-                        if !self.pdf.bar.entry.text().is_empty() { self._markdown_search(); }
-                        self._schedule_slideshow();
-                    }
-                    Err(e) => {
-                        opusdm_ipc::err_log!("viewer", "cannot show {}: {e}", path.display());
-                        self._show_error(&format!("Cannot show {}: {e}", _name(&path)));
-                    }
-                }
+                self._show_text(&path, kind);
             }
             MediaKind::Video => match self.video.open(&path) {
                 Ok(()) => self.stack.set_visible_child_name("video"),
@@ -224,6 +218,26 @@ impl State {
             },
         }
         self._update_info();
+    }
+
+    /// Show a Markdown or source text; the search of the bar goes on in it.
+    fn _show_text(self: &Rc<Self>, path: &Path, kind: MediaKind) {
+        let (result, page) = match kind {
+            MediaKind::Markdown => (self.markdown.show(path), "markdown"),
+            _ => (self.source.show(path), "source"),
+        };
+        match result {
+            Ok(()) => {
+                self.stack.set_visible_child_name(page);
+                self._sync_pdf_panels();
+                if !self.pdf.bar.entry.text().is_empty() { self._text_search(); }
+                self._schedule_slideshow();
+            }
+            Err(e) => {
+                opusdm_ipc::err_log!("viewer", "cannot show {}: {e}", path.display());
+                self._show_error(&format!("Cannot show {}: {e}", _name(path)));
+            }
+        }
     }
 
     /// Ask the page worker for the current page of the PDF on screen.
@@ -287,6 +301,7 @@ impl State {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
             (MediaKind::Markdown, _) => "markdown".to_string(),
+            (MediaKind::Source, _) => self.source.detail(),
             (MediaKind::Pdf, _) if self.pages.get() == 0 => "loading".to_string(),
             (MediaKind::Image | MediaKind::Pdf, _) => match self.image.size() {
                 Some((w, h)) => format!("{}{w}x{h}  -  {}{}", self._page_label(kind), self.image.zoom_label(), if self.image.is_smooth() { "" } else { "  -  pixels" }),
@@ -333,6 +348,7 @@ impl State {
         let dark = gtk::Settings::default().is_some_and(|s| s.is_gtk_application_prefer_dark_theme());
         self.pdf.bar.dark.set_active(dark);
         self.markdown.set_dark(dark);
+        self.source.set_dark(dark);
     }
 
     /// Key controller on the window, capture phase: no focused widget takes the keys.
@@ -363,6 +379,7 @@ impl State {
             Action::Interpolation => self.image.toggle_smooth(),
             Action::NextPage | Action::PrevPage | Action::FirstPage | Action::LastPage => return self._turn_page(action),
             Action::TogglePages => self._toggle_pages(),
+            Action::LineNumbers => self.source.toggle_numbers(),
             Action::Next => return self._step(true),
             Action::Prev => return self._step(false),
             Action::SeekBack => self.video.skip(-SKIP_SECS),
