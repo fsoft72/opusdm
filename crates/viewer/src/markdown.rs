@@ -1,6 +1,7 @@
 //! Markdown to styled text runs. No GTK here: the view turns the runs into a
 //! text buffer, so the parser can be tested alone.
 
+use unicode_width::UnicodeWidthStr;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// Deepest indent level that has its own tag name.
@@ -55,9 +56,9 @@ struct Table {
     cell: Vec<Run>,
 }
 
-/// Width of a cell in characters.
+/// Width of a cell in terminal columns (a wide character takes two).
 fn _cell_width(cell: &[Run]) -> usize {
-    cell.iter().map(|r| r.text.chars().count()).sum()
+    cell.iter().map(|r| r.text.width()).sum()
 }
 
 impl Builder {
@@ -383,6 +384,12 @@ mod tests {
         assert_eq!(tags_of(&runs, "name"), ["bold", "table"]);
         assert_eq!(tags_of(&runs, "bob"), ["bold", "table"]);
         assert_eq!(tags_of(&runs, "al"), ["table"]);
+    }
+
+    #[test]
+    fn wide_characters_count_two_columns() {
+        let runs = parse("| a |\n|---|\n| 日本 |\n");
+        assert_eq!(plain(&runs), "┌──────┐\n│ a    │\n├──────┤\n│ 日本 │\n└──────┘\n\n");
     }
 
     #[test]

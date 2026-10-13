@@ -123,6 +123,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery) {
         keep_zoom: Cell::new(false),
         pdf: pdf_ui,
     });
+    state._start_dark();
     state._wire_keys();
     state._wire_pdf(pdf_channels);
     state._sync_strip();
@@ -325,6 +326,13 @@ impl State {
             this._step(true);
         });
         *self.slide_timer.borrow_mut() = Some(id);
+    }
+
+    /// The document starts dark when the window is dark; the switch shows it.
+    fn _start_dark(&self) {
+        let dark = gtk::Settings::default().is_some_and(|s| s.is_gtk_application_prefer_dark_theme());
+        self.pdf.bar.dark.set_active(dark);
+        self.markdown.set_dark(dark);
     }
 
     /// Key controller on the window, capture phase: no focused widget takes the keys.

@@ -661,13 +661,15 @@ Shows pictures, PDF documents, Markdown texts and videos: the files and folders 
   next pictures.
 - **Markdown texts** (`.md`, `.markdown`): shown rendered in a read-only text view: headings,
   bold, italic, strikethrough, inline code, code blocks, bullet / numbered / task lists, quotes,
-  rules, links, **tables** (drawn as a box with the columns aligned as the file says, bold header)
+  rules, links, **tables** (drawn as a box with the columns aligned as the file says, wide characters counted as two columns, bold header)
   and **pictures** inline (files, relative to the folder of the file, scaled down to 800 pixels;
   a picture on the web or one that cannot be read shows as `[image: alt]`). Raw HTML is not shown.
   **Ctrl+F** opens the search bar like on a PDF: every match is tinted yellow and the current one
   orange, with `3/17` next to the field; **Enter** / **F3** go to the next match, **Shift+Enter** /
   **Shift+F3** to the previous one (wrapping around), **Esc** clears the search. The case is
-  ignored; the text of a picture is not searched. The arrows Up / Down, **Page Up** / **Page Down**, **Home** / **End**
+  ignored; the text of a picture is not searched. The **Dark** switch next to the search field
+  makes the document dark or light without changing the window (it starts as the window is, and
+  is not remembered). The arrows Up / Down, **Page Up** / **Page Down**, **Home** / **End**
   and the mouse wheel scroll; **Left** / **Right**, **Space**, **n** and **p** move to the other
   files; text can be selected and copied with **Ctrl+C**. A click on a link opens it with the
   desktop (a relative path from the folder of the file; `#anchor` links do nothing). A new

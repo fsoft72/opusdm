@@ -17,6 +17,7 @@ gtk4.workspace = true
 async-channel.workspace = true
 hayro = "0.8"
 pulldown-cmark = { version = "0.13", default-features = false }
+unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

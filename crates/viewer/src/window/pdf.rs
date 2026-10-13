@@ -76,6 +76,8 @@ impl State {
         let s = self.clone();
         bar.pages.connect_toggled(move |_| s._sync_pdf_panels());
         let s = self.clone();
+        bar.dark.connect_active_notify(move |sw| s.markdown.set_dark(sw.is_active()));
+        let s = self.clone();
         bar.entry.connect_search_changed(move |_| s._start_search());
         let s = self.clone();
         bar.entry.connect_activate(move |_| s._step_hit(true));
@@ -184,6 +186,7 @@ impl State {
         let pdf = self._is_pdf();
         let searchable = pdf || self._is_markdown();
         self.pdf.bar.pages.set_visible(pdf);
+        self.pdf.bar.dark_box.set_visible(!pdf);
         let full = self.window.is_fullscreen();
         let searching = !self.pdf.bar.entry.text().is_empty() || self.pdf.bar.entry_has_focus(&self.window);
         self.pdf.bar.root.set_visible(searchable && (!full || searching));

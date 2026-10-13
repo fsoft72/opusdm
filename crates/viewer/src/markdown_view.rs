@@ -71,6 +71,15 @@ impl MarkdownView {
         this
     }
 
+    /// Dark or light colours for the document only; the window keeps its own.
+    pub fn set_dark(&self, dark: bool) {
+        let (on, off) = if dark { ("viewer-doc-dark", "viewer-doc-light") } else { ("viewer-doc-light", "viewer-doc-dark") };
+        for widget in [self.root.upcast_ref::<gtk::Widget>(), self.view.upcast_ref()] {
+            widget.remove_css_class(off);
+            widget.add_css_class(on);
+        }
+    }
+
     /// Give the keyboard focus to the text (the arrows scroll it).
     pub fn focus(&self) {
         self.view.grab_focus();

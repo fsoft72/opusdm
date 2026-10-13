@@ -12,6 +12,9 @@ pub struct PdfBar {
     pub prev: gtk::Button,
     pub next: gtk::Button,
     pub status: gtk::Label,
+    /// Dark / light switch of a text document; shown for Markdown only.
+    pub dark_box: gtk::Box,
+    pub dark: gtk::Switch,
 }
 
 impl PdfBar {
@@ -32,15 +35,23 @@ impl PdfBar {
         let status = gtk::Label::new(None);
         status.set_width_chars(10);
         status.set_xalign(0.0);
+        let dark = gtk::Switch::new();
+        dark.set_focusable(false);
+        dark.set_valign(gtk::Align::Center);
+        dark.set_tooltip_text(Some("Dark or light document (the window is not changed)"));
+        let dark_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        dark_box.append(&gtk::Label::new(Some("Dark")));
+        dark_box.append(&dark);
+        dark_box.set_visible(false);
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         root.add_css_class("viewer-pdf-bar");
-        for widget in [pages.upcast_ref::<gtk::Widget>(), spacer.upcast_ref(), entry.upcast_ref(), prev.upcast_ref(), next.upcast_ref(), status.upcast_ref()] {
+        for widget in [pages.upcast_ref::<gtk::Widget>(), spacer.upcast_ref(), dark_box.upcast_ref(), entry.upcast_ref(), prev.upcast_ref(), next.upcast_ref(), status.upcast_ref()] {
             root.append(widget);
         }
         root.set_visible(false);
-        PdfBar { root, pages, entry, prev, next, status }
+        PdfBar { root, pages, entry, prev, next, status, dark_box, dark }
     }
 
     /// True while the keyboard focus is in the search field.

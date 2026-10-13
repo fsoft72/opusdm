@@ -32,6 +32,8 @@ use std::process::ExitCode;
 
 /// Stage and strip look, on top of the shared OpusDM style.
 const VIEWER_CSS: &str = ".viewer-stage, scrolledwindow.viewer-stage, scrolledwindow.viewer-stage viewport, picture.viewer-stage { background: black; } \
+    .viewer-doc-dark, scrolledwindow.viewer-doc-dark, textview.viewer-doc-dark, textview.viewer-doc-dark text { background-color: #1e1f22; color: #e3e3e3; } \
+    .viewer-doc-light, scrolledwindow.viewer-doc-light, textview.viewer-doc-light, textview.viewer-doc-light text { background-color: #ffffff; color: #1a1a1a; } \
     .viewer-error { color: #dddddd; padding: 24px; } \
     .viewer-info { padding: 4px 8px; } \
     .viewer-pdf-bar { padding: 4px 8px; } \
