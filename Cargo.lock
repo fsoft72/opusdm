@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-apps-editor"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "dirs",
  "gtk4",
@@ -2186,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-archive"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "flate2",
  "libarchive3-sys",
@@ -2199,7 +2199,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-audio"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "libpulse-binding",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-brightness"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "tempfile",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-buttonbank"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gtk4",
  "opusdm-ipc",
@@ -2228,7 +2228,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-desktop-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "dirs",
  "gtk4",
@@ -2242,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-devices"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "opusdm-ipc",
@@ -2252,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-dock"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "freedesktop-desktop-entry",
  "gtk4",
@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-fsops"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-ftp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "opusdm-ipc",
  "serde",
@@ -2294,7 +2294,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-hub"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "dirs",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-iconview"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "filetime",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-input-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gtk4",
  "libc",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-ipc"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "dirs",
  "libc",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-lister"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -2384,7 +2384,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-media"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gstreamer",
  "gtk4",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-media-ui"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gtk4",
  "opusdm-media",
@@ -2402,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-network"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "base64",
@@ -2417,7 +2417,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-network-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-panel"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "dirs",
@@ -2453,7 +2453,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-player"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -2465,7 +2465,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-polkit"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-power"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "opusdm-watch",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-run"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gtk4",
  "opusdm-dock",
@@ -2498,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-screen"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gtk4",
  "opusdm-ipc",
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-shot"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "dirs",
  "gtk4",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-snap"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "opusdm-ipc",
@@ -2538,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-terminal"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gtk4",
  "libc",
@@ -2552,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-theme-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bzip2 0.4.4",
  "dirs",
@@ -2572,7 +2572,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-themepack"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "tempfile",
  "walkdir",
@@ -2581,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-ui"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "gdk4-x11",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-viewer"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-watch"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "zbus",
@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-wayland"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "opusdm-ipc",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "opusdm-x11"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "opusdm-ipc",
  "x11rb",
@@ -4046,7 +4046,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "opusdm-themepack",
 ]
