@@ -3,11 +3,24 @@
 
 use std::path::Path;
 
+/// `text` with a leading `~` (alone or followed by `/`) replaced by `$HOME`.
+/// Any other text, or an unset `$HOME`, is returned unchanged.
+pub fn expand_tilde(text: &str) -> String {
+    let Some(rest) = text.strip_prefix('~') else { return text.to_string() };
+    if !(rest.is_empty() || rest.starts_with('/')) { return text.to_string(); }
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => format!("{}{rest}", home.trim_end_matches('/')),
+        _ => text.to_string(),
+    }
+}
+
 /// Suffix that completes `text` to an existing local folder, or `None` when
 /// there is nothing to suggest. The suffix ends with `/`. Only absolute local
-/// paths are completed: bookmarks, remote URLs and archive paths are ignored.
+/// paths (a leading `~` counts as `$HOME`) are completed: bookmarks, remote URLs and archive paths are ignored.
 /// With several matches the first one in alphabetical order wins.
 pub fn suggest(text: &str) -> Option<String> {
+    let expanded = expand_tilde(text);
+    let text = expanded.as_str();
     if !text.starts_with('/') || text.contains('#') { return None; }
     let slash = text.rfind('/')?;
     let (dir, prefix) = (&text[..=slash], &text[slash + 1..]);
@@ -93,6 +106,15 @@ mod tests {
         assert_eq!(suggest("bm:su"), None);
         assert_eq!(suggest("sftp://host/va"), None);
         assert_eq!(suggest("/tmp/file.zip#in"), None);
+    }
+
+    #[test]
+    fn tilde_expands_only_as_a_home_prefix() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_tilde("~"), home);
+        assert_eq!(expand_tilde("~/x"), format!("{}/x", home.trim_end_matches('/')));
+        assert_eq!(expand_tilde("~user/x"), "~user/x");
+        assert_eq!(expand_tilde("/a/~"), "/a/~");
     }
 
     #[test]

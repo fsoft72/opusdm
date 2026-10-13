@@ -645,9 +645,10 @@ fn wire_navigation(ui: &Rc<Ui>, nav: &NavBarWidgets) {
     {
         let ui = ui.clone();
         nav.path_entry.connect_activate(move |entry| {
-            let candidate = PathBuf::from(entry.text().to_string());
+            let text = crate::pathcomplete::expand_tilde(entry.text().as_str());
+            let candidate = PathBuf::from(&text);
             // `name:` or `name:sub/dir` is a bookmark.
-            if let Some(target) = crate::bookmarks_ui::resolve_text(entry.text().as_str()) {
+            if let Some(target) = crate::bookmarks_ui::resolve_text(&text) {
                 if target.is_dir() {
                     ui.navigate_to(&target);
                 } else {
