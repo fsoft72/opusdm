@@ -42,6 +42,7 @@ pub mod inotify;
 pub mod leftout;
 pub mod look;
 pub mod menu;
+pub mod notify;
 pub mod proto;
 pub mod quickapps;
 pub mod reaped;

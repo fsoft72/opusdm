@@ -1,0 +1,23 @@
+[package]
+name = "opusdm-notify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "opusdm-notify"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ui = { path = "../ui" }
+opusdm-ipc = { path = "../ipc" }
+opusdm-snap = { path = "../snap" }
+gtk4.workspace = true
+async-channel.workspace = true
+serde.workspace = true
+x11rb.workspace = true
+zbus = { version = "5.19.0", features = ["blocking"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
