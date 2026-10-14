@@ -102,6 +102,15 @@ impl Notification {
         }
     }
 
+    /// Give a nameless notification a name, so it can be muted and is
+    /// labelled: the name of the sending `process` (Brave sends an empty
+    /// app name), else the `desktop-entry` hint.
+    pub fn fill_app_name(&mut self, process: Option<&str>) {
+        if !self.app_name.trim().is_empty() { return; }
+        let process = process.map(str::trim).filter(|p| !p.is_empty()).map(capitalize);
+        self.app_name = process.or_else(|| self.desktop_entry.clone()).unwrap_or_default();
+    }
+
     /// The default action, if the application offers one.
     pub fn default_action(&self) -> Option<&Action> {
         self.actions.iter().find(|a| a.key == DEFAULT_ACTION)
@@ -118,6 +127,15 @@ impl Notification {
         if let Some(Image::Named(name)) = &self.image { return name.clone(); }
         if !self.app_icon.is_empty() { return self.app_icon.clone(); }
         self.desktop_entry.clone().unwrap_or_default()
+    }
+}
+
+/// `name` with its first letter in upper case (`brave` -> `Brave`).
+fn capitalize(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -290,6 +308,21 @@ mod tests {
         assert_eq!(n.image, Some(Image::Named("/tmp/pic.png".into())));
         assert_eq!(n.app_icon, "/usr/share/a.svg");
         assert_eq!(n.icon_hint(), "/tmp/pic.png");
+    }
+
+    #[test]
+    fn a_nameless_notification_takes_the_process_name() {
+        let mut hints = HashMap::new();
+        hints.insert("desktop-entry".to_string(), owned(Value::from("org.chromium.Chromium")));
+        let mut n = Notification::from_call("".into(), "".into(), "".into(), "".into(), &[], &hints, -1);
+        n.fill_app_name(Some("brave\n"));
+        assert_eq!(n.app_name, "Brave");
+        let mut n = Notification::from_call(" ".into(), "".into(), "".into(), "".into(), &[], &hints, -1);
+        n.fill_app_name(None);
+        assert_eq!(n.app_name, "org.chromium.Chromium");
+        let mut named = call(HashMap::new());
+        named.fill_app_name(Some("other"));
+        assert_eq!(named.app_name, "App");
     }
 
     #[test]

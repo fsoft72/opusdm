@@ -77,6 +77,10 @@ impl Notifications {
         let mut n = Notification::from_call(app_name, app_icon, summary, body, &actions, &hints, expire_timeout);
         n.sender = header.sender().map(|s| s.to_string()).unwrap_or_default();
         n.time = now();
+        if n.app_name.trim().is_empty() {
+            let process = process_name(conn, &n.sender).await;
+            n.fill_app_name(process.as_deref());
+        }
         opusdm_ipc::debug_log!("opusdm-notify", "Notify from {} ({}): {:?}", n.app_name, n.sender, n.summary);
         let (added, shown) = {
             let mut store = self.shared.store();
@@ -118,6 +122,15 @@ impl Notifications {
     fn get_server_information(&self) -> (String, String, String, String) {
         ("OpusDM".into(), "OpusDM".into(), opusdm_ui::VERSION.into(), SPEC_VERSION.into())
     }
+}
+
+/// The name of the process behind the bus name `sender` (`/proc/PID/comm`),
+/// when the bus and `/proc` tell.
+async fn process_name(conn: &zbus::Connection, sender: &str) -> Option<String> {
+    let name = zbus::names::BusName::try_from(sender).ok()?;
+    let bus = zbus::fdo::DBusProxy::new(conn).await.ok()?;
+    let pid = bus.get_connection_unix_process_id(name).await.ok()?;
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()
 }
 
 /// Seconds since the epoch.
