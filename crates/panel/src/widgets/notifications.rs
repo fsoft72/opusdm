@@ -180,9 +180,9 @@ impl NotifyButton {
         }
     }
 
-    /// One history row: picture, app and time, summary, body. Click runs
-    /// the default action (or removes it); right click offers Remove and
-    /// Mute / Unmute.
+    /// One history row: picture, app and time, summary, body, then the
+    /// Remove and Mute / Unmute buttons. Click runs the default action (or
+    /// removes it).
     fn build_row(self: &Rc<Self>, center: &Rc<NotifyCenter>, state: &NotifyState, entry: &HistoryEntry, now: i64) -> gtk::Widget {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let image = row_image(&entry.icon);
@@ -209,23 +209,52 @@ impl NotifyButton {
         }
         line.append(&texts);
 
-        let row = gtk::Button::new();
-        row.add_css_class("flat");
-        row.set_child(Some(&line));
+        let open = gtk::Button::new();
+        open.add_css_class("flat");
+        open.set_hexpand(true);
+        open.set_child(Some(&line));
         {
             let (center, popover, id, has_default) = (center.clone(), self.popover.clone(), entry.id, entry.has_default);
-            row.connect_clicked(move |_| {
+            open.connect_clicked(move |_| {
                 if has_default { center.client().activate(id) } else { center.client().remove(id) }
                 popover.popdown();
             });
         }
-        let menu = row_menu(center, &row, entry, state.is_muted(&entry.app_name));
-        let right = gtk::GestureClick::new();
-        right.set_button(3);
-        right.connect_released(move |_, _, _, _| menu.popup());
-        row.add_controller(right);
+        // Plain buttons, no menu: a popover attached to a row that the next
+        // refresh destroys can leave GTK's input grab on the panel.
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        row.append(&open);
+        let side = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        side.set_valign(gtk::Align::Start);
+        side.append(&remove_button(center, entry.id));
+        if !entry.app_name.is_empty() {
+            side.append(&mute_button(center, &entry.app_name, state.is_muted(&entry.app_name)));
+        }
+        row.append(&side);
         row.upcast()
     }
+}
+
+/// The small button that removes history entry `id`.
+fn remove_button(center: &Rc<NotifyCenter>, id: u32) -> gtk::Button {
+    let button = gtk::Button::from_icon_name("window-close-symbolic");
+    button.add_css_class("flat");
+    button.set_tooltip_text(Some("Remove"));
+    let center = center.clone();
+    button.connect_clicked(move |_| center.client().remove(id));
+    button
+}
+
+/// The small button that mutes (or unmutes) `app_name`.
+fn mute_button(center: &Rc<NotifyCenter>, app_name: &str, muted: bool) -> gtk::Button {
+    let icon = if muted { "notifications-disabled-symbolic" } else { "audio-volume-muted-symbolic" };
+    let button = gtk::Button::from_icon_name(icon);
+    button.add_css_class("flat");
+    let tip = if muted { format!("Unmute {app_name}: show its popups again") } else { format!("Mute {app_name}: history only, no popups") };
+    button.set_tooltip_text(Some(&tip));
+    let (center, app) = (center.clone(), app_name.to_string());
+    button.connect_clicked(move |_| center.client().set_muted(&app, !muted));
+    button
 }
 
 /// The inside of the drop-down: header with the DND switch, the list,
@@ -262,41 +291,6 @@ fn build_content() -> (gtk::Switch, gtk::Button, gtk::Box, gtk::Box) {
     clear.set_halign(gtk::Align::End);
     content.append(&clear);
     (dnd, clear, list, content)
-}
-
-/// The right click menu of a history row: Remove, Mute / Unmute its app.
-fn row_menu(center: &Rc<NotifyCenter>, row: &gtk::Button, entry: &HistoryEntry, muted: bool) -> gtk::Popover {
-    let menu = gtk::Popover::new();
-    menu.set_parent(row);
-    let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let remove = gtk::Button::with_label("Remove");
-    remove.add_css_class("flat");
-    {
-        let (center, menu, id) = (center.clone(), menu.clone(), entry.id);
-        remove.connect_clicked(move |_| {
-            center.client().remove(id);
-            menu.popdown();
-        });
-    }
-    items.append(&remove);
-    if !entry.app_name.is_empty() {
-        let text = if muted { format!("Unmute {}", entry.app_name) } else { format!("Mute {}", entry.app_name) };
-        let mute = gtk::Button::with_label(&text);
-        mute.add_css_class("flat");
-        let (center, menu, app) = (center.clone(), menu.clone(), entry.app_name.clone());
-        mute.connect_clicked(move |_| {
-            center.client().set_muted(&app, !muted);
-            menu.popdown();
-        });
-        items.append(&mute);
-    }
-    menu.set_child(Some(&items));
-    // The row is rebuilt on every change: let the menu go with it.
-    {
-        let menu = menu.clone();
-        row.connect_destroy(move |_| menu.unparent());
-    }
-    menu
 }
 
 /// Tooltip of the bell.

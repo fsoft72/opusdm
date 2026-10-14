@@ -1072,8 +1072,8 @@ clients, `notify-send`) show them as small popups, and the panel keeps a history
   - An app that updates its notification (a chat with new messages) updates the popup in place.
 - **Panel bell** (right end of the panel): a red badge counts the notifications you have not seen
   yet (`9+` above nine). **Click** opens the history, newest first: click an entry to run its
-  action, right click it for **Remove** and **Mute <app>** / **Unmute <app>**; **Clear all**
-  empties the list. Opening the history marks everything as seen. The history keeps the last 100
+  action; its **×** button removes it and the button below mutes (or unmutes) its app;
+  **Clear all** empties the list. Opening the history marks everything as seen. The history keeps the last 100
   notifications for the session (it is not saved to disk). A popup that timed out stays in the
   history; dismissing it removes it.
 - **Do not disturb:** the switch at the top of the history, or a **middle click** on the bell. No
