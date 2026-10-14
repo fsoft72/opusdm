@@ -32,3 +32,15 @@ Open a bank under the mouse, the Start Menu variant (a bank shown as a popup
 menu), the Lister toolbar as an editable bank, drag and drop reordering of
 buttons, and saving the window position on every move (it is saved when the
 window closes and before the hub quits).
+
+## Notifications: not done (from the notification server)
+
+`opusdm-notify` and the panel bell cover popups, history, Do not disturb and
+the mute list. Left out on purpose:
+
+- sound (the `sound-file` / `sound-name` hints, needs GStreamer or canberra);
+- a Settings page for the corner and the popup time (edited in
+  `~/.config/opusdm/notifications.json` for now);
+- a history saved across logins;
+- per-app rules beyond mute (custom time, drop, no sound);
+- a slide animation when the stack moves (popups only fade in).

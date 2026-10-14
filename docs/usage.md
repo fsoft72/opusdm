@@ -1054,6 +1054,38 @@ be imported.
   into NetworkManager. Changing a connection shared by all users may ask for the administrator
   password.
 
+### 3.38 Notifications (`opusdm-notify` and the panel bell)
+
+Programs that send desktop notifications (browsers and web apps such as WhatsApp Web, mail
+clients, `notify-send`) show them as small popups, and the panel keeps a history of them.
+
+- **Started by:** the hub, once at login. A second copy exits at once, so restarting the hub is safe.
+  If another notification server already runs (dunst, Plasma), `opusdm-notify` leaves it alone and
+  exits.
+- **Popups:** stacked from the top right corner of the monitor under the mouse pointer, at most 5
+  at once (the others wait their turn). Each shows the picture or the app icon, the app name, the
+  time, the title, the text (bold, italic, underline and links kept) and the app's buttons.
+  - **Click** runs the app's main action (a browser opens the chat or the page) and closes it.
+  - **Right click** or **×** dismisses it.
+  - It closes by itself after 6 seconds (3 for low urgency; the app may ask for another time).
+    The timer pauses while the mouse is over it. **Critical** ones (red border) stay until closed.
+  - An app that updates its notification (a chat with new messages) updates the popup in place.
+- **Panel bell** (right end of the panel): a red badge counts the notifications you have not seen
+  yet (`9+` above nine). **Click** opens the history, newest first: click an entry to run its
+  action, right click it for **Remove** and **Mute <app>** / **Unmute <app>**; **Clear all**
+  empties the list. Opening the history marks everything as seen. The history keeps the last 100
+  notifications for the session (it is not saved to disk). A popup that timed out stays in the
+  history; dismissing it removes it.
+- **Do not disturb:** the switch at the top of the history, or a **middle click** on the bell. No
+  popups (critical ones still show), everything still goes to the history. The bell is struck
+  through while it is on. **Muted** apps behave the same way on their own.
+- **Settings:** `~/.config/opusdm/notifications.json`. `corner` is `top-right` (default),
+  `top-left`, `bottom-right` or `bottom-left`; `timeout_ms` is the popup time (1000 to 60000);
+  `dnd` and `mute` (a list of app names) are written by the bell. Restart `opusdm-notify` (or the
+  hub) after editing the file by hand.
+- **Not working?** `notify-send -A` (buttons) does not work on Ubuntu with any server: its AppArmor
+  profile lets `notify-send` call only `Notify`. Browsers are not affected.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

@@ -320,6 +320,13 @@ Everything you expect from a modern volume applet.
 - A panel icon lists removable volumes with **Mount, Open, Unmount and Eject** (safe power-off included).
 - **No password, no sudo**: uses udisks2.
 
+### 7.6 Notifications
+
+- WhatsApp Web, mail and every app that notifies show **popups** in a corner of the screen, with the
+  sender's picture, the message and the app's buttons. Click to jump to the chat.
+- A **bell** in the panel counts what you missed and keeps the history of the session.
+- **Do not disturb** with one middle click; **mute** a noisy app from its entry.
+
 ---
 
 ## 8. Media and graphics
@@ -445,6 +452,7 @@ One click and the whole desktop changes.
 - **Themes**: From Amiga blue to Tokyo neon.
 - **Audio and network tray**: Volume, Wi-Fi and VPN in the panel.
 - **Device notifier**: USB sticks, mounted in one click.
+- **Notifications**: Popups, history and Do not disturb.
 - **Screenshot tool**: Capture, annotate, share.
 - **Viewer and player**: Pictures, video and music built in.
 

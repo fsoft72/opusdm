@@ -29,9 +29,10 @@ it and exits; it never replaces an owner.
 | `store.rs` | State: live notifications, history (memory only, `HISTORY_MAX = 100`), unread count, DND, mute list. `decide` routes a notification. No GTK. |
 | `config.rs` | `~/.config/opusdm/notifications.json` (`corner`, `timeout_ms`, `dnd`, `mute`), read with `opusdm_ipc::settings::load_json`, written only by `opusdm-notify`. |
 | `server.rs` | zbus `org.freedesktop.Notifications` at `/org/freedesktop/Notifications` on the session bus. Replies with the id at once and forwards to the GTK loop through an `async_channel`. Emits `NotificationClosed`, `ActionInvoked`, `ActivationToken`. |
-| `control.rs` | zbus `org.opusdm.Notifications1` at `/org/opusdm/Notifications1`, same connection: `GetHistory`, `ClearHistory`, `Remove(id)`, `Activate(id)`, `MarkRead`, `SetDnd(bool)`, `Mute(app)`, `Unmute(app)`, properties `Dnd`, `Unread`, `Muted`, signal `Changed(unread)`. |
+| `control.rs` | zbus `org.opusdm.Notifications1` at `/org/opusdm/Notifications1`, same connection (well-known name `org.opusdm.Notifications1`): `GetState` (DND, unread, history newest first, muted apps, in one call), `ClearHistory`, `Remove(id)`, `Activate(id)`, `MarkRead`, `SetDnd(bool)`, `Mute(app)`, `Unmute(app)`, signal `Changed` (no arguments: the panel calls `GetState` again). Names and tuple types in `opusdm_ipc::notify`. |
+| `markup.rs` | Body markup whitelist and plain text for the history. |
 | `placement.rs` | Pure geometry: corner, stack positions inside a work area, `MAX_VISIBLE = 5`. |
-| `popup.rs` | One GTK window per popup: icon, app name, time, summary, body, action buttons, close button; timers, hover pause, stacking, queue. Wayland through `opusdm_ui::layer` (overlay layer, no keyboard), X11 through `_NET_WM_WINDOW_TYPE_NOTIFICATION`, above, skip taskbar / pager, no input focus, `configure_window` + `retry_after_map`. |
+| `popup.rs` | One GTK window per popup: icon, app name, time, summary, body, action buttons, close button; timers, hover pause, stacking, queue. Wayland through `opusdm_ui::layer` (overlay layer, no keyboard, the compositor picks the monitor). X11: `_NET_WM_WINDOW_TYPE_NOTIFICATION` set at realize; above, sticky, skip taskbar / pager asked with EWMH messages after map (GDK rewrites `_NET_WM_STATE` when it maps); `pin_geometry` + `retry_after_map`; the area is the monitor under the pointer minus the struts (`opusdm_snap::x11::Display`). |
 | `main.rs` | GTK application, connects the parts. |
 
 Panel: `crates/panel/src/widgets/notifications.rs`, a bell with an unread badge
@@ -54,15 +55,19 @@ running the bell is dimmed and the popover says so; it follows the owner with
 3. A replaced notification updates its popup in place and its history entry.
 4. Timeout: `-1` means the configured default (`timeout_ms`, 6000) or 3000 for
    low urgency; `0` never expires; `> 0` as given. Hovering pauses it.
-5. `NotificationClosed(id, reason)` exactly once per id: 1 expired,
-   2 dismissed by the user, 3 `CloseNotification`. An expired popup stays in
-   the history.
+5. `NotificationClosed(id, reason)` exactly once per id, when it is neither
+   on screen nor in the history: 1 expired (a popup that was not kept, or
+   the oldest entry pushed out of a full history), 2 dismissed by the user
+   (popup closed, action run, removed or cleared from the history),
+   3 `CloseNotification`. An expired popup that went into the history stays
+   open, so a click in the history can still reach the application.
 6. Click on the popup body runs the `default` action. Other actions become
    buttons (at most three). Each invocation emits `ActivationToken` (a GDK
    launch context token, for Wayland focus) and then `ActionInvoked`; the
    notification then closes with reason 2 unless `resident`.
-7. `Activate(id)` from the history emits the default action when the sender
-   still owns its unique name on the bus; otherwise nothing happens.
+7. `Activate(id)` from the history runs the default action like a click on
+   the popup (the signals are broadcast: an application that is gone simply
+   does not hear them).
 
 Capabilities: `actions`, `body`, `body-markup`, `body-hyperlinks`,
 `icon-static`, `persistence`. Body markup keeps `b`, `i`, `u` and `a href`;
@@ -70,10 +75,11 @@ everything else is escaped before `set_markup`.
 
 ### Threads
 
-zbus runs both interfaces on its own executor. Messages go to the GTK main loop
-over an `async_channel`; replies that need GTK state (history, DND) are read
-from a `Mutex`-guarded shared store snapshot so a D-Bus call never waits on the
-GTK loop.
+zbus runs both interfaces on its own executor. The store sits behind a
+`Mutex` shared by both sides, so a D-Bus call never waits on the GTK loop.
+What the screen must change goes to the GTK loop over an `async_channel`
+(`Show`, `Hide`, `Invoke`); signals caused by the user (expired, dismissed,
+action) are sent by the GTK loop on the blocking connection.
 
 ### Tests
 
@@ -83,10 +89,13 @@ GTK loop.
 - Live, `#[ignore]`, inside `dbus-run-session`: `Notify` / `replaces_id`,
   `CloseNotification` emits `NotificationClosed(3)`, capabilities, server
   information, control interface.
-- Manual: Brave test page, `notify-send -u critical`, `notify-send -A ok=OK`,
-  WhatsApp Web, on X11 and Wayland.
+- Manual: Brave test page, `notify-send -u critical`, actions through
+  `gdbus call` (Ubuntu's AppArmor profile of `notify-send` allows only
+  `GetServerInformation` and `Notify`, so `notify-send -A` never sees the
+  `actions` capability), WhatsApp Web, on X11 and Wayland.
 
 ### Out of scope
 
 Sound, a Settings page (corner / timeout are edited in the JSON file),
-persistent history, per-app rules beyond mute, animations beyond a fade.
+persistent history, per-app rules beyond mute, animations beyond a fade-in.
+See `NEXT-PHASE.md`.
