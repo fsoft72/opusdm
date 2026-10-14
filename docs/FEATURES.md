@@ -284,6 +284,7 @@ A simple list of programs to start with your session, each with an optional dela
 
 - **Application menu** built from your installed apps, or from a menu you design.
 - **Pager** for virtual desktops, **window list**, **system tray**, **clock**.
+- **Calendar and appointments**: a click on the clock opens the month calendar; click a day to add, change or delete its appointments (text, time, alarm 5 min to 1 hour before, shown as a desktop notification).
 - **Quick apps**: a strip of icon-only launchers, reorderable by drag and drop.
 - **Live CPU, memory and network monitors**.
 - Move it to any edge from the settings.

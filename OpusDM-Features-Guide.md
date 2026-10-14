@@ -129,6 +129,14 @@ Da sinistra a destra trovi:
 
 Prova ad aprire il menu applicazioni e a lanciare un programma.
 
+Un click sull'orologio apre il **calendario** del mese (le frecce cambiano
+mese e anno; i giorni con appuntamenti sono sottolineati). Clicca un giorno:
+si apre la finestra del giorno con i suoi appuntamenti e un modulo con
+**Text**, **Time** (`HH:MM`) e **Alarm** (No alarm, 5, 10, 20, 30 mins,
+1 hour). **Add** lo salva; un click su un appuntamento della lista lo
+riapre per cambiarlo (**Save**) o eliminarlo (**Delete**); **New** svuota il
+modulo. L'allarme arriva come notifica, anche con Non disturbare attivo.
+
 ### Step 2.3 - Il dock
 
 Il dock è una riga di icone lanciatore (di default sul bordo inferiore).

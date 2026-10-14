@@ -11,6 +11,9 @@ use opusdm_ipc::PanelPosition;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+mod agenda_center;
+mod agenda_model;
+mod agenda_window;
 mod appmenu;
 mod dbusmenu;
 mod device_popup;
@@ -93,6 +96,7 @@ struct BarServices {
     battery: Rc<battery_center::BatteryCenter>,
     network: Rc<network_center::NetworkCenter>,
     notify: Rc<notify_center::NotifyCenter>,
+    agenda: Rc<agenda_center::AgendaCenter>,
 }
 
 /// Build one full bar (menu, pager, quick apps, tasklist, device, audio, battery and network trays, sysmon, clock) on the monitor
@@ -106,7 +110,7 @@ fn build_bar_window(
     is_primary: bool,
     services: BarServices,
 ) -> BarWindow {
-    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, notify } = services;
+    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, notify, agenda } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -225,7 +229,7 @@ fn build_bar_window(
     }
     right.append(&widgets::sysmon::build());
     right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    right.append(&widgets::clock::build());
+    right.append(&widgets::clock::build(&agenda));
     // The notification bell closes the bar, on the primary bar only like
     // the trays.
     if is_primary {
@@ -281,6 +285,7 @@ pub fn attach(
     let battery = battery_center::BatteryCenter::new();
     let network = network_center::NetworkCenter::new();
     let notify = notify_center::NotifyCenter::new();
+    let agenda = agenda_center::AgendaCenter::new();
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
@@ -298,6 +303,7 @@ pub fn attach(
         let battery = battery.clone();
         let network = network.clone();
         let notify = notify.clone();
+        let agenda = agenda.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -318,6 +324,7 @@ pub fn attach(
                         battery: battery.clone(),
                         network: network.clone(),
                         notify: notify.clone(),
+                        agenda: agenda.clone(),
                     };
                     build_bar_window(&app, place, &state, i == 0, services)
                 })
@@ -477,6 +484,8 @@ fn install_css() {
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
          .opusdm-panel-clock-date { font-size: 10px; }\n\
+         calendar > grid > label.day-number:checked { font-weight: bold; text-decoration: underline; color: #62a0ea; }\n\
+         button.opusdm-agenda-current { background-color: alpha(currentColor, 0.12); }\n\
          .opusdm-panel-meter { background-color: #14161a; border-radius: 4px; }\n\
          .opusdm-panel-meter-val { font-size: 9px; text-shadow: 0 1px 2px #000000; }\n\
          .opusdm-panel-net-in { color: #74d161; }\n\
