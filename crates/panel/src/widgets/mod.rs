@@ -6,6 +6,7 @@ pub mod battery;
 pub mod clock;
 pub mod devices;
 pub mod network;
+pub mod notifications;
 pub mod pager;
 pub mod quickapps;
 pub mod sni;

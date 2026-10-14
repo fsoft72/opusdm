@@ -25,6 +25,8 @@ const MAX_BUTTONS: usize = 3;
 const BODY_LINES: i32 = 4;
 /// Icon shown when the notification names none.
 const FALLBACK_ICON: &str = "dialog-information";
+/// Space between the edge of a popup and its content: top, bottom, start, end.
+const PADDING: (i32, i32, i32, i32) = (10, 10, 10, 8);
 /// Fade-in: steps and time between them.
 const FADE_STEPS: u32 = 8;
 const FADE_STEP_MS: u64 = 18;
@@ -163,6 +165,7 @@ impl Popups {
         let wayland = opusdm_ui::layer::init(&window, &self.layer_spec(placement::MARGIN));
         if !wayland {
             window.connect_realize(set_x11_type);
+            window.connect_map(add_x11_states);
         }
         let popup = Popup { id: n.id, window: window.clone(), timer: Rc::new(RefCell::new(None)), expire: Rc::new(Cell::new(expire)) };
         self.watch_hover(&popup);
@@ -185,11 +188,13 @@ impl Popups {
     fn content(&self, n: &Notification) -> gtk::Widget {
         let id = n.id;
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        root.set_margin_top(10);
-        root.set_margin_bottom(10);
-        root.set_margin_start(10);
-        root.set_margin_end(8);
-        root.set_size_request(POPUP_WIDTH, -1);
+        let (top, bottom, start, end) = PADDING;
+        root.set_margin_top(top);
+        root.set_margin_bottom(bottom);
+        root.set_margin_start(start);
+        root.set_margin_end(end);
+        // The window is exactly POPUP_WIDTH wide, margins included.
+        root.set_size_request(POPUP_WIDTH - start - end, -1);
 
         let image = picture(n);
         image.set_valign(gtk::Align::Start);
@@ -201,7 +206,11 @@ impl Popups {
         let app = label(&n.app_name, "opusdm-notify-app");
         app.set_hexpand(true);
         header.append(&app);
-        header.append(&label(&clock_time(n.time), "opusdm-notify-time"));
+        let time = label(&clock_time(n.time), "opusdm-notify-time");
+        // Only the app name stretches: the time stays by the close button.
+        time.set_hexpand(false);
+        time.set_max_width_chars(-1);
+        header.append(&time);
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("flat");
         close.add_css_class("opusdm-notify-close");
@@ -336,7 +345,15 @@ fn label(text: &str, class: &str) -> gtk::Label {
     label.set_xalign(0.0);
     label.add_css_class(class);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    narrow(&label);
     label
+}
+
+/// Let the label take the width it is given instead of asking for the width
+/// of its whole text, so the popup stays [`POPUP_WIDTH`] wide.
+fn narrow(label: &gtk::Label) {
+    label.set_max_width_chars(1);
+    label.set_hexpand(true);
 }
 
 /// The body: whitelisted markup, wrapped, at most [`BODY_LINES`] lines.
@@ -348,8 +365,10 @@ fn body_label(body: &str) -> gtk::Label {
     label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     label.set_lines(BODY_LINES);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    narrow(&label);
     let markup = markup::sanitize(body);
-    if gtk::pango::parse_markup(&markup, '\0').is_ok() {
+    // Links are GtkLabel markup, not Pango's: check the rest with Pango.
+    if gtk::pango::parse_markup(&markup::links_as_underline(&markup), '\0').is_ok() {
         label.set_markup(&markup);
     } else {
         label.set_text(&markup::plain_text(body));
@@ -436,6 +455,19 @@ fn fade_in(window: &gtk::Window) {
     });
 }
 
+/// States of a popup on X11.
+const X11_STATES: [&str; 4] = ["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER", "_NET_WM_STATE_STICKY"];
+
+/// X11, once mapped: ask the window manager for the popup states. GDK
+/// rewrites `_NET_WM_STATE` when it maps the window, so the property set at
+/// realize does not last; the EWMH messages do.
+fn add_x11_states(window: &gtk::Window) {
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.add_wm_states(xid, &X11_STATES)) {
+        opusdm_ipc::err_log!("opusdm-notify", "cannot set the popup states: {e}");
+    }
+}
+
 /// X11: mark the window a notification, above the others, on every desktop
 /// and out of the task bar and pager.
 fn set_x11_type(window: &gtk::Window) {
@@ -448,12 +480,7 @@ fn set_x11_type(window: &gtk::Window) {
         let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
         let notification = x11.atom("_NET_WM_WINDOW_TYPE_NOTIFICATION")?;
         let wm_state = x11.atom("_NET_WM_STATE")?;
-        let states = [
-            x11.atom("_NET_WM_STATE_ABOVE")?,
-            x11.atom("_NET_WM_STATE_SKIP_TASKBAR")?,
-            x11.atom("_NET_WM_STATE_SKIP_PAGER")?,
-            x11.atom("_NET_WM_STATE_STICKY")?,
-        ];
+        let states = X11_STATES.iter().map(|name| x11.atom(name)).collect::<Result<Vec<u32>, _>>()?;
         conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[notification])?;
         conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &states)?;
         conn.flush()?;

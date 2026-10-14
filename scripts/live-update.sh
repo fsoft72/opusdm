@@ -30,7 +30,7 @@ RESTART_ALL=0
 # Every OpusDM binary that can be running. opusdm-terminal is left out on
 # purpose: killing it would end the user's shells, possibly the one running
 # this script. Open terminals pick up the new binary when opened again.
-PROCESSES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-player opusdm-viewer opusdm-apps-editor opusdm-input-config opusdm-screen opusdm-network-manager opusdm-polkit"
+PROCESSES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-player opusdm-viewer opusdm-apps-editor opusdm-input-config opusdm-screen opusdm-network-manager opusdm-polkit opusdm-notify"
 # The kernel keeps only the first 15 characters of a process name, and pgrep -x
 # compares against that: a longer name would never match.
 PROC_NAME_MAX=15

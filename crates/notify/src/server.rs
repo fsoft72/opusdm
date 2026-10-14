@@ -263,6 +263,15 @@ mod tests {
         assert_eq!(state.unread, 1);
         assert!(crate::config::path().exists(), "DND is saved");
 
+        // A history entry with a default action is run by the GTK loop.
+        let args = ("test", 0u32, "", "with action", "", vec!["default".to_string(), "Open".to_string()], HashMap::<String, zbus::zvariant::Value>::new(), -1i32);
+        let with_action: u32 = client.call_method(Some(server.as_str()), NOTIFY_PATH, Some(NOTIFY_IFACE), "Notify", &args).unwrap().body().deserialize().unwrap();
+        control(&client, &server, "Activate", &(with_action,));
+        match rx.recv_blocking().unwrap() {
+            Msg::Invoke { id, key, resident } => assert_eq!((id, key.as_str(), resident), (with_action, "default", false)),
+            other => panic!("unexpected {other:?}"),
+        }
+
         control(&client, &server, "Remove", &(quiet,));
         let signal = closed.next().unwrap().unwrap();
         assert_eq!(signal.body().deserialize::<(u32, u32)>().unwrap(), (quiet, CloseReason::Dismissed as u32));

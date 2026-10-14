@@ -70,7 +70,8 @@ impl Screen {
                 }
             }
             PopupEvent::Action { id, key } => {
-                let resident = self.shared.store().get(id).is_some_and(|n| n.resident);
+                // A click that arrives after the notification closed does nothing.
+                let Some(resident) = self.shared.store().get(id).map(|n| n.resident) else { return };
                 self.invoke(id, &key, resident);
             }
         }

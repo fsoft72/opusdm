@@ -81,6 +81,13 @@ fn main() {
         opusdm_ipc::err_log!("opusdm-hub", "cannot start opusdm-polkit: {e}");
     }
 
+    // The notification server: popups for browsers, mail and notify-send,
+    // and the history of the panel's bell. A second one (restarted hub)
+    // exits; it also leaves an already running server (dunst...) alone.
+    if let Err(e) = children::spawn_tool("opusdm-notify") {
+        opusdm_ipc::err_log!("opusdm-hub", "cannot start opusdm-notify: {e}");
+    }
+
     // Launch the Startup Apps of Settings, each after its own wait time,
     // unless the hub was restarted with --no-startup-apps.
     let desktop_settings = opusdm_hub::desktop_settings::load();

@@ -2502,6 +2502,7 @@ dependencies = [
  "opusdm-ui",
  "opusdm-wayland",
  "opusdm-x11",
+ "serde",
  "serde_json",
  "tempfile",
  "x11rb",

@@ -21,6 +21,8 @@ mod battery_center;
 mod battery_model;
 mod network_center;
 mod network_model;
+mod notify_center;
+mod notify_client;
 mod sysmon_model;
 mod devices_model;
 mod ewmh;
@@ -90,6 +92,7 @@ struct BarServices {
     audio: Rc<audio_center::AudioCenter>,
     battery: Rc<battery_center::BatteryCenter>,
     network: Rc<network_center::NetworkCenter>,
+    notify: Rc<notify_center::NotifyCenter>,
 }
 
 /// Build one full bar (menu, pager, quick apps, tasklist, device, audio, battery and network trays, sysmon, clock) on the monitor
@@ -103,7 +106,7 @@ fn build_bar_window(
     is_primary: bool,
     services: BarServices,
 ) -> BarWindow {
-    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network } = services;
+    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, notify } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -223,6 +226,12 @@ fn build_bar_window(
     right.append(&widgets::sysmon::build());
     right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     right.append(&widgets::clock::build());
+    // The notification bell closes the bar, on the primary bar only like
+    // the trays.
+    if is_primary {
+        right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        right.append(&notify.button());
+    }
     bar.set_end_widget(Some(&right));
 
     win.set_child(Some(&bar));
@@ -271,6 +280,7 @@ pub fn attach(
     let audio = audio_center::AudioCenter::new();
     let battery = battery_center::BatteryCenter::new();
     let network = network_center::NetworkCenter::new();
+    let notify = notify_center::NotifyCenter::new();
     let state = Rc::new(RefCell::new(PanelState::default()));
     let windows: Rc<RefCell<Vec<BarWindow>>> = Rc::new(RefCell::new(Vec::new()));
     let (tray_cmd_tx, tray_evt_rx) = systray::spawn(window::PANEL_HEIGHT);
@@ -287,6 +297,7 @@ pub fn attach(
         let audio = audio.clone();
         let battery = battery.clone();
         let network = network.clone();
+        let notify = notify.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
             for bw in windows.borrow_mut().drain(..) {
                 bw.window.close();
@@ -306,6 +317,7 @@ pub fn attach(
                         audio: audio.clone(),
                         battery: battery.clone(),
                         network: network.clone(),
+                        notify: notify.clone(),
                     };
                     build_bar_window(&app, place, &state, i == 0, services)
                 })

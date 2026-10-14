@@ -68,6 +68,22 @@ pub fn sanitize(body: &str) -> String {
     out
 }
 
+/// `markup` (from [`sanitize`]) with its links turned into underlines:
+/// what Pango alone must accept (`<a>` is GtkLabel's own markup).
+pub fn links_as_underline(markup: &str) -> String {
+    let mut out = String::with_capacity(markup.len());
+    let mut rest = markup;
+    while let Some(at) = rest.find("<a href=\"") {
+        out.push_str(&rest[..at]);
+        // The href is escaped by `sanitize`: its first `">` ends the tag.
+        let Some(end) = rest[at..].find("\">") else { break };
+        out.push_str("<u>");
+        rest = &rest[at + end + 2..];
+    }
+    out.push_str(rest);
+    out.replace("</a>", "</u>")
+}
+
 /// The body without any markup and with the entities decoded, for places
 /// that show plain text (the panel history).
 pub fn plain_text(body: &str) -> String {
@@ -233,6 +249,13 @@ mod tests {
         assert_eq!(sanitize("<b>open"), "<b>open</b>");
         assert_eq!(sanitize("close</b>"), "close");
         assert_eq!(sanitize("<b><i>x</b></i>"), "<b><i>x</i></b>");
+    }
+
+    #[test]
+    fn links_become_underlines_for_pango() {
+        let markup = sanitize("see <a href='https://x.org/?a=\"1\"&b=2'>this</a> now");
+        assert_eq!(markup, "see <a href=\"https://x.org/?a=&quot;1&quot;&amp;b=2\">this</a> now");
+        assert_eq!(links_as_underline(&markup), "see <u>this</u> now");
     }
 
     #[test]
