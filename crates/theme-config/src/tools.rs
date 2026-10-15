@@ -15,10 +15,11 @@ enum Action {
 }
 
 /// The buttons of the Advanced tab: label and action.
-const ADVANCED_TOOLS: [(&str, Action); 5] = [
+const ADVANCED_TOOLS: [(&str, Action); 6] = [
     ("Hotkeys", Action::Spawn("opusdm-lister", &["--edit-hotkeys"])),
     ("File Types", Action::Spawn("opusdm-lister", &["--edit-filetypes"])),
     ("Manage Functions", Action::Spawn("opusdm-lister", &["--manage-functions"])),
+    ("Scripts (JavaScript)", Action::Spawn("opusdm-lister", &["--scripts"])),
     ("Button Banks", Action::OpenBankManager),
     ("Apps", Action::Spawn("opusdm-apps-editor", &[])),
 ];

@@ -13,41 +13,6 @@ const MATCH_FG: &str = "#000000";
 /// Mark at the current match, to scroll to.
 const SEARCH_MARK: &str = "search-match";
 
-/// Colour of each `Category` on a dark page (One Dark like).
-const DARK_COLORS: [(Category, &str); 14] = [
-    (Category::Comment, "#7f848e"),
-    (Category::String, "#98c379"),
-    (Category::Escape, "#56b6c2"),
-    (Category::Number, "#d19a66"),
-    (Category::Constant, "#d19a66"),
-    (Category::Keyword, "#c678dd"),
-    (Category::Operator, "#56b6c2"),
-    (Category::Type, "#e5c07b"),
-    (Category::Function, "#61afef"),
-    (Category::Macro, "#56b6c2"),
-    (Category::Tag, "#e06c75"),
-    (Category::Attribute, "#d19a66"),
-    (Category::Heading, "#e06c75"),
-    (Category::Invalid, "#ff5555"),
-];
-
-/// Colour of each `Category` on a light page (GitHub like).
-const LIGHT_COLORS: [(Category, &str); 14] = [
-    (Category::Comment, "#6a737d"),
-    (Category::String, "#032f62"),
-    (Category::Escape, "#005cc5"),
-    (Category::Number, "#005cc5"),
-    (Category::Constant, "#005cc5"),
-    (Category::Keyword, "#d73a49"),
-    (Category::Operator, "#d73a49"),
-    (Category::Type, "#6f42c1"),
-    (Category::Function, "#6f42c1"),
-    (Category::Macro, "#e36209"),
-    (Category::Tag, "#22863a"),
-    (Category::Attribute, "#6f42c1"),
-    (Category::Heading, "#005cc5"),
-    (Category::Invalid, "#b31d28"),
-];
 
 /// A text document the window can search and focus.
 pub trait TextDoc {
@@ -72,7 +37,7 @@ pub fn create_syntax_tags(buffer: &gtk::TextBuffer) {
 
 /// Give the `syn-*` tags the colours of a dark or a light page.
 pub fn color_syntax_tags(buffer: &gtk::TextBuffer, dark: bool) {
-    let colors = if dark { &DARK_COLORS } else { &LIGHT_COLORS };
+    let colors = if dark { &crate::highlight::DARK_COLORS } else { &crate::highlight::LIGHT_COLORS };
     let table = buffer.tag_table();
     for (category, color) in colors {
         let Some(tag) = table.lookup(category.tag_name()) else { continue };

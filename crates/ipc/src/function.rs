@@ -106,11 +106,14 @@ pub enum InternalCmd {
     /// Start an external program. By default the function does not wait for
     /// it; it can wait, and its output can go to a window.
     Run,
+    /// Run a JavaScript script from `~/.config/opusdm/scripts` (see
+    /// [`crate::scripts`]); the function waits for it.
+    Script,
 }
 
 impl InternalCmd {
     /// Every internal command, in the order the editor offers them.
-    pub const ALL: [InternalCmd; 26] = [
+    pub const ALL: [InternalCmd; 27] = [
         InternalCmd::Copy,
         InternalCmd::Move,
         InternalCmd::Delete,
@@ -137,6 +140,7 @@ impl InternalCmd {
         InternalCmd::HideBank,
         InternalCmd::Confirm,
         InternalCmd::Run,
+        InternalCmd::Script,
     ];
 
     /// The bank command this is, or `None` for every other command.
@@ -180,6 +184,7 @@ impl InternalCmd {
             InternalCmd::HideBank => "Hide Bank",
             InternalCmd::Confirm => "Confirm",
             InternalCmd::Run => "Run",
+            InternalCmd::Script => "Run Script",
         }
     }
 }
@@ -231,6 +236,8 @@ pub mod schema {
         PathTemplate,
         /// The name of a button bank, picked from the saved banks.
         Bank,
+        /// The name of a JavaScript script, picked from the saved scripts.
+        Script,
     }
 
     /// One configurable parameter of an [`InternalCmd`].
@@ -345,6 +352,15 @@ pub mod schema {
                 },
                 ParamSpec { key: "wait", label: "Wait for it to finish (a failure stops the function)", required: false, kind: ParamKind::Bool },
                 ParamSpec { key: "window", label: "Show its output in a window", required: false, kind: ParamKind::Bool },
+            ],
+            InternalCmd::Script => &[
+                ParamSpec { key: "script", label: "Script", required: true, kind: ParamKind::Script },
+                ParamSpec {
+                    key: "args",
+                    label: "Arguments (opus.args; {f}, {o}, ... allowed)",
+                    required: false,
+                    kind: ParamKind::PathTemplate,
+                },
             ],
             InternalCmd::Confirm => &[ParamSpec {
                 key: "message",

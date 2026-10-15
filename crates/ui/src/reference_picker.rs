@@ -1,5 +1,6 @@
 //! A control that edits one function reference: a saved Function, a bash
-//! command, a program or an internal command (see `opusdm_ipc::funcref`), optionally also "none".
+//! command, a program, an internal command or a JavaScript script (see
+//! `opusdm_ipc::funcref`), optionally also "none".
 //! Shared by the hotkey, user menu, script event, button bank and file type
 //! editors.
 
@@ -25,6 +26,8 @@ pub enum RefKind {
     Exec,
     /// An internal command, with its arguments.
     Internal,
+    /// A JavaScript script, by name.
+    Script,
 }
 
 /// The kinds a picker offers, in drop-down order.
@@ -33,7 +36,7 @@ fn kinds(allow_none: bool) -> Vec<RefKind> {
     if allow_none {
         all.push(RefKind::None);
     }
-    all.extend([RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal]);
+    all.extend([RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal, RefKind::Script]);
     all
 }
 
@@ -46,6 +49,7 @@ impl RefKind {
             RefKind::Bash => "Bash",
             RefKind::Exec => "Exec",
             RefKind::Internal => "Internal",
+            RefKind::Script => "Script",
         }
     }
 }
@@ -63,13 +67,15 @@ struct Draft {
     internal: Option<InternalCmd>,
     /// The arguments of the internal command, as typed on a command line.
     internal_args: String,
+    /// The name of the chosen script.
+    script: String,
 }
 
 impl Draft {
     /// The draft for a stored reference string. An empty one is the `None`
     /// kind when `allow_none`, else an unchosen Function.
     fn from_reference(reference: &str, allow_none: bool) -> Draft {
-        let mut draft = Draft { kind: RefKind::Function, function: String::new(), bash: String::new(), show_output: false, exec: String::new(), internal: None, internal_args: String::new() };
+        let mut draft = Draft { kind: RefKind::Function, function: String::new(), bash: String::new(), show_output: false, exec: String::new(), internal: None, internal_args: String::new(), script: String::new() };
         if reference.is_empty() && allow_none {
             draft.kind = RefKind::None;
             return draft;
@@ -92,6 +98,10 @@ impl Draft {
                 draft.internal = opusdm_ipc::cli::find_command(head);
                 draft.internal_args = if draft.internal.is_some() { rest.trim().to_string() } else { line.to_string() };
             }
+            FuncRef::Script { name } => {
+                draft.kind = RefKind::Script;
+                draft.script = name;
+            }
         }
         draft
     }
@@ -104,6 +114,7 @@ impl Draft {
             RefKind::Bash => funcref::format(&FuncRef::Bash { cmd: self.bash.clone(), show_output: self.show_output }),
             RefKind::Exec => funcref::format(&FuncRef::Exec { line: self.exec.clone() }),
             RefKind::Internal => funcref::format(&FuncRef::Internal { line: self.internal_line() }),
+            RefKind::Script => funcref::format(&FuncRef::Script { name: self.script.clone() }),
         }
     }
 
@@ -177,6 +188,9 @@ struct Inner {
     browse: gtk::Button,
     internal_dd: gtk::DropDown,
     internal_entry: gtk::Entry,
+    /// The names of the saved scripts, in the order of `script_dd`.
+    scripts: Vec<String>,
+    script_dd: gtk::DropDown,
 }
 
 impl Inner {
@@ -188,6 +202,7 @@ impl Inner {
         self.exec_entry.set_visible(kind == RefKind::Exec);
         self.browse.set_visible(kind == RefKind::Exec);
         self.internal_dd.set_visible(kind == RefKind::Internal);
+        self.script_dd.set_visible(kind == RefKind::Script);
         self.show_internal_args();
     }
 
@@ -212,6 +227,8 @@ impl Inner {
         let internal_position = draft.internal.and_then(|cmd| InternalCmd::ALL.iter().position(|c| *c == cmd));
         self.internal_dd.set_selected(internal_position.map(|p| p as u32).unwrap_or(gtk::INVALID_LIST_POSITION));
         self.internal_entry.set_text(&draft.internal_args);
+        let script_position = self.scripts.iter().position(|n| *n == draft.script);
+        self.script_dd.set_selected(script_position.map(|p| p as u32).unwrap_or(gtk::INVALID_LIST_POSITION));
         let kind = draft.kind;
         drop(draft);
         self.show_kind(kind);
@@ -265,6 +282,12 @@ impl RefPicker {
         internal_entry.set_hexpand(true);
         internal_entry.set_placeholder_text(Some("arguments, e.g. name=value"));
         root.append(&internal_entry);
+        let scripts: Vec<String> = opusdm_ipc::scripts::list().into_iter().map(|s| s.name).collect();
+        let script_names: Vec<&str> = scripts.iter().map(String::as_str).collect();
+        let script_dd = gtk::DropDown::from_strings(&script_names);
+        script_dd.set_hexpand(true);
+        enable_filter(&script_dd);
+        root.append(&script_dd);
 
         let inner = Rc::new(Inner {
             draft: RefCell::new(Draft::from_reference(current, allow_none)),
@@ -279,6 +302,8 @@ impl RefPicker {
             browse,
             internal_dd,
             internal_entry,
+            scripts,
+            script_dd,
         });
         inner.load();
 
@@ -355,6 +380,17 @@ impl RefPicker {
                     return;
                 }
                 inner.draft.borrow_mut().internal_args = e.text().to_string();
+                on_change(inner.draft.borrow().reference());
+            });
+        }
+        {
+            let (inner, on_change) = (inner.clone(), on_change.clone());
+            inner.clone().script_dd.connect_selected_notify(move |d| {
+                let Some(name) = inner.scripts.get(d.selected() as usize).cloned() else { return };
+                if inner.loading.get() {
+                    return;
+                }
+                inner.draft.borrow_mut().script = name;
                 on_change(inner.draft.borrow().reference());
             });
         }
@@ -437,8 +473,8 @@ mod tests {
 
     #[test]
     fn kinds_start_with_none_only_when_allowed() {
-        assert_eq!(kinds(false), vec![RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal]);
-        assert_eq!(kinds(true), vec![RefKind::None, RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal]);
+        assert_eq!(kinds(false), vec![RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal, RefKind::Script]);
+        assert_eq!(kinds(true), vec![RefKind::None, RefKind::Function, RefKind::Bash, RefKind::Exec, RefKind::Internal, RefKind::Script]);
     }
 
     #[test]
@@ -453,6 +489,13 @@ mod tests {
         assert_eq!(d.internal, None, "an unknown command is kept as typed");
         assert_eq!(d.reference(), "internal:frobnicate x");
         assert_eq!(Draft::from_reference("internal:", false).reference(), "internal:");
+    }
+
+    #[test]
+    fn a_script_reference_keeps_its_name() {
+        let d = Draft::from_reference("script:tidy up", false);
+        assert_eq!((d.kind, d.script.as_str()), (RefKind::Script, "tidy up"));
+        assert_eq!(d.reference(), "script:tidy up");
     }
 
     #[test]

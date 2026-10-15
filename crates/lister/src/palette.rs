@@ -173,6 +173,11 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         CommandId::FindKey => crate::hotkey_editor::open_find_key(ui),
         CommandId::ManageUserMenu => crate::menu_editor::open_menu_editor(ui),
         CommandId::ManageScripts => crate::scripts_editor::open_scripts_editor(ui),
+        CommandId::JsScripts => {
+            if let Err(e) = crate::scripts_ui::launch() {
+                crate::actions::flash(ui, &format!("cannot open Scripts: {e}"));
+            }
+        }
         CommandId::CommandLine => crate::cli_dialog::open_command_line(ui),
         CommandId::ManageFiletypes => crate::filetypes_ui::open_editor(ui, None),
         CommandId::CreateFiletype => c::create_filetype(ui),

@@ -534,19 +534,32 @@ fn bank_choices(names: &[String], current: Option<&str>) -> (Vec<String>, Option
 /// exists stays selected as "(missing)" until the user picks another. With no
 /// banks at all the field says so and the required parameter stays missing.
 fn build_bank_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec) -> gtk::Box {
+    let names = opusdm_ipc::buttonbank::Banks::load().names();
+    build_choice_field(state, step_idx, spec, names, "(no button banks yet, create one first)")
+}
+
+/// A drop-down of the saved JavaScript scripts, built like
+/// [`build_bank_field`].
+fn build_script_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec) -> gtk::Box {
+    let names = opusdm_ipc::scripts::list().into_iter().map(|s| s.name).collect();
+    build_choice_field(state, step_idx, spec, names, "(no scripts yet, create one in Scripts... first)")
+}
+
+/// A drop-down of `names` for parameter `spec`; `empty_note` is shown
+/// instead when there is nothing to pick and nothing stored.
+fn build_choice_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::ParamSpec, names: Vec<String>, empty_note: &str) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let label = gtk::Label::new(Some(spec.label));
     label.set_xalign(0.0);
     row.append(&label);
 
-    let names = opusdm_ipc::buttonbank::Banks::load().names();
     let key = spec.key;
     let current = match state.function.borrow().steps.get(step_idx) {
         Some(FnStep::Internal { args, .. }) => args.get(key).map(str::to_string),
         _ => None,
     };
     if names.is_empty() && current.as_deref().is_none_or(|c| c.trim().is_empty()) {
-        row.append(&gtk::Label::new(Some("(no button banks yet, create one first)")));
+        row.append(&gtk::Label::new(Some(empty_note)));
         return row;
     }
     let (choices, selected) = bank_choices(&names, current.as_deref());
@@ -583,6 +596,9 @@ fn build_param_field(state: &Rc<EditorState>, step_idx: usize, spec: &schema::Pa
     }
     if spec.kind == schema::ParamKind::Bank {
         return build_bank_field(state, step_idx, spec);
+    }
+    if spec.kind == schema::ParamKind::Script {
+        return build_script_field(state, step_idx, spec);
     }
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let label = gtk::Label::new(Some(spec.label));
@@ -635,6 +651,7 @@ const INTERNAL_CMDS: &[InternalCmd] = &[
     InternalCmd::HideBank,
     InternalCmd::Confirm,
     InternalCmd::Run,
+    InternalCmd::Script,
 ];
 
 /// Ask which `InternalCmd` to add, append it with empty args, and rebuild.
