@@ -58,6 +58,10 @@ pub enum FnEvent {
     /// A `Confirm` step asks the user `message`; `reply` gets their answer. A
     /// dropped `reply` (nobody to ask) fails the step.
     Confirm { step_idx: usize, message: String, reply: Sender<bool> },
+    /// A script's `opus.alert`: show `message` and send on `reply` once the
+    /// user closed the dialog. A dropped `reply` (nobody to show it to) is
+    /// not an error, the script goes on.
+    Alert { step_idx: usize, message: String, reply: Sender<bool> },
     /// A `Run` step with a window: the program's output. The window outlives
     /// the function, so these events are routed by `(run_id, step_idx)`.
     Window { step_idx: usize, title: String, msg: WindowMsg },

@@ -147,6 +147,12 @@ impl Host {
                     host.send(&ToHub::ConfirmReply { req_id, ok });
                 });
             }
+            ToLister::AlertPrompt { req_id, message } => {
+                let host = self.clone();
+                opusdm_ui::requester(&self.prompt_parent(), "Alert", &message, None, &[("OK", true)], move |ok| {
+                    host.send(&ToHub::ConfirmReply { req_id, ok });
+                });
+            }
             ToLister::ConflictPrompt { req_id, path, src, dst, .. } => {
                 let host = self.clone();
                 let detail = format!("source: {} bytes\ndestination: {} bytes", src.size, dst.size);

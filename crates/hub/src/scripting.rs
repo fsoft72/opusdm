@@ -248,6 +248,16 @@ fn dispatch(op: &str, payload: &Value) -> Result<Value, String> {
             let _ = host.events_tx.send((host.run_id, FnEvent::Confirm { step_idx: host.step_idx, message, reply }));
             answer.recv().map(Value::Bool).map_err(|_| "confirm: nobody was there to answer".to_string())
         }
+        "alert" => {
+            let message = str_field(payload, "message").unwrap_or("").to_string();
+            let (reply, answer) = channel::<bool>();
+            let _ = host.events_tx.send((host.run_id, FnEvent::Alert { step_idx: host.step_idx, message, reply }));
+            // The dialog is closed when the answer comes; a dropped reply
+            // (the Lister went away) just lets the script go on.
+            let _ = answer.recv();
+            Ok(Value::Null)
+        }
+        "notify" => notify(payload),
         "exec" => exec(&host, payload),
         "sleep" => {
             let ms = payload.get("ms").and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as u64;
@@ -495,6 +505,42 @@ fn run_function(host: &Snapshot, wanted: &str) -> Result<Value, String> {
     }
     set_source(source);
     Ok(Value::Null)
+}
+
+/// `opus.notify`: show a desktop notification through
+/// `org.freedesktop.Notifications` (the OpusDM notification server, or any
+/// other the session runs). Fields: `title`, `body`, `icon`, `timeout` (ms,
+/// `-1` the server's default, `0` never) and `urgency` (`low`, `normal`,
+/// `critical`). Answers the notification id.
+fn notify(payload: &Value) -> Result<Value, String> {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value as Variant;
+
+    let title = str_field(payload, "title").unwrap_or("");
+    if title.is_empty() {
+        return Err("notify: no title given".to_string());
+    }
+    let urgency: u8 = match str_field(payload, "urgency").unwrap_or("normal") {
+        "low" => 0,
+        "normal" => 1,
+        "critical" => 2,
+        other => return Err(format!("notify: urgency must be low, normal or critical, not \"{other}\"")),
+    };
+    let timeout = payload.get("timeout").and_then(Value::as_i64).unwrap_or(-1).clamp(-1, i32::MAX as i64) as i32;
+    let mut hints: HashMap<&str, Variant> = HashMap::new();
+    hints.insert("urgency", Variant::U8(urgency));
+    let conn = zbus::blocking::Connection::session().map_err(|e| format!("notify: no session bus: {e}"))?;
+    let reply = conn
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &("OpusDM Script", 0u32, str_field(payload, "icon").unwrap_or(""), title, str_field(payload, "body").unwrap_or(""), Vec::<&str>::new(), hints, timeout),
+        )
+        .map_err(|e| format!("notify: the notification server did not take it: {e}"))?;
+    let id: u32 = reply.body().deserialize().map_err(|e| format!("notify: unexpected answer: {e}"))?;
+    Ok(json!(id))
 }
 
 /// `opus.exec`: run a program, wait, and capture its output.

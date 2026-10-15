@@ -541,6 +541,9 @@ pub enum ToLister {
     /// A Function's `Confirm` step asks the user; reply with
     /// `ToHub::ConfirmReply`.
     ConfirmPrompt { req_id: u64, message: String },
+    /// A script's `opus.alert`: show `message` in a modal dialog with one OK
+    /// button; reply with `ToHub::ConfirmReply` (`ok` true) once it is closed.
+    AlertPrompt { req_id: u64, message: String },
     /// A `Run` step with an output window started a program: open the
     /// window `id` titled `title`.
     OutputOpen { id: u64, title: String },
@@ -740,6 +743,7 @@ mod tests {
         roundtrip_tolister(ToLister::OutputEnd { id: 7, exit: Some(0) });
         roundtrip_tolister(ToLister::ScanDir { path: "/p".into(), select: Some("f".into()), mode: Some("icons".into()) });
         roundtrip_tolister(ToLister::ConfirmPrompt { req_id: 3, message: "Sure?".into() });
+        roundtrip_tolister(ToLister::AlertPrompt { req_id: 4, message: "Careful".into() });
         roundtrip_tolister(ToLister::RemoteTransfer { op: Op::Copy, srcs: vec!["sftp://h/a".into()], dest_dir: "/d".into() });
         roundtrip_tolister(ToLister::FormatsUpdate(crate::format::FormatStore::default()));
         roundtrip_tolister(ToLister::FunctionsUpdate(vec![crate::function::Function::new("f")]));

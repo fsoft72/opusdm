@@ -63,6 +63,9 @@ fn run_with(code: &str, source: SelectionCtx, dest: Option<SelectionCtx>, hub: H
             FnEvent::Confirm { reply, .. } => {
                 let _ = reply.send(hub.confirm);
             }
+            FnEvent::Alert { reply, .. } => {
+                let _ = reply.send(true);
+            }
             FnEvent::Job { spec, done, .. } => {
                 let _ = done.send(crate::functions::run_job_inline(spec, &CancelToken::new(), |_, _, _, _| {}));
             }
@@ -219,6 +222,23 @@ fn confirm_returns_the_answer_without_failing() {
     let r = run_with("opus.log(opus.confirm('sure?'))", ctx(&[], dir.path()), None, hub, CancelToken::new());
     assert_eq!(r.result, Ok(()));
     assert_eq!(r.log, ["false"]);
+}
+
+#[test]
+fn alert_waits_for_the_dialog_and_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = run("opus.alert('careful'); opus.log('after')", ctx(&[], dir.path()));
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(r.log, ["after"]);
+}
+
+#[test]
+fn notify_needs_a_title_and_a_known_urgency() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = run("opus.notify('')", ctx(&[], dir.path()));
+    assert!(r.result.unwrap_err().contains("no title"));
+    let r = run("opus.notify('hi', { urgency: 'loud' })", ctx(&[], dir.path()));
+    assert!(r.result.unwrap_err().contains("urgency"));
 }
 
 #[test]

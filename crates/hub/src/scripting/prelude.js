@@ -173,6 +173,14 @@
         print: log,
         /** Ask a yes / no question; true for yes. */
         confirm: (message) => call("confirm", { message: text(message) }),
+        /** Show `message` in a modal dialog with one OK button; returns when it is closed. */
+        alert: (message) => { call("alert", { message: text(message) }); },
+        /** Show a desktop notification. `options`: `{ body, icon, timeout (ms, 0 = never), urgency: "low" | "normal" | "critical" }`.
+         *  Returns the notification id. */
+        notify(title, options) {
+            const o = options || {};
+            return call("notify", { title: text(title), body: o.body === undefined ? "" : text(o.body), icon: o.icon || "", timeout: o.timeout === undefined ? -1 : o.timeout, urgency: o.urgency || "normal" });
+        },
         /** Start a program (`run("kitty -e htop")`). `options`: `{ wait, window }`. */
         run(commandLine, options) {
             const o = options || {};

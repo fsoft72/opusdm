@@ -182,6 +182,10 @@ impl Hub {
             self.function_confirm(run_id, message, reply);
             return;
         }
+        if let crate::functions::FnEvent::Alert { message, reply, .. } = ev {
+            self.function_alert(run_id, message, reply);
+            return;
+        }
         if let crate::functions::FnEvent::ScriptQuery { query, reply } = ev {
             let _ = reply.send(self.script_query(query));
             return;
@@ -263,6 +267,7 @@ impl Hub {
             crate::functions::FnEvent::SetBackground { .. }
             | crate::functions::FnEvent::Job { .. }
             | crate::functions::FnEvent::Confirm { .. }
+            | crate::functions::FnEvent::Alert { .. }
             | crate::functions::FnEvent::ScriptQuery { .. }
             | crate::functions::FnEvent::NewLister { .. }
             | crate::functions::FnEvent::Window { .. } => return,
@@ -351,6 +356,27 @@ impl Hub {
         self.next_req += 1;
         self.confirms.insert(req_id, (reply, cid));
         self.send_to(cid, ToLister::ConfirmPrompt { req_id, message });
+    }
+
+    /// A script's `opus.alert` of run `run_id`: show `message` on the Lister
+    /// that started the run. Without one the message goes to the log and the
+    /// reply is sent at once, so the script is not stopped by a dialog nobody
+    /// could see.
+    pub(super) fn function_alert(&mut self, run_id: u64, message: String, reply: Sender<bool>) {
+        let owner = self
+            .runs
+            .requester(run_id)
+            .flatten()
+            .filter(|cid| self.conns.contains_key(cid));
+        let Some(cid) = owner else {
+            opusdm_ipc::err_log!("hub", "function run {run_id}: alert with nobody to show it to: {message}");
+            let _ = reply.send(true);
+            return;
+        };
+        let req_id = self.next_req;
+        self.next_req += 1;
+        self.confirms.insert(req_id, (reply, cid));
+        self.send_to(cid, ToLister::AlertPrompt { req_id, message });
     }
 
     /// Answer a script's question (see `crate::scripting::ScriptQuery`).

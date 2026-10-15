@@ -133,6 +133,8 @@ All calls are synchronous. Relative paths are relative to the SOURCE folder,
 | Member | What it does |
 |---|---|
 | `opus.log(...)`, `console.log/info/warn/error` | One output line (objects as JSON) |
+| `opus.alert(message)` | Modal dialog with one OK button; the script waits for it. With no Lister to show it the message goes to the hub log and the script goes on |
+| `opus.notify(title, {body, icon, timeout, urgency})` | Desktop notification through `org.freedesktop.Notifications` (D-Bus `Notify`); `timeout` ms (-1 default, 0 stays), `urgency` low / normal / critical; returns the id |
 | `opus.confirm(message)` | Yes / no question, `true` for yes (a "no" does not fail the script) |
 | `opus.sleep(ms)` | Wait |
 | `opus.fs.read/write/append/list/stat/exists/isFile/isDir/mkdir` | Files; `list` and `stat` give `{name, path, isFile, isDir, isLink, size, modified, mode}` |

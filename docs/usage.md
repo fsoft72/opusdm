@@ -1119,6 +1119,8 @@ opus.log(`copied ${src.selected.length} item(s) to ${target}`);
 | `opus.runFunction(name)`, `opus.runScript(name, args)` | A saved Function, another script |
 | `opus.run(cmd, {wait, window})`, `opus.exec(prog, args)`, `opus.shell(script)` | Programs; `exec` / `shell` return `{code, stdout, stderr}` |
 | `opus.log(...)`, `console.log(...)`, `opus.confirm(msg)`, `opus.sleep(ms)` | Output, a yes / no question, a pause |
+| `opus.alert(msg)` | A modal dialog with one OK button; the script waits until it is closed |
+| `opus.notify(title, {body, icon, timeout, urgency})` | A desktop notification (`timeout` in ms, 0 stays; `urgency`: `low`, `normal`, `critical`); returns its id |
 | `opus.fs.*`, `opus.path.*` | Files (`read`, `write`, `append`, `list`, `stat`, `exists`, `isDir`, `mkdir`) and path helpers |
 | `opus.newLister`, `setBackground`, `leaveOut`, `hide`, `reveal`, `desktop.next()`, `bank.toggle(name)` | Desktop shortcuts |
 

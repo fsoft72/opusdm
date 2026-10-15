@@ -207,6 +207,8 @@ pub const API: &[ApiEntry] = &[
     api("Programs", "opus.shell(script, {cwd, input})", "opus.shell(\"\")", "bash -c script, captured like opus.exec."),
     api("User", "opus.log(...values)", "opus.log()", "Write a line to the output (console.log does the same)."),
     api("User", "opus.confirm(message)", "opus.confirm(\"\")", "Ask a yes / no question; true for yes."),
+    api("User", "opus.alert(message)", "opus.alert(\"\")", "Show a message in a modal dialog with an OK button; the script waits until it is closed."),
+    api("User", "opus.notify(title, {body, icon, timeout, urgency})", "opus.notify(\"\")", "Show a desktop notification. timeout in ms (0 = stays); urgency: low, normal or critical. Returns the notification id."),
     api("User", "opus.sleep(ms)", "opus.sleep(1000)", "Wait some milliseconds."),
     api("Desktop", "opus.newLister(dir)", "opus.newLister()", "Open a new Lister, on its default folder without dir."),
     api("Desktop", "opus.setBackground(file, fit)", "opus.setBackground(\"\")", "Make a picture or video the desktop background; fit: fill, fit, center or tile."),
