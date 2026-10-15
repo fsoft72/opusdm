@@ -337,6 +337,7 @@ Everything you expect from a modern volume applet.
 A fast image and video viewer that knows its way around a folder.
 
 - **Zoom** from 5% to 1600%, pan, fit, 100%, **rotate**, mouse wheel and keyboard.
+- **PDF pages** scroll with the wheel as one long picture (Ctrl+wheel zooms), with previous / next page buttons.
 - **Pixel-perfect mode** (sharp pixels instead of smoothing) for pixel art and fine detail.
 - **Thumbnail strip**, natural sort order (`img2` before `img10`), wrap-around gallery.
 - **Slideshow** with automatic timing, videos play to the end.

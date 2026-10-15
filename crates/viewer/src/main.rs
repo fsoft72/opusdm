@@ -15,6 +15,7 @@ mod line_numbers;
 mod loader;
 mod markdown;
 mod markdown_view;
+mod page_wheel;
 mod view_paintable;
 mod pdf;
 mod pdf_bar;

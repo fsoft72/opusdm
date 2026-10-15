@@ -1,6 +1,8 @@
-//! The picture area: a scrolled `gtk::Picture` with wheel zoom and drag pan.
+//! The picture area: a scrolled `gtk::Picture` with wheel zoom and drag pan;
+//! over a PDF page the wheel scrolls and turns the pages, Ctrl+wheel zooms.
 
 use crate::loader::RawImage;
+use crate::page_wheel::{notch_pixels, wheel_move, WheelMove};
 use crate::view_paintable::ViewPaintable;
 use crate::zoom::{anchored_scroll, content_box, fit_scale, rotate_point, rotated_size, screen_size, unrotate_point, Mode, Zoom};
 use gtk4 as gtk;
@@ -8,6 +10,15 @@ use gtk::{gdk, glib};
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+/// Where the scroll goes when another page replaces the one on screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Landing {
+    /// The scroll stays where it is.
+    Keep,
+    Top,
+    Bottom,
+}
 
 /// Shows one picture at a time.
 pub struct ImageView {
@@ -25,6 +36,12 @@ pub struct ImageView {
     pointer: Cell<Option<(f64, f64)>>,
     /// Called after the wheel changed the zoom, so the window can show it.
     on_wheel_zoom: RefCell<Option<Box<dyn Fn()>>>,
+    /// The wheel scrolls and turns pages (a PDF) instead of zooming.
+    page_scroll: Cell<bool>,
+    /// Pixels the wheel pushed past an edge of the page, toward a page turn.
+    overscroll: Cell<f64>,
+    /// Called when the wheel goes past the bottom (`true`) or top (`false`) edge.
+    on_page_edge: RefCell<Option<Box<dyn Fn(bool)>>>,
 }
 
 impl ImageView {
@@ -37,7 +54,7 @@ impl ImageView {
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.add_css_class("viewer-stage");
-        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None), on_wheel_zoom: RefCell::new(None) });
+        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None), on_wheel_zoom: RefCell::new(None), page_scroll: Cell::new(false), overscroll: Cell::new(0.0), on_page_edge: RefCell::new(None) });
         this._wire_pointer();
         this._wire_wheel();
         this._wire_drag();
@@ -56,12 +73,19 @@ impl ImageView {
         self.root.add_controller(motion);
     }
 
-    /// Wheel up zooms in, wheel down zooms out; the scrolled window never scrolls with it.
+    /// Wheel up zooms in, wheel down zooms out (a picture, or Ctrl+wheel); over
+    /// a PDF page the wheel scrolls and turns the pages. The scrolled window
+    /// never scrolls by itself.
     fn _wire_wheel(self: &Rc<Self>) {
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = self.clone();
-        scroll.connect_scroll(move |_, _, dy| {
+        scroll.connect_scroll(move |controller, _, dy| {
+            let ctrl = controller.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
+            if this.page_scroll.get() && !ctrl {
+                this._wheel_scroll(dy, controller.unit() == gdk::ScrollUnit::Surface);
+                return glib::Propagation::Stop;
+            }
             if dy < 0.0 { this.zoom_in(); } else if dy > 0.0 { this.zoom_out(); }
             if let Some(notify) = this.on_wheel_zoom.borrow().as_ref() { notify(); }
             glib::Propagation::Stop
@@ -69,9 +93,39 @@ impl ImageView {
         self.root.add_controller(scroll);
     }
 
+    /// Scroll the page by a wheel step of `dy` (notches, or pixels when
+    /// `pixels`), or ask for a page turn past an edge.
+    fn _wheel_scroll(&self, dy: f64, pixels: bool) {
+        let vadj = self.root.vadjustment();
+        let notch = notch_pixels(vadj.page_size().max(self.root.height() as f64));
+        let delta = if pixels { dy } else { dy * notch };
+        let mut overscroll = self.overscroll.get();
+        let step = wheel_move(vadj.value(), vadj.upper(), vadj.page_size(), delta, &mut overscroll, notch);
+        self.overscroll.set(overscroll);
+        match step {
+            WheelMove::Scroll(value) => vadj.set_value(value),
+            WheelMove::Turn(forward) => {
+                if let Some(turn) = self.on_page_edge.borrow().as_ref() { turn(forward); }
+            }
+            WheelMove::Hold => {}
+        }
+    }
+
     /// Run `notify` after every wheel zoom (the keys and buttons go through the window).
     pub fn connect_wheel_zoom(&self, notify: impl Fn() + 'static) {
         *self.on_wheel_zoom.borrow_mut() = Some(Box::new(notify));
+    }
+
+    /// Run `turn` when the wheel goes past the bottom (`true`) or the top
+    /// (`false`) edge of a page.
+    pub fn connect_page_edge(&self, turn: impl Fn(bool) + 'static) {
+        *self.on_page_edge.borrow_mut() = Some(Box::new(turn));
+    }
+
+    /// `true` while a PDF is shown: the wheel scrolls and turns the pages, Ctrl+wheel zooms.
+    pub fn set_page_scroll(&self, on: bool) {
+        self.page_scroll.set(on);
+        self.overscroll.set(0.0);
     }
 
     /// Dragging moves the scroll bars the other way, like grabbing the picture.
@@ -98,12 +152,23 @@ impl ImageView {
     }
 
     /// Show another page of the same document (or the same page with other
-    /// marks): zoom and rotation stay; `to_top` scrolls back to the top.
-    pub fn replace_image(&self, raw: RawImage, to_top: bool) {
+    /// marks): zoom and rotation stay; `landing` says where the scroll goes.
+    pub fn replace_image(&self, raw: RawImage, landing: Landing) {
         *self.raw.borrow_mut() = Some(raw);
         self.shown_rotation.set(None);
         self._apply();
-        if to_top { self.root.vadjustment().set_value(0.0); }
+        let vadj = self.root.vadjustment();
+        match landing {
+            Landing::Keep => {}
+            Landing::Top => vadj.set_value(0.0),
+            Landing::Bottom => {
+                let Some(full) = self._full_size() else { return };
+                let page = self.root.height() as f64;
+                _scroll_to(&vadj, (full.1 - page).max(0.0), full.1.max(page));
+                // The adjustment learns the new size only after the next layout.
+                glib::idle_add_local_once(move || vadj.set_value(vadj.upper() - vadj.page_size()));
+            }
+        }
     }
 
     /// The picture widget, for the controllers of the PDF links.

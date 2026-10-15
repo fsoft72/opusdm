@@ -709,6 +709,10 @@ Lister preview, the Icon View thumbnails and the background picker.
   **Source file** type for these extensions and names; an older one needs it added with
   **Edit File Types...**. Files over 8 MiB are not shown.
 - **PDF documents:** one page at a time, shown like a picture (zoom, drag, rotate as above).
+  The **mouse wheel** scrolls the page; going on past its bottom shows the next page from
+  its top, going on past its top shows the previous page from its bottom, so the pages read
+  like one long picture (a page that fits the window turns on every notch). **Ctrl+wheel**
+  zooms around the pointer.
   **Right** / **Down** / **Page Down** go to the next page, **Left** / **Up** / **Page Up** to
   the previous one, **Home** / **End** to the first / last one (on a PDF the arrows turn pages:
   **Space**, **n** and **p** move to the other files); zoom and rotation stay when the page changes. The page is drawn at 144 dpi, so
@@ -716,6 +720,8 @@ Lister preview, the Icon View thumbnails and the background picker.
   A bar over the page holds:
   - **Pages** (or **F9**): opens and closes the page panel on the left, one thumbnail per page
     (made in the background once the panel opens); a click goes to that page.
+  - **<** / **>** next to it: previous / next page, shown from its top (greyed on the first /
+    last page).
   - The **search field** (**Ctrl+F**): every match in the document is tinted yellow, the
     current one orange, with `3/17` next to the field. **Enter** / **F3** or the down arrow go to
     the next match (turning the page when needed), **Shift+Enter** / **Shift+F3** or the up arrow

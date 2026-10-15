@@ -1,4 +1,5 @@
-//! The bar over a PDF: the button that opens and closes the page panel and the
+//! The bar over a PDF: the button that opens and closes the page panel, the
+//! previous / next page buttons and the
 //! search field with its previous / next buttons and the match count; the
 //! zoom buttons and the dark switch of a text document.
 
@@ -9,6 +10,9 @@ use gtk::prelude::*;
 pub struct PdfBar {
     pub root: gtk::Box,
     pub pages: gtk::ToggleButton,
+    /// Previous / next page of a PDF.
+    pub page_prev: gtk::Button,
+    pub page_next: gtk::Button,
     pub entry: gtk::SearchEntry,
     pub prev: gtk::Button,
     pub next: gtk::Button,
@@ -27,6 +31,12 @@ impl PdfBar {
         let pages = gtk::ToggleButton::with_label("Pages");
         pages.set_focusable(false);
         pages.set_tooltip_text(Some("Show or hide the page panel (F9)"));
+        let page_prev = gtk::Button::from_icon_name("go-previous-symbolic");
+        page_prev.set_focusable(false);
+        page_prev.set_tooltip_text(Some("Previous page (Page Up)"));
+        let page_next = gtk::Button::from_icon_name("go-next-symbolic");
+        page_next.set_focusable(false);
+        page_next.set_tooltip_text(Some("Next page (Page Down)"));
         let entry = gtk::SearchEntry::new();
         entry.set_placeholder_text(Some("Find in document (Ctrl+F)"));
         entry.set_width_chars(28);
@@ -57,11 +67,11 @@ impl PdfBar {
         spacer.set_hexpand(true);
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         root.add_css_class("viewer-pdf-bar");
-        for widget in [pages.upcast_ref::<gtk::Widget>(), spacer.upcast_ref(), zoom_out.upcast_ref(), zoom_in.upcast_ref(), dark_box.upcast_ref(), entry.upcast_ref(), prev.upcast_ref(), next.upcast_ref(), status.upcast_ref()] {
+        for widget in [pages.upcast_ref::<gtk::Widget>(), page_prev.upcast_ref(), page_next.upcast_ref(), spacer.upcast_ref(), zoom_out.upcast_ref(), zoom_in.upcast_ref(), dark_box.upcast_ref(), entry.upcast_ref(), prev.upcast_ref(), next.upcast_ref(), status.upcast_ref()] {
             root.append(widget);
         }
         root.set_visible(false);
-        PdfBar { root, pages, entry, prev, next, status, zoom_out, zoom_in, dark_box, dark }
+        PdfBar { root, pages, page_prev, page_next, entry, prev, next, status, zoom_out, zoom_in, dark_box, dark }
     }
 
     /// True while the keyboard focus is in the search field.

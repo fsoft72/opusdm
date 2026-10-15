@@ -265,7 +265,7 @@ impl State {
     fn _picture_loaded(self: &Rc<Self>, result: Result<RawImage, String>) {
         match result {
             Ok(raw) => {
-                if self.keep_zoom.get() { self.image.replace_image(raw, true); } else { self.image.set_image(raw); }
+                if self.keep_zoom.get() { self.image.replace_image(raw, self._pdf_landing()); } else { self.image.set_image(raw); }
                 self.stack.set_visible_child_name("image");
             }
             Err(e) => {

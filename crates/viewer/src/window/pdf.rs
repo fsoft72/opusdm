@@ -2,6 +2,7 @@
 //! page panel, the search matches drawn on the page and the links.
 
 use super::{State, _name};
+use crate::image_view::Landing;
 use crate::keys::page_after;
 use crate::keys::Action;
 use crate::kind::MediaKind;
@@ -40,6 +41,8 @@ pub(super) struct PdfUi {
     links: RefCell<Vec<Link>>,
     /// Scroll to the current match once the page being rendered arrives.
     reveal_hit: Cell<bool>,
+    /// Show the page being rendered from its bottom (the wheel went back past the top).
+    land_bottom: Cell<bool>,
 }
 
 /// Channels the window loops read for the PDF side.
@@ -54,7 +57,7 @@ pub(super) fn build() -> (PdfUi, PdfChannels) {
     let (search_answer_tx, search_rx) = async_channel::unbounded();
     let panel = PagePanel::new(page_pick_tx);
     panel.root.set_visible(false);
-    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false) };
+    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false), land_bottom: Cell::new(false) };
     (ui, PdfChannels { page_pick_rx, search_rx })
 }
 
@@ -76,6 +79,12 @@ impl State {
         let bar = &self.pdf.bar;
         let s = self.clone();
         bar.pages.connect_toggled(move |_| s._sync_pdf_panels());
+        let s = self.clone();
+        bar.page_prev.connect_clicked(move |_| s._turn_page(Action::PrevPage));
+        let s = self.clone();
+        bar.page_next.connect_clicked(move |_| s._turn_page(Action::NextPage));
+        let s = self.clone();
+        self.image.connect_page_edge(move |forward| s._pdf_edge(forward));
         let s = self.clone();
         bar.dark.connect_active_notify(move |sw| {
             s.markdown.set_dark(sw.is_active());
@@ -189,7 +198,10 @@ impl State {
         *self.pdf.clean.borrow_mut() = None;
         self.pdf.links.borrow_mut().clear();
         self.pdf.reveal_hit.set(false);
+        self.pdf.land_bottom.set(false);
+        self.image.set_page_scroll(self._is_pdf());
         self._sync_pdf_panels();
+        self._sync_page_buttons();
     }
 
     /// Show or hide the bar and the page panel for the file on screen and the
@@ -198,6 +210,8 @@ impl State {
         let pdf = self._is_pdf();
         let searchable = pdf || self._text_doc().is_some();
         self.pdf.bar.pages.set_visible(pdf);
+        self.pdf.bar.page_prev.set_visible(pdf);
+        self.pdf.bar.page_next.set_visible(pdf);
         self.pdf.bar.dark_box.set_visible(!pdf);
         let full = self.window.is_fullscreen();
         let searching = !self.pdf.bar.entry.text().is_empty() || self.pdf.bar.entry_has_focus(&self.window);
@@ -240,14 +254,40 @@ impl State {
             if !self.pdf.bar.entry.text().is_empty() { self._start_search(); }
         }
         self.pdf.panel.set_current(self.page.get());
+        self._sync_page_buttons();
         let Some(raw) = self._marked_page() else { return };
         self._picture_loaded(Ok(raw));
         if self.pdf.reveal_hit.replace(false) { self._reveal_current_hit(); }
     }
 
-    /// Move to page `index` of the PDF on screen; `reveal` scrolls to the
-    /// current match once the page is there.
+    /// Move to page `index` of the PDF on screen, shown from its top; `reveal`
+    /// scrolls to the current match once the page is there.
     pub(super) fn _pdf_go_to(self: &Rc<Self>, index: usize, reveal: bool) {
+        self._pdf_go_to_at(index, reveal, false);
+    }
+
+    /// The wheel went past the bottom (`forward`) or the top edge of the page:
+    /// the next page shows from its top, the previous one from its bottom.
+    fn _pdf_edge(self: &Rc<Self>, forward: bool) {
+        let page = self.page.get();
+        if !forward && page == 0 { return; }
+        self._pdf_go_to_at(if forward { page + 1 } else { page - 1 }, false, !forward);
+    }
+
+    /// Where the scroll goes when the page being rendered arrives.
+    pub(super) fn _pdf_landing(&self) -> Landing {
+        if self.pdf.land_bottom.get() { Landing::Bottom } else { Landing::Top }
+    }
+
+    /// The previous / next page buttons work only when there is such a page.
+    fn _sync_page_buttons(&self) {
+        let (page, pages) = (self.page.get(), self.pages.get());
+        self.pdf.bar.page_prev.set_sensitive(page > 0);
+        self.pdf.bar.page_next.set_sensitive(page + 1 < pages);
+    }
+
+    /// [`Self::_pdf_go_to`]; `bottom` shows the page from its bottom.
+    fn _pdf_go_to_at(self: &Rc<Self>, index: usize, reveal: bool, bottom: bool) {
         let Some((path, MediaKind::Pdf)) = self._current() else { return };
         if index >= self.pages.get() { return; }
         if index == self.page.get() {
@@ -259,7 +299,9 @@ impl State {
         self.page.set(index);
         self.keep_zoom.set(true);
         self.pdf.reveal_hit.set(reveal);
+        self.pdf.land_bottom.set(bottom);
         self.pdf.panel.set_current(index);
+        self._sync_page_buttons();
         self._request_page(&path);
         self._update_info();
     }
@@ -286,7 +328,7 @@ impl State {
     fn _refresh_marks(&self, reveal: bool) {
         if self.stack.visible_child_name().as_deref() != Some("image") { return; }
         let Some(raw) = self._marked_page() else { return };
-        self.image.replace_image(raw, false);
+        self.image.replace_image(raw, Landing::Keep);
         if reveal { self._reveal_current_hit(); }
     }
 
