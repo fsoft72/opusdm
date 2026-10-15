@@ -46,6 +46,7 @@ pub mod notify;
 pub mod proto;
 pub mod quickapps;
 pub mod reaped;
+pub mod scripts;
 pub mod settings;
 pub mod session;
 pub mod sidecar;

@@ -2,7 +2,7 @@
 //! text buffer, so the parser can be tested alone.
 
 use crate::highlight::{pieces, syntax_for_token};
-use syntect::parsing::SyntaxReference;
+use crate::highlight::syntect::parsing::SyntaxReference;
 use unicode_width::UnicodeWidthStr;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 

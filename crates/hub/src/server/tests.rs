@@ -493,6 +493,58 @@ fn a_run_from_a_tool_window_without_a_source_lister_fails() {
     assert_eq!(error, function_run::NO_SOURCE_ERROR);
 }
 
+/// A `Script` step running `code` inline, as the script editor's Run sends it.
+fn inline_script(code: &str) -> Vec<FnStep> {
+    let mut args = std::collections::BTreeMap::new();
+    args.insert("script".to_string(), "inline".to_string());
+    args.insert("code".to_string(), code.to_string());
+    vec![FnStep::Internal { cmd: opusdm_ipc::function::InternalCmd::Script, args: opusdm_ipc::function::InternalArgs(args) }]
+}
+
+#[test]
+fn a_script_from_a_tool_window_runs_without_a_source_lister() {
+    let (_td, listener, path) = bind_temp();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut tool = connect(&path);
+    send(&mut tool, &ToHub::RunFunction { steps: inline_script("opus.log('listers', opus.listers.length, opus.source.path === opus.home)") }).unwrap();
+    let mut lines = Vec::new();
+    recv_until(&mut tool, |m| match m {
+        ToLister::FunctionOutput { line, .. } => {
+            lines.push(line);
+            None
+        }
+        ToLister::FunctionFailed { error, .. } => panic!("the script failed: {error}"),
+        ToLister::FunctionDone => Some(()),
+        _ => None,
+    });
+    assert!(lines.contains(&"listers 0 true".to_string()), "{lines:?}");
+}
+
+#[test]
+fn a_script_asks_the_hub_for_the_listers_and_their_roles() {
+    let (_td, listener, path) = bind_temp();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut a = connect(&path);
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    let _w: Welcome = recv(&mut a).unwrap().unwrap();
+    send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
+    let mut tool = connect(&path);
+    send(&mut tool, &ToHub::RunFunction { steps: inline_script("for (const l of opus.listers) opus.log(l.role, l.path)") }).unwrap();
+    recv_until(&mut a, |m| matches!(m, ToLister::QuerySelection).then_some(()));
+    send(&mut a, &ToHub::SelectionReply { paths: vec![], cwd: std::env::temp_dir() }).unwrap();
+    let mut lines = Vec::new();
+    recv_until(&mut tool, |m| match m {
+        ToLister::FunctionOutput { line, .. } => {
+            lines.push(line);
+            None
+        }
+        ToLister::FunctionFailed { error, .. } => panic!("the script failed: {error}"),
+        ToLister::FunctionDone => Some(()),
+        _ => None,
+    });
+    assert!(lines.contains(&"source /a".to_string()), "{lines:?}");
+}
+
 #[test]
 fn a_run_window_keeps_receiving_output_after_the_function_finished() {
     let (_td, listener, path) = bind_temp();
@@ -840,7 +892,7 @@ fn welcome_carries_the_formats_loaded_from_disk() {
 
 /// Read messages from `s` until `pick` returns a value, panicking after 30
 /// messages (role broadcasts may interleave with the reply we want).
-fn recv_until<T>(s: &mut UnixStream, pick: impl Fn(ToLister) -> Option<T>) -> T {
+fn recv_until<T>(s: &mut UnixStream, mut pick: impl FnMut(ToLister) -> Option<T>) -> T {
     for _ in 0..30 {
         let msg: ToLister = recv(s).unwrap().unwrap();
         if let Some(v) = pick(msg) {

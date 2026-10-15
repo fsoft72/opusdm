@@ -58,6 +58,8 @@ mod palette;
 mod passwd;
 mod reselect;
 mod scripts_editor;
+mod script_editor;
+mod scripts_ui;
 mod select_criteria;
 mod sizecache;
 mod status_format;
@@ -99,6 +101,12 @@ fn run_functions_manager() -> gtk4::glib::ExitCode {
     run_tool("org.opusdm.Functions", function_editor::open_standalone)
 }
 
+/// Run only the Scripts window (JavaScript scripts), with no file window.
+/// The application exits when its last window is closed.
+fn run_scripts_window() -> gtk4::glib::ExitCode {
+    run_tool("org.opusdm.Scripts", scripts_ui::open_standalone)
+}
+
 /// Run only the Edit Hotkeys window, with no file window. The application
 /// exits when the window is closed.
 fn run_hotkey_editor() -> gtk4::glib::ExitCode {
@@ -132,6 +140,10 @@ fn main() {
     }
     if std::env::args().any(|a| a == function_editor::MANAGE_FUNCTIONS_FLAG) {
         let code = run_functions_manager();
+        std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
+    }
+    if std::env::args().any(|a| a == scripts_ui::SCRIPTS_FLAG) {
+        let code = run_scripts_window();
         std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
     }
     if std::env::args().any(|a| a == hotkey_editor::EDIT_HOTKEYS_FLAG) {

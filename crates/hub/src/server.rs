@@ -23,7 +23,7 @@ mod function_run;
 mod function_runs;
 mod persist;
 
-use function_run::NO_SOURCE_ERROR;
+use function_run::{only_scripts, NO_SOURCE_ERROR};
 use function_runs::FunctionRuns;
 use persist::PersistMsg;
 
@@ -486,6 +486,10 @@ impl Hub {
             ToHub::RunFunction { steps } => match self.run_source_for(cid) {
                 Some(source) => {
                     self.start_function_run(Some(cid), Some(source), steps);
+                }
+                // A script can work without a Lister (it starts in $HOME).
+                None if only_scripts(&steps) => {
+                    self.start_function_run(Some(cid), None, steps);
                 }
                 None => self.function_failed(Some(cid), NO_SOURCE_ERROR.to_string()),
             },

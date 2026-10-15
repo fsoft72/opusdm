@@ -109,7 +109,7 @@ impl SourceView {
     }
 
     /// Colour `text` on a thread; it stops as soon as another file is shown.
-    fn _start_colouring(&self, generation: u64, text: String, syntax: &'static syntect::parsing::SyntaxReference) {
+    fn _start_colouring(&self, generation: u64, text: String, syntax: &'static crate::highlight::syntect::parsing::SyntaxReference) {
         let (current, tx) = (self.generation.clone(), self.coloured_tx.clone());
         std::thread::spawn(move || {
             highlight_in_batches(&text, syntax, BATCH_LINES, |spans| {

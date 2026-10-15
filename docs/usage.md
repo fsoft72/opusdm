@@ -1092,6 +1092,38 @@ clients, `notify-send`) show them as small popups, and the panel keeps a history
 - **Not working?** `notify-send -A` (buttons) does not work on Ubuntu with any server: its AppArmor
   profile lets `notify-send` call only `Notify`. Browsers are not affected.
 
+### 3.39 JavaScript Scripts
+
+Scripts are JavaScript files in `~/.config/opusdm/scripts` (one `<name>.js` each), run by the hub with the Boa engine. Open the **Scripts** window from the palette (**Scripts (JavaScript)...**) or from the Settings window (Advanced tab).
+
+- **Scripts window**: the list (name and the script's first `//` comment), a filter, and **New...**, **Edit...** (or double click), **Run**, **Rename...**, **Duplicate**, **Delete**, **Show Folder**. The output of a run appears in the Output pane. Scripts changed by hand in the folder show up on their own.
+- **Editor**: JavaScript colouring, line numbers, a reference panel (double click inserts the entry). **Ctrl+S** saves, **F5** or **Ctrl+Enter** runs the text as it is in the editor (no need to save) with the Arguments field as `opus.args`. **Tab** / **Shift+Tab** indent, **Enter** keeps the indentation, **Ctrl+/** comments lines. An error is shown in red and its line is marked.
+- **Running a script from elsewhere**: the **Run Script** step of the Function Editor (with optional Arguments, `{f}`, `{o}`, ... allowed), the **Script** kind of the Hotkeys, User Menu, Script Events, Button Banks and File Types editors (`script:<name>`), or the Command Line (`Script backup`).
+
+Everything is synchronous: a call returns when the hub is done. Relative paths are relative to the SOURCE folder, `~` is home.
+
+```js
+// Copy the selection to ~/backup/<date>, only newer files.
+const src = opus.source;
+if (!src || src.selected.length === 0) throw new Error("select something first");
+const target = opus.path.join(opus.home, "backup", new Date().toISOString().slice(0, 10));
+opus.fs.mkdir(target);
+opus.command("Copy", { files: src.selected, to: target, newer: true });
+opus.log(`copied ${src.selected.length} item(s) to ${target}`);
+```
+
+| API | What it does |
+|---|---|
+| `opus.source`, `opus.dest`, `opus.listers` | The Listers: `path`, `selected`, `selectedNames`, `role`, `go(dir)`, `files(pattern)`, `refresh()` |
+| `opus.command(name, params)` | Any internal command (`Copy`, `MoveAs`, `MakeDir`, `ChangeDir`, ...); `files` replaces the selection, `to` the DEST folder. `opus.commands` lists them with their parameters |
+| `opus.runFunction(name)`, `opus.runScript(name, args)` | A saved Function, another script |
+| `opus.run(cmd, {wait, window})`, `opus.exec(prog, args)`, `opus.shell(script)` | Programs; `exec` / `shell` return `{code, stdout, stderr}` |
+| `opus.log(...)`, `console.log(...)`, `opus.confirm(msg)`, `opus.sleep(ms)` | Output, a yes / no question, a pause |
+| `opus.fs.*`, `opus.path.*` | Files (`read`, `write`, `append`, `list`, `stat`, `exists`, `isDir`, `mkdir`) and path helpers |
+| `opus.newLister`, `setBackground`, `leaveOut`, `hide`, `reveal`, `desktop.next()`, `bank.toggle(name)` | Desktop shortcuts |
+
+The full reference is in the editor's panel and in `docs/superpowers/specs/2026-10-15-javascript-scripting-design.md`.
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

@@ -5,7 +5,8 @@
 //! (run by `bash -c`), `bash+out:<cmd>` (the same, output in a window) or
 //! `exec:<program and arguments>` (started directly, no shell) or
 //! `internal:<command and arguments>` (an internal command, written like a
-//! command line entry: `internal:CopyAs new_name=*.bak`). A string
+//! command line entry: `internal:CopyAs new_name=*.bak`) or `script:<name>`
+//! (a JavaScript script of `~/.config/opusdm/scripts`). A string
 //! without a prefix is a saved Function id, as before. An inline reference
 //! runs as one synthetic `Run` step, so the hub needs no new executor. See
 //! `docs/superpowers/specs/2026-10-05-inline-commands-design.md`.
@@ -23,6 +24,8 @@ pub const BASH_OUT_PREFIX: &str = "bash+out:";
 pub const EXEC_PREFIX: &str = "exec:";
 /// Prefix of an internal command with its arguments.
 pub const INTERNAL_PREFIX: &str = "internal:";
+/// Prefix of a JavaScript script, by name.
+pub const SCRIPT_PREFIX: &str = "script:";
 
 /// What a reference string stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +39,8 @@ pub enum FuncRef {
     /// An internal command name followed by its arguments, as on the
     /// command line (`MakeDir backup`).
     Internal { line: String },
+    /// A JavaScript script, by name (`script:backup`).
+    Script { name: String },
 }
 
 /// Read a reference string. Total: anything that is not an inline command is
@@ -53,6 +58,9 @@ pub fn parse(reference: &str) -> FuncRef {
     if let Some(line) = reference.strip_prefix(INTERNAL_PREFIX) {
         return FuncRef::Internal { line: line.to_string() };
     }
+    if let Some(name) = reference.strip_prefix(SCRIPT_PREFIX) {
+        return FuncRef::Script { name: name.to_string() };
+    }
     FuncRef::Saved(reference.to_string())
 }
 
@@ -64,6 +72,7 @@ pub fn format(r: &FuncRef) -> String {
         FuncRef::Bash { cmd, show_output: true } => format!("{BASH_OUT_PREFIX}{cmd}"),
         FuncRef::Exec { line } => format!("{EXEC_PREFIX}{line}"),
         FuncRef::Internal { line } => format!("{INTERNAL_PREFIX}{line}"),
+        FuncRef::Script { name } => format!("{SCRIPT_PREFIX}{name}"),
     }
 }
 
@@ -126,6 +135,13 @@ pub fn problem(r: &FuncRef) -> Option<String> {
             (!program_exists(program)).then(|| format!("exec: '{program}' was not found"))
         }
         FuncRef::Internal { line } => parse_internal(line).err(),
+        FuncRef::Script { name } => {
+            if let Err(e) = crate::scripts::validate_name(name) {
+                return Some(format!("script: {e}"));
+            }
+            let path = crate::scripts::scripts_dir().join(format!("{name}.{}", crate::scripts::EXTENSION));
+            (!path.is_file()).then(|| format!("script: '{name}' was not found"))
+        }
     }
 }
 
@@ -137,6 +153,7 @@ pub fn describe(r: &FuncRef) -> Option<String> {
         FuncRef::Bash { cmd, .. } => Some(format!("bash: {cmd}")),
         FuncRef::Exec { line } => Some(format!("exec: {line}")),
         FuncRef::Internal { line } => Some(format!("internal: {}", line.trim())),
+        FuncRef::Script { name } => Some(format!("script: {name}")),
     }
 }
 
@@ -189,6 +206,11 @@ pub fn to_steps_with(r: &FuncRef, wait: bool) -> Result<Vec<FnStep>, String> {
             let (cmd, args) = parse_internal(line)?;
             return Ok(vec![FnStep::Internal { cmd, args }]);
         }
+        FuncRef::Script { name } => {
+            // The script itself waits for what it runs: `wait` changes nothing.
+            args.0.insert("script".to_string(), name.clone());
+            return Ok(vec![FnStep::Internal { cmd: InternalCmd::Script, args }]);
+        }
     }
     if wait {
         args.0.insert("wait".to_string(), BOOL_TRUE.to_string());
@@ -215,11 +237,26 @@ mod tests {
 
     #[test]
     fn parse_and_format_round_trip_every_kind() {
-        for text in ["fn-1a-2", "bash:ls -l", "bash+out:ls -l", "exec:kitty --class x", "bash:echo a:b", "exec:"] {
+        for text in ["fn-1a-2", "bash:ls -l", "bash+out:ls -l", "exec:kitty --class x", "bash:echo a:b", "exec:", "script:my backup"] {
             assert_eq!(format(&parse(text)), text);
         }
         assert_eq!(parse("bash+out:ls"), FuncRef::Bash { cmd: "ls".into(), show_output: true });
         assert_eq!(parse("bash:ls"), FuncRef::Bash { cmd: "ls".into(), show_output: false });
+    }
+
+    #[test]
+    fn a_script_runs_as_one_script_step_also_from_the_command_line() {
+        // Like `exec:` with a missing program, a missing script is reported
+        // before anything runs.
+        let error = to_steps(&parse("script:no such script here")).unwrap_err();
+        assert!(error.contains("'no such script here' was not found"), "{error}");
+        assert!(problem(&parse("script:a/b")).unwrap().contains("'/'"));
+        match to_steps(&parse("internal:Script backup args='{f}'")).unwrap().remove(0) {
+            FnStep::Internal { cmd: InternalCmd::Script, args } => {
+                assert_eq!((args.get("script"), args.get("args")), (Some("backup"), Some("{f}")));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

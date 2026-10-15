@@ -3,6 +3,7 @@
 
 mod fonts;
 pub mod layer;
+pub mod line_numbers;
 mod look_css;
 mod reference_picker;
 mod requester;

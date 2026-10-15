@@ -15,6 +15,7 @@ opusdm-iconview = { path = "../iconview" }
 opusdm-ftp = { path = "../ftp" }
 opusdm-fsops = { path = "../fsops" }
 opusdm-archive = { path = "../archive" }
+opusdm-highlight = { path = "../highlight" }
 async-channel.workspace = true
 libc.workspace = true
 gtk4.workspace = true

@@ -61,6 +61,10 @@ pub enum FnEvent {
     /// A `Run` step with a window: the program's output. The window outlives
     /// the function, so these events are routed by `(run_id, step_idx)`.
     Window { step_idx: usize, title: String, msg: WindowMsg },
+    /// A script asks the hub something only the hub knows (the open Listers,
+    /// the saved Functions) or to act on a Lister; `reply` gets the answer. A
+    /// dropped `reply` fails the script's call.
+    ScriptQuery { query: crate::scripting::ScriptQuery, reply: Sender<crate::scripting::QueryReply> },
     /// Every step finished successfully.
     AllDone,
 }
@@ -162,46 +166,62 @@ fn run_steps_cancellable(
             let _ = events_tx.send((run_id, FnEvent::Failed { step_idx, error: "cancelled".to_string() }));
             return;
         }
-        let result = match step {
-            // One exhaustive match: a new `InternalCmd` does not compile until
-            // it is dispatched here.
-            FnStep::Internal { cmd, args } => match *cmd {
-                InternalCmd::ChangeDir => run_change_dir(run_id, step_idx, args, &mut source, dest, events_tx),
-                InternalCmd::NewLister => run_new_lister(run_id, step_idx, args, &source, dest, events_tx),
-                InternalCmd::Run => run_run(run_id, step_idx, args, &source, dest, events_tx),
-                InternalCmd::Confirm => run_confirm(run_id, step_idx, args, &source, dest, events_tx),
-                InternalCmd::SetBackground => run_set_background(run_id, step_idx, args, &source, dest, events_tx),
-                InternalCmd::LeaveOut => run_leave_out(run_id, step_idx, false, &source, events_tx),
-                InternalCmd::PutAway => run_leave_out(run_id, step_idx, true, &source, events_tx),
-                InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide => {
-                    run_hide(run_id, step_idx, *cmd, events_tx)
-                }
-                InternalCmd::DesktopPrev | InternalCmd::DesktopNext => run_desktop(run_id, step_idx, *cmd, events_tx),
-                InternalCmd::OpenInputConfig => run_open_input_config(run_id, step_idx, events_tx),
-                InternalCmd::OpenBank => run_bank(run_id, step_idx, BankAction::Open, args, bank_exists, events_tx),
-                InternalCmd::CloseBank => run_bank(run_id, step_idx, BankAction::Close, args, bank_exists, events_tx),
-                InternalCmd::ToggleBank => run_bank(run_id, step_idx, BankAction::Toggle, args, bank_exists, events_tx),
-                InternalCmd::HideBank => run_bank(run_id, step_idx, BankAction::Hide, args, bank_exists, events_tx),
-                InternalCmd::Rename => run_rename(run_id, step_idx, args, &source, dest, events_tx),
-                InternalCmd::MakeDir => run_make_entry(run_id, step_idx, false, args, &source, dest, events_tx),
-                InternalCmd::NewFile => run_make_entry(run_id, step_idx, true, args, &source, dest, events_tx),
-                InternalCmd::Copy => run_file_job(run_id, step_idx, FileJob::Copy, args, &source, dest, events_tx),
-                InternalCmd::Move => run_file_job(run_id, step_idx, FileJob::Move, args, &source, dest, events_tx),
-                InternalCmd::Delete => run_file_job(run_id, step_idx, FileJob::Delete, args, &source, dest, events_tx),
-                InternalCmd::CopyAs => run_file_job(run_id, step_idx, FileJob::CopyAs, args, &source, dest, events_tx),
-                InternalCmd::MoveAs => run_file_job(run_id, step_idx, FileJob::MoveAs, args, &source, dest, events_tx),
-                InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, &source, dest, events_tx),
-            },
-            FnStep::External { argv, cwd_source } => {
-                run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, &source, dest, events_tx)
-            }
-        };
+        let result = run_step(run_id, step_idx, step, &mut source, dest, events_tx, cancel);
         if let Err(error) = result {
             let _ = events_tx.send((run_id, FnEvent::Failed { step_idx, error }));
             return;
         }
     }
     let _ = events_tx.send((run_id, FnEvent::AllDone));
+}
+
+/// Run one step on `source` (a `ChangeDir` step moves its cwd) and `dest`.
+/// Shared by the step loop and by scripts, whose `opus.command` runs one
+/// internal command at a time.
+pub(crate) fn run_step(
+    run_id: u64,
+    step_idx: usize,
+    step: &FnStep,
+    source: &mut SelectionCtx,
+    dest: Option<&SelectionCtx>,
+    events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
+) -> Result<(), String> {
+    match step {
+        // One exhaustive match: a new `InternalCmd` does not compile until
+        // it is dispatched here.
+        FnStep::Internal { cmd, args } => match *cmd {
+            InternalCmd::ChangeDir => run_change_dir(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::NewLister => run_new_lister(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::Script => crate::scripting::run_script(run_id, step_idx, args, source, dest, events_tx, cancel),
+            InternalCmd::Run => run_run(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::Confirm => run_confirm(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::SetBackground => run_set_background(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::LeaveOut => run_leave_out(run_id, step_idx, false, source, events_tx),
+            InternalCmd::PutAway => run_leave_out(run_id, step_idx, true, source, events_tx),
+            InternalCmd::Hide | InternalCmd::Reveal | InternalCmd::ToggleHide => {
+                run_hide(run_id, step_idx, *cmd, events_tx)
+            }
+            InternalCmd::DesktopPrev | InternalCmd::DesktopNext => run_desktop(run_id, step_idx, *cmd, events_tx),
+            InternalCmd::OpenInputConfig => run_open_input_config(run_id, step_idx, events_tx),
+            InternalCmd::OpenBank => run_bank(run_id, step_idx, BankAction::Open, args, bank_exists, events_tx),
+            InternalCmd::CloseBank => run_bank(run_id, step_idx, BankAction::Close, args, bank_exists, events_tx),
+            InternalCmd::ToggleBank => run_bank(run_id, step_idx, BankAction::Toggle, args, bank_exists, events_tx),
+            InternalCmd::HideBank => run_bank(run_id, step_idx, BankAction::Hide, args, bank_exists, events_tx),
+            InternalCmd::Rename => run_rename(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::MakeDir => run_make_entry(run_id, step_idx, false, args, source, dest, events_tx),
+            InternalCmd::NewFile => run_make_entry(run_id, step_idx, true, args, source, dest, events_tx),
+            InternalCmd::Copy => run_file_job(run_id, step_idx, FileJob::Copy, args, source, dest, events_tx),
+            InternalCmd::Move => run_file_job(run_id, step_idx, FileJob::Move, args, source, dest, events_tx),
+            InternalCmd::Delete => run_file_job(run_id, step_idx, FileJob::Delete, args, source, dest, events_tx),
+            InternalCmd::CopyAs => run_file_job(run_id, step_idx, FileJob::CopyAs, args, source, dest, events_tx),
+            InternalCmd::MoveAs => run_file_job(run_id, step_idx, FileJob::MoveAs, args, source, dest, events_tx),
+            InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, source, dest, events_tx),
+        },
+        FnStep::External { argv, cwd_source } => {
+            run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, source, dest, events_tx)
+        }
+    }
 }
 
 fn expand_err_msg(e: ExpandError) -> String {

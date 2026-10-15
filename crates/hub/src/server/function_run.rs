@@ -8,6 +8,12 @@ use super::*;
 /// Why a run from a tool window (Manage Functions' Test) did not start.
 pub(super) const NO_SOURCE_ERROR: &str = "There is no SOURCE Lister: select a Lister as SOURCE, then try again.";
 
+/// Whether `steps` is not empty and only runs scripts: such a run may start
+/// with no SOURCE Lister.
+pub(super) fn only_scripts(steps: &[FnStep]) -> bool {
+    !steps.is_empty() && steps.iter().all(|s| matches!(s, FnStep::Internal { cmd: opusdm_ipc::function::InternalCmd::Script, .. }))
+}
+
 /// A Function run waiting on `SelectionReply` from SOURCE and/or DEST,
 /// tracked between `ToHub::RunFunction` and the point every slot it needs
 /// has been filled.
@@ -176,6 +182,10 @@ impl Hub {
             self.function_confirm(run_id, message, reply);
             return;
         }
+        if let crate::functions::FnEvent::ScriptQuery { query, reply } = ev {
+            let _ = reply.send(self.script_query(query));
+            return;
+        }
         let Some(requester) = self.runs.requester(run_id) else { return };
         let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
         if terminal {
@@ -253,6 +263,7 @@ impl Hub {
             crate::functions::FnEvent::SetBackground { .. }
             | crate::functions::FnEvent::Job { .. }
             | crate::functions::FnEvent::Confirm { .. }
+            | crate::functions::FnEvent::ScriptQuery { .. }
             | crate::functions::FnEvent::NewLister { .. }
             | crate::functions::FnEvent::Window { .. } => return,
             crate::functions::FnEvent::LeaveOut { .. }
@@ -340,6 +351,45 @@ impl Hub {
         self.next_req += 1;
         self.confirms.insert(req_id, (reply, cid));
         self.send_to(cid, ToLister::ConfirmPrompt { req_id, message });
+    }
+
+    /// Answer a script's question (see `crate::scripting::ScriptQuery`).
+    pub(super) fn script_query(&mut self, query: crate::scripting::ScriptQuery) -> crate::scripting::QueryReply {
+        use crate::scripting::ScriptQuery;
+        match query {
+            ScriptQuery::Listers => {
+                let source = self.roles.source().map(|l| l.0);
+                let dests: Vec<u64> = self.roles.dests().iter().map(|l| l.0).collect();
+                let mut cids: Vec<u64> = self.conns.iter().filter(|(_, c)| c.registered).map(|(cid, _)| *cid).collect();
+                cids.sort_unstable();
+                let listers = cids
+                    .into_iter()
+                    .map(|cid| {
+                        let role = if source == Some(cid) {
+                            "source"
+                        } else if dests.contains(&cid) {
+                            "dest"
+                        } else {
+                            "none"
+                        };
+                        serde_json::json!({ "id": cid, "role": role, "path": self.conns[&cid].path.display().to_string() })
+                    })
+                    .collect();
+                Ok(serde_json::Value::Array(listers))
+            }
+            ScriptQuery::Functions => serde_json::to_value(&self.current_functions).map_err(|e| e.to_string()),
+            ScriptQuery::GoTo { lister, path } => {
+                if !self.conns.get(&lister).is_some_and(|c| c.registered) {
+                    return Err(format!("Lister {lister} is not open"));
+                }
+                self.send_to_lister(lister, ToLister::GoTo { path: path.clone() });
+                Ok(serde_json::json!({ "path": path.display().to_string() }))
+            }
+            ScriptQuery::Refresh { path } => {
+                self.broadcast(ToLister::InvalidatePath(path));
+                Ok(serde_json::Value::Null)
+            }
+        }
     }
 
     /// Clean up any Function-run bookkeeping referencing `cid`, called when
