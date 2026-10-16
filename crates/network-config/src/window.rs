@@ -12,6 +12,7 @@ use opusdm_network::agent::MANAGER_IDENTIFIER;
 use opusdm_network::import;
 use opusdm_network::profile::{Profile, ProfileKind};
 use opusdm_network::{watch, ProfileSummary, ProfilesMsg};
+use opusdm_network_config::closing::CloseState;
 use opusdm_network_config::groups::{grouped, state_text};
 use opusdm_network_config::session::EditSession;
 use opusdm_network_config::worker::{self, Done, Job};
@@ -27,8 +28,18 @@ const LIST_W: i32 = 280;
 /// The text of the editor side with nothing selected.
 const NOTHING_SELECTED: &str = "Choose a connection, or add one with +";
 
-/// What runs once the user has decided about the unsaved changes.
-type AfterLeave = Box<dyn Fn(&Rc<App>)>;
+/// What runs once the user has decided about the unsaved changes; it gets
+/// what the user chose.
+type AfterLeave = Box<dyn Fn(&Rc<App>, Leave)>;
+
+/// What the user did with the unsaved changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Leave {
+    /// The save was sent to the worker; its result comes later.
+    Saved,
+    /// The changes were dropped.
+    Discarded,
+}
 
 /// The buttons under the list.
 struct ListButtons {
@@ -55,10 +66,8 @@ pub struct App {
     selected: RefCell<Option<String>>,
     /// Set while the code changes the list selection.
     quiet: Cell<bool>,
-    /// Close the window once the save in progress ends well.
-    close_after_save: Cell<bool>,
-    /// The user chose to close without saving.
-    closing: Cell<bool>,
+    /// Whether the window closes now, after the save in progress, or not.
+    close: Cell<CloseState>,
 }
 
 /// Open the window of `app`.
@@ -90,8 +99,7 @@ pub fn open(app: &gtk::Application) {
         view: RefCell::new(None),
         selected: RefCell::new(None),
         quiet: Cell::new(false),
-        close_after_save: Cell::new(false),
-        closing: Cell::new(false),
+        close: Cell::new(CloseState::default()),
     });
     let (layout, list_buttons) = app_state.layout();
     window.set_child(Some(&layout));
@@ -175,19 +183,32 @@ impl App {
         connect_button(&buttons.import, &weak, App::import);
         self.window.connect_close_request(move |_| {
             let Some(a) = weak.upgrade() else { return glib::Propagation::Proceed };
-            if a.closing.get() || !a.is_dirty() { return glib::Propagation::Proceed; }
-            a.ask_before_leaving(Box::new(|a: &Rc<App>| {
-                a.closing.set(true);
-                a.window.close();
+            if a.close.get().may_close(a.is_dirty()) { return glib::Propagation::Proceed; }
+            if a.close.get().waits_for_save() { return glib::Propagation::Stop; }
+            a.ask_before_leaving(Box::new(|a: &Rc<App>, leave| match leave {
+                // The window closes when the worker reports the save.
+                Leave::Saved => a.update_close(CloseState::save_then_close),
+                Leave::Discarded => {
+                    a.update_close(CloseState::discard);
+                    a.window.close();
+                }
             }));
             glib::Propagation::Stop
         });
     }
 
-    /// Hand a job to the worker thread.
-    fn send(&self, job: Job) {
+    /// Hand a job to the worker thread. Returns whether it was sent.
+    fn send(&self, job: Job) -> bool {
         let sent = self.jobs.borrow().as_ref().is_some_and(|tx| tx.send(job).is_ok());
         if !sent { self.show_error("NetworkManager is not available"); }
+        sent
+    }
+
+    /// Change the close state with `change`.
+    fn update_close(&self, change: fn(&mut CloseState)) {
+        let mut state = self.close.get();
+        change(&mut state);
+        self.close.set(state);
     }
 
     /// Show an information line. The line always keeps its height, so the
@@ -210,7 +231,7 @@ impl App {
                 *self.jobs.borrow_mut() = Some(worker::spawn(backend, self.done_tx.clone()));
                 self.show_info("");
             }
-            ProfilesMsg::Changed => self.send(Job::List),
+            ProfilesMsg::Changed => { self.send(Job::List); }
             ProfilesMsg::AgentFailed(why) => {
                 opusdm_ipc::err_log!("opusdm-network-manager", "secret agent: {why}");
                 self.show_error(&format!("The keyring cannot answer NetworkManager ({why}): connections that need a password may fail"));
@@ -232,8 +253,10 @@ impl App {
             }
             Done::Saved(uuid) => {
                 self.show_info("Saved");
-                if self.close_after_save.get() {
-                    self.closing.set(true);
+                let mut state = self.close.get();
+                let close_now = state.saved();
+                self.close.set(state);
+                if close_now {
                     self.window.close();
                     return;
                 }
@@ -251,7 +274,7 @@ impl App {
                 self.send(Job::List);
             }
             Done::Failed(what, e) => {
-                self.close_after_save.set(false);
+                self.update_close(CloseState::failed);
                 self.show_error(&format!("{what}: {}", e.text()));
             }
         }
@@ -328,7 +351,7 @@ impl App {
         }
         // Until the user answers, the list shows the profile still edited.
         self.reselect();
-        self.ask_before_leaving(Box::new(move |a: &Rc<App>| a.load(uuid.clone())));
+        self.ask_before_leaving(Box::new(move |a: &Rc<App>, _| a.load(uuid.clone())));
     }
 
     /// Start loading the profile `uuid` into the editor.
@@ -349,8 +372,9 @@ impl App {
     }
 
     /// Ask what to do with the changes in the editor, then run `then` unless
-    /// the user cancels. Save runs `then` at once: the save goes on in the
-    /// worker and its result is reported in the message line.
+    /// the user cancels or the save cannot be sent. Save runs `then` as soon
+    /// as the save is sent: the save goes on in the worker and its result is
+    /// reported in the message line.
     fn ask_before_leaving(self: &Rc<Self>, then: AfterLeave) {
         let name = self.view.borrow().as_ref().map(|v| v.ctx.read(|p| p.id.clone())).unwrap_or_default();
         let can_save = self.view.borrow().as_ref().is_some_and(|v| v.ctx.session.borrow().can_save());
@@ -362,13 +386,12 @@ impl App {
             let Some(a) = weak.upgrade() else { return };
             match choice {
                 0 => {
-                    a.save();
-                    then(&a);
+                    if a.save() { then(&a, Leave::Saved); }
                 }
                 1 => {
                     // The changes are dropped, so leaving asks nothing more.
                     if let Some(v) = a.view.borrow().as_ref() { v.ctx.session.borrow_mut().revert(); }
-                    then(&a);
+                    then(&a, Leave::Discarded);
                 }
                 _ => {}
             }
@@ -394,7 +417,7 @@ impl App {
             let weak = weak.clone();
             move || if let Some(a) = weak.upgrade() { a.update_buttons() }
         });
-        connect_button(&view.save, &weak, App::save);
+        connect_button(&view.save, &weak, |a| { a.save(); });
         connect_button(&view.revert, &weak, App::revert);
         connect_button(&view.connect, &weak, App::toggle_connection);
         self.set_editor(view.root.clone().upcast());
@@ -425,17 +448,18 @@ impl App {
         if let Some(v) = self.view.borrow().as_ref() { v.update(summary.as_ref()); }
     }
 
-    /// Save the profile in the editor.
-    fn save(self: &Rc<Self>) {
+    /// Save the profile in the editor. Returns whether the save was sent to
+    /// the worker.
+    fn save(self: &Rc<Self>) -> bool {
         let job = {
             let view = self.view.borrow();
-            let Some(v) = view.as_ref() else { return };
+            let Some(v) = view.as_ref() else { return false };
             let s = v.ctx.session.borrow();
-            if !s.can_save() { return; }
+            if !s.can_save() { return false; }
             Job::Save { profile: Box::new(s.current.clone()), base: s.base.clone(), files: s.files.clone() }
         };
         self.show_info("Saving...");
-        self.send(job);
+        self.send(job)
     }
 
     /// Drop the changes in the editor and show the profile as saved.
@@ -456,12 +480,14 @@ impl App {
         let Some(summary) = self.summary(&uuid) else { return };
         if summary.active || summary.activating {
             self.show_info(&format!("Disconnecting {}...", summary.name));
-            return self.send(Job::Deactivate(uuid));
+            self.send(Job::Deactivate(uuid));
+            return;
         }
         if self.is_dirty() { return self.show_error("Save the changes before connecting"); }
         if !summary.ask_password {
             self.show_info(&format!("Connecting {}...", summary.name));
-            return self.send(Job::Activate { uuid, password: None });
+            self.send(Job::Activate { uuid, password: None });
+            return;
         }
         let weak = Rc::downgrade(self);
         let name = summary.name.clone();
@@ -484,7 +510,7 @@ impl App {
                 }
             });
         };
-        if self.is_dirty() { self.ask_before_leaving(Box::new(start)) } else { start(self) }
+        if self.is_dirty() { self.ask_before_leaving(Box::new(move |a, _| start(a))) } else { start(self) }
     }
 
     /// Delete the profile in the editor, after asking.
@@ -531,7 +557,7 @@ impl App {
                 }
             });
         };
-        if self.is_dirty() { self.ask_before_leaving(Box::new(start)) } else { start(self) }
+        if self.is_dirty() { self.ask_before_leaving(Box::new(move |a, _| start(a))) } else { start(self) }
     }
 }
 
