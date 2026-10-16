@@ -47,6 +47,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 ///
 /// With `overwrite` the data goes to a temp file that replaces the destination
 /// only when the copy succeeds; an existing destination survives any failure.
+/// The temp file is flushed to disk before the rename, so a crash never
+/// leaves an empty file in place of the old one.
 ///
 /// Calls `on_bytes` with the size of each chunk written. On cancel it removes
 /// the partial output and returns `ErrorKind::Interrupted`.
@@ -54,6 +56,20 @@ pub fn copy_file(
     src: &Path,
     dst: &Path,
     overwrite: bool,
+    cancel: &CancelToken,
+    on_bytes: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    copy_file_synced(src, dst, overwrite, overwrite, cancel, on_bytes)
+}
+
+/// [`copy_file`] that also calls `fsync` on the written data before the file
+/// is renamed into place or reported as done when `sync` is set. A Move sets
+/// it, because the source is deleted right after the copy.
+fn copy_file_synced(
+    src: &Path,
+    dst: &Path,
+    overwrite: bool,
+    sync: bool,
     cancel: &CancelToken,
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
@@ -85,6 +101,9 @@ pub fn copy_file(
         std::fs::set_permissions(&out, meta.permissions())?;
         let mtime = filetime::FileTime::from_last_modification_time(&meta);
         filetime::set_file_mtime(&out, mtime)?;
+        if sync {
+            writer.sync_all()?;
+        }
         if overwrite {
             std::fs::rename(&out, dst)?;
         }
@@ -104,6 +123,23 @@ fn temp_sibling(dst: &Path) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     dst.with_file_name(format!(".{name}.opusdm-tmp-{}-{seq}", std::process::id()))
+}
+
+/// Create a symlink at `link` pointing to `target`.
+///
+/// Without `overwrite` it fails with `AlreadyExists` when `link` exists. With
+/// `overwrite` the link is made under a temp name and renamed into place, so
+/// an existing entry is only replaced once the new link exists. A directory
+/// at `link` is never replaced (`rename` refuses).
+fn create_symlink(target: &Path, link: &Path, overwrite: bool) -> io::Result<()> {
+    if !overwrite { return std::os::unix::fs::symlink(target, link); }
+    let tmp = temp_sibling(link);
+    std::os::unix::fs::symlink(target, &tmp)?;
+    let renamed = std::fs::rename(&tmp, link);
+    if renamed.is_err() {
+        crate::cleanup::remove_partial(&tmp);
+    }
+    renamed
 }
 
 /// Whether `path` exists and is the same inode (device + inode number) as the
@@ -232,19 +268,24 @@ struct CopyShared {
     update: bool,
     /// Copy only files missing at the destination or newer than it.
     newer: bool,
-    /// Source paths copied so far; `Some` only when a partial Move needs to
-    /// delete exactly those.
+    /// Source paths copied so far; `Some` only for a Move, which deletes
+    /// exactly those when some sources were skipped.
     copied_srcs: Option<Mutex<Vec<PathBuf>>>,
+    /// Flush every copied file to disk before counting it as done. Set for a
+    /// Move, whose sources are deleted afterwards.
+    sync_files: bool,
 }
 
 impl CopyShared {
+    /// Shared state for one job. `is_move` tracks the copied sources and
+    /// makes every copied file durable before the sources are deleted.
     fn new(
         tx: Sender<Progress>,
         cancel: CancelToken,
         total_files: u64,
         total_bytes: u64,
         opts: &TransferOpts,
-        track_copied: bool,
+        is_move: bool,
     ) -> Self {
         Self {
             tx,
@@ -265,7 +306,8 @@ impl CopyShared {
             conflict_lock: Mutex::new(()),
             update: opts.update,
             newer: opts.newer,
-            copied_srcs: track_copied.then(|| Mutex::new(Vec::new())),
+            copied_srcs: is_move.then(|| Mutex::new(Vec::new())),
+            sync_files: is_move,
         }
     }
 
@@ -400,7 +442,8 @@ fn copy_file_counted(shared: &CopyShared, task: &CopyTask, overwrite: bool) -> i
         let done = file_done.fetch_add(n, Ordering::Relaxed) + n;
         shared.add_bytes(&task.abs, n, done, file_total);
     };
-    copy_file(&task.abs, &task.dst, overwrite, &shared.cancel, &mut on_bytes)?;
+    let sync = overwrite || shared.sync_files;
+    copy_file_synced(&task.abs, &task.dst, overwrite, sync, &shared.cancel, &mut on_bytes)?;
     shared.copied.fetch_add(1, Ordering::Relaxed);
     shared.record_copied(&task.abs);
     shared.emit(&task.abs, false);
@@ -465,8 +508,21 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
                     shared.skipped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                let _ = std::fs::remove_file(&link);
-                match std::os::unix::fs::symlink(target, &link) {
+                let mut overwrite = shared.overwrite_all.load(Ordering::SeqCst);
+                if !overwrite && std::fs::symlink_metadata(&link).is_ok() {
+                    match shared.decide(&link, abs) {
+                        Decision::Copy { overwrite: o } => overwrite = o,
+                        Decision::Skip => {
+                            shared.skipped.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        Decision::Cancel => {
+                            shared.abort();
+                            return;
+                        }
+                    }
+                }
+                match create_symlink(target, &link, overwrite) {
                     Ok(()) => shared.record_copied(abs),
                     Err(e) => shared.push_error(link, e.to_string()),
                 }
@@ -517,9 +573,10 @@ pub fn copy_tree(
 
 /// [`copy_tree`] with a filter, `update`/`newer` flags and per-source names.
 ///
-/// When `delete_src_after` is set and `opts` is partial, only the source
+/// When `delete_src_after` is set and `opts` is partial or any file was
+/// skipped (filter, flags or a conflict answered with Skip), only the source
 /// files that were actually copied are removed (then the directories that
-/// became empty), so a filtered Move never destroys what it skipped.
+/// became empty), so a Move never destroys what it skipped.
 pub fn copy_tree_opts(
     srcs: &[PathBuf],
     dest_dir: &Path,
@@ -568,14 +625,15 @@ fn copy_tree_workers(
     };
     let _ = tx.send(Progress::Scanning { files: plan.total_files, bytes: plan.total_bytes });
 
-    let partial_move = delete_src_after && opts.is_partial();
+    // A Move always records what it copied: a conflict answered with Skip
+    // leaves sources behind even when no filter or flag was set.
     let shared = Arc::new(CopyShared::new(
         tx.clone(),
         cancel.clone(),
         plan.total_files,
         plan.total_bytes,
         opts,
-        partial_move,
+        delete_src_after,
     ));
 
     // One pool for the whole job. On a single core there is nothing to overlap,
@@ -595,6 +653,12 @@ fn copy_tree_workers(
     let mut errors = shared.take_errors();
 
     if delete_src_after && errors.is_empty() && !cancelled {
+        // The new directory entries must reach the disk before the only
+        // other copy of the data is deleted.
+        errors.extend(sync_dest_dirs(&plan, dest_dir));
+    }
+    if delete_src_after && errors.is_empty() && !cancelled {
+        let partial_move = opts.is_partial() || shared.skipped.load(Ordering::SeqCst) > 0;
         if partial_move {
             errors.extend(remove_copied(&plan, &shared.take_copied()));
         } else {
@@ -612,6 +676,23 @@ fn copy_tree_workers(
         cancelled,
         errors,
     }
+}
+
+/// Call `fsync` on `dest_dir` and on every planned directory below it, so the
+/// entries of the copied files are on disk. Returns one error per directory
+/// that could not be synced.
+fn sync_dest_dirs(plan: &Plan, dest_dir: &Path) -> Vec<(PathBuf, String)> {
+    let planned = plan.items.iter().filter_map(|item| match item {
+        Item::Dir { rel, .. } => Some(dest_dir.join(rel)),
+        _ => None,
+    });
+    let mut errors = Vec::new();
+    for dir in std::iter::once(dest_dir.to_path_buf()).chain(planned) {
+        if let Err(e) = std::fs::File::open(&dir).and_then(|f| f.sync_all()) {
+            errors.push((dir, format!("cannot flush folder to disk: {e}")));
+        }
+    }
+    errors
 }
 
 /// Delete the source files in `copied`, then the planned source directories
@@ -636,8 +717,8 @@ fn remove_copied(plan: &Plan, copied: &[PathBuf]) -> Vec<(PathBuf, String)> {
 /// Emit a `Conflict` event and block for the reply. `None` if the channel closed.
 fn ask_conflict(tx: &Sender<Progress>, dst: &Path, src: &Path) -> Option<Resolution> {
     let (reply_tx, reply_rx) = channel::<Resolution>();
-    let src_meta = std::fs::metadata(src).ok().map(|m| file_meta(&m))?;
-    let dst_meta = std::fs::metadata(dst).ok().map(|m| file_meta(&m))?;
+    let src_meta = entry_metadata(src).ok().map(|m| file_meta(&m))?;
+    let dst_meta = entry_metadata(dst).ok().map(|m| file_meta(&m))?;
     tx.send(Progress::Conflict {
         path: dst.to_path_buf(),
         src: src_meta,
@@ -646,6 +727,12 @@ fn ask_conflict(tx: &Sender<Progress>, dst: &Path, src: &Path) -> Option<Resolut
     })
     .ok()?;
     reply_rx.recv().ok()
+}
+
+/// Metadata of the entry `p` points to, or of the link itself when it
+/// dangles, so a broken symlink can still be shown in a conflict prompt.
+fn entry_metadata(p: &Path) -> io::Result<std::fs::Metadata> {
+    std::fs::metadata(p).or_else(|_| std::fs::symlink_metadata(p))
 }
 
 /// Remove a file or a directory tree.
@@ -722,13 +809,31 @@ mod tests {
         answer: Resolution,
         workers: usize,
     ) -> (u64, u64, bool, Vec<(PathBuf, String)>) {
+        run_transfer_workers(srcs, dest, answer, workers, false)
+    }
+
+    /// [`run_copy_workers`] that can also delete the sources afterwards, as
+    /// the cross-filesystem Move does.
+    fn run_transfer_workers(
+        srcs: Vec<PathBuf>,
+        dest: PathBuf,
+        answer: Resolution,
+        workers: usize,
+        delete_src_after: bool,
+    ) -> (u64, u64, bool, Vec<(PathBuf, String)>) {
         let (tx, rx) = channel::<Progress>();
         let cancel = CancelToken::new();
         let worker = {
             let tx = tx.clone();
             thread::spawn(move || {
-                let done =
-                    copy_tree_with_workers(&srcs, &dest, &tx, &cancel, false, workers);
+                let done = copy_tree_with_workers(
+                    &srcs,
+                    &dest,
+                    &tx,
+                    &cancel,
+                    delete_src_after,
+                    workers,
+                );
                 tx.send(done).unwrap();
             })
         };
@@ -790,6 +895,120 @@ mod tests {
             assert_eq!((copied, skipped), (0, 1), "workers={workers}");
             assert_eq!(fs::read(dst.join("s/f.txt")).unwrap(), b"OLD");
         }
+    }
+
+    /// A move through the copy engine must keep the source files the user
+    /// chose to skip, and still delete the ones it copied.
+    #[test]
+    fn move_keeps_the_sources_skipped_on_conflict() {
+        for workers in WORKER_MODES {
+            let td = tempfile::tempdir().unwrap();
+            let src = td.path().join("s");
+            let dst = td.path().join("d");
+            fs::create_dir_all(&src).unwrap();
+            fs::create_dir_all(dst.join("s")).unwrap();
+            fs::write(src.join("kept.txt"), b"NEW").unwrap();
+            fs::write(src.join("moved.txt"), b"MOVED").unwrap();
+            fs::write(dst.join("s/kept.txt"), b"OLD").unwrap();
+
+            let (copied, skipped, cancelled, errors) =
+                run_transfer_workers(vec![src.clone()], dst.clone(), Resolution::Skip, workers, true);
+
+            assert_eq!((copied, skipped, cancelled), (1, 1, false), "workers={workers}");
+            assert!(errors.is_empty(), "workers={workers}: {errors:?}");
+            assert_eq!(fs::read(src.join("kept.txt")).unwrap(), b"NEW", "workers={workers}");
+            assert!(!src.join("moved.txt").exists(), "workers={workers}");
+            assert_eq!(fs::read(dst.join("s/moved.txt")).unwrap(), b"MOVED");
+            assert_eq!(fs::read(dst.join("s/kept.txt")).unwrap(), b"OLD");
+        }
+    }
+
+    /// A move with no conflict still removes the whole source tree.
+    #[test]
+    fn move_without_conflicts_removes_the_source_tree() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("sub/f.txt"), b"x").unwrap();
+
+        let (copied, _, _, errors) =
+            run_transfer_workers(vec![src.clone()], dst.clone(), Resolution::Skip, 1, true);
+
+        assert_eq!(copied, 1);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(!src.exists());
+        assert_eq!(fs::read(dst.join("s/sub/f.txt")).unwrap(), b"x");
+    }
+
+    /// Syncing the destination folders succeeds when they all exist.
+    #[test]
+    fn sync_dest_dirs_flushes_every_planned_folder() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(dst.join("s/sub")).unwrap();
+        let plan = crate::scan::scan(std::slice::from_ref(&src)).unwrap();
+        assert!(sync_dest_dirs(&plan, &dst).is_empty());
+    }
+
+    /// A folder that cannot be synced is reported, which stops a Move from
+    /// deleting its sources.
+    #[test]
+    fn sync_dest_dirs_reports_a_missing_folder() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(dst.join("s")).unwrap();
+        let plan = crate::scan::scan(std::slice::from_ref(&src)).unwrap();
+        let errors = sync_dest_dirs(&plan, &dst);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, dst.join("s/sub"));
+    }
+
+    /// A source symlink whose name exists at the destination asks first;
+    /// Skip keeps the existing regular file.
+    #[test]
+    fn symlink_conflict_skip_keeps_the_destination_file() {
+        for workers in WORKER_MODES {
+            let td = tempfile::tempdir().unwrap();
+            let src = td.path().join("s");
+            let dst = td.path().join("d");
+            fs::create_dir_all(&src).unwrap();
+            fs::create_dir_all(dst.join("s")).unwrap();
+            std::os::unix::fs::symlink("nowhere", src.join("link")).unwrap();
+            fs::write(dst.join("s/link"), b"OLD").unwrap();
+
+            let (_, skipped, cancelled, errors) =
+                run_copy_workers(vec![src], dst.clone(), Resolution::Skip, workers);
+
+            assert_eq!((skipped, cancelled), (1, false), "workers={workers}");
+            assert!(errors.is_empty(), "workers={workers}: {errors:?}");
+            assert_eq!(fs::read(dst.join("s/link")).unwrap(), b"OLD");
+        }
+    }
+
+    /// Overwrite replaces the existing entry with the link and leaves no temp.
+    #[test]
+    fn symlink_conflict_overwrite_replaces_the_destination() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(dst.join("s")).unwrap();
+        std::os::unix::fs::symlink("nowhere", src.join("link")).unwrap();
+        fs::write(dst.join("s/link"), b"OLD").unwrap();
+
+        let (_, skipped, cancelled, errors) =
+            run_copy_workers(vec![src], dst.clone(), Resolution::Overwrite, 1);
+
+        assert_eq!((skipped, cancelled), (0, false));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(fs::read_link(dst.join("s/link")).unwrap(), PathBuf::from("nowhere"));
+        assert_eq!(fs::read_dir(dst.join("s")).unwrap().count(), 1);
     }
 
     #[test]

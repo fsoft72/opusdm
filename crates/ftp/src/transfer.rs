@@ -1,9 +1,10 @@
 //! Downloading remote files and folders into a local directory.
 
 use crate::{RemoteError, RemoteFs};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// How deep a download follows directories (guards against link loops).
 const MAX_DEPTH: usize = 64;
@@ -23,6 +24,56 @@ pub struct RemoteItem {
 /// write outside the target through `..`, a `/` or a NUL.
 pub fn safe_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+}
+
+/// The I/O error a cancelled transfer stops with. Its kind is not
+/// `Interrupted`, which copy loops retry instead of stopping.
+fn cancelled_io() -> io::Error {
+    io::Error::other("cancelled")
+}
+
+/// A local file being written by a download; refuses to go on once `cancel`
+/// is set, so a transfer stops in the middle of a file.
+struct CancelWriter<'a, W: Write> {
+    inner: W,
+    cancel: &'a AtomicBool,
+}
+
+impl<W: Write> Write for CancelWriter<'_, W> {
+    /// Write to the inner file unless the transfer was cancelled.
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) { return Err(cancelled_io()); }
+        self.inner.write(buf)
+    }
+
+    /// Flush the inner file.
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// A local file being read by an upload; refuses to go on once `cancel` is
+/// set, so a transfer stops in the middle of a file.
+struct CancelReader<'a, R: Read> {
+    inner: R,
+    cancel: &'a AtomicBool,
+}
+
+impl<R: Read> Read for CancelReader<'_, R> {
+    /// Read from the inner file unless the transfer was cancelled.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) { return Err(cancelled_io()); }
+        self.inner.read(buf)
+    }
+}
+
+/// `result` with any failure that happened after `cancel` was set reported
+/// as [`RemoteError::Cancelled`].
+fn or_cancelled<T>(result: Result<T, RemoteError>, cancel: &AtomicBool) -> Result<T, RemoteError> {
+    match result {
+        Err(_) if cancel.load(Ordering::Relaxed) => Err(RemoteError::Cancelled),
+        other => other,
+    }
 }
 
 /// Join a server directory and a name.
@@ -56,6 +107,9 @@ pub fn download(
     Ok(made)
 }
 
+/// Download one file. The data goes to a temp file next to `local` that
+/// replaces it only once the transfer succeeded, so a failed or cancelled
+/// download never destroys an existing local copy.
 fn download_file(
     fs: &mut dyn RemoteFs,
     remote: &str,
@@ -63,17 +117,30 @@ fn download_file(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&str),
 ) -> Result<(), RemoteError> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(RemoteError::Failed("cancelled".to_string()));
-    }
+    if cancel.load(Ordering::Relaxed) { return Err(RemoteError::Cancelled); }
     progress(remote);
-    let mut file = File::create(local)?;
-    let result = fs.read_file(remote, &mut file);
+    let part = part_sibling(local);
+    let file = OpenOptions::new().write(true).create_new(true).open(&part)?;
+    let mut writer = CancelWriter { inner: file, cancel };
+    let read = or_cancelled(fs.read_file(remote, &mut writer), cancel);
+    let file = writer.inner;
+    let result = read
+        .and_then(|_| file.sync_all().map_err(RemoteError::from))
+        .and_then(|()| std::fs::rename(&part, local).map_err(RemoteError::from));
     if result.is_err() {
         drop(file);
-        let _ = std::fs::remove_file(local);
+        let _ = std::fs::remove_file(&part);
     }
-    result.map(|_| ())
+    result
+}
+
+/// A hidden, unused path in the same folder as `local`, so the final
+/// `rename` stays on one filesystem.
+fn part_sibling(local: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    local.with_file_name(format!(".{name}.opusdm-part-{}-{seq}", std::process::id()))
 }
 
 fn download_dir(
@@ -135,7 +202,7 @@ fn upload_item(
     depth: usize,
 ) -> Result<(), RemoteError> {
     if cancel.load(Ordering::Relaxed) {
-        return Err(RemoteError::Failed("cancelled".to_string()));
+        return Err(RemoteError::Cancelled);
     }
     let meta = std::fs::symlink_metadata(local)?;
     if meta.is_dir() {
@@ -151,8 +218,8 @@ fn upload_item(
         }
     } else if meta.is_file() {
         progress(remote);
-        let mut file = File::open(local)?;
-        fs.write_file(remote, &mut file)?;
+        let mut reader = CancelReader { inner: File::open(local)?, cancel };
+        or_cancelled(fs.write_file(remote, &mut reader), cancel)?;
     }
     Ok(())
 }
@@ -180,7 +247,7 @@ fn remove_item(
     depth: usize,
 ) -> Result<(), RemoteError> {
     if cancel.load(Ordering::Relaxed) {
-        return Err(RemoteError::Failed("cancelled".to_string()));
+        return Err(RemoteError::Cancelled);
     }
     if path.trim_end_matches('/').is_empty() {
         return Err(RemoteError::Failed("refusing to delete the server root".to_string()));
@@ -235,7 +302,7 @@ pub fn existing_remote(fs: &mut dyn RemoteFs, dir: &str, names: &[String]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RemoteEntry;
+    use crate::{RemoteEntry, COPY_CHUNK};
     use std::collections::HashMap;
     use std::io::Write;
 
@@ -362,11 +429,105 @@ mod tests {
         assert!(!td.path().join("nope").exists());
     }
 
+    /// A failed re-download keeps the local copy that was already there and
+    /// leaves no temp file behind.
+    #[test]
+    fn a_failed_download_keeps_the_existing_local_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("nope"), b"KEEP").unwrap();
+        let missing = vec![RemoteItem { path: "/nope".into(), name: "nope".into(), is_dir: false }];
+        assert!(download(&mut tree(), &missing, td.path(), &AtomicBool::new(false), &mut |_| {}).is_err());
+        assert_eq!(std::fs::read(td.path().join("nope")).unwrap(), b"KEEP");
+        assert_eq!(std::fs::read_dir(td.path()).unwrap().count(), 1);
+    }
+
+    /// A successful download replaces an existing local file and leaves no
+    /// temp file behind.
+    #[test]
+    fn a_download_replaces_the_existing_local_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("top.txt"), b"OLD").unwrap();
+        download(&mut tree(), &items()[1..], td.path(), &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(td.path().join("top.txt")).unwrap(), b"T");
+        assert_eq!(std::fs::read_dir(td.path()).unwrap().count(), 1);
+    }
+
     #[test]
     fn cancel_stops_the_download() {
         let td = tempfile::tempdir().unwrap();
         let err = download(&mut tree(), &items(), td.path(), &AtomicBool::new(true), &mut |_| {}).unwrap_err();
-        assert_eq!(err, RemoteError::Failed("cancelled".to_string()));
+        assert_eq!(err, RemoteError::Cancelled);
+    }
+
+    /// A server that moves one file in two chunks and presses cancel in
+    /// between, as a user would during a long transfer.
+    struct CancelMidFile {
+        cancel: std::sync::Arc<AtomicBool>,
+        uploaded: Vec<u8>,
+    }
+
+    impl RemoteFs for CancelMidFile {
+        fn list(&mut self, _path: &str) -> Result<Vec<RemoteEntry>, RemoteError> {
+            Ok(Vec::new())
+        }
+        fn read_file(&mut self, _path: &str, out: &mut dyn Write) -> Result<u64, RemoteError> {
+            out.write_all(b"first")?;
+            self.cancel.store(true, Ordering::Relaxed);
+            out.write_all(b"second")?;
+            Ok(11)
+        }
+        fn write_file(&mut self, _path: &str, data: &mut dyn std::io::Read) -> Result<u64, RemoteError> {
+            let mut chunk = [0u8; 4];
+            data.read_exact(&mut chunk)?;
+            self.uploaded.extend_from_slice(&chunk);
+            self.cancel.store(true, Ordering::Relaxed);
+            data.read_to_end(&mut self.uploaded)?;
+            Ok(self.uploaded.len() as u64)
+        }
+        fn mkdir(&mut self, _path: &str) -> Result<(), RemoteError> {
+            Ok(())
+        }
+        fn remove_file(&mut self, _path: &str) -> Result<(), RemoteError> {
+            Ok(())
+        }
+        fn remove_dir(&mut self, _path: &str) -> Result<(), RemoteError> {
+            Ok(())
+        }
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn cancel_stops_a_download_in_the_middle_of_a_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("f"), b"KEEP").unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut server = CancelMidFile { cancel: cancel.clone(), uploaded: Vec::new() };
+        let item = vec![RemoteItem { path: "/f".into(), name: "f".into(), is_dir: false }];
+        let err = download(&mut server, &item, td.path(), &cancel, &mut |_| {}).unwrap_err();
+        assert_eq!(err, RemoteError::Cancelled);
+        assert_eq!(std::fs::read(td.path().join("f")).unwrap(), b"KEEP");
+        assert_eq!(std::fs::read_dir(td.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cancel_stops_an_upload_in_the_middle_of_a_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("f"), vec![1u8; 64 * 1024]).unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut server = CancelMidFile { cancel: cancel.clone(), uploaded: Vec::new() };
+        let err = upload(&mut server, &[td.path().join("f")], "/up", &cancel, &mut |_| {}).unwrap_err();
+        assert_eq!(err, RemoteError::Cancelled);
+        assert!(server.uploaded.len() < 64 * 1024, "the whole file was sent");
+    }
+
+    /// The chunked copy moves everything and counts the bytes.
+    #[test]
+    fn copy_chunked_moves_every_byte() {
+        let data: Vec<u8> = (0..(COPY_CHUNK * 2 + 17)).map(|i| i as u8).collect();
+        let mut out = Vec::new();
+        let n = crate::copy_chunked(&mut &data[..], &mut out).unwrap();
+        assert_eq!(n, data.len() as u64);
+        assert_eq!(out, data);
     }
 
     #[test]

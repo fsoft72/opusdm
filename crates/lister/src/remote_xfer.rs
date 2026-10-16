@@ -248,7 +248,7 @@ impl Ui {
                         let (ui2, cancel, tx, plan, src, dst) = (ui.clone(), cancel.clone(), tx.clone(), plan.clone(), src.clone(), dst.clone());
                         ui.ask_overwrite(&window, prepared.existing.clone(), move |skip| {
                             let Some(skip) = skip else {
-                                ui2.finish_transfer(Err(RemoteError::Failed("cancelled".to_string())), &[]);
+                                ui2.finish_transfer(Err(RemoteError::Cancelled), &[]);
                                 return;
                             };
                             std::thread::spawn(move || {
@@ -303,7 +303,7 @@ impl Ui {
     fn finish_transfer(self: &Rc<Self>, result: Result<(), RemoteError>, touched: &[PathBuf]) {
         match result {
             Ok(()) => crate::actions::flash(self, "transfer complete"),
-            Err(RemoteError::Failed(m)) if m == "cancelled" => crate::actions::flash(self, "transfer cancelled"),
+            Err(RemoteError::Cancelled) => crate::actions::flash(self, "transfer cancelled"),
             Err(e) => crate::actions::flash(self, &format!("transfer failed: {e}")),
         }
         for dir in touched {
