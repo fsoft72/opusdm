@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-16
+- Docs: new `OPTIMIZE.md` at the root, a prioritized checklist of 27 optimization and quality items found by a code review of the whole workspace (1 Critical, 11 High, 10 Medium, 5 Low). No code changed.
 - Fix (ui, all apps, build-release): the `opusdm-*` apps showed the generic application icon. `opusdm-ui` gets `set_app_icon()` (GTK default window icon name `opusdm`), called from `connect_startup` of every app (hub, lister, settings, dock, run, shot, terminal, player, viewer, input-config, screen, apps-editor, network-manager, polkit). `build-release.sh` stages `assets/ball.png` as `hicolor/512x512/apps/opusdm.png` and one hidden `org.opusdm.<Id>.desktop` per app (Wayland compositors map the app id to the icon through it); `install.sh` installs both and refreshes the icon cache. The Openbox theme copy now uses `openbox-share/.` so `dist/share` can hold more than the theme. Compiles; NOT checked in a session: needs `install.sh` to be run, and the Lister tool windows started by the hub with other app ids have no desktop entry.
 
 ## 2026-10-15
