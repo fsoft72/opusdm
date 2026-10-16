@@ -463,9 +463,32 @@ const X11_STATES: [&str; 4] = ["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_SKIP_TASKBA
 /// realize does not last; the EWMH messages do.
 fn add_x11_states(window: &gtk::Window) {
     let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
-    if let Err(e) = opusdm_ui::with_x11(|x11| x11.add_wm_states(xid, &X11_STATES)) {
+    let set = opusdm_ui::with_x11(|x11| {
+        refuse_x11_input_focus(x11.conn(), xid)?;
+        x11.add_wm_states(xid, &X11_STATES)
+    });
+    if let Err(e) = set {
         opusdm_ipc::err_log!("opusdm-notify", "cannot set the popup states: {e}");
     }
+}
+
+/// X11: make the popup unable to take the keyboard focus: `WM_HINTS` input
+/// false (GDK writes it as true) and no `WM_TAKE_FOCUS` in `WM_PROTOCOLS`
+/// (GTK adds it, and it makes the window "locally active", so the window
+/// manager would still focus it).
+fn refuse_x11_input_focus(conn: &impl x11rb::connection::Connection, xid: u32) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::properties::WmHints;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+    let mut hints = WmHints::get(conn, xid)?.reply()?.unwrap_or_default();
+    hints.input = Some(false);
+    hints.set(conn, xid)?;
+    let protocols = conn.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
+    let take_focus = conn.intern_atom(false, b"WM_TAKE_FOCUS")?.reply()?.atom;
+    let current = conn.get_property(false, xid, protocols, AtomEnum::ATOM, 0, 64)?.reply()?;
+    let kept: Vec<u32> = current.value32().into_iter().flatten().filter(|a| *a != take_focus).collect();
+    conn.change_property32(PropMode::REPLACE, xid, protocols, AtomEnum::ATOM, &kept)?;
+    Ok(())
 }
 
 /// X11: mark the window a notification, above the others, on every desktop
@@ -480,9 +503,13 @@ fn set_x11_type(window: &gtk::Window) {
         let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
         let notification = x11.atom("_NET_WM_WINDOW_TYPE_NOTIFICATION")?;
         let wm_state = x11.atom("_NET_WM_STATE")?;
+        let user_time = x11.atom("_NET_WM_USER_TIME")?;
         let states = X11_STATES.iter().map(|name| x11.atom(name)).collect::<Result<Vec<u32>, _>>()?;
         conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[notification])?;
         conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &states)?;
+        // A user time of 0 tells the window manager not to focus the window when it maps.
+        conn.change_property32(PropMode::REPLACE, xid, user_time, AtomEnum::CARDINAL, &[0])?;
+        refuse_x11_input_focus(x11.conn(), xid)?;
         conn.flush()?;
         Ok(())
     });
