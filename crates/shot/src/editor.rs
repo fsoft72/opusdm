@@ -397,6 +397,7 @@ fn paint(ui: &Ui, cr: &cairo::Context) -> Result<(), cairo::Error> {
 fn begin_drag(ui: &Ui, p: Point) {
     commit_text(ui);
     let mut st = ui.state.borrow_mut();
+    let starts_text = st.tool == Tool::Text;
     match st.tool {
         Tool::Select => {
             st.selected = st.doc.hit_test(p);
@@ -426,10 +427,11 @@ fn begin_drag(ui: &Ui, p: Point) {
             };
             st.selected = Some(edit.index);
             st.edit = Some(edit);
-            ui.im.focus_in();
         }
     }
     drop(st);
+    // The input method may call back into the state, so no borrow is held.
+    if starts_text { ui.im.focus_in(); }
     ui.canvas.queue_draw();
 }
 
@@ -559,9 +561,12 @@ fn erase_char(ui: &Ui) {
 
 /// Finish the text being edited; an empty one is dropped.
 fn commit_text(ui: &Ui) {
+    if ui.state.borrow().edit.is_none() { return; }
+    // The input method may commit its pending text now, through `type_text`,
+    // so no borrow is held while it runs and the edit is still open.
+    ui.im.focus_out();
     let mut st = ui.state.borrow_mut();
     let Some(edit) = st.edit.take() else { return };
-    ui.im.focus_out();
     let empty = matches!(&st.doc.items().get(edit.index).map(|a| &a.shape), Some(Shape::Text { text, .. }) if text.is_empty());
     if empty {
         if edit.is_new { st.doc.undo(); } else { st.doc.remove(edit.index); }
