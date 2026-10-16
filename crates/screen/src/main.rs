@@ -38,7 +38,7 @@ fn main() -> gtk::glib::ExitCode {
         if let Some(problem) = problem {
             return ui::open_problem(app, &problem);
         }
-        let backend: Box<dyn ScreenBackend> = if demo { Box::new(FakeBackend::new(two_monitor_system())) } else { for_session() };
+        let backend: Box<dyn ScreenBackend + Send> = if demo { Box::new(FakeBackend::new(two_monitor_system())) } else { for_session() };
         ui::open(app, backend);
     });
     app.run_with_args(&gtk_args)

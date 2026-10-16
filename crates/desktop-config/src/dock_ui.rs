@@ -7,21 +7,18 @@ use gtk::prelude::*;
 use opusdm_dock::{apps, list};
 use opusdm_ipc::{DockPosition, PanelPosition};
 use std::cell::RefCell;
+use opusdm_ui::{clear_children, labeled_row, pick_file, section_heading, FileFilterSpec, FilePick, LabelWidth};
+use std::path::Path;
 use std::rc::Rc;
 
 /// An edit of the dock id list for one entry (move up, move down, remove).
 type ListEdit = Box<dyn Fn(&mut Vec<String>, &str)>;
 
+/// Where the Add Application dialog opens.
+const SYSTEM_APPS_DIR: &str = "/usr/share/applications";
+
 /// Icon sizes the drop-down offers, in pixels.
 const ICON_SIZES: [i32; 3] = [32, 48, 64];
-
-/// A section heading label styled like the other sections.
-fn heading(text: &str) -> gtk::Label {
-    let l = gtk::Label::new(Some(text));
-    l.set_xalign(0.0);
-    l.add_css_class("heading");
-    l
-}
 
 /// The dock edges the panel leaves free: every edge except the panel's own.
 pub fn available_positions(panel: PanelPosition) -> Vec<DockPosition> {
@@ -60,7 +57,7 @@ impl DockSection {
     /// the panel edge the dock must keep clear of.
     pub fn new(position: DockPosition, icon_size: i32, panel: PanelPosition) -> Rc<Self> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("DOCK"));
+        root.append(&section_heading("DOCK"));
 
         let position_row = gtk::DropDown::new(None::<gio::ListModel>, gtk::Expression::NONE);
         let size_labels: Vec<String> = ICON_SIZES.iter().map(|s| format!("{s} px")).collect();
@@ -70,13 +67,7 @@ impl DockSection {
         size.set_selected(ICON_SIZES.iter().position(|s| *s == nearest).unwrap_or(1) as u32);
 
         for (label, dropdown) in [("Position", &position_row), ("Icon size", &size)] {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let name = gtk::Label::new(Some(label));
-            name.set_xalign(0.0);
-            name.set_size_request(90, -1);
-            row.append(&name);
-            row.append(dropdown);
-            root.append(&row);
+            root.append(&labeled_row(label, LabelWidth::Pixels(90), 8, dropdown));
         }
         let section = Rc::new(Self {
             root,
@@ -133,7 +124,7 @@ impl DockAppsSection {
     /// "Add..." file dialog.
     pub fn new(window: &impl IsA<gtk::Window>, ids: Vec<String>) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("DOCK APPS"));
+        root.append(&section_heading("DOCK APPS"));
 
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::None);
@@ -161,9 +152,7 @@ impl DockAppsSection {
 impl AppsInner {
     /// Repaint the list from `ids`.
     fn rebuild(self: &Rc<Self>) {
-        while let Some(row) = self.list.first_child() {
-            self.list.remove(&row);
-        }
+        clear_children(&self.list);
         let ids = self.ids.borrow().clone();
         for id in &ids {
             self.list.append(&self.build_row(id));
@@ -212,19 +201,16 @@ impl AppsInner {
 
     /// Let the user pick a `.desktop` file and append it to the list.
     fn choose_app(self: &Rc<Self>, window: &gtk::Window) {
-        let filter = gtk::FileFilter::new();
-        filter.add_pattern("*.desktop");
-        filter.set_name(Some("Applications"));
-        let filters = gio::ListStore::new::<gtk::FileFilter>();
-        filters.append(&filter);
-        let dialog = gtk::FileDialog::builder()
-            .title("Add Application")
-            .filters(&filters)
-            .initial_folder(&gio::File::for_path("/usr/share/applications"))
-            .build();
+        let pick = FilePick {
+            title: "Add Application",
+            filter: Some(FileFilterSpec { name: "Applications", patterns: &["*.desktop"], ..Default::default() }),
+            initial_folder: Some(Path::new(SYSTEM_APPS_DIR)),
+            ..Default::default()
+        };
         let this = self.clone();
-        dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
-            let Some(id) = result.ok().and_then(|f| f.path()).and_then(|p| apps::id_for_desktop_file(&p)) else {
+        pick_file(Some(window), &pick, move |path| {
+            let Some(id) = apps::id_for_desktop_file(&path) else {
+                opusdm_ipc::err_log!("opusdm-settings", "{} is not an installed application", path.display());
                 return;
             };
             let end = this.ids.borrow().len();

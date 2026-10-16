@@ -50,12 +50,14 @@ impl Shared {
         *self.themes.borrow_mut() = theme::all_themes();
     }
 
-    /// Store `config`, save it and apply it to every open terminal.
-    pub fn update_config(&self, config: TerminalConfig) {
-        config::save(&config);
+    /// Save `config`, store it and apply it to every open terminal. When the
+    /// save fails nothing changes and the error message is returned.
+    pub fn update_config(&self, config: TerminalConfig) -> Result<(), String> {
+        config::save(&config)?;
         *self.config.borrow_mut() = config;
         self.reload_themes();
         self.preview(&self.config());
+        Ok(())
     }
 
     /// Apply `config` to every open terminal without storing it, for the

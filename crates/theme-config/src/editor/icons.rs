@@ -3,8 +3,8 @@
 use crate::draft::queue_icon_replace;
 use crate::writer::{AssetOp, ICON_NAMES};
 use gtk4 as gtk;
-use gtk::gio;
 use gtk::prelude::*;
+use opusdm_ui::{pick_file, FileFilterSpec, FilePick};
 use opusdm_ipc::themes::theme_dir;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,17 +39,14 @@ impl IconsTab {
             let window = window.clone();
             let ops = ops.clone();
             replace.connect_clicked(move |_| {
-                let filter = gtk::FileFilter::new();
-                filter.add_suffix("png");
-                filter.set_name(Some("PNG icons"));
-                let filters = gio::ListStore::new::<gtk::FileFilter>();
-                filters.append(&filter);
-                let dialog = gtk::FileDialog::builder().title("Replace Icon").filters(&filters).build();
+                let pick = FilePick {
+                    title: "Replace Icon",
+                    filter: Some(FileFilterSpec { name: "PNG icons", suffixes: &["png"], ..Default::default() }),
+                    ..Default::default()
+                };
                 let thumb = thumb.clone();
                 let ops = ops.clone();
-                dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-                    let Ok(file) = result else { return };
-                    let Some(path) = file.path() else { return };
+                pick_file(Some(window.upcast_ref()), &pick, move |path| {
                     thumb.set_filename(Some(&path));
                     queue_icon_replace(&mut ops.borrow_mut(), name, path);
                 });

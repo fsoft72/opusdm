@@ -15,9 +15,7 @@ impl OptionalSection {
     /// Wrap `content` under `title`; `is_set` is the initial state of the box.
     pub fn new(title: &str, content: &impl IsA<gtk::Widget>, is_set: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some(title));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading(title);
         let check = gtk::CheckButton::with_label("Set by this theme");
         check.set_active(is_set);
         let content: gtk::Widget = content.upcast_ref::<gtk::Widget>().clone();

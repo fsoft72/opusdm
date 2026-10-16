@@ -7,9 +7,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk4 as gtk;
-use gtk::glib;
+use gtk::{gio, glib};
 use gtk::prelude::*;
-use opusdm_screen::backend::ScreenBackend;
+use opusdm_screen::backend::{ScreenBackend, SharedBackend};
 use opusdm_screen::geometry::{fit_view, snap_position, Rect, View};
 use opusdm_screen::session::{Session, State};
 use opusdm_screen::{modes, same_rate, store, Layout, Monitor, MonitorConfig, Rotation, ScreenError};
@@ -31,6 +31,8 @@ const APP_TAG: &str = "opusdm-screen";
 const SCALES: [f64; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 /// Text of the Rate list entry that lets `xrandr` choose.
 const AUTO_RATE: &str = "Automatic";
+/// What a worker task reports when it panicked.
+const TASK_FAILED: &str = "the screen tool failed unexpectedly";
 
 /// A monitor being dragged.
 struct Drag {
@@ -40,7 +42,16 @@ struct Drag {
 
 /// What every callback of the window shares.
 struct Ui {
-    session: RefCell<Session<Box<dyn ScreenBackend>>>,
+    window: gtk::ApplicationWindow,
+    session: RefCell<Session<SharedBackend>>,
+    /// Set while `xrandr` or `wlr-randr` runs on a worker thread: every
+    /// control waits.
+    busy: Cell<bool>,
+    /// The user closed the window while a layout was pending or a command
+    /// ran: close once the previous layout is back.
+    close_after: Cell<bool>,
+    /// The window may close now.
+    closing: Cell<bool>,
     selected: RefCell<Option<String>>,
     view: Cell<View>,
     drag: RefCell<Option<Drag>>,
@@ -86,12 +97,23 @@ pub fn open_problem(app: &gtk::Application, problem: &str) {
     window.present();
 }
 
-/// Open the Screens window on `backend`.
-pub fn open(app: &gtk::Application, backend: Box<dyn ScreenBackend>) {
-    match Session::open(backend) {
-        Ok(session) => build(app, session),
-        Err(e) => open_problem(app, &e.to_string()),
-    }
+/// Open the Screens window on `backend`. The monitors are read on a worker
+/// thread; the window opens once they are known.
+pub fn open(app: &gtk::Application, backend: Box<dyn ScreenBackend + Send>) {
+    let backend = SharedBackend::new(backend);
+    // No window is open while reading: hold the app so it does not quit.
+    let hold = app.hold();
+    let app = app.clone();
+    let worker = backend.clone();
+    let handle = gio::spawn_blocking(move || worker.query());
+    glib::spawn_future_local(async move {
+        let result = handle.await.unwrap_or_else(|_| Err(ScreenError::Session(TASK_FAILED.to_string())));
+        match result {
+            Ok(parsed) => build(&app, Session::from_parsed(backend, parsed)),
+            Err(e) => open_problem(&app, &e.to_string()),
+        }
+        drop(hold);
+    });
 }
 
 /// A label and a widget in a row.
@@ -136,13 +158,19 @@ fn scale_text(scale: f64) -> String {
     format!("{scale:.2}x")
 }
 
-fn build(app: &gtk::Application, session: Session<Box<dyn ScreenBackend>>) {
+/// Build and show the Screens window on `session`.
+fn build(app: &gtk::Application, session: Session<SharedBackend>) {
     let area = gtk::DrawingArea::new();
     area.set_content_height(240);
     area.set_hexpand(true);
     area.set_vexpand(true);
+    let window = gtk::ApplicationWindow::builder().application(app).title("Screens").default_width(WINDOW_W).default_height(WINDOW_H).build();
     let ui = Rc::new(Ui {
+        window: window.clone(),
         session: RefCell::new(session),
+        busy: Cell::new(false),
+        close_after: Cell::new(false),
+        closing: Cell::new(false),
         selected: RefCell::new(None),
         view: Cell::new(View { scale: 0.1, ox: 0.0, oy: 0.0 }),
         drag: RefCell::new(None),
@@ -173,7 +201,6 @@ fn build(app: &gtk::Application, session: Session<Box<dyn ScreenBackend>>) {
         duplicate: gtk::Button::with_label("Duplicate"),
     });
 
-    let window = gtk::ApplicationWindow::builder().application(app).title("Screens").default_width(WINDOW_W).default_height(WINDOW_H).build();
     let root = gtk::Box::new(gtk::Orientation::Vertical, SPACING);
     root.set_margin_top(MARGIN);
     root.set_margin_bottom(MARGIN);
@@ -282,11 +309,15 @@ fn connect(ui: &Rc<Ui>, window: &gtk::ApplicationWindow, keep: &gtk::Button, rev
     let u = ui.clone();
     revert.connect_clicked(move |_| u.on_revert());
 
-    // Closing the window while the question is open goes back.
+    // Closing the window while the question is open goes back first; the
+    // window closes once the old layout is back.
     let u = ui.clone();
     window.connect_close_request(move |_| {
+        let pending = u.session.borrow().revert_target().is_some();
+        if u.closing.get() || (!pending && !u.busy.get()) { return glib::Propagation::Proceed; }
+        u.close_after.set(true);
         u.on_revert();
-        glib::Propagation::Proceed
+        glib::Propagation::Stop
     });
 }
 
@@ -335,12 +366,14 @@ impl Ui {
         self.fill_panel();
         self.updating.set(false);
         let session = self.session.borrow();
+        let busy = self.busy.get();
         let pending = session.state() == State::Pending;
         let dirty = session.is_dirty();
-        self.apply.set_sensitive(dirty && !pending);
-        self.reset.set_sensitive(dirty && !pending);
-        self.detect.set_sensitive(!pending);
-        let free = !pending;
+        self.apply.set_sensitive(dirty && !pending && !busy);
+        self.reset.set_sensitive(dirty && !pending && !busy);
+        self.detect.set_sensitive(!pending && !busy);
+        self.confirm_bar.set_sensitive(!busy);
+        let free = !pending && !busy;
         self.extend.set_sensitive(free);
         self.duplicate.set_sensitive(free);
         self.only_box.set_sensitive(free);
@@ -357,7 +390,7 @@ impl Ui {
             self.enabled.set_sensitive(false);
             return;
         };
-        let editable = session.state() == State::Idle;
+        let editable = session.state() == State::Idle && !self.busy.get();
         let on = config.enabled && editable;
         if let Some(index) = session.monitors().iter().position(|m| m.name == monitor.name) {
             self.pick.set_selected(index as u32);
@@ -512,30 +545,89 @@ impl Ui {
         self.refresh();
     }
 
+    /// Run `work` on the backend on a worker thread, with every control
+    /// waiting; `done` gets its result back on the GTK thread. Then a close
+    /// asked meanwhile goes on.
+    fn run_backend<T: Send + 'static>(
+        self: &Rc<Self>,
+        work: impl FnOnce(&SharedBackend) -> Result<T, ScreenError> + Send + 'static,
+        done: impl FnOnce(&Rc<Ui>, Result<T, ScreenError>) + 'static,
+    ) {
+        self.busy.set(true);
+        self.refresh();
+        let backend = self.session.borrow().backend().clone();
+        let handle = gio::spawn_blocking(move || work(&backend));
+        let ui = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let result = handle.await.unwrap_or_else(|_| Err(ScreenError::Session(TASK_FAILED.to_string())));
+            let Some(ui) = ui.upgrade() else { return };
+            ui.busy.set(false);
+            done(&ui, result);
+            ui.refresh();
+            ui.close_if_asked();
+        });
+    }
+
+    /// The user closed the window while a command ran: revert a layout that
+    /// is still pending, or close.
+    fn close_if_asked(self: &Rc<Self>) {
+        if !self.close_after.get() || self.busy.get() { return; }
+        if self.session.borrow().revert_target().is_some() && self.remaining.get() > 0 { return self.on_revert(); }
+        self.closing.set(true);
+        self.window.close();
+    }
+
     /// Read the monitors again.
     fn on_detect(self: &Rc<Self>) {
-        let result = self.session.borrow_mut().refresh();
-        match result {
-            Ok(()) => self.status.set_text(""),
-            Err(e) => self.show_error(&e),
-        }
-        self.rebuild_monitors();
+        if self.busy.get() { return; }
+        let ready = self.session.borrow().start_refresh();
+        if let Err(e) = ready { return self.show_error(&e); }
+        self.status.set_text("Reading the monitors...");
+        self.run_backend(|backend| backend.query(), |ui, result| {
+            match result {
+                Ok(parsed) => {
+                    ui.status.set_text("");
+                    ui.session.borrow_mut().finish_refresh(parsed);
+                }
+                Err(e) => ui.show_error(&e),
+            }
+            ui.rebuild_monitors();
+        });
     }
 
     /// Apply and ask whether to keep the result.
     fn on_apply(self: &Rc<Self>) {
-        let result = self.session.borrow_mut().apply();
-        if let Err(e) = result {
-            self.show_error(&e);
-            self.refresh();
-            return;
-        }
+        if self.busy.get() { return; }
+        let started = self.session.borrow_mut().start_apply();
+        let layout = match started {
+            Ok(layout) => layout,
+            Err(e) => {
+                self.show_error(&e);
+                self.refresh();
+                return;
+            }
+        };
+        self.status.set_text("Applying...");
+        self.run_backend(move |backend| backend.apply(&layout), |ui, result| {
+            let result = ui.session.borrow_mut().finish_apply(result);
+            match result {
+                Ok(()) => ui.ask_to_keep(),
+                Err(e) => ui.show_error(&e),
+            }
+        });
+    }
+
+    /// The layout is applied: show the question and start the countdown.
+    fn ask_to_keep(self: &Rc<Self>) {
         self.status.set_text("");
         self.edit_bar_visible(false);
         self.remaining.set(CONFIRM_SECS);
         self.show_countdown();
-        let u = self.clone();
-        let id = glib::timeout_add_local(Duration::from_secs(1), move || u.tick());
+        let u = Rc::downgrade(self);
+        let id = glib::timeout_add_local(Duration::from_secs(1), move || match u.upgrade() {
+            Some(u) => u.tick(),
+            None => glib::ControlFlow::Break,
+        });
         *self.timer.borrow_mut() = Some(id);
         self.refresh();
     }
@@ -552,7 +644,7 @@ impl Ui {
     }
 
     /// One second of the countdown; at zero the old layout returns.
-    fn tick(&self) -> glib::ControlFlow {
+    fn tick(self: &Rc<Self>) -> glib::ControlFlow {
         let left = self.remaining.get().saturating_sub(1);
         self.remaining.set(left);
         if left > 0 {
@@ -580,18 +672,28 @@ impl Ui {
         self.refresh();
     }
 
-    /// Put the previous layout back (also when the window closes).
-    fn on_revert(&self) {
+    /// Put the previous layout back (also when the window closes), on a
+    /// worker thread. A failed revert while closing still closes.
+    fn on_revert(self: &Rc<Self>) {
+        if self.busy.get() { return; }
         self.stop_timer();
-        let result = self.session.borrow_mut().revert();
-        if let Err(e) = result { self.show_error(&e); }
-        self.edit_bar_visible(true);
-        self.refresh();
+        self.remaining.set(0);
+        let Some(previous) = self.session.borrow().revert_target() else {
+            self.edit_bar_visible(true);
+            self.refresh();
+            return self.close_if_asked();
+        };
+        self.confirm_label.set_text("Going back...");
+        self.run_backend(move |backend| backend.apply(&previous), |ui, result| {
+            let result = ui.session.borrow_mut().finish_revert(result);
+            if let Err(e) = result { ui.show_error(&e); }
+            ui.edit_bar_visible(true);
+        });
     }
 
     /// Press on the canvas: select the monitor under the pointer and start dragging it.
     fn drag_begin(&self, x: f64, y: f64) {
-        if self.session.borrow().state() == State::Pending { return; }
+        if self.busy.get() || self.session.borrow().state() == State::Pending { return; }
         let view = self.view.get();
         let hit = self.rects().into_iter().rev().find(|(_, r)| view.hits(r, x, y));
         let Some((name, rect)) = hit else { return };

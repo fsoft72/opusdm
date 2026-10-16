@@ -12,17 +12,25 @@ use opusdm_ipc::{Appearance, Behavior, ColorSettings, IconSetId};
 pub struct IconSetSection {
     pub root: gtk::Box,
     dropdown: gtk::DropDown,
-    /// Parallel to the dropdown's rows: `None` (index 0) then every
-    /// installed custom theme, in the order shown.
+    /// Parallel to the dropdown's rows: every installed theme, in the order
+    /// shown. Empty when no theme is installed.
     options: Vec<IconSetId>,
+    /// The icon set the section was opened with, reported when the dropdown
+    /// has no row selected.
+    initial: IconSetId,
+}
+
+/// The icon set of row `index` in `options`, or `fallback` when there is no
+/// such row (no theme installed, or nothing selected).
+fn pick_icon_set(options: &[IconSetId], index: u32, fallback: &IconSetId) -> IconSetId {
+    options.get(index as usize).cloned().unwrap_or_else(|| fallback.clone())
 }
 
 impl IconSetSection {
+    /// A picker of the installed themes with `current` selected.
     pub fn new(current: &IconSetId) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("THEME"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("THEME");
         root.append(&heading);
 
         let mut options: Vec<IconSetId> = Vec::new();
@@ -37,12 +45,13 @@ impl IconSetSection {
         dropdown.set_selected(selected as u32);
         root.append(&dropdown);
 
-        Self { root, dropdown, options }
+        Self { root, dropdown, options, initial: current.clone() }
     }
 
-    /// The currently selected icon set.
+    /// The currently selected icon set; the one the section was opened with
+    /// when no row is selected.
     pub fn value(&self) -> IconSetId {
-        self.options[self.dropdown.selected() as usize].clone()
+        pick_icon_set(&self.options, self.dropdown.selected(), &self.initial)
     }
 }
 
@@ -167,9 +176,7 @@ pub struct ColorsSection {
 impl ColorsSection {
     pub fn new(window: &gtk::ApplicationWindow, c: &ColorSettings) -> Self {
         let outer = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("COLOURS"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("COLOURS");
         outer.append(&heading);
 
         let grid = gtk::Grid::new();
@@ -309,9 +316,7 @@ pub struct AppearanceSection {
 impl AppearanceSection {
     pub fn new(initial: &Appearance) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("APPEARANCE"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("APPEARANCE");
         root.append(&heading);
 
         let type_indicators = gtk::CheckButton::with_label("Type indicators after names (/ * @ = |)");
@@ -349,9 +354,7 @@ pub struct ThemeModeSection {
 impl ThemeModeSection {
     pub fn new(initial: opusdm_ipc::ThemeMode) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("LIGHT / DARK"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("LIGHT / DARK");
         root.append(&heading);
 
         let dropdown = gtk::DropDown::from_strings(&["Light", "Dark"]);
@@ -418,9 +421,7 @@ pub struct BehaviorSection {
 impl BehaviorSection {
     pub fn new(initial: &Behavior) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("BEHAVIOUR"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("BEHAVIOUR");
         root.append(&heading);
 
         let auto_refresh =
@@ -471,6 +472,15 @@ impl BehaviorSection {
 mod tests {
     use super::*;
     use opusdm_ipc::ThemeMode;
+
+    #[test]
+    fn icon_set_pick_falls_back_when_nothing_matches() {
+        let options = vec![IconSetId::Custom("a".into()), IconSetId::Custom("b".into())];
+        let fallback = IconSetId::Custom("current".into());
+        assert_eq!(pick_icon_set(&options, 1, &fallback), IconSetId::Custom("b".into()));
+        assert_eq!(pick_icon_set(&[], 0, &fallback), fallback, "no theme installed");
+        assert_eq!(pick_icon_set(&options, gtk::INVALID_LIST_POSITION, &fallback), fallback, "nothing selected");
+    }
 
     #[test]
     fn theme_mode_section_reports_seeded_then_edited_value() {

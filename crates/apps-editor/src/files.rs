@@ -60,3 +60,37 @@ pub fn delete_own_entry(id: &str) -> io::Result<()> {
         _ => Ok(()),
     }
 }
+
+/// Delete every entry of `ids` with `delete`. Returns the ids whose delete
+/// failed, to try again at the next save, and one error line for each.
+pub fn delete_entries(ids: Vec<String>, delete: impl Fn(&str) -> io::Result<()>) -> (Vec<String>, Vec<String>) {
+    let mut pending = Vec::new();
+    let mut errors = Vec::new();
+    for id in ids {
+        if let Err(e) = delete(&id) {
+            errors.push(format!("{id}: {e}"));
+            pending.push(id);
+        }
+    }
+    (pending, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_delete_stays_pending() {
+        let ids = vec!["opusdm-a.desktop".to_string(), "opusdm-b.desktop".to_string()];
+        let (pending, errors) = delete_entries(ids, |id| if id == "opusdm-b.desktop" { Err(io::Error::other("read-only")) } else { Ok(()) });
+        assert_eq!(pending, vec!["opusdm-b.desktop".to_string()]);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("opusdm-b.desktop") && errors[0].contains("read-only"), "{}", errors[0]);
+    }
+
+    #[test]
+    fn deletes_that_work_leave_nothing_pending() {
+        let (pending, errors) = delete_entries(vec!["opusdm-a.desktop".to_string()], |_| Ok(()));
+        assert!(pending.is_empty() && errors.is_empty());
+    }
+}

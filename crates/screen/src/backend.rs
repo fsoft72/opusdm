@@ -4,10 +4,19 @@
 
 use std::io::Read;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::commands::{xrandr_args, XRANDR};
 use crate::parse::{parse_query, Parsed};
 use crate::{Layout, ScreenError};
+
+/// Longest wait for `xrandr` or `wlr-randr`: a display server that does not
+/// answer must not hang the window or the hub.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How often a running command is checked for its exit.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// What reads and changes the monitors of the system.
 pub trait ScreenBackend {
@@ -26,6 +35,36 @@ impl<T: ScreenBackend + ?Sized> ScreenBackend for Box<T> {
     /// Ask the boxed backend.
     fn apply(&self, layout: &Layout) -> Result<(), ScreenError> {
         (**self).apply(layout)
+    }
+}
+
+/// A backend that can be cloned and used from any thread (one call at a
+/// time), so the window can run `xrandr` on a worker thread.
+#[derive(Clone)]
+pub struct SharedBackend(Arc<Mutex<Box<dyn ScreenBackend + Send>>>);
+
+impl SharedBackend {
+    /// Share `backend`.
+    pub fn new(backend: Box<dyn ScreenBackend + Send>) -> Self {
+        Self(Arc::new(Mutex::new(backend)))
+    }
+
+    /// Run `call` on the backend while holding the lock.
+    fn with<T>(&self, call: impl FnOnce(&dyn ScreenBackend) -> Result<T, ScreenError>) -> Result<T, ScreenError> {
+        let backend = self.0.lock().map_err(|_| ScreenError::Session("the screen backend failed earlier".to_string()))?;
+        call(backend.as_ref())
+    }
+}
+
+impl ScreenBackend for SharedBackend {
+    /// Ask the shared backend.
+    fn query(&self) -> Result<Parsed, ScreenError> {
+        self.with(|b| b.query())
+    }
+
+    /// Ask the shared backend.
+    fn apply(&self, layout: &Layout) -> Result<(), ScreenError> {
+        self.with(|b| b.apply(layout))
     }
 }
 
@@ -48,29 +87,47 @@ pub fn for_session() -> Box<dyn ScreenBackend + Send> {
     if opusdm_ipc::session::is_wayland() { Box::new(WlrRandrBackend) } else { Box::new(XrandrBackend) }
 }
 
-/// Read the output of `child` and wait for it. The wait goes through
-/// `opusdm_ipc::reaped`, because the hub's SIGCHLD reaper can collect the
-/// child first (a plain wait would then fail with `ECHILD`).
-fn collect(mut child: Child) -> std::io::Result<(ExitStatus, String, String)> {
-    let stderr = child.stderr.take();
-    let stderr_reader = std::thread::spawn(move || {
+/// Read all of `pipe` on a helper thread.
+fn read_on_thread(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<std::io::Result<String>> {
+    std::thread::spawn(move || {
         let mut text = String::new();
-        if let Some(mut pipe) = stderr {
-            let _ = pipe.read_to_string(&mut text);
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_string(&mut text)?;
         }
-        text
-    });
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_string(&mut stdout)?;
-    }
-    let status = opusdm_ipc::reaped::wait(&mut child)?;
-    let stderr = stderr_reader.join().unwrap_or_default();
+        Ok(text)
+    })
+}
+
+/// Read the output of `child` and wait for it, at most `timeout`; a child
+/// still running then is killed and a `TimedOut` error returned. The wait
+/// goes through `opusdm_ipc::reaped`, because the hub's SIGCHLD reaper can
+/// collect the child first (a plain wait would then fail with `ECHILD`).
+fn collect(mut child: Child, timeout: Duration) -> std::io::Result<(ExitStatus, String, String)> {
+    let stdout_reader = read_on_thread(child.stdout.take());
+    let stderr_reader = read_on_thread(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let mut lost_since = None;
+    let status = loop {
+        if let Some(status) = opusdm_ipc::reaped::poll_exit(&mut child, &mut lost_since)? { break status; }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            opusdm_ipc::reaped::wait(&mut child)?;
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("did not answer within {} s", timeout.as_secs_f32())));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+    let stdout = stdout_reader.join().map_err(|_| std::io::Error::other("the stdout reader failed"))??;
+    let stderr = stderr_reader.join().unwrap_or(Ok(String::new())).unwrap_or_default();
     Ok((status, stdout, stderr))
 }
 
 /// Run `argv` and return its stdout.
 fn run(argv: &[String]) -> Result<String, ScreenError> {
+    run_with_timeout(argv, COMMAND_TIMEOUT)
+}
+
+/// Run `argv` and return its stdout; give up after `timeout`.
+fn run_with_timeout(argv: &[String], timeout: Duration) -> Result<String, ScreenError> {
     let Some(program) = argv.first() else { return Err(ScreenError::Session("empty command".to_string())) };
     let failed = |reason: String| ScreenError::CommandFailed { command: argv.join(" "), stderr: reason };
     let child = Command::new(program).args(&argv[1..]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| {
@@ -81,7 +138,7 @@ fn run(argv: &[String]) -> Result<String, ScreenError> {
             failed(e.to_string())
         }
     })?;
-    let (status, stdout, stderr) = collect(child).map_err(|e| failed(e.to_string()))?;
+    let (status, stdout, stderr) = collect(child, timeout).map_err(|e| failed(e.to_string()))?;
     if !status.success() { return Err(failed(stderr.trim().to_string())); }
     Ok(stdout)
 }
@@ -150,6 +207,23 @@ mod tests {
     fn a_failing_program_reports_its_command_and_stderr() {
         let err = run(&["sh".to_string(), "-c".to_string(), "echo boom >&2; exit 3".to_string()]).unwrap_err();
         assert_eq!(err, ScreenError::CommandFailed { command: "sh -c echo boom >&2; exit 3".to_string(), stderr: "boom".to_string() });
+    }
+
+    #[test]
+    fn a_program_that_hangs_is_stopped_after_the_timeout() {
+        let started = std::time::Instant::now();
+        let err = run_with_timeout(&["sleep".to_string(), "5".to_string()], std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "waited {:?}", started.elapsed());
+        assert!(matches!(&err, ScreenError::CommandFailed { stderr, .. } if stderr.contains("did not answer")), "{err}");
+    }
+
+    #[test]
+    fn a_shared_backend_reaches_the_same_backend_from_another_thread() {
+        let shared = SharedBackend::new(Box::new(crate::fake::FakeBackend::new(crate::fake::two_monitor_system())));
+        let other = shared.clone();
+        let layout = shared.query().unwrap().layout;
+        std::thread::spawn(move || other.apply(&layout).unwrap()).join().unwrap();
+        assert_eq!(shared.query().unwrap().layout, crate::fake::two_monitor_system().layout);
     }
 
     #[test]

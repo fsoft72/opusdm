@@ -10,7 +10,8 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::ui::{heading, ColorRow};
+use crate::ui::ColorRow;
+use opusdm_ui::{clear_children, labeled_row, section_heading, LabelWidth};
 
 /// Thumbnail size, in pixels, of a picture row and of a theme picture chooser entry.
 const ROW_THUMB: (i32, i32) = (64, 40);
@@ -46,7 +47,7 @@ impl BackgroundSection {
     /// and file dialogs.
     pub fn new(window: &gtk::ApplicationWindow, initial: &Background) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        root.append(&heading("DESKTOP BACKGROUND"));
+        root.append(&section_heading("DESKTOP BACKGROUND"));
 
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::None);
@@ -119,13 +120,7 @@ impl BackgroundSection {
 
 /// A row with a fixed-width name on the left and `widget` after it.
 fn _labelled(text: &str, widget: &impl IsA<gtk::Widget>) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let name = gtk::Label::new(Some(text));
-    name.set_xalign(0.0);
-    name.set_size_request(90, -1);
-    row.append(&name);
-    row.append(widget);
-    row
+    labeled_row(text, LabelWidth::Pixels(90), 8, widget)
 }
 
 /// The dropdown index of `fit`, among `count` choices.
@@ -219,9 +214,7 @@ impl Inner {
 
     /// Throw the rows away and build them again from the model.
     fn rebuild(self: &Rc<Self>) {
-        while let Some(row) = self.list.first_child() {
-            self.list.remove(&row);
-        }
+        clear_children(&self.list);
         let entries = self.entries.borrow().clone();
         if entries.is_empty() {
             let note = gtk::Label::new(Some("No background: the desktop shows the default colour."));

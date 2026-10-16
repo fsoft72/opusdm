@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 mod apply;
+mod background;
 mod builder;
 mod draft;
 mod editor;
@@ -34,6 +35,9 @@ fn main() -> gtk::glib::ExitCode {
     app.connect_activate(move |app| if edit_theme { build_editor_only(app) } else { build_window(app) });
     app.run_with_args::<&str>(&[])
 }
+
+/// The archives Import Theme offers.
+const THEME_ARCHIVE_PATTERNS: [&str; 4] = ["*.zip", "*.tar.gz", "*.tgz", "*.tar.bz2"];
 
 /// Command line flag that makes the settings app open only the Theme Editor.
 const EDIT_THEME_FLAG: &str = "--edit-theme";
@@ -336,8 +340,11 @@ fn build_window(app: &gtk::Application) {
         cancel.connect_clicked(move |_| window.close());
     }
     connect_apply(&apply, &sections, &note);
-    connect_import(&theme_buttons.import, &window, &select_theme, &note);
-    connect_export(&theme_buttons.export, &window, &sections.icon_set, &note);
+    // Import and Export run off the GTK thread; the theme buttons and Apply
+    // wait meanwhile.
+    let busy: Vec<gtk::Widget> = [&theme_buttons.edit, &theme_buttons.import, &theme_buttons.export, &apply].into_iter().map(|b| b.clone().upcast()).collect();
+    connect_import(&theme_buttons.import, &window, &select_theme, &note, &busy);
+    connect_export(&theme_buttons.export, &window, &sections.icon_set, &note, &busy);
     {
         let window = window.clone();
         theme_buttons.edit.connect_clicked(move |_| {
@@ -370,69 +377,79 @@ fn connect_apply(apply: &gtk::Button, sections: &Rc<Sections>, note: &gtk::Label
     apply.connect_clicked(move |_| {
         let selected = sections.icon_set.borrow().value();
         let (prefs, desktop) = sections.read();
-        if let Err(e) = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig { apps: sections.dock_apps.apps() }) {
+        let dock_error = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig { apps: sections.dock_apps.apps() }).err().map(|e| e.to_string());
+        if let Some(e) = &dock_error {
             opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
         }
         let settings = model::resolve_selected(&selected, &prefs);
-        match model::apply_full(&settings, &desktop) {
-            model::ApplyOutcome::SentToHub => show_note(&note, "Applied to the running desktop."),
-            model::ApplyOutcome::WroteFile => show_note(&note, "No hub running - saved, effective on next login."),
-            model::ApplyOutcome::Failed(e) => show_note(&note, &format!("Could not apply: {e}")),
-        }
+        let outcome = model::apply_full(&settings, &desktop);
+        show_note(&note, &model::apply_message(&outcome, dock_error.as_deref()));
     });
 }
 
-/// Import theme: pick an archive, unpack it as a theme and select it.
-fn connect_import(button: &gtk::Button, window: &gtk::ApplicationWindow, select_theme: &Rc<dyn Fn(String)>, note: &gtk::Label) {
+/// Import theme: pick an archive, unpack it as a theme on a worker thread
+/// and select it. `busy` is insensitive while the archive is unpacked.
+fn connect_import(button: &gtk::Button, window: &gtk::ApplicationWindow, select_theme: &Rc<dyn Fn(String)>, note: &gtk::Label, busy: &[gtk::Widget]) {
     let window = window.clone();
     let select_theme = select_theme.clone();
     let note = note.clone();
+    let busy = busy.to_vec();
     button.connect_clicked(move |_| {
-        let filter = gtk::FileFilter::new();
-        filter.add_pattern("*.zip");
-        filter.add_pattern("*.tar.gz");
-        filter.add_pattern("*.tgz");
-        filter.add_pattern("*.tar.bz2");
-        filter.set_name(Some("Theme archives"));
-        let filters = gio::ListStore::new::<gtk::FileFilter>();
-        filters.append(&filter);
-
-        let dialog = gtk::FileDialog::builder().title("Import Theme").filters(&filters).build();
+        let pick = opusdm_ui::FilePick {
+            title: "Import Theme",
+            filter: Some(opusdm_ui::FileFilterSpec { name: "Theme archives", patterns: &THEME_ARCHIVE_PATTERNS, ..Default::default() }),
+            ..Default::default()
+        };
         let select_theme = select_theme.clone();
         let note = note.clone();
-        dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-            let Ok(file) = result else { return };
-            let Some(path) = file.path() else { return };
-            match crate::importer::import_theme_archive(&path) {
-                Ok(slug) => {
-                    show_note(&note, &format!("Imported theme \"{slug}\". Select it above and click Apply."));
-                    select_theme(slug.clone());
-                }
-                Err(e) => show_note(&note, &format!("Import failed: {e}")),
-            }
+        let busy = busy.clone();
+        opusdm_ui::pick_file(Some(window.upcast_ref()), &pick, move |path| {
+            show_note(&note, &format!("Importing {}...", path.display()));
+            let (note, select_theme) = (note.clone(), select_theme.clone());
+            background::run_blocking(
+                background::busy_widgets(busy.clone()),
+                move || crate::importer::import_theme_archive(&path).map_err(|e| e.to_string()),
+                move |result| match result.and_then(|r| r) {
+                    Ok(slug) => {
+                        show_note(&note, &format!("Imported theme \"{slug}\". Select it above and click Apply."));
+                        select_theme(slug);
+                    }
+                    Err(e) => show_note(&note, &format!("Import failed: {e}")),
+                },
+            );
         });
     });
 }
 
-/// Export theme: save the theme selected in `icon_set` as a zip file.
-fn connect_export(button: &gtk::Button, window: &gtk::ApplicationWindow, icon_set: &Rc<RefCell<Rc<ui::IconSetSection>>>, note: &gtk::Label) {
+/// Export theme: save the theme selected in `icon_set` as a zip file, on a
+/// worker thread. `busy` is insensitive while the archive is written.
+fn connect_export(button: &gtk::Button, window: &gtk::ApplicationWindow, icon_set: &Rc<RefCell<Rc<ui::IconSetSection>>>, note: &gtk::Label, busy: &[gtk::Widget]) {
     let window = window.clone();
     let icon_set = icon_set.clone();
     let note = note.clone();
+    let busy = busy.to_vec();
     button.connect_clicked(move |_| {
         let opusdm_ipc::IconSetId::Custom(slug) = icon_set.borrow().value();
         let dialog = gtk::FileDialog::builder().title("Export Theme").initial_name(format!("{slug}.zip")).build();
         let note = note.clone();
+        let busy = busy.clone();
         dialog.save(Some(&window), gio::Cancellable::NONE, move |result| {
             let Ok(file) = result else { return };
             let Some(mut path) = file.path() else { return };
             if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("zip")) {
                 path.set_extension("zip");
             }
-            match exporter::export_theme(&slug, &path) {
-                Ok(()) => show_note(&note, &format!("Exported to {}.", path.display())),
-                Err(e) => show_note(&note, &format!("Export failed: {e}")),
-            }
+            show_note(&note, &format!("Exporting to {}...", path.display()));
+            let (note, slug) = (note.clone(), slug.clone());
+            let shown = path.display().to_string();
+            background::run_blocking(
+                background::busy_widgets(busy.clone()),
+                move || exporter::export_theme(&slug, &path),
+                move |result| match result.and_then(|r| r) {
+                    Ok(()) => show_note(&note, &format!("Exported to {shown}.")),
+                    Err(e) => show_note(&note, &format!("Export failed: {e}")),
+                },
+            );
         });
     });
 }

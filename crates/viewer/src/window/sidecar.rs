@@ -38,15 +38,16 @@ pub(super) fn follow_stdin(state: &Rc<State>) {
             if tx.send_blocking(update).is_err() || done { break; }
         }
     });
-    let s = state.clone();
+    let weak = Rc::downgrade(state);
     glib::spawn_future_local(async move {
         while let Ok(mut update) = rx.recv().await {
             // Arrow keys in the Lister send bursts: only the newest one counts.
             while let Ok(newer) = rx.try_recv() { update = newer; }
             let Some(paths) = update else { break };
+            let Some(s) = weak.upgrade() else { return };
             s._replace_gallery(&paths);
         }
-        s.window.close();
+        if let Some(s) = weak.upgrade() { s.window.close(); }
     });
 }
 

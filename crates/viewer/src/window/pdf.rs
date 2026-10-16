@@ -64,17 +64,9 @@ pub(super) fn build() -> (PdfUi, PdfChannels) {
 impl State {
     /// Connect the bar, the panel, the search worker and the link controllers.
     pub(super) fn _wire_pdf(self: &Rc<Self>, channels: PdfChannels) {
-        let s = self.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(index) = channels.page_pick_rx.recv().await {
-                s._pdf_go_to(index, false);
-            }
-        });
-        let s = self.clone();
-        glib::spawn_future_local(async move {
-            while let Ok((generation, result)) = channels.search_rx.recv().await {
-                if generation == s.pdf.search_generation.get() { s._search_done(result); }
-            }
+        super::_listen(self, channels.page_pick_rx, |s, index| s._pdf_go_to(index, false));
+        super::_listen(self, channels.search_rx, |s, (generation, result)| {
+            if generation == s.pdf.search_generation.get() { s._search_done(result); }
         });
         let bar = &self.pdf.bar;
         let s = self.clone();

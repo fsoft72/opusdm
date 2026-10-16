@@ -10,8 +10,8 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_media::{Engine, EngineOptions, Event, MediaError, PlayState};
-use std::cell::Cell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -52,17 +52,24 @@ pub fn open(app: &gtk::Application, args: &Args) {
     stack.add_named(&audio.root, Some("audio"));
     stack.add_css_class("player-stage");
 
-    let controls = Controls::new(_handlers(&engine), args.looping);
+    // The controls and the keys hold the engine weakly: closing the window
+    // drops the only strong reference, and with it the GStreamer pipeline.
+    let weak_engine = Rc::downgrade(&engine);
+    let controls = Controls::new(_handlers(&weak_engine), args.looping);
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
     vbox.append(&stack);
     vbox.append(&controls.root);
     window.set_child(Some(&vbox));
-    _wire_keys(&window, &engine, &controls);
+    _wire_keys(&window, &weak_engine, &controls);
     _wire_fullscreen(&window, &stack, &controls);
+    _drop_engine_on_close(&window, engine.clone());
 
-    let (w, c, a, s) = (window.clone(), controls.clone(), audio.clone(), stack.clone());
+    // The loop holds the window weakly and ends with it; the controls and
+    // the audio view hold no engine, so they may stay strong here.
+    let (w, c, a, s) = (window.downgrade(), controls.clone(), audio, stack.downgrade());
     glib::spawn_future_local(async move {
         while let Ok(event) = rx.recv().await {
+            let (Some(w), Some(s)) = (w.upgrade(), s.upgrade()) else { return };
             _on_event(&w, &c, &a, &s, &name, event);
         }
     });
@@ -71,19 +78,30 @@ pub fn open(app: &gtk::Application, args: &Args) {
     if let Err(e) = engine.open(&args.target).and_then(|_| engine.play()) { fatal(&window, &e); }
 }
 
-/// What each control does to the engine.
-fn _handlers(engine: &Rc<Engine>) -> Handlers {
+/// Keep `engine` alive until `window` closes, then drop it: its pipeline goes
+/// to the Null state and its event sender closes, which ends the event loop.
+fn _drop_engine_on_close(window: &gtk::ApplicationWindow, engine: Rc<Engine>) {
+    let slot = RefCell::new(Some(engine));
+    window.connect_close_request(move |_| {
+        slot.borrow_mut().take();
+        glib::Propagation::Proceed
+    });
+}
+
+/// What each control does to the engine, while the engine is alive.
+fn _handlers(engine: &Weak<Engine>) -> Handlers {
     let (e_play, e_seek, e_vol, e_mute, e_loop) = (engine.clone(), engine.clone(), engine.clone(), engine.clone(), engine.clone());
     Handlers {
-        toggle_play: Box::new(move || _toggle_play(&e_play)),
+        toggle_play: Box::new(move || if let Some(e) = e_play.upgrade() { _toggle_play(&e) }),
         seek: Box::new(move |value, accurate| {
-            let Some(duration) = e_seek.duration() else { return };
+            let Some(engine) = e_seek.upgrade() else { return };
+            let Some(duration) = engine.duration() else { return };
             let ns = slider_to_ns(value, duration);
-            if let Err(e) = e_seek.seek(ns, accurate) { opusdm_ipc::err_log!("player", "{e}"); }
+            if let Err(e) = engine.seek(ns, accurate) { opusdm_ipc::err_log!("player", "{e}"); }
         }),
-        volume: Box::new(move |v| e_vol.set_volume(v)),
-        mute: Box::new(move |m| e_mute.set_muted(m)),
-        looping: Some(Box::new(move |on| e_loop.set_loop(on))),
+        volume: Box::new(move |v| if let Some(e) = e_vol.upgrade() { e.set_volume(v) }),
+        mute: Box::new(move |m| if let Some(e) = e_mute.upgrade() { e.set_muted(m) }),
+        looping: Some(Box::new(move |on| if let Some(e) = e_loop.upgrade() { e.set_loop(on) })),
     }
 }
 
@@ -95,11 +113,12 @@ fn _toggle_play(engine: &Engine) {
 }
 
 /// Space, arrows, F, M, Q and Esc.
-fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Rc<Engine>, controls: &Rc<Controls>) {
+fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Weak<Engine>, controls: &Rc<Controls>) {
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     let (w, engine, controls) = (window.clone(), engine.clone(), controls.clone());
     key.connect_key_pressed(move |_, k, _, _| {
+        let Some(engine) = engine.upgrade() else { return glib::Propagation::Proceed };
         let skip = |delta: i64| {
             let duration = engine.duration().unwrap_or(0);
             let target = offset(engine.position().unwrap_or(0), delta, duration);

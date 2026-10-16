@@ -1,7 +1,7 @@
 //! The WireGuard and OpenVPN tabs of the editor, and the OpenVPN advanced
 //! options dialog.
 
-use crate::form::{check, choice, clear, entry, file_entry, join_list, note, page_box, secret_entry, spin, split_list, EditorCtx, Form, SPACING};
+use crate::form::{check, choice, entry, file_entry, join_list, note, page_box, secret_entry, spin, split_list, EditorCtx, Form, SPACING};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
@@ -76,10 +76,7 @@ pub fn wireguard_page(ctx: &Rc<EditorCtx>) -> gtk::Widget {
     let peers = gtk::Box::new(gtk::Orientation::Vertical, SPACING);
     ctx.field("wireguard.peers", &peers);
     peer_frames(ctx, &peers);
-    let heading = gtk::Label::new(Some("Peers"));
-    heading.add_css_class("heading");
-    heading.set_xalign(0.0);
-    form.wide(&heading);
+    form.wide(&opusdm_ui::section_heading("Peers"));
     form.wide(&peers);
     let scroll = gtk::ScrolledWindow::builder().child(form.widget()).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
     scroll.upcast()
@@ -88,7 +85,7 @@ pub fn wireguard_page(ctx: &Rc<EditorCtx>) -> gtk::Widget {
 /// Fill `box_` with one frame per peer and an Add button. Rebuilt after an
 /// add or a remove.
 fn peer_frames(ctx: &Rc<EditorCtx>, box_: &gtk::Box) {
-    clear(box_);
+    opusdm_ui::clear_children(box_);
     let peers = ctx.read(|p| match &p.detail {
         Detail::WireGuard(w) => w.peers.clone(),
         _ => Vec::new(),
@@ -196,7 +193,7 @@ fn data_choice(ctx: &Rc<EditorCtx>, key: &'static str, options: &'static [(&'sta
 
 /// Fill `page` with the fields of the current authentication.
 fn openvpn_fields(ctx: &Rc<EditorCtx>, page: &gtk::Box) {
-    clear(page);
+    opusdm_ui::clear_children(page);
     let Detail::OpenVpn(o) = ctx.read(|p| p.detail.clone()) else { return page.append(&note("Not an OpenVPN connection")) };
     let auth = o.auth();
     let form = Form::new();

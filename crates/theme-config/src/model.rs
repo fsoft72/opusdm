@@ -34,6 +34,20 @@ pub enum ApplyOutcome {
     Failed(String),
 }
 
+/// The note line after Apply: what `outcome` did, preceded by the error of
+/// the `dock.json` write when it failed.
+pub fn apply_message(outcome: &ApplyOutcome, dock_error: Option<&str>) -> String {
+    let applied = match outcome {
+        ApplyOutcome::SentToHub => "Applied to the running desktop.".to_string(),
+        ApplyOutcome::WroteFile => "No hub running - saved, effective on next login.".to_string(),
+        ApplyOutcome::Failed(e) => format!("Could not apply: {e}"),
+    };
+    match dock_error {
+        Some(e) => format!("Could not save the dock apps (dock.json): {e}. {applied}"),
+        None => applied,
+    }
+}
+
 /// Send `settings` and `desktop` to a running hub atomically (one
 /// `SetSettings` plus one `SetDesktopSettings` frame), or persist both
 /// directly to disk if no hub is running.
@@ -150,5 +164,15 @@ mod tests {
         let path = td.path().join("settings.json");
         std::fs::write(&path, b"invalid json").unwrap();
         assert_eq!(load_settings_from(&path), Settings::default());
+    }
+
+    #[test]
+    fn the_apply_message_reports_a_dock_failure() {
+        assert_eq!(apply_message(&ApplyOutcome::SentToHub, None), "Applied to the running desktop.");
+        let text = apply_message(&ApplyOutcome::SentToHub, Some("disk full"));
+        assert!(text.contains("dock.json") && text.contains("disk full"), "{text}");
+        assert!(!text.starts_with("Applied"), "{text}");
+        let text = apply_message(&ApplyOutcome::Failed("no space".into()), Some("disk full"));
+        assert!(text.contains("no space") && text.contains("disk full"), "{text}");
     }
 }

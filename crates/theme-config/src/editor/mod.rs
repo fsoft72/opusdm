@@ -1,9 +1,9 @@
 //! The Theme Editor: a window that edits the folder of an installed theme.
 //! Widgets read and write a `ThemeDraft` plus a list of pending file
-//! operations; nothing on disk changes until Save. The window and its
-//! signal handlers share one `Rc<Editor>`. That is a reference cycle which is
-//! never broken, so the editor state leaks after the window closes; it is
-//! small and the editor is opened rarely, so this is accepted.
+//! operations; nothing on disk changes until Save. The signal handlers and
+//! the preview timer hold the `Editor` weakly; the close handler holds the
+//! only strong reference and drops it when the window closes, so the editor
+//! state goes away with its window.
 //!
 //! While the editor is open, the theme it shows is previewed live on the
 //! running desktop: a timer sends the look the widgets describe to the hub
@@ -112,8 +112,6 @@ struct Editor {
     preview: RefCell<Preview>,
     /// True while code, not the user, changes the list selection.
     programmatic: Cell<bool>,
-    /// Set once the user agreed to discard unsaved changes and close.
-    closing: Cell<bool>,
     on_saved: Rc<dyn Fn(String)>,
 }
 
@@ -188,10 +186,10 @@ fn build_layout(window: &gtk::ApplicationWindow) -> Layout {
     Layout { list, right, status, buttons }
 }
 
-/// Run `action` on `editor` when `btn` is clicked.
+/// Run `action` on `editor` when `btn` is clicked, while the editor lives.
 fn on_click(editor: &Rc<Editor>, btn: &gtk::Button, action: impl Fn(&Rc<Editor>) + 'static) {
-    let editor = editor.clone();
-    btn.connect_clicked(move |_| action(&editor));
+    let editor = Rc::downgrade(editor);
+    btn.connect_clicked(move |_| if let Some(editor) = editor.upgrade() { action(&editor) });
 }
 
 /// Run `action` on `editor` when `btn` is clicked, once unsaved changes are
@@ -228,7 +226,6 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
         current: RefCell::new(None),
         preview: RefCell::new(Preview { sent: baseline.clone(), baseline, ended: false }),
         programmatic: Cell::new(false),
-        closing: Cell::new(false),
         on_saved,
     });
 
@@ -251,8 +248,11 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
 
     editor.open_active();
     {
-        let editor = editor.clone();
-        glib::timeout_add_local(PREVIEW_INTERVAL, move || editor.update_preview());
+        let editor = Rc::downgrade(&editor);
+        glib::timeout_add_local(PREVIEW_INTERVAL, move || match editor.upgrade() {
+            Some(editor) => editor.update_preview(),
+            None => glib::ControlFlow::Break,
+        });
     }
     window.present();
 }
@@ -261,9 +261,9 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
 /// one are saved or discarded; a refused discard puts the selection back.
 fn wire_list_selection(editor: &Rc<Editor>) {
     let list = editor.list.clone();
-    let editor = editor.clone();
+    let editor = Rc::downgrade(editor);
     list.connect_row_selected(move |_, row| {
-        let Some(row) = row else { return };
+        let (Some(row), Some(editor)) = (row, editor.upgrade()) else { return };
         if editor.programmatic.get() {
             return;
         }
@@ -281,31 +281,21 @@ fn wire_list_selection(editor: &Rc<Editor>) {
 }
 
 /// Closing the window with unsaved changes asks first; a close that goes
-/// through ends the live preview.
+/// through ends the live preview and drops the editor, whose only strong
+/// reference this guard holds.
 fn wire_close_guard(editor: &Rc<Editor>) {
-    let window = editor.window.clone();
-    let editor = editor.clone();
-    window.connect_close_request(move |_| {
-        if editor.closing.get() || !editor.is_dirty() {
+    let weak = Rc::downgrade(editor);
+    let owner = RefCell::new(Some(editor.clone()));
+    opusdm_ui::DirtyGuard::attach(
+        &editor.window,
+        "This theme has unsaved changes. Close without saving?",
+        None,
+        move || weak.upgrade().is_some_and(|e| e.is_dirty()),
+        move || {
+            let Some(editor) = owner.borrow_mut().take() else { return };
             editor.end_preview();
-            return glib::Propagation::Proceed;
-        }
-        let again = editor.clone();
-        opusdm_ui::requester(
-            &editor.window,
-            "Unsaved Changes",
-            "This theme has unsaved changes. Close without saving?",
-            None,
-            &[("Close", true), ("Cancel", false)],
-            move |close| {
-                if close {
-                    again.closing.set(true);
-                    again.window.close();
-                }
-            },
-        );
-        glib::Propagation::Stop
-    });
+        },
+    );
 }
 
 impl Editor {
@@ -369,9 +359,7 @@ impl Editor {
     /// Rebuild the theme list and select `select` (the first row when `None`).
     fn refresh_list(&self, select: Option<&str>) {
         self.programmatic.set(true);
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
-        }
+        opusdm_ui::clear_children(&self.list);
         let mut slugs = Vec::new();
         for theme in opusdm_ipc::themes::scan_themes() {
             let label = gtk::Label::builder().label(&theme.label).xalign(0.0).margin_start(6).margin_end(6).margin_top(4).margin_bottom(4).build();
@@ -409,9 +397,7 @@ impl Editor {
         };
         let ops = Rc::new(RefCell::new(Vec::new()));
         let tabs = Tabs::new(&self.window, slug, &draft, &ops);
-        while let Some(child) = self.right.first_child() {
-            self.right.remove(&child);
-        }
+        opusdm_ui::clear_children(&self.right);
         let read_only = is_read_only(slug);
         if read_only {
             let message = gtk::Label::builder().label(READ_ONLY_MESSAGE).justify(gtk::Justification::Center).wrap(true).vexpand(true).build();
@@ -429,9 +415,7 @@ impl Editor {
 
     /// Close the open theme: no tabs, no current theme, so nothing can be saved.
     fn clear(&self) {
-        while let Some(child) = self.right.first_child() {
-            self.right.remove(&child);
-        }
+        opusdm_ui::clear_children(&self.right);
         *self.current.borrow_mut() = None;
     }
 
@@ -447,24 +431,7 @@ impl Editor {
     /// Run `proceed` now when nothing is unsaved, otherwise after the user
     /// agrees to discard; `cancel` runs when they decline.
     fn confirm_discard(self: &Rc<Self>, proceed: impl Fn() + 'static, cancel: impl Fn() + 'static) {
-        if !self.is_dirty() {
-            proceed();
-            return;
-        }
-        opusdm_ui::requester(
-            &self.window,
-            "Unsaved Changes",
-            "This theme has unsaved changes. Discard them?",
-            None,
-            &[("Discard", true), ("Cancel", false)],
-            move |discard| {
-                if discard {
-                    proceed();
-                } else {
-                    cancel();
-                }
-            },
-        );
+        opusdm_ui::confirm_discard(&self.window, self.is_dirty(), "This theme has unsaved changes. Discard them?", proceed, cancel);
     }
 
     /// The open theme's slug, the draft the widgets describe, and the pending
@@ -476,15 +443,36 @@ impl Editor {
         Some((c.slug.clone(), c.tabs.collect(&c.saved), ops))
     }
 
-    /// Save the open theme in place; with `apply`, also make it the active
-    /// theme. Either way the saved look becomes the preview's baseline when
-    /// the theme is (now) the active one, so closing the editor keeps it.
+    /// The widgets that wait while a theme is written: the whole window
+    /// content, so nothing is edited between the snapshot and the reload.
+    fn busy(&self) -> impl Fn(bool) + 'static {
+        crate::background::busy_widgets(self.window.child().into_iter().collect())
+    }
+
+    /// Save the open theme in place, on a worker thread; with `apply`, also
+    /// make it the active theme.
     fn save(self: &Rc<Self>, apply: bool) {
         let Some((slug, draft, ops)) = self.snapshot() else { return };
-        if let Err(e) = write_theme(&slug, &draft, Some(&slug), &ops) {
-            self.status.set_text(&format!("Save failed: {e}"));
-            return;
-        }
+        self.status.set_text("Saving...");
+        let weak = Rc::downgrade(self);
+        let target = slug.clone();
+        crate::background::run_blocking(
+            self.busy(),
+            move || write_theme(&target, &draft, Some(&target), &ops).map(|_| ()).map_err(|e| e.to_string()),
+            move |result| {
+                let Some(editor) = weak.upgrade() else { return };
+                match result.and_then(|r| r) {
+                    Ok(()) => editor.saved(slug, apply),
+                    Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
+                }
+            },
+        );
+    }
+
+    /// Theme `slug` was written: reopen it and, with `apply`, make it the
+    /// active theme. Either way the saved look becomes the preview's baseline
+    /// when the theme is (now) the active one, so closing the editor keeps it.
+    fn saved(self: &Rc<Self>, slug: String, apply: bool) {
         let loaded = self.reload(&slug);
         (self.on_saved)(slug.clone());
         let message = if apply {
@@ -528,17 +516,20 @@ impl Editor {
                 }
                 let mut copy = draft.clone();
                 copy.label = label.trim().to_string();
-                match write_theme(&slug, &copy, Some(&source), &ops) {
-                    Ok(_) => {
-                        editor.refresh_list(Some(&slug));
-                        let loaded = editor.reload(&slug);
-                        (editor.on_saved)(slug);
-                        if loaded {
-                            editor.status.set_text("Saved as a copy.");
+                editor.status.set_text("Saving...");
+                let (source, ops, target) = (source.clone(), ops.clone(), slug.clone());
+                let weak = Rc::downgrade(&editor);
+                crate::background::run_blocking(
+                    editor.busy(),
+                    move || write_theme(&target, &copy, Some(&source), &ops).map(|_| ()).map_err(|e| e.to_string()),
+                    move |result| {
+                        let Some(editor) = weak.upgrade() else { return };
+                        match result.and_then(|r| r) {
+                            Ok(()) => editor.opened(slug, "Saved as a copy."),
+                            Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
                         }
-                    }
-                    Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
-                }
+                    },
+                );
             },
         );
     }
@@ -565,10 +556,19 @@ impl Editor {
             if !go {
                 return;
             }
-            match draft::duplicate_theme(&source, &label) {
-                Ok(slug) => editor.opened(slug, "Duplicated."),
-                Err(e) => editor.status.set_text(&format!("Cannot duplicate: {e}")),
-            }
+            editor.status.set_text("Duplicating...");
+            let (source, weak) = (source.clone(), Rc::downgrade(&editor));
+            crate::background::run_blocking(
+                editor.busy(),
+                move || draft::duplicate_theme(&source, &label).map_err(|e| e.to_string()),
+                move |result| {
+                    let Some(editor) = weak.upgrade() else { return };
+                    match result.and_then(|r| r) {
+                        Ok(slug) => editor.opened(slug, "Duplicated."),
+                        Err(e) => editor.status.set_text(&format!("Cannot duplicate: {e}")),
+                    }
+                },
+            );
         });
     }
 
