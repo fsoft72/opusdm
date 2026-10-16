@@ -215,8 +215,10 @@ impl Ui {
                     }
                     Msg::Done(Err(e)) => {
                         crate::actions::flash(&ui, &format!("download failed: {e}"));
-                        // A broken connection must not stay in the table.
-                        if matches!(e, RemoteError::Failed(_)) {
+                        // A broken connection must not stay in the table. A
+                        // transfer cancelled mid-file can leave the stream
+                        // half-read, so it counts as broken too.
+                        if matches!(e, RemoteError::Failed(_) | RemoteError::Cancelled) {
                             ui.drop_remote_session(&url);
                         }
                         return;

@@ -1,9 +1,9 @@
 //! Downloading remote files and folders into a local directory.
 
 use crate::{RemoteError, RemoteFs};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// How deep a download follows directories (guards against link loops).
 const MAX_DEPTH: usize = 64;
@@ -56,6 +56,9 @@ pub fn download(
     Ok(made)
 }
 
+/// Download one file. The data goes to a temp file next to `local` that
+/// replaces it only once the transfer succeeded, so a failed or cancelled
+/// download never destroys an existing local copy.
 fn download_file(
     fs: &mut dyn RemoteFs,
     remote: &str,
@@ -63,17 +66,28 @@ fn download_file(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&str),
 ) -> Result<(), RemoteError> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(RemoteError::Failed("cancelled".to_string()));
-    }
+    if cancel.load(Ordering::Relaxed) { return Err(RemoteError::Cancelled); }
     progress(remote);
-    let mut file = File::create(local)?;
-    let result = fs.read_file(remote, &mut file);
+    let part = part_sibling(local);
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&part)?;
+    let result = fs
+        .read_file(remote, &mut file)
+        .and_then(|_| file.sync_all().map_err(RemoteError::from))
+        .and_then(|()| std::fs::rename(&part, local).map_err(RemoteError::from));
     if result.is_err() {
         drop(file);
-        let _ = std::fs::remove_file(local);
+        let _ = std::fs::remove_file(&part);
     }
-    result.map(|_| ())
+    result
+}
+
+/// A hidden, unused path in the same folder as `local`, so the final
+/// `rename` stays on one filesystem.
+fn part_sibling(local: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    local.with_file_name(format!(".{name}.opusdm-part-{}-{seq}", std::process::id()))
 }
 
 fn download_dir(
@@ -135,7 +149,7 @@ fn upload_item(
     depth: usize,
 ) -> Result<(), RemoteError> {
     if cancel.load(Ordering::Relaxed) {
-        return Err(RemoteError::Failed("cancelled".to_string()));
+        return Err(RemoteError::Cancelled);
     }
     let meta = std::fs::symlink_metadata(local)?;
     if meta.is_dir() {
@@ -180,7 +194,7 @@ fn remove_item(
     depth: usize,
 ) -> Result<(), RemoteError> {
     if cancel.load(Ordering::Relaxed) {
-        return Err(RemoteError::Failed("cancelled".to_string()));
+        return Err(RemoteError::Cancelled);
     }
     if path.trim_end_matches('/').is_empty() {
         return Err(RemoteError::Failed("refusing to delete the server root".to_string()));
@@ -362,11 +376,34 @@ mod tests {
         assert!(!td.path().join("nope").exists());
     }
 
+    /// A failed re-download keeps the local copy that was already there and
+    /// leaves no temp file behind.
+    #[test]
+    fn a_failed_download_keeps_the_existing_local_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("nope"), b"KEEP").unwrap();
+        let missing = vec![RemoteItem { path: "/nope".into(), name: "nope".into(), is_dir: false }];
+        assert!(download(&mut tree(), &missing, td.path(), &AtomicBool::new(false), &mut |_| {}).is_err());
+        assert_eq!(std::fs::read(td.path().join("nope")).unwrap(), b"KEEP");
+        assert_eq!(std::fs::read_dir(td.path()).unwrap().count(), 1);
+    }
+
+    /// A successful download replaces an existing local file and leaves no
+    /// temp file behind.
+    #[test]
+    fn a_download_replaces_the_existing_local_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("top.txt"), b"OLD").unwrap();
+        download(&mut tree(), &items()[1..], td.path(), &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(td.path().join("top.txt")).unwrap(), b"T");
+        assert_eq!(std::fs::read_dir(td.path()).unwrap().count(), 1);
+    }
+
     #[test]
     fn cancel_stops_the_download() {
         let td = tempfile::tempdir().unwrap();
         let err = download(&mut tree(), &items(), td.path(), &AtomicBool::new(true), &mut |_| {}).unwrap_err();
-        assert_eq!(err, RemoteError::Failed("cancelled".to_string()));
+        assert_eq!(err, RemoteError::Cancelled);
     }
 
     #[test]

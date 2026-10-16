@@ -29,6 +29,8 @@ pub enum RemoteError {
     AuthFailed(String),
     /// The network, the protocol or the server failed.
     Failed(String),
+    /// The user cancelled the transfer.
+    Cancelled,
 }
 
 impl std::fmt::Display for RemoteError {
@@ -41,6 +43,7 @@ impl std::fmt::Display for RemoteError {
             RemoteError::AuthRequired => write!(f, "a password is required"),
             RemoteError::AuthFailed(m) => write!(f, "login failed: {m}"),
             RemoteError::Failed(m) => write!(f, "{m}"),
+            RemoteError::Cancelled => write!(f, "cancelled"),
         }
     }
 }
