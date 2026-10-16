@@ -40,8 +40,9 @@ impl TransferOpts {
         Ok(Self { update: options.update, newer: options.newer, glob, names })
     }
 
-    /// Whether some source files may stay untouched, so a Move must delete
-    /// only what it copied.
+    /// Whether the options alone may leave some source files untouched, so a
+    /// Move must delete only what it copied. Conflicts answered with Skip are
+    /// tracked separately by the copy engine.
     pub fn is_partial(&self) -> bool {
         self.update || self.newer || self.glob.is_some()
     }

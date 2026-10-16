@@ -232,8 +232,8 @@ struct CopyShared {
     update: bool,
     /// Copy only files missing at the destination or newer than it.
     newer: bool,
-    /// Source paths copied so far; `Some` only when a partial Move needs to
-    /// delete exactly those.
+    /// Source paths copied so far; `Some` only for a Move, which deletes
+    /// exactly those when some sources were skipped.
     copied_srcs: Option<Mutex<Vec<PathBuf>>>,
 }
 
@@ -517,9 +517,10 @@ pub fn copy_tree(
 
 /// [`copy_tree`] with a filter, `update`/`newer` flags and per-source names.
 ///
-/// When `delete_src_after` is set and `opts` is partial, only the source
+/// When `delete_src_after` is set and `opts` is partial or any file was
+/// skipped (filter, flags or a conflict answered with Skip), only the source
 /// files that were actually copied are removed (then the directories that
-/// became empty), so a filtered Move never destroys what it skipped.
+/// became empty), so a Move never destroys what it skipped.
 pub fn copy_tree_opts(
     srcs: &[PathBuf],
     dest_dir: &Path,
@@ -568,14 +569,15 @@ fn copy_tree_workers(
     };
     let _ = tx.send(Progress::Scanning { files: plan.total_files, bytes: plan.total_bytes });
 
-    let partial_move = delete_src_after && opts.is_partial();
+    // A Move always records what it copied: a conflict answered with Skip
+    // leaves sources behind even when no filter or flag was set.
     let shared = Arc::new(CopyShared::new(
         tx.clone(),
         cancel.clone(),
         plan.total_files,
         plan.total_bytes,
         opts,
-        partial_move,
+        delete_src_after,
     ));
 
     // One pool for the whole job. On a single core there is nothing to overlap,
@@ -595,6 +597,7 @@ fn copy_tree_workers(
     let mut errors = shared.take_errors();
 
     if delete_src_after && errors.is_empty() && !cancelled {
+        let partial_move = opts.is_partial() || shared.skipped.load(Ordering::SeqCst) > 0;
         if partial_move {
             errors.extend(remove_copied(&plan, &shared.take_copied()));
         } else {
@@ -722,13 +725,31 @@ mod tests {
         answer: Resolution,
         workers: usize,
     ) -> (u64, u64, bool, Vec<(PathBuf, String)>) {
+        run_transfer_workers(srcs, dest, answer, workers, false)
+    }
+
+    /// [`run_copy_workers`] that can also delete the sources afterwards, as
+    /// the cross-filesystem Move does.
+    fn run_transfer_workers(
+        srcs: Vec<PathBuf>,
+        dest: PathBuf,
+        answer: Resolution,
+        workers: usize,
+        delete_src_after: bool,
+    ) -> (u64, u64, bool, Vec<(PathBuf, String)>) {
         let (tx, rx) = channel::<Progress>();
         let cancel = CancelToken::new();
         let worker = {
             let tx = tx.clone();
             thread::spawn(move || {
-                let done =
-                    copy_tree_with_workers(&srcs, &dest, &tx, &cancel, false, workers);
+                let done = copy_tree_with_workers(
+                    &srcs,
+                    &dest,
+                    &tx,
+                    &cancel,
+                    delete_src_after,
+                    workers,
+                );
                 tx.send(done).unwrap();
             })
         };
@@ -790,6 +811,51 @@ mod tests {
             assert_eq!((copied, skipped), (0, 1), "workers={workers}");
             assert_eq!(fs::read(dst.join("s/f.txt")).unwrap(), b"OLD");
         }
+    }
+
+    /// A move through the copy engine must keep the source files the user
+    /// chose to skip, and still delete the ones it copied.
+    #[test]
+    fn move_keeps_the_sources_skipped_on_conflict() {
+        for workers in WORKER_MODES {
+            let td = tempfile::tempdir().unwrap();
+            let src = td.path().join("s");
+            let dst = td.path().join("d");
+            fs::create_dir_all(&src).unwrap();
+            fs::create_dir_all(dst.join("s")).unwrap();
+            fs::write(src.join("kept.txt"), b"NEW").unwrap();
+            fs::write(src.join("moved.txt"), b"MOVED").unwrap();
+            fs::write(dst.join("s/kept.txt"), b"OLD").unwrap();
+
+            let (copied, skipped, cancelled, errors) =
+                run_transfer_workers(vec![src.clone()], dst.clone(), Resolution::Skip, workers, true);
+
+            assert_eq!((copied, skipped, cancelled), (1, 1, false), "workers={workers}");
+            assert!(errors.is_empty(), "workers={workers}: {errors:?}");
+            assert_eq!(fs::read(src.join("kept.txt")).unwrap(), b"NEW", "workers={workers}");
+            assert!(!src.join("moved.txt").exists(), "workers={workers}");
+            assert_eq!(fs::read(dst.join("s/moved.txt")).unwrap(), b"MOVED");
+            assert_eq!(fs::read(dst.join("s/kept.txt")).unwrap(), b"OLD");
+        }
+    }
+
+    /// A move with no conflict still removes the whole source tree.
+    #[test]
+    fn move_without_conflicts_removes_the_source_tree() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("sub/f.txt"), b"x").unwrap();
+
+        let (copied, _, _, errors) =
+            run_transfer_workers(vec![src.clone()], dst.clone(), Resolution::Skip, 1, true);
+
+        assert_eq!(copied, 1);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(!src.exists());
+        assert_eq!(fs::read(dst.join("s/sub/f.txt")).unwrap(), b"x");
     }
 
     #[test]

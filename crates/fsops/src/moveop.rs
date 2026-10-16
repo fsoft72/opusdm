@@ -94,7 +94,8 @@ pub fn run_move_opts(
     }
 
     if !cross_fs.is_empty() {
-        // copy_tree emits its own Scanning/File events and deletes sources.
+        // copy_tree emits its own Scanning/File events and deletes the
+        // sources it copied; files skipped on a conflict stay in place.
         let cross_opts = TransferOpts {
             names: opts.names.as_ref().map(|_| cross_names),
             ..TransferOpts::default()
