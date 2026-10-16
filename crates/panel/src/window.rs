@@ -125,7 +125,7 @@ fn apply(xid: u32, place: Placement) -> Result<(), opusdm_ui::X11Error> {
     let height = PANEL_HEIGHT.max(1) as u32;
     opusdm_ui::with_x11(|x11| {
         let conn = x11.conn();
-        let bottom_gap = x11.screen_height() - (place.mon_y + place.mon_h);
+        let bottom_gap = x11.screen_height()? - (place.mon_y + place.mon_h);
         let dock_type = x11.atom("_NET_WM_WINDOW_TYPE_DOCK")?;
         let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
         let wm_state = x11.atom("_NET_WM_STATE")?;

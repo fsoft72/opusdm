@@ -113,7 +113,6 @@ pub fn x11_sync(conn: &impl Connection) -> Result<(), ReplyError> {
 pub struct X11 {
     conn: RustConnection,
     root: u32,
-    screen_height: i32,
     atoms: Mutex<HashMap<&'static str, u32>>,
 }
 
@@ -143,9 +142,8 @@ fn shared() -> Result<Arc<X11>, X11Error> {
     if let Some(x11) = slot.as_ref() {
         return Ok(x11.clone());
     }
-    let Session { conn, screen_num, root } = connect()?;
-    let screen_height = i32::from(conn.setup().roots[screen_num].height_in_pixels);
-    let x11 = Arc::new(X11 { conn, root, screen_height, atoms: Mutex::new(HashMap::new()) });
+    let Session { conn, root, .. } = connect()?;
+    let x11 = Arc::new(X11 { conn, root, atoms: Mutex::new(HashMap::new()) });
     *slot = Some(x11.clone());
     Ok(x11)
 }
@@ -161,9 +159,12 @@ impl X11 {
         self.root
     }
 
-    /// Height of the default screen in pixels.
-    pub fn screen_height(&self) -> i32 {
-        self.screen_height
+    /// Current height of the default screen in pixels, read from the root
+    /// window geometry on every call so it follows xrandr resizes (the
+    /// connection setup keeps the size the screen had when it was opened).
+    pub fn screen_height(&self) -> Result<i32, X11Error> {
+        let geometry = self.conn.get_geometry(self.root)?.reply()?;
+        Ok(i32::from(geometry.height))
     }
 
     /// The atom called `name`, interned on first use.
@@ -305,5 +306,17 @@ mod tests {
         })
         .unwrap();
         assert!(Arc::ptr_eq(&shared().unwrap(), &shared().unwrap()), "one connection per process");
+    }
+
+    /// Needs a running X server, like the test above.
+    #[test]
+    #[ignore]
+    fn screen_height_is_the_live_root_height() {
+        with_x11(|x11| {
+            let root = x11.conn().get_geometry(x11.root())?.reply()?;
+            assert_eq!(x11.screen_height()?, i32::from(root.height));
+            Ok(())
+        })
+        .unwrap();
     }
 }
