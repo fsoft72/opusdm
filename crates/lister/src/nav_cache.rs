@@ -53,22 +53,23 @@ impl Ui {
 
         let dir_owned = dir.to_path_buf();
         let session = remote_url.as_ref().and_then(|u| self.remote_session(u));
-        let (tx, rx) = async_channel::bounded::<io::Result<Vec<Row>>>(1);
-        std::thread::spawn(move || {
-            let result = if let (Some(url), Some(session)) = (crate::remote::url_of(&dir_owned), session.as_ref()) {
+        // The worker pool reuses its threads, and a read that was superseded
+        // before it started is skipped through the cancel token.
+        let cancel = crate::background::CancelToken::new();
+        self.nav_cancel.replace(cancel.clone()).cancel();
+        let read = move |_: &crate::background::CancelToken| {
+            if let (Some(url), Some(session)) = (crate::remote::url_of(&dir_owned), session.as_ref()) {
                 crate::remote_ui::read_rows(session, &url)
             } else if let Some((arch, inner)) = crate::archive::parse_archive_path(&dir_owned) {
                 crate::archive::read_archive_rows(&arch, &inner)
             } else {
                 read_dir_rows(&dir_owned)
-            };
-            let _ = tx.send_blocking(result);
-        });
+            }
+        };
 
         let this = self.clone();
         let dir_owned = dir.to_path_buf();
-        glib::spawn_future_local(async move {
-            let Ok(result) = rx.recv().await else { return };
+        crate::background::run_cancellable(&cancel, read, move |result: io::Result<Vec<Row>>| {
             // Superseded by a later navigation while this was loading.
             if this.nav_generation.get() != gen {
                 return;

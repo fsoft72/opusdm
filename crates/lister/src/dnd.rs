@@ -134,34 +134,24 @@ fn submit_dropped(ui: &Rc<Ui>, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<Path
     };
     crate::actions::flash(ui, "extracting from the archive...");
     let root = scratch.path().to_path_buf();
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
+    let extract = move || -> std::io::Result<Vec<PathBuf>> {
         let mut extracted = Vec::new();
         for (n, (arch, items)) in groups.iter().enumerate() {
             // One folder per archive, so equal entry names never collide.
             let dir = root.join(n.to_string());
-            match crate::archive::extract_items_to_dir(arch, items, &dir) {
-                Ok(paths) => extracted.extend(paths),
-                Err(e) => {
-                    let _ = tx.send_blocking(Err(e));
-                    return;
-                }
-            }
+            extracted.extend(crate::archive::extract_items_to_dir(arch, items, &dir)?);
         }
-        let _ = tx.send_blocking(Ok(extracted));
-    });
+        Ok(extracted)
+    };
     let ui = ui.clone();
-    gtk::glib::spawn_future_local(async move {
-        match rx.recv().await {
-            Ok(Ok(extracted)) => {
-                // The drop makes this Lister the requester: one JobDone comes back.
-                crate::archive::keep_scratch(scratch, 1);
-                ready.extend(extracted);
-                crate::job_submit::submit_job(&ui, op, ready, dest_dir, opusdm_ipc::JobOptions::default());
-            }
-            Ok(Err(e)) => crate::actions::flash(&ui, &format!("extraction failed: {e}")),
-            Err(_) => crate::actions::flash(&ui, "extraction stopped unexpectedly"),
+    crate::background::run_blocking(extract, move |result| match result {
+        Ok(extracted) => {
+            // The drop makes this Lister the requester: one JobDone comes back.
+            crate::archive::keep_scratch(scratch, 1);
+            ready.extend(extracted);
+            crate::job_submit::submit_job(&ui, op, ready, dest_dir, opusdm_ipc::JobOptions::default());
         }
+        Err(e) => crate::actions::flash(&ui, &format!("extraction failed: {e}")),
     });
 }
 

@@ -9,27 +9,44 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use crate::background::{run_streaming, CancelToken};
 
-/// Recursively calculate total size in bytes of a directory.
-pub fn compute_dir_size(dir: &Path) -> u64 {
-    let mut total = 0u64;
-    for entry in walkdir::WalkDir::new(dir)
-        .min_depth(1)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        if let Ok(meta) = entry.metadata() {
-            if meta.is_file() {
-                total += meta.len();
-            }
+/// The size of a folder tree and how many entries could not be read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DirSize {
+    /// Bytes of the regular files that could be read.
+    pub bytes: u64,
+    /// Entries left out because they could not be read.
+    pub skipped: u64,
+}
+
+/// Recursively calculate the total size in bytes of the files below `dir`,
+/// staying on its filesystem. `None` when `cancel` was cancelled.
+pub fn compute_dir_size(dir: &Path, cancel: &CancelToken) -> Option<DirSize> {
+    let mut size = DirSize::default();
+    for entry in walkdir::WalkDir::new(dir).min_depth(1).same_file_system(true) {
+        if cancel.is_cancelled() { return None; }
+        match entry.and_then(|e| e.metadata()) {
+            Ok(meta) if meta.is_file() => size.bytes += meta.len(),
+            Ok(_) => {}
+            Err(_) => size.skipped += 1,
         }
     }
-    total
+    Some(size)
+}
+
+/// One finished folder of a size scan.
+struct SizeResult {
+    idx: u32,
+    name: String,
+    path: PathBuf,
+    size: DirSize,
 }
 
 /// Calculate sizes for selected directories (or all directories if none selected),
 /// updating the list store rows and the status bar asynchronously. Sizes
 /// calculated before are reused; `force` recalculates them (GetSizes FORCE).
+/// A new calculation cancels the one still running in this Lister.
 pub fn calculate_dir_sizes_async(ui: &Rc<Ui>, force: bool) {
     let cwd = ui.cwd_path();
     let mut target_dirs = Vec::new();
@@ -78,32 +95,38 @@ pub fn calculate_dir_sizes_async(ui: &Rc<Ui>, force: bool) {
 
     crate::actions::flash(ui, &format!("calculating sizes for {} director(ies)...", missing.len()));
 
-    let ui_clone = ui.clone();
-    let (tx, rx) = async_channel::unbounded::<(u32, String, PathBuf, u64)>();
+    let cancel = CancelToken::new();
+    let previous = ui.caches.size_scan.replace(cancel.clone());
+    previous.cancel();
+    let totals = Rc::new(std::cell::Cell::new((total_calculated, count, 0u64)));
+    let (ui_item, totals_item) = (ui.clone(), totals.clone());
+    let ui_end = ui.clone();
+    run_streaming(
+        &cancel,
+        move |out| {
+            for (idx, name, path) in missing {
+                let Some(size) = compute_dir_size(&path, out.cancel()) else { return };
+                if !out.emit(SizeResult { idx, name, path, size }) { return; }
+            }
+        },
+        move |done: SizeResult| {
+            let (bytes, n, skipped) = totals_item.get();
+            totals_item.set((bytes + done.size.bytes, n + 1, skipped + done.size.skipped));
+            ui_item.caches.sizes.borrow_mut().put(done.path, done.size.bytes);
+            apply_size(&ui_item, done.idx, &done.name, done.size.bytes);
+        },
+        move || {
+            let (bytes, n, skipped) = totals.get();
+            crate::actions::flash(&ui_end, &size_summary(n, bytes, skipped));
+        },
+    );
+}
 
-    std::thread::spawn(move || {
-        for (idx, name, path) in missing {
-            let size = compute_dir_size(&path);
-            let _ = tx.send_blocking((idx, name, path, size));
-        }
-    });
-
-    glib::spawn_future_local(async move {
-        while let Ok((idx, name, path, size)) = rx.recv().await {
-            total_calculated += size;
-            count += 1;
-            ui_clone.caches.sizes.borrow_mut().put(path, size);
-            apply_size(&ui_clone, idx, &name, size);
-        }
-        crate::actions::flash(
-            &ui_clone,
-            &format!(
-                "calculated {} directories: total {}",
-                count,
-                format_size(false, total_calculated)
-            ),
-        );
-    });
+/// The message shown when a size calculation ends.
+fn size_summary(count: usize, bytes: u64, skipped: u64) -> String {
+    let text = format!("calculated {count} directories: total {}", format_size(false, bytes));
+    if skipped == 0 { return text; }
+    format!("{text} ({skipped} unreadable entries skipped)")
 }
 
 /// Show `size` on the directory row `name` at store index `idx`; the name is
@@ -207,28 +230,37 @@ pub fn open_checksum_dialog(ui: &Rc<Ui>) {
         .build();
     root.append(&scroller);
 
-    let (tx, rx) = async_channel::unbounded::<(PathBuf, String, String)>();
-    let paths_clone = paths.clone();
-
-    std::thread::spawn(move || {
-        for p in paths_clone {
-            if let Ok((sha, md5)) = compute_file_hashes(&p) {
-                let _ = tx.send_blocking((p, sha, md5));
-            }
-        }
-    });
-
+    let cancel = CancelToken::new();
     let list_box_clone = list_box.clone();
-    let title_lbl_clone = title_lbl.clone();
-
-    glib::spawn_future_local(async move {
-        let mut count = 0;
-        while let Ok((path, sha, md5)) = rx.recv().await {
-            count += 1;
+    let failed = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let hashed = Rc::new(std::cell::Cell::new(0usize));
+    let (failed_item, hashed_item) = (failed.clone(), hashed.clone());
+    run_streaming(
+        &cancel,
+        move |out| {
+            for p in paths {
+                let result = compute_file_hashes(&p);
+                if !out.emit((p, result)) { return; }
+            }
+        },
+        move |(path, result): (PathBuf, std::io::Result<(String, String)>)| {
             let filename = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            let (sha, md5) = match result {
+                Ok(hashes) => hashes,
+                Err(e) => {
+                    let text = format!("{}: {e}", path.display());
+                    let label = gtk::Label::new(Some(&text));
+                    label.set_xalign(0.0);
+                    label.add_css_class("error-text");
+                    list_box_clone.append(&label);
+                    failed_item.borrow_mut().push(text);
+                    return;
+                }
+            };
+            hashed_item.set(hashed_item.get() + 1);
 
             let row = gtk::ListBoxRow::new();
             let vbox = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -247,12 +279,29 @@ pub fn open_checksum_dialog(ui: &Rc<Ui>) {
 
             row.set_child(Some(&vbox));
             list_box_clone.append(&row);
-        }
-        title_lbl_clone.set_text(&format!("Checksums for {count} file(s):"));
+        },
+        move || {
+            let failed = failed.borrow();
+            title_lbl.set_text(&checksum_title(hashed.get(), failed.len()));
+            if !failed.is_empty() {
+                opusdm_ipc::err_log!("opusdm-lister", "checksums: {}", failed.join("; "));
+            }
+        },
+    );
+    // Closing the dialog stops the hashing.
+    shell.window().connect_close_request(move |_| {
+        cancel.cancel();
+        glib::Propagation::Proceed
     });
 
     shell.close_button("Close");
     shell.present();
+}
+
+/// The title of the checksum dialog once every file was read.
+fn checksum_title(hashed: usize, failed: usize) -> String {
+    if failed == 0 { return format!("Checksums for {hashed} file(s):"); }
+    format!("Checksums for {hashed} file(s); {failed} file(s) could not be read:")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,8 +618,46 @@ mod tests {
 
     #[test]
     fn test_compute_dir_size_nonexistent() {
-        let size = compute_dir_size(Path::new("/nonexistent/test/path"));
-        assert_eq!(size, 0);
+        let size = compute_dir_size(Path::new("/nonexistent/test/path"), &CancelToken::new()).unwrap();
+        assert_eq!(size.bytes, 0);
+    }
+
+    #[test]
+    fn dir_size_adds_the_files_and_counts_what_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("a"), [0u8; 10]).unwrap();
+        std::fs::create_dir(td.path().join("sub")).unwrap();
+        std::fs::write(td.path().join("sub/b"), [0u8; 5]).unwrap();
+        let locked = td.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("c"), [0u8; 7]).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let size = compute_dir_size(td.path(), &CancelToken::new()).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(size.bytes, 15);
+        assert_eq!(size.skipped, 1, "the locked folder is reported, not silently dropped");
+    }
+
+    #[test]
+    fn a_cancelled_dir_size_gives_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("a"), b"x").unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert_eq!(compute_dir_size(td.path(), &cancel), None);
+    }
+
+    #[test]
+    fn the_size_summary_reports_skipped_entries() {
+        assert_eq!(size_summary(2, 0, 0), "calculated 2 directories: total 0 B");
+        assert!(size_summary(1, 0, 3).ends_with("(3 unreadable entries skipped)"));
+    }
+
+    #[test]
+    fn the_checksum_title_reports_unreadable_files() {
+        assert_eq!(checksum_title(2, 0), "Checksums for 2 file(s):");
+        assert_eq!(checksum_title(1, 2), "Checksums for 1 file(s); 2 file(s) could not be read:");
     }
 
     #[test]

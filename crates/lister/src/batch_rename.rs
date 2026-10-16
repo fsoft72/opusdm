@@ -205,12 +205,8 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
 fn rename_in_place(ui: &Rc<Ui>, mappings: Vec<(String, String)>) {
     let dir = ui.cwd_path();
     let ui = ui.clone();
-    glib::spawn_future_local(async move {
-        let result = gtk::gio::spawn_blocking(move || rename_all(&dir, &mappings)).await;
+    crate::background::run_blocking(move || rename_all(&dir, &mappings), move |(renamed_count, errors)| {
         ui.reload();
-        let Ok((renamed_count, errors)) = result else {
-            return crate::actions::flash(&ui, "batch rename failed: the worker thread panicked");
-        };
         let (headline, detail) = rename_summary(renamed_count, &errors);
         let Some(detail) = detail else { return crate::actions::flash(&ui, &headline) };
         opusdm_ipc::err_log!("opusdm-lister", "batch rename: {headline}\n{detail}");

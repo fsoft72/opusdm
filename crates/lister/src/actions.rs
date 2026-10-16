@@ -3,7 +3,6 @@
 use crate::client::Roles;
 use crate::window::Ui;
 use gtk4 as gtk;
-use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::{FileMeta, ListerId, Op, Outcome, Resolution, ToHub};
 use std::path::{Path, PathBuf};
@@ -245,22 +244,16 @@ pub fn transfer_from_archive(ui: &Rc<Ui>, op: Op, arch: PathBuf, inner: String) 
         .map(|n| if inner.is_empty() { n } else { format!("{}/{}", inner.trim_end_matches('/'), n) })
         .collect();
     let extract_dir = scratch.path().to_path_buf();
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send_blocking(crate::archive::extract_items_to_dir(&arch, &items, &extract_dir));
-    });
     let ui = ui.clone();
-    glib::spawn_future_local(async move {
-        match rx.recv().await {
-            Ok(Ok(extracted)) => {
-                // One JobDone comes back per DEST Lister the job fans out to.
-                let dests = ui.hub.roles.borrow().dests.len();
-                crate::archive::keep_scratch(scratch, dests);
-                crate::job_submit::submit_job(&ui, op, extracted, None, opusdm_ipc::JobOptions::default());
-            }
-            Ok(Err(e)) => flash(&ui, &format!("extraction failed: {e}")),
-            Err(_) => flash(&ui, "extraction stopped unexpectedly"),
+    let extract = move || crate::archive::extract_items_to_dir(&arch, &items, &extract_dir);
+    crate::background::run_blocking(extract, move |result| match result {
+        Ok(extracted) => {
+            // One JobDone comes back per DEST Lister the job fans out to.
+            let dests = ui.hub.roles.borrow().dests.len();
+            crate::archive::keep_scratch(scratch, dests);
+            crate::job_submit::submit_job(&ui, op, extracted, None, opusdm_ipc::JobOptions::default());
         }
+        Err(e) => flash(&ui, &format!("extraction failed: {e}")),
     });
 }
 

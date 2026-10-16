@@ -10,6 +10,7 @@ mod batch_rename;
 mod size_format;
 mod start_target;
 mod bookmarks_ui;
+mod background;
 mod build;
 mod busy;
 mod cache_list;

@@ -322,14 +322,9 @@ impl Viewer {
         let gen = self.generation.get() + 1;
         self.generation.set(gen);
         let mode = self.mode.get();
-        let (tx, rx) = async_channel::bounded::<ViewData>(1);
         let path_for_thread = path.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(load(&path_for_thread, mode));
-        });
         let this = self.clone();
-        glib::spawn_future_local(async move {
-            let Ok(data) = rx.recv().await else { return };
+        crate::background::run_blocking(move || load(&path_for_thread, mode), move |data| {
             if this.generation.get() != gen {
                 return;
             }

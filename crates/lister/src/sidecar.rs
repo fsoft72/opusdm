@@ -51,11 +51,9 @@ impl Sidecar {
 
     /// Close the pipe (the viewer closes its window) and reap the process.
     fn close(self) {
-        let Sidecar { mut child, stdin, .. } = self;
+        let Sidecar { child, stdin, .. } = self;
         drop(stdin);
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
+        crate::background::reap(child, "the Sidecar viewer");
     }
 }
 
@@ -111,18 +109,17 @@ fn start(ui: &Rc<Ui>) {
 
 /// Keep `shown` in step with what the viewer reports on its stdout, until it exits.
 fn _read_shown(stdout: std::process::ChildStdout, shown: Rc<RefCell<Option<PathBuf>>>) {
-    let (tx, rx) = async_channel::unbounded::<Option<PathBuf>>();
-    std::thread::spawn(move || {
-        let mut reader = io::BufReader::new(stdout);
-        while let Ok(Some(paths)) = read_update(&mut reader) {
-            if tx.send_blocking(paths.into_iter().next()).is_err() { break; }
-        }
-    });
-    glib::spawn_future_local(async move {
-        while let Ok(path) = rx.recv().await {
-            *shown.borrow_mut() = path;
-        }
-    });
+    crate::background::run_streaming(
+        &crate::background::CancelToken::new(),
+        move |out| {
+            let mut reader = io::BufReader::new(stdout);
+            while let Ok(Some(paths)) = read_update(&mut reader) {
+                if !out.emit(paths.into_iter().next()) { break; }
+            }
+        },
+        move |path| *shown.borrow_mut() = path,
+        || {},
+    );
 }
 
 /// The file the Sidecar shows, when it surely belongs to the last update sent

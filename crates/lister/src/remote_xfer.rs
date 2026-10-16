@@ -13,8 +13,9 @@ use opusdm_ftp::{RemoteError, RemoteItem, RemoteUrl};
 use opusdm_ipc::{Op, ToHub};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use crate::background::{run_blocking, run_streaming, CancelToken, Emitter};
 
 /// What a remote job comes down to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,9 +174,8 @@ fn servers(plan: &Plan) -> (Option<RemoteUrl>, Option<RemoteUrl>) {
     }
 }
 
-/// Messages from the worker to the window.
+/// Messages from the transfer worker to the window.
 enum Msg {
-    Prepared(Result<Prepared, RemoteError>),
     File(String),
     Done(Result<(), RemoteError>),
 }
@@ -225,50 +225,60 @@ impl Ui {
 
     /// Stage one, the existing-target question, then stage two.
     fn begin_transfer(self: &Rc<Self>, plan: Plan, src: Option<SharedFs>, dst: Option<SharedFs>, touched: Vec<PathBuf>) {
-        let (tx, rx) = async_channel::unbounded::<Msg>();
         let plan = Arc::new(plan);
-        let (src_t, dst_t, plan_t, tx_t) = (src.clone(), dst.clone(), plan.clone(), tx.clone());
-        std::thread::spawn(move || {
-            let _ = tx_t.send_blocking(Msg::Prepared(prepare(&plan_t, &src_t, &dst_t)));
-        });
         let window = TransferWindow::open(self);
         let ui = self.clone();
-        let cancel = window.cancel.clone();
-        glib::spawn_future_local(async move {
-            let mut started = false;
-            while let Ok(msg) = rx.recv().await {
-                match msg {
-                    Msg::Prepared(Err(e)) => {
-                        window.close();
-                        crate::actions::flash(&ui, &format!("remote transfer failed: {e}"));
-                        return;
-                    }
-                    Msg::Prepared(Ok(prepared)) if !started => {
-                        started = true;
-                        let (ui2, cancel, tx, plan, src, dst) = (ui.clone(), cancel.clone(), tx.clone(), plan.clone(), src.clone(), dst.clone());
-                        ui.ask_overwrite(&window, prepared.existing.clone(), move |skip| {
-                            let Some(skip) = skip else {
-                                ui2.finish_transfer(Err(RemoteError::Failed("cancelled".to_string())), &[]);
-                                return;
-                            };
-                            std::thread::spawn(move || {
-                                let result = execute(&plan, prepared, &skip, &src, &dst, &cancel, &mut |p| {
-                                    let _ = tx.send_blocking(Msg::File(p.to_string()));
-                                });
-                                let _ = tx.send_blocking(Msg::Done(result));
-                            });
-                        });
-                    }
-                    Msg::Prepared(Ok(_)) => {}
-                    Msg::File(path) => window.set_text(&path),
-                    Msg::Done(result) => {
-                        window.close();
-                        ui.finish_transfer(result, &touched);
-                        return;
-                    }
+        let (src_t, dst_t, plan_t) = (src.clone(), dst.clone(), plan.clone());
+        run_blocking(move || prepare(&plan_t, &src_t, &dst_t), move |prepared| {
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(e) => {
+                    window.close();
+                    crate::actions::flash(&ui, &format!("remote transfer failed: {e}"));
+                    return;
                 }
-            }
+            };
+            let (ui2, window2) = (ui.clone(), window.clone());
+            ui.ask_overwrite(&window, prepared.existing.clone(), move |skip| {
+                let Some(skip) = skip else {
+                    window2.close();
+                    ui2.finish_transfer(Err(RemoteError::Failed("cancelled".to_string())), &[]);
+                    return;
+                };
+                ui2.run_transfer(window2, plan, prepared, skip, src, dst, touched);
+            });
         });
+    }
+
+    /// Stage two: run the transfer on a worker, showing each file in the
+    /// window. Cancel stops the transfer itself; its outcome (cancelled
+    /// included) is still reported.
+    #[allow(clippy::too_many_arguments)]
+    fn run_transfer(
+        self: &Rc<Self>,
+        window: Rc<TransferWindow>,
+        plan: Arc<Plan>,
+        prepared: Prepared,
+        skip: Vec<String>,
+        src: Option<SharedFs>,
+        dst: Option<SharedFs>,
+        touched: Vec<PathBuf>,
+    ) {
+        let cancel = window.cancel.clone();
+        let work = move |out: &Emitter<Msg>| {
+            let result = execute(&plan, prepared, &skip, &src, &dst, cancel.flag(), &mut |p| {
+                out.emit(Msg::File(p.to_string()));
+            });
+            out.emit(Msg::Done(result));
+        };
+        let ui = self.clone();
+        run_streaming(&CancelToken::new(), work, move |msg| match msg {
+            Msg::File(path) => window.set_text(&path),
+            Msg::Done(result) => {
+                window.close();
+                ui.finish_transfer(result, &touched);
+            }
+        }, || {});
     }
 
     /// Ask what to do with `existing` names: `Some(names to skip)` or `None`
@@ -317,7 +327,7 @@ impl Ui {
 struct TransferWindow {
     window: gtk::Window,
     label: gtk::Label,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
 }
 
 impl TransferWindow {
@@ -332,11 +342,11 @@ impl TransferWindow {
         shell.content().append(&bar);
         let cancel_btn = shell.button("Cancel");
         let window = shell.present();
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = CancelToken::new();
         {
             let cancel = cancel.clone();
             cancel_btn.connect_clicked(move |b| {
-                cancel.store(true, Ordering::Relaxed);
+                cancel.cancel();
                 b.set_sensitive(false);
             });
         }
@@ -344,7 +354,7 @@ impl TransferWindow {
             // Closing the window cancels too.
             let cancel = cancel.clone();
             window.connect_close_request(move |_| {
-                cancel.store(true, Ordering::Relaxed);
+                cancel.cancel();
                 glib::Propagation::Proceed
             });
         }

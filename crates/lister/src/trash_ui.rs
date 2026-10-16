@@ -240,13 +240,8 @@ fn _empty_all(dialog: &Rc<TrashDialog>) {
 /// and show the errors it returned, if any.
 fn _run(dialog: &Rc<TrashDialog>, work: impl FnOnce() -> Vec<String> + Send + 'static) {
     dialog.window.set_sensitive(false);
-    let (tx, rx) = async_channel::bounded::<Vec<String>>(1);
-    std::thread::spawn(move || {
-        let _ = tx.send_blocking(work());
-    });
     let dialog = dialog.clone();
-    glib::spawn_future_local(async move {
-        let errors = rx.recv().await.unwrap_or_else(|e| vec![format!("the trash worker stopped: {e}")]);
+    crate::background::run_blocking(work, move |errors| {
         dialog.window.set_sensitive(true);
         _reload(&dialog);
         if errors.is_empty() { return; }

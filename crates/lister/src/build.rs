@@ -511,12 +511,14 @@ fn assemble_ui(
         terminal,
         css_provider,
         nav_generation: Cell::new(0),
+        nav_cancel: RefCell::new(crate::background::CancelToken::new()),
         typeahead: Typeahead { buffer: RefCell::new(String::new()), timer: RefCell::new(None) },
         hidden_btn: RefCell::new(None),
         format_state: FormatState { current: RefCell::new(opusdm_ipc::ListerFormat::builtin()), temp: RefCell::new(None) },
         caches: Caches {
             dirs: RefCell::new(crate::dircache::DirCache::new(cache_capacity)),
             sizes: RefCell::new(crate::sizecache::SizeCache::default()),
+            size_scan: RefCell::new(crate::background::CancelToken::new()),
         },
         output_windows: RefCell::new(std::collections::HashMap::new()),
         busy: crate::busy::Busy::default(),
@@ -602,9 +604,8 @@ fn wire_path_completion(entry: &gtk::Entry) {
             // so it runs on a worker; the answer is applied on the GTK thread,
             // which also keeps the text change out of the `changed` signal.
             let (entry, ghost, applying, requests) = (entry.clone(), ghost.clone(), applying.clone(), requests.clone());
-            glib::spawn_future_local(async move {
-                let query = typed.clone();
-                let Ok(suggestion) = gio::spawn_blocking(move || crate::pathcomplete::suggest(&query)).await else { return };
+            let query = typed.clone();
+            crate::background::run_blocking(move || crate::pathcomplete::suggest(&query), move |suggestion| {
                 if !requests.is_current(request) { return; }
                 let end = typed.chars().count() as i32;
                 if entry.text() != typed || entry.position() != end { return; }
@@ -749,6 +750,7 @@ fn wire_window_signals(ui: &Rc<Ui>) {
             crate::dlog!("close request, sending Goodbye to hub");
             ui.send_hub(&ToHub::Goodbye);
             crate::sidecar::stop(&ui);
+            ui.caches.size_scan.borrow().cancel();
             glib::Propagation::Proceed
         });
     }

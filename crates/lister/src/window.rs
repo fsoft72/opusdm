@@ -171,6 +171,8 @@ pub struct Caches {
     pub dirs: RefCell<crate::dircache::DirCache>,
     /// Directory sizes already calculated.
     pub sizes: RefCell<crate::sizecache::SizeCache>,
+    /// Cancels the directory size calculation still running, if any.
+    pub size_scan: RefCell<crate::background::CancelToken>,
 }
 
 impl Caches {
@@ -210,6 +212,9 @@ pub struct Ui {
     /// generation no longer matches was superseded by a later navigation and
     /// its result is dropped instead of applied.
     pub nav_generation: Cell<u64>,
+    /// Cancels the background read of the navigation in flight, so a read
+    /// superseded before its worker started is skipped.
+    pub nav_cancel: RefCell<crate::background::CancelToken>,
     /// Names selected when a job last started or the selection was last
     /// cleared, for Reselect.
     pub last_selection: RefCell<Vec<String>>,
