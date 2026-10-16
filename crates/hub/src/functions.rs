@@ -477,9 +477,10 @@ fn run_open_input_config(run_id: u64, step_idx: usize, events_tx: &Sender<(u64, 
     Ok(())
 }
 
-/// Whether a button bank called `name` exists on disk.
+/// Whether a button bank called `name` exists on disk (read through the
+/// cache, so a bank step does not parse every bank file each time).
 fn bank_exists(name: &str) -> bool {
-    opusdm_ipc::buttonbank::Banks::load().get_by_name(name).is_some()
+    crate::config_cache::banks().get_by_name(name).is_some()
 }
 
 /// Run a `Confirm` step: expand the question, ask through the hub and wait

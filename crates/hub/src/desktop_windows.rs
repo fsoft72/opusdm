@@ -203,8 +203,11 @@ pub(crate) fn build_one_desktop_window(
 
 /// Run the double click action of the user file type of `path` on it. False
 /// when no file type has one, so the caller opens the file the default way.
+/// The file types come from the cache, which reloads `filetypes.json` only
+/// after it changed.
 pub(crate) fn run_file_type(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) -> bool {
-    let Some(id) = opusdm_ipc::filetypes::dblclick_for(path) else { return false };
+    let types = opusdm_hub::config_cache::filetypes();
+    let Some(id) = opusdm_ipc::filetypes::dblclick_in(&types, path) else { return false };
     let _ = cmd_tx.send(HubCmd::RunFunctionOnPaths { id, paths: vec![path.to_path_buf()] });
     true
 }
