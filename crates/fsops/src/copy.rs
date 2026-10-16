@@ -106,6 +106,23 @@ fn temp_sibling(dst: &Path) -> PathBuf {
     dst.with_file_name(format!(".{name}.opusdm-tmp-{}-{seq}", std::process::id()))
 }
 
+/// Create a symlink at `link` pointing to `target`.
+///
+/// Without `overwrite` it fails with `AlreadyExists` when `link` exists. With
+/// `overwrite` the link is made under a temp name and renamed into place, so
+/// an existing entry is only replaced once the new link exists. A directory
+/// at `link` is never replaced (`rename` refuses).
+fn create_symlink(target: &Path, link: &Path, overwrite: bool) -> io::Result<()> {
+    if !overwrite { return std::os::unix::fs::symlink(target, link); }
+    let tmp = temp_sibling(link);
+    std::os::unix::fs::symlink(target, &tmp)?;
+    let renamed = std::fs::rename(&tmp, link);
+    if renamed.is_err() {
+        crate::cleanup::remove_partial(&tmp);
+    }
+    renamed
+}
+
 /// Whether `path` exists and is the same inode (device + inode number) as the
 /// open file `f`.
 fn is_same_file(f: &std::fs::File, path: &Path) -> bool {
@@ -465,8 +482,21 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
                     shared.skipped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                let _ = std::fs::remove_file(&link);
-                match std::os::unix::fs::symlink(target, &link) {
+                let mut overwrite = shared.overwrite_all.load(Ordering::SeqCst);
+                if !overwrite && std::fs::symlink_metadata(&link).is_ok() {
+                    match shared.decide(&link, abs) {
+                        Decision::Copy { overwrite: o } => overwrite = o,
+                        Decision::Skip => {
+                            shared.skipped.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        Decision::Cancel => {
+                            shared.abort();
+                            return;
+                        }
+                    }
+                }
+                match create_symlink(target, &link, overwrite) {
                     Ok(()) => shared.record_copied(abs),
                     Err(e) => shared.push_error(link, e.to_string()),
                 }
@@ -639,8 +669,8 @@ fn remove_copied(plan: &Plan, copied: &[PathBuf]) -> Vec<(PathBuf, String)> {
 /// Emit a `Conflict` event and block for the reply. `None` if the channel closed.
 fn ask_conflict(tx: &Sender<Progress>, dst: &Path, src: &Path) -> Option<Resolution> {
     let (reply_tx, reply_rx) = channel::<Resolution>();
-    let src_meta = std::fs::metadata(src).ok().map(|m| file_meta(&m))?;
-    let dst_meta = std::fs::metadata(dst).ok().map(|m| file_meta(&m))?;
+    let src_meta = entry_metadata(src).ok().map(|m| file_meta(&m))?;
+    let dst_meta = entry_metadata(dst).ok().map(|m| file_meta(&m))?;
     tx.send(Progress::Conflict {
         path: dst.to_path_buf(),
         src: src_meta,
@@ -649,6 +679,12 @@ fn ask_conflict(tx: &Sender<Progress>, dst: &Path, src: &Path) -> Option<Resolut
     })
     .ok()?;
     reply_rx.recv().ok()
+}
+
+/// Metadata of the entry `p` points to, or of the link itself when it
+/// dangles, so a broken symlink can still be shown in a conflict prompt.
+fn entry_metadata(p: &Path) -> io::Result<std::fs::Metadata> {
+    std::fs::metadata(p).or_else(|_| std::fs::symlink_metadata(p))
 }
 
 /// Remove a file or a directory tree.
@@ -856,6 +892,48 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         assert!(!src.exists());
         assert_eq!(fs::read(dst.join("s/sub/f.txt")).unwrap(), b"x");
+    }
+
+    /// A source symlink whose name exists at the destination asks first;
+    /// Skip keeps the existing regular file.
+    #[test]
+    fn symlink_conflict_skip_keeps_the_destination_file() {
+        for workers in WORKER_MODES {
+            let td = tempfile::tempdir().unwrap();
+            let src = td.path().join("s");
+            let dst = td.path().join("d");
+            fs::create_dir_all(&src).unwrap();
+            fs::create_dir_all(dst.join("s")).unwrap();
+            std::os::unix::fs::symlink("nowhere", src.join("link")).unwrap();
+            fs::write(dst.join("s/link"), b"OLD").unwrap();
+
+            let (_, skipped, cancelled, errors) =
+                run_copy_workers(vec![src], dst.clone(), Resolution::Skip, workers);
+
+            assert_eq!((skipped, cancelled), (1, false), "workers={workers}");
+            assert!(errors.is_empty(), "workers={workers}: {errors:?}");
+            assert_eq!(fs::read(dst.join("s/link")).unwrap(), b"OLD");
+        }
+    }
+
+    /// Overwrite replaces the existing entry with the link and leaves no temp.
+    #[test]
+    fn symlink_conflict_overwrite_replaces_the_destination() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(dst.join("s")).unwrap();
+        std::os::unix::fs::symlink("nowhere", src.join("link")).unwrap();
+        fs::write(dst.join("s/link"), b"OLD").unwrap();
+
+        let (_, skipped, cancelled, errors) =
+            run_copy_workers(vec![src], dst.clone(), Resolution::Overwrite, 1);
+
+        assert_eq!((skipped, cancelled), (0, false));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(fs::read_link(dst.join("s/link")).unwrap(), PathBuf::from("nowhere"));
+        assert_eq!(fs::read_dir(dst.join("s")).unwrap().count(), 1);
     }
 
     #[test]
