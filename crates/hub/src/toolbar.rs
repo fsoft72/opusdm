@@ -47,6 +47,7 @@ pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
     });
 
     let cmd_tx = handle.cmd_tx;
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| {
         build_ui(app, cmd_tx.clone(), ui_rx.clone());
     });

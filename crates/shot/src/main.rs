@@ -86,6 +86,7 @@ fn fail(app: &gtk::Application, message: &str) {
 
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.Shot").build();
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(|app| {
         apply_theme();
         // A second launch while a window is open replaces it with a new shot.

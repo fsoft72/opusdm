@@ -118,6 +118,7 @@ fn run_hotkey_editor() -> gtk4::glib::ExitCode {
 fn run_tool(app_id: &str, open: fn(&gtk4::Application)) -> gtk4::glib::ExitCode {
     use gtk4::prelude::*;
     let app = gtk4::Application::builder().application_id(app_id).build();
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| {
         let settings = opusdm_ipc::settings::load_settings("opusdm-lister");
         opusdm_ui::apply_theme_mode(settings.appearance.theme_mode);

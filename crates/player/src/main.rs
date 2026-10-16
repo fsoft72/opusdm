@@ -34,6 +34,7 @@ fn main() -> ExitCode {
     };
     // Each launch is its own process and window; the file is not a GApplication argument.
     let app = gtk::Application::builder().application_id("org.opusdm.Player").flags(gio::ApplicationFlags::NON_UNIQUE).build();
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| {
         apply_theme();
         window::open(app, &args);

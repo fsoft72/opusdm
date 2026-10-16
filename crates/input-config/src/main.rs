@@ -16,6 +16,7 @@ fn apply_theme() {
 
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.InputConfig").build();
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(|app| {
         // A second launch only raises the open window.
         if let Some(window) = app.windows().first() {

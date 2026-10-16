@@ -51,6 +51,7 @@ fn main() -> gtk::glib::ExitCode {
         .application_id("org.opusdm.Terminal")
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
         .build();
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| {
         apply_theme();
         let shared = shared::Shared::new(app);

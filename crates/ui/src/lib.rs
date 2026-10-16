@@ -1,6 +1,7 @@
 //! Shared GTK building blocks for the OpusDM processes: the ReqTools-style
 //! requesters and the skeleton the larger dialogs are built on.
 
+mod app_icon;
 mod fonts;
 pub mod layer;
 pub mod line_numbers;
@@ -13,6 +14,7 @@ mod theme_mode;
 mod version;
 mod x11;
 
+pub use app_icon::{set_app_icon, APP_ICON_NAME};
 pub use fonts::{font_files, register_theme_fonts};
 pub use look_css::{font_rule, surface_rule, ui_look_css, REQUESTER_CLASS, ROW_ALPHA_WITH_PICTURE};
 pub use reference_picker::{browsed_line, function_dropdown, selected_function, RefKind, RefPicker};

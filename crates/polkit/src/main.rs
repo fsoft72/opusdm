@@ -59,6 +59,7 @@ fn main() -> glib::ExitCode {
     // hub) hands over to it and exits.
     app.connect_startup(move |app| start(app, &running));
     // Nothing to show on activation: the dialogs open on request.
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(|_| {});
     app.run()
 }

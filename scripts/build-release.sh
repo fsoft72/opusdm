@@ -49,10 +49,20 @@ done
 cp "$REPO_ROOT/scripts/opusdm-open-folder" "$DIST/bin/opusdm-open-folder"
 cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.desktop"
 
+# Shared window icon (hicolor "opusdm") and one hidden desktop entry per app,
+# named after its application id: Wayland compositors find the icon through it
+mkdir -p "$DIST/share/icons/hicolor/512x512/apps" "$DIST/share/applications"
+cp "$REPO_ROOT/assets/ball.png" "$DIST/share/icons/hicolor/512x512/apps/opusdm.png"
+for pair in Hub:hub Lister:lister Settings:settings Dock:dock Run:run Shot:shot Terminal:terminal Player:player Viewer:viewer InputConfig:input-config Screen:screen AppsEditor:apps-editor NetworkManager:network-manager PolkitAgent:polkit; do
+    id="${pair%%:*}"
+    bin="opusdm-${pair#*:}"
+    printf '[Desktop Entry]\nType=Application\nName=OpusDM %s\nExec=%s\nIcon=opusdm\nTerminal=false\nNoDisplay=true\n' "$id" "$bin" > "$DIST/share/applications/org.opusdm.$id.desktop"
+done
+
 cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$REPO_ROOT/labwc-rc.xml" "$REPO_ROOT/wayfire.ini" "$REPO_ROOT/opusdm-portals.conf" "$DIST/config/"
 cp "$REPO_ROOT"/target/themes/*.zip "$DIST/themes/"
 # Openbox theme (OpusDMTheme): install.sh puts it in /usr/share/themes so root sees it too
-cp -r "$REPO_ROOT/assets/openbox-share" "$DIST/share"
+cp -r "$REPO_ROOT/assets/openbox-share/." "$DIST/share/"
 
 # X11 session script: resolves its own location, so dist can live anywhere
 cat > "$DIST/opusdm-session" <<'SESSION'
@@ -272,6 +282,10 @@ $SUDO mkdir -p /usr/local/bin
 $SUDO ln -sf "$PREFIX/bin/opusdm-open-folder" /usr/local/bin/opusdm-open-folder
 $SUDO mkdir -p /usr/share/applications
 $SUDO cp "$HERE/opusdm-lister.desktop" /usr/share/applications/opusdm-lister.desktop
+$SUDO cp "$HERE"/share/applications/*.desktop /usr/share/applications/
+$SUDO mkdir -p /usr/share/icons/hicolor/512x512/apps
+$SUDO cp "$HERE/share/icons/hicolor/512x512/apps/opusdm.png" /usr/share/icons/hicolor/512x512/apps/opusdm.png
+$SUDO gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 echo "Installed to $PREFIX"
 
 if [ "$X11" -eq 1 ]; then

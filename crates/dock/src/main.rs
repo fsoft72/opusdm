@@ -9,6 +9,7 @@ const PANEL_HEIGHT: i32 = 40;
 
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.Dock").build();
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(|app| {
         let desktop = opusdm_ipc::settings::load_desktop_settings("opusdm-dock");
         let layout = opusdm_dock::DockLayout {

@@ -30,6 +30,7 @@ fn main() -> gtk::glib::ExitCode {
     // handled here and not by GApplication, which would reject the unknown flag.
     let edit_theme = std::env::args().any(|a| a == EDIT_THEME_FLAG);
     let app = gtk::Application::builder().application_id("org.opusdm.Settings").build();
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| if edit_theme { build_editor_only(app) } else { build_window(app) });
     app.run_with_args::<&str>(&[])
 }

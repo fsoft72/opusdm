@@ -73,6 +73,7 @@ fn main() -> ExitCode {
     // Each launch is its own process and window; the file is not a GApplication argument.
     let app = gtk::Application::builder().application_id("org.opusdm.Viewer").flags(gio::ApplicationFlags::NON_UNIQUE).build();
     let gallery = std::cell::RefCell::new(Some(gallery));
+    app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| {
         let Some(gallery) = gallery.borrow_mut().take() else { return };
         apply_theme();
