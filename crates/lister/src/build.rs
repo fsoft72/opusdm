@@ -755,6 +755,7 @@ fn wire_keys(ui: &Rc<Ui>) {
     key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
         let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+        let alt = state.contains(gdk::ModifierType::ALT_MASK);
         // Single-letter bindings must not steal characters from a text
         // field, so where the focus sits decides how a key is read.
         let focus = if crate::window::is_editing(&ui_for_keys.window) {
@@ -763,32 +764,18 @@ fn wire_keys(ui: &Rc<Ui>) {
             crate::keys::Focus::List
         };
         // An open type-to-find buffer takes every key first.
-        let modified = ctrl || state.contains(gdk::ModifierType::ALT_MASK);
+        let modified = ctrl || alt;
         if focus == crate::keys::Focus::List && ui_for_keys.typeahead_feed(keyval, modified) {
             return glib::Propagation::Stop;
         }
-        // Alt+Left / Alt+Right walk the history (resolve() has no Alt).
-        if focus == crate::keys::Focus::List && state.contains(gdk::ModifierType::ALT_MASK) {
-            match keyval {
-                gdk::Key::Left => {
-                    ui_for_keys.history_back();
-                    return glib::Propagation::Stop;
-                }
-                gdk::Key::Right => {
-                    ui_for_keys.history_forward();
-                    return glib::Propagation::Stop;
-                }
-                _ => {}
-            }
-        }
         // A user hotkey (F-03) is looked up next, so it wins over a
-        // built-in binding.
+        // built-in binding (Alt+Left / Alt+Right included).
         let user_function = ui_for_keys.hub.hotkeys.borrow().lookup(keyval, state, focus).cloned();
         if let Some(id) = user_function {
             ui_for_keys.start_run(opusdm_ipc::ToHub::RunFunctionById { id });
             return glib::Propagation::Stop;
         }
-        let Some(action) = crate::keys::resolve(keyval, ctrl, shift, focus) else {
+        let Some(action) = crate::keys::resolve(keyval, ctrl, shift, alt, focus) else {
             // Nothing is bound to this key: a name-like character starts
             // type-to-find.
             let starts = focus == crate::keys::Focus::List
