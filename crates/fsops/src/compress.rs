@@ -7,8 +7,9 @@ use crate::tools::{find_in_path, seven_z_program, seven_z_tool};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::mpsc::Sender;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// Tag of the debug lines written to the console.
@@ -16,6 +17,10 @@ const LOG_TAG: &str = "compress";
 
 /// How often the running tool is polled for exit, cancel and progress.
 const POLL_GAP: Duration = Duration::from_millis(50);
+
+/// Longest tool error text kept for the report, in bytes. The end of the
+/// output is kept, since that is where tools print the fatal error.
+const MAX_STDERR_TEXT: usize = 4096;
 
 /// An archive format `Compress` can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +258,28 @@ fn spawn_tool(format: CompressFormat, plan: &Plan, out_path: &Path, out: File) -
     Ok(child)
 }
 
+/// Read all of `stderr` on a helper thread and return it as text. The
+/// thread ends when every process holding the pipe has closed it.
+fn drain_stderr(mut stderr: ChildStderr) -> JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Err(e) = io::Read::read_to_end(&mut stderr, &mut bytes) {
+            opusdm_ipc::err_log!(LOG_TAG, "cannot read the tool's error output: {e}");
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+/// The last `max` bytes of `text` at most, cut on a character boundary.
+fn tail(text: &str, max: usize) -> &str {
+    if text.len() <= max { return text; }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
 /// Why waiting for the tool did not end well.
 enum WaitError {
     Cancelled,
@@ -271,11 +298,15 @@ fn wait_for(
 ) -> Result<(), WaitError> {
     let mut last = Instant::now();
     let mut lost_since = None;
+    // Read stderr while the tool runs: a full pipe would block it forever.
+    let stderr = child.stderr.take().map(drain_stderr);
     loop {
         if cancel.is_cancelled() {
             opusdm_ipc::err_log!(LOG_TAG, "cancelled, killing pid {}", child.id());
             let _ = child.kill();
             let _ = child.wait();
+            // The drain thread ends on its own once every writer is gone; a
+            // grandchild may still hold the pipe, so it is not joined here.
             return Err(WaitError::Cancelled);
         }
         match opusdm_ipc::reaped::poll_exit(&mut child, &mut lost_since) {
@@ -285,11 +316,8 @@ fn wait_for(
             }
             Ok(Some(status)) => {
                 opusdm_ipc::err_log!(LOG_TAG, "pid {} failed: {status}", child.id());
-                let mut text = String::new();
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = io::Read::read_to_string(&mut err, &mut text);
-                }
-                let text = text.trim();
+                let text = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
+                let text = tail(text.trim(), MAX_STDERR_TEXT);
                 opusdm_ipc::err_log!(LOG_TAG, "stderr: {text:?}");
                 return Err(WaitError::Failed(if text.is_empty() { format!("compressor failed: {status}") } else { text.to_string() }));
             }
@@ -369,6 +397,31 @@ mod tests {
             assert!(errors(&done).is_empty(), "{format:?}: {:?}", errors(&done));
             assert!(std::fs::metadata(out.join(&name)).unwrap().len() > 0, "{format:?}");
         }
+    }
+
+    /// A tool that prints more warnings than a pipe holds must not block:
+    /// the error comes back, cut to its last part.
+    #[test]
+    fn a_tool_with_a_lot_of_stderr_does_not_hang() {
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("out");
+        let child = Command::new("sh")
+            .args(["-c", "head -c 262144 /dev/zero | tr '\\0' w >&2; echo LAST >&2; exit 3"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (done_tx, done_rx) = channel();
+        std::thread::spawn(move || {
+            let (tx, _rx) = channel();
+            let outcome = wait_for(child, &out_path, 0, 1, &tx, &CancelToken::new());
+            let _ = done_tx.send(outcome);
+        });
+        let outcome = done_rx.recv_timeout(Duration::from_secs(20)).expect("wait_for hung on a full stderr pipe");
+        let Err(WaitError::Failed(msg)) = outcome else { panic!("expected a failure") };
+        assert!(msg.ends_with("LAST"), "{}", &msg[msg.len().saturating_sub(40)..]);
+        assert!(msg.len() <= MAX_STDERR_TEXT + 8, "{} bytes", msg.len());
     }
 
     #[test]

@@ -216,6 +216,48 @@ fn cancel_stops_the_extraction() {
     assert!(matches!(err, ArchiveError::Cancelled), "{err}");
 }
 
+/// Size of the file in [`_big_tar_bytes`]: many data blocks.
+const BIG_SIZE: usize = 1024 * 1024;
+
+/// A tar holding the single file `big.bin` of `BIG_SIZE` bytes.
+fn _big_tar_bytes() -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(BIG_SIZE as u64);
+    header.set_mode(0o644);
+    builder.append_data(&mut header, "big.bin", &vec![7u8; BIG_SIZE][..]).unwrap();
+    builder.into_inner().unwrap()
+}
+
+#[test]
+fn a_cancel_in_the_middle_of_a_file_leaves_no_partial_file() {
+    let td = tempfile::tempdir().unwrap();
+    let arch = _put(td.path(), "big.tar", &_big_tar_bytes());
+    let dest = td.path().join("out");
+    fs::create_dir(&dest).unwrap();
+    // The first call is for the header, the next ones for data blocks.
+    let calls = Cell::new(0);
+    let cancel = || {
+        calls.set(calls.get() + 1);
+        calls.get() > 3
+    };
+    let err = extract(&arch, &dest, None, &cancel).unwrap_err();
+    assert!(matches!(err, ArchiveError::Cancelled), "{err}");
+    assert!(!dest.join("big.bin").exists(), "a truncated big.bin was left behind");
+}
+
+#[test]
+fn a_truncated_archive_leaves_no_partial_file() {
+    let td = tempfile::tempdir().unwrap();
+    let mut bytes = _big_tar_bytes();
+    bytes.truncate(BIG_SIZE / 2);
+    let arch = _put(td.path(), "cut.tar", &bytes);
+    let dest = td.path().join("out");
+    fs::create_dir(&dest).unwrap();
+    assert!(extract(&arch, &dest, None, &_never).is_err());
+    assert!(!dest.join("big.bin").exists(), "a truncated big.bin was left behind");
+}
+
 #[test]
 fn a_missing_selection_is_reported() {
     let td = tempfile::tempdir().unwrap();

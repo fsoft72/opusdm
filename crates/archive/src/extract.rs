@@ -102,9 +102,20 @@ pub fn extract(archive: &Path, dest: &Path, only: Option<&[String]>, cancel: &dy
             }
             continue;
         }
-        writer.write_header(&reader, dest, &name, link.as_deref())?;
-        _copy_to_disk(&mut reader, &mut writer, cancel)?;
-        writer.finish_entry()?;
+        let entry = writer
+            .write_header(&reader, dest, &name, link.as_deref())
+            .and_then(|()| _copy_to_disk(&mut reader, &mut writer, cancel))
+            .and_then(|()| writer.finish_entry());
+        if let Err(e) = entry {
+            // The entry did not exist before (checked above), so whatever is
+            // there now is a partial write: a later run would skip it as
+            // already extracted. Close the writer first so it holds no file.
+            drop(writer);
+            if !is_dir {
+                _remove_partial(&dest.join(&name));
+            }
+            return Err(e);
+        }
         if !is_dir {
             done.written += 1;
         }
@@ -115,6 +126,14 @@ pub fn extract(archive: &Path, dest: &Path, only: Option<&[String]>, cancel: &dy
         return Err(ArchiveError::NotFound(missing));
     }
     Ok(done)
+}
+
+/// Remove the partly written entry at `path`. A missing entry is fine; any
+/// other failure is printed, since the caller already reports the first error.
+fn _remove_partial(path: &Path) {
+    let Err(e) = std::fs::remove_file(path) else { return };
+    if e.kind() == std::io::ErrorKind::NotFound { return; }
+    eprintln!("opusdm-archive: cannot remove the partial file {}: {e}", path.display());
 }
 
 /// Move the data of the reader's current entry to the disk writer.
