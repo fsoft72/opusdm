@@ -28,7 +28,7 @@ pub struct UPowerBackend {
 impl UPowerBackend {
     /// Connect to the system bus. Does not need either service to be running yet.
     pub fn connect() -> Result<Self, PowerError> {
-        let conn = Connection::system().map_err(|e| PowerError::from_zbus(&e))?;
+        let conn = Connection::system()?;
         Ok(Self { conn })
     }
 
@@ -39,19 +39,19 @@ impl UPowerBackend {
 
     /// A proxy for `iface` on object `path` of `service`.
     fn proxy(&self, service: &'static str, path: &str, iface: &'static str) -> Result<Proxy<'static>, PowerError> {
-        Proxy::new(&self.conn, service, path.to_string(), iface).map_err(|e| PowerError::from_zbus(&e))
+        Proxy::new(&self.conn, service, path.to_string(), iface).map_err(PowerError::from)
     }
 
     /// `GetAll` of the UPower device interface of one object.
     fn device_props(&self, path: &str) -> Result<Props, PowerError> {
         let props = self.proxy(UPOWER_SERVICE, path, PROPERTIES_IFACE)?;
-        props.call("GetAll", &(DEVICE_IFACE,)).map_err(|e| PowerError::from_zbus(&e))
+        props.call("GetAll", &(DEVICE_IFACE,)).map_err(PowerError::from)
     }
 
     /// The health of the first battery that powers the machine, when known.
     fn battery_health(&self) -> Result<Option<u8>, PowerError> {
         let upower = self.proxy(UPOWER_SERVICE, UPOWER_PATH, UPOWER_IFACE)?;
-        let paths: Vec<OwnedObjectPath> = upower.call("EnumerateDevices", &()).map_err(|e| PowerError::from_zbus(&e))?;
+        let paths: Vec<OwnedObjectPath> = upower.call("EnumerateDevices", &())?;
         for path in paths {
             // A device can vanish between the two calls.
             let Ok(props) = self.device_props(path.as_str()) else { continue };
@@ -74,7 +74,7 @@ impl UPowerBackend {
 impl Backend for UPowerBackend {
     fn state(&self) -> Result<PowerState, PowerError> {
         let upower = self.proxy(UPOWER_SERVICE, UPOWER_PATH, UPOWER_IFACE)?;
-        let on_battery: bool = upower.get_property("OnBattery").map_err(|e| PowerError::from_zbus(&e))?;
+        let on_battery: bool = upower.get_property("OnBattery")?;
         let display = self.device_props(DISPLAY_PATH)?;
         let battery = parse::battery_from(&display, self.battery_health()?);
         let (profiles, active_profile) = self.profiles();
@@ -83,6 +83,6 @@ impl Backend for UPowerBackend {
 
     fn set_profile(&self, profile: Profile) -> Result<(), PowerError> {
         let proxy = self.proxy(PROFILES_SERVICE, PROFILES_PATH, PROFILES_IFACE)?;
-        proxy.set_property("ActiveProfile", profile.id()).map_err(|e| PowerError::from_zbus(&zbus::Error::from(e)))
+        proxy.set_property("ActiveProfile", profile.id()).map_err(PowerError::from)
     }
 }

@@ -61,7 +61,7 @@ pub struct NmBackend {
 impl NmBackend {
     /// Connect to the system bus. Does not need NetworkManager to be running yet.
     pub fn connect() -> Result<Self, NetError> {
-        let conn = Connection::system().map_err(|e| NetError::from_zbus(&e))?;
+        let conn = Connection::system()?;
         Ok(Self { conn, keys: Arc::new(SecretServiceStore), once: Arc::new(OneShotSecrets::default()) })
     }
 
@@ -79,18 +79,18 @@ impl NmBackend {
 
     /// A proxy for `iface` on object `path`.
     fn proxy(&self, path: &str, iface: &'static str) -> Result<Proxy<'static>, NetError> {
-        Proxy::new(&self.conn, SERVICE, path.to_string(), iface).map_err(|e| NetError::from_zbus(&e))
+        Proxy::new(&self.conn, SERVICE, path.to_string(), iface).map_err(NetError::from)
     }
 
     /// Every device with its type and state.
     fn devices(&self) -> Result<Vec<Device>, NetError> {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
-        let paths: Vec<OwnedObjectPath> = nm.call("GetDevices", &()).map_err(|e| NetError::from_zbus(&e))?;
+        let paths: Vec<OwnedObjectPath> = nm.call("GetDevices", &())?;
         let mut out = Vec::new();
         for path in paths {
             let dev = self.proxy(path.as_str(), DEVICE_IFACE)?;
-            let kind: u32 = dev.get_property("DeviceType").map_err(|e| NetError::from_zbus(&e))?;
-            let state: u32 = dev.get_property("State").map_err(|e| NetError::from_zbus(&e))?;
+            let kind: u32 = dev.get_property("DeviceType")?;
+            let state: u32 = dev.get_property("State")?;
             out.push(Device { path, kind, state });
         }
         Ok(out)
@@ -104,13 +104,13 @@ impl NmBackend {
     /// `GetAll` of one interface of one object.
     fn get_all(&self, path: &str, iface: &str) -> Result<Props, NetError> {
         let props = self.proxy(path, PROPERTIES_IFACE)?;
-        props.call("GetAll", &(iface,)).map_err(|e| NetError::from_zbus(&e))
+        props.call("GetAll", &(iface,)).map_err(NetError::from)
     }
 
     /// Every access point the Wi-Fi device sees.
     fn read_aps(&self, wifi: &Device) -> Result<Vec<RawAp>, NetError> {
         let proxy = self.proxy(wifi.path.as_str(), WIRELESS_IFACE)?;
-        let paths: Vec<OwnedObjectPath> = proxy.call("GetAllAccessPoints", &()).map_err(|e| NetError::from_zbus(&e))?;
+        let paths: Vec<OwnedObjectPath> = proxy.call("GetAllAccessPoints", &())?;
         let mut out = Vec::new();
         for path in paths {
             // An access point can vanish between the two calls.
@@ -124,7 +124,7 @@ impl NmBackend {
     /// removed between the two calls is skipped.
     fn all_settings(&self) -> Result<Vec<(OwnedObjectPath, Settings)>, NetError> {
         let proxy = self.proxy(SETTINGS_PATH, SETTINGS_IFACE)?;
-        let paths: Vec<OwnedObjectPath> = proxy.call("ListConnections", &()).map_err(|e| NetError::from_zbus(&e))?;
+        let paths: Vec<OwnedObjectPath> = proxy.call("ListConnections", &())?;
         let mut out = Vec::new();
         for path in paths {
             let Ok(conn) = self.proxy(path.as_str(), CONNECTION_IFACE) else { continue };
@@ -149,7 +149,7 @@ impl NmBackend {
     /// The active connections: object path, profile UUID and state.
     fn active_connections(&self) -> Result<Vec<(OwnedObjectPath, String, u32)>, NetError> {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
-        let paths: Vec<OwnedObjectPath> = nm.get_property("ActiveConnections").map_err(|e| NetError::from_zbus(&e))?;
+        let paths: Vec<OwnedObjectPath> = nm.get_property("ActiveConnections")?;
         let mut out = Vec::new();
         for path in paths {
             // An active connection can vanish between the calls.
@@ -178,7 +178,7 @@ impl NmBackend {
     /// The object path of the profile `uuid`.
     fn profile_path(&self, uuid: &str) -> Result<OwnedObjectPath, NetError> {
         let proxy = self.proxy(SETTINGS_PATH, SETTINGS_IFACE)?;
-        proxy.call("GetConnectionByUuid", &(uuid,)).map_err(|e| NetError::from_zbus(&e))
+        proxy.call("GetConnectionByUuid", &(uuid,)).map_err(NetError::from)
     }
 
     /// The secrets NetworkManager keeps itself for one setting of a profile
@@ -196,7 +196,7 @@ impl NmBackend {
             // The object is removed when the attempt fails, so a read error means it failed.
             let state = self
                 .proxy(active.as_str(), ACTIVE_IFACE)
-                .and_then(|p| p.get_property::<u32>("State").map_err(|e| NetError::from_zbus(&e)))
+                .and_then(|p| p.get_property::<u32>("State").map_err(NetError::from))
                 .unwrap_or(ACTIVE_DEACTIVATED);
             if state == ACTIVE_ACTIVATED { return Ok(()); }
             if state == ACTIVE_DEACTIVATED { return Err("Could not connect".to_string()); }
@@ -214,7 +214,7 @@ impl NmBackend {
     /// UUID to forget if the connection then fails, `None` when nothing was kept.
     fn ensure_key(&self, profile: &OwnedObjectPath, password: Option<&str>) -> Result<Option<String>, NetError> {
         let conn = self.proxy(profile.as_str(), CONNECTION_IFACE)?;
-        let settings: Settings = conn.call("GetSettings", &()).map_err(|e| NetError::from_zbus(&e))?;
+        let settings: Settings = conn.call("GetSettings", &())?;
         if !key_not_stored(&settings) { return Ok(None); }
         let uuid = text_of(&settings, "connection", "uuid").ok_or_else(|| NetError::other("The profile has no uuid"))?;
         let Some(password) = password else {
@@ -266,7 +266,7 @@ fn new_profile<'a>(ssid: &'a str, key: Option<(&'static str, &'a str)>) -> HashM
 impl Backend for NmBackend {
     fn state(&self) -> Result<NetState, NetError> {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
-        let wifi_enabled: bool = nm.get_property("WirelessEnabled").map_err(|e| NetError::from_zbus(&e))?;
+        let wifi_enabled: bool = nm.get_property("WirelessEnabled")?;
         let devices = self.devices()?;
         let all = self.all_settings()?;
         let vpns = vpn_entries(&Self::summaries(&all, &self.active_connections()?));
@@ -285,7 +285,7 @@ impl Backend for NmBackend {
         let active: OwnedObjectPath = self
             .proxy(wifi.path.as_str(), WIRELESS_IFACE)?
             .get_property("ActiveAccessPoint")
-            .map_err(|e| NetError::from_zbus(&e))?;
+            ?;
         let active = (active.as_str() != NO_OBJECT).then(|| active.to_string());
         let saved: HashSet<String> = Self::wifi_profiles(&all).into_iter().map(|(_, ssid)| ssid).collect();
         state.aps = parse::build_aps(&raws, active.as_deref(), &saved);
@@ -294,27 +294,27 @@ impl Backend for NmBackend {
 
     fn set_wifi_enabled(&self, on: bool) -> Result<(), NetError> {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
-        nm.set_property("WirelessEnabled", on).map_err(|e| NetError::from_zbus(&e.into()))
+        nm.set_property("WirelessEnabled", on).map_err(NetError::from)
     }
 
     fn set_eth_enabled(&self, on: bool) -> Result<(), NetError> {
         let eth = self.device_of(DEVICE_ETHERNET, "Ethernet")?;
         if !on {
             let dev = self.proxy(eth.path.as_str(), DEVICE_IFACE)?;
-            return dev.call::<_, _, ()>("Disconnect", &()).map_err(|e| NetError::from_zbus(&e));
+            return dev.call::<_, _, ()>("Disconnect", &()).map_err(NetError::from);
         }
         // "/" for the profile and the access point lets NetworkManager choose.
         let none = ObjectPath::try_from(NO_OBJECT).map_err(|e| NetError::other(e.to_string()))?;
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
         nm.call::<_, _, OwnedObjectPath>("ActivateConnection", &(&none, &eth.path, &none))
             .map(|_| ())
-            .map_err(|e| NetError::from_zbus(&e))
+            .map_err(NetError::from)
     }
 
     fn scan(&self) -> Result<(), NetError> {
         let wifi = self.device_of(DEVICE_WIFI, "Wi-Fi")?;
         let dev = self.proxy(wifi.path.as_str(), WIRELESS_IFACE)?;
-        dev.call::<_, _, ()>("RequestScan", &(NoOptions::new(),)).map_err(|e| NetError::from_zbus(&e))
+        dev.call::<_, _, ()>("RequestScan", &(NoOptions::new(),)).map_err(NetError::from)
     }
 
     fn connect(&self, ssid: &str, password: Option<&str>) -> Result<(), NetError> {
@@ -334,7 +334,7 @@ impl Backend for NmBackend {
             let kept = self.ensure_key(&profile, password)?;
             let active: OwnedObjectPath = nm
                 .call("ActivateConnection", &(&profile, &wifi.path, &ap))
-                .map_err(|e| NetError::from_zbus(&e))?;
+                ?;
             return self.wait_active(&active).map_err(|why| {
                 // A key that did not work must not stay in the keyring.
                 if let Some(uuid) = &kept {
@@ -351,7 +351,7 @@ impl Backend for NmBackend {
         };
         let (created, active): (OwnedObjectPath, OwnedObjectPath) = nm
             .call("AddAndActivateConnection", &(new_profile(ssid, key), &wifi.path, &ap))
-            .map_err(|e| NetError::from_zbus(&e))?;
+            ?;
         self.wait_active(&active).map_err(|why| {
             // A profile that never worked must not stay, or it would be
             // tried again with the same wrong password.
@@ -363,7 +363,7 @@ impl Backend for NmBackend {
     fn disconnect_wifi(&self) -> Result<(), NetError> {
         let wifi = self.device_of(DEVICE_WIFI, "Wi-Fi")?;
         let dev = self.proxy(wifi.path.as_str(), DEVICE_IFACE)?;
-        dev.call::<_, _, ()>("Disconnect", &()).map_err(|e| NetError::from_zbus(&e))
+        dev.call::<_, _, ()>("Disconnect", &()).map_err(NetError::from)
     }
 
     fn activate_vpn(&self, uuid: &str, password: Option<&str>) -> Result<(), NetError> {
@@ -402,7 +402,7 @@ impl ProfileBackend for NmBackend {
     fn load(&self, uuid: &str) -> Result<Loaded, NetError> {
         let path = self.profile_path(uuid)?;
         let conn = self.proxy(path.as_str(), CONNECTION_IFACE)?;
-        let base: Settings = conn.call("GetSettings", &()).map_err(|e| NetError::from_zbus(&e))?;
+        let base: Settings = conn.call("GetSettings", &())?;
         let mut profile = Profile::from_settings(&base)?;
         if let Some(setting) = secret_setting(&profile) {
             profile.fill_secrets(&self.stored_secrets(&path, setting));
@@ -423,11 +423,11 @@ impl ProfileBackend for NmBackend {
         match base {
             None => {
                 let proxy = self.proxy(SETTINGS_PATH, SETTINGS_IFACE)?;
-                proxy.call::<_, _, OwnedObjectPath>("AddConnection", &(settings,)).map_err(|e| NetError::from_zbus(&e))?;
+                proxy.call::<_, _, OwnedObjectPath>("AddConnection", &(settings,))?;
             }
             Some(_) => {
                 let conn = self.proxy(self.profile_path(&profile.uuid)?.as_str(), CONNECTION_IFACE)?;
-                conn.call::<_, _, ()>("Update", &(settings,)).map_err(|e| NetError::from_zbus(&e))?;
+                conn.call::<_, _, ()>("Update", &(settings,))?;
             }
         }
         if !profile.manages_secrets() { return Ok(()); }
@@ -440,7 +440,7 @@ impl ProfileBackend for NmBackend {
 
     fn delete(&self, uuid: &str) -> Result<(), NetError> {
         let conn = self.proxy(self.profile_path(uuid)?.as_str(), CONNECTION_IFACE)?;
-        conn.call::<_, _, ()>("Delete", &()).map_err(|e| NetError::from_zbus(&e))?;
+        conn.call::<_, _, ()>("Delete", &())?;
         self.keys.delete_all(uuid)?;
         import::remove_files(uuid)
     }
@@ -455,7 +455,7 @@ impl ProfileBackend for NmBackend {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
         let result = nm
             .call::<_, _, OwnedObjectPath>("ActivateConnection", &(&path, &none, &none))
-            .map_err(|e| NetError::from_zbus(&e))
+            .map_err(NetError::from)
             .and_then(|active| self.wait_active(&active).map_err(NetError::other));
         self.once.clear(uuid);
         result
@@ -465,7 +465,7 @@ impl ProfileBackend for NmBackend {
         let active = self.active_connections()?;
         let (path, _, _) = active.iter().find(|(_, u, _)| u == uuid).ok_or_else(|| NetError::other("The connection is not active"))?;
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
-        nm.call::<_, _, ()>("DeactivateConnection", &(path,)).map_err(|e| NetError::from_zbus(&e))
+        nm.call::<_, _, ()>("DeactivateConnection", &(path,)).map_err(NetError::from)
     }
 }
 
