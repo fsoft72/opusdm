@@ -2,7 +2,6 @@
 //! widget writes its value into the profile being edited on every change.
 
 use gtk4 as gtk;
-use gtk::gio;
 use gtk::prelude::*;
 use opusdm_network::profile::Profile;
 use opusdm_network_config::session::EditSession;
@@ -209,22 +208,14 @@ pub fn file_entry(ctx: &Rc<EditorCtx>, field: &str, initial: &str, set: impl Fn(
     row.append(&browse);
     let window = ctx.window.clone();
     browse.connect_clicked(move |_| {
-        let dialog = gtk::FileDialog::builder().title("Choose a file").modal(true).build();
         let current = e.text().to_string();
-        if !current.is_empty() {
-            dialog.set_initial_file(Some(&gio::File::for_path(&current)));
-        }
+        let initial_file = (!current.is_empty()).then(|| std::path::Path::new(&current));
+        let pick = opusdm_ui::FilePick { title: "Choose a file", initial_file, ..Default::default() };
         let e = e.clone();
         let parent = window.clone();
-        dialog.open(Some(&window), gio::Cancellable::NONE, move |res| {
-            let file = match res {
-                Ok(file) => file,
-                Err(e) if e.matches(gtk::DialogError::Dismissed) => return,
-                Err(e) => return opusdm_ui::requester(&parent, "File chooser", &e.to_string(), None, &[("OK", ())], |_| {}),
-            };
-            if let Some(path) = file.path() {
-                e.set_text(&path.to_string_lossy());
-            }
+        opusdm_ui::pick_file_or_error(Some(&window), &pick, move |result| match result {
+            Ok(path) => e.set_text(&path.to_string_lossy()),
+            Err(message) => opusdm_ui::requester(&parent, "File chooser", &message, None, &[("OK", ())], |_| {}),
         });
     });
     row
@@ -257,13 +248,6 @@ pub fn note(text: &str) -> gtk::Label {
     l.set_xalign(0.0);
     l.add_css_class("dim-label");
     l
-}
-
-/// Remove every child of `b`.
-pub fn clear(b: &gtk::Box) {
-    while let Some(child) = b.first_child() {
-        b.remove(&child);
-    }
 }
 
 #[cfg(test)]

@@ -4,10 +4,10 @@
 
 use crate::dialogs;
 use crate::editor::{empty_view, EditorView};
-use crate::form::{clear, EditorCtx, MARGIN, SPACING};
+use crate::form::{EditorCtx, MARGIN, SPACING};
 use gtk4 as gtk;
 use gtk::prelude::*;
-use gtk::{gio, glib};
+use gtk::glib;
 use opusdm_network::agent::MANAGER_IDENTIFIER;
 use opusdm_network::import;
 use opusdm_network::profile::{Profile, ProfileKind};
@@ -315,14 +315,12 @@ impl App {
     /// Fill the list from the profiles and the search text, keeping the selection.
     fn rebuild_list(&self) {
         self.quiet.set(true);
-        clear_list(&self.list_box);
+        opusdm_ui::clear_children(&self.list_box);
         let mut uuids = Vec::new();
         let list = self.list.borrow();
         let selected = self.selected.borrow().clone();
         for (section, rows) in grouped(&list, &self.search.text()) {
-            let heading = gtk::Label::new(Some(section.label()));
-            heading.set_xalign(0.0);
-            heading.add_css_class("heading");
+            let heading = opusdm_ui::section_heading(section.label());
             heading.set_margin_top(SPACING);
             heading.set_margin_start(SPACING / 2);
             let row = gtk::ListBoxRow::new();
@@ -412,7 +410,7 @@ impl App {
 
     /// Put `widget` on the editor side.
     fn set_editor(&self, widget: gtk::Widget) {
-        clear(&self.editor_slot);
+        opusdm_ui::clear_children(&self.editor_slot);
         self.editor_slot.append(&widget);
     }
 
@@ -544,22 +542,18 @@ impl App {
     /// Choose a VPN file and open what it holds in the editor.
     fn import(self: &Rc<Self>) {
         let start = |a: &Rc<App>| {
-            let filter = gtk::FileFilter::new();
-            filter.set_name(Some("VPN configurations (*.ovpn, *.conf)"));
-            filter.add_pattern("*.ovpn");
-            filter.add_pattern("*.conf");
-            let filters = gio::ListStore::new::<gtk::FileFilter>();
-            filters.append(&filter);
-            let dialog = gtk::FileDialog::builder().title("Import a VPN").modal(true).filters(&filters).default_filter(&filter).build();
+            let pick = opusdm_ui::FilePick {
+                title: "Import a VPN",
+                filter: Some(opusdm_ui::FileFilterSpec { name: "VPN configurations (*.ovpn, *.conf)", patterns: &["*.ovpn", "*.conf"], ..Default::default() }),
+                ..Default::default()
+            };
             let weak: Weak<App> = Rc::downgrade(a);
-            dialog.open(Some(&a.window), gio::Cancellable::NONE, move |res| {
+            opusdm_ui::pick_file_or_error(Some(a.window.upcast_ref()), &pick, move |result| {
                 let Some(a) = weak.upgrade() else { return };
-                let file = match res {
-                    Ok(file) => file,
-                    Err(e) if e.matches(gtk::DialogError::Dismissed) => return,
-                    Err(e) => return a.show_error(&format!("File chooser: {e}")),
+                let path = match result {
+                    Ok(path) => path,
+                    Err(message) => return a.show_error(&message),
                 };
-                let Some(path) = file.path() else { return a.show_error("Only local files can be imported") };
                 match import::import_file(&path) {
                     Ok(imported) => {
                         a.show_info(&format!("Imported {}: check it and save it", path.display()));
@@ -577,13 +571,6 @@ impl App {
 fn connect_button(button: &gtk::Button, weak: &Weak<App>, action: fn(&Rc<App>)) {
     let weak = weak.clone();
     button.connect_clicked(move |_| if let Some(a) = weak.upgrade() { action(&a) });
-}
-
-/// Remove every row of `list`.
-fn clear_list(list: &gtk::ListBox) {
-    while let Some(row) = list.first_child() {
-        list.remove(&row);
-    }
 }
 
 /// One profile line of the list: the name and its state.

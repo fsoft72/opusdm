@@ -10,18 +10,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::model::{hex_to_rgba, rgba_to_hex};
+use opusdm_ui::{labeled_row, pick_file, section_heading, FilePick, LabelWidth};
 
 /// True when `p` points at a file that exists and can be used as a background.
 pub fn image_path_is_usable(p: Option<&Path>) -> bool {
     p.map(|p| p.is_file()).unwrap_or(false)
-}
-
-/// A section heading label styled like the hub's settings dialog.
-pub(crate) fn heading(text: &str) -> gtk::Label {
-    let l = gtk::Label::new(Some(text));
-    l.set_xalign(0.0);
-    l.add_css_class("heading");
-    l
 }
 
 /// A "hex entry + colour swatch" control. Clicking the swatch opens a GTK
@@ -133,7 +126,7 @@ impl GridSection {
         let (gmin, gmax) = opusdm_ipc::GRID_GAP_RANGE;
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("ICON GRID"));
+        root.append(&section_heading("ICON GRID"));
 
         let icon_spin = gtk::SpinButton::with_range(imin as f64, imax as f64, 1.0);
         icon_spin.set_value(icon_size.clamp(imin, imax) as f64);
@@ -177,12 +170,7 @@ fn preset_row(
     spin: &gtk::SpinButton,
     presets: &'static [(&'static str, i32)],
 ) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let name = gtk::Label::new(Some(label));
-    name.set_xalign(0.0);
-    name.set_size_request(90, -1);
-    row.append(&name);
-    row.append(spin);
+    let row = labeled_row(label, LabelWidth::Pixels(90), 6, spin);
     for (text, value) in presets {
         let b = gtk::Button::with_label(text);
         b.add_css_class("flat");
@@ -206,7 +194,7 @@ impl FolderSection {
     /// empty (the placeholder shows the default behaviour).
     pub fn new(override_dir: Option<&Path>) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("DESKTOP FOLDER"));
+        root.append(&section_heading("DESKTOP FOLDER"));
 
         let entry = gtk::Entry::new();
         entry.set_editable(false);
@@ -266,7 +254,7 @@ impl PanelSection {
     /// Build the section seeded with the current panel position.
     pub fn new(initial: PanelPosition) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("PANEL"));
+        root.append(&section_heading("PANEL"));
 
         let position = gtk::DropDown::from_strings(&["Top", "Bottom"]);
         position.set_selected(match initial {
@@ -274,13 +262,7 @@ impl PanelSection {
             PanelPosition::Bottom => 1,
         });
 
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let name = gtk::Label::new(Some("Position"));
-        name.set_xalign(0.0);
-        name.set_size_request(90, -1);
-        row.append(&name);
-        row.append(&position);
-        root.append(&row);
+        root.append(&labeled_row("Position", LabelWidth::Pixels(90), 8, &position));
         Self { root, position }
     }
 
@@ -321,19 +303,13 @@ impl VirtualScreensSection {
     /// Build the section seeded with the current number of virtual screens.
     pub fn new(initial: u32) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("VIRTUAL SCREENS"));
+        root.append(&section_heading("VIRTUAL SCREENS"));
 
         let (lo, hi) = opusdm_ipc::VIRTUAL_SCREENS_RANGE;
         let spin = gtk::SpinButton::with_range(lo as f64, hi as f64, 1.0);
         spin.set_value(initial as f64);
 
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let name = gtk::Label::new(Some("Number of screens"));
-        name.set_xalign(0.0);
-        name.set_size_request(130, -1);
-        row.append(&name);
-        row.append(&spin);
-        root.append(&row);
+        root.append(&labeled_row("Number of screens", LabelWidth::Pixels(130), 8, &spin));
         Self { root, spin }
     }
 
@@ -354,7 +330,7 @@ impl BrightnessSection {
     /// Build the section; the slider stays disabled until a method is found.
     pub fn new() -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("BRIGHTNESS"));
+        root.append(&section_heading("BRIGHTNESS"));
 
         let scale = gtk::Scale::with_range(
             gtk::Orientation::Horizontal,
@@ -367,13 +343,7 @@ impl BrightnessSection {
         scale.set_value_pos(gtk::PositionType::Right);
         scale.set_sensitive(false);
 
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let name = gtk::Label::new(Some("Monitor brightness"));
-        name.set_xalign(0.0);
-        name.set_size_request(130, -1);
-        row.append(&name);
-        row.append(&scale);
-        root.append(&row);
+        root.append(&labeled_row("Monitor brightness", LabelWidth::Pixels(130), 8, &scale));
 
         let status = gtk::Label::new(Some("Looking for a way to change it..."));
         status.set_xalign(0.0);
@@ -454,7 +424,7 @@ impl StartupAppsSection {
     /// "open a Lister at start" choice.
     pub fn new(initial: &[StartupApp], open_lister_at_start: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("STARTUP APPS"));
+        root.append(&section_heading("STARTUP APPS"));
         let open_lister = gtk::CheckButton::with_label("Open a Lister on the home folder at start");
         open_lister.set_active(open_lister_at_start);
         root.append(&open_lister);
@@ -502,12 +472,9 @@ impl StartupAppsSection {
         {
             let command = command.clone();
             browse.connect_clicked(move |btn| {
-                let dialog = gtk::FileDialog::builder().title("Choose the program to start").build();
                 let command = command.clone();
                 let win = btn.root().and_downcast::<gtk::Window>();
-                dialog.open(win.as_ref(), gio::Cancellable::NONE, move |res| {
-                    let Ok(file) = res else { return };
-                    let Some(path) = file.path() else { return };
+                pick_file(win.as_ref(), &FilePick { title: "Choose the program to start", ..Default::default() }, move |path| {
                     command.set_text(&path.to_string_lossy());
                 });
             });
@@ -586,7 +553,7 @@ impl WindowsSection {
     /// Build the section seeded with the current transparency and snapping settings.
     pub fn new(enabled: bool, inactive_opacity: u32, active_opacity: u32, snap_enabled: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        root.append(&heading("TRANSPARENCY"));
+        root.append(&section_heading("TRANSPARENCY"));
 
         let enabled_check = gtk::CheckButton::with_label("Enable window transparency");
         enabled_check.set_active(enabled);
@@ -608,7 +575,7 @@ impl WindowsSection {
         sync(enabled);
         enabled_check.connect_toggled(move |c| sync(c.is_active()));
 
-        root.append(&heading("SNAPPING"));
+        root.append(&section_heading("SNAPPING"));
         let snap = gtk::CheckButton::with_label("Snap windows dragged to the screen edges");
         snap.set_active(snap_enabled);
         root.append(&snap);

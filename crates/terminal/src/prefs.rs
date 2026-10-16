@@ -16,6 +16,8 @@ use std::rc::Rc;
 
 /// Gap between the columns and rows of the option grids.
 const GRID_SPACING: i32 = 8;
+/// Room above a section heading.
+const HEADING_MARGIN_TOP: i32 = 6;
 
 /// The widgets holding the edited values.
 struct Form {
@@ -140,12 +142,10 @@ fn export_theme(shared: &Rc<Shared>, editor: &Rc<ThemeEditor>, window: &gtk::Win
     });
 }
 
-/// A bold section heading.
+/// A section heading with some room above it.
 fn heading(text: &str) -> gtk::Label {
-    let label = gtk::Label::new(None);
-    label.set_markup(&format!("<b>{}</b>", gtk::glib::markup_escape_text(text)));
-    label.set_xalign(0.0);
-    label.set_margin_top(6);
+    let label = opusdm_ui::section_heading(text);
+    label.set_margin_top(HEADING_MARGIN_TOP);
     label
 }
 

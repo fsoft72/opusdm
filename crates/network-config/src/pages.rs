@@ -1,6 +1,6 @@
 //! The General, Wi-Fi, Ethernet, IPv4 and IPv6 tabs of the editor.
 
-use crate::form::{self, check, choice, clear, entry, join_list, note, secret_entry, spin, split_list, EditorCtx, Form, SPACING};
+use crate::form::{self, check, choice, entry, join_list, note, secret_entry, spin, split_list, EditorCtx, Form, SPACING};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
@@ -195,7 +195,7 @@ pub fn ip_page(ctx: &Rc<EditorCtx>, family: Family) -> gtk::Widget {
 /// Fill `rows` with one line per address and an Add button. Rebuilt after
 /// an add or a remove.
 fn address_rows(ctx: &Rc<EditorCtx>, family: Family, rows: &gtk::Box) {
-    clear(rows);
+    opusdm_ui::clear_children(rows);
     let addresses = ctx.read(|p| match family {
         Family::V4 => p.ipv4.addresses.clone(),
         Family::V6 => p.ipv6.addresses.clone(),

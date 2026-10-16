@@ -3,8 +3,8 @@
 
 use crate::writer::AssetOp;
 use gtk4 as gtk;
-use gtk::gio;
 use gtk::prelude::*;
+use opusdm_ui::{pick_file, FileFilterSpec, FilePick};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -53,9 +53,7 @@ impl AssetList {
     ) -> Self {
         let installed: HashSet<String> = names.iter().cloned().collect();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some(title));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading(title);
         root.append(&heading);
 
         let list = gtk::ListBox::new();
@@ -77,19 +75,14 @@ impl AssetList {
             let list = list.clone();
             let ops = ops.clone();
             add_btn.connect_clicked(move |_| {
-                let filter = gtk::FileFilter::new();
-                for suffix in suffixes {
-                    filter.add_suffix(suffix);
-                }
-                filter.set_name(Some("Supported files"));
-                let filters = gio::ListStore::new::<gtk::FileFilter>();
-                filters.append(&filter);
-                let dialog = gtk::FileDialog::builder().title("Add File").filters(&filters).build();
+                let pick = FilePick {
+                    title: "Add File",
+                    filter: Some(FileFilterSpec { name: "Supported files", suffixes, ..Default::default() }),
+                    ..Default::default()
+                };
                 let list = list.clone();
                 let ops = ops.clone();
-                dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-                    let Ok(file) = result else { return };
-                    let Some(path) = file.path() else { return };
+                pick_file(Some(window.upcast_ref()), &pick, move |path| {
                     let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else { return };
                     ops.borrow_mut().push(add_op(path));
                     if !has_name(&list, &name) {

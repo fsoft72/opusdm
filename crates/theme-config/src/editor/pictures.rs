@@ -6,8 +6,8 @@ use super::optional::OptionalSection;
 use crate::draft::queue_remove_wallpaper;
 use crate::writer::{AssetOp, ThemeDraft};
 use gtk4 as gtk;
-use gtk::gio;
 use gtk::prelude::*;
+use opusdm_ui::{pick_file, FileFilterSpec, FilePick};
 use opusdm_ipc::desktop::{ImageFit, BACKGROUND_IMAGE_EXTS};
 use opusdm_ipc::look::SurfaceImage;
 use std::cell::RefCell;
@@ -65,19 +65,14 @@ impl SurfacePicker {
             let thumb = thumb.clone();
             let window = window.clone();
             choose.connect_clicked(move |_| {
-                let filter = gtk::FileFilter::new();
-                for ext in BACKGROUND_IMAGE_EXTS {
-                    filter.add_suffix(ext);
-                }
-                filter.set_name(Some("Pictures"));
-                let filters = gio::ListStore::new::<gtk::FileFilter>();
-                filters.append(&filter);
-                let dialog = gtk::FileDialog::builder().title("Choose Picture").filters(&filters).build();
+                let pick = FilePick {
+                    title: "Choose Picture",
+                    filter: Some(FileFilterSpec { name: "Pictures", suffixes: &BACKGROUND_IMAGE_EXTS, ..Default::default() }),
+                    ..Default::default()
+                };
                 let path = path.clone();
                 let thumb = thumb.clone();
-                dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-                    let Ok(file) = result else { return };
-                    let Some(chosen) = file.path() else { return };
+                pick_file(Some(window.upcast_ref()), &pick, move |chosen| {
                     path.set_text(&chosen.to_string_lossy());
                     thumb.set_filename(Some(&chosen));
                 });

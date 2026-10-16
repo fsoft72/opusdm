@@ -36,6 +36,9 @@ fn main() -> gtk::glib::ExitCode {
     app.run_with_args::<&str>(&[])
 }
 
+/// The archives Import Theme offers.
+const THEME_ARCHIVE_PATTERNS: [&str; 4] = ["*.zip", "*.tar.gz", "*.tgz", "*.tar.bz2"];
+
 /// Command line flag that makes the settings app open only the Theme Editor.
 const EDIT_THEME_FLAG: &str = "--edit-theme";
 
@@ -392,22 +395,15 @@ fn connect_import(button: &gtk::Button, window: &gtk::ApplicationWindow, select_
     let note = note.clone();
     let busy = busy.to_vec();
     button.connect_clicked(move |_| {
-        let filter = gtk::FileFilter::new();
-        filter.add_pattern("*.zip");
-        filter.add_pattern("*.tar.gz");
-        filter.add_pattern("*.tgz");
-        filter.add_pattern("*.tar.bz2");
-        filter.set_name(Some("Theme archives"));
-        let filters = gio::ListStore::new::<gtk::FileFilter>();
-        filters.append(&filter);
-
-        let dialog = gtk::FileDialog::builder().title("Import Theme").filters(&filters).build();
+        let pick = opusdm_ui::FilePick {
+            title: "Import Theme",
+            filter: Some(opusdm_ui::FileFilterSpec { name: "Theme archives", patterns: &THEME_ARCHIVE_PATTERNS, ..Default::default() }),
+            ..Default::default()
+        };
         let select_theme = select_theme.clone();
         let note = note.clone();
         let busy = busy.clone();
-        dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-            let Ok(file) = result else { return };
-            let Some(path) = file.path() else { return };
+        opusdm_ui::pick_file(Some(window.upcast_ref()), &pick, move |path| {
             show_note(&note, &format!("Importing {}...", path.display()));
             let (note, select_theme) = (note.clone(), select_theme.clone());
             background::run_blocking(

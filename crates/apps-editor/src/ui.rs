@@ -9,6 +9,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::desktop_entry::{self, DesktopFields};
 use opusdm_ipc::menu::{self, MenuItem};
+use opusdm_ui::{clear_children, pick_file, section_heading, DirtyGuard, FileFilterSpec, FilePick};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -106,26 +107,7 @@ pub fn open(app: &gtk::Application) {
 
     {
         let editor = editor.clone();
-        window.connect_close_request(move |w| {
-            if !editor.dirty.get() {
-                return glib::Propagation::Proceed;
-            }
-            let (editor, w) = (editor.clone(), w.clone());
-            opusdm_ui::requester(
-                &editor.window.clone(),
-                "Request",
-                "Discard the changes?",
-                Some("The menu and the entries have unsaved changes."),
-                &[("Discard", true), ("Cancel", false)],
-                move |discard| {
-                    if discard {
-                        editor.dirty.set(false);
-                        w.close();
-                    }
-                },
-            );
-            glib::Propagation::Stop
-        });
+        DirtyGuard::attach(&window, "Discard the changes?", Some("The menu and the entries have unsaved changes."), move || editor.dirty.get(), || {});
     }
 
     editor.rebuild();
@@ -138,10 +120,7 @@ fn _build_form() -> Form {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     root.set_margin_start(10);
     root.set_hexpand(true);
-    let heading = gtk::Label::new(Some("PROPERTIES"));
-    heading.set_xalign(0.0);
-    heading.add_css_class("heading");
-    root.append(&heading);
+    root.append(&section_heading("PROPERTIES"));
 
     let grid = gtk::Grid::new();
     grid.set_row_spacing(8);
@@ -186,19 +165,14 @@ fn _build_form() -> Form {
     {
         let (icon, window_root) = (icon.clone(), root.clone());
         browse.connect_clicked(move |_| {
-            let filter = gtk::FileFilter::new();
-            filter.add_mime_type("image/*");
-            filter.set_name(Some("Images"));
-            let filters = gio::ListStore::new::<gtk::FileFilter>();
-            filters.append(&filter);
-            let dialog = gtk::FileDialog::builder().title("Choose Icon").filters(&filters).build();
+            let pick = FilePick {
+                title: "Choose Icon",
+                filter: Some(FileFilterSpec { name: "Images", mime_types: &["image/*"], ..Default::default() }),
+                ..Default::default()
+            };
             let parent = window_root.root().and_downcast::<gtk::Window>();
             let icon = icon.clone();
-            dialog.open(parent.as_ref(), gio::Cancellable::NONE, move |result| {
-                if let Some(path) = result.ok().and_then(|f| f.path()) {
-                    icon.set_text(&path.to_string_lossy());
-                }
-            });
+            pick_file(parent.as_ref(), &pick, move |path| icon.set_text(&path.to_string_lossy()));
         });
     }
 
@@ -372,9 +346,7 @@ impl Editor {
     /// Repaint the whole tree, keeping the selection when its path still exists.
     fn rebuild(self: &Rc<Self>) {
         self.quiet.set(true);
-        while let Some(row) = self.list.first_child() {
-            self.list.remove(&row);
-        }
+        clear_children(&self.list);
         let mut flat = Vec::new();
         _flatten(&self.items.borrow(), &[], &mut flat);
         let mut rows = Vec::new();

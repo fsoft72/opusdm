@@ -11,6 +11,7 @@ use gtk::prelude::*;
 use opusdm_input_config::backend::{for_session, GroupStatus, Status};
 use opusdm_input_config::parse::{load_xkb_lists, XkbLists};
 use opusdm_input_config::worker::{self, Reply, Request};
+use opusdm_ui::{clear_children, labeled_row, LabelWidth};
 use opusdm_input_config::{
     store, InputError, InputSettings, LayoutEntry, MAX_LAYOUTS, REPEAT_DELAY_MAX_MS, REPEAT_DELAY_MIN_MS, REPEAT_RATE_MAX, REPEAT_RATE_MIN,
     SPEED_MAX, SPEED_MIN,
@@ -148,7 +149,7 @@ impl State {
 
     /// Put the three tabs in `slot`, in place of the loading text.
     fn fill(self: &Rc<Self>, slot: &gtk::Box, status: &Status) {
-        while let Some(child) = slot.first_child() { slot.remove(&child); }
+        clear_children(slot);
         let notebook = gtk::Notebook::new();
         notebook.set_vexpand(true);
         notebook.append_page(&mouse_page(self, &status.mouse), Some(&gtk::Label::new(Some("Mouse"))));
@@ -160,19 +161,13 @@ impl State {
 
 /// A label, a slider and the value, in one row. `on_change` gets the new value.
 fn speed_row(label: &str, initial: f64, on_change: impl Fn(f64) + 'static) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, PAGE_SPACING);
-    let name = gtk::Label::new(Some(label));
-    name.set_width_chars(LABEL_CHARS);
-    name.set_xalign(0.0);
     let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, SPEED_MIN, SPEED_MAX, 0.05);
     scale.set_hexpand(true);
     scale.set_draw_value(true);
     scale.set_digits(2);
     scale.set_value(initial);
     scale.connect_value_changed(move |s| on_change(s.value()));
-    row.append(&name);
-    row.append(&scale);
-    row
+    labeled_row(label, LabelWidth::Chars(LABEL_CHARS), PAGE_SPACING, &scale)
 }
 
 /// A check button that reports its state.
@@ -185,16 +180,10 @@ fn check_row(label: &str, initial: bool, on_toggle: impl Fn(bool) + 'static) -> 
 
 /// A label and a spin button for a whole number.
 fn spin_row(label: &str, initial: u32, min: u32, max: u32, step: u32, on_change: impl Fn(u32) + 'static) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, PAGE_SPACING);
-    let name = gtk::Label::new(Some(label));
-    name.set_width_chars(LABEL_CHARS);
-    name.set_xalign(0.0);
     let spin = gtk::SpinButton::with_range(min as f64, max as f64, step as f64);
     spin.set_value(initial as f64);
     spin.connect_value_changed(move |s| on_change(s.value() as u32));
-    row.append(&name);
-    row.append(&spin);
-    row
+    labeled_row(label, LabelWidth::Chars(LABEL_CHARS), PAGE_SPACING, &spin)
 }
 
 /// A vertical page. A group that cannot be used shows its reason first.
@@ -268,7 +257,7 @@ fn dropdown(labels: &[String], selected: usize) -> gtk::DropDown {
 /// Fill `rows` with one row per layout: layout, variant and a remove button.
 /// Rebuilt after every add, remove or layout change.
 fn build_layout_rows(state: &Rc<State>, lists: &Rc<XkbLists>, rows: &gtk::Box) {
-    while let Some(child) = rows.first_child() { rows.remove(&child); }
+    clear_children(rows);
     let layouts = state.current.borrow().keyboard.layouts.clone();
     let rebuild = {
         let (state, lists, rows) = (state.clone(), lists.clone(), rows.clone());
@@ -381,13 +370,7 @@ fn keyboard_page(state: &Rc<State>, status: &GroupStatus, lists: Rc<XkbLists>) -
             state.update(|all| all.keyboard.switch_option = code);
         });
     }
-    let switch_row = gtk::Box::new(gtk::Orientation::Horizontal, PAGE_SPACING);
-    let switch_label = gtk::Label::new(Some("Switch layout with"));
-    switch_label.set_width_chars(LABEL_CHARS);
-    switch_label.set_xalign(0.0);
-    switch_row.append(&switch_label);
-    switch_row.append(&switch_dd);
-    page.append(&switch_row);
+    page.append(&labeled_row("Switch layout with", LabelWidth::Chars(LABEL_CHARS), PAGE_SPACING, &switch_dd));
 
     let s = state.clone();
     page.append(&spin_row("Repeat delay (ms)", k.repeat_delay_ms, REPEAT_DELAY_MIN_MS, REPEAT_DELAY_MAX_MS, 50, move |v| {

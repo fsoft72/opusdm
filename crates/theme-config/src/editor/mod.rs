@@ -112,8 +112,6 @@ struct Editor {
     preview: RefCell<Preview>,
     /// True while code, not the user, changes the list selection.
     programmatic: Cell<bool>,
-    /// Set once the user agreed to discard unsaved changes and close.
-    closing: Cell<bool>,
     on_saved: Rc<dyn Fn(String)>,
 }
 
@@ -228,7 +226,6 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
         current: RefCell::new(None),
         preview: RefCell::new(Preview { sent: baseline.clone(), baseline, ended: false }),
         programmatic: Cell::new(false),
-        closing: Cell::new(false),
         on_saved,
     });
 
@@ -285,33 +282,20 @@ fn wire_list_selection(editor: &Rc<Editor>) {
 
 /// Closing the window with unsaved changes asks first; a close that goes
 /// through ends the live preview and drops the editor, whose only strong
-/// reference this handler holds.
+/// reference this guard holds.
 fn wire_close_guard(editor: &Rc<Editor>) {
-    let window = editor.window.clone();
+    let weak = Rc::downgrade(editor);
     let owner = RefCell::new(Some(editor.clone()));
-    window.connect_close_request(move |_| {
-        let Some(editor) = owner.borrow().clone() else { return glib::Propagation::Proceed };
-        if editor.closing.get() || !editor.is_dirty() {
+    opusdm_ui::DirtyGuard::attach(
+        &editor.window,
+        "This theme has unsaved changes. Close without saving?",
+        None,
+        move || weak.upgrade().is_some_and(|e| e.is_dirty()),
+        move || {
+            let Some(editor) = owner.borrow_mut().take() else { return };
             editor.end_preview();
-            owner.borrow_mut().take();
-            return glib::Propagation::Proceed;
-        }
-        let again = editor.clone();
-        opusdm_ui::requester(
-            &editor.window,
-            "Unsaved Changes",
-            "This theme has unsaved changes. Close without saving?",
-            None,
-            &[("Close", true), ("Cancel", false)],
-            move |close| {
-                if close {
-                    again.closing.set(true);
-                    again.window.close();
-                }
-            },
-        );
-        glib::Propagation::Stop
-    });
+        },
+    );
 }
 
 impl Editor {
@@ -375,9 +359,7 @@ impl Editor {
     /// Rebuild the theme list and select `select` (the first row when `None`).
     fn refresh_list(&self, select: Option<&str>) {
         self.programmatic.set(true);
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
-        }
+        opusdm_ui::clear_children(&self.list);
         let mut slugs = Vec::new();
         for theme in opusdm_ipc::themes::scan_themes() {
             let label = gtk::Label::builder().label(&theme.label).xalign(0.0).margin_start(6).margin_end(6).margin_top(4).margin_bottom(4).build();
@@ -415,9 +397,7 @@ impl Editor {
         };
         let ops = Rc::new(RefCell::new(Vec::new()));
         let tabs = Tabs::new(&self.window, slug, &draft, &ops);
-        while let Some(child) = self.right.first_child() {
-            self.right.remove(&child);
-        }
+        opusdm_ui::clear_children(&self.right);
         let read_only = is_read_only(slug);
         if read_only {
             let message = gtk::Label::builder().label(READ_ONLY_MESSAGE).justify(gtk::Justification::Center).wrap(true).vexpand(true).build();
@@ -435,9 +415,7 @@ impl Editor {
 
     /// Close the open theme: no tabs, no current theme, so nothing can be saved.
     fn clear(&self) {
-        while let Some(child) = self.right.first_child() {
-            self.right.remove(&child);
-        }
+        opusdm_ui::clear_children(&self.right);
         *self.current.borrow_mut() = None;
     }
 
@@ -453,24 +431,7 @@ impl Editor {
     /// Run `proceed` now when nothing is unsaved, otherwise after the user
     /// agrees to discard; `cancel` runs when they decline.
     fn confirm_discard(self: &Rc<Self>, proceed: impl Fn() + 'static, cancel: impl Fn() + 'static) {
-        if !self.is_dirty() {
-            proceed();
-            return;
-        }
-        opusdm_ui::requester(
-            &self.window,
-            "Unsaved Changes",
-            "This theme has unsaved changes. Discard them?",
-            None,
-            &[("Discard", true), ("Cancel", false)],
-            move |discard| {
-                if discard {
-                    proceed();
-                } else {
-                    cancel();
-                }
-            },
-        );
+        opusdm_ui::confirm_discard(&self.window, self.is_dirty(), "This theme has unsaved changes. Discard them?", proceed, cancel);
     }
 
     /// The open theme's slug, the draft the widgets describe, and the pending

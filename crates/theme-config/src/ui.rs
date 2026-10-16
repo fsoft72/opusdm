@@ -30,9 +30,7 @@ impl IconSetSection {
     /// A picker of the installed themes with `current` selected.
     pub fn new(current: &IconSetId) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("THEME"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("THEME");
         root.append(&heading);
 
         let mut options: Vec<IconSetId> = Vec::new();
@@ -178,9 +176,7 @@ pub struct ColorsSection {
 impl ColorsSection {
     pub fn new(window: &gtk::ApplicationWindow, c: &ColorSettings) -> Self {
         let outer = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("COLOURS"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("COLOURS");
         outer.append(&heading);
 
         let grid = gtk::Grid::new();
@@ -320,9 +316,7 @@ pub struct AppearanceSection {
 impl AppearanceSection {
     pub fn new(initial: &Appearance) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("APPEARANCE"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("APPEARANCE");
         root.append(&heading);
 
         let type_indicators = gtk::CheckButton::with_label("Type indicators after names (/ * @ = |)");
@@ -360,9 +354,7 @@ pub struct ThemeModeSection {
 impl ThemeModeSection {
     pub fn new(initial: opusdm_ipc::ThemeMode) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("LIGHT / DARK"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("LIGHT / DARK");
         root.append(&heading);
 
         let dropdown = gtk::DropDown::from_strings(&["Light", "Dark"]);
@@ -429,9 +421,7 @@ pub struct BehaviorSection {
 impl BehaviorSection {
     pub fn new(initial: &Behavior) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let heading = gtk::Label::new(Some("BEHAVIOUR"));
-        heading.set_xalign(0.0);
-        heading.add_css_class("heading");
+        let heading = opusdm_ui::section_heading("BEHAVIOUR");
         root.append(&heading);
 
         let auto_refresh =
