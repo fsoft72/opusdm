@@ -3,6 +3,7 @@
 
 pub mod activation_follow;
 pub mod bg_sequence;
+pub mod channels;
 pub mod children;
 pub mod compositor;
 pub mod config_cache;

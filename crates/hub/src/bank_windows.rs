@@ -47,7 +47,7 @@ impl BankWindows {
     /// `HubCmd::RunFunctionHeadless` on `cmd_tx`.
     pub fn new(banks: Rc<RefCell<Banks>>, functions: Rc<RefCell<Vec<Function>>>, cmd_tx: Sender<HubCmd>) -> BankWindows {
         let run: Rc<dyn Fn(&str)> = Rc::new(move |id| {
-            let _ = cmd_tx.send(HubCmd::RunFunctionHeadless(id.to_string()));
+            opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::RunFunctionHeadless(id.to_string()), "hub command");
         });
         let function_exists: Rc<dyn Fn(&str) -> bool> = Rc::new(move |id| function_usable(id, &functions.borrow()));
         BankWindows {

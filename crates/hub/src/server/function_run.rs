@@ -217,7 +217,7 @@ impl Hub {
                 return;
             }
             crate::functions::FnEvent::PutAway { paths } => {
-                let _ = self.evt_tx.send(HubEvent::LeftOutRemove(paths.clone()));
+                send_or_log(&self.evt_tx, HubEvent::LeftOutRemove(paths.clone()), "GTK event");
                 return;
             }
             crate::functions::FnEvent::Hide => {
@@ -244,7 +244,7 @@ impl Hub {
                 return;
             }
             crate::functions::FnEvent::Bank { action, bank } => {
-                let _ = self.evt_tx.send(HubEvent::Bank { action: *action, bank: bank.clone() });
+                send_or_log(&self.evt_tx, HubEvent::Bank { action: *action, bank: bank.clone() }, "GTK event");
                 return;
             }
             _ => {}

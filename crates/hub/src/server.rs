@@ -2,6 +2,7 @@
 //! single owner loop that holds all mutable hub state. Only channels cross
 //! thread boundaries.
 
+use crate::channels::send_or_log;
 use crate::jobs::{default_runner, map_progress, validate_op, JobEngine, ProgressTotals};
 use crate::script_events::{EventGuard, ScriptEvent, SHUTDOWN_HOOK_TIMEOUT};
 use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
@@ -457,7 +458,7 @@ impl Hub {
             }
 
             ToHub::RaiseToolbar => {
-                let _ = self.evt_tx.send(HubEvent::RaiseToolbar);
+                send_or_log(&self.evt_tx, HubEvent::RaiseToolbar, "GTK event");
             }
 
             ToHub::SetDesktopSettings(ds) => self.set_desktop_settings(ds),
@@ -481,7 +482,7 @@ impl Hub {
             ToHub::QueryCaches => self.query_caches(cid),
 
             ToHub::OpenBankManager => {
-                let _ = self.evt_tx.send(HubEvent::OpenBankManager);
+                send_or_log(&self.evt_tx, HubEvent::OpenBankManager, "GTK event");
             }
 
             ToHub::FreeAllCaches => {
@@ -587,15 +588,15 @@ impl Hub {
             return;
         }
         self.current_desktop = ds;
-        let _ = self.persist_tx.send(PersistMsg::Desktop(self.current_desktop.clone()));
-        let _ = self.evt_tx.send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Desktop(self.current_desktop.clone()), "desktop.json save");
+        send_or_log(&self.evt_tx, HubEvent::DesktopSettingsChanged(self.current_desktop.clone()), "GTK event");
     }
 
     /// A Lister sent new hotkeys and script bindings: sanitize, save, tell every Lister and re-grab the global keys.
     fn set_bindings(&mut self, cid: u64, new_bindings: Bindings) {
         opusdm_ipc::debug_log!("hub", "SetBindings from conn {cid}: {} hotkeys", new_bindings.hotkeys.len());
         self.current_bindings = bindings::sanitize(new_bindings);
-        let _ = self.persist_tx.send(PersistMsg::Bindings(self.current_bindings.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Bindings(self.current_bindings.clone()), "bindings save");
         self.broadcast(ToLister::BindingsUpdate(self.current_bindings.clone()));
         self.apply_global_keys();
     }
@@ -603,16 +604,16 @@ impl Hub {
     /// A Lister sent new formats: sanitize, save and tell every Lister.
     fn set_formats(&mut self, new_formats: FormatStore) {
         self.current_formats = new_formats.sanitized();
-        let _ = self.persist_tx.send(PersistMsg::Formats(self.current_formats.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Formats(self.current_formats.clone()), "formats.json save");
         self.broadcast(ToLister::FormatsUpdate(self.current_formats.clone()));
     }
 
     /// A Lister sent new functions: save, tell every Lister and the GTK side.
     fn set_functions(&mut self, new_functions: Vec<opusdm_ipc::function::Function>) {
         self.current_functions = new_functions;
-        let _ = self.persist_tx.send(PersistMsg::Functions(self.current_functions.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Functions(self.current_functions.clone()), "functions.json save");
         self.broadcast(ToLister::FunctionsUpdate(self.current_functions.clone()));
-        let _ = self.evt_tx.send(HubEvent::FunctionsChanged(self.current_functions.clone()));
+        send_or_log(&self.evt_tx, HubEvent::FunctionsChanged(self.current_functions.clone()), "GTK event");
     }
 
     /// `ToHub::QueryConfig`: send `cid` the bindings and Functions in force.
@@ -673,11 +674,7 @@ impl Hub {
                 }
                 .into(),
             );
-            let _ = self.evt_tx.send(HubEvent::ListerRegistered {
-                id: ListerId(cid),
-                pid,
-                path: initial_path,
-            });
+            send_or_log(&self.evt_tx, HubEvent::ListerRegistered { id: ListerId(cid), pid, path: initial_path }, "GTK event");
             emit_roles(&self.roles, &self.conns, &self.evt_tx);
         }
         if self.conns.get(&cid).is_some_and(|c| c.registered) {
@@ -907,10 +904,10 @@ impl Hub {
             return;
         }
         self.current_settings = new_settings;
-        let _ = self.persist_tx.send(PersistMsg::Settings(Box::new(self.current_settings.clone())));
+        send_or_log(&self.persist_tx, PersistMsg::Settings(Box::new(self.current_settings.clone())), "settings.json save");
         self.broadcast(ToLister::SettingsUpdate(Box::new(self.current_settings.clone())));
-        let _ = self.evt_tx.send(HubEvent::ThemeChanged(Box::new(self.current_settings.theme.clone())));
-        let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
+        send_or_log(&self.evt_tx, HubEvent::ThemeChanged(Box::new(self.current_settings.theme.clone())), "GTK event");
+        send_or_log(&self.evt_tx, HubEvent::AppearanceChanged(self.current_settings.appearance.clone()), "GTK event");
     }
 
     /// Hide or reveal the desktop environment. Does nothing when the state
@@ -932,7 +929,7 @@ impl Hub {
         }
         self.hidden = hidden;
         self.broadcast(ToLister::SetHidden(hidden));
-        let _ = self.evt_tx.send(HubEvent::HiddenChanged(hidden));
+        send_or_log(&self.evt_tx, HubEvent::HiddenChanged(hidden), "GTK event");
         if hidden || !present_source {
             return;
         }
@@ -958,7 +955,7 @@ impl Hub {
             opusdm_ipc::err_log!("hub", "{e}");
             return;
         }
-        let _ = self.evt_tx.send(HubEvent::LeftOutAdd(paths));
+        send_or_log(&self.evt_tx, HubEvent::LeftOutAdd(paths), "GTK event");
     }
 
     /// Make `path` (a picture or a video) the one desktop background,
@@ -1152,12 +1149,7 @@ impl Hub {
                 if let Some(c) = requester.and_then(|r| self.conns.get(&r)) {
                     let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
                 }
-                let _ = self.evt_tx.send(HubEvent::JobFinished {
-                    job_id,
-                    ok: !cancelled && err_count == 0,
-                    errors: err_count,
-                    cancelled,
-                });
+                send_or_log(&self.evt_tx, HubEvent::JobFinished { job_id, ok: !cancelled && err_count == 0, errors: err_count, cancelled }, "GTK event");
                 // Refresh every Lister showing an affected directory.
                 // Sources are refreshed too: Move/Delete remove them, Duplicate
                 // adds to them, and Copy may have run as a Move.
@@ -1181,14 +1173,15 @@ impl Hub {
                         ..
                     } = &msg
                     {
-                        let _ = self.evt_tx.send(HubEvent::JobUpdate {
+                        let update = HubEvent::JobUpdate {
                             job_id,
                             current_file: current_file.clone(),
                             files_done: *files_done,
                             files_total: *files_total,
                             file_bytes_done: *file_bytes_done,
                             file_bytes_total: *file_bytes_total,
-                        });
+                        };
+                        send_or_log(&self.evt_tx, update, "GTK event");
                     }
                     if let Some(r) = requester {
                         self.send_to(r, msg);
@@ -1336,9 +1329,9 @@ fn drop_conn(
         return false;
     }
     apply_role(roles, RoleEvent::Dropped(ListerId(cid)), conns, evt_tx);
-    let _ = evt_tx.send(HubEvent::ListerGone(ListerId(cid)));
+    send_or_log(evt_tx, HubEvent::ListerGone(ListerId(cid)), "GTK event");
     if !conns.values().any(|c| c.registered) {
-        let _ = evt_tx.send(HubEvent::AllListersGone);
+        send_or_log(evt_tx, HubEvent::AllListersGone, "GTK event");
     }
     true
 }
@@ -1384,7 +1377,7 @@ fn emit_roles(roles: &RoleState, conns: &HashMap<u64, Conn>, evt_tx: &Sender<Hub
         .filter(|(_, c)| c.registered)
         .map(|(k, c)| (ListerId(*k), c.path.clone()))
         .collect();
-    let _ = evt_tx.send(HubEvent::Roles { source: roles.source(), dests: roles.dests(), paths });
+    send_or_log(evt_tx, HubEvent::Roles { source: roles.source(), dests: roles.dests(), paths }, "GTK event");
 }
 
 #[cfg(test)]

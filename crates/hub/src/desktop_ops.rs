@@ -62,7 +62,7 @@ pub fn paste(cmd_tx: &Sender<HubCmd>, dest_dir: PathBuf) {
             return;
         }
         let op = if text.starts_with(CUT_MARKER) { Op::Move } else { Op::Copy };
-        let _ = cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir: dest_dir.clone() });
+        opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::RunJob { op, srcs, dest_dir: dest_dir.clone() }, "hub command");
     });
 }
 
@@ -106,11 +106,8 @@ pub fn confirm_delete(
             if !confirmed {
                 return;
             }
-            let _ = cmd_tx.send(HubCmd::RunJob {
-                op: Op::Delete,
-                srcs: srcs.clone(),
-                dest_dir: dest_dir.clone(),
-            });
+            let job = HubCmd::RunJob { op: Op::Delete, srcs: srcs.clone(), dest_dir: dest_dir.clone() };
+            opusdm_hub::channels::send_or_log(&cmd_tx, job, "hub command");
         },
     );
 }
@@ -135,11 +132,8 @@ pub fn prompt_new(
             if !accepted || text.is_empty() {
                 return;
             }
-            let _ = cmd_tx.send(HubCmd::RunJob {
-                op: make_op(text),
-                srcs: Vec::new(),
-                dest_dir: dest_dir.clone(),
-            });
+            let job = HubCmd::RunJob { op: make_op(text), srcs: Vec::new(), dest_dir: dest_dir.clone() };
+            opusdm_hub::channels::send_or_log(&cmd_tx, job, "hub command");
         },
     );
 }

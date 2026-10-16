@@ -208,7 +208,7 @@ pub(crate) fn build_one_desktop_window(
 pub(crate) fn run_file_type(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) -> bool {
     let types = opusdm_hub::config_cache::filetypes();
     let Some(id) = opusdm_ipc::filetypes::dblclick_in(&types, path) else { return false };
-    let _ = cmd_tx.send(HubCmd::RunFunctionOnPaths { id, paths: vec![path.to_path_buf()] });
+    opusdm_hub::channels::send_or_log(cmd_tx, HubCmd::RunFunctionOnPaths { id, paths: vec![path.to_path_buf()] }, "hub command");
     true
 }
 
@@ -240,7 +240,7 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
                 return;
             }
             if opusdm_hub::leftout::opens_in_lister(&entry) {
-                let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
+                opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::SpawnRequested { start_path: Some(entry.path) }, "hub command");
             } else {
                 open_file(&cmd_tx, &entry.path);
             }
@@ -249,8 +249,8 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
     {
         let cmd_tx = widgets.cmd_tx.clone();
         field.connect_background_activate(move || {
-            let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
-            let _ = cmd_tx.send(HubCmd::EmitScriptEvent(ScriptEvent::DesktopDoubleClick));
+            opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::SpawnRequested { start_path: None }, "hub command");
+            opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::EmitScriptEvent(ScriptEvent::DesktopDoubleClick), "hub command");
         });
     }
     {
@@ -272,7 +272,7 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
             }
             let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
             let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
-            let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
+            opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::RunJob { op, srcs, dest_dir }, "hub command");
         });
     }
     {
@@ -449,7 +449,7 @@ pub(crate) fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconE
     use opusdm_hub::leftout::LaunchAction;
     match opusdm_hub::leftout::launch_action(entry) {
         LaunchAction::Lister => {
-            let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path.clone()) });
+            opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::SpawnRequested { start_path: Some(entry.path.clone()) }, "hub command");
         }
         LaunchAction::DesktopEntry => match gio::DesktopAppInfo::from_filename(&entry.path) {
             Some(info) => {

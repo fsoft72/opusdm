@@ -38,7 +38,7 @@ impl FileManager {
     fn open(&self, uris: &[String]) {
         let Ok(tx) = self.cmd_tx.lock() else { return };
         for path in paths_from_uris(uris) {
-            let _ = tx.send(HubCmd::SpawnRequested { start_path: Some(path) });
+            crate::channels::send_or_log(&tx, HubCmd::SpawnRequested { start_path: Some(path) }, "hub command");
         }
     }
 }

@@ -97,7 +97,7 @@ fn main() {
         opusdm_hub::startup_apps::start(&desktop_settings.startup_apps);
     }
 
-    let _ = handle.cmd_tx.send(server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup));
+    opusdm_hub::channels::send_or_log(&handle.cmd_tx, server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup), "hub command");
 
     children::install_sigchld(handle.cmd_tx.clone());
 
