@@ -26,7 +26,7 @@ pub struct UdisksBackend {
 impl UdisksBackend {
     /// Connect to the system bus. Does not need udisks2 to be running yet.
     pub fn connect() -> Result<Self, DeviceError> {
-        let conn = Connection::system().map_err(|e| DeviceError::from_zbus(&e))?;
+        let conn = Connection::system()?;
         Ok(Self { conn })
     }
 
@@ -37,7 +37,7 @@ impl UdisksBackend {
 
     /// A proxy for `iface` on object `path`.
     fn proxy(&self, path: &str, iface: &'static str) -> Result<Proxy<'static>, DeviceError> {
-        Proxy::new(&self.conn, SERVICE, path.to_string(), iface).map_err(|e| DeviceError::from_zbus(&e))
+        Proxy::new(&self.conn, SERVICE, path.to_string(), iface).map_err(DeviceError::from)
     }
 }
 
@@ -45,7 +45,7 @@ impl Backend for UdisksBackend {
     fn list(&self) -> Result<Vec<Device>, DeviceError> {
         let proxy = self.proxy(ROOT_PATH, MANAGER_IFACE)?;
         let objects: ManagedObjects =
-            proxy.call("GetManagedObjects", &()).map_err(|e| DeviceError::from_zbus(&e))?;
+            proxy.call("GetManagedObjects", &())?;
         Ok(parse::devices(&objects))
     }
 
@@ -53,19 +53,19 @@ impl Backend for UdisksBackend {
         let proxy = self.proxy(path, FS_IFACE)?;
         let point: String = proxy
             .call("Mount", &(NoOptions::new(),))
-            .map_err(|e| DeviceError::from_zbus(&e))?;
+            ?;
         Ok(PathBuf::from(point))
     }
 
     fn unmount(&self, path: &str) -> Result<(), DeviceError> {
         let proxy = self.proxy(path, FS_IFACE)?;
-        proxy.call::<_, _, ()>("Unmount", &(NoOptions::new(),)).map_err(|e| DeviceError::from_zbus(&e))
+        proxy.call::<_, _, ()>("Unmount", &(NoOptions::new(),)).map_err(DeviceError::from)
     }
 
     fn eject_drive(&self, drive_path: &str, power_off: bool) -> Result<(), DeviceError> {
         let proxy = self.proxy(drive_path, DRIVE_IFACE)?;
-        proxy.call::<_, _, ()>("Eject", &(NoOptions::new(),)).map_err(|e| DeviceError::from_zbus(&e))?;
+        proxy.call::<_, _, ()>("Eject", &(NoOptions::new(),))?;
         if !power_off { return Ok(()); }
-        proxy.call::<_, _, ()>("PowerOff", &(NoOptions::new(),)).map_err(|e| DeviceError::from_zbus(&e))
+        proxy.call::<_, _, ()>("PowerOff", &(NoOptions::new(),)).map_err(DeviceError::from)
     }
 }

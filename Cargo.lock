@@ -2631,6 +2631,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-apps"
+version = "0.8.0"
+dependencies = [
+ "freedesktop-desktop-entry",
+ "gtk4",
+ "opusdm-ipc",
+]
+
+[[package]]
 name = "opusdm-apps-editor"
 version = "0.8.0"
 dependencies = [
@@ -2711,12 +2720,11 @@ dependencies = [
 name = "opusdm-dock"
 version = "0.8.0"
 dependencies = [
- "freedesktop-desktop-entry",
  "gtk4",
+ "opusdm-apps",
  "opusdm-ipc",
  "opusdm-ui",
  "tempfile",
- "x11rb",
 ]
 
 [[package]]
@@ -2872,8 +2880,10 @@ name = "opusdm-network"
 version = "0.8.0"
 dependencies = [
  "async-channel",
+ "async-io",
  "base64",
  "dirs",
+ "futures-lite",
  "getrandom 0.2.17",
  "opusdm-watch",
  "secret-service",
@@ -2900,9 +2910,11 @@ version = "0.8.0"
 dependencies = [
  "async-channel",
  "gtk4",
+ "opusdm-apps",
  "opusdm-ipc",
  "opusdm-snap",
  "opusdm-ui",
+ "opusdm-x11",
  "serde",
  "serde_json",
  "tempfile",
@@ -2918,10 +2930,10 @@ dependencies = [
  "dirs",
  "gtk4",
  "libc",
+ "opusdm-apps",
  "opusdm-audio",
  "opusdm-brightness",
  "opusdm-devices",
- "opusdm-dock",
  "opusdm-ipc",
  "opusdm-network",
  "opusdm-power",
@@ -2954,6 +2966,7 @@ dependencies = [
  "async-channel",
  "gtk4",
  "libc",
+ "opusdm-apps",
  "opusdm-ipc",
  "opusdm-ui",
  "tempfile",
@@ -2974,7 +2987,7 @@ name = "opusdm-run"
 version = "0.8.0"
 dependencies = [
  "gtk4",
- "opusdm-dock",
+ "opusdm-apps",
  "opusdm-ipc",
  "opusdm-ui",
  "tempfile",

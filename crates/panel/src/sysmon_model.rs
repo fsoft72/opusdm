@@ -190,6 +190,22 @@ pub fn read_processes() -> HashMap<u32, (String, u64)> {
         .collect()
 }
 
+/// The CPU ticks of every process plus the summary `cpu` total, read
+/// together so each process share is measured over the same interval.
+#[derive(Clone, Default, Debug)]
+pub struct ProcSample {
+    pub cpu_total: u64,
+    pub procs: HashMap<u32, (String, u64)>,
+}
+
+/// Read one [`ProcSample`]. This scans every `/proc/<pid>/stat`, so call it
+/// off the GTK thread.
+pub fn read_proc_sample() -> ProcSample {
+    let stat = std::fs::read_to_string("/proc/stat").unwrap_or_default();
+    let cpu_total = parse_proc_stat(&stat).map(|t| t.total).unwrap_or(0);
+    ProcSample { cpu_total, procs: read_processes() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

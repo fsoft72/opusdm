@@ -17,6 +17,24 @@ pub fn parse_ddc_brief(output: &str) -> Option<(u32, u32)> {
     Some((current, max))
 }
 
+/// The I2C bus number of the first usable monitor in `ddcutil detect
+/// --brief`: the `I2C bus: /dev/i2c-N` line of the first `Display N` block
+/// (an `Invalid display` block is skipped).
+pub fn parse_ddc_detect_bus(output: &str) -> Option<u32> {
+    let mut in_display = false;
+    for line in output.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            in_display = line.starts_with("Display ");
+            continue;
+        }
+        if !in_display { continue; }
+        if let Some(device) = line.trim().strip_prefix("I2C bus:") {
+            return device.trim().strip_prefix("/dev/i2c-")?.parse().ok();
+        }
+    }
+    None
+}
+
 /// The name of the first connected output in `xrandr --query`.
 pub fn parse_xrandr_connected(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
@@ -62,6 +80,19 @@ pub fn raw_to_percent(raw: u32, max: u32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ddc_detect_gives_the_bus_of_the_first_display() {
+        let out = "Invalid display\n   I2C bus:          /dev/i2c-6\n\nDisplay 1\n   I2C bus:          /dev/i2c-10\n   DRM connector:    card2-DP-2\n\nDisplay 2\n   I2C bus:          /dev/i2c-11\n";
+        assert_eq!(parse_ddc_detect_bus(out), Some(10));
+    }
+
+    #[test]
+    fn ddc_detect_without_a_display_gives_no_bus() {
+        assert_eq!(parse_ddc_detect_bus("No displays found.\n"), None);
+        assert_eq!(parse_ddc_detect_bus("Invalid display\n   I2C bus:  /dev/i2c-6\n"), None);
+        assert_eq!(parse_ddc_detect_bus("Display 1\n   I2C bus:  /dev/i2c-x\n"), None);
+    }
 
     const XRANDR_VERBOSE: &str = "Screen 0: minimum 8 x 8, current 2560 x 1440\n\
 DP-0 connected primary 2560x1440+0+0 (0x1c6) normal 697mm x 392mm\n\

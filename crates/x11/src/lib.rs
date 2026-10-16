@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
+use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{self, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, PropMode, StackMode, Window};
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
@@ -85,6 +86,34 @@ pub fn gone<T>(result: Result<T, ReplyError>) -> Result<Option<T>, X11Error> {
     }
 }
 
+/// The raw value of property `prop` of `window`, of any type. `None` when
+/// the property is absent or empty, or the window is gone.
+pub fn property_bytes(conn: &impl Connection, window: Window, prop: u32) -> Option<Vec<u8>> {
+    let reply = conn.get_property(false, window, prop, AtomEnum::ANY, 0, u32::MAX).ok()?.reply().ok()?;
+    if reply.value.is_empty() { return None; }
+    Some(reply.value)
+}
+
+/// The first 32 bit value of property `prop` of `window` (a `CARDINAL`,
+/// `WINDOW` or `ATOM`). `None` when it is absent or not 32 bit.
+pub fn property_card(conn: &impl Connection, window: Window, prop: u32) -> Option<u32> {
+    let reply = conn.get_property(false, window, prop, AtomEnum::ANY, 0, 1).ok()?.reply().ok()?;
+    reply.value32().and_then(|mut values| values.next())
+}
+
+/// Every 32 bit value of property `prop` of `window` (a list of cardinals,
+/// windows or atoms). `None` when it is absent or not 32 bit.
+pub fn property_cards(conn: &impl Connection, window: Window, prop: u32) -> Option<Vec<u32>> {
+    let reply = conn.get_property(false, window, prop, AtomEnum::ANY, 0, u32::MAX).ok()?.reply().ok()?;
+    reply.value32().map(|values| values.collect())
+}
+
+/// Property `prop` of `window` as text, invalid UTF-8 replaced. `None` when
+/// it is absent or empty.
+pub fn property_string(conn: &impl Connection, window: Window, prop: u32) -> Option<String> {
+    property_bytes(conn, window, prop).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Delays, in milliseconds, at which a window is placed again after it was
 /// mapped: the window manager runs its own placement policy after the map and
 /// may move the window, or drop state messages sent before it adopted the
@@ -113,7 +142,6 @@ pub fn x11_sync(conn: &impl Connection) -> Result<(), ReplyError> {
 pub struct X11 {
     conn: RustConnection,
     root: u32,
-    screen_height: i32,
     atoms: Mutex<HashMap<&'static str, u32>>,
 }
 
@@ -143,9 +171,8 @@ fn shared() -> Result<Arc<X11>, X11Error> {
     if let Some(x11) = slot.as_ref() {
         return Ok(x11.clone());
     }
-    let Session { conn, screen_num, root } = connect()?;
-    let screen_height = i32::from(conn.setup().roots[screen_num].height_in_pixels);
-    let x11 = Arc::new(X11 { conn, root, screen_height, atoms: Mutex::new(HashMap::new()) });
+    let Session { conn, root, .. } = connect()?;
+    let x11 = Arc::new(X11 { conn, root, atoms: Mutex::new(HashMap::new()) });
     *slot = Some(x11.clone());
     Ok(x11)
 }
@@ -161,9 +188,12 @@ impl X11 {
         self.root
     }
 
-    /// Height of the default screen in pixels.
-    pub fn screen_height(&self) -> i32 {
-        self.screen_height
+    /// Current height of the default screen in pixels, read from the root
+    /// window geometry on every call so it follows xrandr resizes (the
+    /// connection setup keeps the size the screen had when it was opened).
+    pub fn screen_height(&self) -> Result<i32, X11Error> {
+        let geometry = self.conn.get_geometry(self.root)?.reply()?;
+        Ok(i32::from(geometry.height))
     }
 
     /// The atom called `name`, interned on first use.
@@ -241,6 +271,33 @@ impl X11 {
         self.send_to_root(self.root, "_NET_NUMBER_OF_DESKTOPS", [count, 0, 0, 0, 0])
     }
 
+    /// Write the `_NET_WM_WINDOW_TYPE` of `window` (the atom called
+    /// `window_type`) and its `_NET_WM_STATE` (the atoms called `states`) as
+    /// properties. A window manager reads them when it adopts the window;
+    /// once the window is mapped, change states with [`X11::add_wm_states`].
+    pub fn set_type_and_states(&self, window: u32, window_type: &'static str, states: &[&'static str]) -> Result<(), X11Error> {
+        let type_atom = self.atom(window_type)?;
+        let state_atoms = states.iter().map(|name| self.atom(name)).collect::<Result<Vec<u32>, _>>()?;
+        self.conn.change_property32(PropMode::REPLACE, window, self.atom("_NET_WM_WINDOW_TYPE")?, AtomEnum::ATOM, &[type_atom])?;
+        self.conn.change_property32(PropMode::REPLACE, window, self.atom("_NET_WM_STATE")?, AtomEnum::ATOM, &state_atoms)?;
+        Ok(())
+    }
+
+    /// Fix `window` at the given geometry: user-specified position and size
+    /// hints (so the window manager does not re-place it) with the minimum
+    /// and maximum size equal to the size (so it cannot be resized), then a
+    /// `ConfigureWindow` there.
+    pub fn set_fixed_geometry(&self, window: u32, x: i32, y: i32, w: u32, h: u32) -> Result<(), X11Error> {
+        let (width, height) = (i32::try_from(w)?, i32::try_from(h)?);
+        let mut hints = WmSizeHints::new();
+        hints.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
+        hints.size = Some((WmSizeHintsSpecification::UserSpecified, width, height));
+        hints.min_size = Some((width, height));
+        hints.max_size = Some((width, height));
+        hints.set_normal_hints(&self.conn, window)?.check()?;
+        self.configure(window, x, y, w, h)
+    }
+
     /// A plain `ConfigureWindow` of `window` to the given geometry.
     pub fn configure(&self, window: u32, x: i32, y: i32, w: u32, h: u32) -> Result<(), X11Error> {
         self.conn.configure_window(window, &xproto::ConfigureWindowAux::new().x(x).y(y).width(w).height(h))?;
@@ -305,5 +362,43 @@ mod tests {
         })
         .unwrap();
         assert!(Arc::ptr_eq(&shared().unwrap(), &shared().unwrap()), "one connection per process");
+    }
+
+    /// Needs a running X server, like the test above.
+    #[test]
+    #[ignore]
+    fn type_states_and_fixed_geometry_are_written_and_read_back() {
+        with_x11(|x11| {
+            let conn = x11.conn();
+            let id = conn.generate_id()?;
+            conn.create_window(0, id, x11.root(), 0, 0, 50, 50, 0, xproto::WindowClass::INPUT_OUTPUT, 0, &xproto::CreateWindowAux::new())?;
+            x11.set_type_and_states(id, "_NET_WM_WINDOW_TYPE_DOCK", &["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_STICKY"])?;
+            x11.set_fixed_geometry(id, 7, 9, 120, 40)?;
+            x11_sync(conn)?;
+            let win_type = property_card(conn, id, x11.atom("_NET_WM_WINDOW_TYPE")?);
+            assert_eq!(win_type, Some(x11.atom("_NET_WM_WINDOW_TYPE_DOCK")?));
+            let states = property_cards(conn, id, x11.atom("_NET_WM_STATE")?);
+            assert_eq!(states, Some(vec![x11.atom("_NET_WM_STATE_ABOVE")?, x11.atom("_NET_WM_STATE_STICKY")?]));
+            let hints = WmSizeHints::get_normal_hints(conn, id)?.reply()?.expect("size hints");
+            assert_eq!((hints.min_size, hints.max_size), (Some((120, 40)), Some((120, 40))));
+            let geometry = conn.get_geometry(id)?.reply()?;
+            assert_eq!((geometry.x, geometry.y, geometry.width, geometry.height), (7, 9, 120, 40));
+            assert_eq!(property_string(conn, id, x11.atom("_NET_WM_NAME")?), None);
+            conn.destroy_window(id)?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Needs a running X server, like the test above.
+    #[test]
+    #[ignore]
+    fn screen_height_is_the_live_root_height() {
+        with_x11(|x11| {
+            let root = x11.conn().get_geometry(x11.root())?.reply()?;
+            assert_eq!(x11.screen_height()?, i32::from(root.height));
+            Ok(())
+        })
+        .unwrap();
     }
 }

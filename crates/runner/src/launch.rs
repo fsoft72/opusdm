@@ -42,7 +42,7 @@ pub fn spawn_detached(argv: &[String]) -> Result<(), String> {
 /// launch context.
 pub fn launch_app(id: &str) -> Result<(), String> {
     let info = gio::DesktopAppInfo::new(id).ok_or_else(|| format!("application '{id}' is not installed"))?;
-    opusdm_dock::apps::launch(&info);
+    opusdm_apps::apps::launch(&info);
     Ok(())
 }
 

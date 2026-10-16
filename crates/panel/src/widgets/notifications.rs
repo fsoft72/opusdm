@@ -330,23 +330,9 @@ fn dim_label(text: &str) -> gtk::Label {
 /// The picture of a row: a file, a theme icon, an application's icon, else
 /// a generic one.
 fn row_image(icon: &str) -> gtk::Image {
-    let image = if icon.starts_with('/') && std::path::Path::new(icon).is_file() {
-        gtk::Image::from_file(icon)
-    } else if !icon.is_empty() && gtk::gdk::Display::default().is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(icon)) {
-        gtk::Image::from_icon_name(icon)
-    } else {
-        app_icon(icon).unwrap_or_else(|| gtk::Image::from_icon_name(FALLBACK_ICON))
-    };
+    let image = opusdm_apps::app_image(icon).unwrap_or_else(|| gtk::Image::from_icon_name(FALLBACK_ICON));
     image.set_pixel_size(ROW_ICON_SIZE);
     image
-}
-
-/// The icon of the application whose desktop entry is `name`.
-fn app_icon(name: &str) -> Option<gtk::Image> {
-    if name.is_empty() { return None; }
-    let info = gtk::gio::DesktopAppInfo::new(&format!("{name}.desktop"))?;
-    let icon = gtk::gio::prelude::AppInfoExt::icon(&info)?;
-    Some(gtk::Image::from_gicon(&icon))
 }
 
 /// Seconds since the epoch, now.

@@ -7,8 +7,9 @@ use gtk::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Optional rename callback: called with the committed new name.
-type CommitFn = RefCell<Option<Box<dyn Fn(String)>>>;
+/// Optional rename callback: called with the committed new name. Shared
+/// (`Rc`) so it is called without the cell borrowed.
+type CommitFn = RefCell<Option<Rc<dyn Fn(String)>>>;
 
 struct Inner {
     root: gtk::Box,
@@ -136,28 +137,32 @@ impl IconItem {
         item
     }
 
+    /// Wire the inline rename entry. The handlers live on widgets the item
+    /// owns, so they hold it weakly: a strong handle would keep every item
+    /// (and its rename callback) alive after it is dropped.
     fn wire_editing(&self) {
-        let this = self.clone();
+        let weak = Rc::downgrade(&self.inner);
         self.inner.name_entry.connect_activate(move |e| {
-            this.finish_edit(Some(e.text().to_string()));
+            let Some(inner) = weak.upgrade() else { return };
+            IconItem { inner }.finish_edit(Some(e.text().to_string()));
         });
-        let this = self.clone();
+        let weak = Rc::downgrade(&self.inner);
         let focus = gtk::EventControllerFocus::new();
         focus.connect_leave(move |_| {
-            if this.inner.name_stack.visible_child_name().as_deref() == Some("entry") {
-                let text = this.inner.name_entry.text().to_string();
-                this.finish_edit(Some(text));
+            let Some(inner) = weak.upgrade() else { return };
+            if inner.name_stack.visible_child_name().as_deref() == Some("entry") {
+                let text = inner.name_entry.text().to_string();
+                IconItem { inner }.finish_edit(Some(text));
             }
         });
         self.inner.name_entry.add_controller(focus);
-        let this = self.clone();
+        let weak = Rc::downgrade(&self.inner);
         let key = gtk::EventControllerKey::new();
         key.connect_key_pressed(move |_, keyval, _, _| {
-            if keyval == gtk::gdk::Key::Escape {
-                this.finish_edit(None);
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
+            if keyval != gtk::gdk::Key::Escape { return glib::Propagation::Proceed; }
+            let Some(inner) = weak.upgrade() else { return glib::Propagation::Proceed };
+            IconItem { inner }.finish_edit(None);
+            glib::Propagation::Stop
         });
         self.inner.name_entry.add_controller(key);
     }
@@ -180,7 +185,8 @@ impl IconItem {
         }
         self.inner.name_label.set_text(&text);
         *self.inner.original_name.borrow_mut() = text.clone();
-        if let Some(cb) = self.inner.on_commit.borrow().as_ref() {
+        let commit = self.inner.on_commit.borrow().clone();
+        if let Some(cb) = commit {
             cb(text);
         }
     }
@@ -255,7 +261,13 @@ impl IconItem {
 
     /// Register the rename callback.
     pub fn connect_edit_committed(&self, f: impl Fn(String) + 'static) {
-        *self.inner.on_commit.borrow_mut() = Some(Box::new(f));
+        *self.inner.on_commit.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// How many handles share this item, for the leak tests.
+    #[cfg(test)]
+    pub(crate) fn strong_count(&self) -> usize {
+        Rc::strong_count(&self.inner)
     }
 
     /// Current displayed name.

@@ -1,6 +1,11 @@
 //! The skeleton shared by the device, audio and network workers: a retrying
 //! connection loop that reports an outage once, and a burst drain that turns
-//! many bus signals into one wakeup. No GTK.
+//! many bus signals into one wakeup, plus the [`DbusError`] their calls
+//! return. No GTK.
+
+mod dbus_error;
+
+pub use dbus_error::DbusError;
 
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;

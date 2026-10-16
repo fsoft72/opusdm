@@ -1,6 +1,6 @@
 //! The application menu: a `gtk::MenuButton` whose popover renders
 //! `menu.json`'s tree of folders and apps, plus Settings / About / Logout /
-//! Shutdown. `menu.json` is seeded (see `opusdm_dock::menu_defaults`) with
+//! Shutdown. `menu.json` is seeded (see `opusdm_apps::menu_defaults`) with
 //! the installed apps grouped by freedesktop category on first run (or
 //! whenever it is emptied), then edited with the Apps editor
 //! (`opusdm-apps-editor`). The items are re-read every time the menu opens.
@@ -10,7 +10,7 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use crate::widgets;
-use opusdm_dock::apps;
+use opusdm_apps::apps;
 use opusdm_ipc::{MenuItem, PanelPosition};
 use std::process::Command;
 
@@ -129,7 +129,7 @@ fn load_items() -> Vec<MenuItem> {
     match opusdm_ipc::menu::load_menu_config() {
         Some(cfg) if !cfg.items.is_empty() => cfg.items,
         _ => {
-            let cfg = opusdm_ipc::MenuConfig { items: opusdm_dock::menu_defaults::default_menu_items() };
+            let cfg = opusdm_ipc::MenuConfig { items: opusdm_apps::menu_defaults::default_menu_items() };
             if let Err(e) = opusdm_ipc::menu::save_menu_config(&cfg) {
                 opusdm_ipc::err_log!("panel", "cannot write menu.json: {e}");
             }

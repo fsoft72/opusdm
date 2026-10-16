@@ -33,7 +33,7 @@ pub fn flatten_menu(items: &[MenuItem]) -> Vec<String> {
 fn app_entries() -> Vec<Entry> {
     let ids = opusdm_ipc::menu::load_menu_config().map(|cfg| flatten_menu(&cfg.items)).unwrap_or_default();
     if !ids.is_empty() {
-        let infos = opusdm_dock::apps::resolve(&ids).into_iter().map(|e| e.info);
+        let infos = opusdm_apps::apps::resolve(&ids).into_iter().map(|e| e.info);
         return infos.filter_map(|info| app_entry(&info)).collect();
     }
     gio::AppInfo::all()

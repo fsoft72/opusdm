@@ -2,8 +2,9 @@
 //! last minute, sampled from `/proc/stat` and `/proc/net/dev` once a second.
 //! A click on either meter opens a borderless details popup below it.
 
-use crate::sysmon_model::{self as model, CpuTimes, IfaceBytes, IfaceRate, LoadAvg, ProcUsage};
+use crate::sysmon_model::{self as model, CpuTimes, IfaceBytes, IfaceRate, LoadAvg, ProcSample, ProcUsage};
 use gtk4 as gtk;
+use gtk::{gio, glib};
 use gtk::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -93,12 +94,65 @@ struct State {
     cores_prev: Vec<CpuTimes>,
     net_prev: (u64, u64),
     ifaces_prev: Vec<IfaceBytes>,
-    /// CPU ticks per pid at the previous sample; filled only while the CPU
-    /// details are open, since reading every process costs more.
-    procs_prev: HashMap<u32, u64>,
     cpu_trace: Rc<RefCell<Trace>>,
     rx_trace: Rc<RefCell<Trace>>,
     tx_trace: Rc<RefCell<Trace>>,
+}
+
+/// The busiest processes shown in the CPU details. Sampled only while the
+/// details are open, on a worker thread, since reading every process costs
+/// more than the rest of a tick.
+#[derive(Default)]
+struct ProcWatch {
+    /// The last sample, `None` until the first scan after opening.
+    prev: Option<ProcSample>,
+    /// The busiest processes between the last two samples.
+    top: Option<Vec<ProcUsage>>,
+    /// Whether a scan is running on a worker.
+    busy: bool,
+    /// Bumped by `reset`, so a scan started before it is dropped.
+    generation: u64,
+}
+
+impl ProcWatch {
+    /// Forget every sample (the details were opened or closed).
+    fn reset(&mut self) {
+        self.prev = None;
+        self.top = None;
+        self.generation += 1;
+    }
+
+    /// Fold in one finished scan started at `generation`. A scan older than
+    /// the last `reset` only clears `busy`.
+    fn fold(&mut self, generation: u64, now: ProcSample) {
+        self.busy = false;
+        if generation != self.generation { return; }
+        if let Some(prev) = &self.prev {
+            self.top = Some(top_between(prev, &now));
+        }
+        self.prev = Some(now);
+    }
+}
+
+/// Start a process scan on a worker thread, unless one is already running.
+fn scan_processes(watch: &Rc<RefCell<ProcWatch>>) {
+    let generation = {
+        let mut w = watch.borrow_mut();
+        if w.busy { return; }
+        w.busy = true;
+        w.generation
+    };
+    let watch = watch.clone();
+    glib::spawn_future_local(async move {
+        let sample = gio::spawn_blocking(model::read_proc_sample).await.unwrap_or_default();
+        watch.borrow_mut().fold(generation, sample);
+    });
+}
+
+/// The busiest processes between two samples, busiest first.
+fn top_between(prev: &ProcSample, now: &ProcSample) -> Vec<ProcUsage> {
+    let total_delta = now.cpu_total.saturating_sub(prev.cpu_total);
+    model::top_processes(&ticks_by_pid(&prev.procs), &now.procs, total_delta, TOP_PROCESSES)
 }
 
 /// Trace colours. CPU is one green line; network download ("in") is green,
@@ -357,32 +411,35 @@ pub fn build() -> gtk::Widget {
         cores_prev: model::parse_proc_stat_cores(&stat),
         net_prev: model::parse_net_dev(&net),
         ifaces_prev: model::parse_net_ifaces(&net),
-        procs_prev: HashMap::new(),
         cpu_trace,
         rx_trace,
         tx_trace,
     }));
 
-    // Opening the CPU details takes a first process sample, so the next tick
-    // can tell the busiest ones; closing drops it.
+    // Opening the CPU details starts a first process sample, so a later one
+    // can tell the busiest processes; closing drops them.
+    let procs = Rc::new(RefCell::new(ProcWatch::default()));
     {
-        let state = state.clone();
+        let procs = procs.clone();
         cpu_details.popover.connect_show(move |_| {
-            state.borrow_mut().procs_prev = ticks_by_pid(&model::read_processes());
+            procs.borrow_mut().reset();
+            scan_processes(&procs);
         });
     }
     {
-        let state = state.clone();
-        cpu_details.popover.connect_closed(move |_| state.borrow_mut().procs_prev.clear());
+        let procs = procs.clone();
+        cpu_details.popover.connect_closed(move |_| procs.borrow_mut().reset());
     }
 
-    gtk::glib::timeout_add_local(TICK, move || {
+    // The timer stops once the bar is destroyed (a monitor change or a
+    // screen resize rebuilds every bar), like the clock's.
+    glib::timeout_add_local(TICK, move || {
+        if cpu_label.root().is_none() { return glib::ControlFlow::Break; }
         let mut s = state.borrow_mut();
 
         let stat = read("/proc/stat");
         if let Some(now) = model::parse_proc_stat(&stat) {
             let pct = model::cpu_percent(s.cpu_prev, now);
-            let total_delta = now.total.saturating_sub(s.cpu_prev.total);
             s.cpu_prev = now;
             s.cpu_trace.borrow_mut().push(pct);
             cpu_label.set_text(&format!("{pct:.0}%"));
@@ -390,13 +447,10 @@ pub fn build() -> gtk::Widget {
 
             let cores = model::parse_proc_stat_cores(&stat);
             if cpu_details.popover.is_visible() {
-                let procs_now = model::read_processes();
-                let top = model::top_processes(&s.procs_prev, &procs_now, total_delta, TOP_PROCESSES);
-                let measured = !s.procs_prev.is_empty();
-                s.procs_prev = ticks_by_pid(&procs_now);
+                scan_processes(&procs);
                 let load = model::parse_loadavg(&read("/proc/loadavg"));
                 let per_core = model::cores_percent(&s.cores_prev, &cores);
-                cpu_details.update(pct, &per_core, load, measured.then_some(top.as_slice()));
+                cpu_details.update(pct, &per_core, load, procs.borrow().top.as_deref());
             }
             s.cores_prev = cores;
         }
@@ -420,7 +474,7 @@ pub fn build() -> gtk::Widget {
         }
         s.ifaces_prev = ifaces;
 
-        gtk::glib::ControlFlow::Continue
+        glib::ControlFlow::Continue
     });
 
     root.upcast()
@@ -465,6 +519,31 @@ mod tests {
     fn ticks_keep_the_pid() {
         let procs = HashMap::from([(7, ("x".to_string(), 42))]);
         assert_eq!(ticks_by_pid(&procs), HashMap::from([(7, 42)]));
+    }
+
+    #[test]
+    fn top_between_uses_the_cpu_total_of_both_samples() {
+        let prev = ProcSample { cpu_total: 1000, procs: HashMap::from([(1, ("a".to_string(), 10)), (2, ("b".to_string(), 50))]) };
+        let now = ProcSample { cpu_total: 1200, procs: HashMap::from([(1, ("a".to_string(), 110)), (2, ("b".to_string(), 70))]) };
+        let top = top_between(&prev, &now);
+        assert_eq!(top.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![1, 2]);
+        assert!((top[0].percent - 50.0).abs() < 1e-9);
+        assert!((top[1].percent - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_scan_from_before_a_reset_is_dropped() {
+        let sample = ProcSample { cpu_total: 10, procs: HashMap::from([(1, ("a".to_string(), 1))]) };
+        let mut w = ProcWatch { busy: true, ..ProcWatch::default() };
+        let stale = w.generation;
+        w.reset();
+        w.fold(stale, sample.clone());
+        assert!(!w.busy);
+        assert!(w.prev.is_none());
+        w.fold(w.generation, sample.clone());
+        assert!(w.prev.is_some() && w.top.is_none());
+        w.fold(w.generation, sample);
+        assert_eq!(w.top, Some(Vec::new()));
     }
 
     #[test]

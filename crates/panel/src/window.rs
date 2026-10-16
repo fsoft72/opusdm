@@ -9,7 +9,6 @@
 
 use gtk4 as gtk;
 use opusdm_ipc::PanelPosition;
-use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -125,17 +124,11 @@ fn apply(xid: u32, place: Placement) -> Result<(), opusdm_ui::X11Error> {
     let height = PANEL_HEIGHT.max(1) as u32;
     opusdm_ui::with_x11(|x11| {
         let conn = x11.conn();
-        let bottom_gap = x11.screen_height() - (place.mon_y + place.mon_h);
-        let dock_type = x11.atom("_NET_WM_WINDOW_TYPE_DOCK")?;
-        let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
-        let wm_state = x11.atom("_NET_WM_STATE")?;
-        let state_above = x11.atom("_NET_WM_STATE_ABOVE")?;
-        let state_sticky = x11.atom("_NET_WM_STATE_STICKY")?;
+        let bottom_gap = x11.screen_height()? - (place.mon_y + place.mon_h);
         let strut = x11.atom("_NET_WM_STRUT")?;
         let strut_partial = x11.atom("_NET_WM_STRUT_PARTIAL")?;
 
-        conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[dock_type])?;
-        conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_above, state_sticky])?;
+        x11.set_type_and_states(xid, "_NET_WM_WINDOW_TYPE_DOCK", &["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_STICKY"])?;
 
         // Keep the bar on every virtual desktop, not only the one it was
         // mapped on (property for adoption, client messages once mapped).
@@ -148,14 +141,7 @@ fn apply(xid: u32, place: Placement) -> Result<(), opusdm_ui::X11Error> {
         conn.change_property32(PropMode::REPLACE, xid, strut_partial, AtomEnum::CARDINAL, &partial)?;
 
         // Position is user-specified so openbox does not re-center us.
-        let mut hints = WmSizeHints::new();
-        hints.position = Some((WmSizeHintsSpecification::UserSpecified, mon_x, mon_y));
-        hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, height as i32));
-        hints.min_size = Some((width as i32, height as i32));
-        hints.max_size = Some((width as i32, height as i32));
-        hints.set_normal_hints(conn, xid)?.check()?;
-
-        x11.configure(xid, mon_x, mon_y, width, height)
+        x11.set_fixed_geometry(xid, mon_x, mon_y, width, height)
     })
 }
 

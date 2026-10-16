@@ -16,8 +16,7 @@ path = "src/main.rs"
 opusdm-ui = { path = "../ui" }
 opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
-x11rb.workspace = true
-freedesktop-desktop-entry.workspace = true
+opusdm-apps = { path = "../apps" }
 
 [dev-dependencies]
 tempfile.workspace = true

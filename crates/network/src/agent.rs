@@ -203,12 +203,12 @@ impl SecretAgent {
 /// `identifier`; NetworkManager must be running. The registration ends with
 /// the connection.
 pub fn register(conn: &Connection, src: SecretSources, identifier: &str) -> Result<(), NetError> {
-    let bus = zbus::blocking::fdo::DBusProxy::new(conn).map_err(|e| NetError::from_zbus(&e))?;
+    let bus = zbus::blocking::fdo::DBusProxy::new(conn)?;
     let name = zbus::names::BusName::try_from(SERVICE).map_err(|e| NetError::other(e.to_string()))?;
     let nm_owner = bus.get_name_owner(name).map_err(|e| NetError::other(e.to_string()))?.to_string();
-    conn.object_server().at(AGENT_PATH, SecretAgent { src, nm_owner }).map_err(|e| NetError::from_zbus(&e))?;
-    let manager = zbus::blocking::Proxy::new(conn, SERVICE, MANAGER_PATH, MANAGER_IFACE).map_err(|e| NetError::from_zbus(&e))?;
-    manager.call::<_, _, ()>("Register", &(identifier,)).map_err(|e| NetError::from_zbus(&e))
+    conn.object_server().at(AGENT_PATH, SecretAgent { src, nm_owner })?;
+    let manager = zbus::blocking::Proxy::new(conn, SERVICE, MANAGER_PATH, MANAGER_IFACE)?;
+    manager.call::<_, _, ()>("Register", &(identifier,)).map_err(NetError::from)
 }
 
 #[cfg(test)]

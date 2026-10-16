@@ -1,0 +1,14 @@
+[package]
+name = "opusdm-apps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opusdm_apps"
+path = "src/lib.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+gtk4.workspace = true
+freedesktop-desktop-entry.workspace = true

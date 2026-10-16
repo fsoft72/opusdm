@@ -5,7 +5,7 @@
 //! the matching `ClientMessage` (same throw-away style as the hub's
 //! `pin_geometry`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
@@ -14,6 +14,8 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 use x11rb::CURRENT_TIME;
+
+use opusdm_x11::{property_bytes, property_card, property_cards, property_string};
 
 /// ICCCM `IconicState`, the argument to `WM_CHANGE_STATE` that asks the window
 /// manager to minimise a window.
@@ -152,6 +154,58 @@ pub fn pick_icon(words: &[u32], target: i32) -> Option<IconRgba> {
 }
 
 // --------------------------------------------------------------------------
+// Client cache
+// --------------------------------------------------------------------------
+
+/// What the observer knows about the managed windows, so a property change
+/// on one window re-reads only that window and icons are read once.
+#[derive(Default)]
+struct ClientCache {
+    /// Window ids in `_NET_CLIENT_LIST` order.
+    order: Vec<Window>,
+    /// The last read of each listed window; `None` for one the panel never
+    /// shows (a dock, the desktop, a skip-taskbar window).
+    clients: HashMap<Window, Option<ClientWin>>,
+    /// The `_NET_WM_ICON` of each listed window, read once per window and
+    /// again only when the property changes.
+    icons: HashMap<Window, Option<IconRgba>>,
+}
+
+impl ClientCache {
+    /// Adopt a new client list: forget the windows that left it and return
+    /// the ids that were not read yet, in list order.
+    fn set_order(&mut self, ids: Vec<Window>) -> Vec<Window> {
+        let listed: HashSet<Window> = ids.iter().copied().collect();
+        self.clients.retain(|xid, _| listed.contains(xid));
+        self.icons.retain(|xid, _| listed.contains(xid));
+        let new = ids.iter().copied().filter(|xid| !self.clients.contains_key(xid)).collect();
+        self.order = ids;
+        new
+    }
+
+    /// Whether `xid` is in the current client list.
+    fn contains(&self, xid: Window) -> bool {
+        self.order.contains(&xid)
+    }
+
+    /// Record the last read of `xid`.
+    fn store(&mut self, xid: Window, client: Option<ClientWin>) {
+        self.clients.insert(xid, client);
+    }
+
+    /// Record a new geometry of `xid`, so a later snapshot does not send an
+    /// old one.
+    fn set_rect(&mut self, xid: Window, rect: WinRect) {
+        if let Some(Some(c)) = self.clients.get_mut(&xid) { c.rect = rect; }
+    }
+
+    /// Every shown window, in client list order.
+    fn snapshot(&self) -> Vec<ClientWin> {
+        self.order.iter().filter_map(|xid| self.clients.get(xid).cloned().flatten()).collect()
+    }
+}
+
+// --------------------------------------------------------------------------
 // Observer thread
 // --------------------------------------------------------------------------
 
@@ -186,8 +240,9 @@ fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::err
     conn.flush()?;
 
     let mut watched: HashSet<Window> = HashSet::new();
+    let mut cache = ClientCache::default();
     emit_desktops(&conn, root, &atoms, tx);
-    emit_clients(&conn, root, &atoms, &mut watched, tx);
+    emit_clients(&conn, root, &atoms, &mut watched, &mut cache, tx);
     emit_active(&conn, root, &atoms, tx);
 
     let mut pending: Option<Event> = None;
@@ -207,13 +262,13 @@ fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::err
                     break;
                 }
             }
-            emit_geometries(&conn, root, &atoms, &watched, tx);
+            emit_geometries(&conn, root, &watched, &mut cache, tx);
             continue;
         }
         let Event::PropertyNotify(e) = event else { continue };
         if e.window == root {
             if e.atom == atoms._NET_CURRENT_DESKTOP {
-                if let Some(n) = get_card(&conn, root, atoms._NET_CURRENT_DESKTOP) {
+                if let Some(n) = property_card(&conn, root, atoms._NET_CURRENT_DESKTOP) {
                     let _ = tx.send_blocking(EwmhEvent::CurrentDesktop(n));
                 }
             } else if e.atom == atoms._NET_NUMBER_OF_DESKTOPS
@@ -221,7 +276,7 @@ fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::err
             {
                 emit_desktops(&conn, root, &atoms, tx);
             } else if e.atom == atoms._NET_CLIENT_LIST {
-                emit_clients(&conn, root, &atoms, &mut watched, tx);
+                emit_clients(&conn, root, &atoms, &mut watched, &mut cache, tx);
             } else if e.atom == atoms._NET_ACTIVE_WINDOW {
                 emit_active(&conn, root, &atoms, tx);
             }
@@ -229,8 +284,9 @@ fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::err
             || e.atom == u32::from(AtomEnum::WM_NAME)
             || e.atom == atoms._NET_WM_STATE
             || e.atom == atoms._NET_WM_DESKTOP
+            || e.atom == atoms._NET_WM_ICON
         {
-            emit_clients(&conn, root, &atoms, &mut watched, tx);
+            emit_client(&conn, root, &atoms, &mut cache, e.window, e.atom == atoms._NET_WM_ICON, tx);
         }
     }
 }
@@ -241,28 +297,33 @@ fn emit_desktops(
     atoms: &Atoms,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let count = get_card(conn, root, atoms._NET_NUMBER_OF_DESKTOPS).unwrap_or(1);
-    let current = get_card(conn, root, atoms._NET_CURRENT_DESKTOP).unwrap_or(0);
-    let names = get_bytes(conn, root, atoms._NET_DESKTOP_NAMES)
+    let count = property_card(conn, root, atoms._NET_NUMBER_OF_DESKTOPS).unwrap_or(1);
+    let current = property_card(conn, root, atoms._NET_CURRENT_DESKTOP).unwrap_or(0);
+    let names = property_bytes(conn, root, atoms._NET_DESKTOP_NAMES)
         .map(|b| parse_desktop_names(&b))
         .unwrap_or_default();
     let _ = tx.send_blocking(EwmhEvent::Desktops { count, current, names });
 }
 
-/// Send the current rectangle of every watched, still existing client.
+/// Send the current rectangle of every watched, still existing client, and
+/// keep it in `cache`.
 fn emit_geometries(
     conn: &RustConnection,
     root: Window,
-    atoms: &Atoms,
     watched: &HashSet<Window>,
+    cache: &mut ClientCache,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let Some(raw) = get_bytes(conn, root, atoms._NET_CLIENT_LIST) else { return };
-    let rects: Vec<(u32, WinRect)> = parse_window_list(&raw)
-        .into_iter()
+    let rects: Vec<(u32, WinRect)> = cache
+        .order
+        .iter()
+        .copied()
         .filter(|xid| watched.contains(xid))
         .filter_map(|xid| read_rect(conn, root, xid).map(|r| (xid, r)))
         .collect();
+    for (xid, rect) in &rects {
+        cache.set_rect(*xid, *rect);
+    }
     let _ = tx.send_blocking(EwmhEvent::Geometries(rects));
 }
 
@@ -284,42 +345,72 @@ fn emit_active(
     atoms: &Atoms,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let active = get_card(conn, root, atoms._NET_ACTIVE_WINDOW).filter(|w| *w != 0);
+    let active = property_card(conn, root, atoms._NET_ACTIVE_WINDOW).filter(|w| *w != 0);
     let _ = tx.send_blocking(EwmhEvent::ActiveWindow(active));
 }
 
+/// Re-read `_NET_CLIENT_LIST`, read only the windows that joined it, and
+/// send the full client snapshot. Windows that left the list stop being
+/// watched.
 fn emit_clients(
     conn: &RustConnection,
     root: Window,
     atoms: &Atoms,
     watched: &mut HashSet<Window>,
+    cache: &mut ClientCache,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let Some(raw) = get_bytes(conn, root, atoms._NET_CLIENT_LIST) else {
+    let Some(raw) = property_bytes(conn, root, atoms._NET_CLIENT_LIST) else {
         return;
     };
     let ids = parse_window_list(&raw);
-    let mut clients = Vec::with_capacity(ids.len());
-    for xid in ids {
+    watched.retain(|xid| ids.contains(xid));
+    for xid in cache.set_order(ids) {
+        // Select the events before reading, so no change slips in between.
         if watched.insert(xid) {
             let _ = conn.change_window_attributes(
                 xid,
                 &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
             );
         }
-        if let Some(c) = read_client(conn, root, xid, atoms) {
-            clients.push(c);
-        }
+        let client = read_client(conn, root, xid, atoms, &mut cache.icons);
+        cache.store(xid, client);
     }
-    let _ = tx.send_blocking(EwmhEvent::Clients(clients));
+    let _ = tx.send_blocking(EwmhEvent::Clients(cache.snapshot()));
+}
+
+/// Re-read the one listed window `xid` after a property change (its icon
+/// too when `icon_changed`) and send the full client snapshot. A window not
+/// in the client list is ignored.
+fn emit_client(
+    conn: &RustConnection,
+    root: Window,
+    atoms: &Atoms,
+    cache: &mut ClientCache,
+    xid: Window,
+    icon_changed: bool,
+    tx: &async_channel::Sender<EwmhEvent>,
+) {
+    if !cache.contains(xid) { return; }
+    if icon_changed { cache.icons.remove(&xid); }
+    let client = read_client(conn, root, xid, atoms, &mut cache.icons);
+    cache.store(xid, client);
+    let _ = tx.send_blocking(EwmhEvent::Clients(cache.snapshot()));
 }
 
 /// Read the panel-relevant properties of one client window. Returns `None`
 /// for windows we never show (docks, the desktop, windows that ask to be
-/// left out of the taskbar) or that vanished.
-fn read_client(conn: &RustConnection, root: Window, xid: Window, atoms: &Atoms) -> Option<ClientWin> {
+/// left out of the taskbar) or that vanished. The icon comes from `icons`
+/// when it was read before, and is stored there otherwise.
+fn read_client(
+    conn: &RustConnection,
+    root: Window,
+    xid: Window,
+    atoms: &Atoms,
+    icons: &mut HashMap<Window, Option<IconRgba>>,
+) -> Option<ClientWin> {
     // Skip docks and the desktop.
-    if let Some(types) = get_atoms(conn, xid, atoms._NET_WM_WINDOW_TYPE) {
+    if let Some(types) = property_cards(conn, xid, atoms._NET_WM_WINDOW_TYPE) {
         if types.contains(&atoms._NET_WM_WINDOW_TYPE_DOCK)
             || types.contains(&atoms._NET_WM_WINDOW_TYPE_DESKTOP)
         {
@@ -327,75 +418,33 @@ fn read_client(conn: &RustConnection, root: Window, xid: Window, atoms: &Atoms) 
         }
     }
 
-    let title = get_string(conn, xid, atoms._NET_WM_NAME)
+    let title = property_string(conn, xid, atoms._NET_WM_NAME)
         .filter(|s| !s.is_empty())
-        .or_else(|| get_string(conn, xid, AtomEnum::WM_NAME.into()))
+        .or_else(|| property_string(conn, xid, AtomEnum::WM_NAME.into()))
         .unwrap_or_default();
 
-    let desktop = match get_card(conn, xid, atoms._NET_WM_DESKTOP) {
+    let desktop = match property_card(conn, xid, atoms._NET_WM_DESKTOP) {
         Some(ALL_DESKTOPS) => -1,
         Some(n) => n as i64,
         None => -1,
     };
 
-    let states = get_atoms(conn, xid, atoms._NET_WM_STATE).unwrap_or_default();
+    let states = property_cards(conn, xid, atoms._NET_WM_STATE).unwrap_or_default();
     if states.contains(&atoms._NET_WM_STATE_SKIP_TASKBAR) {
         return None;
     }
     let minimized = states.contains(&atoms._NET_WM_STATE_HIDDEN);
 
-    let icon = get_card_array(conn, xid, atoms._NET_WM_ICON)
-        .and_then(|words| pick_icon(&words, 24));
+    let icon = icons
+        .entry(xid)
+        .or_insert_with(|| property_cards(conn, xid, atoms._NET_WM_ICON).and_then(|words| pick_icon(&words, 24)))
+        .clone();
 
-    let pid = get_card(conn, xid, atoms._NET_WM_PID).filter(|p| *p != 0);
+    let pid = property_card(conn, xid, atoms._NET_WM_PID).filter(|p| *p != 0);
 
     let rect = read_rect(conn, root, xid).unwrap_or_default();
 
     Some(ClientWin { xid, title, desktop, minimized, pid, icon, app_id: None, rect })
-}
-
-// --------------------------------------------------------------------------
-// Property helpers
-// --------------------------------------------------------------------------
-
-fn get_bytes(conn: &RustConnection, win: Window, prop: u32) -> Option<Vec<u8>> {
-    let r = conn
-        .get_property(false, win, prop, AtomEnum::ANY, 0, u32::MAX)
-        .ok()?
-        .reply()
-        .ok()?;
-    if r.value.is_empty() {
-        None
-    } else {
-        Some(r.value)
-    }
-}
-
-fn get_card(conn: &RustConnection, win: Window, prop: u32) -> Option<u32> {
-    let r = conn
-        .get_property(false, win, prop, AtomEnum::ANY, 0, 1)
-        .ok()?
-        .reply()
-        .ok()?;
-    r.value32().and_then(|mut it| it.next())
-}
-
-fn get_card_array(conn: &RustConnection, win: Window, prop: u32) -> Option<Vec<u32>> {
-    let r = conn
-        .get_property(false, win, prop, AtomEnum::ANY, 0, u32::MAX)
-        .ok()?
-        .reply()
-        .ok()?;
-    r.value32().map(|it| it.collect())
-}
-
-fn get_atoms(conn: &RustConnection, win: Window, prop: u32) -> Option<Vec<u32>> {
-    get_card_array(conn, win, prop)
-}
-
-fn get_string(conn: &RustConnection, win: Window, prop: u32) -> Option<String> {
-    let bytes = get_bytes(conn, win, prop)?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 // --------------------------------------------------------------------------
@@ -498,6 +547,46 @@ mod tests {
         assert_eq!((icon.width, icon.height), (2, 1));
         // First pixel unpacked from 0xFF0000FF -> R0 G0 B255 A255.
         assert_eq!(&icon.rgba[0..4], &[0, 0, 255, 255]);
+    }
+
+    fn win(xid: u32, title: &str) -> ClientWin {
+        ClientWin { xid, title: title.into(), desktop: 0, minimized: false, pid: None, icon: None, app_id: None, rect: WinRect::default() }
+    }
+
+    #[test]
+    fn client_cache_returns_only_new_ids_and_forgets_removed_ones() {
+        let mut cache = ClientCache::default();
+        assert_eq!(cache.set_order(vec![1, 2]), vec![1, 2]);
+        cache.store(1, Some(win(1, "a")));
+        cache.store(2, Some(win(2, "b")));
+        cache.icons.insert(2, None);
+        assert_eq!(cache.set_order(vec![2, 3]), vec![3]);
+        assert!(!cache.contains(1));
+        assert!(cache.contains(2) && cache.contains(3));
+        assert!(!cache.icons.contains_key(&1) && cache.icons.contains_key(&2));
+    }
+
+    #[test]
+    fn client_cache_snapshot_follows_the_list_order_and_skips_hidden() {
+        let mut cache = ClientCache::default();
+        cache.set_order(vec![3, 1, 2]);
+        cache.store(1, Some(win(1, "a")));
+        cache.store(2, None);
+        cache.store(3, Some(win(3, "c")));
+        let xids: Vec<u32> = cache.snapshot().iter().map(|c| c.xid).collect();
+        assert_eq!(xids, vec![3, 1]);
+        cache.store(1, Some(win(1, "renamed")));
+        assert_eq!(cache.snapshot()[1].title, "renamed");
+    }
+
+    #[test]
+    fn client_cache_keeps_geometry_updates() {
+        let mut cache = ClientCache::default();
+        cache.set_order(vec![1]);
+        cache.store(1, Some(win(1, "a")));
+        let rect = WinRect { x: 5, y: 6, w: 7, h: 8 };
+        cache.set_rect(1, rect);
+        assert_eq!(cache.snapshot()[0].rect, rect);
     }
 
     #[test]

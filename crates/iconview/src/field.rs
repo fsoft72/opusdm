@@ -23,10 +23,18 @@ use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
-/// A list of listener closures with signature `F`.
-type Listeners<F> = RefCell<Vec<Box<F>>>;
+/// A list of listener closures with signature `F`. Shared (`Rc`) so an
+/// emitter can copy the list and call it without holding the borrow: a
+/// listener may then register another listener without a panic.
+type Listeners<F> = RefCell<Vec<Rc<F>>>;
+
+/// The listeners in `list` right now, copied so none of them runs while the
+/// list is borrowed.
+pub(super) fn listeners<F: ?Sized>(list: &Listeners<F>) -> Vec<Rc<F>> {
+    list.borrow().clone()
+}
 
 /// Pinned icons that were moved: each path with its new position.
 type PinnedMoves = Vec<(PathBuf, (f64, f64))>;
@@ -107,7 +115,24 @@ pub struct IconField {
     pub(super) inner: Rc<Inner>,
 }
 
+/// A weak handle to an `IconField`, held by the closures on widgets the
+/// field owns so they do not keep it (and its thumbnail workers) alive.
+#[derive(Clone)]
+pub(super) struct WeakIconField(Weak<Inner>);
+
+impl WeakIconField {
+    /// The field, while some strong handle still holds it.
+    pub(super) fn upgrade(&self) -> Option<IconField> {
+        self.0.upgrade().map(|inner| IconField { inner })
+    }
+}
+
 impl IconField {
+    /// A weak handle to this field, for signal handlers.
+    pub(super) fn downgrade(&self) -> WeakIconField {
+        WeakIconField(Rc::downgrade(&self.inner))
+    }
+
     /// A new field in grid mode, 64px icons.
     pub fn new() -> IconField {
         let fixed = gtk::Fixed::new();
@@ -163,25 +188,34 @@ impl IconField {
         let field = IconField { inner };
         crate::style::install();
 
-        // Drain finished thumbnails on the main loop.
+        // Drain finished thumbnails on the main loop. The loop ends when the
+        // field is gone: dropping it drops the pool, whose workers then close
+        // the channel.
         if let Some(rx) = thumb_rx {
-            let this = field.clone();
+            let weak = field.downgrade();
             gtk::glib::spawn_future_local(async move {
                 while let Ok(res) = rx.recv().await {
+                    let Some(this) = weak.upgrade() else { break };
                     this.apply_thumb_result(res);
                 }
             });
         }
 
         // Re-flow when the visible width changes or the field is first shown.
-        let this = field.clone();
-        field.inner.layout.scroller.hadjustment().connect_page_size_notify(move |_| this.relayout());
-        let this = field.clone();
-        field.inner.layout.fixed.connect_map(move |_| this.relayout());
+        let weak = field.downgrade();
+        field.inner.layout.scroller.hadjustment().connect_page_size_notify(move |_| {
+            if let Some(this) = weak.upgrade() { this.relayout(); }
+        });
+        let weak = field.downgrade();
+        field.inner.layout.fixed.connect_map(move |_| {
+            if let Some(this) = weak.upgrade() { this.relayout(); }
+        });
         // Scrolling doesn't move anything, just changes which items need a
         // live widget once virtualized - a cheap resync, not a full relayout.
-        let this = field.clone();
-        field.inner.layout.scroller.vadjustment().connect_value_changed(move |_| this.sync_realized());
+        let weak = field.downgrade();
+        field.inner.layout.scroller.vadjustment().connect_value_changed(move |_| {
+            if let Some(this) = weak.upgrade() { this.sync_realized(); }
+        });
 
         // Install interaction controllers (click, drag, key, dnd, context menu, scroll, reposition).
         controllers::install_controllers(&field);
@@ -463,44 +497,44 @@ impl IconField {
 
     /// Register a selection-changed listener.
     pub fn connect_selection_changed(&self, f: impl Fn() + 'static) {
-        self.inner.events.on_selection_changed.borrow_mut().push(Box::new(f));
+        self.inner.events.on_selection_changed.borrow_mut().push(Rc::new(f));
     }
 
     /// Register an activate (open) listener.
     pub fn connect_activate(&self, f: impl Fn(usize) + 'static) {
-        self.inner.events.on_activate.borrow_mut().push(Box::new(f));
+        self.inner.events.on_activate.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a listener for a double-click on empty space (no item under
     /// the pointer) - e.g. to open a new window rooted at this field's
     /// directory.
     pub fn connect_background_activate(&self, f: impl Fn() + 'static) {
-        self.inner.events.on_background_activate.borrow_mut().push(Box::new(f));
+        self.inner.events.on_background_activate.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a drop listener: (dropped paths, target index or `-1`, shift held).
     pub fn connect_drop_uris(&self, f: impl Fn(Vec<PathBuf>, i32, bool) + 'static) {
-        self.inner.events.on_drop_uris.borrow_mut().push(Box::new(f));
+        self.inner.events.on_drop_uris.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a context-menu listener: (index or `-1`, x, y).
     pub fn connect_context_menu(&self, f: impl Fn(i32, f64, f64) + 'static) {
-        self.inner.events.on_context_menu.borrow_mut().push(Box::new(f));
+        self.inner.events.on_context_menu.borrow_mut().push(Rc::new(f));
     }
 
     /// Register an inline-rename listener: (index, new name).
     pub fn connect_rename_requested(&self, f: impl Fn(usize, String) + 'static) {
-        self.inner.events.on_rename_requested.borrow_mut().push(Box::new(f));
+        self.inner.events.on_rename_requested.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a zoom listener: signed step from Ctrl+scroll.
     pub fn connect_zoom_requested(&self, f: impl Fn(i32) + 'static) {
-        self.inner.events.on_zoom_requested.borrow_mut().push(Box::new(f));
+        self.inner.events.on_zoom_requested.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a listener fired after icons are repositioned in Free mode.
     pub fn connect_move_icons(&self, f: impl Fn() + 'static) {
-        self.inner.events.on_move_icons.borrow_mut().push(Box::new(f));
+        self.inner.events.on_move_icons.borrow_mut().push(Rc::new(f));
     }
 
     /// Replace the pinned positions (by path). They apply to the entries
@@ -513,7 +547,7 @@ impl IconField {
     /// position of every moved entry whose `left_out` or `group` flag is set. Not fired
     /// when no such entry moved.
     pub fn connect_pinned_moved(&self, f: impl Fn(PinnedMoves) + 'static) {
-        self.inner.events.on_pinned_moved.borrow_mut().push(Box::new(f));
+        self.inner.events.on_pinned_moved.borrow_mut().push(Rc::new(f));
     }
 
     /// Copy the pinned positions onto the entries that currently have one.
@@ -552,7 +586,7 @@ impl IconField {
         if paths.is_empty() {
             return;
         }
-        for cb in self.inner.events.on_drop_uris.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_drop_uris) {
             cb(paths.clone(), target, shift);
         }
     }
@@ -642,11 +676,11 @@ impl IconField {
             }
         }
         self.relayout();
-        for cb in self.inner.events.on_move_icons.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_move_icons) {
             cb();
         }
         if !moved.is_empty() {
-            for cb in self.inner.events.on_pinned_moved.borrow().iter() {
+            for cb in listeners(&self.inner.events.on_pinned_moved) {
                 cb(moved.clone());
             }
         }
@@ -659,19 +693,19 @@ impl IconField {
 
     pub(super) fn emit_selection_changed(&self) {
         self.sync_selection_classes();
-        for cb in self.inner.events.on_selection_changed.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_selection_changed) {
             cb();
         }
     }
 
     pub(super) fn emit_activate(&self, i: usize) {
-        for cb in self.inner.events.on_activate.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_activate) {
             cb(i);
         }
     }
 
     pub(super) fn emit_background_activate(&self) {
-        for cb in self.inner.events.on_background_activate.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_background_activate) {
             cb();
         }
     }
@@ -873,6 +907,8 @@ mod tests {
             ("field_reload_cancels_drag", field_reload_cancels_drag),
             ("field_group_entry", field_group_entry),
             ("field_virtualization", field_virtualization),
+            ("field_closures_hold_no_strong_refs", field_closures_hold_no_strong_refs),
+            ("field_listeners_may_register_listeners", field_listeners_may_register_listeners),
         ];
         let failed: Vec<&str> =
             scenarios.iter().filter(|(_, run)| std::panic::catch_unwind(*run).is_err()).map(|(name, _)| *name).collect();
@@ -1309,6 +1345,50 @@ mod tests {
         fg.update_reposition(40.0, 20.0);
         fg.end_reposition(40.0, 20.0);
         assert_eq!(*group_log.borrow(), vec![(PathBuf::from("group:tools"), (340.0, 220.0))]);
+    }
+
+    /// The signal handlers and the thumbnail drain loop hold the field and
+    /// its items weakly, so dropping the last handle frees them.
+    fn field_closures_hold_no_strong_refs() {
+        let item = IconItem::new(&entries(1)[0], 64, &no_icons());
+        assert_eq!(item.strong_count(), 1, "an item's own handlers must not keep it alive");
+        let f = IconField::new();
+        f.set_entries(&entries(3));
+        f.inner.layout.scroller.set_size_request(400, 400);
+        f.relayout();
+        assert!(!f.inner.layout.realized.borrow().is_empty());
+        assert_eq!(Rc::strong_count(&f.inner), 1, "the field's handlers must not keep it alive");
+        let weak = Rc::downgrade(&f.inner);
+        drop(f);
+        assert!(weak.upgrade().is_none());
+    }
+
+    /// A listener may register more listeners while it runs: the list is
+    /// not borrowed during the call.
+    fn field_listeners_may_register_listeners() {
+        let f = IconField::new();
+        f.set_entries(&entries(2));
+        let hits = Rc::new(Cell::new(0));
+        let (inner_f, h) = (f.clone(), hits.clone());
+        f.connect_selection_changed(move || {
+            let h = h.clone();
+            inner_f.connect_selection_changed(move || h.set(h.get() + 1));
+        });
+        f.select_exclusive(0);
+        f.select_exclusive(1);
+        assert_eq!(hits.get(), 1, "the listener added by the first call runs on the second");
+
+        let item = IconItem::new(&entries(1)[0], 64, &no_icons());
+        let (again, h) = (item.clone(), hits.clone());
+        item.connect_edit_committed(move |_| {
+            let h = h.clone();
+            again.connect_edit_committed(move |_| h.set(h.get() + 10));
+        });
+        item.start_edit();
+        item.finish_edit(Some("one.txt".to_string()));
+        item.start_edit();
+        item.finish_edit(Some("two.txt".to_string()));
+        assert_eq!(hits.get(), 11);
     }
 
     /// Only the visible items of a big field have widgets.

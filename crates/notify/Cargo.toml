@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 opusdm-ui = { path = "../ui" }
+opusdm-apps = { path = "../apps" }
+opusdm-x11 = { path = "../x11" }
 opusdm-ipc = { path = "../ipc" }
 opusdm-snap = { path = "../snap" }
 gtk4.workspace = true
