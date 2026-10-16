@@ -47,6 +47,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 ///
 /// With `overwrite` the data goes to a temp file that replaces the destination
 /// only when the copy succeeds; an existing destination survives any failure.
+/// The temp file is flushed to disk before the rename, so a crash never
+/// leaves an empty file in place of the old one.
 ///
 /// Calls `on_bytes` with the size of each chunk written. On cancel it removes
 /// the partial output and returns `ErrorKind::Interrupted`.
@@ -54,6 +56,20 @@ pub fn copy_file(
     src: &Path,
     dst: &Path,
     overwrite: bool,
+    cancel: &CancelToken,
+    on_bytes: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    copy_file_synced(src, dst, overwrite, overwrite, cancel, on_bytes)
+}
+
+/// [`copy_file`] that also calls `fsync` on the written data before the file
+/// is renamed into place or reported as done when `sync` is set. A Move sets
+/// it, because the source is deleted right after the copy.
+fn copy_file_synced(
+    src: &Path,
+    dst: &Path,
+    overwrite: bool,
+    sync: bool,
     cancel: &CancelToken,
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
@@ -85,6 +101,9 @@ pub fn copy_file(
         std::fs::set_permissions(&out, meta.permissions())?;
         let mtime = filetime::FileTime::from_last_modification_time(&meta);
         filetime::set_file_mtime(&out, mtime)?;
+        if sync {
+            writer.sync_all()?;
+        }
         if overwrite {
             std::fs::rename(&out, dst)?;
         }
@@ -252,16 +271,21 @@ struct CopyShared {
     /// Source paths copied so far; `Some` only for a Move, which deletes
     /// exactly those when some sources were skipped.
     copied_srcs: Option<Mutex<Vec<PathBuf>>>,
+    /// Flush every copied file to disk before counting it as done. Set for a
+    /// Move, whose sources are deleted afterwards.
+    sync_files: bool,
 }
 
 impl CopyShared {
+    /// Shared state for one job. `is_move` tracks the copied sources and
+    /// makes every copied file durable before the sources are deleted.
     fn new(
         tx: Sender<Progress>,
         cancel: CancelToken,
         total_files: u64,
         total_bytes: u64,
         opts: &TransferOpts,
-        track_copied: bool,
+        is_move: bool,
     ) -> Self {
         Self {
             tx,
@@ -282,7 +306,8 @@ impl CopyShared {
             conflict_lock: Mutex::new(()),
             update: opts.update,
             newer: opts.newer,
-            copied_srcs: track_copied.then(|| Mutex::new(Vec::new())),
+            copied_srcs: is_move.then(|| Mutex::new(Vec::new())),
+            sync_files: is_move,
         }
     }
 
@@ -417,7 +442,8 @@ fn copy_file_counted(shared: &CopyShared, task: &CopyTask, overwrite: bool) -> i
         let done = file_done.fetch_add(n, Ordering::Relaxed) + n;
         shared.add_bytes(&task.abs, n, done, file_total);
     };
-    copy_file(&task.abs, &task.dst, overwrite, &shared.cancel, &mut on_bytes)?;
+    let sync = overwrite || shared.sync_files;
+    copy_file_synced(&task.abs, &task.dst, overwrite, sync, &shared.cancel, &mut on_bytes)?;
     shared.copied.fetch_add(1, Ordering::Relaxed);
     shared.record_copied(&task.abs);
     shared.emit(&task.abs, false);
@@ -627,6 +653,11 @@ fn copy_tree_workers(
     let mut errors = shared.take_errors();
 
     if delete_src_after && errors.is_empty() && !cancelled {
+        // The new directory entries must reach the disk before the only
+        // other copy of the data is deleted.
+        errors.extend(sync_dest_dirs(&plan, dest_dir));
+    }
+    if delete_src_after && errors.is_empty() && !cancelled {
         let partial_move = opts.is_partial() || shared.skipped.load(Ordering::SeqCst) > 0;
         if partial_move {
             errors.extend(remove_copied(&plan, &shared.take_copied()));
@@ -645,6 +676,23 @@ fn copy_tree_workers(
         cancelled,
         errors,
     }
+}
+
+/// Call `fsync` on `dest_dir` and on every planned directory below it, so the
+/// entries of the copied files are on disk. Returns one error per directory
+/// that could not be synced.
+fn sync_dest_dirs(plan: &Plan, dest_dir: &Path) -> Vec<(PathBuf, String)> {
+    let planned = plan.items.iter().filter_map(|item| match item {
+        Item::Dir { rel, .. } => Some(dest_dir.join(rel)),
+        _ => None,
+    });
+    let mut errors = Vec::new();
+    for dir in std::iter::once(dest_dir.to_path_buf()).chain(planned) {
+        if let Err(e) = std::fs::File::open(&dir).and_then(|f| f.sync_all()) {
+            errors.push((dir, format!("cannot flush folder to disk: {e}")));
+        }
+    }
+    errors
 }
 
 /// Delete the source files in `copied`, then the planned source directories
@@ -892,6 +940,33 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         assert!(!src.exists());
         assert_eq!(fs::read(dst.join("s/sub/f.txt")).unwrap(), b"x");
+    }
+
+    /// Syncing the destination folders succeeds when they all exist.
+    #[test]
+    fn sync_dest_dirs_flushes_every_planned_folder() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(dst.join("s/sub")).unwrap();
+        let plan = crate::scan::scan(std::slice::from_ref(&src)).unwrap();
+        assert!(sync_dest_dirs(&plan, &dst).is_empty());
+    }
+
+    /// A folder that cannot be synced is reported, which stops a Move from
+    /// deleting its sources.
+    #[test]
+    fn sync_dest_dirs_reports_a_missing_folder() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(dst.join("s")).unwrap();
+        let plan = crate::scan::scan(std::slice::from_ref(&src)).unwrap();
+        let errors = sync_dest_dirs(&plan, &dst);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, dst.join("s/sub"));
     }
 
     /// A source symlink whose name exists at the destination asks first;
