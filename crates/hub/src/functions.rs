@@ -704,10 +704,9 @@ fn run_run(
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("started {} (pid {})", argv[0], child.id()) }));
 
     if !window {
-        // Nobody waits: a thread reaps it so it never lingers as a zombie.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
+        // Nobody waits: the hub's SIGCHLD reaper collects it, so it never
+        // lingers as a zombie. Dropping `child` does not wait for it.
+        drop(child);
         let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
         return Ok(());
     }
@@ -732,7 +731,9 @@ fn run_run(
             for r in readers {
                 let _ = r.join();
             }
-            let code = child.wait().ok().and_then(|s| s.code());
+            // The SIGCHLD reaper may collect the child first: `reaped::wait`
+            // then recovers the status it recorded.
+            let code = opusdm_ipc::reaped::wait(&mut child).ok().and_then(|s| s.code());
             let _ = tx.send((run_id, FnEvent::Window { step_idx, title, msg: WindowMsg::Closed(code) }));
             code
         }

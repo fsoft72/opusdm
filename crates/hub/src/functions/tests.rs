@@ -696,6 +696,37 @@ fn run_with_window_and_wait_blocks_and_checks_the_exit() {
 }
 
 #[test]
+fn run_with_window_and_wait_keeps_the_status_the_sigchld_reaper_took() {
+    // The program exits at once, but a background child keeps its output
+    // pipes open, so the step waits on them while the "reaper" (this test,
+    // standing in for the hub's `waitpid(-1)`) collects the exit status.
+    let td = tempfile::tempdir().unwrap();
+    let src = ctx(&[], td.path().to_str().unwrap());
+    let steps = run_args("sh -c '(sleep 0.5) & exit 0'", &["window", "wait"]);
+    let (tx, rx) = channel();
+    let events = std::thread::scope(|scope| {
+        let src = &src;
+        let steps = &steps;
+        scope.spawn(move || run_steps(1, steps, src, None, &tx));
+        let mut events = Vec::new();
+        for (_, ev) in rx {
+            if let FnEvent::Output { line, .. } = &ev {
+                if let Some(pid) = line.strip_suffix(')').and_then(|l| l.rsplit_once("(pid ")).map(|(_, p)| p.parse::<i32>().unwrap()) {
+                    let mut raw: libc::c_int = 0;
+                    // SAFETY: waits for a child of this process; `raw` is a valid out-pointer.
+                    assert_eq!(unsafe { libc::waitpid(pid, &mut raw, 0) }, pid);
+                    opusdm_ipc::reaped::record(pid as u32, raw);
+                }
+            }
+            events.push(ev);
+        }
+        events
+    });
+    assert!(events.iter().any(|e| matches!(e, FnEvent::Window { msg: WindowMsg::Closed(Some(0)), .. })));
+    assert!(matches!(events.last(), Some(FnEvent::AllDone)), "the step succeeded");
+}
+
+#[test]
 fn run_expands_codes_and_rejects_empty_or_unknown_programs() {
     let td = tempfile::tempdir().unwrap();
     let src = ctx(&["/tmp/some file.txt"], td.path().to_str().unwrap());
