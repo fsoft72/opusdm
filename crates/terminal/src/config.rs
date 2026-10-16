@@ -114,11 +114,14 @@ pub fn load() -> TerminalConfig {
     load_from(&config_path())
 }
 
-/// Save the config, logging a failure (a lost option is not worth a crash).
-pub fn save(config: &TerminalConfig) {
-    if let Err(e) = save_to(&config_path(), config) {
-        opusdm_ipc::err_log!("opusdm-terminal", "cannot save the options: {e}");
+/// Save the config. A failure is logged and returned as a message that
+/// names the file, for the user to read.
+pub fn save(config: &TerminalConfig) -> Result<(), String> {
+    let result = save_to(&config_path(), config);
+    if let Err(e) = &result {
+        opusdm_ipc::err_log!("opusdm-terminal", "{e}");
     }
+    result
 }
 
 /// Load the config from `path`.
@@ -126,9 +129,9 @@ fn load_from(path: &Path) -> TerminalConfig {
     load_json::<TerminalConfig>(path, "opusdm-terminal", "terminal options").sanitized()
 }
 
-/// Save the config to `path`.
-fn save_to(path: &Path, config: &TerminalConfig) -> std::io::Result<()> {
-    save_json(path, &config.clone().sanitized())
+/// Save the config to `path`; the error names the file.
+fn save_to(path: &Path, config: &TerminalConfig) -> Result<(), String> {
+    save_json(path, &config.clone().sanitized()).map_err(|e| format!("Cannot save the options to {}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -151,6 +154,16 @@ mod tests {
         config.hotkeys.insert("split-vertical".into(), "<Alt>v".into());
         save_to(&path, &config).unwrap();
         assert_eq!(load_from(&path), config);
+    }
+
+    #[test]
+    fn a_failed_save_is_reported_with_the_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
+        let path = blocker.join("terminal.json");
+        let message = save_to(&path, &TerminalConfig::default()).unwrap_err();
+        assert!(message.contains(&path.display().to_string()), "{message}");
     }
 
     #[test]

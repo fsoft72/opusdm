@@ -86,13 +86,10 @@ pub fn open(shared: &Rc<Shared>, parent: &gtk::Window) {
 }
 
 /// Store the options of `form`, apply them and close `window`. An invalid
-/// hotkey is reported and keeps the dialog open.
+/// hotkey or a failed save is reported and keeps the dialog open.
 fn save_and_close(shared: &Shared, form: &Form, window: &gtk::Window) {
-    match read_form(form, shared.config()) {
-        Ok(config) => {
-            shared.update_config(config);
-            window.close();
-        }
+    match read_form(form, shared.config()).and_then(|config| shared.update_config(config)) {
+        Ok(()) => window.close(),
         Err(message) => opusdm_ui::requester(window, "Preferences", &message, None, &[("OK", ())], |_| {}),
     }
 }

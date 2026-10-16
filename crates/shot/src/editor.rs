@@ -270,6 +270,20 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar
 }
 
+/// Write the delay of `delay` to the config once, when `window` closes, and
+/// only when the user changed it.
+fn save_delay_on_close(window: &gtk::ApplicationWindow, delay: &gtk::SpinButton) {
+    let initial = delay.value_as_int();
+    let delay = delay.clone();
+    window.connect_close_request(move |_| {
+        // Takes a number typed but not yet confirmed with Enter.
+        delay.update();
+        let current = delay.value_as_int();
+        if current != initial { config::save(&config::ShotConfig { delay_secs: current.max(0) as u32 }); }
+        glib::Propagation::Proceed
+    });
+}
+
 /// The bottom bar: format options on the left, the three save actions on the
 /// right.
 fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
@@ -280,7 +294,7 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar.append(&ui.lossless);
     bar.append(&gtk::Label::new(Some("Delay (s)")));
     bar.append(&ui.delay);
-    ui.delay.connect_value_changed(|spin| config::save(&config::ShotConfig { delay_secs: spin.value_as_int().max(0) as u32 }));
+    save_delay_on_close(&ui.window, &ui.delay);
     {
         let ui2 = ui.clone();
         ui.format.connect_selected_notify(move |_| refresh_save_options(&ui2));

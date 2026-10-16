@@ -370,15 +370,13 @@ fn connect_apply(apply: &gtk::Button, sections: &Rc<Sections>, note: &gtk::Label
     apply.connect_clicked(move |_| {
         let selected = sections.icon_set.borrow().value();
         let (prefs, desktop) = sections.read();
-        if let Err(e) = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig { apps: sections.dock_apps.apps() }) {
+        let dock_error = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig { apps: sections.dock_apps.apps() }).err().map(|e| e.to_string());
+        if let Some(e) = &dock_error {
             opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
         }
         let settings = model::resolve_selected(&selected, &prefs);
-        match model::apply_full(&settings, &desktop) {
-            model::ApplyOutcome::SentToHub => show_note(&note, "Applied to the running desktop."),
-            model::ApplyOutcome::WroteFile => show_note(&note, "No hub running - saved, effective on next login."),
-            model::ApplyOutcome::Failed(e) => show_note(&note, &format!("Could not apply: {e}")),
-        }
+        let outcome = model::apply_full(&settings, &desktop);
+        show_note(&note, &model::apply_message(&outcome, dock_error.as_deref()));
     });
 }
 

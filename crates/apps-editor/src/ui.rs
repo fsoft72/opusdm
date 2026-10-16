@@ -698,11 +698,11 @@ impl Editor {
                 Err(e) => errors.push(format!("{}: {e}", fields.name)),
             }
         }
-        for id in self.to_delete.borrow_mut().drain(..) {
-            if let Err(e) = files::delete_own_entry(&id) {
-                errors.push(format!("{id}: {e}"));
-            }
-        }
+        // A delete that failed stays in the list, so the next save retries it.
+        let ids = std::mem::take(&mut *self.to_delete.borrow_mut());
+        let (pending, delete_errors) = files::delete_entries(ids, files::delete_own_entry);
+        *self.to_delete.borrow_mut() = pending;
+        errors.extend(delete_errors);
         let cfg = opusdm_ipc::MenuConfig { items: self.items.borrow().clone() };
         if let Err(e) = opusdm_ipc::menu::save_menu_config(&cfg) {
             errors.push(format!("menu.json: {e}"));
