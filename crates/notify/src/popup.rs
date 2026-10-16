@@ -393,12 +393,12 @@ fn clock_time(time: i64) -> String {
 fn picture(n: &Notification) -> gtk::Image {
     let image = match &n.image {
         Some(Image::Pixels(p)) => texture_image(p),
-        Some(Image::Named(name)) => named_image(name),
+        Some(Image::Named(name)) => opusdm_apps::app_image(name),
         None => None,
     };
     let image = image
-        .or_else(|| (!n.app_icon.is_empty()).then(|| named_image(&n.app_icon)).flatten())
-        .or_else(|| n.desktop_entry.as_deref().and_then(desktop_entry_image))
+        .or_else(|| opusdm_apps::app_image(&n.app_icon))
+        .or_else(|| n.desktop_entry.as_deref().and_then(opusdm_apps::app_image))
         .unwrap_or_else(|| gtk::Image::from_icon_name(FALLBACK_ICON));
     image.set_pixel_size(ICON_SIZE);
     image
@@ -410,29 +410,6 @@ fn texture_image(p: &crate::model::Pixels) -> Option<gtk::Image> {
     let bytes = glib::Bytes::from(&p.data[..]);
     let texture = gdk::MemoryTexture::new(p.width, p.height, format, &bytes, p.stride as usize);
     Some(gtk::Image::from_paintable(Some(&texture)))
-}
-
-/// An image of a file path or of a theme icon name; `None` when neither
-/// exists.
-fn named_image(name: &str) -> Option<gtk::Image> {
-    if name.starts_with('/') {
-        return match gdk::Texture::from_filename(name) {
-            Ok(texture) => Some(gtk::Image::from_paintable(Some(&texture))),
-            Err(e) => {
-                opusdm_ipc::debug_log!("opusdm-notify", "cannot load picture {name}: {e}");
-                None
-            }
-        };
-    }
-    let display = gdk::Display::default()?;
-    gtk::IconTheme::for_display(&display).has_icon(name).then(|| gtk::Image::from_icon_name(name))
-}
-
-/// The icon of the application `entry` names (`brave-browser`).
-fn desktop_entry_image(entry: &str) -> Option<gtk::Image> {
-    let info = gtk::gio::DesktopAppInfo::new(&format!("{entry}.desktop"))?;
-    let icon = gtk::gio::prelude::AppInfoExt::icon(&info)?;
-    Some(gtk::Image::from_gicon(&icon))
 }
 
 /// Height the window wants at [`POPUP_WIDTH`].

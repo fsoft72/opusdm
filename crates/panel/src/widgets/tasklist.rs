@@ -285,23 +285,12 @@ fn icon_image(c: &ClientWin) -> gtk::Image {
             return img;
         }
     }
-    let img = match c.app_id.as_deref().and_then(app_icon) {
+    let img = match c.app_id.as_deref().and_then(opusdm_apps::desktop_icon) {
         Some(icon) => gtk::Image::from_gicon(&icon),
         None => gtk::Image::from_icon_name("application-x-executable"),
     };
     img.set_pixel_size(ICON_PX);
     img
-}
-
-/// The icon of the desktop file named by the Wayland `app_id`
-/// (`org.gnome.Nautilus`, or `foot` for `foot.desktop`), trying the
-/// lowercase name too.
-fn app_icon(app_id: &str) -> Option<gio::Icon> {
-    use gio::prelude::AppInfoExt;
-    [app_id.to_string(), app_id.to_lowercase()]
-        .iter()
-        .find_map(|id| gio::DesktopAppInfo::new(&format!("{id}.desktop")))
-        .and_then(|info| info.icon())
 }
 
 #[cfg(test)]

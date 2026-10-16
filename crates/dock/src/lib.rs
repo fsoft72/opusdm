@@ -13,10 +13,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-pub mod apps;
 pub mod list;
-pub mod menu_defaults;
 mod placement;
+
+/// The pinned apps and the default menu live in `opusdm-apps`; re-exported
+/// so `opusdm_dock::apps` and `opusdm_dock::menu_defaults` keep working.
+pub use opusdm_apps::{apps, menu_defaults};
 mod window;
 
 use apps::AppEntry;

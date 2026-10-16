@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 opusdm-ui = { path = "../ui" }
+opusdm-apps = { path = "../apps" }
 opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
 async-channel.workspace = true

@@ -8,7 +8,7 @@ use gtk4 as gtk;
 use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_dock::apps;
+use opusdm_apps::apps;
 use opusdm_ipc::quickapps::{load_quickapps, save_quickapps};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};

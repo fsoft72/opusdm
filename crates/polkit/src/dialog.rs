@@ -303,9 +303,7 @@ fn header(request: &Request) -> gtk::Box {
 
 /// The request's icon when the theme has it, otherwise a padlock.
 fn icon_name(requested: &str) -> &str {
-    if requested.is_empty() { return FALLBACK_ICON; }
-    let known = gtk::gdk::Display::default().is_some_and(|display| gtk::IconTheme::for_display(&display).has_icon(requested));
-    if known { requested } else { FALLBACK_ICON }
+    opusdm_apps::themed_or(requested, FALLBACK_ICON)
 }
 
 /// The user who authenticates: a choice when there are several.
