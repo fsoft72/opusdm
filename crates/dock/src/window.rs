@@ -14,9 +14,6 @@
 
 use crate::placement::Placement;
 use gtk4 as gtk;
-use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
-use x11rb::protocol::xproto::{AtomEnum, PropMode};
-use x11rb::wrapper::ConnectionExt as _;
 
 /// Layer shell placement of the dock placed by `place`: anchored to its own
 /// edge, `EDGE_MARGIN` away from it, inside the space the panel leaves free,
@@ -91,40 +88,18 @@ pub fn set_below(window: &gtk::ApplicationWindow) {
 fn apply(xid: u32, place: Placement, count: usize) -> Result<(), opusdm_ui::X11Error> {
     let (x, y, w, h) = place.rect(count);
     opusdm_ui::with_x11(|x11| {
-        let conn = x11.conn();
         // NORMAL, not DOCK: see the module doc for why. `_NET_WM_STATE` is set
         // here as a property before mapping, which some window managers honour
         // for BELOW/SKIP_* (unlike ABOVE); `set_below` in `connect_map` covers
         // openbox, which does not.
-        let normal_type = x11.atom("_NET_WM_WINDOW_TYPE_NORMAL")?;
-        let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
-        let wm_state = x11.atom("_NET_WM_STATE")?;
-        let state_below = x11.atom("_NET_WM_STATE_BELOW")?;
-        let skip_taskbar = x11.atom("_NET_WM_STATE_SKIP_TASKBAR")?;
-        let skip_pager = x11.atom("_NET_WM_STATE_SKIP_PAGER")?;
-        let state_sticky = x11.atom("_NET_WM_STATE_STICKY")?;
-
-        conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[normal_type])?;
-        conn.change_property32(
-            PropMode::REPLACE,
-            xid,
-            wm_state,
-            AtomEnum::ATOM,
-            &[state_below, skip_taskbar, skip_pager, state_sticky],
-        )?;
+        let states = ["_NET_WM_STATE_BELOW", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER", "_NET_WM_STATE_STICKY"];
+        x11.set_type_and_states(xid, "_NET_WM_WINDOW_TYPE_NORMAL", &states)?;
 
         // Keep the dock on every virtual desktop (property for adoption,
         // client messages once mapped).
         x11.stick_to_all_desktops(xid)?;
 
         // Position is user-specified so openbox does not re-center us.
-        let mut hints = WmSizeHints::new();
-        hints.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
-        hints.size = Some((WmSizeHintsSpecification::UserSpecified, w, h));
-        hints.min_size = Some((w, h));
-        hints.max_size = Some((w, h));
-        hints.set_normal_hints(conn, xid)?.check()?;
-
-        x11.configure(xid, x, y, w as u32, h as u32)
+        x11.set_fixed_geometry(xid, x, y, w.max(1) as u32, h.max(1) as u32)
     })
 }

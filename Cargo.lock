@@ -2725,7 +2725,6 @@ dependencies = [
  "opusdm-ipc",
  "opusdm-ui",
  "tempfile",
- "x11rb",
 ]
 
 [[package]]
@@ -2913,6 +2912,7 @@ dependencies = [
  "opusdm-ipc",
  "opusdm-snap",
  "opusdm-ui",
+ "opusdm-x11",
  "serde",
  "serde_json",
  "tempfile",

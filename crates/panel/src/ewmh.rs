@@ -15,6 +15,8 @@ use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 use x11rb::CURRENT_TIME;
 
+use opusdm_x11::{property_bytes, property_card, property_cards, property_string};
+
 /// ICCCM `IconicState`, the argument to `WM_CHANGE_STATE` that asks the window
 /// manager to minimise a window.
 const ICONIC_STATE: u32 = 3;
@@ -266,7 +268,7 @@ fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::err
         let Event::PropertyNotify(e) = event else { continue };
         if e.window == root {
             if e.atom == atoms._NET_CURRENT_DESKTOP {
-                if let Some(n) = get_card(&conn, root, atoms._NET_CURRENT_DESKTOP) {
+                if let Some(n) = property_card(&conn, root, atoms._NET_CURRENT_DESKTOP) {
                     let _ = tx.send_blocking(EwmhEvent::CurrentDesktop(n));
                 }
             } else if e.atom == atoms._NET_NUMBER_OF_DESKTOPS
@@ -295,9 +297,9 @@ fn emit_desktops(
     atoms: &Atoms,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let count = get_card(conn, root, atoms._NET_NUMBER_OF_DESKTOPS).unwrap_or(1);
-    let current = get_card(conn, root, atoms._NET_CURRENT_DESKTOP).unwrap_or(0);
-    let names = get_bytes(conn, root, atoms._NET_DESKTOP_NAMES)
+    let count = property_card(conn, root, atoms._NET_NUMBER_OF_DESKTOPS).unwrap_or(1);
+    let current = property_card(conn, root, atoms._NET_CURRENT_DESKTOP).unwrap_or(0);
+    let names = property_bytes(conn, root, atoms._NET_DESKTOP_NAMES)
         .map(|b| parse_desktop_names(&b))
         .unwrap_or_default();
     let _ = tx.send_blocking(EwmhEvent::Desktops { count, current, names });
@@ -343,7 +345,7 @@ fn emit_active(
     atoms: &Atoms,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let active = get_card(conn, root, atoms._NET_ACTIVE_WINDOW).filter(|w| *w != 0);
+    let active = property_card(conn, root, atoms._NET_ACTIVE_WINDOW).filter(|w| *w != 0);
     let _ = tx.send_blocking(EwmhEvent::ActiveWindow(active));
 }
 
@@ -358,7 +360,7 @@ fn emit_clients(
     cache: &mut ClientCache,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let Some(raw) = get_bytes(conn, root, atoms._NET_CLIENT_LIST) else {
+    let Some(raw) = property_bytes(conn, root, atoms._NET_CLIENT_LIST) else {
         return;
     };
     let ids = parse_window_list(&raw);
@@ -408,7 +410,7 @@ fn read_client(
     icons: &mut HashMap<Window, Option<IconRgba>>,
 ) -> Option<ClientWin> {
     // Skip docks and the desktop.
-    if let Some(types) = get_atoms(conn, xid, atoms._NET_WM_WINDOW_TYPE) {
+    if let Some(types) = property_cards(conn, xid, atoms._NET_WM_WINDOW_TYPE) {
         if types.contains(&atoms._NET_WM_WINDOW_TYPE_DOCK)
             || types.contains(&atoms._NET_WM_WINDOW_TYPE_DESKTOP)
         {
@@ -416,18 +418,18 @@ fn read_client(
         }
     }
 
-    let title = get_string(conn, xid, atoms._NET_WM_NAME)
+    let title = property_string(conn, xid, atoms._NET_WM_NAME)
         .filter(|s| !s.is_empty())
-        .or_else(|| get_string(conn, xid, AtomEnum::WM_NAME.into()))
+        .or_else(|| property_string(conn, xid, AtomEnum::WM_NAME.into()))
         .unwrap_or_default();
 
-    let desktop = match get_card(conn, xid, atoms._NET_WM_DESKTOP) {
+    let desktop = match property_card(conn, xid, atoms._NET_WM_DESKTOP) {
         Some(ALL_DESKTOPS) => -1,
         Some(n) => n as i64,
         None => -1,
     };
 
-    let states = get_atoms(conn, xid, atoms._NET_WM_STATE).unwrap_or_default();
+    let states = property_cards(conn, xid, atoms._NET_WM_STATE).unwrap_or_default();
     if states.contains(&atoms._NET_WM_STATE_SKIP_TASKBAR) {
         return None;
     }
@@ -435,58 +437,14 @@ fn read_client(
 
     let icon = icons
         .entry(xid)
-        .or_insert_with(|| get_card_array(conn, xid, atoms._NET_WM_ICON).and_then(|words| pick_icon(&words, 24)))
+        .or_insert_with(|| property_cards(conn, xid, atoms._NET_WM_ICON).and_then(|words| pick_icon(&words, 24)))
         .clone();
 
-    let pid = get_card(conn, xid, atoms._NET_WM_PID).filter(|p| *p != 0);
+    let pid = property_card(conn, xid, atoms._NET_WM_PID).filter(|p| *p != 0);
 
     let rect = read_rect(conn, root, xid).unwrap_or_default();
 
     Some(ClientWin { xid, title, desktop, minimized, pid, icon, app_id: None, rect })
-}
-
-// --------------------------------------------------------------------------
-// Property helpers
-// --------------------------------------------------------------------------
-
-fn get_bytes(conn: &RustConnection, win: Window, prop: u32) -> Option<Vec<u8>> {
-    let r = conn
-        .get_property(false, win, prop, AtomEnum::ANY, 0, u32::MAX)
-        .ok()?
-        .reply()
-        .ok()?;
-    if r.value.is_empty() {
-        None
-    } else {
-        Some(r.value)
-    }
-}
-
-fn get_card(conn: &RustConnection, win: Window, prop: u32) -> Option<u32> {
-    let r = conn
-        .get_property(false, win, prop, AtomEnum::ANY, 0, 1)
-        .ok()?
-        .reply()
-        .ok()?;
-    r.value32().and_then(|mut it| it.next())
-}
-
-fn get_card_array(conn: &RustConnection, win: Window, prop: u32) -> Option<Vec<u32>> {
-    let r = conn
-        .get_property(false, win, prop, AtomEnum::ANY, 0, u32::MAX)
-        .ok()?
-        .reply()
-        .ok()?;
-    r.value32().map(|it| it.collect())
-}
-
-fn get_atoms(conn: &RustConnection, win: Window, prop: u32) -> Option<Vec<u32>> {
-    get_card_array(conn, win, prop)
-}
-
-fn get_string(conn: &RustConnection, win: Window, prop: u32) -> Option<String> {
-    let bytes = get_bytes(conn, win, prop)?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 // --------------------------------------------------------------------------

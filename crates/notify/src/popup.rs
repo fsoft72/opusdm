@@ -462,8 +462,8 @@ fn refuse_x11_input_focus(conn: &impl x11rb::connection::Connection, xid: u32) -
     hints.set(conn, xid)?;
     let protocols = conn.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
     let take_focus = conn.intern_atom(false, b"WM_TAKE_FOCUS")?.reply()?.atom;
-    let current = conn.get_property(false, xid, protocols, AtomEnum::ATOM, 0, 64)?.reply()?;
-    let kept: Vec<u32> = current.value32().into_iter().flatten().filter(|a| *a != take_focus).collect();
+    let current = opusdm_x11::property_cards(conn, xid, protocols).unwrap_or_default();
+    let kept: Vec<u32> = current.into_iter().filter(|a| *a != take_focus).collect();
     conn.change_property32(PropMode::REPLACE, xid, protocols, AtomEnum::ATOM, &kept)?;
     Ok(())
 }
@@ -477,13 +477,8 @@ fn set_x11_type(window: &gtk::Window) {
         use x11rb::protocol::xproto::{AtomEnum, PropMode};
         use x11rb::wrapper::ConnectionExt as _;
         let conn = x11.conn();
-        let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
-        let notification = x11.atom("_NET_WM_WINDOW_TYPE_NOTIFICATION")?;
-        let wm_state = x11.atom("_NET_WM_STATE")?;
         let user_time = x11.atom("_NET_WM_USER_TIME")?;
-        let states = X11_STATES.iter().map(|name| x11.atom(name)).collect::<Result<Vec<u32>, _>>()?;
-        conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[notification])?;
-        conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &states)?;
+        x11.set_type_and_states(xid, "_NET_WM_WINDOW_TYPE_NOTIFICATION", &X11_STATES)?;
         // A user time of 0 tells the window manager not to focus the window when it maps.
         conn.change_property32(PropMode::REPLACE, xid, user_time, AtomEnum::CARDINAL, &[0])?;
         refuse_x11_input_focus(x11.conn(), xid)?;
