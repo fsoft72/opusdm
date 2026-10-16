@@ -64,9 +64,12 @@ impl Inotify {
 
 /// A live watch on whatever directory the Lister is showing.
 ///
-/// Dropping it stops the thread at its next idle wakeup.
+/// Dropping it (or [`DirWatcher::stop`]) stops the thread at its next idle
+/// wakeup.
 pub struct DirWatcher {
     inotify: Arc<Inotify>,
+    /// The notice channel, kept to close it on [`DirWatcher::stop`].
+    tx: async_channel::Sender<PathBuf>,
 }
 
 impl DirWatcher {
@@ -79,11 +82,12 @@ impl DirWatcher {
         let inotify = Arc::new(Inotify::new()?);
         let (tx, rx) = async_channel::unbounded::<PathBuf>();
         let worker = Arc::clone(&inotify);
+        let worker_tx = tx.clone();
         std::thread::Builder::new()
             .name("opusdm-watcher".into())
-            .spawn(move || watch_loop(&worker, &tx, debounce))
+            .spawn(move || watch_loop(&worker, &worker_tx, debounce))
             .map_err(|e| io::Error::other(format!("cannot spawn watcher thread: {e}")))?;
-        Ok((DirWatcher { inotify }, rx))
+        Ok((DirWatcher { inotify, tx }, rx))
     }
 
     /// Watch `dir` instead of whatever was being watched before.
@@ -94,6 +98,13 @@ impl DirWatcher {
     /// Stop reporting changes until the next [`watch`](Self::watch).
     pub fn unwatch(&self) {
         self.inotify.rewatch(None);
+    }
+
+    /// Stop for good: drop the watch and close the notice channel, which
+    /// ends the receiver's loop and retires the thread at its next wakeup.
+    pub fn stop(&self) {
+        self.unwatch();
+        self.tx.close();
     }
 }
 
@@ -208,6 +219,16 @@ mod tests {
 
         std::fs::write(td.path().join("b"), b"2").unwrap();
         assert!(wait_for(&rx, 1).is_none(), "no notice after unwatch");
+    }
+
+    #[test]
+    fn stop_closes_the_channel_so_the_receiver_loop_ends() {
+        let td = tempfile::tempdir().unwrap();
+        let (watcher, rx) = DirWatcher::start(Duration::from_millis(50)).unwrap();
+        watcher.watch(td.path());
+        watcher.stop();
+        std::fs::write(td.path().join("late"), b"1").unwrap();
+        assert!(rx.recv_blocking().is_err(), "a stopped watcher sends nothing and closes the channel");
     }
 
     #[test]

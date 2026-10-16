@@ -64,7 +64,7 @@ pub fn open_scripts_editor(ui: &Rc<Ui>) {
         save_btn.connect_clicked(move |_| {
             let mut updated = ui.hub.bindings.borrow().clone();
             updated.scripts = state.scripts.borrow().clone();
-            let _ = ui.hub.client.send(&opusdm_ipc::ToHub::SetBindings(updated));
+            ui.send_hub(&opusdm_ipc::ToHub::SetBindings(updated));
             crate::actions::flash(&ui, "script events saved");
         });
     }

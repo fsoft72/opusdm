@@ -46,9 +46,10 @@ pub fn attach(ui: &Rc<Ui>, view: &gtk::ColumnView) {
         crate::dlog!("column view drop: leave");
     });
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let view = view.clone();
         target.connect_drop(move |t, value, x, y| {
+            let Some(ui) = weak.upgrade() else { return false };
             crate::dlog!("column view drop: fired at ({x}, {y}), value type={:?}", value.type_());
             let Ok(file_list) = value.get::<gdk::FileList>() else {
                 crate::dlog!("column view drop: value is not a FileList");
@@ -79,8 +80,9 @@ pub fn attach(ui: &Rc<Ui>, view: &gtk::ColumnView) {
 /// Wire an `IconField`'s drop callback to `ToHub::RunJob`, mirroring `attach`
 /// for the column view. Shift held at drop time means move, otherwise copy.
 pub fn attach_field(ui: &Rc<Ui>, field: &IconField) {
-    let ui = ui.clone();
+    let weak = Rc::downgrade(ui);
     field.connect_drop_uris(move |srcs, target, shift| {
+        let Some(ui) = weak.upgrade() else { return };
         crate::dlog!("icon field drop: target={target} shift={shift} srcs={srcs:?}");
         if srcs.is_empty() {
             crate::dlog!("icon field drop: no paths, aborting");
@@ -134,34 +136,24 @@ fn submit_dropped(ui: &Rc<Ui>, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<Path
     };
     crate::actions::flash(ui, "extracting from the archive...");
     let root = scratch.path().to_path_buf();
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
+    let extract = move || -> std::io::Result<Vec<PathBuf>> {
         let mut extracted = Vec::new();
         for (n, (arch, items)) in groups.iter().enumerate() {
             // One folder per archive, so equal entry names never collide.
             let dir = root.join(n.to_string());
-            match crate::archive::extract_items_to_dir(arch, items, &dir) {
-                Ok(paths) => extracted.extend(paths),
-                Err(e) => {
-                    let _ = tx.send_blocking(Err(e));
-                    return;
-                }
-            }
+            extracted.extend(crate::archive::extract_items_to_dir(arch, items, &dir)?);
         }
-        let _ = tx.send_blocking(Ok(extracted));
-    });
+        Ok(extracted)
+    };
     let ui = ui.clone();
-    gtk::glib::spawn_future_local(async move {
-        match rx.recv().await {
-            Ok(Ok(extracted)) => {
-                // The drop makes this Lister the requester: one JobDone comes back.
-                crate::archive::keep_scratch(scratch, 1);
-                ready.extend(extracted);
-                crate::job_submit::submit_job(&ui, op, ready, dest_dir, opusdm_ipc::JobOptions::default());
-            }
-            Ok(Err(e)) => crate::actions::flash(&ui, &format!("extraction failed: {e}")),
-            Err(_) => crate::actions::flash(&ui, "extraction stopped unexpectedly"),
+    crate::background::run_blocking(extract, move |result| match result {
+        Ok(extracted) => {
+            // The drop makes this Lister the requester: one JobDone comes back.
+            crate::archive::keep_scratch(scratch, 1);
+            ready.extend(extracted);
+            crate::job_submit::submit_job(&ui, op, ready, dest_dir, opusdm_ipc::JobOptions::default());
         }
+        Err(e) => crate::actions::flash(&ui, &format!("extraction failed: {e}")),
     });
 }
 

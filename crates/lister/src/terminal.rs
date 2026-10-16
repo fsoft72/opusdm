@@ -165,16 +165,14 @@ impl TerminalDrawer {
     /// focus (VTE swallows function keys before bubble-phase controllers see
     /// them, so this must run in the capture phase).
     pub fn attach(self: &Rc<Self>, ui: &Rc<Ui>) {
-        let ui = ui.clone();
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let ui_keys = ui.clone();
+        let weak = Rc::downgrade(ui);
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
-            if keyval == gdk::Key::F4 {
-                ui_keys.toggle_terminal();
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
+            if keyval != gdk::Key::F4 { return glib::Propagation::Proceed; }
+            let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
+            ui.toggle_terminal();
+            glib::Propagation::Stop
         });
         ui.window.add_controller(key_ctrl);
     }

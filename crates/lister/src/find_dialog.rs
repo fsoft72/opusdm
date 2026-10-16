@@ -1,6 +1,7 @@
 //! The "Find" dialog (F-19, F-20): name and content search with streaming
 //! results. The search runs on a thread; this file only shows what it sends.
 
+use crate::background::{run_streaming, CancelToken};
 use crate::find_search::{result_label, run_search, status_text, FindQuery, Found, RunState, SearchEvent};
 use crate::viewer::ViewerOptions;
 use crate::viewer_mode::Mode;
@@ -12,8 +13,6 @@ use opusdm_ipc::NameFilter;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 /// One open Find dialog.
 struct Dialog {
@@ -33,7 +32,7 @@ struct Dialog {
     /// The Contains text of the current search, if it is a content search.
     searched_text: RefCell<Option<String>>,
     /// Cancel flag of the running (or last) search.
-    cancel: RefCell<Arc<AtomicBool>>,
+    cancel: RefCell<CancelToken>,
     /// Bumped by every search; events of an older one are ignored.
     generation: Cell<u64>,
     scanned: Cell<usize>,
@@ -84,7 +83,7 @@ pub fn open(ui: &Rc<Ui>, focus_contains: bool) {
         results: RefCell::new(Vec::new()),
         root: RefCell::new(PathBuf::new()),
         searched_text: RefCell::new(None),
-        cancel: RefCell::new(Arc::new(AtomicBool::new(false))),
+        cancel: RefCell::new(CancelToken::new()),
         generation: Cell::new(0),
         scanned: Cell::new(0),
     });
@@ -165,7 +164,7 @@ pub fn open(ui: &Rc<Ui>, focus_contains: bool) {
 impl Dialog {
     /// Stop the running search, if any.
     fn stop(&self) {
-        self.cancel.borrow().store(true, Ordering::Relaxed);
+        self.cancel.borrow().cancel();
     }
 
     /// Start a search from the fields, replacing the one that is running.
@@ -200,29 +199,31 @@ impl Dialog {
         self.generation.set(generation);
         self.status.set_text(&status_text(RunState::Running, 0, 0, 0, false));
 
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = CancelToken::new();
         *self.cancel.borrow_mut() = cancel.clone();
-        let (tx, rx) = async_channel::unbounded::<SearchEvent>();
-        let thread_cancel = cancel.clone();
-        std::thread::spawn(move || {
-            run_search(&query, &thread_cancel, |event| {
-                let _ = tx.send_blocking(event);
-            });
-        });
-
+        let search_cancel = cancel.clone();
         let this = self.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(event) = rx.recv().await {
-                if this.generation.get() != generation {
-                    break;
+        // Delivery is not tied to the search's cancel flag: a stopped search
+        // still reports Done, which shows it as cancelled.
+        run_streaming(
+            &CancelToken::new(),
+            move |out| {
+                run_search(&query, search_cancel.flag(), |event| {
+                    out.emit(event);
+                });
+            },
+            move |event| {
+                // Events of a search replaced by a newer one are dropped.
+                if this.generation.get() == generation {
+                    this.handle(event, &cancel);
                 }
-                this.handle(event, &cancel);
-            }
-        });
+            },
+            || {},
+        );
     }
 
     /// Show one event of the running search.
-    fn handle(&self, event: SearchEvent, cancel: &AtomicBool) {
+    fn handle(&self, event: SearchEvent, cancel: &CancelToken) {
         match event {
             SearchEvent::Found(found) => {
                 let label = gtk::Label::new(Some(&result_label(&self.root.borrow(), &found)));
@@ -237,7 +238,7 @@ impl Dialog {
                 self.status.set_text(&status_text(RunState::Running, n, self.results.borrow().len(), 0, false));
             }
             SearchEvent::Done { scanned, skipped, truncated } => {
-                let state = if cancel.load(Ordering::Relaxed) { RunState::Cancelled } else { RunState::Done };
+                let state = if cancel.is_cancelled() { RunState::Cancelled } else { RunState::Done };
                 self.status.set_text(&status_text(state, scanned, self.results.borrow().len(), skipped, truncated));
             }
         }

@@ -6,7 +6,6 @@ use crate::model::Row;
 use crate::remote;
 use crate::window::Ui;
 use gtk4 as gtk;
-use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ftp::{AddressBook, RemoteError, RemoteFs, RemoteItem, RemoteUrl, Scheme, Site};
 use std::cell::RefCell;
@@ -14,11 +13,13 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 /// A connected server, shared with the worker threads that use it.
 pub type SharedFs = Arc<Mutex<Box<dyn RemoteFs>>>;
+
+/// Name of the thread that closes remote connections.
+const CLOSE_THREAD_NAME: &str = "opusdm-ftp-close";
 
 /// What to do once a connection is ready.
 type Then = Box<dyn FnOnce(&Rc<Ui>)>;
@@ -29,6 +30,40 @@ type Then = Box<dyn FnOnce(&Rc<Ui>)>;
 pub struct RemoteState {
     sessions: RefCell<HashMap<String, SharedFs>>,
     passwords: RefCell<HashMap<String, String>>,
+    /// Cancels the downloads still running when the Lister closes.
+    downloads: crate::background::CancelToken,
+}
+
+/// Close every session in `sessions` (blocking: run it on a worker).
+fn close_sessions(sessions: Vec<SharedFs>) {
+    for session in sessions {
+        if let Ok(mut fs) = session.lock() {
+            fs.close();
+        }
+    }
+}
+
+impl RemoteState {
+    /// Forget every connection and password and close the connections on a
+    /// thread of their own (a dead server must not block the caller, which
+    /// may be a closing window). Returns how many were open.
+    pub fn close_all(&self) -> usize {
+        let sessions: Vec<SharedFs> = self.sessions.borrow_mut().drain().map(|(_, s)| s).collect();
+        self.passwords.borrow_mut().clear();
+        let count = sessions.len();
+        if count == 0 { return 0; }
+        let spawned = std::thread::Builder::new().name(CLOSE_THREAD_NAME.to_string()).spawn(move || close_sessions(sessions));
+        if let Err(e) = spawned {
+            opusdm_ipc::err_log!("opusdm-lister", "cannot start a thread to close the remote connections: {e}");
+        }
+        count
+    }
+
+    /// The Lister is closing: stop the downloads and close every connection.
+    pub fn shutdown(&self) {
+        self.downloads.cancel();
+        self.close_all();
+    }
 }
 
 /// A callback that can be taken out once, for use inside `Fn` closures.
@@ -77,13 +112,8 @@ impl Ui {
         params.password = self.remote.passwords.borrow().get(&key).cloned();
         crate::actions::flash(self, &format!("connecting to {} ...", url.host));
         let known_hosts = params.known_hosts.clone();
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(opusdm_ftp::connect(&params));
-        });
         let ui = self.clone();
-        glib::spawn_future_local(async move {
-            let Ok(result) = rx.recv().await else { return };
+        crate::background::run_blocking(move || opusdm_ftp::connect(&params), move |result| {
             match result {
                 Ok(fs) => {
                     ui.remote.sessions.borrow_mut().insert(key, Arc::new(Mutex::new(fs)));
@@ -192,55 +222,39 @@ impl Ui {
             File(String),
             Done(Result<Vec<PathBuf>, RemoteError>),
         }
-        let (tx, rx) = async_channel::unbounded::<Msg>();
-        std::thread::spawn(move || {
-            let cancel = AtomicBool::new(false);
+        let download = move |out: &crate::background::Emitter<Msg>| {
             let result = match session.lock() {
-                Ok(mut fs) => opusdm_ftp::download(fs.as_mut(), &items, &dir, &cancel, &mut |p| {
-                    let _ = tx.send_blocking(Msg::File(p.to_string()));
+                Ok(mut fs) => opusdm_ftp::download(fs.as_mut(), &items, &dir, out.cancel().flag(), &mut |p| {
+                    out.emit(Msg::File(p.to_string()));
                 }),
                 Err(_) => Err(RemoteError::Failed("the connection is unusable".to_string())),
             };
-            let _ = tx.send_blocking(Msg::Done(result));
-        });
+            out.emit(Msg::Done(result));
+        };
         let ui = self.clone();
         let url = url.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(msg) = rx.recv().await {
-                match msg {
-                    Msg::File(path) => crate::actions::flash(&ui, &format!("downloading {path}")),
-                    Msg::Done(Ok(paths)) => {
-                        done(&ui, paths);
-                        return;
-                    }
-                    Msg::Done(Err(e)) => {
-                        crate::actions::flash(&ui, &format!("download failed: {e}"));
-                        // A broken connection must not stay in the table. A
-                        // transfer cancelled mid-file can leave the stream
-                        // half-read, so it counts as broken too.
-                        if matches!(e, RemoteError::Failed(_) | RemoteError::Cancelled) {
-                            ui.drop_remote_session(&url);
-                        }
-                        return;
-                    }
+        let mut done = Some(done);
+        crate::background::run_streaming(&self.remote.downloads, download, move |msg| match msg {
+            Msg::File(path) => crate::actions::flash(&ui, &format!("downloading {path}")),
+            Msg::Done(Ok(paths)) => {
+                if let Some(done) = done.take() { done(&ui, paths); }
+            }
+            Msg::Done(Err(e)) => {
+                crate::actions::flash(&ui, &format!("download failed: {e}"));
+                // A broken connection must not stay in the table. A
+                // transfer cancelled mid-file can leave the stream
+                // half-read, so it counts as broken too.
+                if matches!(e, RemoteError::Failed(_) | RemoteError::Cancelled) {
+                    ui.drop_remote_session(&url);
                 }
             }
-        });
+        }, || {});
     }
 
     /// Close every connection ("FTP Quit"). A Lister showing a remote folder
     /// goes back to the home folder.
     pub fn quit_remote(self: &Rc<Self>) {
-        let sessions: Vec<SharedFs> = self.remote.sessions.borrow_mut().drain().map(|(_, s)| s).collect();
-        self.remote.passwords.borrow_mut().clear();
-        let count = sessions.len();
-        std::thread::spawn(move || {
-            for session in sessions {
-                if let Ok(mut fs) = session.lock() {
-                    fs.close();
-                }
-            }
-        });
+        let count = self.remote.close_all();
         if remote::url_of(&self.cwd_path()).is_some() {
             if let Ok(home) = std::env::var("HOME") {
                 self.navigate_to(std::path::Path::new(&home));

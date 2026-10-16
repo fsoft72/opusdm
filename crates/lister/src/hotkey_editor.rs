@@ -55,17 +55,15 @@ pub fn find_key(hotkeys: &[Hotkey], functions: &[Function], combo: &KeyCombo) ->
     }
 }
 
-/// The built-in binding `combo` triggers in the file list, if any. Alt and
-/// Super never reach the built-in table. Shift turns a letter into its
-/// uppercase keyval.
+/// The built-in binding `combo` triggers in the file list, if any. Super
+/// never reaches the built-in table, and Alt only does for the history keys.
+/// Shift turns a letter into its uppercase keyval.
 fn builtin_title(combo: &KeyCombo) -> Option<String> {
-    if combo.mods.alt || combo.mods.sup {
-        return None;
-    }
+    if combo.mods.sup { return None; }
     let name = combo.normalized_name();
     let shifted_letter = combo.mods.shift && name.len() == 1 && name.chars().all(|c| c.is_ascii_alphabetic());
     let key = if shifted_letter { gdk::Key::from_name(name.to_ascii_uppercase())? } else { gdk::Key::from_name(&name)? };
-    let action = crate::keys::resolve(key, combo.mods.ctrl, combo.mods.shift, Focus::List)?;
+    let action = crate::keys::resolve(key, combo.mods.ctrl, combo.mods.shift, combo.mods.alt, Focus::List)?;
     Some(action_title(&action))
 }
 
@@ -485,6 +483,24 @@ mod tests {
             KeyMeaning::Builtin { title } => assert!(title.contains("Reselect"), "{title}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn alt_left_is_reported_as_the_history_built_in() {
+        match find_key(&[], &[], &combo("Alt+Left")) {
+            KeyMeaning::Builtin { title } => assert!(title.contains("History Back"), "{title}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_user_hotkey_on_alt_right_wins_over_the_history_built_in() {
+        let hotkeys = [Hotkey { key: "Alt+Right".into(), function: "f1".into(), global: false }];
+        let functions = [function("f1", "Mine")];
+        assert_eq!(
+            find_key(&hotkeys, &functions, &combo("Alt+Right")),
+            KeyMeaning::UserFunction { name: "Mine".into(), global: false }
+        );
     }
 
     #[test]

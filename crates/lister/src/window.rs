@@ -7,7 +7,7 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
-use opusdm_ipc::{ListerId, Settings, ToHub, ToLister};
+use opusdm_ipc::{ListerId, Settings, ToHub};
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,15 @@ use std::rc::Rc;
 const FOCUS_ROW_RETRY_MS: u64 = 20;
 /// Tries to focus the cursor row before giving up.
 const FOCUS_ROW_TRIES: u32 = 10;
+/// Seconds a flashed message stays in the message line.
+const FLASH_SECS: u64 = 4;
+
+/// The variant name of `msg`, for log lines (the payload can be large).
+fn hub_message_name(msg: &ToHub) -> String {
+    let text = format!("{msg:?}");
+    let end = text.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(text.len());
+    text[..end].to_string()
+}
 
 /// Whether the keyboard focus currently sits in a text field, where a plain
 /// letter is a character rather than a shortcut.
@@ -139,6 +148,22 @@ pub struct NavHistory {
     pub list: gtk::ListBox,
 }
 
+/// Where the Lister has been and where it is going: the back / forward
+/// history with its widgets, and the background read in flight.
+pub struct Navigation {
+    /// Back / forward history.
+    pub history: RefCell<crate::history::History>,
+    /// Back / forward buttons and the history drop-down.
+    pub widgets: NavHistory,
+    /// Bumped on every `navigate_to`; an in-flight background listing whose
+    /// generation no longer matches was superseded by a later navigation and
+    /// its result is dropped instead of applied.
+    pub generation: Cell<u64>,
+    /// Cancels the background read of the navigation in flight, so a read
+    /// superseded before its worker started is skipped.
+    pub cancel: RefCell<crate::background::CancelToken>,
+}
+
 /// Type-to-find: the text typed so far and the idle timeout that closes it.
 pub struct Typeahead {
     /// Text typed so far; empty when no search is open.
@@ -162,6 +187,8 @@ pub struct Caches {
     pub dirs: RefCell<crate::dircache::DirCache>,
     /// Directory sizes already calculated.
     pub sizes: RefCell<crate::sizecache::SizeCache>,
+    /// Cancels the directory size calculation still running, if any.
+    pub size_scan: RefCell<crate::background::CancelToken>,
 }
 
 impl Caches {
@@ -197,10 +224,8 @@ pub struct Ui {
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
     pub css_provider: gtk::CssProvider,
-    /// Bumped on every `navigate_to`; an in-flight background listing whose
-    /// generation no longer matches was superseded by a later navigation and
-    /// its result is dropped instead of applied.
-    pub nav_generation: Cell<u64>,
+    /// Back / forward history and the navigation in flight.
+    pub nav: Navigation,
     /// Names selected when a job last started or the selection was last
     /// cleared, for Reselect.
     pub last_selection: RefCell<Vec<String>>,
@@ -222,10 +247,6 @@ pub struct Ui {
     pub busy: crate::busy::Busy,
     /// Open FTP / SFTP connections (F-39).
     pub remote: crate::remote_ui::RemoteState,
-    /// Back / forward history.
-    pub history: RefCell<crate::history::History>,
-    /// Back / forward buttons and the history drop-down.
-    pub nav_history: NavHistory,
     /// Whether the latest mouse button press in the window held Ctrl, so a
     /// Ctrl+double click on a folder opens it in a new Lister. Key presses
     /// reset it, so keyboard activation always stays in this Lister.
@@ -263,7 +284,7 @@ impl Ui {
     }
 
     /// Apply a listing produced by `navigate_to`'s background read.
-    pub(crate) fn apply_navigation(self: &Rc<Self>, dir: &Path, rows: io::Result<Vec<Row>>) {
+    pub(crate) fn apply_navigation(self: &Rc<Self>, dir: &Path, rows: io::Result<crate::model::Listing>) {
         let rows = match rows {
             Ok(r) => r,
             Err(e) => {
@@ -292,7 +313,7 @@ impl Ui {
             self.terminal.sync_cwd(dir);
         }
         *self.cwd.borrow_mut() = dir.to_path_buf();
-        self.history.borrow_mut().push(dir.to_path_buf());
+        self.nav.history.borrow_mut().push(dir.to_path_buf());
         self.refresh_history_ui();
         // A "Use" format only lives in the directory it was applied in.
         if self.format_state.temp.borrow().as_ref().is_some_and(|(p, _)| p != dir) {
@@ -304,14 +325,13 @@ impl Ui {
         }
         let name_filter = opusdm_ipc::NameFilter::new(&format.show_glob, &format.hide_glob);
         let show_hidden = self.view.show_hidden.get();
-        let visible = crate::model::visible_rows(rows, show_hidden, &name_filter, |name| {
+        let visible = crate::model::visible_rows(&rows, show_hidden, &name_filter, |name| {
             self.caches.sizes.borrow().get(&dir.join(name))
         });
         // The store keeps name order, whatever order `read_dir` returned, so
         // two reads of an unchanged folder compare equal row by row.
-        let mut rows = visible.rows;
-        rows.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        let new_rows: Vec<Rc<Row>> = rows.into_iter().map(Rc::new).collect();
+        let mut new_rows = visible.rows;
+        new_rows.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         self.sync_watch(dir);
         self.status_bar.totals.set((visible.dirs, visible.files, visible.bytes));
         if same_dir {
@@ -332,7 +352,7 @@ impl Ui {
         crate::sidecar::follow(self);
         self.update_gauge(dir);
         self.refresh_icon_view();
-        let _ = self.hub.client.send(&ToHub::PathChanged(dir.to_path_buf()));
+        self.send_hub(&ToHub::PathChanged(dir.to_path_buf()));
     }
 
     /// Bring the store in line with `new_rows` (name order) by replacing only
@@ -532,143 +552,58 @@ impl Ui {
         self.status_bar.label.set_text(&crate::status_format::format_status(&format, &info));
     }
 
-    /// Handle a message from the hub.
-    pub fn apply_inbound(self: &Rc<Self>, msg: ToLister) {
-        crate::dlog!("hub msg: {msg:?}");
-        match msg {
-            ToLister::RoleChanged { source, dests, source_locked } => {
-                *self.hub.roles.borrow_mut() = Roles { source, dests, source_locked };
-                self.update_status();
-                crate::actions::sync_role_buttons(self);
-            }
-            ToLister::InvalidatePath(p) => {
-                if self.caches.dirs.borrow_mut().remove(&p) {
-                    self.report_cache();
-                }
-                if p == *self.cwd.borrow() {
-                    self.reload();
-                }
-            }
-            ToLister::Present => self.window.present(),
-            ToLister::SetHidden(hidden) => self.set_hidden(hidden),
-            ToLister::Shutdown => self.window.close(),
-            // Progress is shown centrally by the hub's progress window now.
-            ToLister::JobProgress { .. } => {}
-            ToLister::ConfirmPrompt { req_id, message } => {
-                let ui = self.clone();
-                opusdm_ui::requester(&self.window, "Confirm", &message, None, &[("OK", true), ("Cancel", false)], move |ok| {
-                    let _ = ui.hub.client.send(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
-                });
-            }
-            ToLister::AlertPrompt { req_id, message } => {
-                let ui = self.clone();
-                opusdm_ui::requester(&self.window, "Alert", &message, None, &[("OK", true)], move |ok| {
-                    let _ = ui.hub.client.send(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
-                });
-            }
-            ToLister::RemoteTransfer { op, srcs, dest_dir } => self.run_remote_transfer(op, srcs, dest_dir),
-            ToLister::JobDone { job_id, outcome, errors } => {
-                crate::actions::on_job_done(self, job_id, &outcome, &errors);
-            }
-            ToLister::ConflictPrompt { req_id, path, src, dst, .. } => {
-                crate::actions::on_conflict(self, req_id, &path, src, dst);
-            }
-            ToLister::SettingsUpdate(new_settings) => {
-                let names_changed = {
-                    let old = self.hub.settings.borrow();
-                    old.theme.icon_set != new_settings.theme.icon_set
-                        || old.appearance.type_indicators != new_settings.appearance.type_indicators
-                };
-                *self.hub.settings.borrow_mut() = *new_settings;
-                let capacity = self.hub.settings.borrow().behavior.cache_capacity();
-                self.caches.dirs.borrow_mut().set_capacity(capacity);
-                self.report_cache();
-                self.update_status();
-                opusdm_ui::apply_theme_mode(self.hub.settings.borrow().appearance.theme_mode);
-                self.update_css_for_colors();
-                self.view.icon_field.set_icon_set(self.hub.settings.borrow().theme.icon_set.clone());
-                // Auto-refresh may have just been switched on or off.
-                let cwd = self.cwd.borrow().clone();
-                self.sync_watch(&cwd);
-                // Name-column text is built at bind time, so glyph and
-                // indicator changes only show after the rows are rebound.
-                if names_changed {
-                    self.touch_rows();
-                }
-            }
-            ToLister::Pong => {}
-            ToLister::FreeCaches => self.free_caches(),
-            ToLister::OutputOpen { id, title } => crate::output_window::open(self, id, &title),
-            ToLister::OutputLine { id, line } => crate::output_window::append(self, id, &format!("{line}\n")),
-            ToLister::OutputEnd { id, exit } => crate::output_window::end(self, id, exit),
-            ToLister::ScanDir { path, select, mode } => {
-                self.window.present();
-                // The toggle button drives the view, so its state follows.
-                match mode.as_deref() {
-                    Some("icons") => self.view.mode_toggle.set_active(true),
-                    Some("details") => self.view.mode_toggle.set_active(false),
-                    _ => {}
-                }
-                let ui = self.clone();
-                self.navigate(&path, true, move || {
-                    if let Some(name) = &select {
-                        ui.view.selection.unselect_all();
-                        ui.select_names(std::slice::from_ref(name));
-                    }
-                });
-            }
-            ToLister::GoTo { path } => {
-                self.window.present();
-                self.navigate_to(&path);
-            }
-            ToLister::CacheList(entries) => crate::cache_list::show(self, entries),
-            ToLister::FormatsUpdate(new_formats) => {
-                *self.hub.formats.borrow_mut() = new_formats;
-                self.on_formats_changed();
-            }
-            ToLister::FunctionsUpdate(new_functions) => {
-                *self.hub.functions.borrow_mut() = new_functions;
-            }
-            ToLister::BindingsUpdate(new_bindings) => {
-                *self.hub.hotkeys.borrow_mut() = crate::hotkeys::HotkeyMap::from_hotkeys(&new_bindings.hotkeys);
-                *self.hub.bindings.borrow_mut() = new_bindings;
-            }
-            ToLister::QuerySelection => {
-                let _ = self.hub.client.send(&opusdm_ipc::ToHub::SelectionReply {
-                    paths: self.selected_paths(),
-                    cwd: self.cwd_path(),
-                });
-            }
-            ToLister::CheckFitResult { dest_dir, needed, free, fits, percent } => {
-                crate::checkfit_ui::show_result(self, &dest_dir, needed, free, fits, percent);
-            }
-            ToLister::CheckFitFailed { message } => {
-                crate::actions::flash(self, &format!("check fit failed: {message}"));
-            }
-            // Step output is shown by the Manage Functions window's Test;
-            // a run from here only reports how it ended.
-            ToLister::FunctionOutput { .. } | ToLister::FunctionStepDone { .. } => {}
-            ToLister::FunctionFailed { step_idx, error } => {
-                self.run_finished();
-                crate::actions::flash(self, &format!("function failed at step {step_idx}: {error}"));
-            }
-            ToLister::FunctionDone => {
-                self.run_finished();
-                crate::actions::flash(self, "function finished");
-            }
-        }
-    }
-
     /// Hand a function to the hub (`ToHub::RunFunction` or `RunFunctionById`)
-    /// and show the busy indicator until it reports Done or Failed.
+    /// and show the busy indicator until it reports Done or Failed. A
+    /// request that cannot be sent stops the indicator again at once.
     pub fn start_run(&self, request: opusdm_ipc::ToHub) {
         self.busy.start();
         self.refresh_busy();
-        let _ = self.hub.client.send(&request);
+        if !self.send_hub(&request) {
+            self.run_finished();
+        }
+    }
+
+    /// Send `msg` to the hub. A failure is logged and flashed in the message
+    /// line, and `false` is returned so the caller can undo what it started.
+    pub fn send_hub(&self, msg: &ToHub) -> bool {
+        let Err(e) = self.hub.client.send(msg) else { return true };
+        opusdm_ipc::err_log!("opusdm-lister", "cannot send {} to the hub: {e}", hub_message_name(msg));
+        self.flash(&format!("lost the connection to the hub: {e}"));
+        false
+    }
+
+    /// The window is closing: tell the hub, close the Sidecar, cancel the
+    /// background work, close the remote connections and stop the folder
+    /// watcher, so nothing outlives the window or keeps the `Ui` alive.
+    pub fn shutdown(&self) {
+        crate::dlog!("shutting down, sending Goodbye to hub");
+        // The hub may already be gone (that is often why the window closes).
+        if let Err(e) = self.hub.client.send(&ToHub::Goodbye) {
+            crate::dlog!("Goodbye not sent: {e}");
+        }
+        crate::sidecar::stop(self);
+        self.nav.cancel.borrow().cancel();
+        self.caches.size_scan.borrow().cancel();
+        self.remote.shutdown();
+        if let Some(watcher) = &self.hub.watcher {
+            watcher.stop();
+        }
+    }
+
+    /// Show `text` in the transient message line for a few seconds.
+    pub fn flash(&self, text: &str) {
+        self.status_bar.job_line.set_text(text);
+        let line = self.status_bar.job_line.clone();
+        let expected = text.to_string();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(FLASH_SECS), move || {
+            if line.text() == expected {
+                line.set_text("");
+            }
+        });
     }
 
     /// A function finished or failed: update the indicator.
-    fn run_finished(&self) {
+    pub(crate) fn run_finished(&self) {
         self.busy.finish();
         self.refresh_busy();
     }
@@ -743,12 +678,7 @@ impl Ui {
             glib::spawn_future_local(async move {
                 let Ok(result) = rx.recv().await else { return };
                 match result {
-                    Ok(temp_path) => {
-                        let uri = format!("file://{}", temp_path.to_string_lossy());
-                        if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
-                            crate::actions::flash(&ui, &format!("cannot open {}: {e}", temp_path.display()));
-                        }
-                    }
+                    Ok(temp_path) => ui.open_with_default(&temp_path),
                     Err(e) => crate::actions::flash(&ui, &format!("cannot extract from the archive: {e}")),
                 }
             });
@@ -760,10 +690,9 @@ impl Ui {
                 self.navigate_to(&target);
             } else {
                 let item = opusdm_ftp::RemoteItem { path: url.join(&row.name).path, name: row.name.clone(), is_dir: false };
-                self.download_remote(&url, vec![item], |_ui, paths| {
+                self.download_remote(&url, vec![item], |ui, paths| {
                     if let Some(path) = paths.first() {
-                        let uri = format!("file://{}", path.to_string_lossy());
-                        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                        ui.open_with_default(path);
                     }
                 });
             }
@@ -776,9 +705,16 @@ impl Ui {
         } else if let Some(function) = crate::filetypes_ui::type_for(&target, &row).and_then(|t| t.actions.dblclick) {
             crate::filetypes_ui::run_on_row(self, &row.name, &function);
         } else {
-            let uri = format!("file://{}", target.to_string_lossy());
-            let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+            self.open_with_default(&target);
         }
+    }
+
+    /// Hand the local file `path` to its default application, logging and
+    /// flashing the error when the launch fails.
+    fn open_with_default(self: &Rc<Self>, path: &Path) {
+        let Err(e) = crate::open_default::open_default(path) else { return };
+        opusdm_ipc::err_log!("opusdm-lister", "{e}");
+        crate::actions::flash(self, &e);
     }
 
     /// Ctrl+Return: open the folder at `position` in a new Lister. Anything
@@ -804,7 +740,7 @@ impl Ui {
             }
             None => cwd.join(&row.name),
         };
-        let _ = self.hub.client.send(&ToHub::SpawnLister { start_path: Some(target) });
+        self.send_hub(&ToHub::SpawnLister { start_path: Some(target) });
     }
 
     /// Put the keyboard cursor on `pos` and make that row the only
@@ -900,12 +836,12 @@ impl Ui {
             crate::actions::flash(self, "no other SOURCE/DEST Lister to switch to");
             return;
         };
-        let _ = self.hub.client.send(&ToHub::PresentLister(target));
+        self.send_hub(&ToHub::PresentLister(target));
     }
 
     /// Point the inotify watch at `dir`, or drop it when auto-refresh is off or
     /// the path is a virtual archive (nothing on disk to watch).
-    fn sync_watch(&self, dir: &Path) {
+    pub(crate) fn sync_watch(&self, dir: &Path) {
         let Some(watcher) = &self.hub.watcher else { return };
         let enabled = self.hub.settings.borrow().behavior.auto_refresh;
         if enabled && crate::archive::parse_archive_path(dir).is_none() && crate::remote::url_of(dir).is_none() {
@@ -935,5 +871,17 @@ impl Ui {
         let css_data = crate::theme::generate_css(&s);
         self.css_provider.load_from_data(&css_data);
         crate::icons::set_icon_colour(&s.theme.colors.toolbar_button_fg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_messages_are_logged_by_their_variant_name() {
+        assert_eq!(hub_message_name(&ToHub::Goodbye), "Goodbye");
+        assert_eq!(hub_message_name(&ToHub::PathChanged(PathBuf::from("/a b"))), "PathChanged");
+        assert_eq!(hub_message_name(&ToHub::SpawnLister { start_path: None }), "SpawnLister");
     }
 }

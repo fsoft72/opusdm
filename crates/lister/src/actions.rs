@@ -3,7 +3,6 @@
 use crate::client::Roles;
 use crate::window::Ui;
 use gtk4 as gtk;
-use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::{FileMeta, ListerId, Op, Outcome, Resolution, ToHub};
 use std::path::{Path, PathBuf};
@@ -70,10 +69,14 @@ fn text_button(label: &str, tooltip: &str) -> gtk::Button {
     btn
 }
 
-/// Run `action` on `ui` when `btn` is clicked.
+/// Run `action` on `ui` when `btn` is clicked. The handler holds a `Weak`,
+/// so the button (owned by the `Ui`) does not keep the `Ui` alive.
 fn on_click(ui: &Rc<Ui>, btn: &gtk::Button, action: impl Fn(&Rc<Ui>) + 'static) {
-    let ui = ui.clone();
-    btn.connect_clicked(move |_| action(&ui));
+    let weak = Rc::downgrade(ui);
+    btn.connect_clicked(move |_| {
+        let Some(ui) = weak.upgrade() else { return };
+        action(&ui);
+    });
 }
 
 /// The show-hidden toggle: its icon follows its state and a change reloads
@@ -83,8 +86,9 @@ fn hidden_toggle(ui: &Rc<Ui>) -> gtk::ToggleButton {
     let btn = crate::icons::icon_toggle_button(hidden_icon(active), "Toggle Hidden Files", ROW_ICON_SIZE);
     btn.set_active(active);
     *ui.hidden_btn.borrow_mut() = Some(btn.clone());
-    let ui = ui.clone();
+    let weak = Rc::downgrade(ui);
     btn.connect_toggled(move |btn| {
+        let Some(ui) = weak.upgrade() else { return };
         let active = btn.is_active();
         ui.view.show_hidden.set(active);
         btn.set_child(Some(&crate::icons::svg_image(hidden_icon(active), ROW_ICON_SIZE)));
@@ -103,8 +107,11 @@ fn wire_delete(ui: &Rc<Ui>, btn: &gtk::Button) {
     });
     // Ask on release, not on press: a requester opened mid-press swallows
     // the release and leaves the button stuck down.
-    let ui_right = ui.clone();
-    gesture.connect_released(move |_, _, _, _| crate::commands::delete_selection(&ui_right, true));
+    let weak = Rc::downgrade(ui);
+    gesture.connect_released(move |_, _, _, _| {
+        let Some(ui) = weak.upgrade() else { return };
+        crate::commands::delete_selection(&ui, true);
+    });
     btn.add_controller(gesture);
     on_click(ui, btn, |ui| crate::commands::delete_selection(ui, false));
 }
@@ -143,16 +150,14 @@ fn rename_selected(ui: &Rc<Ui>) {
 /// set by clicking the stat-bar badge (see build::build_window), which
 /// cycles SOURCE -> DEST -> NONE.
 fn wire_role_lock(ui: &Rc<Ui>) {
-    let btn = ui.status_bar.role_lock_btn.clone();
-    let ui = ui.clone();
-    btn.connect_toggled(move |b| {
+    let weak = Rc::downgrade(ui);
+    ui.status_bar.role_lock_btn.connect_toggled(move |b| {
+        let Some(ui) = weak.upgrade() else { return };
         if ui.status_bar.role_guard.get() {
             return;
         }
         let msg = if b.is_active() { ToHub::LockRole } else { ToHub::UnlockRole };
-        if let Err(e) = ui.hub.client.send(&msg) {
-            flash(&ui, &format!("lost the connection to the hub: {e}"));
-        }
+        ui.send_hub(&msg);
     });
 }
 
@@ -168,7 +173,7 @@ fn as_command(op: &Op) -> Option<crate::keys::CommandId> {
 fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
     // Right click: the "As..." variant (naming dialog) of the same operation.
     if let Some(cmd) = as_command(&op) {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let gesture = gtk::GestureClick::new();
         gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
         gesture.connect_pressed(|g, _, _, _| {
@@ -177,12 +182,14 @@ fn wire_transfer(ui: &Rc<Ui>, btn: &gtk::Button, op: Op) {
         // Open the modal dialog on release, not on press: a dialog opened
         // mid-press swallows the release and leaves the button stuck down.
         gesture.connect_released(move |_, _, _, _| {
+            let Some(ui) = weak.upgrade() else { return };
             crate::palette::execute_command(&ui, cmd.clone());
         });
         btn.add_controller(gesture);
     }
-    let ui = ui.clone();
+    let weak = Rc::downgrade(ui);
     btn.connect_clicked(move |_| {
+        let Some(ui) = weak.upgrade() else { return };
         if let Err(msg) = resolve_copy_target(&ui.hub.roles.borrow(), ui.hub.id) {
             flash(&ui, &msg);
             return;
@@ -245,22 +252,16 @@ pub fn transfer_from_archive(ui: &Rc<Ui>, op: Op, arch: PathBuf, inner: String) 
         .map(|n| if inner.is_empty() { n } else { format!("{}/{}", inner.trim_end_matches('/'), n) })
         .collect();
     let extract_dir = scratch.path().to_path_buf();
-    let (tx, rx) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send_blocking(crate::archive::extract_items_to_dir(&arch, &items, &extract_dir));
-    });
     let ui = ui.clone();
-    glib::spawn_future_local(async move {
-        match rx.recv().await {
-            Ok(Ok(extracted)) => {
-                // One JobDone comes back per DEST Lister the job fans out to.
-                let dests = ui.hub.roles.borrow().dests.len();
-                crate::archive::keep_scratch(scratch, dests);
-                crate::job_submit::submit_job(&ui, op, extracted, None, opusdm_ipc::JobOptions::default());
-            }
-            Ok(Err(e)) => flash(&ui, &format!("extraction failed: {e}")),
-            Err(_) => flash(&ui, "extraction stopped unexpectedly"),
+    let extract = move || crate::archive::extract_items_to_dir(&arch, &items, &extract_dir);
+    crate::background::run_blocking(extract, move |result| match result {
+        Ok(extracted) => {
+            // One JobDone comes back per DEST Lister the job fans out to.
+            let dests = ui.hub.roles.borrow().dests.len();
+            crate::archive::keep_scratch(scratch, dests);
+            crate::job_submit::submit_job(&ui, op, extracted, None, opusdm_ipc::JobOptions::default());
         }
+        Err(e) => flash(&ui, &format!("extraction failed: {e}")),
     });
 }
 
@@ -362,7 +363,7 @@ pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: Fi
             ("Cancel", Resolution::Cancel),
         ],
         move |resolution| {
-            let _ = ui.hub.client.send(&ToHub::ConflictReply { req_id, resolution });
+            ui.send_hub(&ToHub::ConflictReply { req_id, resolution });
         },
     );
 }
@@ -393,14 +394,7 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>, permanent:
 
 /// Show `text` in the transient message line for a few seconds.
 pub fn flash(ui: &Rc<Ui>, text: &str) {
-    ui.status_bar.job_line.set_text(text);
-    let line = ui.status_bar.job_line.clone();
-    let expected = text.to_string();
-    glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
-        if line.text() == expected {
-            line.set_text("");
-        }
-    });
+    ui.flash(text);
 }
 
 /// A small modal name-entry dialog. Calls `on_ok` with the entered text.

@@ -2,7 +2,6 @@
 
 use crate::window::Ui;
 use gtk4 as gtk;
-use gtk::glib;
 use gtk::prelude::*;
 use std::io;
 use std::path::Path;
@@ -58,12 +57,7 @@ impl Ui {
             return;
         }
         let dir = dir.to_path_buf();
-        let (tx, rx) = async_channel::bounded::<Option<(u64, u64)>>(1);
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(usage(&dir).ok());
-        });
-        glib::spawn_future_local(async move {
-            let Ok(result) = rx.recv().await else { return };
+        crate::background::run_blocking(move || usage(&dir).ok(), move |result| {
             if generation.get() != this_request {
                 return;
             }

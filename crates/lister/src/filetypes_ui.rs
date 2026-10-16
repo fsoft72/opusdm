@@ -13,13 +13,12 @@ use std::path::Path;
 use std::rc::Rc;
 
 /// The user file type of the file at `path`, or `None` when none matches (or
-/// `row` is a directory). `filetypes.json` is read on every call, so an edit
-/// applies at once; the file is small and a double click is rare.
+/// `row` is a directory). `filetypes.json` comes from the in-memory cache,
+/// which drops its copy as soon as the file changes, so an edit applies at
+/// once. Only the few leading bytes a magic rule needs are read from `path`.
 pub fn type_for(path: &Path, row: &Row) -> Option<FileType> {
-    if row.is_dir {
-        return None;
-    }
-    let types = filetypes::load_filetypes();
+    if row.is_dir { return None; }
+    let types = crate::config_cache::filetypes();
     let head = filetypes::read_head(path, types.head_needed());
     let facts = FileFacts { name: &row.name, size: row.size, modified: row.modified_unix, head: &head };
     types.find(&facts).cloned()
@@ -257,7 +256,10 @@ fn build_editor(
         let state = state.clone();
         save_btn.connect_clicked(move |_| match build_types(&state) {
             Ok(types) => match filetypes::save_filetypes(&types) {
-                Ok(()) => report("file types saved"),
+                Ok(()) => {
+                    crate::config_cache::invalidate_filetypes();
+                    report("file types saved");
+                }
                 Err(e) => report(&format!("could not save file types: {e}")),
             },
             Err(messages) => state.status.set_text(&messages.join("; ")),

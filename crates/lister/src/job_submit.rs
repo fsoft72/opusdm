@@ -63,7 +63,7 @@ pub fn submit_job(
 
 /// Put the job on the wire.
 fn send(ui: &Rc<Ui>, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf>, options: JobOptions) {
-    let _ = ui.hub.client.send(&ToHub::RunJob { op, srcs, dest_dir, options });
+    ui.send_hub(&ToHub::RunJob { op, srcs, dest_dir, options });
 }
 
 #[cfg(test)]

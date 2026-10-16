@@ -27,13 +27,11 @@ pub fn launch_manager() -> std::io::Result<()> {
 }
 
 /// Start this binary with `flag`, which makes it open one tool window
-/// instead of a file window. A thread reaps the process when it exits.
+/// instead of a file window. The process is reaped when it exits.
 pub fn launch_tool(flag: &str) -> std::io::Result<()> {
     let bin = std::env::current_exe()?;
-    let mut child = std::process::Command::new(bin).arg(flag).spawn()?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+    let child = std::process::Command::new(bin).arg(flag).spawn()?;
+    crate::background::reap(child, flag);
     Ok(())
 }
 

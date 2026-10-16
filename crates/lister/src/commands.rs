@@ -125,7 +125,7 @@ pub fn create_here(ui: &Rc<Ui>, file: bool) {
     let win = ui.window.clone();
     crate::actions::prompt(&win, title, "", move |name| {
         let op = if file { Op::NewFile { name } } else { Op::MakeDir { name } };
-        let _ = ui_clone.hub.client.send(&ToHub::RunJob {
+        ui_clone.send_hub(&ToHub::RunJob {
             op,
             srcs: Vec::new(),
             dest_dir: Some(ui_clone.cwd_path()),
@@ -183,7 +183,7 @@ pub fn go_root(ui: &Rc<Ui>) {
 pub fn open_parent_in_new(ui: &Rc<Ui>) {
     match crate::navpath::parent(&ui.cwd.borrow()) {
         Some(parent) => {
-            let _ = ui.hub.client.send(&ToHub::SpawnLister { start_path: Some(parent) });
+            ui.send_hub(&ToHub::SpawnLister { start_path: Some(parent) });
         }
         None => crate::actions::flash(ui, "already at the top"),
     }
@@ -192,7 +192,7 @@ pub fn open_parent_in_new(ui: &Rc<Ui>) {
 /// Open the root of the current tree in a new Lister.
 pub fn open_root_in_new(ui: &Rc<Ui>) {
     let root = crate::navpath::root(&ui.cwd.borrow());
-    let _ = ui.hub.client.send(&ToHub::SpawnLister { start_path: Some(root) });
+    ui.send_hub(&ToHub::SpawnLister { start_path: Some(root) });
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ pub fn open_root_in_new(ui: &Rc<Ui>) {
 /// focus notification.
 pub fn request_role(ui: &Rc<Ui>, role: Role) {
     if ui.window.is_active() {
-        let _ = ui.hub.client.send(&ToHub::SetRole(role));
+        ui.send_hub(&ToHub::SetRole(role));
         return;
     }
     let ui = ui.clone();
@@ -217,7 +217,7 @@ pub fn request_role(ui: &Rc<Ui>, role: Role) {
         }
         let ui = ui.clone();
         glib::idle_add_local_once(move || {
-            let _ = ui.hub.client.send(&ToHub::SetRole(role));
+            ui.send_hub(&ToHub::SetRole(role));
         });
     });
 }
@@ -227,7 +227,7 @@ pub fn toggle_pin(ui: &Rc<Ui>) {
     let active = !ui.status_bar.role_lock_btn.is_active();
     ui.status_bar.role_lock_btn.set_active(active);
     let msg = if active { ToHub::LockRole } else { ToHub::UnlockRole };
-    let _ = ui.hub.client.send(&msg);
+    ui.send_hub(&msg);
 }
 
 // ---------------------------------------------------------------------------

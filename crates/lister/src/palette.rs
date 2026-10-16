@@ -163,7 +163,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
             }
         }
         CommandId::ManageBanks => {
-            let _ = ui.hub.client.send(&ToHub::OpenBankManager);
+            ui.send_hub(&ToHub::OpenBankManager);
         }
         CommandId::ManageHotkeys => {
             if let Err(e) = crate::hotkey_editor::launch_editor() {

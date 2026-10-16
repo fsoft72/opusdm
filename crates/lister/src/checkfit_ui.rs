@@ -19,7 +19,7 @@ pub fn start(ui: &Rc<Ui>) {
         return;
     }
     crate::actions::flash(ui, "checking free space...");
-    let _ = ui.hub.client.send(&ToHub::CheckFit { srcs, dest_dir: None });
+    ui.send_hub(&ToHub::CheckFit { srcs, dest_dir: None });
 }
 
 /// The requester text for a hub answer.

@@ -1,7 +1,7 @@
 //! Navigation with the directory cache: show the cached listing at once, then
 //! re-read the disk and update the view only if it changed.
 
-use crate::model::{read_dir_rows, Row};
+use crate::model::{read_dir_rows, Listing, Row};
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::glib;
@@ -17,7 +17,7 @@ impl Ui {
     /// view only when it differs from what is shown. `on_done` runs once the
     /// final listing is on screen.
     pub fn navigate(self: &Rc<Self>, dir: &Path, use_cache: bool, on_done: impl Fn() + 'static) {
-        let history_before = self.history.borrow().clone();
+        let history_before = self.nav.history.borrow().clone();
         self.navigate_from(dir, use_cache, history_before, on_done);
     }
 
@@ -42,35 +42,36 @@ impl Ui {
             return;
         }
         let previous = self.cwd_path();
-        let gen = self.nav_generation.get() + 1;
-        self.nav_generation.set(gen);
+        let gen = self.nav.generation.get() + 1;
+        self.nav.generation.set(gen);
 
         let is_archive = crate::archive::parse_archive_path(dir).is_some() || remote_url.is_some();
         let cached = if use_cache && !is_archive { self.caches.dirs.borrow_mut().get(dir) } else { None };
         if let Some(rows) = &cached {
-            self.apply_navigation(dir, Ok((**rows).clone()));
+            self.apply_navigation(dir, Ok(rows.clone()));
         }
 
         let dir_owned = dir.to_path_buf();
         let session = remote_url.as_ref().and_then(|u| self.remote_session(u));
-        let (tx, rx) = async_channel::bounded::<io::Result<Vec<Row>>>(1);
-        std::thread::spawn(move || {
-            let result = if let (Some(url), Some(session)) = (crate::remote::url_of(&dir_owned), session.as_ref()) {
+        // The worker pool reuses its threads, and a read that was superseded
+        // before it started is skipped through the cancel token.
+        let cancel = crate::background::CancelToken::new();
+        self.nav.cancel.replace(cancel.clone()).cancel();
+        let read = move |_: &crate::background::CancelToken| {
+            if let (Some(url), Some(session)) = (crate::remote::url_of(&dir_owned), session.as_ref()) {
                 crate::remote_ui::read_rows(session, &url)
             } else if let Some((arch, inner)) = crate::archive::parse_archive_path(&dir_owned) {
                 crate::archive::read_archive_rows(&arch, &inner)
             } else {
                 read_dir_rows(&dir_owned)
-            };
-            let _ = tx.send_blocking(result);
-        });
+            }
+        };
 
         let this = self.clone();
         let dir_owned = dir.to_path_buf();
-        glib::spawn_future_local(async move {
-            let Ok(result) = rx.recv().await else { return };
+        crate::background::run_cancellable(&cancel, read, move |result: io::Result<Vec<Row>>| {
             // Superseded by a later navigation while this was loading.
-            if this.nav_generation.get() != gen {
+            if this.nav.generation.get() != gen {
                 return;
             }
             // A failed read leaves the previous listing on screen; callers that
@@ -88,7 +89,7 @@ impl Ui {
         self: &Rc<Self>,
         dir: &Path,
         result: io::Result<Vec<Row>>,
-        cached: Option<Rc<Vec<Row>>>,
+        cached: Option<Listing>,
         previous: std::path::PathBuf,
         history_before: crate::history::History,
     ) -> bool {
@@ -109,7 +110,7 @@ impl Ui {
                 self.apply_navigation(dir, Err(e));
                 // The move never happened: undo its history step, and if the
                 // cached rows were already shown, go back where we were.
-                *self.history.borrow_mut() = history_before;
+                *self.nav.history.borrow_mut() = history_before;
                 self.refresh_history_ui();
                 if cached.is_some() && previous != dir {
                     self.navigate_to(&previous);
@@ -120,6 +121,7 @@ impl Ui {
         if cached.as_ref().is_some_and(|c| crate::dircache::same_listing(c, &rows)) {
             return true;
         }
+        let rows = crate::model::listing(rows);
         // Keep the user's selection when the fresh listing replaces a cached one.
         let selected = if cached.is_some() { self.selected_names() } else { Vec::new() };
         if !is_archive {
@@ -155,7 +157,7 @@ impl Ui {
     /// Tell the hub which directories this Lister has cached.
     pub fn report_cache(&self) {
         let paths = self.caches.dirs.borrow().paths();
-        let _ = self.hub.client.send(&ToHub::CacheReport(paths));
+        self.send_hub(&ToHub::CacheReport(paths));
     }
 
     /// Drop the whole cache and tell the hub.
@@ -166,8 +168,8 @@ impl Ui {
 
     /// Go to the previous history entry.
     pub fn history_back(self: &Rc<Self>) {
-        let before = self.history.borrow().clone();
-        let target = self.history.borrow_mut().back();
+        let before = self.nav.history.borrow().clone();
+        let target = self.nav.history.borrow_mut().back();
         if let Some(dir) = target {
             self.navigate_from(&dir, true, before, || {});
         }
@@ -175,8 +177,8 @@ impl Ui {
 
     /// Go to the next history entry.
     pub fn history_forward(self: &Rc<Self>) {
-        let before = self.history.borrow().clone();
-        let target = self.history.borrow_mut().forward();
+        let before = self.nav.history.borrow().clone();
+        let target = self.nav.history.borrow_mut().forward();
         if let Some(dir) = target {
             self.navigate_from(&dir, true, before, || {});
         }
@@ -184,8 +186,8 @@ impl Ui {
 
     /// Go to history entry `index`.
     pub fn history_jump(self: &Rc<Self>, index: usize) {
-        let before = self.history.borrow().clone();
-        let target = self.history.borrow_mut().jump(index);
+        let before = self.nav.history.borrow().clone();
+        let target = self.nav.history.borrow_mut().jump(index);
         if let Some(dir) = target {
             self.navigate_from(&dir, true, before, || {});
         }
@@ -195,10 +197,10 @@ impl Ui {
     /// the current entry in bold).
     pub fn refresh_history_ui(&self) {
         use gtk::prelude::*;
-        let history = self.history.borrow();
-        self.nav_history.back.set_sensitive(history.can_back());
-        self.nav_history.forward.set_sensitive(history.can_forward());
-        let list = &self.nav_history.list;
+        let history = self.nav.history.borrow();
+        self.nav.widgets.back.set_sensitive(history.can_back());
+        self.nav.widgets.forward.set_sensitive(history.can_forward());
+        let list = &self.nav.widgets.list;
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
@@ -221,18 +223,25 @@ impl Ui {
 pub fn install_history(ui: &Rc<Ui>, popover: &gtk::Popover) {
     use gtk::prelude::*;
     {
-        let ui = ui.clone();
-        ui.clone().nav_history.back.connect_clicked(move |_| ui.history_back());
+        let weak = Rc::downgrade(ui);
+        ui.nav.widgets.back.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.history_back();
+        });
     }
     {
-        let ui = ui.clone();
-        ui.clone().nav_history.forward.connect_clicked(move |_| ui.history_forward());
+        let weak = Rc::downgrade(ui);
+        ui.nav.widgets.forward.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.history_forward();
+        });
     }
     {
-        let ui_for_click = ui.clone();
+        let weak = Rc::downgrade(ui);
         let popover = popover.clone();
-        ui.nav_history.list.connect_row_activated(move |_, row| {
-            let len = ui_for_click.history.borrow().entries().len();
+        ui.nav.widgets.list.connect_row_activated(move |_, row| {
+            let Some(ui_for_click) = weak.upgrade() else { return };
+            let len = ui_for_click.nav.history.borrow().entries().len();
             // Rows are listed newest first.
             let Some(index) = len.checked_sub(1 + row.index() as usize) else { return };
             popover.popdown();

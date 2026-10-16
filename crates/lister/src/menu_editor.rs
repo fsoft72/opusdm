@@ -49,7 +49,7 @@ pub fn open_menu_editor(ui: &Rc<Ui>) {
         save_btn.connect_clicked(move |_| {
             let mut updated = state.ui.hub.bindings.borrow().clone();
             updated.menu = state.tree.borrow().clone();
-            let _ = state.ui.hub.client.send(&opusdm_ipc::ToHub::SetBindings(updated));
+            state.ui.send_hub(&opusdm_ipc::ToHub::SetBindings(updated));
             crate::actions::flash(&state.ui, "user menu saved");
         });
     }

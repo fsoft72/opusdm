@@ -25,13 +25,11 @@ pub fn viewer_command(exe_dir: Option<&Path>, files: &[PathBuf]) -> Command {
     cmd
 }
 
-/// Start the image viewer on `files`. A thread reaps it when it exits.
+/// Start the image viewer on `files`. It is reaped when it exits.
 pub fn launch(files: &[PathBuf]) -> io::Result<()> {
     let exe = std::env::current_exe().ok();
-    let mut child = viewer_command(exe.as_deref().and_then(Path::parent), files).spawn()?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+    let child = viewer_command(exe.as_deref().and_then(Path::parent), files).spawn()?;
+    crate::background::reap(child, VIEWER_BIN);
     Ok(())
 }
 

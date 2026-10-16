@@ -224,7 +224,20 @@ pub enum Action {
 /// `shift` is only consulted for keys whose keyval does not already encode it
 /// (Ctrl+N versus Ctrl+Shift+N); shifted characters such as `*`, `+`, `~` and `G` arrive as their own
 /// keyvals.
-pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, focus: Focus) -> Option<Action> {
+///
+/// With `alt` held, only Alt+Left / Alt+Right (history back / forward over
+/// the list) are built-in; every other Alt combination is left free for
+/// user hotkeys.
+pub fn resolve(key: gdk::Key, ctrl: bool, shift: bool, alt: bool, focus: Focus) -> Option<Action> {
+    if alt {
+        if ctrl || focus != Focus::List { return None; }
+        return match key {
+            gdk::Key::Left | gdk::Key::KP_Left => Some(Action::Command(CommandId::HistoryBack)),
+            gdk::Key::Right | gdk::Key::KP_Right => Some(Action::Command(CommandId::HistoryForward)),
+            _ => None,
+        };
+    }
+
     // Ctrl chords work wherever the focus is, including inside text fields.
     if ctrl {
         // New folder / new file only fire over the list: inside a text field
@@ -299,11 +312,11 @@ mod tests {
     use super::*;
 
     fn list(key: gdk::Key) -> Option<Action> {
-        resolve(key, false, false, Focus::List)
+        resolve(key, false, false, false, Focus::List)
     }
 
     fn editing(key: gdk::Key) -> Option<Action> {
-        resolve(key, false, false, Focus::Editing)
+        resolve(key, false, false, false, Focus::Editing)
     }
 
     #[test]
@@ -314,9 +327,9 @@ mod tests {
 
     #[test]
     fn ctrl_return_enters_in_a_new_lister_only_over_the_list() {
-        assert_eq!(resolve(gdk::Key::Return, true, false, Focus::List), Some(Action::EnterNew));
-        assert_eq!(resolve(gdk::Key::KP_Enter, true, false, Focus::List), Some(Action::EnterNew));
-        assert_eq!(resolve(gdk::Key::Return, true, false, Focus::Editing), None);
+        assert_eq!(resolve(gdk::Key::Return, true, false, false, Focus::List), Some(Action::EnterNew));
+        assert_eq!(resolve(gdk::Key::KP_Enter, true, false, false, Focus::List), Some(Action::EnterNew));
+        assert_eq!(resolve(gdk::Key::Return, true, false, false, Focus::Editing), None);
     }
 
     #[test]
@@ -329,9 +342,9 @@ mod tests {
 
     #[test]
     fn shift_delete_deletes_without_the_trash() {
-        let shifted = resolve(gdk::Key::Delete, false, true, Focus::List);
+        let shifted = resolve(gdk::Key::Delete, false, true, false, Focus::List);
         assert_eq!(shifted, Some(Action::Command(CommandId::DeletePermanent)));
-        assert_eq!(resolve(gdk::Key::KP_Delete, false, true, Focus::List), shifted);
+        assert_eq!(resolve(gdk::Key::KP_Delete, false, true, false, Focus::List), shifted);
     }
 
     #[test]
@@ -376,11 +389,11 @@ mod tests {
 
     #[test]
     fn shift_only_matters_where_the_keyval_does_not_encode_it() {
-        assert_eq!(resolve(gdk::Key::n, true, false, Focus::List), Some(Action::Command(CommandId::Mkdir)));
-        assert_eq!(resolve(gdk::Key::N, true, true, Focus::List), Some(Action::Command(CommandId::NewFile)));
-        assert_eq!(resolve(gdk::Key::F7, false, false, Focus::List), None, "F7 is no longer bound");
-        assert_eq!(resolve(gdk::Key::F7, false, true, Focus::List), None, "Shift+F7 is no longer bound");
-        assert_eq!(resolve(gdk::Key::n, true, false, Focus::Editing), None, "Ctrl+N stays out of text fields");
+        assert_eq!(resolve(gdk::Key::n, true, false, false, Focus::List), Some(Action::Command(CommandId::Mkdir)));
+        assert_eq!(resolve(gdk::Key::N, true, true, false, Focus::List), Some(Action::Command(CommandId::NewFile)));
+        assert_eq!(resolve(gdk::Key::F7, false, false, false, Focus::List), None, "F7 is no longer bound");
+        assert_eq!(resolve(gdk::Key::F7, false, true, false, Focus::List), None, "Shift+F7 is no longer bound");
+        assert_eq!(resolve(gdk::Key::n, true, false, false, Focus::Editing), None, "Ctrl+N stays out of text fields");
     }
 
     #[test]
@@ -398,7 +411,7 @@ mod tests {
     #[test]
     fn f3_opens_the_viewer_and_space_is_unbound() {
         assert_eq!(list(gdk::Key::F3), Some(Action::Command(CommandId::OpenViewer)));
-        assert_eq!(resolve(gdk::Key::F3, false, true, Focus::List), Some(Action::Command(CommandId::ToggleSidecar)));
+        assert_eq!(resolve(gdk::Key::F3, false, true, false, Focus::List), Some(Action::Command(CommandId::ToggleSidecar)));
         assert_eq!(list(gdk::Key::space), None);
         assert_eq!(list(gdk::Key::KP_Space), None);
     }
@@ -411,31 +424,49 @@ mod tests {
 
     #[test]
     fn ctrl_shift_a_reselects_while_ctrl_a_selects_all() {
-        assert_eq!(resolve(gdk::Key::A, true, true, Focus::List), Some(Action::Command(CommandId::Reselect)));
-        assert_eq!(resolve(gdk::Key::a, true, false, Focus::List), Some(Action::Command(CommandId::SelectAll)));
+        assert_eq!(resolve(gdk::Key::A, true, true, false, Focus::List), Some(Action::Command(CommandId::Reselect)));
+        assert_eq!(resolve(gdk::Key::a, true, false, false, Focus::List), Some(Action::Command(CommandId::SelectAll)));
     }
 
     #[test]
     fn ctrl_chords_work_in_both_focus_modes() {
         for focus in [Focus::List, Focus::Editing] {
-            assert_eq!(resolve(gdk::Key::p, true, false, focus), Some(Action::OpenPalette));
-            assert_eq!(resolve(gdk::Key::f, true, false, focus), Some(Action::RevealFilter));
-            assert_eq!(resolve(gdk::Key::l, true, false, focus), Some(Action::FocusPath));
-            assert_eq!(resolve(gdk::Key::a, true, false, focus), Some(Action::Command(CommandId::SelectAll)));
-            assert_eq!(resolve(gdk::Key::r, true, false, focus), Some(Action::Command(CommandId::Reload)));
-            assert_eq!(resolve(gdk::Key::h, true, false, focus), Some(Action::Command(CommandId::ToggleHidden)));
-            assert_eq!(resolve(gdk::Key::c, true, false, focus), Some(Action::Command(CommandId::ClipCopy)));
-            assert_eq!(resolve(gdk::Key::x, true, false, focus), Some(Action::Command(CommandId::ClipCut)));
-            assert_eq!(resolve(gdk::Key::v, true, false, focus), Some(Action::Command(CommandId::ClipPaste)));
+            assert_eq!(resolve(gdk::Key::p, true, false, false, focus), Some(Action::OpenPalette));
+            assert_eq!(resolve(gdk::Key::f, true, false, false, focus), Some(Action::RevealFilter));
+            assert_eq!(resolve(gdk::Key::l, true, false, false, focus), Some(Action::FocusPath));
+            assert_eq!(resolve(gdk::Key::a, true, false, false, focus), Some(Action::Command(CommandId::SelectAll)));
+            assert_eq!(resolve(gdk::Key::r, true, false, false, focus), Some(Action::Command(CommandId::Reload)));
+            assert_eq!(resolve(gdk::Key::h, true, false, false, focus), Some(Action::Command(CommandId::ToggleHidden)));
+            assert_eq!(resolve(gdk::Key::c, true, false, false, focus), Some(Action::Command(CommandId::ClipCopy)));
+            assert_eq!(resolve(gdk::Key::x, true, false, false, focus), Some(Action::Command(CommandId::ClipCut)));
+            assert_eq!(resolve(gdk::Key::v, true, false, false, focus), Some(Action::Command(CommandId::ClipPaste)));
         }
     }
 
     #[test]
     fn ctrl_does_not_leak_into_the_plain_letter_bindings() {
         // Ctrl+C is the clipboard copy, and unbound Ctrl+letters stay unbound.
-        assert_eq!(resolve(gdk::Key::c, true, false, Focus::List), Some(Action::Command(CommandId::ClipCopy)));
-        assert_eq!(resolve(gdk::Key::d, true, false, Focus::List), None);
-        assert_eq!(resolve(gdk::Key::j, true, false, Focus::List), None);
+        assert_eq!(resolve(gdk::Key::c, true, false, false, Focus::List), Some(Action::Command(CommandId::ClipCopy)));
+        assert_eq!(resolve(gdk::Key::d, true, false, false, Focus::List), None);
+        assert_eq!(resolve(gdk::Key::j, true, false, false, Focus::List), None);
+    }
+
+    #[test]
+    fn alt_left_and_right_walk_the_history_over_the_list() {
+        let back = resolve(gdk::Key::Left, false, false, true, Focus::List);
+        assert_eq!(back, Some(Action::Command(CommandId::HistoryBack)));
+        let forward = resolve(gdk::Key::Right, false, false, true, Focus::List);
+        assert_eq!(forward, Some(Action::Command(CommandId::HistoryForward)));
+        assert_eq!(resolve(gdk::Key::Left, false, false, true, Focus::Editing), None, "Alt+Left stays in text fields");
+        assert_eq!(resolve(gdk::Key::Left, true, false, true, Focus::List), None, "Ctrl+Alt+Left is not history");
+    }
+
+    #[test]
+    fn alt_with_any_other_key_is_not_a_built_in() {
+        for key in [gdk::Key::c, gdk::Key::F5, gdk::Key::Delete, gdk::Key::Return, gdk::Key::Up] {
+            assert_eq!(resolve(key, false, false, true, Focus::List), None, "{key:?}");
+        }
+        assert_eq!(resolve(gdk::Key::c, true, false, true, Focus::List), None, "Ctrl+Alt+C is not Ctrl+C");
     }
 
     #[test]
@@ -460,7 +491,7 @@ mod tests {
         ];
         for key in keys {
             for (ctrl, shift) in [(false, false), (false, true), (true, false)] {
-                let Some(Action::Command(id)) = resolve(key, ctrl, shift, Focus::List) else {
+                let Some(Action::Command(id)) = resolve(key, ctrl, shift, false, Focus::List) else {
                     continue;
                 };
                 assert!(known.contains(&id), "{key:?} maps to unknown command {id:?}");
