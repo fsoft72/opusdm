@@ -8,9 +8,6 @@
 //! instead, anchored to every edge of its monitor (see [`layer_spec`]).
 
 use gtk4 as gtk;
-use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
-use x11rb::protocol::xproto::{AtomEnum, PropMode};
-use x11rb::wrapper::ConnectionExt as _;
 
 /// Layer shell placement of the desktop window of the monitor `rect`: the
 /// whole monitor, below everything, ignoring the panel's exclusive zone
@@ -56,23 +53,15 @@ pub fn pin_geometry(window: &gtk::ApplicationWindow, x: i32, y: i32, width: i32,
     }
 }
 
-
+/// Mark `xid` as the desktop window and fix it at `(x, y)`, `width` x
+/// `height`, through the shared `opusdm_x11` helpers.
 fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), opusdm_ui::X11Error> {
     let width = width.max(1) as u32;
     let height = height.max(1) as u32;
     opusdm_ui::with_x11(|x11| {
-        let conn = x11.conn();
-        let desktop_type = x11.atom("_NET_WM_WINDOW_TYPE_DESKTOP")?;
-        let win_type = x11.atom("_NET_WM_WINDOW_TYPE")?;
-        let wm_state = x11.atom("_NET_WM_STATE")?;
-        let state_below = x11.atom("_NET_WM_STATE_BELOW")?;
-        let state_sticky = x11.atom("_NET_WM_STATE_STICKY")?;
-
-        // Window type = DESKTOP.
-        conn.change_property32(PropMode::REPLACE, xid, win_type, AtomEnum::ATOM, &[desktop_type])?;
-
-        // Keep it below every other window, and sticky across virtual desktops.
-        conn.change_property32(PropMode::REPLACE, xid, wm_state, AtomEnum::ATOM, &[state_below, state_sticky])?;
+        // Window type DESKTOP, kept below every other window and sticky
+        // across virtual desktops.
+        x11.set_type_and_states(xid, "_NET_WM_WINDOW_TYPE_DESKTOP", &["_NET_WM_STATE_BELOW", "_NET_WM_STATE_STICKY"])?;
 
         // Show it on every virtual desktop. The state property above is read
         // by the WM only when it adopts the window; once mapped, it honours
@@ -80,16 +69,9 @@ fn apply(xid: u32, x: i32, y: i32, width: i32, height: i32) -> Result<(), opusdm
         x11.stick_to_all_desktops(xid)?;
         x11.add_wm_states(xid, &["_NET_WM_STATE_BELOW"])?;
 
-        // Tell the WM the position is user-specified so it does not re-center the
-        // window (openbox centers windows that carry no position hint).
-        let mut hints = WmSizeHints::new();
-        hints.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
-        hints.size = Some((WmSizeHintsSpecification::UserSpecified, width as i32, height as i32));
-        hints.min_size = Some((width as i32, height as i32));
-        hints.max_size = Some((width as i32, height as i32));
-        hints.set_normal_hints(conn, xid)?.check()?;
-
-        // Pin geometry to this monitor's origin at its full size.
-        x11.configure(xid, x, y, width, height)
+        // User-specified position and fixed size, so the WM does not
+        // re-center the window (openbox centers windows that carry no
+        // position hint), then pin it to this monitor's origin.
+        x11.set_fixed_geometry(xid, x, y, width, height)
     })
 }
