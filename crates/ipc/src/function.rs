@@ -203,11 +203,11 @@ impl InternalArgs {
     /// The [`JobOptions`](crate::JobOptions) these arguments describe. A
     /// blank `include_glob` means no filter.
     pub fn job_options(&self) -> crate::JobOptions {
-        let glob = self.get("include_glob").map(str::trim).filter(|g| !g.is_empty());
+        let glob = self.get(keys::INCLUDE_GLOB).map(str::trim).filter(|g| !g.is_empty());
         crate::JobOptions {
-            update: self.flag("update"),
-            newer: self.flag("newer"),
-            move_when_same: self.flag("move_when_same"),
+            update: self.flag(keys::UPDATE),
+            newer: self.flag(keys::NEWER),
+            move_when_same: self.flag(keys::MOVE_WHEN_SAME),
             quiet: false,
             include_glob: glob.map(String::from),
         }
@@ -217,6 +217,51 @@ impl InternalArgs {
     pub fn flag(&self, key: &str) -> bool {
         self.get(key) == Some(BOOL_TRUE)
     }
+}
+
+/// The keys of the `Internal` step parameters, as stored in
+/// [`InternalArgs`] and declared in [`schema`].
+pub mod keys {
+    /// A folder or file path (`ChangeDir`, `NewLister`, `SetBackground`).
+    pub const PATH: &str = "path";
+    /// `ChangeDir`: open the folder in a new Lister.
+    pub const NEW: &str = "new";
+    /// `ChangeDir`: the path may be a file, open its folder and select it.
+    pub const CONTAINER: &str = "container";
+    /// `ChangeDir`: the view, `details` or `icons`.
+    pub const MODE: &str = "mode";
+    /// `SetBackground`: how the picture fits the screen.
+    pub const FIT: &str = "fit";
+    /// `Confirm`: the question to ask.
+    pub const MESSAGE: &str = "message";
+    /// Bank steps: the name of the button bank.
+    pub const BANK: &str = "bank";
+    /// `Rename`, `CopyAs`, `MoveAs`: the new name pattern.
+    pub const NEW_NAME: &str = "new_name";
+    /// `MakeDir`, `NewFile`: the name of the entry to create.
+    pub const NAME: &str = "name";
+    /// `Run`: the program and its arguments.
+    pub const COMMAND: &str = "command";
+    /// `Run`: wait for the program to finish.
+    pub const WAIT: &str = "wait";
+    /// `Run`: show the program's output in a window.
+    pub const WINDOW: &str = "window";
+    /// `Script`: the name of the script. `Run`: the flag set for inline
+    /// bash commands, whose third word is a script passed as typed.
+    pub const SCRIPT: &str = "script";
+    /// `Script`: the unsaved code to run instead of a saved script (the
+    /// script editor's Run).
+    pub const CODE: &str = "code";
+    /// `Script`: the arguments passed to the script.
+    pub const ARGS: &str = "args";
+    /// Job steps: only files matching this glob.
+    pub const INCLUDE_GLOB: &str = "include_glob";
+    /// Job steps: only files that already exist at the destination.
+    pub const UPDATE: &str = "update";
+    /// Job steps: only files missing or older at the destination.
+    pub const NEWER: &str = "newer";
+    /// `Copy`: move instead of copy on the same device.
+    pub const MOVE_WHEN_SAME: &str = "move_when_same";
 }
 
 /// Per-`InternalCmd` parameter schema: which fields the editor must show,
@@ -251,31 +296,31 @@ pub mod schema {
 
     /// Shared optional include filter of every job-backed command.
     const GLOB: ParamSpec = ParamSpec {
-        key: "include_glob",
+        key: super::keys::INCLUDE_GLOB,
         label: "Only files matching (e.g. *.rs;*.toml)",
         required: false,
         kind: ParamKind::Text,
     };
     const UPDATE: ParamSpec = ParamSpec {
-        key: "update",
+        key: super::keys::UPDATE,
         label: "Only files that already exist at the destination",
         required: false,
         kind: ParamKind::Bool,
     };
     const NEWER: ParamSpec = ParamSpec {
-        key: "newer",
+        key: super::keys::NEWER,
         label: "Only files missing or older at the destination",
         required: false,
         kind: ParamKind::Bool,
     };
     const MOVE_WHEN_SAME: ParamSpec = ParamSpec {
-        key: "move_when_same",
+        key: super::keys::MOVE_WHEN_SAME,
         label: "Move instead of copy on the same device",
         required: false,
         kind: ParamKind::Bool,
     };
     const NEW_NAME: ParamSpec = ParamSpec {
-        key: "new_name",
+        key: super::keys::NEW_NAME,
         label: "New name (* = original name)",
         required: true,
         kind: ParamKind::PathTemplate,
@@ -290,41 +335,41 @@ pub mod schema {
             InternalCmd::CopyAs => &[NEW_NAME, UPDATE, NEWER, GLOB],
             InternalCmd::MoveAs => &[NEW_NAME, UPDATE, NEWER, GLOB],
             InternalCmd::MakeDir => &[ParamSpec {
-                key: "name",
+                key: super::keys::NAME,
                 label: "Directory name",
                 required: true,
                 kind: ParamKind::Text,
             }],
             InternalCmd::NewFile => &[ParamSpec {
-                key: "name",
+                key: super::keys::NAME,
                 label: "File name",
                 required: true,
                 kind: ParamKind::Text,
             }],
             InternalCmd::Rename => &[ParamSpec {
-                key: "new_name",
+                key: super::keys::NEW_NAME,
                 label: "New name",
                 required: true,
                 kind: ParamKind::PathTemplate,
             }],
             InternalCmd::ChangeDir => &[
                 ParamSpec {
-                    key: "path",
+                    key: super::keys::PATH,
                     label: "Directory (absolute, ~ or relative to the current one)",
                     required: true,
                     kind: ParamKind::PathTemplate,
                 },
-                ParamSpec { key: "new", label: "Open in a NEW Lister", required: false, kind: ParamKind::Bool },
+                ParamSpec { key: super::keys::NEW, label: "Open in a NEW Lister", required: false, kind: ParamKind::Bool },
                 ParamSpec {
-                    key: "container",
+                    key: super::keys::CONTAINER,
                     label: "The path may be a file: open its folder and select it",
                     required: false,
                     kind: ParamKind::Bool,
                 },
-                ParamSpec { key: "mode", label: "View: details or icons (empty = keep)", required: false, kind: ParamKind::Text },
+                ParamSpec { key: super::keys::MODE, label: "View: details or icons (empty = keep)", required: false, kind: ParamKind::Text },
             ],
             InternalCmd::NewLister => &[ParamSpec {
-                key: "path",
+                key: super::keys::PATH,
                 label: "Directory (absolute, ~ or relative to the current one; empty = default)",
                 required: false,
                 kind: ParamKind::PathTemplate,
@@ -338,45 +383,45 @@ pub mod schema {
             | InternalCmd::DesktopNext
             | InternalCmd::OpenInputConfig => &[],
             InternalCmd::OpenBank | InternalCmd::CloseBank | InternalCmd::ToggleBank | InternalCmd::HideBank => &[ParamSpec {
-                key: "bank",
+                key: super::keys::BANK,
                 label: "Button bank",
                 required: true,
                 kind: ParamKind::Bank,
             }],
             InternalCmd::Run => &[
                 ParamSpec {
-                    key: "command",
+                    key: super::keys::COMMAND,
                     label: "Program and arguments (quotes group words; {f}, {o}, ... allowed)",
                     required: true,
                     kind: ParamKind::PathTemplate,
                 },
-                ParamSpec { key: "wait", label: "Wait for it to finish (a failure stops the function)", required: false, kind: ParamKind::Bool },
-                ParamSpec { key: "window", label: "Show its output in a window", required: false, kind: ParamKind::Bool },
+                ParamSpec { key: super::keys::WAIT, label: "Wait for it to finish (a failure stops the function)", required: false, kind: ParamKind::Bool },
+                ParamSpec { key: super::keys::WINDOW, label: "Show its output in a window", required: false, kind: ParamKind::Bool },
             ],
             InternalCmd::Script => &[
-                ParamSpec { key: "script", label: "Script", required: true, kind: ParamKind::Script },
+                ParamSpec { key: super::keys::SCRIPT, label: "Script", required: true, kind: ParamKind::Script },
                 ParamSpec {
-                    key: "args",
+                    key: super::keys::ARGS,
                     label: "Arguments (opus.args; {f}, {o}, ... allowed)",
                     required: false,
                     kind: ParamKind::PathTemplate,
                 },
             ],
             InternalCmd::Confirm => &[ParamSpec {
-                key: "message",
+                key: super::keys::MESSAGE,
                 label: "Question to ask (may use {f}, {o}, ...)",
                 required: true,
                 kind: ParamKind::PathTemplate,
             }],
             InternalCmd::SetBackground => &[
                 ParamSpec {
-                    key: "path",
+                    key: super::keys::PATH,
                     label: "Image or video file (png, jpg, webp, gif, mp4, mkv, webm, ...)",
                     required: true,
                     kind: ParamKind::PathTemplate,
                 },
                 ParamSpec {
-                    key: "fit",
+                    key: super::keys::FIT,
                     label: "Fit: fill, fit, center or tile (empty = keep current)",
                     required: false,
                     kind: ParamKind::Text,

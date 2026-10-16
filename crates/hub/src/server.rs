@@ -779,28 +779,15 @@ impl Hub {
         if ids.is_empty() {
             return;
         }
-        let saved = self.current_functions.clone();
         let deadline = Instant::now() + SHUTDOWN_HOOK_TIMEOUT;
         let mut receivers = Vec::new();
         for id in ids {
-            let reference = opusdm_ipc::funcref::parse(&id);
-            let steps = if let opusdm_ipc::funcref::FuncRef::Saved(_) = reference {
-                let Some(function) = saved.iter().find(|f| f.id == id) else {
-                    opusdm_ipc::err_log!("hub", "shutdown hook: function '{id}' not found");
+            // An inline command is waited for: the hub must not quit under it.
+            let steps = match function_run::resolve_steps(&self.current_functions, &id, true) {
+                Ok(steps) => steps,
+                Err(e) => {
+                    opusdm_ipc::err_log!("hub", "shutdown hook '{id}' cannot run: {e}");
                     continue;
-                };
-                if !opusdm_ipc::function::validate(function).is_empty() {
-                    opusdm_ipc::err_log!("hub", "shutdown hook: function '{}' is invalid", function.name);
-                    continue;
-                }
-                function.steps.clone()
-            } else {
-                match opusdm_ipc::funcref::to_steps_with(&reference, true) {
-                    Ok(steps) => steps,
-                    Err(e) => {
-                        opusdm_ipc::err_log!("hub", "shutdown hook '{id}' cannot run: {e}");
-                        continue;
-                    }
                 }
             };
             let run_id = self.runs.next_id();

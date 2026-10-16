@@ -1839,3 +1839,24 @@ fn a_broadcast_is_encoded_once_and_written_as_a_normal_frame() {
     peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     assert!(matches!(recv::<_, ToLister>(&mut peer).unwrap(), Some(ToLister::InvalidatePath(p)) if p == std::path::Path::new("/b")));
 }
+
+#[test]
+fn resolve_steps_finds_saved_functions_and_rejects_missing_or_invalid_ones() {
+    use opusdm_ipc::function::{Function, InternalArgs, InternalCmd};
+    let mut good = Function::new("Good");
+    good.steps.push(FnStep::External { argv: vec!["true".into()], cwd_source: true });
+    let mut bad = Function::new("Bad");
+    bad.steps.push(FnStep::Internal { cmd: InternalCmd::Confirm, args: InternalArgs::default() });
+    let functions = vec![good.clone(), bad.clone()];
+    assert_eq!(function_run::resolve_steps(&functions, &good.id, false), Ok(good.steps.clone()));
+    assert!(function_run::resolve_steps(&functions, &bad.id, false).unwrap_err().contains("is invalid"));
+    let missing = opusdm_ipc::function::Function::new("Gone").id;
+    assert!(function_run::resolve_steps(&functions, &missing, false).unwrap_err().contains("not found"));
+}
+
+#[test]
+fn resolve_steps_waits_for_an_inline_command_only_when_asked() {
+    let waits = |steps: Vec<FnStep>| matches!(&steps[..], [FnStep::Internal { args, .. }] if args.flag("wait"));
+    assert!(!waits(function_run::resolve_steps(&[], "exec:true", false).unwrap()));
+    assert!(waits(function_run::resolve_steps(&[], "exec:true", true).unwrap()));
+}

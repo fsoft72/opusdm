@@ -319,6 +319,23 @@ fn cancelling_stops_a_confirm_or_alert_nobody_answers() {
 }
 
 #[test]
+fn every_call_of_the_prelude_has_an_op() {
+    const CALL: &str = "call(\"";
+    let called: Vec<&str> = PRELUDE.match_indices(CALL).filter_map(|(at, _)| PRELUDE[at + CALL.len()..].split('"').next()).collect();
+    assert!(called.len() >= OPS.len(), "the prelude calls were not found: {called:?}");
+    for op in called {
+        assert!(OPS.iter().any(|(name, _)| *name == op), "the prelude calls \"{op}\" but OPS has no entry for it");
+    }
+}
+
+#[test]
+fn op_names_are_unique() {
+    for (i, (name, _)) in OPS.iter().enumerate() {
+        assert!(!OPS[i + 1..].iter().any(|(other, _)| other == name), "\"{name}\" is in OPS twice");
+    }
+}
+
+#[test]
 fn scripts_cannot_nest_forever() {
     std::thread::spawn(|| {
         let (tx, _rx) = channel();

@@ -12,7 +12,7 @@
 //! `docs/superpowers/specs/2026-10-05-inline-commands-design.md`.
 
 use crate::cli::{self, tokenize, CliCommand};
-use crate::function::{FnStep, FunctionId, InternalArgs, InternalCmd, BOOL_TRUE};
+use crate::function::{keys, FnStep, FunctionId, InternalArgs, InternalCmd, BOOL_TRUE};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -193,14 +193,14 @@ pub fn to_steps_with(r: &FuncRef, wait: bool) -> Result<Vec<FnStep>, String> {
             // `Run` step honours the `script` flag): file names pasted into
             // it would be run as shell code. The selection is passed as the
             // positional parameters instead, so the script reads `"$@"`.
-            args.0.insert("command".to_string(), format!("bash -c {} opusdm {{f}}", quote(cmd)));
-            args.0.insert("script".to_string(), BOOL_TRUE.to_string());
+            args.0.insert(keys::COMMAND.to_string(), format!("bash -c {} opusdm {{f}}", quote(cmd)));
+            args.0.insert(keys::SCRIPT.to_string(), BOOL_TRUE.to_string());
             if *show_output {
-                args.0.insert("window".to_string(), BOOL_TRUE.to_string());
+                args.0.insert(keys::WINDOW.to_string(), BOOL_TRUE.to_string());
             }
         }
         FuncRef::Exec { line } => {
-            args.0.insert("command".to_string(), line.trim().to_string());
+            args.0.insert(keys::COMMAND.to_string(), line.trim().to_string());
         }
         FuncRef::Internal { line } => {
             let (cmd, args) = parse_internal(line)?;
@@ -208,12 +208,12 @@ pub fn to_steps_with(r: &FuncRef, wait: bool) -> Result<Vec<FnStep>, String> {
         }
         FuncRef::Script { name } => {
             // The script itself waits for what it runs: `wait` changes nothing.
-            args.0.insert("script".to_string(), name.clone());
+            args.0.insert(keys::SCRIPT.to_string(), name.clone());
             return Ok(vec![FnStep::Internal { cmd: InternalCmd::Script, args }]);
         }
     }
     if wait {
-        args.0.insert("wait".to_string(), BOOL_TRUE.to_string());
+        args.0.insert(keys::WAIT.to_string(), BOOL_TRUE.to_string());
     }
     Ok(vec![FnStep::Internal { cmd: InternalCmd::Run, args }])
 }

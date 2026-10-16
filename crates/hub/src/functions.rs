@@ -5,7 +5,7 @@
 //! `docs/superpowers/specs/2026-09-28-function-editor-design.md`.
 
 use opusdm_fsops::{run_job, CancelToken, JobSpec, Progress};
-use opusdm_ipc::function::{expand_argv_element, expand_text, ExpandError, ExpandedArg, FnStep, InternalArgs, InternalCmd, SelectionCtx};
+use opusdm_ipc::function::{expand_argv_element, expand_text, keys, ExpandError, ExpandedArg, FnStep, InternalArgs, InternalCmd, SelectionCtx};
 use opusdm_ipc::glob::expand_new_name;
 use opusdm_ipc::buttonbank::BankAction;
 use opusdm_ipc::{Op, Resolution};
@@ -313,7 +313,7 @@ fn run_change_dir(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = expand_text(args.get(keys::PATH).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
     let text = text.trim();
     if text.is_empty() {
         return Err("Change Directory: path is empty".to_string());
@@ -323,7 +323,7 @@ fn run_change_dir(
     let target = std::fs::canonicalize(&target)
         .map_err(|e| format!("Change Directory: cannot open {}: {e}", target.display()))?;
     // With `container`, a file means "its folder, with the file selected".
-    let (target, select) = if args.flag("container") && !Path::new(&target).is_dir() {
+    let (target, select) = if args.flag(keys::CONTAINER) && !Path::new(&target).is_dir() {
         let name = target.file_name().map(|n| n.to_string_lossy().into_owned());
         let parent = target.parent().map(Path::to_path_buf);
         match (parent, name) {
@@ -336,14 +336,14 @@ fn run_change_dir(
     if !Path::new(&target).is_dir() {
         return Err(format!("Change Directory: {} is not a directory", target.display()));
     }
-    let mode = match args.get("mode").map(|m| m.trim().to_ascii_lowercase()).filter(|m| !m.is_empty()) {
+    let mode = match args.get(keys::MODE).map(|m| m.trim().to_ascii_lowercase()).filter(|m| !m.is_empty()) {
         None => None,
         Some(m) if m == "details" || m == "icons" => Some(m),
         Some(other) => return Err(format!("Change Directory: the view must be details or icons, not {other:?}")),
     };
     source.cwd = target.clone();
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("cd {}", target.display()) }));
-    let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target, select, mode, new_lister: args.flag("new") }));
+    let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target, select, mode, new_lister: args.flag(keys::NEW) }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
 }
@@ -359,7 +359,7 @@ fn run_new_lister(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = expand_text(args.get(keys::PATH).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
     let text = text.trim();
     let path = if text.is_empty() {
         None
@@ -390,7 +390,7 @@ fn run_set_background(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = expand_text(args.get(keys::PATH).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
     let text = text.trim();
     if text.is_empty() {
         return Err("Set Background: path is empty".to_string());
@@ -402,7 +402,7 @@ fn run_set_background(
             picked.display()
         ));
     }
-    let fit = match args.get("fit").map(str::trim).filter(|f| !f.is_empty()) {
+    let fit = match args.get(keys::FIT).map(str::trim).filter(|f| !f.is_empty()) {
         Some(text) => Some(opusdm_ipc::ImageFit::parse(text).ok_or_else(|| {
             format!("Set Background: unknown fit \"{text}\" (use fill, fit, center or tile)")
         })?),
@@ -494,7 +494,7 @@ fn run_confirm(
     events_tx: &Sender<(u64, FnEvent)>,
     cancel: &CancelToken,
 ) -> Result<(), String> {
-    let template = args.get("message").unwrap_or("");
+    let template = args.get(keys::MESSAGE).unwrap_or("");
     let message = expand_text(template, source, dest).map_err(expand_err_msg)?;
     if message.trim().is_empty() {
         return Err("Confirm: no question given".to_string());
@@ -523,7 +523,7 @@ fn run_bank(
     exists: impl Fn(&str) -> bool,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let name = args.get("bank").map(str::trim).unwrap_or("");
+    let name = args.get(keys::BANK).map(str::trim).unwrap_or("");
     if name.is_empty() {
         return Err("Bank: no bank name given".to_string());
     }
@@ -546,7 +546,7 @@ fn run_rename(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let template = args.get("new_name").unwrap_or("");
+    let template = args.get(keys::NEW_NAME).unwrap_or("");
     let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;
     let old = source.paths.first().ok_or_else(|| "Rename: nothing selected".to_string())?;
     let new_path = old.with_file_name(new_name.trim());
@@ -576,7 +576,7 @@ fn run_make_entry(
     // `palette.rs`'s existing Mkdir/NewFile commands (which create
     // in the invoking Lister's cwd, never the DEST pane) - a DEST
     // being open must not redirect where the new entry lands.
-    let template = args.get("name").unwrap_or("");
+    let template = args.get(keys::NAME).unwrap_or("");
     let name = expand_text(template, source, dest).map_err(expand_err_msg)?;
     // Reuses `opusdm_fsops::delete::make_entry` (the same call the
     // hub's own MakeDir/NewFile jobs use) rather than a bare
@@ -644,7 +644,7 @@ fn run_file_job(
         FileJob::Delete => Op::Delete,
         FileJob::Duplicate => Op::Duplicate,
         FileJob::CopyAs | FileJob::MoveAs => {
-            let pattern = expand_text(args.get("new_name").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+            let pattern = expand_text(args.get(keys::NEW_NAME).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
             let new_names = source
                 .paths
                 .iter()
@@ -713,16 +713,16 @@ fn run_run(
     events_tx: &Sender<(u64, FnEvent)>,
     cancel: &CancelToken,
 ) -> Result<(), String> {
-    let templates = opusdm_ipc::cli::tokenize(args.get("command").unwrap_or("")).map_err(|e| format!("Run: {e}"))?;
+    let templates = opusdm_ipc::cli::tokenize(args.get(keys::COMMAND).unwrap_or("")).map_err(|e| format!("Run: {e}"))?;
     if templates.is_empty() {
         return Err("Run: no program given".to_string());
     }
-    let (wait, window) = (args.flag("wait"), args.flag("window"));
+    let (wait, window) = (args.flag(keys::WAIT), args.flag(keys::WINDOW));
     // A `bash -c <script> ...` command (flag `script`, set for inline bash
     // commands): the script, the third word, is passed as typed. Expanding
     // placeholders in it would paste file names into shell code and turn an
     // empty selection into an empty string inside it.
-    let script = if args.flag("script") && templates.len() > 2 { Some(templates[2].as_str()) } else { None };
+    let script = if args.flag(keys::SCRIPT) && templates.len() > 2 { Some(templates[2].as_str()) } else { None };
     // Waiting without a window is the plain External step.
     if wait && !window {
         return run_external(

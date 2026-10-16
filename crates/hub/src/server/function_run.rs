@@ -4,6 +4,24 @@
 //! Lister goes away. These are `impl Hub` methods split out of `server.rs`.
 
 use super::*;
+use crate::functions::FnEvent;
+
+/// Switch the virtual desktop by `delta` (a `DesktopPrev` / `DesktopNext`
+/// step): on Wayland through the compositor session, on X11 through EWMH.
+fn switch_desktop(delta: i32) {
+    if opusdm_ipc::session::is_wayland() {
+        if let Some(session) = opusdm_wayland::shared() {
+            session.switch_workspace(delta);
+        }
+        return;
+    }
+    if !opusdm_ipc::session::is_x11() {
+        return;
+    }
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.switch_desktop(delta)) {
+        opusdm_ipc::err_log!("hub", "cannot switch the virtual desktop: {e}");
+    }
+}
 
 /// Why a run from a tool window (Manage Functions' Test) did not start.
 pub(super) const NO_SOURCE_ERROR: &str = "There is no SOURCE Lister: select a Lister as SOURCE, then try again.";
@@ -12,6 +30,22 @@ pub(super) const NO_SOURCE_ERROR: &str = "There is no SOURCE Lister: select a Li
 /// with no SOURCE Lister.
 pub(super) fn only_scripts(steps: &[FnStep]) -> bool {
     !steps.is_empty() && steps.iter().all(|s| matches!(s, FnStep::Internal { cmd: opusdm_ipc::function::InternalCmd::Script, .. }))
+}
+
+/// The steps of the function or inline command `id` names: a saved Function
+/// from `functions` (it must exist and be valid), or the steps of an inline
+/// reference (`bash:`, `exec:`, ...), whose program the run waits for when
+/// `wait` is set. The error says why nothing can run.
+pub(super) fn resolve_steps(functions: &[opusdm_ipc::function::Function], id: &str, wait: bool) -> Result<Vec<FnStep>, String> {
+    let reference = opusdm_ipc::funcref::parse(id);
+    if !matches!(reference, opusdm_ipc::funcref::FuncRef::Saved(_)) {
+        return opusdm_ipc::funcref::to_steps_with(&reference, wait);
+    }
+    let function = functions.iter().find(|f| f.id == id).ok_or_else(|| format!("function '{id}' not found (it may have been deleted)"))?;
+    if let Some(first) = opusdm_ipc::function::validate(function).first() {
+        return Err(format!("function '{}' is invalid: {}", function.name, first.message));
+    }
+    Ok(function.steps.clone())
 }
 
 /// A Function run waiting on `SelectionReply` from SOURCE and/or DEST,
@@ -101,26 +135,13 @@ impl Hub {
     /// The steps of the function or inline command `id` names. A missing or
     /// invalid one is reported through [`Self::function_failed`].
     fn steps_for(&mut self, requester: Option<u64>, id: &str) -> Option<Vec<FnStep>> {
-        let reference = opusdm_ipc::funcref::parse(id);
-        if !matches!(reference, opusdm_ipc::funcref::FuncRef::Saved(_)) {
-            return match opusdm_ipc::funcref::to_steps(&reference) {
-                Ok(steps) => Some(steps),
-                Err(e) => {
-                    self.function_failed(requester, e);
-                    None
-                }
-            };
+        match resolve_steps(&self.current_functions, id, false) {
+            Ok(steps) => Some(steps),
+            Err(e) => {
+                self.function_failed(requester, e);
+                None
+            }
         }
-        let Some(function) = self.current_functions.iter().find(|f| f.id == id).cloned() else {
-            self.function_failed(requester, format!("function '{id}' not found (it may have been deleted)"));
-            return None;
-        };
-        let problems = opusdm_ipc::function::validate(&function);
-        if let Some(first) = problems.first() {
-            self.function_failed(requester, format!("function '{}' is invalid: {}", function.name, first.message));
-            return None;
-        }
-        Some(function.steps)
     }
 
     /// Run the saved function `id` on the hub's own initiative: SOURCE is the
@@ -165,125 +186,102 @@ impl Hub {
         crate::functions::spawn_executor(run_id, run.steps, source_sel, run.dest_sel, self.runs.events_tx(), cancel);
     }
 
-    /// A `FnEvent` arrived from a running Function's executor thread; turn
-    /// it into the matching `ToLister` and send it to whichever connection
-    /// asked for this run. A hub-originated run has no such connection: its
-    /// failures are logged instead.
-    pub(super) fn function_event(&mut self, run_id: u64, ev: crate::functions::FnEvent) {
-        if let crate::functions::FnEvent::Job { spec, done, .. } = ev {
-            self.function_job(run_id, spec, done);
-            return;
-        }
-        if let crate::functions::FnEvent::Window { step_idx, msg } = ev {
-            self.run_window_event(run_id, step_idx, msg);
-            return;
-        }
-        if let crate::functions::FnEvent::Confirm { message, reply, .. } = ev {
-            self.function_confirm(run_id, message, reply);
-            return;
-        }
-        if let crate::functions::FnEvent::Alert { message, reply, .. } = ev {
-            self.function_alert(run_id, message, reply);
-            return;
-        }
-        if let crate::functions::FnEvent::ScriptQuery { query, reply } = ev {
-            let _ = reply.send(self.script_query(query));
-            return;
-        }
+    /// A `FnEvent` arrived from a running Function's executor thread. It is
+    /// a request a step waits on, an action for the hub to apply, or
+    /// progress for the Lister that asked for the run; each kind has its own
+    /// handler. Actions and progress of a run the hub no longer knows (its
+    /// Lister closed) are dropped.
+    pub(super) fn function_event(&mut self, run_id: u64, ev: FnEvent) {
+        let Some(ev) = self.function_request(run_id, ev) else { return };
         let Some(requester) = self.runs.requester(run_id) else { return };
-        let terminal = matches!(ev, crate::functions::FnEvent::Failed { .. } | crate::functions::FnEvent::AllDone);
-        if terminal {
+        let Some(ev) = self.function_action(ev) else { return };
+        self.function_progress(run_id, requester, ev);
+    }
+
+    /// Handle `ev` when it is a request a step of run `run_id` waits on (a
+    /// file job, an output window, a question, a script query); give it back
+    /// otherwise.
+    fn function_request(&mut self, run_id: u64, ev: FnEvent) -> Option<FnEvent> {
+        match ev {
+            FnEvent::Job { spec, done, .. } => self.function_job(run_id, spec, done),
+            FnEvent::Window { step_idx, msg } => self.run_window_event(run_id, step_idx, msg),
+            FnEvent::Confirm { message, reply, .. } => self.function_confirm(run_id, message, reply),
+            FnEvent::Alert { message, reply, .. } => self.function_alert(run_id, message, reply),
+            FnEvent::ScriptQuery { query, reply } => {
+                let _ = reply.send(self.script_query(query));
+            }
+            other => return Some(other),
+        }
+        None
+    }
+
+    /// Apply `ev` when it is an action for the hub (background, new Listers,
+    /// left-out icons, hiding, virtual desktops, banks); give it back
+    /// otherwise. Actions apply for every run, hub-originated ones (script
+    /// events) included; the requester still gets the step's Output and
+    /// StepDone lines from the executor.
+    fn function_action(&mut self, ev: FnEvent) -> Option<FnEvent> {
+        match ev {
+            FnEvent::SetBackground { path, fit } => self.apply_background_image(path, fit),
+            FnEvent::ChangeDir { path, new_lister: true, .. } => self.spawn_lister(Some(path)),
+            FnEvent::NewLister { path } => self.spawn_lister(path),
+            FnEvent::LeaveOut { paths } => self.leave_out(paths),
+            FnEvent::PutAway { paths } => {
+                send_or_log(&self.evt_tx, HubEvent::LeftOutRemove(paths), "GTK event");
+            }
+            FnEvent::Hide => self.set_hidden(true),
+            FnEvent::Reveal => self.set_hidden(false),
+            FnEvent::ToggleHide => self.set_hidden(!self.hidden),
+            FnEvent::Desktop { delta } => switch_desktop(delta),
+            FnEvent::Bank { action, bank } => {
+                send_or_log(&self.evt_tx, HubEvent::Bank { action, bank }, "GTK event");
+            }
+            other => return Some(other),
+        }
+        None
+    }
+
+    /// Report progress `ev` of run `run_id` to `requester`, the Lister that
+    /// asked for the run; a hub-originated run (`None`) has nobody to tell,
+    /// so its failures are logged instead. A run that ended is forgotten.
+    fn function_progress(&mut self, run_id: u64, requester: Option<u64>, ev: FnEvent) {
+        let msg = match ev {
+            FnEvent::ChangeDir { path, select, mode, .. } => ToLister::ScanDir { path, select, mode },
+            FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
+            FnEvent::StepDone { step_idx, exit_code } => ToLister::FunctionStepDone { step_idx, exit_code },
+            FnEvent::Failed { step_idx, error } => ToLister::FunctionFailed { step_idx, error },
+            FnEvent::AllDone => ToLister::FunctionDone,
+            // Requests and actions: handled before this point.
+            FnEvent::Job { .. }
+            | FnEvent::Window { .. }
+            | FnEvent::Confirm { .. }
+            | FnEvent::Alert { .. }
+            | FnEvent::ScriptQuery { .. }
+            | FnEvent::SetBackground { .. }
+            | FnEvent::NewLister { .. }
+            | FnEvent::LeaveOut { .. }
+            | FnEvent::PutAway { .. }
+            | FnEvent::Hide
+            | FnEvent::Reveal
+            | FnEvent::ToggleHide
+            | FnEvent::Desktop { .. }
+            | FnEvent::Bank { .. } => return,
+        };
+        if matches!(msg, ToLister::FunctionFailed { .. } | ToLister::FunctionDone) {
             self.runs.finish(run_id);
             self.event_guard.finish(run_id);
         }
-        // A background change applies for every requester, hub-originated
-        // runs (script events) included; the requester still gets the
-        // step's Output and StepDone lines from the executor.
-        if let crate::functions::FnEvent::SetBackground { path, fit } = &ev {
-            self.apply_background_image(path.clone(), *fit);
-            return;
-        }
-        match &ev {
-            crate::functions::FnEvent::ChangeDir { path, new_lister: true, .. } => {
-                self.spawn_lister(Some(path.clone()));
-                return;
-            }
-            crate::functions::FnEvent::NewLister { path } => {
-                self.spawn_lister(path.clone());
-                return;
-            }
-            crate::functions::FnEvent::LeaveOut { paths } => {
-                self.leave_out(paths.clone());
-                return;
-            }
-            crate::functions::FnEvent::PutAway { paths } => {
-                send_or_log(&self.evt_tx, HubEvent::LeftOutRemove(paths.clone()), "GTK event");
-                return;
-            }
-            crate::functions::FnEvent::Hide => {
-                self.set_hidden(true);
-                return;
-            }
-            crate::functions::FnEvent::Reveal => {
-                self.set_hidden(false);
-                return;
-            }
-            crate::functions::FnEvent::ToggleHide => {
-                self.set_hidden(!self.hidden);
-                return;
-            }
-            crate::functions::FnEvent::Desktop { delta } => {
-                if opusdm_ipc::session::is_wayland() {
-                    if let Some(session) = opusdm_wayland::shared() { session.switch_workspace(*delta); }
-                    return;
-                }
-                if !opusdm_ipc::session::is_x11() { return; }
-                if let Err(e) = opusdm_ui::with_x11(|x11| x11.switch_desktop(*delta)) {
-                    opusdm_ipc::err_log!("hub", "cannot switch the virtual desktop: {e}");
-                }
-                return;
-            }
-            crate::functions::FnEvent::Bank { action, bank } => {
-                send_or_log(&self.evt_tx, HubEvent::Bank { action: *action, bank: bank.clone() }, "GTK event");
-                return;
-            }
-            _ => {}
-        }
         let Some(requester) = requester else {
-            match ev {
-                crate::functions::FnEvent::Failed { step_idx, error } => {
+            match msg {
+                ToLister::FunctionFailed { step_idx, error } => {
                     opusdm_ipc::err_log!("hub", "function run {run_id} failed at step {step_idx}: {error}");
                 }
-                crate::functions::FnEvent::Output { step_idx, line } => {
+                ToLister::FunctionOutput { step_idx, line } => {
                     opusdm_ipc::debug_log!("hub", "function run {run_id} step {step_idx}: {line}");
                 }
                 _ => {}
             }
             return;
-        };
-        let msg = match ev {
-            crate::functions::FnEvent::ChangeDir { path, select, mode, .. } => ToLister::ScanDir { path, select, mode },
-            // Applied above, before this match.
-            crate::functions::FnEvent::SetBackground { .. }
-            | crate::functions::FnEvent::Job { .. }
-            | crate::functions::FnEvent::Confirm { .. }
-            | crate::functions::FnEvent::Alert { .. }
-            | crate::functions::FnEvent::ScriptQuery { .. }
-            | crate::functions::FnEvent::NewLister { .. }
-            | crate::functions::FnEvent::Window { .. } => return,
-            crate::functions::FnEvent::LeaveOut { .. }
-            | crate::functions::FnEvent::PutAway { .. }
-            | crate::functions::FnEvent::Hide
-            | crate::functions::FnEvent::Reveal
-            | crate::functions::FnEvent::ToggleHide
-            | crate::functions::FnEvent::Desktop { .. }
-            | crate::functions::FnEvent::Bank { .. } => return,
-            crate::functions::FnEvent::Output { step_idx, line } => ToLister::FunctionOutput { step_idx, line },
-            crate::functions::FnEvent::StepDone { step_idx, exit_code } => {
-                ToLister::FunctionStepDone { step_idx, exit_code }
-            }
-            crate::functions::FnEvent::Failed { step_idx, error } => ToLister::FunctionFailed { step_idx, error },
-            crate::functions::FnEvent::AllDone => ToLister::FunctionDone,
         };
         self.send_to(requester, msg);
     }
