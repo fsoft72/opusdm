@@ -19,6 +19,12 @@ use std::time::Duration;
 /// checks whether its run was cancelled.
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 
+/// Most lines one output-window message carries.
+const OUTPUT_BATCH_LINES: usize = 256;
+
+/// Longest an output line waits in a batch before it is sent to the window.
+const OUTPUT_BATCH_DELAY: Duration = Duration::from_millis(50);
+
 /// The error text of a step stopped because its run was cancelled.
 pub(crate) const CANCELLED: &str = "cancelled";
 
@@ -171,8 +177,8 @@ pub fn run_job_inline(
 pub enum WindowMsg {
     /// The program started: open the window, titled `title`.
     Open { title: String },
-    /// One line of its output.
-    Line(String),
+    /// A batch of its output lines (see [`batch_lines`]).
+    Lines(Vec<String>),
     /// It ended with this exit code (`None` when killed by a signal).
     Closed(Option<i32>),
 }
@@ -776,25 +782,35 @@ fn run_run(
     let _ = events_tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Open { title } }));
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
+    let (line_tx, line_rx) = channel::<String>();
     let stream = |reader: Box<dyn std::io::Read + Send>| {
-        let tx = events_tx.clone();
+        let tx = line_tx.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(reader).lines().map_while(Result::ok) {
-                let _ = tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Line(line) }));
+                if tx.send(line).is_err() { break; }
             }
-        })
+        });
     };
-    let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
+    stream(Box::new(stdout));
+    stream(Box::new(stderr));
+    // The batcher ends once both readers dropped their senders.
+    drop(line_tx);
+    let tx = events_tx.clone();
+    let output = std::thread::spawn(move || {
+        batch_lines(line_rx, OUTPUT_BATCH_LINES, OUTPUT_BATCH_DELAY, |lines| {
+            let _ = tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Lines(lines) }));
+        });
+    });
     let window = WindowRun { run_id, step_idx, events_tx: events_tx.clone() };
     if wait {
-        let code = window.finish(child, readers, cancel).map_err(|e| format!("Run: '{}': {e}", argv[0]))?;
+        let code = window.finish(child, output, cancel).map_err(|e| format!("Run: '{}': {e}", argv[0]))?;
         let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: code }));
         return if code == Some(0) { Ok(()) } else { Err(format!("Run: '{}' exited with {code:?}", argv[0])) };
     }
     // Not waited for: the program outlives the step, so the run's cancel
     // does not stop it.
     std::thread::spawn(move || {
-        let _ = window.finish(child, readers, &CancelToken::new());
+        let _ = window.finish(child, output, &CancelToken::new());
     });
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
@@ -809,22 +825,52 @@ struct WindowRun {
 }
 
 impl WindowRun {
-    /// Wait for `child` (killing it when `cancel` is set), let its output
-    /// `readers` finish and tell the window it ended. Returns the exit code
-    /// (`None` when killed by a signal), or why the wait failed. The readers
-    /// of a cancelled program are not joined: a process it started may still
-    /// hold the pipes open.
-    fn finish(self, mut child: Child, readers: [std::thread::JoinHandle<()>; 2], cancel: &CancelToken) -> Result<Option<i32>, String> {
+    /// Wait for `child` (killing it when `cancel` is set), let its `output`
+    /// batcher send the last lines and tell the window it ended. Returns the
+    /// exit code (`None` when killed by a signal), or why the wait failed.
+    /// The output of a cancelled program is not waited for: a process it
+    /// started may still hold the pipes open.
+    fn finish(self, mut child: Child, output: std::thread::JoinHandle<()>, cancel: &CancelToken) -> Result<Option<i32>, String> {
         let waited = wait_or_kill(&mut child, cancel);
         if waited.is_ok() {
-            for r in readers {
-                let _ = r.join();
-            }
+            let _ = output.join();
         }
         let code = waited.as_ref().ok().and_then(ExitStatus::code);
         let closed = FnEvent::Window { step_idx: self.step_idx, msg: WindowMsg::Closed(code) };
         let _ = self.events_tx.send((self.run_id, closed));
         waited.map(|status| status.code())
+    }
+}
+
+/// Collect the lines arriving on `lines` into batches and hand each one to
+/// `flush`, so a chatty program costs one message per batch instead of one
+/// per line. A batch is flushed once it holds `max_lines` lines, once its
+/// first line has waited `max_delay`, and when every sender is gone, which
+/// is also when this returns. An empty batch is never flushed.
+fn batch_lines(lines: Receiver<String>, max_lines: usize, max_delay: Duration, mut flush: impl FnMut(Vec<String>)) {
+    let mut batch = Vec::new();
+    let mut deadline: Option<std::time::Instant> = None;
+    loop {
+        let received = match deadline {
+            None => lines.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => lines.recv_timeout(at.saturating_duration_since(std::time::Instant::now())),
+        };
+        match received {
+            Ok(line) => {
+                if batch.is_empty() {
+                    deadline = Some(std::time::Instant::now() + max_delay);
+                }
+                batch.push(line);
+                if batch.len() < max_lines { continue; }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                if !batch.is_empty() { flush(batch); }
+                return;
+            }
+        }
+        flush(std::mem::take(&mut batch));
+        deadline = None;
     }
 }
 

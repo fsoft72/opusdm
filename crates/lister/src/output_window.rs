@@ -36,6 +36,17 @@ pub fn open(ui: &Rc<Ui>, id: u64, title: &str) {
     });
 }
 
+/// The text a batch of output `lines` adds to a window: each line followed
+/// by a newline, so one buffer insert covers the whole batch.
+pub fn lines_text(lines: &[String]) -> String {
+    let mut text = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
+    for line in lines {
+        text.push_str(line);
+        text.push('\n');
+    }
+    text
+}
+
 /// Add `text` at the end of window `id`, if it is still open.
 pub fn append(ui: &Rc<Ui>, id: u64, text: &str) {
     if let Some(buffer) = ui.output_windows.borrow().get(&id) {
@@ -59,5 +70,11 @@ mod tests {
         assert!(end_text(Some(0)).contains("finished]"));
         assert!(end_text(Some(3)).contains("exit code 3"));
         assert!(end_text(None).contains("signal"));
+    }
+
+    #[test]
+    fn a_batch_of_lines_becomes_newline_terminated_text() {
+        assert_eq!(lines_text(&["a".to_string(), "b".to_string()]), "a\nb\n");
+        assert_eq!(lines_text(&[]), "");
     }
 }

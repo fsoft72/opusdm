@@ -566,7 +566,7 @@ fn a_run_window_keeps_receiving_output_after_the_function_finished() {
         let m: ToLister = recv(&mut a).unwrap().unwrap();
         match m {
             ToLister::OutputOpen { .. } => seen.push("open".into()),
-            ToLister::OutputLine { line, .. } => seen.push(format!("line:{line}")),
+            ToLister::OutputLines { lines, .. } => seen.extend(lines.iter().map(|line| format!("line:{line}"))),
             ToLister::OutputEnd { exit, .. } => {
                 seen.push(format!("end:{exit:?}"));
                 break;

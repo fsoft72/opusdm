@@ -678,7 +678,8 @@ fn run_with_a_window_streams_output_and_reports_the_exit() {
     let events = run_events(&run_args("sh -c 'echo one; echo two >&2; exit 3'", &["window"]), &ctx(&[], td.path().to_str().unwrap()));
     let msgs: Vec<&WindowMsg> = events.iter().filter_map(|e| match e { FnEvent::Window { msg, .. } => Some(msg), _ => None }).collect();
     assert!(matches!(msgs.first(), Some(WindowMsg::Open { title }) if title.contains("echo one")));
-    assert!(msgs.contains(&&WindowMsg::Line("one".into())) && msgs.contains(&&WindowMsg::Line("two".into())));
+    let lines: Vec<&String> = msgs.iter().filter_map(|m| match m { WindowMsg::Lines(l) => Some(l), _ => None }).flatten().collect();
+    assert!(lines.contains(&&"one".to_string()) && lines.contains(&&"two".to_string()), "{lines:?}");
     assert_eq!(msgs.last(), Some(&&WindowMsg::Closed(Some(3))));
     // Not waiting: the step itself succeeded.
     assert!(events.iter().any(|e| matches!(e, FnEvent::AllDone)));
@@ -813,4 +814,42 @@ fn run_step_starts_the_program_when_the_lister_folder_is_virtual() {
     run_steps(1, &steps, &src, None, &tx);
     drop(tx);
     assert!(matches!(drain(rx).last(), Some(FnEvent::AllDone)));
+}
+
+#[test]
+fn batch_lines_sends_lines_already_waiting_as_one_batch() {
+    let (tx, rx) = channel::<String>();
+    for i in 0..5 {
+        tx.send(format!("l{i}")).unwrap();
+    }
+    drop(tx);
+    let mut batches = Vec::new();
+    batch_lines(rx, 100, Duration::from_millis(50), |b| batches.push(b));
+    assert_eq!(batches, vec![vec!["l0", "l1", "l2", "l3", "l4"]]);
+}
+
+#[test]
+fn batch_lines_caps_a_batch_at_max_lines() {
+    let (tx, rx) = channel::<String>();
+    for i in 0..25 {
+        tx.send(format!("l{i}")).unwrap();
+    }
+    drop(tx);
+    let mut sizes = Vec::new();
+    batch_lines(rx, 10, Duration::from_secs(60), |b| sizes.push(b.len()));
+    assert_eq!(sizes, vec![10, 10, 5]);
+}
+
+#[test]
+fn batch_lines_flushes_a_waiting_line_after_the_delay() {
+    let (tx, rx) = channel::<String>();
+    let (out_tx, out_rx) = channel::<Vec<String>>();
+    let batcher = std::thread::spawn(move || batch_lines(rx, 100, Duration::from_millis(20), |b| out_tx.send(b).unwrap()));
+    tx.send("first".into()).unwrap();
+    // The sender stays open: only the delay can flush the line.
+    let got = out_rx.recv_timeout(Duration::from_secs(5)).expect("the line is flushed without a second one");
+    assert_eq!(got, vec!["first"]);
+    drop(tx);
+    batcher.join().unwrap();
+    assert!(out_rx.try_recv().is_err(), "no empty batch on close");
 }

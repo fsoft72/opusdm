@@ -138,7 +138,7 @@ impl Host {
     fn handle(self: &Rc<Self>, msg: ToLister) {
         match msg {
             ToLister::FunctionOutput { line, .. } => self.run_output(&format!("{line}\n"), None),
-            ToLister::OutputLine { line, .. } => self.run_output(&format!("{line}\n"), None),
+            ToLister::OutputLines { lines, .. } => self.run_output(&crate::output_window::lines_text(&lines), None),
             ToLister::FunctionFailed { error, .. } => self.run_ended(&format!("{error}\n"), Some(script_editor::TAG_ERROR)),
             ToLister::FunctionDone => self.run_ended("--- finished ---\n", Some(script_editor::TAG_DIM)),
             ToLister::ConfirmPrompt { req_id, message } => {

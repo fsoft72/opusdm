@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// in `ToHub::Register` and `Welcome`. Bump it whenever a message changes in
 /// a way an older peer cannot decode. A peer that predates versioning sends
 /// no field and decodes as version 0.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// A warning text when a peer speaks protocol `peer` instead of
 /// [`PROTOCOL_VERSION`], or `None` when both agree. A mismatch is only
@@ -570,8 +570,9 @@ pub enum ToLister {
     /// A `Run` step with an output window started a program: open the
     /// window `id` titled `title`.
     OutputOpen { id: u64, title: String },
-    /// One line of output for window `id`.
-    OutputLine { id: u64, line: String },
+    /// Output lines for window `id`, batched by the hub (without their
+    /// line terminators).
+    OutputLines { id: u64, lines: Vec<String> },
     /// The program of window `id` ended (`None` = killed by a signal).
     OutputEnd { id: u64, exit: Option<i32> },
     /// A function's `ChangeDir` step: go to `path`, switch to the `details`
@@ -763,7 +764,7 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionDone);
         roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
         roundtrip_tolister(ToLister::OutputOpen { id: 7, title: "ls -l".into() });
-        roundtrip_tolister(ToLister::OutputLine { id: 7, line: "x".into() });
+        roundtrip_tolister(ToLister::OutputLines { id: 7, lines: vec!["x".into(), "y".into()] });
         roundtrip_tolister(ToLister::OutputEnd { id: 7, exit: Some(0) });
         roundtrip_tolister(ToLister::ScanDir { path: "/p".into(), select: Some("f".into()), mode: Some("icons".into()) });
         roundtrip_tolister(ToLister::ConfirmPrompt { req_id: 3, message: "Sure?".into() });

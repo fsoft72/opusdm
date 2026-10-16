@@ -61,7 +61,7 @@ impl Ui {
 
             // Functions started here and their output windows.
             ToLister::OutputOpen { id, title } => crate::output_window::open(self, id, &title),
-            ToLister::OutputLine { id, line } => crate::output_window::append(self, id, &format!("{line}\n")),
+            ToLister::OutputLines { id, lines } => crate::output_window::append(self, id, &crate::output_window::lines_text(&lines)),
             ToLister::OutputEnd { id, exit } => crate::output_window::end(self, id, exit),
             // Step output is shown by the Manage Functions window's Test;
             // a run from here only reports how it ended.

@@ -72,7 +72,7 @@ impl Host {
                 self.report(&error);
             }
             ToLister::FunctionDone => self.append_log("function finished\n"),
-            ToLister::OutputLine { line, .. } => self.append_log(&format!("{line}\n")),
+            ToLister::OutputLines { lines, .. } => self.append_log(&crate::output_window::lines_text(&lines)),
             ToLister::ConfirmPrompt { req_id, message } => {
                 let host = self.clone();
                 opusdm_ui::requester(&self.window, "Confirm", &message, None, &[("OK", true), ("Cancel", false)], move |ok| {

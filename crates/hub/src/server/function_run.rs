@@ -319,7 +319,7 @@ impl Hub {
         let Some(&cid) = self.output_windows.get(&key) else { return };
         let message = match msg {
             WindowMsg::Open { title } => ToLister::OutputOpen { id, title },
-            WindowMsg::Line(line) => ToLister::OutputLine { id, line },
+            WindowMsg::Lines(lines) => ToLister::OutputLines { id, lines },
             WindowMsg::Closed(exit) => {
                 self.output_windows.remove(&key);
                 ToLister::OutputEnd { id, exit }
