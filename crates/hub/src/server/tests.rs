@@ -1750,3 +1750,47 @@ fn a_forwarder_wraps_every_message_for_the_owner_loop() {
         .collect();
     assert_eq!(ids, vec![3, 4], "in order, and the thread ends with its input");
 }
+
+#[test]
+fn accept_errors_are_classified_by_errno() {
+    let os = std::io::Error::from_raw_os_error;
+    assert_eq!(classify_accept_error(&os(libc::ECONNABORTED)), AcceptErrorAction::Retry);
+    assert_eq!(classify_accept_error(&os(libc::EINTR)), AcceptErrorAction::Retry);
+    assert_eq!(classify_accept_error(&os(libc::EMFILE)), AcceptErrorAction::Backoff);
+    assert_eq!(classify_accept_error(&os(libc::ENFILE)), AcceptErrorAction::Backoff);
+    assert_eq!(classify_accept_error(&os(libc::EBADF)), AcceptErrorAction::Stop);
+    assert_eq!(classify_accept_error(&os(libc::EINVAL)), AcceptErrorAction::Stop);
+}
+
+#[test]
+fn accept_loop_keeps_accepting_after_a_temporary_error() {
+    let (a, _b) = UnixStream::pair().unwrap();
+    let mut script: std::collections::VecDeque<std::io::Result<UnixStream>> = vec![
+        Err(std::io::Error::from_raw_os_error(libc::ECONNABORTED)),
+        Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+        Ok(a),
+        Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+    ]
+    .into();
+    let (tx, rx) = channel::<OwnerMsg>();
+    accept_loop(|| script.pop_front().expect("the loop must stop on EBADF"), &tx, Duration::from_millis(1));
+    assert!(script.is_empty(), "the loop went on until the fatal error");
+    let accepted = rx.try_iter().filter(|m| matches!(m, OwnerMsg::Accepted(_))).count();
+    assert_eq!(accepted, 1, "the client after the temporary errors was accepted");
+}
+
+#[test]
+fn accept_loop_stops_when_the_owner_loop_is_gone() {
+    let (tx, rx) = channel::<OwnerMsg>();
+    drop(rx);
+    let mut calls = 0;
+    accept_loop(
+        || {
+            calls += 1;
+            Ok(UnixStream::pair().unwrap().0)
+        },
+        &tx,
+        Duration::from_millis(1),
+    );
+    assert_eq!(calls, 1);
+}

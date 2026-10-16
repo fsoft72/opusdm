@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod function_run;
 mod function_runs;
@@ -188,18 +188,7 @@ pub fn spawn_server_with(listener: UnixListener, on_spawn: SpawnFn, opts: Server
         let owner_tx = owner_tx.clone();
         std::thread::Builder::new()
             .name("opusdm-accept".into())
-            .spawn(move || {
-                for stream in listener.incoming() {
-                    match stream {
-                        Ok(s) => {
-                            if owner_tx.send(OwnerMsg::Accepted(s)).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })
+            .spawn(move || accept_loop(|| listener.accept().map(|(s, _)| s), &owner_tx, ACCEPT_BACKOFF))
             .expect("spawn accept thread");
     }
     // GTK command forwarder.
@@ -224,6 +213,61 @@ pub fn spawn_server_with(listener: UnixListener, on_spawn: SpawnFn, opts: Server
         .expect("spawn owner thread");
 
     ServerHandle { cmd_tx, evt_rx }
+}
+
+/// How long the accept loop sleeps after running out of file descriptors or
+/// memory, so it does not spin while the condition lasts.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// What the accept loop does after an `accept()` error.
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptErrorAction {
+    /// A per-connection error (aborted handshake, signal): try again at once.
+    Retry,
+    /// A resource limit (EMFILE, ENFILE, ENOBUFS, ENOMEM): wait, then retry.
+    Backoff,
+    /// The listening socket itself is unusable: stop accepting.
+    Stop,
+}
+
+/// Sort an `accept()` error into retry, back off or stop. Unknown errors
+/// are treated as temporary: a hub that stops accepting is unusable, while a
+/// retry costs one log line per [`ACCEPT_BACKOFF`].
+fn classify_accept_error(e: &std::io::Error) -> AcceptErrorAction {
+    match e.raw_os_error() {
+        Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK | libc::EOPNOTSUPP | libc::EFAULT) => AcceptErrorAction::Stop,
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM) => AcceptErrorAction::Backoff,
+        Some(_) => AcceptErrorAction::Retry,
+        None => AcceptErrorAction::Backoff,
+    }
+}
+
+/// Accept connections with `accept` and hand each one to the owner loop.
+/// Temporary errors are logged and retried (after `backoff` for a resource
+/// limit); the loop ends on a fatal error or when the owner loop is gone.
+fn accept_loop(mut accept: impl FnMut() -> std::io::Result<UnixStream>, owner_tx: &Sender<OwnerMsg>, backoff: Duration) {
+    loop {
+        let e = match accept() {
+            Ok(s) => {
+                if owner_tx.send(OwnerMsg::Accepted(s)).is_err() {
+                    return;
+                }
+                continue;
+            }
+            Err(e) => e,
+        };
+        match classify_accept_error(&e) {
+            AcceptErrorAction::Retry => opusdm_ipc::err_log!("hub", "accept failed, retrying: {e}"),
+            AcceptErrorAction::Backoff => {
+                opusdm_ipc::err_log!("hub", "accept failed, retrying in {backoff:?}: {e}");
+                std::thread::sleep(backoff);
+            }
+            AcceptErrorAction::Stop => {
+                opusdm_ipc::err_log!("hub", "accept failed, no more clients can connect: {e}");
+                return;
+            }
+        }
+    }
 }
 
 /// Everything the owner loop merges into one stream.
