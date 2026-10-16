@@ -7,8 +7,9 @@ use gtk::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Optional rename callback: called with the committed new name.
-type CommitFn = RefCell<Option<Box<dyn Fn(String)>>>;
+/// Optional rename callback: called with the committed new name. Shared
+/// (`Rc`) so it is called without the cell borrowed.
+type CommitFn = RefCell<Option<Rc<dyn Fn(String)>>>;
 
 struct Inner {
     root: gtk::Box,
@@ -184,7 +185,8 @@ impl IconItem {
         }
         self.inner.name_label.set_text(&text);
         *self.inner.original_name.borrow_mut() = text.clone();
-        if let Some(cb) = self.inner.on_commit.borrow().as_ref() {
+        let commit = self.inner.on_commit.borrow().clone();
+        if let Some(cb) = commit {
             cb(text);
         }
     }
@@ -259,7 +261,7 @@ impl IconItem {
 
     /// Register the rename callback.
     pub fn connect_edit_committed(&self, f: impl Fn(String) + 'static) {
-        *self.inner.on_commit.borrow_mut() = Some(Box::new(f));
+        *self.inner.on_commit.borrow_mut() = Some(Rc::new(f));
     }
 
     /// How many handles share this item, for the leak tests.

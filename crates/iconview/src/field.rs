@@ -25,8 +25,16 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
-/// A list of listener closures with signature `F`.
-type Listeners<F> = RefCell<Vec<Box<F>>>;
+/// A list of listener closures with signature `F`. Shared (`Rc`) so an
+/// emitter can copy the list and call it without holding the borrow: a
+/// listener may then register another listener without a panic.
+type Listeners<F> = RefCell<Vec<Rc<F>>>;
+
+/// The listeners in `list` right now, copied so none of them runs while the
+/// list is borrowed.
+pub(super) fn listeners<F: ?Sized>(list: &Listeners<F>) -> Vec<Rc<F>> {
+    list.borrow().clone()
+}
 
 /// Pinned icons that were moved: each path with its new position.
 type PinnedMoves = Vec<(PathBuf, (f64, f64))>;
@@ -489,44 +497,44 @@ impl IconField {
 
     /// Register a selection-changed listener.
     pub fn connect_selection_changed(&self, f: impl Fn() + 'static) {
-        self.inner.events.on_selection_changed.borrow_mut().push(Box::new(f));
+        self.inner.events.on_selection_changed.borrow_mut().push(Rc::new(f));
     }
 
     /// Register an activate (open) listener.
     pub fn connect_activate(&self, f: impl Fn(usize) + 'static) {
-        self.inner.events.on_activate.borrow_mut().push(Box::new(f));
+        self.inner.events.on_activate.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a listener for a double-click on empty space (no item under
     /// the pointer) - e.g. to open a new window rooted at this field's
     /// directory.
     pub fn connect_background_activate(&self, f: impl Fn() + 'static) {
-        self.inner.events.on_background_activate.borrow_mut().push(Box::new(f));
+        self.inner.events.on_background_activate.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a drop listener: (dropped paths, target index or `-1`, shift held).
     pub fn connect_drop_uris(&self, f: impl Fn(Vec<PathBuf>, i32, bool) + 'static) {
-        self.inner.events.on_drop_uris.borrow_mut().push(Box::new(f));
+        self.inner.events.on_drop_uris.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a context-menu listener: (index or `-1`, x, y).
     pub fn connect_context_menu(&self, f: impl Fn(i32, f64, f64) + 'static) {
-        self.inner.events.on_context_menu.borrow_mut().push(Box::new(f));
+        self.inner.events.on_context_menu.borrow_mut().push(Rc::new(f));
     }
 
     /// Register an inline-rename listener: (index, new name).
     pub fn connect_rename_requested(&self, f: impl Fn(usize, String) + 'static) {
-        self.inner.events.on_rename_requested.borrow_mut().push(Box::new(f));
+        self.inner.events.on_rename_requested.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a zoom listener: signed step from Ctrl+scroll.
     pub fn connect_zoom_requested(&self, f: impl Fn(i32) + 'static) {
-        self.inner.events.on_zoom_requested.borrow_mut().push(Box::new(f));
+        self.inner.events.on_zoom_requested.borrow_mut().push(Rc::new(f));
     }
 
     /// Register a listener fired after icons are repositioned in Free mode.
     pub fn connect_move_icons(&self, f: impl Fn() + 'static) {
-        self.inner.events.on_move_icons.borrow_mut().push(Box::new(f));
+        self.inner.events.on_move_icons.borrow_mut().push(Rc::new(f));
     }
 
     /// Replace the pinned positions (by path). They apply to the entries
@@ -539,7 +547,7 @@ impl IconField {
     /// position of every moved entry whose `left_out` or `group` flag is set. Not fired
     /// when no such entry moved.
     pub fn connect_pinned_moved(&self, f: impl Fn(PinnedMoves) + 'static) {
-        self.inner.events.on_pinned_moved.borrow_mut().push(Box::new(f));
+        self.inner.events.on_pinned_moved.borrow_mut().push(Rc::new(f));
     }
 
     /// Copy the pinned positions onto the entries that currently have one.
@@ -578,7 +586,7 @@ impl IconField {
         if paths.is_empty() {
             return;
         }
-        for cb in self.inner.events.on_drop_uris.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_drop_uris) {
             cb(paths.clone(), target, shift);
         }
     }
@@ -668,11 +676,11 @@ impl IconField {
             }
         }
         self.relayout();
-        for cb in self.inner.events.on_move_icons.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_move_icons) {
             cb();
         }
         if !moved.is_empty() {
-            for cb in self.inner.events.on_pinned_moved.borrow().iter() {
+            for cb in listeners(&self.inner.events.on_pinned_moved) {
                 cb(moved.clone());
             }
         }
@@ -685,19 +693,19 @@ impl IconField {
 
     pub(super) fn emit_selection_changed(&self) {
         self.sync_selection_classes();
-        for cb in self.inner.events.on_selection_changed.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_selection_changed) {
             cb();
         }
     }
 
     pub(super) fn emit_activate(&self, i: usize) {
-        for cb in self.inner.events.on_activate.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_activate) {
             cb(i);
         }
     }
 
     pub(super) fn emit_background_activate(&self) {
-        for cb in self.inner.events.on_background_activate.borrow().iter() {
+        for cb in listeners(&self.inner.events.on_background_activate) {
             cb();
         }
     }
@@ -900,6 +908,7 @@ mod tests {
             ("field_group_entry", field_group_entry),
             ("field_virtualization", field_virtualization),
             ("field_closures_hold_no_strong_refs", field_closures_hold_no_strong_refs),
+            ("field_listeners_may_register_listeners", field_listeners_may_register_listeners),
         ];
         let failed: Vec<&str> =
             scenarios.iter().filter(|(_, run)| std::panic::catch_unwind(*run).is_err()).map(|(name, _)| *name).collect();
@@ -1352,6 +1361,34 @@ mod tests {
         let weak = Rc::downgrade(&f.inner);
         drop(f);
         assert!(weak.upgrade().is_none());
+    }
+
+    /// A listener may register more listeners while it runs: the list is
+    /// not borrowed during the call.
+    fn field_listeners_may_register_listeners() {
+        let f = IconField::new();
+        f.set_entries(&entries(2));
+        let hits = Rc::new(Cell::new(0));
+        let (inner_f, h) = (f.clone(), hits.clone());
+        f.connect_selection_changed(move || {
+            let h = h.clone();
+            inner_f.connect_selection_changed(move || h.set(h.get() + 1));
+        });
+        f.select_exclusive(0);
+        f.select_exclusive(1);
+        assert_eq!(hits.get(), 1, "the listener added by the first call runs on the second");
+
+        let item = IconItem::new(&entries(1)[0], 64, &no_icons());
+        let (again, h) = (item.clone(), hits.clone());
+        item.connect_edit_committed(move |_| {
+            let h = h.clone();
+            again.connect_edit_committed(move |_| h.set(h.get() + 10));
+        });
+        item.start_edit();
+        item.finish_edit(Some("one.txt".to_string()));
+        item.start_edit();
+        item.finish_edit(Some("two.txt".to_string()));
+        assert_eq!(hits.get(), 11);
     }
 
     /// Only the visible items of a big field have widgets.

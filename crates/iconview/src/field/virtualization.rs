@@ -181,7 +181,7 @@ impl IconField {
             let weak = self.downgrade();
             it.connect_edit_committed(move |new_name| {
                 let Some(this) = weak.upgrade() else { return };
-                for cb in this.inner.events.on_rename_requested.borrow().iter() {
+                for cb in super::listeners(&this.inner.events.on_rename_requested) {
                     cb(i, new_name.clone());
                 }
             });

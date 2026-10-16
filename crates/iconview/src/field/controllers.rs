@@ -221,7 +221,7 @@ fn install_context_menu_controller(field: &IconField) {
             }
         }
         let idx = hit.map(|i| i as i32).unwrap_or(-1);
-        for cb in this.inner.events.on_context_menu.borrow().iter() {
+        for cb in super::listeners(&this.inner.events.on_context_menu) {
             cb(idx, x, y);
         }
     });
@@ -238,7 +238,7 @@ fn install_zoom_controller(field: &IconField) {
             return gtk::glib::Propagation::Proceed;
         }
         let step = if dy < 0.0 { 1 } else { -1 };
-        for cb in this.inner.events.on_zoom_requested.borrow().iter() {
+        for cb in super::listeners(&this.inner.events.on_zoom_requested) {
             cb(step);
         }
         gtk::glib::Propagation::Stop
