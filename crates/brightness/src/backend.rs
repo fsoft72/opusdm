@@ -5,9 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 use crate::parse::{
-    parse_ddc_brief, parse_xrandr_brightness, parse_xrandr_connected, percent_to_raw, raw_to_percent,
+    parse_ddc_brief, parse_ddc_detect_bus, parse_xrandr_brightness, parse_xrandr_connected, percent_to_raw, raw_to_percent,
 };
 use crate::{clamp_percent, BrightnessError};
 
@@ -123,16 +124,64 @@ impl Backend for Sysfs {
     }
 }
 
+/// The I2C bus of the monitor `ddcutil` talks to. Passing it with `--bus`
+/// spares `ddcutil` its display detection (about a second) on every call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DdcBus {
+    /// Not looked up yet, or forgotten after a failed call.
+    Unknown,
+    /// `ddcutil detect` found no usable monitor: let each call detect.
+    Missing,
+    /// The `/dev/i2c-N` number of the monitor.
+    Number(u32),
+}
+
+/// `args` for `ddcutil`, plus `--bus N` when the bus is known.
+fn with_bus(args: &[&str], bus: DdcBus) -> Vec<String> {
+    let mut all: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    if let DdcBus::Number(n) = bus {
+        all.push("--bus".to_string());
+        all.push(n.to_string());
+    }
+    all
+}
+
 /// An external monitor, through DDC/CI (VCP feature 10) with `ddcutil`.
 pub struct Ddc {
     /// The maximum the monitor reported; 100 until the first read.
     max: AtomicU32,
+    /// The monitor's bus, detected once and reused.
+    bus: Mutex<DdcBus>,
 }
 
 impl Ddc {
     /// A DDC backend; nothing is run until `get` or `set`.
     pub fn new() -> Self {
-        Self { max: AtomicU32::new(100) }
+        Self { max: AtomicU32::new(100), bus: Mutex::new(DdcBus::Unknown) }
+    }
+
+    /// The monitor's bus, running `ddcutil detect` the first time.
+    fn bus(&self) -> DdcBus {
+        let mut bus = self.bus.lock().unwrap_or_else(|e| e.into_inner());
+        if *bus == DdcBus::Unknown {
+            *bus = match run("ddcutil", "ddcutil", &["detect", "--brief"]) {
+                Ok(out) => parse_ddc_detect_bus(&out).map_or(DdcBus::Missing, DdcBus::Number),
+                Err(_) => DdcBus::Missing,
+            };
+        }
+        *bus
+    }
+
+    /// Run `ddcutil` with `args` on the monitor's bus. A failure forgets the
+    /// bus, so the next call detects it again (the monitor may have moved).
+    fn run_on_bus(&self, args: &[&str]) -> Result<String, BrightnessError> {
+        let all = with_bus(args, self.bus());
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        let result = run("ddcutil", "ddcutil", &all);
+        if result.is_err() {
+            *self.bus.lock().unwrap_or_else(|e| e.into_inner()) = DdcBus::Unknown;
+        }
+        result
     }
 }
 
@@ -150,7 +199,7 @@ impl Backend for Ddc {
 
     /// Read VCP 10 and remember the maximum of the monitor.
     fn get(&self) -> Result<u8, BrightnessError> {
-        let out = run("ddcutil", "ddcutil", &["getvcp", "10", "--brief"])?;
+        let out = self.run_on_bus(&["getvcp", "10", "--brief"])?;
         let (current, max) = parse_ddc_brief(&out).ok_or_else(|| BrightnessError::Parse { tool: "ddcutil".to_string(), detail: out.trim().to_string() })?;
         self.max.store(max, Ordering::Relaxed);
         Ok(raw_to_percent(current, max))
@@ -159,7 +208,7 @@ impl Backend for Ddc {
     /// Write VCP 10 scaled to the maximum of the monitor.
     fn set(&self, percent: u8) -> Result<(), BrightnessError> {
         let raw = percent_to_raw(clamp_percent(percent), self.max.load(Ordering::Relaxed));
-        run("ddcutil", "ddcutil", &["setvcp", "10", &raw.to_string(), "--noverify"]).map(|_| ())
+        self.run_on_bus(&["setvcp", "10", &raw.to_string(), "--noverify"]).map(|_| ())
     }
 }
 
@@ -241,6 +290,13 @@ mod tests {
     #[test]
     fn sysfs_missing_root_is_an_io_error() {
         assert!(matches!(Sysfs::find(Path::new("/nonexistent/backlight")), Err(BrightnessError::Io { .. })));
+    }
+
+    #[test]
+    fn a_known_bus_is_passed_to_ddcutil() {
+        assert_eq!(with_bus(&["getvcp", "10"], DdcBus::Number(4)), vec!["getvcp", "10", "--bus", "4"]);
+        assert_eq!(with_bus(&["getvcp", "10"], DdcBus::Missing), vec!["getvcp", "10"]);
+        assert_eq!(with_bus(&["getvcp", "10"], DdcBus::Unknown), vec!["getvcp", "10"]);
     }
 
     #[test]
