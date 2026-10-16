@@ -53,6 +53,7 @@ mod menu_editor;
 mod model;
 mod nav_cache;
 mod navpath;
+mod open_default;
 mod output_window;
 mod palette;
 mod passwd;

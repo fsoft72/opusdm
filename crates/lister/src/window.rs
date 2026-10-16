@@ -743,12 +743,7 @@ impl Ui {
             glib::spawn_future_local(async move {
                 let Ok(result) = rx.recv().await else { return };
                 match result {
-                    Ok(temp_path) => {
-                        let uri = format!("file://{}", temp_path.to_string_lossy());
-                        if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
-                            crate::actions::flash(&ui, &format!("cannot open {}: {e}", temp_path.display()));
-                        }
-                    }
+                    Ok(temp_path) => ui.open_with_default(&temp_path),
                     Err(e) => crate::actions::flash(&ui, &format!("cannot extract from the archive: {e}")),
                 }
             });
@@ -760,10 +755,9 @@ impl Ui {
                 self.navigate_to(&target);
             } else {
                 let item = opusdm_ftp::RemoteItem { path: url.join(&row.name).path, name: row.name.clone(), is_dir: false };
-                self.download_remote(&url, vec![item], |_ui, paths| {
+                self.download_remote(&url, vec![item], |ui, paths| {
                     if let Some(path) = paths.first() {
-                        let uri = format!("file://{}", path.to_string_lossy());
-                        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                        ui.open_with_default(path);
                     }
                 });
             }
@@ -776,9 +770,16 @@ impl Ui {
         } else if let Some(function) = crate::filetypes_ui::type_for(&target, &row).and_then(|t| t.actions.dblclick) {
             crate::filetypes_ui::run_on_row(self, &row.name, &function);
         } else {
-            let uri = format!("file://{}", target.to_string_lossy());
-            let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+            self.open_with_default(&target);
         }
+    }
+
+    /// Hand the local file `path` to its default application, logging and
+    /// flashing the error when the launch fails.
+    fn open_with_default(self: &Rc<Self>, path: &Path) {
+        let Err(e) = crate::open_default::open_default(path) else { return };
+        opusdm_ipc::err_log!("opusdm-lister", "{e}");
+        crate::actions::flash(self, &e);
     }
 
     /// Ctrl+Return: open the folder at `position` in a new Lister. Anything
