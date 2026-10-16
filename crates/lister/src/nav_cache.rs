@@ -223,17 +223,24 @@ impl Ui {
 pub fn install_history(ui: &Rc<Ui>, popover: &gtk::Popover) {
     use gtk::prelude::*;
     {
-        let ui = ui.clone();
-        ui.clone().nav_history.back.connect_clicked(move |_| ui.history_back());
+        let weak = Rc::downgrade(ui);
+        ui.nav_history.back.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.history_back();
+        });
     }
     {
-        let ui = ui.clone();
-        ui.clone().nav_history.forward.connect_clicked(move |_| ui.history_forward());
+        let weak = Rc::downgrade(ui);
+        ui.nav_history.forward.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.history_forward();
+        });
     }
     {
-        let ui_for_click = ui.clone();
+        let weak = Rc::downgrade(ui);
         let popover = popover.clone();
         ui.nav_history.list.connect_row_activated(move |_, row| {
+            let Some(ui_for_click) = weak.upgrade() else { return };
             let len = ui_for_click.history.borrow().entries().len();
             // Rows are listed newest first.
             let Some(index) = len.checked_sub(1 + row.index() as usize) else { return };

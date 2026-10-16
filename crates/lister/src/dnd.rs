@@ -46,9 +46,10 @@ pub fn attach(ui: &Rc<Ui>, view: &gtk::ColumnView) {
         crate::dlog!("column view drop: leave");
     });
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let view = view.clone();
         target.connect_drop(move |t, value, x, y| {
+            let Some(ui) = weak.upgrade() else { return false };
             crate::dlog!("column view drop: fired at ({x}, {y}), value type={:?}", value.type_());
             let Ok(file_list) = value.get::<gdk::FileList>() else {
                 crate::dlog!("column view drop: value is not a FileList");
@@ -79,8 +80,9 @@ pub fn attach(ui: &Rc<Ui>, view: &gtk::ColumnView) {
 /// Wire an `IconField`'s drop callback to `ToHub::RunJob`, mirroring `attach`
 /// for the column view. Shift held at drop time means move, otherwise copy.
 pub fn attach_field(ui: &Rc<Ui>, field: &IconField) {
-    let ui = ui.clone();
+    let weak = Rc::downgrade(ui);
     field.connect_drop_uris(move |srcs, target, shift| {
+        let Some(ui) = weak.upgrade() else { return };
         crate::dlog!("icon field drop: target={target} shift={shift} srcs={srcs:?}");
         if srcs.is_empty() {
             crate::dlog!("icon field drop: no paths, aborting");

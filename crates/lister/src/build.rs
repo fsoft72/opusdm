@@ -12,7 +12,7 @@ use gtk::prelude::*;
 use opusdm_ipc::{ListerId, Settings, ToHub};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 /// How long the path entry's "error" CSS class (invalid path flash) stays on.
 const PATH_ENTRY_ERROR_FLASH_MS: u64 = 600;
@@ -60,14 +60,15 @@ pub fn run(connected: Connected, start: PathBuf, select: Vec<String>) -> glib::E
         let ui_for_select = ui.clone();
         ui.navigate(&st.start, true, move || ui_for_select.select_names(&to_select));
 
-        let ui_for_pump = ui.clone();
+        let weak = Rc::downgrade(&ui);
         glib::spawn_future_local(async move {
             while let Ok(inb) = inbox.recv().await {
+                let Some(ui) = weak.upgrade() else { break };
                 match inb {
-                    Inbound::Msg(m) => ui_for_pump.apply_inbound(m),
+                    Inbound::Msg(m) => ui.apply_inbound(m),
                     Inbound::HubGone => {
                         crate::dlog!("hub connection lost, closing window");
-                        ui_for_pump.window.close();
+                        ui.window.close();
                         break;
                     }
                 }
@@ -540,17 +541,19 @@ fn assemble_ui(
 /// cycle the role; see `Roles::next_role`).
 fn wire_stat_bar(ui: &Rc<Ui>, star_btn: &gtk::Button) {
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         star_btn.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
             ui.send_hub(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
         });
     }
     {
-        let ui_for_click = ui.clone();
+        let weak = Rc::downgrade(ui);
         let gesture = gtk::GestureClick::new();
         gesture.connect_released(move |_, _, _, _| {
-            let next = ui_for_click.hub.roles.borrow().next_role(ui_for_click.hub.id);
-            ui_for_click.send_hub(&ToHub::SetRole(next));
+            let Some(ui) = weak.upgrade() else { return };
+            let next = ui.hub.roles.borrow().next_role(ui.hub.id);
+            ui.send_hub(&ToHub::SetRole(next));
         });
         ui.status_bar.role_badge.add_controller(gesture);
     }
@@ -635,8 +638,9 @@ fn wire_path_completion(entry: &gtk::Entry) {
 fn wire_navigation(ui: &Rc<Ui>, nav: &NavBarWidgets) {
     wire_path_completion(&nav.path_entry);
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         nav.parent_btn.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
             let parent = crate::navpath::parent(&ui.cwd.borrow());
             if let Some(p) = parent {
                 ui.navigate_to(&p);
@@ -644,16 +648,18 @@ fn wire_navigation(ui: &Rc<Ui>, nav: &NavBarWidgets) {
         });
     }
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         nav.home_btn.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
             if let Ok(home) = std::env::var("HOME") {
                 ui.navigate_to(Path::new(&home));
             }
         });
     }
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         nav.path_entry.connect_activate(move |entry| {
+            let Some(ui) = weak.upgrade() else { return };
             let text = crate::pathcomplete::expand_tilde(entry.text().as_str());
             let candidate = PathBuf::from(&text);
             // `name:` or `name:sub/dir` is a bookmark.
@@ -700,12 +706,16 @@ fn wire_navigation(ui: &Rc<Ui>, nav: &NavBarWidgets) {
 /// selection-changed handler (status line, active preview, Sidecar).
 fn wire_selection(ui: &Rc<Ui>) {
     {
-        let ui = ui.clone();
-        ui.view.column_view.clone().connect_activate(move |_, position| ui.activate_row(position));
+        let weak = Rc::downgrade(ui);
+        ui.view.column_view.connect_activate(move |_, position| {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.activate_row(position);
+        });
     }
     {
-        let ui = ui.clone();
-        ui.view.selection.clone().connect_selection_changed(move |_, _, _| {
+        let weak = Rc::downgrade(ui);
+        ui.view.selection.connect_selection_changed(move |_, _, _| {
+            let Some(ui) = weak.upgrade() else { return };
             ui.sync_cursor_from_selection();
             ui.update_status();
             crate::sidecar::follow(&ui);
@@ -713,17 +723,17 @@ fn wire_selection(ui: &Rc<Ui>) {
     }
 }
 
-/// Window-level signals: focus notifies the hub, closing sends `Goodbye` so
-/// the process can exit.
+/// Window-level signals: focus notifies the hub, closing shuts the `Ui`
+/// down (see [`Ui::shutdown`]) so the process can exit.
 fn wire_window_signals(ui: &Rc<Ui>) {
     {
         // Record the Ctrl state of every button press before the list sees
         // it, for Ctrl+double click (open the folder in a new Lister).
-        let window = ui.window.clone();
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let legacy = gtk::EventControllerLegacy::new();
         legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
         legacy.connect_event(move |_, event| {
+            let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
             match event.event_type() {
                 gdk::EventType::ButtonPress => {
                     ui.ctrl_click.set(event.modifier_state().contains(gdk::ModifierType::CONTROL_MASK));
@@ -733,24 +743,21 @@ fn wire_window_signals(ui: &Rc<Ui>) {
             }
             glib::Propagation::Proceed
         });
-        window.add_controller(legacy);
+        ui.window.add_controller(legacy);
     }
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let focus = gtk::EventControllerFocus::new();
-        let window = ui.window.clone();
         focus.connect_enter(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
             ui.send_hub(&ToHub::FocusGained);
         });
-        window.add_controller(focus);
+        ui.window.add_controller(focus);
     }
     {
-        let ui = ui.clone();
-        ui.window.clone().connect_close_request(move |_| {
-            crate::dlog!("close request, sending Goodbye to hub");
-            ui.send_hub(&ToHub::Goodbye);
-            crate::sidecar::stop(&ui);
-            ui.caches.size_scan.borrow().cancel();
+        let weak = Rc::downgrade(ui);
+        ui.window.connect_close_request(move |_| {
+            if let Some(ui) = weak.upgrade() { ui.shutdown(); }
             glib::Propagation::Proceed
         });
     }
@@ -759,9 +766,10 @@ fn wire_window_signals(ui: &Rc<Ui>) {
 /// Keyboard shortcuts. The binding table itself lives in `keys.rs`; this
 /// only turns the resolved action into a call.
 fn wire_keys(ui: &Rc<Ui>) {
-    let ui_for_keys = ui.clone();
+    let weak = Rc::downgrade(ui);
     let key_ctrl = gtk::EventControllerKey::new();
     key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+        let Some(ui_for_keys) = weak.upgrade() else { return glib::Propagation::Proceed };
         let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let alt = state.contains(gdk::ModifierType::ALT_MASK);
@@ -803,8 +811,9 @@ fn wire_keys(ui: &Rc<Ui>) {
 fn wire_icon_view(ui: &Rc<Ui>, view_toggle: &gtk::ToggleButton) {
     // Icon-view toggle: swap the stack child and rebuild entries on the way in.
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         view_toggle.connect_toggled(move |b| {
+            let Some(ui) = weak.upgrade() else { return };
             let on = b.is_active();
             ui.view.mode.set(if on { ViewMode::Icons } else { ViewMode::Details });
             ui.view.stack
@@ -818,13 +827,17 @@ fn wire_icon_view(ui: &Rc<Ui>, view_toggle: &gtk::ToggleButton) {
     crate::dnd::attach_field(ui, &ui.view.icon_field);
     let icon_field = ui.view.icon_field.clone();
     {
-        let ui = ui.clone();
-        icon_field.connect_activate(move |i| ui.activate_row(i as u32));
+        let weak = Rc::downgrade(ui);
+        icon_field.connect_activate(move |i| {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.activate_row(i as u32);
+        });
     }
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let field = icon_field.clone();
         icon_field.connect_rename_requested(move |i, new_name| {
+            let Some(ui) = weak.upgrade() else { return };
             let Some(entry) = field.entry(i) else { return };
             let new_path = ui.cwd_path().join(&new_name);
             if let Err(e) = opusdm_fsops::rename_noreplace(&entry.path, &new_path) {
@@ -835,9 +848,10 @@ fn wire_icon_view(ui: &Rc<Ui>, view_toggle: &gtk::ToggleButton) {
         });
     }
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let field = icon_field.clone();
         icon_field.connect_context_menu(move |idx, x, y| {
+            let Some(ui) = weak.upgrade() else { return };
             if idx < 0 {
                 crate::context_menu::show_empty_area_menu(&ui, field.widget(), x, y);
                 return;
@@ -848,9 +862,10 @@ fn wire_icon_view(ui: &Rc<Ui>, view_toggle: &gtk::ToggleButton) {
         });
     }
     {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(ui);
         let field = icon_field.clone();
         icon_field.connect_zoom_requested(move |delta| {
+            let Some(ui) = weak.upgrade() else { return };
             use opusdm_iconview::ICON_ZOOM_STEPS as STEPS;
             let cur = ui.view.icon_size.get();
             // If icon_size was ever set to a value outside STEPS, snap to the
@@ -907,11 +922,12 @@ fn build_window(
     view_toggle.add_css_class("flat");
     root.append(&button_row);
 
-    // The columns need the `Ui`, which is built after them.
-    let ui_slot: Rc<RefCell<Option<Rc<Ui>>>> = Rc::new(RefCell::new(None));
+    // The columns need the `Ui`, which is built after them. The slot holds
+    // a `Weak`: the column factories live on the `Ui`'s own widgets.
+    let ui_slot: Rc<RefCell<Weak<Ui>>> = Rc::new(RefCell::new(Weak::new()));
     let ui_getter = {
         let slot = ui_slot.clone();
-        move || slot.borrow().clone()
+        move || slot.borrow().upgrade()
     };
     let view = build_file_view(&settings, ui_getter);
     wire_filter_bar(&view);
@@ -934,15 +950,18 @@ fn build_window(
     let ui = assemble_ui(parts, client, id, roles, settings, bindings, formats, functions, watcher);
 
     // Drain coalesced watch notices on the GTK thread.
+    // The loop ends when the watcher is stopped (see `Ui::shutdown`) or the
+    // `Ui` is gone.
     if let Some(watch_rx) = watch_rx {
-        let ui = ui.clone();
+        let weak = Rc::downgrade(&ui);
         glib::spawn_future_local(async move {
             while let Ok(dir) = watch_rx.recv().await {
+                let Some(ui) = weak.upgrade() else { break };
                 ui.on_directory_changed(&dir);
             }
         });
     }
-    *ui_slot.borrow_mut() = Some(ui.clone());
+    *ui_slot.borrow_mut() = Rc::downgrade(&ui);
     terminal.attach(&ui);
     ui.update_css_for_colors();
 

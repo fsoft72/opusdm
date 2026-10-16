@@ -692,6 +692,24 @@ impl Ui {
         false
     }
 
+    /// The window is closing: tell the hub, close the Sidecar, cancel the
+    /// background work, close the remote connections and stop the folder
+    /// watcher, so nothing outlives the window or keeps the `Ui` alive.
+    pub fn shutdown(&self) {
+        crate::dlog!("shutting down, sending Goodbye to hub");
+        // The hub may already be gone (that is often why the window closes).
+        if let Err(e) = self.hub.client.send(&ToHub::Goodbye) {
+            crate::dlog!("Goodbye not sent: {e}");
+        }
+        crate::sidecar::stop(self);
+        self.nav_cancel.borrow().cancel();
+        self.caches.size_scan.borrow().cancel();
+        self.remote.shutdown();
+        if let Some(watcher) = &self.hub.watcher {
+            watcher.stop();
+        }
+    }
+
     /// Show `text` in the transient message line for a few seconds.
     pub fn flash(&self, text: &str) {
         self.status_bar.job_line.set_text(text);

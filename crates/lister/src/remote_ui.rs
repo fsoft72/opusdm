@@ -18,6 +18,9 @@ use std::sync::{Arc, Mutex};
 /// A connected server, shared with the worker threads that use it.
 pub type SharedFs = Arc<Mutex<Box<dyn RemoteFs>>>;
 
+/// Name of the thread that closes remote connections.
+const CLOSE_THREAD_NAME: &str = "opusdm-ftp-close";
+
 /// What to do once a connection is ready.
 type Then = Box<dyn FnOnce(&Rc<Ui>)>;
 
@@ -37,6 +40,29 @@ fn close_sessions(sessions: Vec<SharedFs>) {
         if let Ok(mut fs) = session.lock() {
             fs.close();
         }
+    }
+}
+
+impl RemoteState {
+    /// Forget every connection and password and close the connections on a
+    /// thread of their own (a dead server must not block the caller, which
+    /// may be a closing window). Returns how many were open.
+    pub fn close_all(&self) -> usize {
+        let sessions: Vec<SharedFs> = self.sessions.borrow_mut().drain().map(|(_, s)| s).collect();
+        self.passwords.borrow_mut().clear();
+        let count = sessions.len();
+        if count == 0 { return 0; }
+        let spawned = std::thread::Builder::new().name(CLOSE_THREAD_NAME.to_string()).spawn(move || close_sessions(sessions));
+        if let Err(e) = spawned {
+            opusdm_ipc::err_log!("opusdm-lister", "cannot start a thread to close the remote connections: {e}");
+        }
+        count
+    }
+
+    /// The Lister is closing: stop the downloads and close every connection.
+    pub fn shutdown(&self) {
+        self.downloads.cancel();
+        self.close_all();
     }
 }
 
@@ -226,10 +252,7 @@ impl Ui {
     /// Close every connection ("FTP Quit"). A Lister showing a remote folder
     /// goes back to the home folder.
     pub fn quit_remote(self: &Rc<Self>) {
-        let sessions: Vec<SharedFs> = self.remote.sessions.borrow_mut().drain().map(|(_, s)| s).collect();
-        self.remote.passwords.borrow_mut().clear();
-        let count = sessions.len();
-        crate::background::run_blocking(move || close_sessions(sessions), |_| {});
+        let count = self.remote.close_all();
         if remote::url_of(&self.cwd_path()).is_some() {
             if let Ok(home) = std::env::var("HOME") {
                 self.navigate_to(std::path::Path::new(&home));

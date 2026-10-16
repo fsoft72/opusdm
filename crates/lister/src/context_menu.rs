@@ -155,9 +155,10 @@ pub fn show_empty_area_menu(ui: &Rc<Ui>, anchor: &impl IsA<gtk::Widget>, x: f64,
 pub fn attach_empty_area(ui: &Rc<Ui>, column_view: &gtk::ColumnView) {
     let click = gtk::GestureClick::new();
     click.set_button(gdk::BUTTON_SECONDARY);
-    let ui = ui.clone();
+    let weak = Rc::downgrade(ui);
     click.connect_pressed(move |gesture, n_press, x, y| {
         if n_press != 1 { return; }
+        let Some(ui) = weak.upgrade() else { return };
         let Some(view) = gesture.widget() else { return };
         let Some(picked) = view.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
         let names: Vec<String> = std::iter::successors(Some(picked), |w| w.parent())
