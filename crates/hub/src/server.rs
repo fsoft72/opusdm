@@ -533,7 +533,12 @@ impl Hub {
                 self.send_to_lister(lister.0, ToLister::GoTo { path });
             }
 
-            ToHub::Register { pid, initial_path } => self.register_lister(cid, pid, initial_path),
+            ToHub::Register { pid, initial_path, version } => {
+                if let Some(warning) = opusdm_ipc::protocol_mismatch(version) {
+                    opusdm_ipc::err_log!("hub", "Lister pid {pid}: {warning}");
+                }
+                self.register_lister(cid, pid, initial_path)
+            }
 
             ToHub::FocusGained => {
                 apply_role(&mut self.roles, RoleEvent::FocusGained(ListerId(cid)), &mut self.conns, &self.evt_tx);
@@ -706,6 +711,7 @@ impl Hub {
                     bindings: self.current_bindings.clone(),
                     formats: self.current_formats.clone(),
                     functions: self.current_functions.clone(),
+                    version: opusdm_ipc::PROTOCOL_VERSION,
                 },
             );
             send_or_log(&self.evt_tx, HubEvent::ListerRegistered { id: ListerId(cid), pid, path: initial_path }, "GTK event");

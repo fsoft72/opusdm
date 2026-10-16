@@ -76,10 +76,16 @@ impl Client {
         initial_path: &Path,
     ) -> io::Result<Connected> {
         let mut stream = UnixStream::connect(sock_path)?;
-        send(&mut stream, &ToHub::Register { pid, initial_path: initial_path.to_path_buf() })?;
+        send(
+            &mut stream,
+            &ToHub::Register { pid, initial_path: initial_path.to_path_buf(), version: opusdm_ipc::PROTOCOL_VERSION },
+        )?;
         let welcome: Welcome = recv(&mut stream)?
             .ok_or_else(|| io::Error::other("hub closed before Welcome"))?;
-        let Welcome { lister_id: id, source, dests, source_locked, settings, bindings, formats, functions } = welcome;
+        let Welcome { lister_id: id, source, dests, source_locked, settings, bindings, formats, functions, version } = welcome;
+        if let Some(warning) = opusdm_ipc::protocol_mismatch(version) {
+            opusdm_ipc::err_log!("opusdm-lister", "hub: {warning}");
+        }
         let roles = Roles { source, dests, source_locked };
         let reader_stream = stream.try_clone()?;
         let inbox = start_reader(reader_stream);
@@ -242,7 +248,7 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
             let got: ToHub = recv(&mut s).unwrap().unwrap();
-            assert!(matches!(got, ToHub::Register { pid: 77, .. }));
+            assert!(matches!(got, ToHub::Register { pid: 77, version: opusdm_ipc::PROTOCOL_VERSION, .. }));
             send(&mut s, &Welcome {
                 lister_id: ListerId(5),
                 source: Some(ListerId(5)),
@@ -252,6 +258,7 @@ mod tests {
                 bindings: opusdm_ipc::Bindings::default(),
                 formats: opusdm_ipc::FormatStore::default(),
                 functions: Vec::new(),
+                version: opusdm_ipc::PROTOCOL_VERSION,
             }).unwrap();
             send(&mut s, &ToLister::InvalidatePath("/tmp".into())).unwrap();
         });
@@ -286,6 +293,7 @@ mod tests {
                 bindings: opusdm_ipc::Bindings::default(),
                 formats: opusdm_ipc::FormatStore::default(),
                 functions: Vec::new(),
+                version: opusdm_ipc::PROTOCOL_VERSION,
             }).unwrap();
         });
         let (mut client, _id, _roles, _settings, _bindings, _formats, _functions) =
@@ -321,6 +329,7 @@ mod tests {
                 bindings: to_send,
                 formats: opusdm_ipc::FormatStore::default(),
                 functions: Vec::new(),
+                version: opusdm_ipc::PROTOCOL_VERSION,
             }).unwrap();
         });
         let (_client, _id, _roles, _settings, bindings, _formats, _functions) =
@@ -347,6 +356,7 @@ mod tests {
                 bindings: opusdm_ipc::Bindings::default(),
                 formats: to_send,
                 functions: Vec::new(),
+                version: opusdm_ipc::PROTOCOL_VERSION,
             }).unwrap();
         });
         let (_client, _id, _roles, _settings, _bindings, formats, _functions) =

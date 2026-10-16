@@ -11,7 +11,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
 fn reg(s: &mut UnixStream, pid: u32, path: &str) -> opusdm_ipc::ListerId {
-    send(s, &ToHub::Register { pid, initial_path: path.into() }).unwrap();
+    send(s, &ToHub::Register { pid, initial_path: path.into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     recv::<_, Welcome>(s).unwrap().unwrap().lister_id
 }
 

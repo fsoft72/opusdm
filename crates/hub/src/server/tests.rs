@@ -46,7 +46,7 @@ fn register_gets_welcome_and_focus_makes_source() {
     let handle = spawn_server(listener, Box::new(|_p| {}));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1000, initial_path: "/home/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1000, initial_path: "/home/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let welcome: Welcome = recv(&mut a).unwrap().unwrap();
     assert_eq!(welcome.source, None);
     assert!(welcome.dests.is_empty());
@@ -81,9 +81,9 @@ fn two_listers_focus_toggles_source_dest() {
     let _h = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
     let mut b = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _wa: Welcome = recv(&mut a).unwrap().unwrap();
-    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
+    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _wb: Welcome = recv(&mut b).unwrap().unwrap();
 
     send(&mut a, &ToHub::FocusGained).unwrap();
@@ -144,7 +144,7 @@ fn set_background_step_applies_and_persists_the_image() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut c = connect(&path);
-    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut c).unwrap().unwrap();
 
     let mut args = std::collections::BTreeMap::new();
@@ -220,7 +220,7 @@ fn leave_out_and_put_away_steps_emit_hub_events() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut c = connect(&path);
-    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut c).unwrap().unwrap();
 
     for cmd in [opusdm_ipc::function::InternalCmd::LeaveOut, opusdm_ipc::function::InternalCmd::PutAway] {
@@ -296,7 +296,7 @@ fn goodbye_drops_lister_and_notifies_gtk() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 9, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 9, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _wa: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::Goodbye).unwrap();
     drop(a);
@@ -319,12 +319,12 @@ fn run_function_queries_source_and_dest_then_executes() {
 
     // SOURCE lister.
     let mut src = connect(&path);
-    send(&mut src, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut src, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut src).unwrap().unwrap();
 
     // DEST lister.
     let mut dst = connect(&path);
-    send(&mut dst, &ToHub::Register { pid: 2, initial_path: "/dst".into() }).unwrap();
+    send(&mut dst, &ToHub::Register { pid: 2, initial_path: "/dst".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut dst).unwrap().unwrap();
 
     // `start_function_run` treats the RunFunction sender as SOURCE
@@ -380,10 +380,10 @@ fn run_function_queries_source_and_dest_then_executes() {
 /// SOURCE and DEST listers, DEST role set, ready for a function run.
 fn source_and_dest(path: &std::path::Path) -> (UnixStream, UnixStream) {
     let mut src = connect(path);
-    send(&mut src, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut src, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut src).unwrap().unwrap();
     let mut dst = connect(path);
-    send(&mut dst, &ToHub::Register { pid: 2, initial_path: "/dst".into() }).unwrap();
+    send(&mut dst, &ToHub::Register { pid: 2, initial_path: "/dst".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut dst).unwrap().unwrap();
     send(&mut dst, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
     let _r: ToLister = recv(&mut src).unwrap().unwrap();
@@ -427,7 +427,7 @@ fn confirm_round_trip(ok: bool) -> bool {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     let mut args = std::collections::BTreeMap::new();
     args.insert("message".to_string(), "Go on?".to_string());
@@ -459,7 +459,7 @@ fn a_run_from_a_tool_window_uses_the_source_lister_and_reports_to_the_tool() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
     // The Manage Functions window talks to the hub without registering.
@@ -525,7 +525,7 @@ fn a_script_asks_the_hub_for_the_listers_and_their_roles() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
     let mut tool = connect(&path);
@@ -550,7 +550,7 @@ fn a_run_window_keeps_receiving_output_after_the_function_finished() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     let mut args = std::collections::BTreeMap::new();
     args.insert("command".to_string(), "sh -c 'sleep 0.3; echo late'".to_string());
@@ -664,7 +664,7 @@ fn headless_function_copy_as_conflict_is_skipped_without_a_prompt() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
     let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
@@ -690,7 +690,7 @@ fn run_function_from_the_dest_lister_itself_does_not_wait_on_itself_twice() {
     let handle = spawn_server(listener, Box::new(|_p| {}));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
     let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
@@ -731,7 +731,7 @@ fn set_bindings_sanitizes_persists_and_broadcasts() {
     let _handle = spawn_server(listener, Box::new(|_p| {}));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let welcome: Welcome = recv(&mut a).unwrap().unwrap();
     assert_eq!(welcome.bindings, opusdm_ipc::Bindings::default());
 
@@ -806,11 +806,11 @@ fn set_functions_persists_and_broadcasts_to_every_lister() {
     let _handle = spawn_server(listener, Box::new(|_p| {}));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let welcome: Welcome = recv(&mut a).unwrap().unwrap();
     assert!(welcome.functions.is_empty());
     let mut b = connect(&path);
-    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
+    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _: Welcome = recv(&mut b).unwrap().unwrap();
 
     let f = opusdm_ipc::function::Function::new("Backup");
@@ -840,7 +840,7 @@ fn set_formats_sanitizes_persists_and_broadcasts() {
     let _handle = spawn_server(listener, Box::new(|_p| {}));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let welcome: Welcome = recv(&mut a).unwrap().unwrap();
     assert_eq!(welcome.formats, opusdm_ipc::FormatStore::default());
 
@@ -885,7 +885,7 @@ fn welcome_carries_the_formats_loaded_from_disk() {
     let _handle = spawn_server_with(listener, Box::new(|_p| {}), ServerOptions::production());
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let welcome: Welcome = recv(&mut a).unwrap().unwrap();
     assert_eq!(welcome.formats, on_disk);
 }
@@ -905,7 +905,7 @@ fn recv_until<T>(s: &mut UnixStream, mut pick: impl FnMut(ToLister) -> Option<T>
 /// Register a Lister and return its stream and id.
 fn register(path: &std::path::Path, pid: u32, start: &str) -> (UnixStream, ListerId) {
     let mut s = connect(path);
-    send(&mut s, &ToHub::Register { pid, initial_path: start.into() }).unwrap();
+    send(&mut s, &ToHub::Register { pid, initial_path: start.into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let welcome: Welcome = recv(&mut s).unwrap().unwrap();
     (s, welcome.lister_id)
 }
@@ -1020,7 +1020,7 @@ fn welcome_carries_the_bindings_loaded_from_disk() {
     let _handle = spawn_server_with(listener, Box::new(|_p| {}), ServerOptions::production());
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let welcome: Welcome = recv(&mut a).unwrap().unwrap();
     assert_eq!(welcome.bindings, on_disk);
 }
@@ -1059,7 +1059,7 @@ fn run_function_by_id_with_an_unknown_id_reports_failure() {
     let _handle = spawn_server(listener, Box::new(|_p| {}));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::RunFunctionById { id: "nope".into() }).unwrap();
 
@@ -1080,7 +1080,7 @@ fn run_function_by_id_runs_a_saved_function() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     send(&mut a, &ToHub::RunFunctionById { id: f.id.clone() }).unwrap();
@@ -1102,7 +1102,7 @@ fn run_function_by_id_runs_an_inline_bash_command() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     // `{a,b}` is bash brace expansion, not a placeholder: it must reach bash untouched.
@@ -1127,7 +1127,7 @@ fn run_function_by_id_runs_an_inline_exec_line() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     let id = format!("exec:sh -c 'echo x >> {}'", marker.display());
@@ -1147,7 +1147,7 @@ fn an_inline_command_that_cannot_run_reports_failure() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     send(&mut a, &ToHub::RunFunctionById { id: "exec:opusdm-no-such-program-xyz".into() }).unwrap();
@@ -1185,7 +1185,7 @@ fn a_bash_command_receives_the_selection_as_positional_parameters() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     // A file name that would run a command if it were pasted into the script.
@@ -1244,7 +1244,7 @@ fn a_headless_bash_run_with_output_opens_its_window_on_the_source_lister() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
     let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
@@ -1293,7 +1293,7 @@ fn headless_run_queries_the_source_lister() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Source)).unwrap();
     let _r: ToLister = recv(&mut a).unwrap().unwrap(); // RoleChanged
@@ -1321,7 +1321,7 @@ fn two_runs_waiting_on_one_lister_both_complete_in_order() {
     let (_td, listener, path) = bind_temp();
     let _handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     // Both requests reach the hub before the lister answers either.
@@ -1408,14 +1408,14 @@ fn lister_opened_runs_once_and_is_throttled_inside_the_cooldown() {
     let _handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     wait_for_lines(&marker, 1);
 
     // A second lister right away is the loop a self-spawning hook would
     // create: it must be throttled, not run again.
     let mut b = connect(&path);
-    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
+    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut b).unwrap().unwrap();
     std::thread::sleep(Duration::from_millis(400));
     let lines = std::fs::read_to_string(&marker).unwrap().lines().count();
@@ -1440,7 +1440,7 @@ fn lister_closed_runs_the_bound_function() {
     let _handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     send(&mut a, &ToHub::Goodbye).unwrap();
 
@@ -1465,7 +1465,7 @@ fn shutdown_hooks_finish_before_the_listers_are_told_to_quit() {
     let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
 
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     handle.cmd_tx.send(HubCmd::Shutdown).unwrap();
@@ -1491,7 +1491,7 @@ fn a_shutdown_hook_can_be_an_inline_command() {
     };
     let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(bindings));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
 
     handle.cmd_tx.send(HubCmd::Shutdown).unwrap();
@@ -1535,7 +1535,7 @@ fn set_hidden_tells_listers_and_the_gtk_side_once_and_toggle_flips_it() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut c = connect(&path);
-    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut c).unwrap().unwrap();
     let hidden_event = |ev: HubEvent| match ev {
         HubEvent::HiddenChanged(h) => Some(h),
@@ -1579,7 +1579,7 @@ fn a_requested_lister_registering_while_hidden_reveals_everything() {
     };
     assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(true));
     let mut c = connect(&path);
-    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut c).unwrap().unwrap();
     assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(false));
 }
@@ -1589,7 +1589,7 @@ fn hide_reveal_and_toggle_steps_drive_the_hidden_state() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut c = connect(&path);
-    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut c).unwrap().unwrap();
     let hidden_event = |ev: HubEvent| match ev {
         HubEvent::HiddenChanged(h) => Some(h),
@@ -1638,7 +1638,7 @@ fn a_lister_nobody_asked_for_registering_while_hidden_is_told_to_hide_too() {
     };
     assert_eq!(next_matching(&handle, Duration::from_millis(1000), hidden_event), Some(true));
     let mut c = connect(&path);
-    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into() }).unwrap();
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/src".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut c).unwrap().unwrap();
     loop {
         match recv::<_, ToLister>(&mut c).unwrap() {
@@ -1659,10 +1659,10 @@ fn reveal_presents_only_the_source_lister_after_telling_everyone() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut a = connect(&path);
-    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into() }).unwrap();
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut a).unwrap().unwrap();
     let mut b = connect(&path);
-    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into() }).unwrap();
+    send(&mut b, &ToHub::Register { pid: 2, initial_path: "/b".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _w: Welcome = recv(&mut b).unwrap().unwrap();
     send(&mut a, &ToHub::FocusGained).unwrap();
     loop {
@@ -1800,7 +1800,7 @@ fn a_lister_that_stops_reading_is_disconnected_instead_of_queueing_forever() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut stalled = connect(&path);
-    send(&mut stalled, &ToHub::Register { pid: 1, initial_path: "/s".into() }).unwrap();
+    send(&mut stalled, &ToHub::Register { pid: 1, initial_path: "/s".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
     let _welcome: Welcome = recv(&mut stalled).unwrap().unwrap();
     // An unregistered peer gets no broadcasts, so it can flood without reading.
     let mut flooder = connect(&path);

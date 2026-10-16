@@ -4,6 +4,20 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Version of the hub <-> Lister wire protocol spoken by this build, carried
+/// in `ToHub::Register` and `Welcome`. Bump it whenever a message changes in
+/// a way an older peer cannot decode. A peer that predates versioning sends
+/// no field and decodes as version 0.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// A warning text when a peer speaks protocol `peer` instead of
+/// [`PROTOCOL_VERSION`], or `None` when both agree. A mismatch is only
+/// reported: the connection keeps working as far as the messages still decode.
+pub fn protocol_mismatch(peer: u32) -> Option<String> {
+    if peer == PROTOCOL_VERSION { return None; }
+    Some(format!("peer speaks IPC protocol {peer}, this build speaks {PROTOCOL_VERSION}; restart both after an upgrade"))
+}
+
 /// Stable identifier the hub assigns to each connected Lister.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ListerId(pub u64);
@@ -152,8 +166,14 @@ pub enum Outcome {
 /// Messages a Lister sends to the hub.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToHub {
-    /// First message on a fresh connection.
-    Register { pid: u32, initial_path: PathBuf },
+    /// First message on a fresh connection. `version` is the sender's
+    /// [`PROTOCOL_VERSION`] (0 from a peer that predates versioning).
+    Register {
+        pid: u32,
+        initial_path: PathBuf,
+        #[serde(default)]
+        version: u32,
+    },
     /// Single-instance probe; hub replies `ToLister::Pong`.
     Ping,
     /// Sent by a redundant hub invocation asking the running hub to raise its toolbar.
@@ -451,6 +471,9 @@ pub struct Welcome {
     /// The saved Functions (the hub owns `functions.json`).
     #[serde(default)]
     pub functions: Vec<crate::function::Function>,
+    /// The hub's [`PROTOCOL_VERSION`] (0 from a hub that predates versioning).
+    #[serde(default)]
+    pub version: u32,
 }
 
 /// Messages the hub sends to a Lister once it is registered.
@@ -591,7 +614,7 @@ mod tests {
 
     #[test]
     fn every_tohub_variant_roundtrips() {
-        roundtrip_tohub(ToHub::Register { pid: 42, initial_path: "/home/x".into() });
+        roundtrip_tohub(ToHub::Register { pid: 42, initial_path: "/home/x".into(), version: PROTOCOL_VERSION });
         roundtrip_tohub(ToHub::Ping);
         roundtrip_tohub(ToHub::RaiseToolbar);
         roundtrip_tohub(ToHub::Goodbye);
@@ -682,6 +705,7 @@ mod tests {
             bindings: crate::bindings::Bindings::default(),
             formats: crate::format::FormatStore::default(),
             functions: vec![crate::function::Function::new("Copy and notify")],
+            version: PROTOCOL_VERSION,
         };
         let mut buf = Vec::new();
         send(&mut buf, &msg).unwrap();
@@ -938,5 +962,31 @@ mod tests {
     fn set_hidden_roundtrips() {
         roundtrip_tolister(ToLister::SetHidden(true));
         roundtrip_tolister(ToLister::SetHidden(false));
+    }
+
+    #[test]
+    fn register_without_version_decodes_as_version_zero() {
+        let json = r#"{"Register":{"pid":3,"initial_path":"/a"}}"#;
+        let got: ToHub = serde_json::from_str(json).unwrap();
+        assert_eq!(got, ToHub::Register { pid: 3, initial_path: "/a".into(), version: 0 });
+    }
+
+    #[test]
+    fn welcome_without_version_decodes_as_version_zero() {
+        let json = r#"{"lister_id":1,"source":null,"dests":[],"source_locked":false,"settings":{}}"#;
+        let got: Welcome = serde_json::from_str(json).unwrap();
+        assert_eq!(got.version, 0);
+    }
+
+    #[test]
+    fn register_carries_the_protocol_version() {
+        roundtrip_tohub(ToHub::Register { pid: 1, initial_path: "/".into(), version: PROTOCOL_VERSION });
+    }
+
+    #[test]
+    fn protocol_mismatch_reports_only_a_different_version() {
+        assert_eq!(protocol_mismatch(PROTOCOL_VERSION), None);
+        let msg = protocol_mismatch(0).unwrap();
+        assert!(msg.contains(&PROTOCOL_VERSION.to_string()));
     }
 }
