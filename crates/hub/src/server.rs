@@ -1344,6 +1344,16 @@ fn spawn_forwarder<T: Send + 'static>(name: &str, rx: Receiver<T>, owner_tx: Sen
         .unwrap_or_else(|e| panic!("spawn {name} forwarder thread: {e}"));
 }
 
+/// Whether a `recv` error means the peer sent something this hub cannot
+/// decode (an unknown message, a bad or oversized frame), as opposed to the
+/// connection itself failing.
+fn is_decode_error(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::Other | std::io::ErrorKind::InvalidData)
+}
+
+/// Read connection `cid` until it ends, passing every message to the owner
+/// loop. A message the hub cannot decode ends the connection with a log line,
+/// so a client built from another OpusDM version is not dropped silently.
 fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
     loop {
         match recv::<_, ToHub>(&mut stream) {
@@ -1351,12 +1361,16 @@ fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
                 if owner_tx.send(OwnerMsg::FromLister(cid, msg)).is_err() {
                     return;
                 }
+                continue;
             }
-            Ok(None) | Err(_) => {
-                let _ = owner_tx.send(OwnerMsg::ListerEof(cid));
-                return;
+            Ok(None) => {}
+            Err(e) if is_decode_error(&e) => {
+                opusdm_ipc::err_log!("hub", "connection {cid} sent a message this hub cannot read (another OpusDM version?), disconnecting: {e}");
             }
+            Err(e) => opusdm_ipc::debug_log!("hub", "connection {cid} failed: {e}"),
         }
+        let _ = owner_tx.send(OwnerMsg::ListerEof(cid));
+        return;
     }
 }
 

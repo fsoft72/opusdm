@@ -68,9 +68,7 @@ fn run(action: &Action) {
 /// Tell the running hub to open the button bank manager.
 fn open_bank_manager() {
     let sock = opusdm_ipc::sockpath::hub_sock_path();
-    let sent = std::os::unix::net::UnixStream::connect(&sock)
-        .and_then(|mut stream| opusdm_ipc::frame::send(&mut stream, &opusdm_ipc::ToHub::OpenBankManager));
-    if let Err(e) = sent {
+    if let Err(e) = opusdm_ipc::sockpath::send_oneshot(&sock, &[opusdm_ipc::ToHub::OpenBankManager]) {
         opusdm_ipc::err_log!("theme-config", "cannot reach the hub to open the button banks: {e}");
     }
 }

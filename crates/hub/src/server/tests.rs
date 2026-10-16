@@ -1860,3 +1860,18 @@ fn resolve_steps_waits_for_an_inline_command_only_when_asked() {
     assert!(!waits(function_run::resolve_steps(&[], "exec:true", false).unwrap()));
     assert!(waits(function_run::resolve_steps(&[], "exec:true", true).unwrap()));
 }
+
+#[test]
+fn an_unknown_message_is_a_decode_error_and_ends_the_connection() {
+    let mut frame = Vec::new();
+    opusdm_ipc::frame::write_frame(&mut frame, br#"{"FromTheFuture":{}}"#).unwrap();
+    let err = recv::<_, ToHub>(&mut std::io::Cursor::new(frame.clone())).unwrap_err();
+    assert!(is_decode_error(&err), "{err:?}");
+    assert!(!is_decode_error(&std::io::Error::from(std::io::ErrorKind::ConnectionReset)));
+
+    let (mut peer, hub_side) = UnixStream::pair().unwrap();
+    std::io::Write::write_all(&mut peer, &frame).unwrap();
+    let (tx, rx) = channel::<OwnerMsg>();
+    reader_loop(7, hub_side, tx);
+    assert!(matches!(rx.try_recv(), Ok(OwnerMsg::ListerEof(7))));
+}
