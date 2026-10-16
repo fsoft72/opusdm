@@ -1,7 +1,5 @@
 //! The icon shared by every OpusDM window.
 
-use gtk4::prelude::*;
-
 /// Name of the icon installed in the hicolor theme (`opusdm.png`).
 pub const APP_ICON_NAME: &str = "opusdm";
 
