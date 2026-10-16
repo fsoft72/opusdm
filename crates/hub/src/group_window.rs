@@ -78,10 +78,13 @@ impl GroupWindows {
         window.set_child(Some(field.widget()));
 
         {
-            let field_for_activate = field.clone();
+            // The listeners live in the field: a strong handle would keep a
+            // closed window's field alive forever.
+            let weak = field.downgrade();
             let launch = actions.launch.clone();
             field.connect_activate(move |i| {
-                if let Some(entry) = field_for_activate.entry(i) {
+                let Some(field) = weak.upgrade() else { return };
+                if let Some(entry) = field.entry(i) {
                     launch(&entry);
                 }
             });
@@ -94,16 +97,17 @@ impl GroupWindows {
         {
             let remove = actions.remove.clone();
             let id = group.id.clone();
-            let field_for_menu = field.clone();
+            let weak = field.downgrade();
             field.connect_context_menu(move |idx, x, y| {
                 if idx < 0 {
                     return;
                 }
-                let Some(entry) = field_for_menu.entry(idx as usize) else { return };
-                let (x, y) = field_for_menu
-                    .translate_from_canvas(field_for_menu.widget(), x, y)
+                let Some(field) = weak.upgrade() else { return };
+                let Some(entry) = field.entry(idx as usize) else { return };
+                let (x, y) = field
+                    .translate_from_canvas(field.widget(), x, y)
                     .unwrap_or((x, y));
-                popup_remove_menu(field_for_menu.widget(), x, y, &id, entry.path, remove.clone());
+                popup_remove_menu(field.widget(), x, y, &id, entry.path, remove.clone());
             });
         }
         {

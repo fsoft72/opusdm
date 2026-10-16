@@ -29,7 +29,7 @@ pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-pub use field::IconField;
+pub use field::{IconField, WeakIconField};
 pub use item::IconItem;
 pub use types::{
     IconEntry, IconKind, LayoutMode, ThumbSize, DEFAULT_ICON_SIZE, ICON_ZOOM_STEPS,

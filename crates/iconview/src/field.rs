@@ -116,20 +116,23 @@ pub struct IconField {
 }
 
 /// A weak handle to an `IconField`, held by the closures on widgets the
-/// field owns so they do not keep it (and its thumbnail workers) alive.
+/// field owns, and by listeners registered on it, so they do not keep it
+/// (and its thumbnail workers) alive.
 #[derive(Clone)]
-pub(super) struct WeakIconField(Weak<Inner>);
+pub struct WeakIconField(Weak<Inner>);
 
 impl WeakIconField {
     /// The field, while some strong handle still holds it.
-    pub(super) fn upgrade(&self) -> Option<IconField> {
+    pub fn upgrade(&self) -> Option<IconField> {
         self.0.upgrade().map(|inner| IconField { inner })
     }
 }
 
 impl IconField {
-    /// A weak handle to this field, for signal handlers.
-    pub(super) fn downgrade(&self) -> WeakIconField {
+    /// A weak handle to this field, for signal handlers and for listeners
+    /// registered on the field itself, which would otherwise form an `Rc`
+    /// cycle that keeps the field alive forever.
+    pub fn downgrade(&self) -> WeakIconField {
         WeakIconField(Rc::downgrade(&self.inner))
     }
 
@@ -908,6 +911,7 @@ mod tests {
             ("field_group_entry", field_group_entry),
             ("field_virtualization", field_virtualization),
             ("field_closures_hold_no_strong_refs", field_closures_hold_no_strong_refs),
+            ("field_weak_handle_in_listeners", field_weak_handle_in_listeners),
             ("field_listeners_may_register_listeners", field_listeners_may_register_listeners),
         ];
         let failed: Vec<&str> =
@@ -1359,6 +1363,26 @@ mod tests {
         assert!(!f.inner.layout.realized.borrow().is_empty());
         assert_eq!(Rc::strong_count(&f.inner), 1, "the field's handlers must not keep it alive");
         let weak = Rc::downgrade(&f.inner);
+        drop(f);
+        assert!(weak.upgrade().is_none());
+    }
+
+    /// A caller's listener that captures the field through the public weak
+    /// handle does not keep it alive, and reaches it while it lives.
+    fn field_weak_handle_in_listeners() {
+        let f = IconField::new();
+        f.set_entries(&entries(2));
+        let names = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (weak, seen) = (f.downgrade(), names.clone());
+        f.connect_activate(move |i| {
+            let Some(field) = weak.upgrade() else { return };
+            if let Some(entry) = field.entry(i) {
+                seen.borrow_mut().push(entry.name);
+            }
+        });
+        assert_eq!(Rc::strong_count(&f.inner), 1, "a weak listener must not keep the field alive");
+        assert!(f.downgrade().upgrade().is_some());
+        let weak = f.downgrade();
         drop(f);
         assert!(weak.upgrade().is_none());
     }
