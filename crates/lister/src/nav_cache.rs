@@ -1,7 +1,7 @@
 //! Navigation with the directory cache: show the cached listing at once, then
 //! re-read the disk and update the view only if it changed.
 
-use crate::model::{read_dir_rows, Row};
+use crate::model::{read_dir_rows, Listing, Row};
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::glib;
@@ -48,7 +48,7 @@ impl Ui {
         let is_archive = crate::archive::parse_archive_path(dir).is_some() || remote_url.is_some();
         let cached = if use_cache && !is_archive { self.caches.dirs.borrow_mut().get(dir) } else { None };
         if let Some(rows) = &cached {
-            self.apply_navigation(dir, Ok((**rows).clone()));
+            self.apply_navigation(dir, Ok(rows.clone()));
         }
 
         let dir_owned = dir.to_path_buf();
@@ -89,7 +89,7 @@ impl Ui {
         self: &Rc<Self>,
         dir: &Path,
         result: io::Result<Vec<Row>>,
-        cached: Option<Rc<Vec<Row>>>,
+        cached: Option<Listing>,
         previous: std::path::PathBuf,
         history_before: crate::history::History,
     ) -> bool {
@@ -121,6 +121,7 @@ impl Ui {
         if cached.as_ref().is_some_and(|c| crate::dircache::same_listing(c, &rows)) {
             return true;
         }
+        let rows = crate::model::listing(rows);
         // Keep the user's selection when the fresh listing replaces a cached one.
         let selected = if cached.is_some() { self.selected_names() } else { Vec::new() };
         if !is_archive {

@@ -5,7 +5,18 @@ use opusdm_ipc::{FormatColumn, Separate};
 use std::cmp::Ordering;
 use std::io;
 use std::path::Path;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+
+/// A folder listing shared between the directory cache and the view: one
+/// allocation per row, handed around by reference count instead of copied.
+pub type Listing = Rc<[Rc<Row>]>;
+
+/// Wrap freshly read rows into a [`Listing`] (moves them, no copy).
+pub fn listing(rows: Vec<Row>) -> Listing {
+    rows.into_iter().map(Rc::new).collect()
+}
 
 /// One row in a Lister's file view.
 #[derive(Clone, PartialEq)]
@@ -32,10 +43,31 @@ pub struct Row {
     /// allocates or re-lowercases per comparison.
     pub name_lower: String,
     /// Lowercased owner user name, precomputed once (also avoids taking the
-    /// `format_user` cache lock inside the comparator).
-    pub user_lower: String,
+    /// `format_user` cache lock inside the comparator). Shared by the rows
+    /// of one listing with the same owner.
+    pub user_lower: Arc<str>,
     /// Lowercased owner group name, precomputed once, same reason.
-    pub group_lower: String,
+    pub group_lower: Arc<str>,
+}
+
+/// Lowercased owner names already looked up while reading one listing, so
+/// its rows share them and the global name caches are locked once per id.
+#[derive(Default)]
+pub struct OwnerNames {
+    users: HashMap<u32, Arc<str>>,
+    groups: HashMap<u32, Arc<str>>,
+}
+
+impl OwnerNames {
+    /// The lowercased name of user `uid`.
+    pub fn user(&mut self, uid: u32) -> Arc<str> {
+        self.users.entry(uid).or_insert_with(|| format_user(uid).to_lowercase().into()).clone()
+    }
+
+    /// The lowercased name of group `gid`.
+    pub fn group(&mut self, gid: u32) -> Arc<str> {
+        self.groups.entry(gid).or_insert_with(|| format_group(gid).to_lowercase().into()).clone()
+    }
 }
 
 /// The attributes of a `Row` other than its name, for `Row::new`. The default
@@ -55,10 +87,16 @@ pub struct RowAttrs {
 impl Row {
     /// Build a `Row`, deriving the precomputed sort keys from the given fields.
     pub fn new(name: String, attrs: RowAttrs) -> Self {
+        Self::with_owners(name, attrs, &mut OwnerNames::default())
+    }
+
+    /// [`Row::new`] taking the owner names from `owners`, so the rows of one
+    /// listing share them.
+    pub fn with_owners(name: String, attrs: RowAttrs, owners: &mut OwnerNames) -> Self {
         let RowAttrs { is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode } = attrs;
         let name_lower = name.to_lowercase();
-        let user_lower = format_user(uid).to_lowercase();
-        let group_lower = format_group(gid).to_lowercase();
+        let user_lower = owners.user(uid);
+        let group_lower = owners.group(gid);
         Row {
             name,
             is_dir,
@@ -97,6 +135,7 @@ pub enum SortCol {
 /// follows its target; `broken_link` is set when the target does not resolve.
 pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
     let mut rows = Vec::new();
+    let mut owners = OwnerNames::default();
     for entry in std::fs::read_dir(dir)? {
         // Per-entry failures (transient races, one unreadable file) skip just
         // that entry instead of aborting an otherwise valid listing.
@@ -130,7 +169,7 @@ pub fn read_dir_rows(dir: &Path) -> io::Result<Vec<Row>> {
             }
         };
         let RowFields { is_dir, size, modified_unix, uid, gid, mode } = fields;
-        rows.push(Row::new(name, RowAttrs { is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode }));
+        rows.push(Row::with_owners(name, RowAttrs { is_dir, is_symlink, broken_link, size, modified_unix, uid, gid, mode }, &mut owners));
     }
     Ok(rows)
 }
@@ -330,7 +369,7 @@ static GROUP_CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
 /// totals the status bar shows.
 #[derive(Default)]
 pub struct VisibleRows {
-    pub rows: Vec<Row>,
+    pub rows: Vec<Rc<Row>>,
     pub dirs: u32,
     pub files: u32,
     pub bytes: u64,
@@ -339,21 +378,23 @@ pub struct VisibleRows {
 /// Reduce a raw listing to what the Lister shows: drops the `.opusdm` folder,
 /// hidden entries unless `show_hidden`, and files rejected by `filter`
 /// (directories are never name-filtered). Directories take their remembered
-/// size from `dir_size`. Totals count only the kept rows.
+/// size from `dir_size`. Totals count only the kept rows. Kept rows are
+/// shared with `rows`; only a folder whose size changes is copied.
 pub fn visible_rows(
-    rows: Vec<Row>,
+    rows: &[Rc<Row>],
     show_hidden: bool,
     filter: &opusdm_ipc::NameFilter,
     dir_size: impl Fn(&str) -> Option<u64>,
 ) -> VisibleRows {
     let mut out = VisibleRows::default();
-    for mut row in rows {
+    for row in rows {
         if row.name == opusdm_iconview::scan::OPUSDM_DIR {
             continue;
         }
+        let mut row = row.clone();
         if row.is_dir {
-            if let Some(size) = dir_size(&row.name) {
-                row.size = size;
+            if let Some(size) = dir_size(&row.name).filter(|s| *s != row.size) {
+                Rc::make_mut(&mut row).size = size;
             }
         }
         if !show_hidden && row.name.starts_with('.') {
@@ -548,14 +589,40 @@ mod tests {
             row(".hidden", false, 100, 0),
         ];
         let filter = opusdm_ipc::NameFilter::new("*.rs", "");
-        let out = visible_rows(rows.clone(), false, &filter, |name| (name == "src").then_some(4096));
+        let rows = listing(rows);
+        let out = visible_rows(&rows, false, &filter, |name| (name == "src").then_some(4096));
         let names: Vec<_> = out.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["src", "a.rs"], "hidden, .opusdm and non matching files dropped");
         assert_eq!((out.dirs, out.files, out.bytes), (1, 1, 10));
         assert_eq!(out.rows[0].size, 4096, "the remembered directory size is applied");
 
-        let all = visible_rows(rows, true, &opusdm_ipc::NameFilter::new("", ""), |_| None);
+        let all = visible_rows(&rows, true, &opusdm_ipc::NameFilter::new("", ""), |_| None);
         assert_eq!((all.dirs, all.files, all.bytes), (2, 3, 115));
+    }
+
+    #[test]
+    fn visible_rows_share_unchanged_rows_and_copy_only_resized_folders() {
+        let rows = listing(vec![row("src", true, 0, 0), row("a.rs", false, 10, 0)]);
+        let all = opusdm_ipc::NameFilter::new("", "");
+        let out = visible_rows(&rows, true, &all, |_| None);
+        assert!(Rc::ptr_eq(&out.rows[0], &rows[0]) && Rc::ptr_eq(&out.rows[1], &rows[1]));
+        let sized = visible_rows(&rows, true, &all, |_| Some(7));
+        assert!(!Rc::ptr_eq(&sized.rows[0], &rows[0]), "the folder got its remembered size");
+        assert_eq!(sized.rows[0].size, 7);
+        assert_eq!(rows[0].size, 0, "the cached row is left alone");
+        assert!(Rc::ptr_eq(&sized.rows[1], &rows[1]));
+    }
+
+    #[test]
+    fn rows_of_one_listing_share_their_owner_names() {
+        let td = tempfile::tempdir().unwrap();
+        for n in ["a", "b", "c"] {
+            std::fs::write(td.path().join(n), b"x").unwrap();
+        }
+        let rows = read_dir_rows(td.path()).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.windows(2).all(|w| std::sync::Arc::ptr_eq(&w[0].user_lower, &w[1].user_lower)));
+        assert!(rows.windows(2).all(|w| std::sync::Arc::ptr_eq(&w[0].group_lower, &w[1].group_lower)));
     }
 
     #[test]

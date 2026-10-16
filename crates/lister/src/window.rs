@@ -277,7 +277,7 @@ impl Ui {
     }
 
     /// Apply a listing produced by `navigate_to`'s background read.
-    pub(crate) fn apply_navigation(self: &Rc<Self>, dir: &Path, rows: io::Result<Vec<Row>>) {
+    pub(crate) fn apply_navigation(self: &Rc<Self>, dir: &Path, rows: io::Result<crate::model::Listing>) {
         let rows = match rows {
             Ok(r) => r,
             Err(e) => {
@@ -318,14 +318,13 @@ impl Ui {
         }
         let name_filter = opusdm_ipc::NameFilter::new(&format.show_glob, &format.hide_glob);
         let show_hidden = self.view.show_hidden.get();
-        let visible = crate::model::visible_rows(rows, show_hidden, &name_filter, |name| {
+        let visible = crate::model::visible_rows(&rows, show_hidden, &name_filter, |name| {
             self.caches.sizes.borrow().get(&dir.join(name))
         });
         // The store keeps name order, whatever order `read_dir` returned, so
         // two reads of an unchanged folder compare equal row by row.
-        let mut rows = visible.rows;
-        rows.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        let new_rows: Vec<Rc<Row>> = rows.into_iter().map(Rc::new).collect();
+        let mut new_rows = visible.rows;
+        new_rows.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         self.sync_watch(dir);
         self.status_bar.totals.set((visible.dirs, visible.files, visible.bytes));
         if same_dir {
