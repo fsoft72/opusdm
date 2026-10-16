@@ -1,7 +1,31 @@
 //! Look-ahead for the path bar: while the user types an absolute local path,
 //! suggest the folder name that completes the last component.
+//!
+//! [`suggest`] lists a folder, so the path bar runs it on a worker thread;
+//! [`Requests`] tells which answer belongs to the newest keystroke.
 
+use std::cell::Cell;
 use std::path::Path;
+
+/// Numbers the look-ahead requests, so the answer to an older keystroke that
+/// arrives after a newer one was started is dropped.
+#[derive(Default)]
+pub struct Requests {
+    latest: Cell<u64>,
+}
+
+impl Requests {
+    /// Start a new request and return its number.
+    pub fn next(&self) -> u64 {
+        self.latest.set(self.latest.get() + 1);
+        self.latest.get()
+    }
+
+    /// Whether `id` is still the newest request.
+    pub fn is_current(&self, id: u64) -> bool {
+        self.latest.get() == id
+    }
+}
 
 /// `text` with a leading `~` (alone or followed by `/`) replaced by `$HOME`.
 /// Any other text, or an unset `$HOME`, is returned unchanged.
@@ -29,13 +53,24 @@ pub fn suggest(text: &str) -> Option<String> {
         .read_dir()
         .ok()?
         .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.starts_with(prefix))
+        .filter_map(|e| e.file_name().into_string().ok().map(|n| (e, n)))
+        .filter(|(_, n)| n.starts_with(prefix))
+        .filter(|(e, _)| is_folder(e))
+        .map(|(_, n)| n)
         .collect();
     names.sort();
     let first = names.into_iter().next()?;
     Some(format!("{}/", &first[prefix.len()..]))
+}
+
+/// Whether the directory entry is a folder. The type comes from `read_dir`
+/// itself; only a symbolic link is followed with a `stat`.
+fn is_folder(entry: &std::fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(t) if t.is_symlink() => entry.path().is_dir(),
+        Ok(t) => t.is_dir(),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +150,24 @@ mod tests {
         assert_eq!(expand_tilde("~/x"), format!("{}/x", home.trim_end_matches('/')));
         assert_eq!(expand_tilde("~user/x"), "~user/x");
         assert_eq!(expand_tilde("/a/~"), "/a/~");
+    }
+
+    #[test]
+    fn a_symlink_to_a_folder_counts_as_a_folder() {
+        let dir = tree();
+        std::os::unix::fs::symlink(dir.path().join("beta"), dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("alfile"), dir.path().join("lfile")).unwrap();
+        assert_eq!(suggest(&typed(&dir, "li")), Some("nk/".to_string()));
+        assert_eq!(suggest(&typed(&dir, "lf")), None, "a link to a file is not a folder");
+    }
+
+    #[test]
+    fn only_the_newest_request_is_current() {
+        let requests = Requests::default();
+        let first = requests.next();
+        let second = requests.next();
+        assert!(!requests.is_current(first));
+        assert!(requests.is_current(second));
     }
 
     #[test]

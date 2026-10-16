@@ -10,9 +10,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 /// Where the path bar text `text` leads when it is a bookmark reference.
+/// The bookmarks come from the in-memory cache, not from disk.
 pub fn resolve_text(text: &str) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    bookmarks::load_bookmarks().resolve(text, &home)
+    crate::config_cache::bookmarks().resolve(text, &home)
+}
+
+/// Save the bookmarks and drop the cached copy, so the path bar sees the
+/// change at once.
+fn store_bookmarks(all: &Bookmarks) -> std::io::Result<()> {
+    let saved = bookmarks::save_bookmarks(all);
+    crate::config_cache::invalidate_bookmarks();
+    saved
 }
 
 /// A bookmark name suggested for `folder`: its last component made usable.
@@ -38,7 +47,7 @@ pub fn add_current_folder(ui: &Rc<Ui>) {
         all.set(&name, &ui2.cwd_path().to_string_lossy());
         match all.problems().first() {
             Some(problem) => crate::actions::flash(&ui2, problem),
-            None => match bookmarks::save_bookmarks(&all) {
+            None => match store_bookmarks(&all) {
                 Ok(()) => crate::actions::flash(&ui2, &format!("bookmark {name}: added")),
                 Err(e) => crate::actions::flash(&ui2, &format!("could not save the bookmarks: {e}")),
             },
@@ -96,7 +105,7 @@ pub fn open_manager(ui: &Rc<Ui>) {
                 crate::actions::flash(&ui, problem);
                 false
             }
-            None => match bookmarks::save_bookmarks(&state.borrow()) {
+            None => match store_bookmarks(&state.borrow()) {
                 Ok(()) => true,
                 Err(e) => {
                     crate::actions::flash(&ui, &format!("could not save the bookmarks: {e}"));

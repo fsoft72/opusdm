@@ -22,6 +22,7 @@ mod crypt_dialog;
 mod cli_dialog;
 mod clip;
 mod commands;
+mod config_cache;
 mod columns;
 mod context_menu;
 mod dircache;

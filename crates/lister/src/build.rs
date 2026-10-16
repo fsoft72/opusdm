@@ -591,17 +591,24 @@ fn wire_path_completion(entry: &gtk::Entry) {
         key_ctrl.connect_key_released(move |_, _, _, _| typing.set(false));
     }
     entry.add_controller(key_ctrl);
+    let requests = Rc::new(crate::pathcomplete::Requests::default());
     {
         let ghost = ghost.clone();
         entry.connect_changed(move |entry| {
             if applying.get() || !typing.get() { return; }
             let typed = entry.text().to_string();
-            // Changing the text from inside `changed` would re-enter the signal.
-            let (entry, ghost, applying) = (entry.clone(), ghost.clone(), applying.clone());
-            glib::idle_add_local_once(move || {
+            let request = requests.next();
+            // Listing the folder can be slow (network mounts, huge folders),
+            // so it runs on a worker; the answer is applied on the GTK thread,
+            // which also keeps the text change out of the `changed` signal.
+            let (entry, ghost, applying, requests) = (entry.clone(), ghost.clone(), applying.clone(), requests.clone());
+            glib::spawn_future_local(async move {
+                let query = typed.clone();
+                let Ok(suggestion) = gio::spawn_blocking(move || crate::pathcomplete::suggest(&query)).await else { return };
+                if !requests.is_current(request) { return; }
                 let end = typed.chars().count() as i32;
                 if entry.text() != typed || entry.position() != end { return; }
-                let Some(suffix) = crate::pathcomplete::suggest(&typed) else { return };
+                let Some(suffix) = suggestion else { return };
                 let mut pos = end;
                 applying.set(true);
                 entry.insert_text(&suffix, &mut pos);

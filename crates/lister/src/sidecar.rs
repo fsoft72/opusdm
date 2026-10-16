@@ -81,7 +81,7 @@ pub fn follow(ui: &Ui) {
     let mut slot = ui.sidecar.borrow_mut();
     let Some(sidecar) = slot.as_mut() else { return };
     let cursor = ui.row_at(ui.view.cursor.get()).map(|r| ui.cwd_path().join(&r.name));
-    if let Err(e) = sidecar.send(sidecar_paths(ui.selected_paths(), cursor)) {
+    if let Err(e) = sidecar.send(sidecar_paths(ui.selected_paths(), cursor, &ui.cwd_path())) {
         crate::dlog!("sidecar gone: {e}");
         if let Some(gone) = slot.take() { gone.close(); }
     }
@@ -204,12 +204,14 @@ pub fn job_done(ui: &Ui) {
     follow(ui);
 }
 
-/// What the Sidecar shows: the selected paths, else the cursor row, keeping
-/// only what is on the local disk (not entries inside archives or on servers).
-pub fn sidecar_paths(selected: Vec<PathBuf>, cursor: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut paths = if selected.is_empty() { cursor.into_iter().collect() } else { selected };
-    paths.retain(|p| p.exists());
-    paths
+/// What the Sidecar shows: the selected paths, else the cursor row, all in
+/// the folder `cwd`. Only a local folder sends anything (not the inside of an
+/// archive or a server). The rows come from the listing, so they are not
+/// checked on disk: this runs on every selection change on the GTK thread.
+pub fn sidecar_paths(selected: Vec<PathBuf>, cursor: Option<PathBuf>, cwd: &Path) -> Vec<PathBuf> {
+    let local = crate::archive::parse_archive_path(cwd).is_none() && crate::remote::url_of(cwd).is_none();
+    if !local { return Vec::new(); }
+    if selected.is_empty() { cursor.into_iter().collect() } else { selected }
 }
 
 #[cfg(test)]
@@ -217,16 +219,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_selection_wins_over_the_cursor_and_missing_paths_are_dropped() {
-        let td = tempfile::tempdir().unwrap();
-        let (a, b) = (td.path().join("a.png"), td.path().join("b.png"));
-        std::fs::write(&a, "").unwrap();
-        std::fs::write(&b, "").unwrap();
-        let gone = td.path().join("gone.png");
-        assert_eq!(sidecar_paths(vec![a.clone(), gone.clone()], Some(b.clone())), vec![a.clone()]);
-        assert_eq!(sidecar_paths(Vec::new(), Some(b.clone())), vec![b]);
-        assert_eq!(sidecar_paths(Vec::new(), Some(gone)), Vec::<PathBuf>::new());
-        assert_eq!(sidecar_paths(Vec::new(), None), Vec::<PathBuf>::new());
+    fn the_selection_wins_over_the_cursor() {
+        let (a, b) = (PathBuf::from("/d/a.png"), PathBuf::from("/d/b.png"));
+        let local = Path::new("/d");
+        assert_eq!(sidecar_paths(vec![a.clone()], Some(b.clone()), local), vec![a]);
+        assert_eq!(sidecar_paths(Vec::new(), Some(b.clone()), local), vec![b]);
+        assert_eq!(sidecar_paths(Vec::new(), None, local), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn nothing_is_sent_from_archives_or_servers_and_nothing_is_stat_ed() {
+        // The paths do not exist: a local folder sends them as listed.
+        let gone = PathBuf::from("/definitely/not/here.png");
+        assert_eq!(sidecar_paths(Vec::new(), Some(gone.clone()), Path::new("/definitely/not")), vec![gone]);
+        let in_archive = Path::new("/tmp/x.zip#inner");
+        assert!(sidecar_paths(vec![in_archive.join("a.png")], None, in_archive).is_empty());
+        let remote = crate::remote::path_of(&opusdm_ftp::RemoteUrl::parse("sftp://host/pub").unwrap());
+        assert!(sidecar_paths(vec![remote.join("a.png")], None, &remote).is_empty());
     }
 
     #[test]
