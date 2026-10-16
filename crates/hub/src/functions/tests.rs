@@ -677,7 +677,7 @@ fn run_with_a_window_streams_output_and_reports_the_exit() {
     let td = tempfile::tempdir().unwrap();
     let events = run_events(&run_args("sh -c 'echo one; echo two >&2; exit 3'", &["window"]), &ctx(&[], td.path().to_str().unwrap()));
     let msgs: Vec<&WindowMsg> = events.iter().filter_map(|e| match e { FnEvent::Window { msg, .. } => Some(msg), _ => None }).collect();
-    assert_eq!(msgs.first(), Some(&&WindowMsg::Open));
+    assert!(matches!(msgs.first(), Some(WindowMsg::Open { title }) if title.contains("echo one")));
     assert!(msgs.contains(&&WindowMsg::Line("one".into())) && msgs.contains(&&WindowMsg::Line("two".into())));
     assert_eq!(msgs.last(), Some(&&WindowMsg::Closed(Some(3))));
     // Not waiting: the step itself succeeded.
@@ -693,6 +693,90 @@ fn run_with_window_and_wait_blocks_and_checks_the_exit() {
     let bad = run_events(&run_args("sh -c 'exit 2'", &["window", "wait"]), &src);
     assert!(matches!(bad.last(), Some(FnEvent::Failed { .. })));
     assert!(bad.iter().any(|e| matches!(e, FnEvent::Window { msg: WindowMsg::Closed(Some(2)), .. })));
+}
+
+#[test]
+fn run_with_window_and_wait_keeps_the_status_the_sigchld_reaper_took() {
+    // The program exits at once, but a background child keeps its output
+    // pipes open, so the step waits on them while the "reaper" (this test,
+    // standing in for the hub's `waitpid(-1)`) collects the exit status.
+    let td = tempfile::tempdir().unwrap();
+    let src = ctx(&[], td.path().to_str().unwrap());
+    let steps = run_args("sh -c '(sleep 0.5) & exit 0'", &["window", "wait"]);
+    let (tx, rx) = channel();
+    let events = std::thread::scope(|scope| {
+        let src = &src;
+        let steps = &steps;
+        scope.spawn(move || run_steps(1, steps, src, None, &tx));
+        let mut events = Vec::new();
+        for (_, ev) in rx {
+            if let FnEvent::Output { line, .. } = &ev {
+                if let Some(pid) = line.strip_suffix(')').and_then(|l| l.rsplit_once("(pid ")).map(|(_, p)| p.parse::<i32>().unwrap()) {
+                    let mut raw: libc::c_int = 0;
+                    // SAFETY: waits for a child of this process; `raw` is a valid out-pointer.
+                    assert_eq!(unsafe { libc::waitpid(pid, &mut raw, 0) }, pid);
+                    opusdm_ipc::reaped::record(pid as u32, raw);
+                }
+            }
+            events.push(ev);
+        }
+        events
+    });
+    assert!(events.iter().any(|e| matches!(e, FnEvent::Window { msg: WindowMsg::Closed(Some(0)), .. })));
+    assert!(matches!(events.last(), Some(FnEvent::AllDone)), "the step succeeded");
+}
+
+/// Run `steps`, cancel the run after `after`, and return its events and how
+/// long it took. Questions are never answered (their replies are kept alive),
+/// like a dialog the user leaves open.
+fn run_cancelled_after(steps: &[FnStep], after: std::time::Duration) -> (Vec<FnEvent>, std::time::Duration) {
+    let td = tempfile::tempdir().unwrap();
+    let src = ctx(&[], td.path().to_str().unwrap());
+    let cancel = CancelToken::new();
+    let (tx, rx) = channel();
+    let started = std::time::Instant::now();
+    let worker = {
+        let (steps, run_cancel) = (steps.to_vec(), cancel.clone());
+        std::thread::spawn(move || run_steps_cancellable(1, &steps, &src, None, &tx, &run_cancel))
+    };
+    std::thread::sleep(after);
+    cancel.cancel();
+    let mut events = Vec::new();
+    let mut unanswered = Vec::new();
+    // Bounded, so a step that ignores the cancel fails the test instead of hanging it.
+    while let Ok((_, ev)) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        match ev {
+            FnEvent::Confirm { reply, .. } => unanswered.push(reply),
+            other => events.push(other),
+        }
+    }
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    worker.join().unwrap();
+    (events, took)
+}
+
+#[test]
+fn cancelling_stops_an_external_step_that_is_running() {
+    let steps = vec![FnStep::External { argv: vec!["sleep".into(), "30".into()], cwd_source: true }];
+    let (events, took) = run_cancelled_after(&steps, std::time::Duration::from_millis(200));
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("cancelled")));
+}
+
+#[test]
+fn cancelling_stops_a_run_step_that_waits_with_a_window() {
+    let (events, took) = run_cancelled_after(&run_args("sleep 30", &["window", "wait"]), std::time::Duration::from_millis(200));
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("cancelled")));
+    assert!(events.iter().any(|e| matches!(e, FnEvent::Window { msg: WindowMsg::Closed(_), .. })), "the window is told the program ended");
+}
+
+#[test]
+fn cancelling_stops_a_confirm_nobody_answers() {
+    let (events, took) = run_cancelled_after(&confirm_steps("Sure?"), std::time::Duration::from_millis(200));
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("cancelled")));
 }
 
 #[test]

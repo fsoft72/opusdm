@@ -1750,3 +1750,128 @@ fn a_forwarder_wraps_every_message_for_the_owner_loop() {
         .collect();
     assert_eq!(ids, vec![3, 4], "in order, and the thread ends with its input");
 }
+
+#[test]
+fn accept_errors_are_classified_by_errno() {
+    let os = std::io::Error::from_raw_os_error;
+    assert_eq!(classify_accept_error(&os(libc::ECONNABORTED)), AcceptErrorAction::Retry);
+    assert_eq!(classify_accept_error(&os(libc::EINTR)), AcceptErrorAction::Retry);
+    assert_eq!(classify_accept_error(&os(libc::EMFILE)), AcceptErrorAction::Backoff);
+    assert_eq!(classify_accept_error(&os(libc::ENFILE)), AcceptErrorAction::Backoff);
+    assert_eq!(classify_accept_error(&os(libc::EBADF)), AcceptErrorAction::Stop);
+    assert_eq!(classify_accept_error(&os(libc::EINVAL)), AcceptErrorAction::Stop);
+}
+
+#[test]
+fn accept_loop_keeps_accepting_after_a_temporary_error() {
+    let (a, _b) = UnixStream::pair().unwrap();
+    let mut script: std::collections::VecDeque<std::io::Result<UnixStream>> = vec![
+        Err(std::io::Error::from_raw_os_error(libc::ECONNABORTED)),
+        Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+        Ok(a),
+        Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+    ]
+    .into();
+    let (tx, rx) = channel::<OwnerMsg>();
+    accept_loop(|| script.pop_front().expect("the loop must stop on EBADF"), &tx, Duration::from_millis(1));
+    assert!(script.is_empty(), "the loop went on until the fatal error");
+    let accepted = rx.try_iter().filter(|m| matches!(m, OwnerMsg::Accepted(_))).count();
+    assert_eq!(accepted, 1, "the client after the temporary errors was accepted");
+}
+
+#[test]
+fn accept_loop_stops_when_the_owner_loop_is_gone() {
+    let (tx, rx) = channel::<OwnerMsg>();
+    drop(rx);
+    let mut calls = 0;
+    accept_loop(
+        || {
+            calls += 1;
+            Ok(UnixStream::pair().unwrap().0)
+        },
+        &tx,
+        Duration::from_millis(1),
+    );
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn a_lister_that_stops_reading_is_disconnected_instead_of_queueing_forever() {
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut stalled = connect(&path);
+    send(&mut stalled, &ToHub::Register { pid: 1, initial_path: "/s".into() }).unwrap();
+    let _welcome: Welcome = recv(&mut stalled).unwrap().unwrap();
+    // An unregistered peer gets no broadcasts, so it can flood without reading.
+    let mut flooder = connect(&path);
+    let long = PathBuf::from("/x".repeat(500));
+    for _ in 0..(WRITER_QUEUE * 2) {
+        send(&mut flooder, &ToHub::Invalidate(long.clone())).unwrap();
+    }
+    let gone = next_matching(&handle, Duration::from_secs(5), |ev| matches!(ev, HubEvent::ListerGone(_)).then_some(()));
+    assert!(gone.is_some(), "the stalled Lister was not disconnected");
+}
+
+#[test]
+fn a_full_writer_queue_shuts_the_connection_down() {
+    let (hub_side, mut peer) = UnixStream::pair().unwrap();
+    let (tx, _rx) = sync_channel::<OutMsg>(1);
+    let conn = Conn { tx, shutdown: hub_side, registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() };
+    assert!(conn.queue(1, ToLister::Pong));
+    assert!(!conn.queue(1, ToLister::Pong), "the queue is full");
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    assert!(recv::<_, ToLister>(&mut peer).unwrap().is_none(), "the peer sees the end of the connection");
+}
+
+#[test]
+fn a_broadcast_is_encoded_once_and_written_as_a_normal_frame() {
+    let (hub_side, mut peer) = UnixStream::pair().unwrap();
+    let (tx, rx) = sync_channel::<OutMsg>(4);
+    let mut conns = HashMap::new();
+    conns.insert(1, Conn { tx, shutdown: hub_side.try_clone().unwrap(), registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() });
+    broadcast(&conns, &ToLister::InvalidatePath("/a".into()));
+    drop(conns);
+    assert!(matches!(rx.try_recv(), Ok(OutMsg::Encoded(_))));
+    let (tx, rx) = sync_channel::<OutMsg>(4);
+    tx.send(OutMsg::Encoded(serde_json::to_vec(&ToLister::InvalidatePath("/b".into())).unwrap().into())).unwrap();
+    drop(tx);
+    writer_loop(hub_side, rx);
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    assert!(matches!(recv::<_, ToLister>(&mut peer).unwrap(), Some(ToLister::InvalidatePath(p)) if p == std::path::Path::new("/b")));
+}
+
+#[test]
+fn resolve_steps_finds_saved_functions_and_rejects_missing_or_invalid_ones() {
+    use opusdm_ipc::function::{Function, InternalArgs, InternalCmd};
+    let mut good = Function::new("Good");
+    good.steps.push(FnStep::External { argv: vec!["true".into()], cwd_source: true });
+    let mut bad = Function::new("Bad");
+    bad.steps.push(FnStep::Internal { cmd: InternalCmd::Confirm, args: InternalArgs::default() });
+    let functions = vec![good.clone(), bad.clone()];
+    assert_eq!(function_run::resolve_steps(&functions, &good.id, false), Ok(good.steps.clone()));
+    assert!(function_run::resolve_steps(&functions, &bad.id, false).unwrap_err().contains("is invalid"));
+    let missing = opusdm_ipc::function::Function::new("Gone").id;
+    assert!(function_run::resolve_steps(&functions, &missing, false).unwrap_err().contains("not found"));
+}
+
+#[test]
+fn resolve_steps_waits_for_an_inline_command_only_when_asked() {
+    let waits = |steps: Vec<FnStep>| matches!(&steps[..], [FnStep::Internal { args, .. }] if args.flag("wait"));
+    assert!(!waits(function_run::resolve_steps(&[], "exec:true", false).unwrap()));
+    assert!(waits(function_run::resolve_steps(&[], "exec:true", true).unwrap()));
+}
+
+#[test]
+fn an_unknown_message_is_a_decode_error_and_ends_the_connection() {
+    let mut frame = Vec::new();
+    opusdm_ipc::frame::write_frame(&mut frame, br#"{"FromTheFuture":{}}"#).unwrap();
+    let err = recv::<_, ToHub>(&mut std::io::Cursor::new(frame.clone())).unwrap_err();
+    assert!(is_decode_error(&err), "{err:?}");
+    assert!(!is_decode_error(&std::io::Error::from(std::io::ErrorKind::ConnectionReset)));
+
+    let (mut peer, hub_side) = UnixStream::pair().unwrap();
+    std::io::Write::write_all(&mut peer, &frame).unwrap();
+    let (tx, rx) = channel::<OwnerMsg>();
+    reader_loop(7, hub_side, tx);
+    assert!(matches!(rx.try_recv(), Ok(OwnerMsg::ListerEof(7))));
+}

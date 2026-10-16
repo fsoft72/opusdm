@@ -5,14 +5,68 @@
 //! `docs/superpowers/specs/2026-09-28-function-editor-design.md`.
 
 use opusdm_fsops::{run_job, CancelToken, JobSpec, Progress};
-use opusdm_ipc::function::{expand_argv_element, expand_text, ExpandError, ExpandedArg, FnStep, InternalArgs, InternalCmd, SelectionCtx};
+use opusdm_ipc::function::{expand_argv_element, expand_text, keys, ExpandError, ExpandedArg, FnStep, InternalArgs, InternalCmd, SelectionCtx};
 use opusdm_ipc::glob::expand_new_name;
 use opusdm_ipc::buttonbank::BankAction;
 use opusdm_ipc::{Op, Resolution};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{channel, Sender};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
+
+/// How often a step that blocks (a running program, an open question)
+/// checks whether its run was cancelled.
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+/// The error text of a step stopped because its run was cancelled.
+pub(crate) const CANCELLED: &str = "cancelled";
+
+/// Why [`recv_or_cancel`] returned without an answer.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NoAnswer {
+    /// The run was cancelled while waiting.
+    Cancelled,
+    /// The other side dropped its sender without answering.
+    Dropped,
+}
+
+/// Wait for an answer on `rx` (a dialog, a job), giving up as soon as
+/// `cancel` is set.
+pub(crate) fn recv_or_cancel<T>(rx: &Receiver<T>, cancel: &CancelToken) -> Result<T, NoAnswer> {
+    loop {
+        if cancel.is_cancelled() {
+            return Err(NoAnswer::Cancelled);
+        }
+        match rx.recv_timeout(CANCEL_POLL) {
+            Ok(answer) => return Ok(answer),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return Err(NoAnswer::Dropped),
+        }
+    }
+}
+
+/// Wait for `child` to exit (safe against the SIGCHLD reaper, see
+/// `opusdm_ipc::reaped`), killing it when `cancel` is set. A cancelled wait
+/// fails with [`CANCELLED`] once the killed child is reaped.
+pub(crate) fn wait_or_kill(child: &mut Child, cancel: &CancelToken) -> Result<ExitStatus, String> {
+    let mut lost_since = None;
+    loop {
+        if let Some(status) = opusdm_ipc::reaped::poll_exit(child, &mut lost_since).map_err(|e| format!("wait failed: {e}"))? {
+            return Ok(status);
+        }
+        if cancel.is_cancelled() {
+            if let Err(e) = child.kill() {
+                opusdm_ipc::err_log!("hub", "cannot kill cancelled pid {}: {e}", child.id());
+            }
+            if let Err(e) = opusdm_ipc::reaped::wait(child) {
+                opusdm_ipc::err_log!("hub", "cannot reap cancelled pid {}: {e}", child.id());
+            }
+            return Err(CANCELLED.to_string());
+        }
+        std::thread::sleep(CANCEL_POLL);
+    }
+}
 
 /// One event a running Function reports, tagged with its `run_id` by the
 /// caller when relayed onward (see `server.rs::function_event`).
@@ -64,7 +118,7 @@ pub enum FnEvent {
     Alert { step_idx: usize, message: String, reply: Sender<bool> },
     /// A `Run` step with a window: the program's output. The window outlives
     /// the function, so these events are routed by `(run_id, step_idx)`.
-    Window { step_idx: usize, title: String, msg: WindowMsg },
+    Window { step_idx: usize, msg: WindowMsg },
     /// A script asks the hub something only the hub knows (the open Listers,
     /// the saved Functions) or to act on a Lister; `reply` gets the answer. A
     /// dropped `reply` fails the script's call.
@@ -115,8 +169,8 @@ pub fn run_job_inline(
 /// What a `Run` output window is told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowMsg {
-    /// The program started: open the window.
-    Open,
+    /// The program started: open the window, titled `title`.
+    Open { title: String },
     /// One line of its output.
     Line(String),
     /// It ended with this exit code (`None` when killed by a signal).
@@ -198,8 +252,8 @@ pub(crate) fn run_step(
             InternalCmd::ChangeDir => run_change_dir(run_id, step_idx, args, source, dest, events_tx),
             InternalCmd::NewLister => run_new_lister(run_id, step_idx, args, source, dest, events_tx),
             InternalCmd::Script => crate::scripting::run_script(run_id, step_idx, args, source, dest, events_tx, cancel),
-            InternalCmd::Run => run_run(run_id, step_idx, args, source, dest, events_tx),
-            InternalCmd::Confirm => run_confirm(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::Run => run_run(run_id, step_idx, args, source, dest, events_tx, cancel),
+            InternalCmd::Confirm => run_confirm(run_id, step_idx, args, source, dest, events_tx, cancel),
             InternalCmd::SetBackground => run_set_background(run_id, step_idx, args, source, dest, events_tx),
             InternalCmd::LeaveOut => run_leave_out(run_id, step_idx, false, source, events_tx),
             InternalCmd::PutAway => run_leave_out(run_id, step_idx, true, source, events_tx),
@@ -223,7 +277,7 @@ pub(crate) fn run_step(
             InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, source, dest, events_tx),
         },
         FnStep::External { argv, cwd_source } => {
-            run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, source, dest, events_tx)
+            run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, source, dest, events_tx, cancel)
         }
     }
 }
@@ -259,7 +313,7 @@ fn run_change_dir(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = expand_text(args.get(keys::PATH).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
     let text = text.trim();
     if text.is_empty() {
         return Err("Change Directory: path is empty".to_string());
@@ -269,7 +323,7 @@ fn run_change_dir(
     let target = std::fs::canonicalize(&target)
         .map_err(|e| format!("Change Directory: cannot open {}: {e}", target.display()))?;
     // With `container`, a file means "its folder, with the file selected".
-    let (target, select) = if args.flag("container") && !Path::new(&target).is_dir() {
+    let (target, select) = if args.flag(keys::CONTAINER) && !Path::new(&target).is_dir() {
         let name = target.file_name().map(|n| n.to_string_lossy().into_owned());
         let parent = target.parent().map(Path::to_path_buf);
         match (parent, name) {
@@ -282,14 +336,14 @@ fn run_change_dir(
     if !Path::new(&target).is_dir() {
         return Err(format!("Change Directory: {} is not a directory", target.display()));
     }
-    let mode = match args.get("mode").map(|m| m.trim().to_ascii_lowercase()).filter(|m| !m.is_empty()) {
+    let mode = match args.get(keys::MODE).map(|m| m.trim().to_ascii_lowercase()).filter(|m| !m.is_empty()) {
         None => None,
         Some(m) if m == "details" || m == "icons" => Some(m),
         Some(other) => return Err(format!("Change Directory: the view must be details or icons, not {other:?}")),
     };
     source.cwd = target.clone();
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("cd {}", target.display()) }));
-    let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target, select, mode, new_lister: args.flag("new") }));
+    let _ = events_tx.send((run_id, FnEvent::ChangeDir { path: target, select, mode, new_lister: args.flag(keys::NEW) }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
 }
@@ -305,7 +359,7 @@ fn run_new_lister(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = expand_text(args.get(keys::PATH).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
     let text = text.trim();
     let path = if text.is_empty() {
         None
@@ -336,7 +390,7 @@ fn run_set_background(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let text = expand_text(args.get("path").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+    let text = expand_text(args.get(keys::PATH).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
     let text = text.trim();
     if text.is_empty() {
         return Err("Set Background: path is empty".to_string());
@@ -348,7 +402,7 @@ fn run_set_background(
             picked.display()
         ));
     }
-    let fit = match args.get("fit").map(str::trim).filter(|f| !f.is_empty()) {
+    let fit = match args.get(keys::FIT).map(str::trim).filter(|f| !f.is_empty()) {
         Some(text) => Some(opusdm_ipc::ImageFit::parse(text).ok_or_else(|| {
             format!("Set Background: unknown fit \"{text}\" (use fill, fit, center or tile)")
         })?),
@@ -423,13 +477,14 @@ fn run_open_input_config(run_id: u64, step_idx: usize, events_tx: &Sender<(u64, 
     Ok(())
 }
 
-/// Whether a button bank called `name` exists on disk.
+/// Whether a button bank called `name` exists on disk (read through the
+/// cache, so a bank step does not parse every bank file each time).
 fn bank_exists(name: &str) -> bool {
-    opusdm_ipc::buttonbank::Banks::load().get_by_name(name).is_some()
+    crate::config_cache::banks().get_by_name(name).is_some()
 }
 
-/// Run a `Confirm` step: expand the question, ask through the hub and wait.
-/// Anything but a yes stops the function.
+/// Run a `Confirm` step: expand the question, ask through the hub and wait
+/// (until `cancel` is set). Anything but a yes stops the function.
 fn run_confirm(
     run_id: u64,
     step_idx: usize,
@@ -437,21 +492,23 @@ fn run_confirm(
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
 ) -> Result<(), String> {
-    let template = args.get("message").unwrap_or("");
+    let template = args.get(keys::MESSAGE).unwrap_or("");
     let message = expand_text(template, source, dest).map_err(expand_err_msg)?;
     if message.trim().is_empty() {
         return Err("Confirm: no question given".to_string());
     }
     let (reply, answer) = channel::<bool>();
     let _ = events_tx.send((run_id, FnEvent::Confirm { step_idx, message, reply }));
-    match answer.recv() {
+    match recv_or_cancel(&answer, cancel) {
         Ok(true) => {
             let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
             Ok(())
         }
         Ok(false) => Err("Confirm: stopped by the user".to_string()),
-        Err(_) => Err("Confirm: nobody was there to answer".to_string()),
+        Err(NoAnswer::Cancelled) => Err(format!("Confirm: {CANCELLED}")),
+        Err(NoAnswer::Dropped) => Err("Confirm: nobody was there to answer".to_string()),
     }
 }
 
@@ -466,7 +523,7 @@ fn run_bank(
     exists: impl Fn(&str) -> bool,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let name = args.get("bank").map(str::trim).unwrap_or("");
+    let name = args.get(keys::BANK).map(str::trim).unwrap_or("");
     if name.is_empty() {
         return Err("Bank: no bank name given".to_string());
     }
@@ -489,7 +546,7 @@ fn run_rename(
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
 ) -> Result<(), String> {
-    let template = args.get("new_name").unwrap_or("");
+    let template = args.get(keys::NEW_NAME).unwrap_or("");
     let new_name = expand_text(template, source, dest).map_err(expand_err_msg)?;
     let old = source.paths.first().ok_or_else(|| "Rename: nothing selected".to_string())?;
     let new_path = old.with_file_name(new_name.trim());
@@ -519,7 +576,7 @@ fn run_make_entry(
     // `palette.rs`'s existing Mkdir/NewFile commands (which create
     // in the invoking Lister's cwd, never the DEST pane) - a DEST
     // being open must not redirect where the new entry lands.
-    let template = args.get("name").unwrap_or("");
+    let template = args.get(keys::NAME).unwrap_or("");
     let name = expand_text(template, source, dest).map_err(expand_err_msg)?;
     // Reuses `opusdm_fsops::delete::make_entry` (the same call the
     // hub's own MakeDir/NewFile jobs use) rather than a bare
@@ -587,7 +644,7 @@ fn run_file_job(
         FileJob::Delete => Op::Delete,
         FileJob::Duplicate => Op::Duplicate,
         FileJob::CopyAs | FileJob::MoveAs => {
-            let pattern = expand_text(args.get("new_name").unwrap_or(""), source, dest).map_err(expand_err_msg)?;
+            let pattern = expand_text(args.get(keys::NEW_NAME).unwrap_or(""), source, dest).map_err(expand_err_msg)?;
             let new_names = source
                 .paths
                 .iter()
@@ -646,6 +703,7 @@ fn expand_argv(argv: &[String], source: &SelectionCtx, dest: Option<&SelectionCt
 /// in the SOURCE folder. Without `wait` the step ends at once and the
 /// program is left running (and reaped); with `window` its output streams to
 /// a window on the requesting Lister that stays open after the function ends.
+/// A program the step waits for is killed when `cancel` is set.
 fn run_run(
     run_id: u64,
     step_idx: usize,
@@ -653,17 +711,18 @@ fn run_run(
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
 ) -> Result<(), String> {
-    let templates = opusdm_ipc::cli::tokenize(args.get("command").unwrap_or("")).map_err(|e| format!("Run: {e}"))?;
+    let templates = opusdm_ipc::cli::tokenize(args.get(keys::COMMAND).unwrap_or("")).map_err(|e| format!("Run: {e}"))?;
     if templates.is_empty() {
         return Err("Run: no program given".to_string());
     }
-    let (wait, window) = (args.flag("wait"), args.flag("window"));
+    let (wait, window) = (args.flag(keys::WAIT), args.flag(keys::WINDOW));
     // A `bash -c <script> ...` command (flag `script`, set for inline bash
     // commands): the script, the third word, is passed as typed. Expanding
     // placeholders in it would paste file names into shell code and turn an
     // empty selection into an empty string inside it.
-    let script = if args.flag("script") && templates.len() > 2 { Some(templates[2].as_str()) } else { None };
+    let script = if args.flag(keys::SCRIPT) && templates.len() > 2 { Some(templates[2].as_str()) } else { None };
     // Waiting without a window is the plain External step.
     if wait && !window {
         return run_external(
@@ -673,6 +732,7 @@ fn run_run(
             source,
             dest,
             events_tx,
+            cancel,
         );
     }
     let argv = expand_run_argv(&templates, script, source, dest).map_err(|e| format!("Run: {e}"))?;
@@ -704,49 +764,68 @@ fn run_run(
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("started {} (pid {})", argv[0], child.id()) }));
 
     if !window {
-        // Nobody waits: a thread reaps it so it never lingers as a zombie.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
+        // Nobody waits: the hub's SIGCHLD reaper collects it, so it never
+        // lingers as a zombie. Dropping `child` does not wait for it.
+        drop(child);
         let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
         return Ok(());
     }
 
     let title = argv.join(" ");
     // Sent before the step ends, so the hub knows who owns the window.
-    let _ = events_tx.send((run_id, FnEvent::Window { step_idx, title: title.clone(), msg: WindowMsg::Open }));
+    let _ = events_tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Open { title } }));
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let stream = |reader: Box<dyn std::io::Read + Send>| {
-        let (tx, title) = (events_tx.clone(), title.clone());
+        let tx = events_tx.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(reader).lines().map_while(Result::ok) {
-                let _ = tx.send((run_id, FnEvent::Window { step_idx, title: title.clone(), msg: WindowMsg::Line(line) }));
+                let _ = tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Line(line) }));
             }
         })
     };
     let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
-    let finish = {
-        let (tx, title) = (events_tx.clone(), title.clone());
-        move |mut child: std::process::Child, readers: [std::thread::JoinHandle<()>; 2]| {
-            for r in readers {
-                let _ = r.join();
-            }
-            let code = child.wait().ok().and_then(|s| s.code());
-            let _ = tx.send((run_id, FnEvent::Window { step_idx, title, msg: WindowMsg::Closed(code) }));
-            code
-        }
-    };
+    let window = WindowRun { run_id, step_idx, events_tx: events_tx.clone() };
     if wait {
-        let code = finish(child, readers);
+        let code = window.finish(child, readers, cancel).map_err(|e| format!("Run: '{}': {e}", argv[0]))?;
         let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: code }));
         return if code == Some(0) { Ok(()) } else { Err(format!("Run: '{}' exited with {code:?}", argv[0])) };
     }
+    // Not waited for: the program outlives the step, so the run's cancel
+    // does not stop it.
     std::thread::spawn(move || {
-        finish(child, readers);
+        let _ = window.finish(child, readers, &CancelToken::new());
     });
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
+}
+
+/// A `Run` program whose output streams to a window: where to tell the
+/// window that the program ended.
+struct WindowRun {
+    run_id: u64,
+    step_idx: usize,
+    events_tx: Sender<(u64, FnEvent)>,
+}
+
+impl WindowRun {
+    /// Wait for `child` (killing it when `cancel` is set), let its output
+    /// `readers` finish and tell the window it ended. Returns the exit code
+    /// (`None` when killed by a signal), or why the wait failed. The readers
+    /// of a cancelled program are not joined: a process it started may still
+    /// hold the pipes open.
+    fn finish(self, mut child: Child, readers: [std::thread::JoinHandle<()>; 2], cancel: &CancelToken) -> Result<Option<i32>, String> {
+        let waited = wait_or_kill(&mut child, cancel);
+        if waited.is_ok() {
+            for r in readers {
+                let _ = r.join();
+            }
+        }
+        let code = waited.as_ref().ok().and_then(ExitStatus::code);
+        let closed = FnEvent::Window { step_idx: self.step_idx, msg: WindowMsg::Closed(code) };
+        let _ = self.events_tx.send((self.run_id, closed));
+        waited.map(|status| status.code())
+    }
 }
 
 /// The working directory a child process can really start in. A Lister's
@@ -783,7 +862,8 @@ struct ExternalCall<'a> {
 
 /// Run one `External` step: expand every argv element (keeping `script`,
 /// see [`expand_run_argv`]), spawn it with piped stdout/stderr, stream every
-/// line as it arrives, and report the exit status.
+/// line as it arrives, and report the exit status. The program is killed
+/// when `cancel` is set.
 fn run_external(
     run_id: u64,
     step_idx: usize,
@@ -791,6 +871,7 @@ fn run_external(
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
 ) -> Result<(), String> {
     let ExternalCall { argv, script, cwd_source } = call;
     if argv.is_empty() {
@@ -810,18 +891,21 @@ fn run_external(
 
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let out_tx = events_tx.clone();
-    let out_thread = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = out_tx.send((run_id, FnEvent::Output { step_idx, line }));
-        }
-    });
-    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-        let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line }));
+    let stream = |reader: Box<dyn std::io::Read + Send>| {
+        let tx = events_tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(reader).lines().map_while(Result::ok) {
+                let _ = tx.send((run_id, FnEvent::Output { step_idx, line }));
+            }
+        })
+    };
+    let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
+    // A cancelled program's readers are not joined: a process it started
+    // may still hold the pipes open.
+    let status = wait_or_kill(&mut child, cancel).map_err(|e| format!("'{}': {e}", expanded[0]))?;
+    for r in readers {
+        let _ = r.join();
     }
-    let _ = out_thread.join();
-
-    let status = opusdm_ipc::reaped::wait(&mut child).map_err(|e| format!("wait failed: {e}"))?;
     let exit_code = status.code();
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code }));
     if !status.success() {

@@ -3,8 +3,10 @@
 
 pub mod activation_follow;
 pub mod bg_sequence;
+pub mod channels;
 pub mod children;
 pub mod compositor;
+pub mod config_cache;
 pub mod desktop_diff;
 pub mod desktop_files;
 pub mod file_manager;

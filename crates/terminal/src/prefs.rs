@@ -10,7 +10,6 @@ use crate::theme_editor::ThemeEditor;
 use gtk4 as gtk;
 use gtk::{gdk, gio, glib, pango};
 use gtk::prelude::*;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -413,6 +412,6 @@ fn open_themes_folder(button: &gtk::Button) {
 
 /// Ask the running hub to open a Lister on `dir`.
 fn open_in_lister(dir: &Path) -> std::io::Result<()> {
-    let mut stream = UnixStream::connect(opusdm_ipc::sockpath::hub_sock_path())?;
-    opusdm_ipc::frame::send(&mut stream, &opusdm_ipc::ToHub::SpawnLister { start_path: Some(dir.to_path_buf()) })
+    let msg = opusdm_ipc::ToHub::SpawnLister { start_path: Some(dir.to_path_buf()) };
+    opusdm_ipc::sockpath::send_oneshot(&opusdm_ipc::sockpath::hub_sock_path(), &[msg])
 }

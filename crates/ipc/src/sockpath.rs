@@ -46,6 +46,17 @@ pub fn ensure_sock_dir(path: &Path) -> io::Result<()> {
     b.create(dir)
 }
 
+/// Connect to the hub socket at `sock`, send `msgs` in order and hang up,
+/// without waiting for an answer: the one-shot client of the tools that only
+/// tell the hub something (open a Lister, apply settings, run a function).
+pub fn send_oneshot(sock: &Path, msgs: &[ToHub]) -> io::Result<()> {
+    let mut stream = UnixStream::connect(sock)?;
+    for msg in msgs {
+        send(&mut stream, msg)?;
+    }
+    Ok(())
+}
+
 /// Connect to `path` and probe with `Ping`. `true` only if a live hub replies `Pong`.
 pub fn probe_live_hub(path: &Path) -> bool {
     let Ok(mut s) = UnixStream::connect(path) else {
@@ -92,6 +103,24 @@ mod tests {
                 assert!(s.ends_with("/hub.sock"), "{s}");
             });
         });
+    }
+
+    #[test]
+    fn send_oneshot_delivers_every_message_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("hub.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        send_oneshot(&sock, &[ToHub::Ping, ToHub::RaiseToolbar]).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        assert!(matches!(recv::<_, ToHub>(&mut peer).unwrap(), Some(ToHub::Ping)));
+        assert!(matches!(recv::<_, ToHub>(&mut peer).unwrap(), Some(ToHub::RaiseToolbar)));
+        assert!(recv::<_, ToHub>(&mut peer).unwrap().is_none(), "the client hung up");
+    }
+
+    #[test]
+    fn send_oneshot_fails_when_no_hub_listens() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(send_oneshot(&dir.path().join("nope.sock"), &[ToHub::Ping]).is_err());
     }
 
     #[test]

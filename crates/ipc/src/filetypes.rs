@@ -344,8 +344,9 @@ pub fn dblclick_for(path: &Path) -> Option<FunctionId> {
     dblclick_in(&load_filetypes(), path)
 }
 
-/// [`dblclick_for`] against the given `types` (testable).
-fn dblclick_in(types: &FileTypes, path: &Path) -> Option<FunctionId> {
+/// [`dblclick_for`] against the given `types` (testable, and usable with a
+/// cached [`FileTypes`]).
+pub fn dblclick_in(types: &FileTypes, path: &Path) -> Option<FunctionId> {
     let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
     let name = path.file_name()?.to_string_lossy().into_owned();
     let head = read_head(path, types.head_needed());

@@ -87,7 +87,7 @@ impl ProgressWindow {
             let abort_btn = gtk::Button::with_label("Abort");
             let cmd_tx = self.cmd_tx.clone();
             abort_btn.connect_clicked(move |_| {
-                let _ = cmd_tx.send(HubCmd::CancelJob(job_id));
+                opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::CancelJob(job_id), "hub command");
             });
             let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             header.append(&file_label);

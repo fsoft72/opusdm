@@ -105,7 +105,7 @@ pub(crate) fn attach_desktop_double_click_events(overlay: &gtk::Overlay, cmd_tx:
         let cmd_tx = cmd_tx.clone();
         gesture.connect_pressed(move |_, n_press, _, _| {
             if n_press == 2 {
-                let _ = cmd_tx.send(HubCmd::EmitScriptEvent(event));
+                opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::EmitScriptEvent(event), "hub command");
             }
         });
         overlay.add_controller(gesture);
@@ -230,7 +230,7 @@ pub(crate) fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opu
         btn.connect_clicked(move |_| {
             menu_ref.set_visible(false);
             if opens_in_lister {
-                let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(path.clone()) });
+                opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::SpawnRequested { start_path: Some(path.clone()) }, "hub command");
             } else {
                 crate::desktop_windows::open_file(&widgets.cmd_tx, &path);
             }
@@ -357,7 +357,7 @@ fn add_file_items(menu: &gtk::Box, widgets: &Rc<Widgets>) {
     {
         let widgets = widgets.clone();
         add_item(menu, menu, "New Lister", move || {
-            let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
+            opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::SpawnRequested { start_path: None }, "hub command");
         });
     }
 
@@ -407,7 +407,7 @@ fn add_file_items(menu: &gtk::Box, widgets: &Rc<Widgets>) {
     {
         let cmd_tx = widgets.cmd_tx.clone();
         let btn = add_item(menu, menu, hide_label(widgets.desktop.hidden.get()), move || {
-            let _ = cmd_tx.send(HubCmd::ToggleHidden);
+            opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::ToggleHidden, "hub command");
         });
         widgets.desktop.hide_buttons.borrow_mut().push(btn);
     }

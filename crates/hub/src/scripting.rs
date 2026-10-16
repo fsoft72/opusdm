@@ -10,12 +10,13 @@
 //! [`FnEvent::ScriptQuery`].
 //!
 //! Every call is synchronous: the script waits for its commands. A run that
-//! is cancelled (its Lister closed) fails at the next `opus` call.
+//! is cancelled (its Lister closed) fails at the next `opus` call; a call
+//! that blocks (`exec`, `confirm`, `alert`, `sleep`) stops at once.
 
-use crate::functions::{run_step, FnEvent};
+use crate::functions::{recv_or_cancel, run_step, wait_or_kill, FnEvent, NoAnswer, CANCELLED};
 use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source};
 use opusdm_fsops::CancelToken;
-use opusdm_ipc::function::{expand_text, schema, FnStep, InternalArgs, InternalCmd, SelectionCtx, BOOL_TRUE};
+use opusdm_ipc::function::{expand_text, keys, schema, FnStep, InternalArgs, InternalCmd, SelectionCtx, BOOL_TRUE};
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -81,15 +82,15 @@ pub fn run_script(
     events_tx: &Sender<(u64, FnEvent)>,
     cancel: &CancelToken,
 ) -> Result<(), String> {
-    let name = args.get("script").map(str::trim).unwrap_or("").to_string();
+    let name = args.get(keys::SCRIPT).map(str::trim).unwrap_or("").to_string();
     if name.is_empty() {
         return Err("Run Script: no script given".to_string());
     }
-    let code = match args.get("code") {
+    let code = match args.get(keys::CODE) {
         Some(code) => code.to_string(),
         None => opusdm_ipc::scripts::load(&name).map_err(|e| format!("Run Script: cannot read script \"{name}\": {e}"))?,
     };
-    let script_args = expand_text(args.get("args").unwrap_or(""), source, dest)
+    let script_args = expand_text(args.get(keys::ARGS).unwrap_or(""), source, dest)
         .map_err(|opusdm_ipc::function::ExpandError::MissingDest(token)| format!("{token}: no DEST Lister open"))?;
     if HOSTS.with(|h| h.borrow().len()) >= MAX_DEPTH {
         return Err(format!("Run Script: scripts nested more than {MAX_DEPTH} deep"));
@@ -210,136 +211,235 @@ fn set_source(source: SelectionCtx) {
     });
 }
 
-/// Run one `opus` call.
+/// One `opus` call: what it does with the running script's host and the
+/// call's payload.
+type OpFn = fn(&Snapshot, &Value) -> Result<Value, String>;
+
+/// Every `opus` call the prelude can make, by op name (see
+/// `scripting/prelude.js`; a test checks that each one is here).
+const OPS: &[(&str, OpFn)] = &[
+    ("version", op_version),
+    ("log", op_log),
+    ("context", op_context),
+    ("commands", op_commands),
+    ("command", op_command),
+    ("confirm", op_confirm),
+    ("alert", op_alert),
+    ("notify", op_notify),
+    ("exec", exec),
+    ("sleep", op_sleep),
+    ("env", op_env),
+    ("listers", op_listers),
+    ("functions", op_functions),
+    ("scripts", op_scripts),
+    ("lister.go", op_lister_go),
+    ("refresh", op_refresh),
+    ("runFunction", op_run_function),
+    ("fs.stat", op_fs_stat),
+    ("fs.read", op_fs_read),
+    ("fs.write", op_fs_write),
+    ("fs.list", op_fs_list),
+    ("fs.mkdir", op_fs_mkdir),
+];
+
+/// Run one `opus` call: look `op` up in [`OPS`] and run it for the running
+/// script. A cancelled run fails every call.
 fn dispatch(op: &str, payload: &Value) -> Result<Value, String> {
     let host = snapshot()?;
     if host.cancel.is_cancelled() {
-        return Err("cancelled".to_string());
+        return Err(CANCELLED.to_string());
     }
-    match op {
-        "version" => Ok(json!(env!("CARGO_PKG_VERSION"))),
-        "log" => {
-            for line in str_field(payload, "text").unwrap_or("").lines() {
-                let _ = host.events_tx.send((host.run_id, FnEvent::Output { step_idx: host.step_idx, line: line.to_string() }));
-            }
-            Ok(Value::Null)
-        }
-        "context" => Ok(json!({
-            "script": host.name,
-            "args": host.args,
-            "home": std::env::var("HOME").unwrap_or_default(),
-            "source": selection_json(&host.source),
-            "dest": host.dest.as_ref().map(selection_json),
-        })),
-        "commands" => Ok(commands_json()),
-        "command" => {
-            let step = command_step(payload)?;
-            let (mut source, dest) = command_context(&host, payload)?;
-            let result = run_step(host.run_id, host.step_idx, &step, &mut source, dest.as_ref(), &host.events_tx, &host.cancel);
-            // A `files` list stands in for the selection for this command
-            // only; the folder a `ChangeDir` moved to stays.
-            source.paths = host.source.paths;
-            set_source(source);
-            result.map(|_| Value::Null)
-        }
-        "confirm" => {
-            let message = str_field(payload, "message").unwrap_or("").to_string();
-            let (reply, answer) = channel::<bool>();
-            let _ = host.events_tx.send((host.run_id, FnEvent::Confirm { step_idx: host.step_idx, message, reply }));
-            answer.recv().map(Value::Bool).map_err(|_| "confirm: nobody was there to answer".to_string())
-        }
-        "alert" => {
-            let message = str_field(payload, "message").unwrap_or("").to_string();
-            let (reply, answer) = channel::<bool>();
-            let _ = host.events_tx.send((host.run_id, FnEvent::Alert { step_idx: host.step_idx, message, reply }));
-            // The dialog is closed when the answer comes; a dropped reply
-            // (the Lister went away) just lets the script go on.
-            let _ = answer.recv();
-            Ok(Value::Null)
-        }
-        "notify" => notify(payload),
-        "exec" => exec(&host, payload),
-        "sleep" => {
-            let ms = payload.get("ms").and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as u64;
-            let mut left = Duration::from_millis(ms);
-            while !left.is_zero() {
-                if host.cancel.is_cancelled() {
-                    return Err("cancelled".to_string());
-                }
-                let step = left.min(Duration::from_millis(50));
-                std::thread::sleep(step);
-                left -= step;
-            }
-            Ok(Value::Null)
-        }
-        "env" => Ok(std::env::var(str_field(payload, "name").unwrap_or("")).map(Value::String).unwrap_or(Value::Null)),
-        "listers" => query(&host, ScriptQuery::Listers),
-        "functions" => query(&host, ScriptQuery::Functions),
-        "scripts" => Ok(Value::Array(
-            opusdm_ipc::scripts::list().into_iter().map(|s| json!({ "name": s.name, "description": s.description })).collect(),
-        )),
-        "lister.go" => {
-            let lister = payload.get("id").and_then(Value::as_u64).ok_or_else(|| "go: no Lister id".to_string())?;
-            let dir = existing_dir(&host.source, str_field(payload, "path").unwrap_or(""))?;
-            query(&host, ScriptQuery::GoTo { lister, path: dir })
-        }
-        "refresh" => {
-            let dir = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
-            query(&host, ScriptQuery::Refresh { path: dir })
-        }
-        "runFunction" => run_function(&host, str_field(payload, "name").unwrap_or("")),
-        "fs.stat" => {
-            let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
-            Ok(stat_json(&path).unwrap_or(Value::Null))
-        }
-        "fs.read" => {
-            let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
-            let size = std::fs::metadata(&path).map_err(|e| format!("read {}: {e}", path.display()))?.len();
-            if size > MAX_READ_BYTES {
-                return Err(format!("read {}: the file is larger than {} MiB", path.display(), MAX_READ_BYTES >> 20));
-            }
-            let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-            Ok(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
-        }
-        "fs.write" => {
-            use std::io::Write;
-            let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
-            let data = str_field(payload, "data").unwrap_or("");
-            let append = payload.get("append").and_then(Value::as_bool).unwrap_or(false);
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .append(append)
-                .truncate(!append)
-                .open(&path)
-                .map_err(|e| format!("write {}: {e}", path.display()))?;
-            file.write_all(data.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
-            Ok(Value::Null)
-        }
-        "fs.list" => {
-            let dir = resolve(&host.source, str_field(payload, "path").unwrap_or("."))?;
-            let pattern = str_field(payload, "pattern").filter(|p| !p.trim().is_empty());
-            let entries = std::fs::read_dir(&dir).map_err(|e| format!("list {}: {e}", dir.display()))?;
-            let mut list: Vec<(String, Value)> = entries
-                .flatten()
-                .filter_map(|entry| {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if pattern.is_some_and(|p| !opusdm_ipc::glob::glob_match(p, &name)) {
-                        return None;
-                    }
-                    stat_json(&entry.path()).map(|v| (name.to_lowercase(), v))
-                })
-                .collect();
-            list.sort_by(|a, b| a.0.cmp(&b.0));
-            Ok(Value::Array(list.into_iter().map(|(_, v)| v).collect()))
-        }
-        "fs.mkdir" => {
-            let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
-            std::fs::create_dir_all(&path).map_err(|e| format!("mkdir {}: {e}", path.display()))?;
-            Ok(Value::Null)
-        }
-        other => Err(format!("unknown opus call \"{other}\"")),
+    let Some((_, run)) = OPS.iter().find(|(name, _)| *name == op) else {
+        return Err(format!("unknown opus call \"{op}\""));
+    };
+    run(&host, payload)
+}
+
+/// `opus.version`: the OpusDM version.
+fn op_version(_host: &Snapshot, _payload: &Value) -> Result<Value, String> {
+    Ok(json!(env!("CARGO_PKG_VERSION")))
+}
+
+/// `opus.log`: one `Output` line per line of `text`.
+fn op_log(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    for line in str_field(payload, "text").unwrap_or("").lines() {
+        let _ = host.events_tx.send((host.run_id, FnEvent::Output { step_idx: host.step_idx, line: line.to_string() }));
     }
+    Ok(Value::Null)
+}
+
+/// The script's context: its name, arguments, home folder, SOURCE and DEST.
+fn op_context(host: &Snapshot, _payload: &Value) -> Result<Value, String> {
+    Ok(json!({
+        "script": host.name,
+        "args": host.args,
+        "home": std::env::var("HOME").unwrap_or_default(),
+        "source": selection_json(&host.source),
+        "dest": host.dest.as_ref().map(selection_json),
+    }))
+}
+
+/// `opus.commands`: every internal command with its parameters.
+fn op_commands(_host: &Snapshot, _payload: &Value) -> Result<Value, String> {
+    Ok(commands_json())
+}
+
+/// `opus.command`: run one internal command, as a Function step would.
+fn op_command(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let step = command_step(payload)?;
+    let (mut source, dest) = command_context(host, payload)?;
+    let result = run_step(host.run_id, host.step_idx, &step, &mut source, dest.as_ref(), &host.events_tx, &host.cancel);
+    // A `files` list stands in for the selection for this command
+    // only; the folder a `ChangeDir` moved to stays.
+    source.paths = host.source.paths.clone();
+    set_source(source);
+    result.map(|_| Value::Null)
+}
+
+/// `opus.confirm`: ask the user `message` and answer yes (`true`) or no.
+fn op_confirm(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let message = str_field(payload, "message").unwrap_or("").to_string();
+    let (reply, answer) = channel::<bool>();
+    let _ = host.events_tx.send((host.run_id, FnEvent::Confirm { step_idx: host.step_idx, message, reply }));
+    match recv_or_cancel(&answer, &host.cancel) {
+        Ok(yes) => Ok(Value::Bool(yes)),
+        Err(NoAnswer::Cancelled) => Err(CANCELLED.to_string()),
+        Err(NoAnswer::Dropped) => Err("confirm: nobody was there to answer".to_string()),
+    }
+}
+
+/// `opus.alert`: show `message` and wait until the dialog is closed.
+fn op_alert(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let message = str_field(payload, "message").unwrap_or("").to_string();
+    let (reply, answer) = channel::<bool>();
+    let _ = host.events_tx.send((host.run_id, FnEvent::Alert { step_idx: host.step_idx, message, reply }));
+    // The dialog is closed when the answer comes; a dropped reply
+    // (the Lister went away) just lets the script go on.
+    match recv_or_cancel(&answer, &host.cancel) {
+        Err(NoAnswer::Cancelled) => Err(CANCELLED.to_string()),
+        Ok(_) | Err(NoAnswer::Dropped) => Ok(Value::Null),
+    }
+}
+
+/// `opus.notify`, see [`notify`].
+fn op_notify(_host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    notify(payload)
+}
+
+/// `opus.sleep`: wait `ms` milliseconds, stopping early when cancelled.
+fn op_sleep(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let ms = payload.get("ms").and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as u64;
+    let mut left = Duration::from_millis(ms);
+    while !left.is_zero() {
+        if host.cancel.is_cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        let step = left.min(Duration::from_millis(50));
+        std::thread::sleep(step);
+        left -= step;
+    }
+    Ok(Value::Null)
+}
+
+/// `opus.env`: the environment variable `name`, or `null`.
+fn op_env(_host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    Ok(std::env::var(str_field(payload, "name").unwrap_or("")).map(Value::String).unwrap_or(Value::Null))
+}
+
+/// `opus.listers`: the open Listers, asked from the hub.
+fn op_listers(host: &Snapshot, _payload: &Value) -> Result<Value, String> {
+    query(host, ScriptQuery::Listers)
+}
+
+/// `opus.functions`: the saved Functions, asked from the hub.
+fn op_functions(host: &Snapshot, _payload: &Value) -> Result<Value, String> {
+    query(host, ScriptQuery::Functions)
+}
+
+/// `opus.scripts`: the saved scripts with their descriptions.
+fn op_scripts(_host: &Snapshot, _payload: &Value) -> Result<Value, String> {
+    Ok(Value::Array(
+        opusdm_ipc::scripts::list().into_iter().map(|s| json!({ "name": s.name, "description": s.description })).collect(),
+    ))
+}
+
+/// `lister.go(path)`: show an existing directory in Lister `id`.
+fn op_lister_go(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let lister = payload.get("id").and_then(Value::as_u64).ok_or_else(|| "go: no Lister id".to_string())?;
+    let dir = existing_dir(&host.source, str_field(payload, "path").unwrap_or(""))?;
+    query(host, ScriptQuery::GoTo { lister, path: dir })
+}
+
+/// `opus.refresh`: read `path` again in every Lister showing it.
+fn op_refresh(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let dir = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
+    query(host, ScriptQuery::Refresh { path: dir })
+}
+
+/// `opus.runFunction`, see [`run_function`].
+fn op_run_function(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    run_function(host, str_field(payload, "name").unwrap_or(""))
+}
+
+/// `opus.fs.stat`: what [`stat_json`] tells about `path`, or `null`.
+fn op_fs_stat(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
+    Ok(stat_json(&path).unwrap_or(Value::Null))
+}
+
+/// `opus.fs.read`: the text of `path`, up to [`MAX_READ_BYTES`].
+fn op_fs_read(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
+    let size = std::fs::metadata(&path).map_err(|e| format!("read {}: {e}", path.display()))?.len();
+    if size > MAX_READ_BYTES {
+        return Err(format!("read {}: the file is larger than {} MiB", path.display(), MAX_READ_BYTES >> 20));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    Ok(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// `opus.fs.write` / `opus.fs.append`: write `data` to `path`.
+fn op_fs_write(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    use std::io::Write;
+    let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
+    let data = str_field(payload, "data").unwrap_or("");
+    let append = payload.get("append").and_then(Value::as_bool).unwrap_or(false);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(append)
+        .truncate(!append)
+        .open(&path)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    file.write_all(data.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(Value::Null)
+}
+
+/// `opus.fs.list`: the entries of a directory (optionally matching
+/// `pattern`), sorted by name with case ignored.
+fn op_fs_list(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let dir = resolve(&host.source, str_field(payload, "path").unwrap_or("."))?;
+    let pattern = str_field(payload, "pattern").filter(|p| !p.trim().is_empty());
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("list {}: {e}", dir.display()))?;
+    let mut list: Vec<(String, Value)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if pattern.is_some_and(|p| !opusdm_ipc::glob::glob_match(p, &name)) {
+                return None;
+            }
+            stat_json(&entry.path()).map(|v| (name.to_lowercase(), v))
+        })
+        .collect();
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(Value::Array(list.into_iter().map(|(_, v)| v).collect()))
+}
+
+/// `opus.fs.mkdir`: create `path` and its missing parents.
+fn op_fs_mkdir(host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let path = resolve(&host.source, str_field(payload, "path").unwrap_or(""))?;
+    std::fs::create_dir_all(&path).map_err(|e| format!("mkdir {}: {e}", path.display()))?;
+    Ok(Value::Null)
 }
 
 /// The string field `key` of `payload`.
@@ -543,9 +643,10 @@ fn notify(payload: &Value) -> Result<Value, String> {
     Ok(json!(id))
 }
 
-/// `opus.exec`: run a program, wait, and capture its output.
+/// `opus.exec`: run a program, wait, and capture its output. The program is
+/// killed when the run is cancelled.
 fn exec(host: &Snapshot, payload: &Value) -> Result<Value, String> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     let program = str_field(payload, "program").unwrap_or("").trim();
     if program.is_empty() {
@@ -576,11 +677,24 @@ fn exec(host: &Snapshot, payload: &Value) -> Result<Value, String> {
             let _ = stdin.write_all(text.as_bytes());
         });
     }
-    let output = child.wait_with_output().map_err(|e| format!("exec {program}: {e}"))?;
+    let collect = |mut reader: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = reader.read_to_end(&mut bytes);
+            bytes
+        })
+    };
+    let stdout = collect(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = collect(Box::new(child.stderr.take().expect("piped stderr")));
+    // A cancelled program's readers are not joined: a process it started
+    // may still hold the pipes open.
+    let status = wait_or_kill(&mut child, &host.cancel).map_err(|e| format!("exec {program}: {e}"))?;
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
     Ok(json!({
-        "code": output.status.code(),
-        "stdout": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr),
+        "code": status.code(),
+        "stdout": String::from_utf8_lossy(&stdout),
+        "stderr": String::from_utf8_lossy(&stderr),
     }))
 }
 

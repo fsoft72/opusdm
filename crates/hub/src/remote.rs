@@ -40,8 +40,7 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
     };
     let sock = request.sock.unwrap_or_else(opusdm_ipc::sockpath::hub_sock_path);
     let message = opusdm_ipc::ToHub::RunFunctionHeadless { id: request.id };
-    let sent = std::os::unix::net::UnixStream::connect(&sock).and_then(|mut stream| opusdm_ipc::frame::send(&mut stream, &message));
-    match sent {
+    match opusdm_ipc::sockpath::send_oneshot(&sock, &[message]) {
         Ok(()) => Some(0),
         Err(e) => {
             opusdm_ipc::err_log!("opusdm-hub", "cannot reach the hub at {}: {e}", sock.display());

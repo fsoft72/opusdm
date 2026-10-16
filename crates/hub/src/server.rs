@@ -2,6 +2,7 @@
 //! single owner loop that holds all mutable hub state. Only channels cross
 //! thread boundaries.
 
+use crate::channels::send_or_log;
 use crate::jobs::{default_runner, map_progress, validate_op, JobEngine, ProgressTotals};
 use crate::script_events::{EventGuard, ScriptEvent, SHUTDOWN_HOOK_TIMEOUT};
 use crate::roles::{apply_role_event, RoleEffect, RoleEvent, RoleState};
@@ -16,8 +17,9 @@ use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLi
 use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Instant;
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TrySendError};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 mod function_run;
 mod function_runs;
@@ -188,18 +190,7 @@ pub fn spawn_server_with(listener: UnixListener, on_spawn: SpawnFn, opts: Server
         let owner_tx = owner_tx.clone();
         std::thread::Builder::new()
             .name("opusdm-accept".into())
-            .spawn(move || {
-                for stream in listener.incoming() {
-                    match stream {
-                        Ok(s) => {
-                            if owner_tx.send(OwnerMsg::Accepted(s)).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })
+            .spawn(move || accept_loop(|| listener.accept().map(|(s, _)| s), &owner_tx, ACCEPT_BACKOFF))
             .expect("spawn accept thread");
     }
     // GTK command forwarder.
@@ -226,6 +217,61 @@ pub fn spawn_server_with(listener: UnixListener, on_spawn: SpawnFn, opts: Server
     ServerHandle { cmd_tx, evt_rx }
 }
 
+/// How long the accept loop sleeps after running out of file descriptors or
+/// memory, so it does not spin while the condition lasts.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// What the accept loop does after an `accept()` error.
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptErrorAction {
+    /// A per-connection error (aborted handshake, signal): try again at once.
+    Retry,
+    /// A resource limit (EMFILE, ENFILE, ENOBUFS, ENOMEM): wait, then retry.
+    Backoff,
+    /// The listening socket itself is unusable: stop accepting.
+    Stop,
+}
+
+/// Sort an `accept()` error into retry, back off or stop. Unknown errors
+/// are treated as temporary: a hub that stops accepting is unusable, while a
+/// retry costs one log line per [`ACCEPT_BACKOFF`].
+fn classify_accept_error(e: &std::io::Error) -> AcceptErrorAction {
+    match e.raw_os_error() {
+        Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK | libc::EOPNOTSUPP | libc::EFAULT) => AcceptErrorAction::Stop,
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM) => AcceptErrorAction::Backoff,
+        Some(_) => AcceptErrorAction::Retry,
+        None => AcceptErrorAction::Backoff,
+    }
+}
+
+/// Accept connections with `accept` and hand each one to the owner loop.
+/// Temporary errors are logged and retried (after `backoff` for a resource
+/// limit); the loop ends on a fatal error or when the owner loop is gone.
+fn accept_loop(mut accept: impl FnMut() -> std::io::Result<UnixStream>, owner_tx: &Sender<OwnerMsg>, backoff: Duration) {
+    loop {
+        let e = match accept() {
+            Ok(s) => {
+                if owner_tx.send(OwnerMsg::Accepted(s)).is_err() {
+                    return;
+                }
+                continue;
+            }
+            Err(e) => e,
+        };
+        match classify_accept_error(&e) {
+            AcceptErrorAction::Retry => opusdm_ipc::err_log!("hub", "accept failed, retrying: {e}"),
+            AcceptErrorAction::Backoff => {
+                opusdm_ipc::err_log!("hub", "accept failed, retrying in {backoff:?}: {e}");
+                std::thread::sleep(backoff);
+            }
+            AcceptErrorAction::Stop => {
+                opusdm_ipc::err_log!("hub", "accept failed, no more clients can connect: {e}");
+                return;
+            }
+        }
+    }
+}
+
 /// Everything the owner loop merges into one stream.
 enum OwnerMsg {
     Accepted(UnixStream),
@@ -234,7 +280,15 @@ enum OwnerMsg {
     JobProgress(u64, Progress),
     FromGtk(HubCmd),
     FunctionEvent(u64, crate::functions::FnEvent),
+    /// The fit-check worker answered connection `cid`.
+    FitChecked(u64, ToLister),
 }
+
+/// How many messages may wait for one connection's writer. A Lister reads
+/// its socket on a thread of its own, so a full queue means it stopped
+/// reading altogether: it is disconnected rather than left to grow the
+/// hub's memory without bound.
+const WRITER_QUEUE: usize = 4096;
 
 /// One connected peer. `registered` flips true after `Register`.
 ///
@@ -242,9 +296,10 @@ enum OwnerMsg {
 /// blocking `send()` on the owner thread, so a stalled or non-reading
 /// client cannot stall connection lifecycle, role changes, or job
 /// progress for every other Lister. `shutdown` is a separate socket
-/// clone kept only to tear the connection down from `drop_conn`.
+/// clone kept to tear the connection down from `drop_conn` or when the
+/// queue overflows.
 struct Conn {
-    tx: Sender<OutMsg>,
+    tx: SyncSender<OutMsg>,
     shutdown: UnixStream,
     registered: bool,
     pid: u32,
@@ -253,12 +308,35 @@ struct Conn {
     cache_paths: Vec<PathBuf>,
 }
 
-/// Either of the two message types the hub writes to a Lister socket.
-/// `Welcome` is sent exactly once, right after `Register`; everything
-/// else after that is a `ToLister`.
+impl Conn {
+    /// Queue `msg` for this connection's writer; `cid` names it in the log.
+    /// A full queue means the peer stopped reading: the socket is shut down,
+    /// so its reader reports the end and the hub drops the connection then,
+    /// and the message is lost. Returns whether the message was queued.
+    fn queue(&self, cid: u64, msg: impl Into<OutMsg>) -> bool {
+        match self.tx.try_send(msg.into()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                opusdm_ipc::err_log!("hub", "connection {cid} stopped reading ({WRITER_QUEUE} messages queued): disconnecting it");
+                let _ = self.shutdown.shutdown(std::net::Shutdown::Both);
+                false
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                opusdm_ipc::debug_log!("hub", "connection {cid} is closing: message dropped");
+                false
+            }
+        }
+    }
+}
+
+/// What the hub writes to a Lister socket. `Welcome` is sent exactly once,
+/// right after `Register`; everything else after that is a `ToLister`, or
+/// one already encoded once for every Lister of a broadcast.
 enum OutMsg {
     Welcome(Box<Welcome>),
     ToLister(ToLister),
+    /// The JSON body of a `ToLister`, shared by every receiver.
+    Encoded(Arc<[u8]>),
 }
 
 impl From<ToLister> for OutMsg {
@@ -281,6 +359,7 @@ fn writer_loop(mut stream: UnixStream, rx: Receiver<OutMsg>) {
         let result = match msg {
             OutMsg::Welcome(w) => send(&mut stream, &*w),
             OutMsg::ToLister(m) => send(&mut stream, &m),
+            OutMsg::Encoded(bytes) => opusdm_ipc::frame::write_frame(&mut stream, &bytes),
         };
         if result.is_err() {
             break;
@@ -364,12 +443,14 @@ struct Hub {
     on_spawn: SpawnFn,
     /// Function runs: pending selections, requesters and cancel tokens.
     runs: FunctionRuns,
+    /// Feeds the fit-check worker.
+    fit_tx: Sender<FitRequest>,
 }
 
 impl Hub {
     /// Send `msg` to every registered Lister.
     fn broadcast(&mut self, msg: ToLister) {
-        broadcast(&mut self.conns, &msg);
+        broadcast(&self.conns, &msg);
     }
 
     /// A new peer connected: allocate a connection id, spawn its writer and
@@ -380,7 +461,7 @@ impl Hub {
         let (Ok(write_stream), Ok(shutdown)) = (stream.try_clone(), stream.try_clone()) else {
             return;
         };
-        let (tx, writer_rx) = channel::<OutMsg>();
+        let (tx, writer_rx) = sync_channel::<OutMsg>(WRITER_QUEUE);
         let writer_spawned = std::thread::Builder::new()
             .name(format!("opusdm-writer-{cid}"))
             .spawn(move || writer_loop(write_stream, writer_rx));
@@ -413,7 +494,7 @@ impl Hub {
             }
 
             ToHub::RaiseToolbar => {
-                let _ = self.evt_tx.send(HubEvent::RaiseToolbar);
+                send_or_log(&self.evt_tx, HubEvent::RaiseToolbar, "GTK event");
             }
 
             ToHub::SetDesktopSettings(ds) => self.set_desktop_settings(ds),
@@ -437,7 +518,7 @@ impl Hub {
             ToHub::QueryCaches => self.query_caches(cid),
 
             ToHub::OpenBankManager => {
-                let _ = self.evt_tx.send(HubEvent::OpenBankManager);
+                send_or_log(&self.evt_tx, HubEvent::OpenBankManager, "GTK event");
             }
 
             ToHub::FreeAllCaches => {
@@ -543,15 +624,15 @@ impl Hub {
             return;
         }
         self.current_desktop = ds;
-        let _ = self.persist_tx.send(PersistMsg::Desktop(self.current_desktop.clone()));
-        let _ = self.evt_tx.send(HubEvent::DesktopSettingsChanged(self.current_desktop.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Desktop(self.current_desktop.clone()), "desktop.json save");
+        send_or_log(&self.evt_tx, HubEvent::DesktopSettingsChanged(self.current_desktop.clone()), "GTK event");
     }
 
     /// A Lister sent new hotkeys and script bindings: sanitize, save, tell every Lister and re-grab the global keys.
     fn set_bindings(&mut self, cid: u64, new_bindings: Bindings) {
         opusdm_ipc::debug_log!("hub", "SetBindings from conn {cid}: {} hotkeys", new_bindings.hotkeys.len());
         self.current_bindings = bindings::sanitize(new_bindings);
-        let _ = self.persist_tx.send(PersistMsg::Bindings(self.current_bindings.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Bindings(self.current_bindings.clone()), "bindings save");
         self.broadcast(ToLister::BindingsUpdate(self.current_bindings.clone()));
         self.apply_global_keys();
     }
@@ -559,16 +640,16 @@ impl Hub {
     /// A Lister sent new formats: sanitize, save and tell every Lister.
     fn set_formats(&mut self, new_formats: FormatStore) {
         self.current_formats = new_formats.sanitized();
-        let _ = self.persist_tx.send(PersistMsg::Formats(self.current_formats.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Formats(self.current_formats.clone()), "formats.json save");
         self.broadcast(ToLister::FormatsUpdate(self.current_formats.clone()));
     }
 
     /// A Lister sent new functions: save, tell every Lister and the GTK side.
     fn set_functions(&mut self, new_functions: Vec<opusdm_ipc::function::Function>) {
         self.current_functions = new_functions;
-        let _ = self.persist_tx.send(PersistMsg::Functions(self.current_functions.clone()));
+        send_or_log(&self.persist_tx, PersistMsg::Functions(self.current_functions.clone()), "functions.json save");
         self.broadcast(ToLister::FunctionsUpdate(self.current_functions.clone()));
-        let _ = self.evt_tx.send(HubEvent::FunctionsChanged(self.current_functions.clone()));
+        send_or_log(&self.evt_tx, HubEvent::FunctionsChanged(self.current_functions.clone()), "GTK event");
     }
 
     /// `ToHub::QueryConfig`: send `cid` the bindings and Functions in force.
@@ -581,9 +662,7 @@ impl Hub {
     /// is skipped: its reader reports the end and the hub cleans up then.
     fn send_to(&self, cid: u64, msg: ToLister) {
         let Some(c) = self.conns.get(&cid) else { return };
-        if c.tx.send(msg.into()).is_err() {
-            opusdm_ipc::debug_log!("hub", "connection {cid} is closing: message dropped");
-        }
+        c.queue(cid, msg);
     }
 
     /// [`Self::send_to`], only when `cid` is a registered Lister.
@@ -616,7 +695,8 @@ impl Hub {
             c.registered = true;
             c.pid = pid;
             c.path = initial_path.clone();
-            let _ = c.tx.send(
+            c.queue(
+                cid,
                 Welcome {
                     lister_id: ListerId(cid),
                     source: self.roles.source(),
@@ -626,14 +706,9 @@ impl Hub {
                     bindings: self.current_bindings.clone(),
                     formats: self.current_formats.clone(),
                     functions: self.current_functions.clone(),
-                }
-                .into(),
+                },
             );
-            let _ = self.evt_tx.send(HubEvent::ListerRegistered {
-                id: ListerId(cid),
-                pid,
-                path: initial_path,
-            });
+            send_or_log(&self.evt_tx, HubEvent::ListerRegistered { id: ListerId(cid), pid, path: initial_path }, "GTK event");
             emit_roles(&self.roles, &self.conns, &self.evt_tx);
         }
         if self.conns.get(&cid).is_some_and(|c| c.registered) {
@@ -704,28 +779,15 @@ impl Hub {
         if ids.is_empty() {
             return;
         }
-        let saved = self.current_functions.clone();
         let deadline = Instant::now() + SHUTDOWN_HOOK_TIMEOUT;
         let mut receivers = Vec::new();
         for id in ids {
-            let reference = opusdm_ipc::funcref::parse(&id);
-            let steps = if let opusdm_ipc::funcref::FuncRef::Saved(_) = reference {
-                let Some(function) = saved.iter().find(|f| f.id == id) else {
-                    opusdm_ipc::err_log!("hub", "shutdown hook: function '{id}' not found");
+            // An inline command is waited for: the hub must not quit under it.
+            let steps = match function_run::resolve_steps(&self.current_functions, &id, true) {
+                Ok(steps) => steps,
+                Err(e) => {
+                    opusdm_ipc::err_log!("hub", "shutdown hook '{id}' cannot run: {e}");
                     continue;
-                };
-                if !opusdm_ipc::function::validate(function).is_empty() {
-                    opusdm_ipc::err_log!("hub", "shutdown hook: function '{}' is invalid", function.name);
-                    continue;
-                }
-                function.steps.clone()
-            } else {
-                match opusdm_ipc::funcref::to_steps_with(&reference, true) {
-                    Ok(steps) => steps,
-                    Err(e) => {
-                        opusdm_ipc::err_log!("hub", "shutdown hook '{id}' cannot run: {e}");
-                        continue;
-                    }
                 }
             };
             let run_id = self.runs.next_id();
@@ -823,33 +885,22 @@ impl Hub {
         }
     }
 
-    /// `ToHub::CheckFit` from `cid`: size the selection and read the free
-    /// space on its own thread (a big tree can take a while), then answer
-    /// the requester.
+    /// `ToHub::CheckFit` from `cid`: hand the selection to the fit-check
+    /// worker (sizing a big tree can take a while), which answers through
+    /// `OwnerMsg::FitChecked`.
     fn check_fit(&mut self, cid: u64, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf>) {
-        let Some(reply) = self.conns.get(&cid).map(|c| c.tx.clone()) else { return };
+        if !self.conns.contains_key(&cid) {
+            return;
+        }
         let dest_dir = dest_dir.or_else(|| {
             self.roles
                 .dests()
                 .iter()
                 .find_map(|d| self.conns.get(&d.0).map(|c| c.path.clone()))
         });
-        std::thread::spawn(move || {
-            let msg = match dest_dir {
-                None => ToLister::CheckFitFailed { message: "no DEST Lister set".into() },
-                Some(dir) => match opusdm_fsops::checkfit::check_fit(&srcs, &dir) {
-                    Ok(r) => ToLister::CheckFitResult {
-                        dest_dir: dir,
-                        needed: r.needed,
-                        free: r.free,
-                        fits: r.fits,
-                        percent: r.percent,
-                    },
-                    Err(e) => ToLister::CheckFitFailed { message: format!("{}: {e}", dir.display()) },
-                },
-            };
-            let _ = reply.send(msg.into());
-        });
+        if self.fit_tx.send(FitRequest { cid, srcs, dest_dir }).is_err() {
+            self.send_to(cid, ToLister::CheckFitFailed { message: "the fit-check worker is gone".into() });
+        }
     }
 
     /// Adopt `new_settings`: sanitize the background, persist to
@@ -863,10 +914,10 @@ impl Hub {
             return;
         }
         self.current_settings = new_settings;
-        let _ = self.persist_tx.send(PersistMsg::Settings(Box::new(self.current_settings.clone())));
+        send_or_log(&self.persist_tx, PersistMsg::Settings(Box::new(self.current_settings.clone())), "settings.json save");
         self.broadcast(ToLister::SettingsUpdate(Box::new(self.current_settings.clone())));
-        let _ = self.evt_tx.send(HubEvent::ThemeChanged(Box::new(self.current_settings.theme.clone())));
-        let _ = self.evt_tx.send(HubEvent::AppearanceChanged(self.current_settings.appearance.clone()));
+        send_or_log(&self.evt_tx, HubEvent::ThemeChanged(Box::new(self.current_settings.theme.clone())), "GTK event");
+        send_or_log(&self.evt_tx, HubEvent::AppearanceChanged(self.current_settings.appearance.clone()), "GTK event");
     }
 
     /// Hide or reveal the desktop environment. Does nothing when the state
@@ -888,7 +939,7 @@ impl Hub {
         }
         self.hidden = hidden;
         self.broadcast(ToLister::SetHidden(hidden));
-        let _ = self.evt_tx.send(HubEvent::HiddenChanged(hidden));
+        send_or_log(&self.evt_tx, HubEvent::HiddenChanged(hidden), "GTK event");
         if hidden || !present_source {
             return;
         }
@@ -914,7 +965,7 @@ impl Hub {
             opusdm_ipc::err_log!("hub", "{e}");
             return;
         }
-        let _ = self.evt_tx.send(HubEvent::LeftOutAdd(paths));
+        send_or_log(&self.evt_tx, HubEvent::LeftOutAdd(paths), "GTK event");
     }
 
     /// Make `path` (a picture or a video) the one desktop background,
@@ -938,15 +989,8 @@ impl Hub {
         options: opusdm_ipc::JobOptions,
     ) {
         let fail = |conns: &mut HashMap<u64, Conn>, msg: String| {
-            if let Some(c) = conns.get_mut(&cid) {
-                let _ = c.tx.send(
-                    ToLister::JobDone {
-                        job_id: 0,
-                        outcome: Outcome::Error { message: msg },
-                        errors: Vec::new(),
-                    }
-                    .into(),
-                );
+            if let Some(c) = conns.get(&cid) {
+                c.queue(cid, ToLister::JobDone { job_id: 0, outcome: Outcome::Error { message: msg }, errors: Vec::new() });
             }
         };
         // A `None` destination means a button Copy/Move: the requester
@@ -1085,7 +1129,7 @@ impl Hub {
                 self.next_req += 1;
                 self.replies.insert(req_id, reply);
                 self.conflict_owners.insert(req_id, cid);
-                let _ = c.tx.send(ToLister::ConflictPrompt { req_id, job_id, path, src, dst }.into());
+                c.queue(cid, ToLister::ConflictPrompt { req_id, job_id, path, src, dst });
             }
             Progress::Done { copied, skipped, cancelled, errors } => {
                 let outcome = if cancelled {
@@ -1105,15 +1149,10 @@ impl Hub {
                     let _ = waiter.send(result);
                 }
                 // `meta` still borrows `self.jobs`: send through the field.
-                if let Some(c) = requester.and_then(|r| self.conns.get(&r)) {
-                    let _ = c.tx.send(ToLister::JobDone { job_id, outcome, errors }.into());
+                if let Some((r, c)) = requester.and_then(|r| self.conns.get(&r).map(|c| (r, c))) {
+                    c.queue(r, ToLister::JobDone { job_id, outcome, errors });
                 }
-                let _ = self.evt_tx.send(HubEvent::JobFinished {
-                    job_id,
-                    ok: !cancelled && err_count == 0,
-                    errors: err_count,
-                    cancelled,
-                });
+                send_or_log(&self.evt_tx, HubEvent::JobFinished { job_id, ok: !cancelled && err_count == 0, errors: err_count, cancelled }, "GTK event");
                 // Refresh every Lister showing an affected directory.
                 // Sources are refreshed too: Move/Delete remove them, Duplicate
                 // adds to them, and Copy may have run as a Move.
@@ -1137,14 +1176,15 @@ impl Hub {
                         ..
                     } = &msg
                     {
-                        let _ = self.evt_tx.send(HubEvent::JobUpdate {
+                        let update = HubEvent::JobUpdate {
                             job_id,
                             current_file: current_file.clone(),
                             files_done: *files_done,
                             files_total: *files_total,
                             file_bytes_done: *file_bytes_done,
                             file_bytes_total: *file_bytes_total,
-                        });
+                        };
+                        send_or_log(&self.evt_tx, update, "GTK event");
                     }
                     if let Some(r) = requester {
                         self.send_to(r, msg);
@@ -1213,6 +1253,7 @@ fn owner_loop(
         evt_tx,
         on_spawn,
         runs: FunctionRuns::new(fe_tx),
+        fit_tx: spawn_fit_worker(owner_tx.clone()),
     };
 
     hub.apply_global_keys();
@@ -1240,10 +1281,49 @@ fn owner_loop(
                 hub.function_event(run_id, ev);
                 true
             }
+            OwnerMsg::FitChecked(cid, answer) => {
+                hub.send_to(cid, answer);
+                true
+            }
         };
         if !keep_running {
             return;
         }
+    }
+}
+
+/// One `ToHub::CheckFit` waiting for the fit-check worker.
+struct FitRequest {
+    cid: u64,
+    srcs: Vec<PathBuf>,
+    dest_dir: Option<PathBuf>,
+}
+
+/// Start the thread that answers `ToHub::CheckFit` requests one after the
+/// other, each answer going back to the owner loop as
+/// `OwnerMsg::FitChecked`. One worker instead of a thread per request.
+fn spawn_fit_worker(owner_tx: Sender<OwnerMsg>) -> Sender<FitRequest> {
+    let (tx, rx) = channel::<FitRequest>();
+    std::thread::Builder::new()
+        .name("opusdm-check-fit".into())
+        .spawn(move || {
+            for req in rx {
+                let answer = fit_answer(&req.srcs, req.dest_dir);
+                if owner_tx.send(OwnerMsg::FitChecked(req.cid, answer)).is_err() {
+                    return;
+                }
+            }
+        })
+        .expect("spawn fit-check thread");
+    tx
+}
+
+/// Size `srcs`, read the free space of `dest_dir` and say whether they fit.
+fn fit_answer(srcs: &[PathBuf], dest_dir: Option<PathBuf>) -> ToLister {
+    let Some(dir) = dest_dir else { return ToLister::CheckFitFailed { message: "no DEST Lister set".into() } };
+    match opusdm_fsops::checkfit::check_fit(srcs, &dir) {
+        Ok(r) => ToLister::CheckFitResult { dest_dir: dir, needed: r.needed, free: r.free, fits: r.fits, percent: r.percent },
+        Err(e) => ToLister::CheckFitFailed { message: format!("{}: {e}", dir.display()) },
     }
 }
 
@@ -1264,6 +1344,16 @@ fn spawn_forwarder<T: Send + 'static>(name: &str, rx: Receiver<T>, owner_tx: Sen
         .unwrap_or_else(|e| panic!("spawn {name} forwarder thread: {e}"));
 }
 
+/// Whether a `recv` error means the peer sent something this hub cannot
+/// decode (an unknown message, a bad or oversized frame), as opposed to the
+/// connection itself failing.
+fn is_decode_error(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::Other | std::io::ErrorKind::InvalidData)
+}
+
+/// Read connection `cid` until it ends, passing every message to the owner
+/// loop. A message the hub cannot decode ends the connection with a log line,
+/// so a client built from another OpusDM version is not dropped silently.
 fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
     loop {
         match recv::<_, ToHub>(&mut stream) {
@@ -1271,12 +1361,16 @@ fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
                 if owner_tx.send(OwnerMsg::FromLister(cid, msg)).is_err() {
                     return;
                 }
+                continue;
             }
-            Ok(None) | Err(_) => {
-                let _ = owner_tx.send(OwnerMsg::ListerEof(cid));
-                return;
+            Ok(None) => {}
+            Err(e) if is_decode_error(&e) => {
+                opusdm_ipc::err_log!("hub", "connection {cid} sent a message this hub cannot read (another OpusDM version?), disconnecting: {e}");
             }
+            Err(e) => opusdm_ipc::debug_log!("hub", "connection {cid} failed: {e}"),
         }
+        let _ = owner_tx.send(OwnerMsg::ListerEof(cid));
+        return;
     }
 }
 
@@ -1292,9 +1386,9 @@ fn drop_conn(
         return false;
     }
     apply_role(roles, RoleEvent::Dropped(ListerId(cid)), conns, evt_tx);
-    let _ = evt_tx.send(HubEvent::ListerGone(ListerId(cid)));
+    send_or_log(evt_tx, HubEvent::ListerGone(ListerId(cid)), "GTK event");
     if !conns.values().any(|c| c.registered) {
-        let _ = evt_tx.send(HubEvent::AllListersGone);
+        send_or_log(evt_tx, HubEvent::AllListersGone, "GTK event");
     }
     true
 }
@@ -1314,8 +1408,8 @@ fn apply_role(
                 emit_roles(roles, conns, evt_tx);
             }
             RoleEffect::Reject(id) => {
-                if let Some(c) = conns.get_mut(&id.0) {
-                    let _ = c.tx.send(roles_msg(roles).into());
+                if let Some(c) = conns.get(&id.0) {
+                    c.queue(id.0, roles_msg(roles));
                 }
             }
         }
@@ -1328,9 +1422,21 @@ fn roles_msg(roles: &RoleState) -> ToLister {
 }
 
 /// Send `msg` to every registered Lister.
-fn broadcast(conns: &mut HashMap<u64, Conn>, msg: &ToLister) {
-    for c in conns.values_mut().filter(|c| c.registered) {
-        let _ = c.tx.send(msg.clone().into());
+/// The message is encoded to JSON once and the bytes are shared by every
+/// writer, instead of cloning and encoding it again for each Lister.
+fn broadcast(conns: &HashMap<u64, Conn>, msg: &ToLister) {
+    if !conns.values().any(|c| c.registered) {
+        return;
+    }
+    let bytes: Arc<[u8]> = match serde_json::to_vec(msg) {
+        Ok(bytes) => bytes.into(),
+        Err(e) => {
+            opusdm_ipc::err_log!("hub", "cannot encode a broadcast: {e}");
+            return;
+        }
+    };
+    for (cid, c) in conns.iter().filter(|(_, c)| c.registered) {
+        c.queue(*cid, OutMsg::Encoded(bytes.clone()));
     }
 }
 
@@ -1340,7 +1446,7 @@ fn emit_roles(roles: &RoleState, conns: &HashMap<u64, Conn>, evt_tx: &Sender<Hub
         .filter(|(_, c)| c.registered)
         .map(|(k, c)| (ListerId(*k), c.path.clone()))
         .collect();
-    let _ = evt_tx.send(HubEvent::Roles { source: roles.source(), dests: roles.dests(), paths });
+    send_or_log(evt_tx, HubEvent::Roles { source: roles.source(), dests: roles.dests(), paths }, "GTK event");
 }
 
 #[cfg(test)]

@@ -203,9 +203,12 @@ pub(crate) fn build_one_desktop_window(
 
 /// Run the double click action of the user file type of `path` on it. False
 /// when no file type has one, so the caller opens the file the default way.
+/// The file types come from the cache, which reloads `filetypes.json` only
+/// after it changed.
 pub(crate) fn run_file_type(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) -> bool {
-    let Some(id) = opusdm_ipc::filetypes::dblclick_for(path) else { return false };
-    let _ = cmd_tx.send(HubCmd::RunFunctionOnPaths { id, paths: vec![path.to_path_buf()] });
+    let types = opusdm_hub::config_cache::filetypes();
+    let Some(id) = opusdm_ipc::filetypes::dblclick_in(&types, path) else { return false };
+    opusdm_hub::channels::send_or_log(cmd_tx, HubCmd::RunFunctionOnPaths { id, paths: vec![path.to_path_buf()] }, "hub command");
     true
 }
 
@@ -215,8 +218,20 @@ pub(crate) fn open_file(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::pa
     if run_file_type(cmd_tx, path) {
         return;
     }
-    let uri = format!("file://{}", path.display());
-    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+    if let Err(e) = open_default(path) {
+        opusdm_ipc::err_log!("hub", "cannot open {}: {e}", path.display());
+    }
+}
+
+/// The `file://` URI of `path`, escaped by GIO, so names with `#`, `%`, `?`,
+/// spaces or bytes that are not UTF-8 stay one valid URI.
+fn file_uri(path: &Path) -> glib::GString {
+    gio::File::for_path(path).uri()
+}
+
+/// Open `path` with the default application for its type.
+pub(crate) fn open_default(path: &Path) -> Result<(), glib::Error> {
+    gio::AppInfo::launch_default_for_uri(&file_uri(path), gio::AppLaunchContext::NONE)
 }
 
 /// Wire the primary monitor's icon field: open on activate, copy/move on
@@ -237,7 +252,7 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
                 return;
             }
             if opusdm_hub::leftout::opens_in_lister(&entry) {
-                let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path) });
+                opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::SpawnRequested { start_path: Some(entry.path) }, "hub command");
             } else {
                 open_file(&cmd_tx, &entry.path);
             }
@@ -246,8 +261,8 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
     {
         let cmd_tx = widgets.cmd_tx.clone();
         field.connect_background_activate(move || {
-            let _ = cmd_tx.send(HubCmd::SpawnRequested { start_path: None });
-            let _ = cmd_tx.send(HubCmd::EmitScriptEvent(ScriptEvent::DesktopDoubleClick));
+            opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::SpawnRequested { start_path: None }, "hub command");
+            opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::EmitScriptEvent(ScriptEvent::DesktopDoubleClick), "hub command");
         });
     }
     {
@@ -269,7 +284,7 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
             }
             let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
             let op = if shift { opusdm_ipc::Op::Move } else { opusdm_ipc::Op::Copy };
-            let _ = widgets.cmd_tx.send(HubCmd::RunJob { op, srcs, dest_dir });
+            opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::RunJob { op, srcs, dest_dir }, "hub command");
         });
     }
     {
@@ -446,7 +461,7 @@ pub(crate) fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconE
     use opusdm_hub::leftout::LaunchAction;
     match opusdm_hub::leftout::launch_action(entry) {
         LaunchAction::Lister => {
-            let _ = widgets.cmd_tx.send(HubCmd::SpawnRequested { start_path: Some(entry.path.clone()) });
+            opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::SpawnRequested { start_path: Some(entry.path.clone()) }, "hub command");
         }
         LaunchAction::DesktopEntry => match gio::DesktopAppInfo::from_filename(&entry.path) {
             Some(info) => {
@@ -474,8 +489,7 @@ pub(crate) fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconE
             if run_file_type(&widgets.cmd_tx, &entry.path) {
                 return;
             }
-            let uri = gio::File::for_path(&entry.path).uri();
-            if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
+            if let Err(e) = open_default(&entry.path) {
                 opusdm_ipc::err_log!("hub", "cannot open {}: {e}", entry.path.display());
                 show_group_error(widgets, &format!("Cannot open {}: {e}", entry.path.display()));
             }
@@ -613,6 +627,18 @@ pub(crate) fn keep_clear_of_panel(field: &impl IsA<gtk::Widget>, position: opusd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_uri_escapes_names_that_a_plain_format_would_break() {
+        use std::os::unix::ffi::OsStrExt;
+        let odd = Path::new("/tmp/a #1 50% why?.txt");
+        let uri = file_uri(odd);
+        assert!(uri.starts_with("file:///tmp/"), "{uri}");
+        assert!(!uri.contains('#') && !uri.contains('?') && !uri.contains(' '), "{uri}");
+        assert_eq!(gio::File::for_uri(&uri).path().as_deref(), Some(odd));
+        let not_utf8 = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9.txt"));
+        assert_eq!(gio::File::for_uri(&file_uri(&not_utf8)).path(), Some(not_utf8));
+    }
 
     #[test]
     fn desktop_rule_css_has_a_rule_per_entry() {
