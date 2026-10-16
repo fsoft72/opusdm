@@ -726,6 +726,59 @@ fn run_with_window_and_wait_keeps_the_status_the_sigchld_reaper_took() {
     assert!(matches!(events.last(), Some(FnEvent::AllDone)), "the step succeeded");
 }
 
+/// Run `steps`, cancel the run after `after`, and return its events and how
+/// long it took. Questions are never answered (their replies are kept alive),
+/// like a dialog the user leaves open.
+fn run_cancelled_after(steps: &[FnStep], after: std::time::Duration) -> (Vec<FnEvent>, std::time::Duration) {
+    let td = tempfile::tempdir().unwrap();
+    let src = ctx(&[], td.path().to_str().unwrap());
+    let cancel = CancelToken::new();
+    let (tx, rx) = channel();
+    let started = std::time::Instant::now();
+    let worker = {
+        let (steps, run_cancel) = (steps.to_vec(), cancel.clone());
+        std::thread::spawn(move || run_steps_cancellable(1, &steps, &src, None, &tx, &run_cancel))
+    };
+    std::thread::sleep(after);
+    cancel.cancel();
+    let mut events = Vec::new();
+    let mut unanswered = Vec::new();
+    // Bounded, so a step that ignores the cancel fails the test instead of hanging it.
+    while let Ok((_, ev)) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        match ev {
+            FnEvent::Confirm { reply, .. } => unanswered.push(reply),
+            other => events.push(other),
+        }
+    }
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    worker.join().unwrap();
+    (events, took)
+}
+
+#[test]
+fn cancelling_stops_an_external_step_that_is_running() {
+    let steps = vec![FnStep::External { argv: vec!["sleep".into(), "30".into()], cwd_source: true }];
+    let (events, took) = run_cancelled_after(&steps, std::time::Duration::from_millis(200));
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("cancelled")));
+}
+
+#[test]
+fn cancelling_stops_a_run_step_that_waits_with_a_window() {
+    let (events, took) = run_cancelled_after(&run_args("sleep 30", &["window", "wait"]), std::time::Duration::from_millis(200));
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("cancelled")));
+    assert!(events.iter().any(|e| matches!(e, FnEvent::Window { msg: WindowMsg::Closed(_), .. })), "the window is told the program ended");
+}
+
+#[test]
+fn cancelling_stops_a_confirm_nobody_answers() {
+    let (events, took) = run_cancelled_after(&confirm_steps("Sure?"), std::time::Duration::from_millis(200));
+    assert!(took < std::time::Duration::from_secs(10), "the step was not stopped: {took:?}");
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains("cancelled")));
+}
+
 #[test]
 fn run_expands_codes_and_rejects_empty_or_unknown_programs() {
     let td = tempfile::tempdir().unwrap();

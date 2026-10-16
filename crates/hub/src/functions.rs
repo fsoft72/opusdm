@@ -11,8 +11,62 @@ use opusdm_ipc::buttonbank::BankAction;
 use opusdm_ipc::{Op, Resolution};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{channel, Sender};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
+
+/// How often a step that blocks (a running program, an open question)
+/// checks whether its run was cancelled.
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+/// The error text of a step stopped because its run was cancelled.
+pub(crate) const CANCELLED: &str = "cancelled";
+
+/// Why [`recv_or_cancel`] returned without an answer.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NoAnswer {
+    /// The run was cancelled while waiting.
+    Cancelled,
+    /// The other side dropped its sender without answering.
+    Dropped,
+}
+
+/// Wait for an answer on `rx` (a dialog, a job), giving up as soon as
+/// `cancel` is set.
+pub(crate) fn recv_or_cancel<T>(rx: &Receiver<T>, cancel: &CancelToken) -> Result<T, NoAnswer> {
+    loop {
+        if cancel.is_cancelled() {
+            return Err(NoAnswer::Cancelled);
+        }
+        match rx.recv_timeout(CANCEL_POLL) {
+            Ok(answer) => return Ok(answer),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return Err(NoAnswer::Dropped),
+        }
+    }
+}
+
+/// Wait for `child` to exit (safe against the SIGCHLD reaper, see
+/// `opusdm_ipc::reaped`), killing it when `cancel` is set. A cancelled wait
+/// fails with [`CANCELLED`] once the killed child is reaped.
+pub(crate) fn wait_or_kill(child: &mut Child, cancel: &CancelToken) -> Result<ExitStatus, String> {
+    let mut lost_since = None;
+    loop {
+        if let Some(status) = opusdm_ipc::reaped::poll_exit(child, &mut lost_since).map_err(|e| format!("wait failed: {e}"))? {
+            return Ok(status);
+        }
+        if cancel.is_cancelled() {
+            if let Err(e) = child.kill() {
+                opusdm_ipc::err_log!("hub", "cannot kill cancelled pid {}: {e}", child.id());
+            }
+            if let Err(e) = opusdm_ipc::reaped::wait(child) {
+                opusdm_ipc::err_log!("hub", "cannot reap cancelled pid {}: {e}", child.id());
+            }
+            return Err(CANCELLED.to_string());
+        }
+        std::thread::sleep(CANCEL_POLL);
+    }
+}
 
 /// One event a running Function reports, tagged with its `run_id` by the
 /// caller when relayed onward (see `server.rs::function_event`).
@@ -198,8 +252,8 @@ pub(crate) fn run_step(
             InternalCmd::ChangeDir => run_change_dir(run_id, step_idx, args, source, dest, events_tx),
             InternalCmd::NewLister => run_new_lister(run_id, step_idx, args, source, dest, events_tx),
             InternalCmd::Script => crate::scripting::run_script(run_id, step_idx, args, source, dest, events_tx, cancel),
-            InternalCmd::Run => run_run(run_id, step_idx, args, source, dest, events_tx),
-            InternalCmd::Confirm => run_confirm(run_id, step_idx, args, source, dest, events_tx),
+            InternalCmd::Run => run_run(run_id, step_idx, args, source, dest, events_tx, cancel),
+            InternalCmd::Confirm => run_confirm(run_id, step_idx, args, source, dest, events_tx, cancel),
             InternalCmd::SetBackground => run_set_background(run_id, step_idx, args, source, dest, events_tx),
             InternalCmd::LeaveOut => run_leave_out(run_id, step_idx, false, source, events_tx),
             InternalCmd::PutAway => run_leave_out(run_id, step_idx, true, source, events_tx),
@@ -223,7 +277,7 @@ pub(crate) fn run_step(
             InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, source, dest, events_tx),
         },
         FnStep::External { argv, cwd_source } => {
-            run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, source, dest, events_tx)
+            run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, source, dest, events_tx, cancel)
         }
     }
 }
@@ -428,8 +482,8 @@ fn bank_exists(name: &str) -> bool {
     opusdm_ipc::buttonbank::Banks::load().get_by_name(name).is_some()
 }
 
-/// Run a `Confirm` step: expand the question, ask through the hub and wait.
-/// Anything but a yes stops the function.
+/// Run a `Confirm` step: expand the question, ask through the hub and wait
+/// (until `cancel` is set). Anything but a yes stops the function.
 fn run_confirm(
     run_id: u64,
     step_idx: usize,
@@ -437,6 +491,7 @@ fn run_confirm(
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
 ) -> Result<(), String> {
     let template = args.get("message").unwrap_or("");
     let message = expand_text(template, source, dest).map_err(expand_err_msg)?;
@@ -445,13 +500,14 @@ fn run_confirm(
     }
     let (reply, answer) = channel::<bool>();
     let _ = events_tx.send((run_id, FnEvent::Confirm { step_idx, message, reply }));
-    match answer.recv() {
+    match recv_or_cancel(&answer, cancel) {
         Ok(true) => {
             let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
             Ok(())
         }
         Ok(false) => Err("Confirm: stopped by the user".to_string()),
-        Err(_) => Err("Confirm: nobody was there to answer".to_string()),
+        Err(NoAnswer::Cancelled) => Err(format!("Confirm: {CANCELLED}")),
+        Err(NoAnswer::Dropped) => Err("Confirm: nobody was there to answer".to_string()),
     }
 }
 
@@ -646,6 +702,7 @@ fn expand_argv(argv: &[String], source: &SelectionCtx, dest: Option<&SelectionCt
 /// in the SOURCE folder. Without `wait` the step ends at once and the
 /// program is left running (and reaped); with `window` its output streams to
 /// a window on the requesting Lister that stays open after the function ends.
+/// A program the step waits for is killed when `cancel` is set.
 fn run_run(
     run_id: u64,
     step_idx: usize,
@@ -653,6 +710,7 @@ fn run_run(
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
 ) -> Result<(), String> {
     let templates = opusdm_ipc::cli::tokenize(args.get("command").unwrap_or("")).map_err(|e| format!("Run: {e}"))?;
     if templates.is_empty() {
@@ -673,6 +731,7 @@ fn run_run(
             source,
             dest,
             events_tx,
+            cancel,
         );
     }
     let argv = expand_run_argv(&templates, script, source, dest).map_err(|e| format!("Run: {e}"))?;
@@ -725,29 +784,48 @@ fn run_run(
         })
     };
     let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
-    let finish = {
-        let (tx, title) = (events_tx.clone(), title.clone());
-        move |mut child: std::process::Child, readers: [std::thread::JoinHandle<()>; 2]| {
-            for r in readers {
-                let _ = r.join();
-            }
-            // The SIGCHLD reaper may collect the child first: `reaped::wait`
-            // then recovers the status it recorded.
-            let code = opusdm_ipc::reaped::wait(&mut child).ok().and_then(|s| s.code());
-            let _ = tx.send((run_id, FnEvent::Window { step_idx, title, msg: WindowMsg::Closed(code) }));
-            code
-        }
-    };
+    let window = WindowRun { run_id, step_idx, title, events_tx: events_tx.clone() };
     if wait {
-        let code = finish(child, readers);
+        let code = window.finish(child, readers, cancel).map_err(|e| format!("Run: '{}': {e}", argv[0]))?;
         let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: code }));
         return if code == Some(0) { Ok(()) } else { Err(format!("Run: '{}' exited with {code:?}", argv[0])) };
     }
+    // Not waited for: the program outlives the step, so the run's cancel
+    // does not stop it.
     std::thread::spawn(move || {
-        finish(child, readers);
+        let _ = window.finish(child, readers, &CancelToken::new());
     });
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
+}
+
+/// A `Run` program whose output streams to a window: where to tell the
+/// window that the program ended.
+struct WindowRun {
+    run_id: u64,
+    step_idx: usize,
+    title: String,
+    events_tx: Sender<(u64, FnEvent)>,
+}
+
+impl WindowRun {
+    /// Wait for `child` (killing it when `cancel` is set), let its output
+    /// `readers` finish and tell the window it ended. Returns the exit code
+    /// (`None` when killed by a signal), or why the wait failed. The readers
+    /// of a cancelled program are not joined: a process it started may still
+    /// hold the pipes open.
+    fn finish(self, mut child: Child, readers: [std::thread::JoinHandle<()>; 2], cancel: &CancelToken) -> Result<Option<i32>, String> {
+        let waited = wait_or_kill(&mut child, cancel);
+        if waited.is_ok() {
+            for r in readers {
+                let _ = r.join();
+            }
+        }
+        let code = waited.as_ref().ok().and_then(ExitStatus::code);
+        let closed = FnEvent::Window { step_idx: self.step_idx, title: self.title, msg: WindowMsg::Closed(code) };
+        let _ = self.events_tx.send((self.run_id, closed));
+        waited.map(|status| status.code())
+    }
 }
 
 /// The working directory a child process can really start in. A Lister's
@@ -784,7 +862,8 @@ struct ExternalCall<'a> {
 
 /// Run one `External` step: expand every argv element (keeping `script`,
 /// see [`expand_run_argv`]), spawn it with piped stdout/stderr, stream every
-/// line as it arrives, and report the exit status.
+/// line as it arrives, and report the exit status. The program is killed
+/// when `cancel` is set.
 fn run_external(
     run_id: u64,
     step_idx: usize,
@@ -792,6 +871,7 @@ fn run_external(
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
 ) -> Result<(), String> {
     let ExternalCall { argv, script, cwd_source } = call;
     if argv.is_empty() {
@@ -811,18 +891,21 @@ fn run_external(
 
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let out_tx = events_tx.clone();
-    let out_thread = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = out_tx.send((run_id, FnEvent::Output { step_idx, line }));
-        }
-    });
-    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-        let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line }));
+    let stream = |reader: Box<dyn std::io::Read + Send>| {
+        let tx = events_tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(reader).lines().map_while(Result::ok) {
+                let _ = tx.send((run_id, FnEvent::Output { step_idx, line }));
+            }
+        })
+    };
+    let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
+    // A cancelled program's readers are not joined: a process it started
+    // may still hold the pipes open.
+    let status = wait_or_kill(&mut child, cancel).map_err(|e| format!("'{}': {e}", expanded[0]))?;
+    for r in readers {
+        let _ = r.join();
     }
-    let _ = out_thread.join();
-
-    let status = opusdm_ipc::reaped::wait(&mut child).map_err(|e| format!("wait failed: {e}"))?;
     let exit_code = status.code();
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code }));
     if !status.success() {

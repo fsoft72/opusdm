@@ -274,6 +274,50 @@ fn a_cancelled_run_fails_at_the_next_call() {
     assert!(r.result.unwrap_err().contains("cancelled"));
 }
 
+/// Run `code`, cancel it after 200 ms and return its result and how long it
+/// took. Dialogs are never answered (their replies are kept alive).
+fn run_cancelled_mid_call(code: &str) -> (Result<(), String>, std::time::Duration) {
+    let dir = tempfile::tempdir().unwrap();
+    let cancel = CancelToken::new();
+    let (tx, rx) = channel::<(u64, FnEvent)>();
+    let mut args = InternalArgs::default();
+    args.0.insert("script".into(), "test".into());
+    args.0.insert("code".into(), code.into());
+    let started = std::time::Instant::now();
+    let worker = {
+        let (cancel, mut source) = (cancel.clone(), ctx(&[], dir.path()));
+        std::thread::spawn(move || run_script(7, 0, &args, &mut source, None, &tx, &cancel))
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    cancel.cancel();
+    let mut unanswered = Vec::new();
+    // Bounded, so a step that ignores the cancel fails the test instead of hanging it.
+    while let Ok((_, event)) = rx.recv_timeout(Duration::from_secs(10)) {
+        if let FnEvent::Confirm { reply, .. } | FnEvent::Alert { reply, .. } = event {
+            unanswered.push(reply);
+        }
+    }
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(10), "the script was not stopped: {took:?}");
+    (worker.join().expect("the script thread does not panic"), took)
+}
+
+#[test]
+fn cancelling_stops_a_running_exec() {
+    let (result, took) = run_cancelled_mid_call("opus.exec('sleep', ['30'])");
+    assert!(took < Duration::from_secs(10), "exec was not stopped: {took:?}");
+    assert!(result.unwrap_err().contains("cancelled"));
+}
+
+#[test]
+fn cancelling_stops_a_confirm_or_alert_nobody_answers() {
+    for code in ["opus.confirm('sure?')", "opus.alert('careful')"] {
+        let (result, took) = run_cancelled_mid_call(code);
+        assert!(took < Duration::from_secs(10), "{code} was not stopped: {took:?}");
+        assert!(result.unwrap_err().contains("cancelled"), "{code}");
+    }
+}
+
 #[test]
 fn scripts_cannot_nest_forever() {
     std::thread::spawn(|| {

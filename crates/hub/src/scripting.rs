@@ -10,9 +10,10 @@
 //! [`FnEvent::ScriptQuery`].
 //!
 //! Every call is synchronous: the script waits for its commands. A run that
-//! is cancelled (its Lister closed) fails at the next `opus` call.
+//! is cancelled (its Lister closed) fails at the next `opus` call; a call
+//! that blocks (`exec`, `confirm`, `alert`, `sleep`) stops at once.
 
-use crate::functions::{run_step, FnEvent};
+use crate::functions::{recv_or_cancel, run_step, wait_or_kill, FnEvent, NoAnswer, CANCELLED};
 use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source};
 use opusdm_fsops::CancelToken;
 use opusdm_ipc::function::{expand_text, schema, FnStep, InternalArgs, InternalCmd, SelectionCtx, BOOL_TRUE};
@@ -246,7 +247,11 @@ fn dispatch(op: &str, payload: &Value) -> Result<Value, String> {
             let message = str_field(payload, "message").unwrap_or("").to_string();
             let (reply, answer) = channel::<bool>();
             let _ = host.events_tx.send((host.run_id, FnEvent::Confirm { step_idx: host.step_idx, message, reply }));
-            answer.recv().map(Value::Bool).map_err(|_| "confirm: nobody was there to answer".to_string())
+            match recv_or_cancel(&answer, &host.cancel) {
+                Ok(yes) => Ok(Value::Bool(yes)),
+                Err(NoAnswer::Cancelled) => Err(CANCELLED.to_string()),
+                Err(NoAnswer::Dropped) => Err("confirm: nobody was there to answer".to_string()),
+            }
         }
         "alert" => {
             let message = str_field(payload, "message").unwrap_or("").to_string();
@@ -254,8 +259,10 @@ fn dispatch(op: &str, payload: &Value) -> Result<Value, String> {
             let _ = host.events_tx.send((host.run_id, FnEvent::Alert { step_idx: host.step_idx, message, reply }));
             // The dialog is closed when the answer comes; a dropped reply
             // (the Lister went away) just lets the script go on.
-            let _ = answer.recv();
-            Ok(Value::Null)
+            match recv_or_cancel(&answer, &host.cancel) {
+                Err(NoAnswer::Cancelled) => Err(CANCELLED.to_string()),
+                Ok(_) | Err(NoAnswer::Dropped) => Ok(Value::Null),
+            }
         }
         "notify" => notify(payload),
         "exec" => exec(&host, payload),
@@ -543,9 +550,10 @@ fn notify(payload: &Value) -> Result<Value, String> {
     Ok(json!(id))
 }
 
-/// `opus.exec`: run a program, wait, and capture its output.
+/// `opus.exec`: run a program, wait, and capture its output. The program is
+/// killed when the run is cancelled.
 fn exec(host: &Snapshot, payload: &Value) -> Result<Value, String> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     let program = str_field(payload, "program").unwrap_or("").trim();
     if program.is_empty() {
@@ -576,11 +584,24 @@ fn exec(host: &Snapshot, payload: &Value) -> Result<Value, String> {
             let _ = stdin.write_all(text.as_bytes());
         });
     }
-    let output = child.wait_with_output().map_err(|e| format!("exec {program}: {e}"))?;
+    let collect = |mut reader: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = reader.read_to_end(&mut bytes);
+            bytes
+        })
+    };
+    let stdout = collect(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = collect(Box::new(child.stderr.take().expect("piped stderr")));
+    // A cancelled program's readers are not joined: a process it started
+    // may still hold the pipes open.
+    let status = wait_or_kill(&mut child, &host.cancel).map_err(|e| format!("exec {program}: {e}"))?;
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
     Ok(json!({
-        "code": output.status.code(),
-        "stdout": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr),
+        "code": status.code(),
+        "stdout": String::from_utf8_lossy(&stdout),
+        "stderr": String::from_utf8_lossy(&stderr),
     }))
 }
 
