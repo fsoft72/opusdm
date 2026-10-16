@@ -307,7 +307,7 @@ impl Ui {
             Err(e) => crate::actions::flash(self, &format!("transfer failed: {e}")),
         }
         for dir in touched {
-            let _ = self.hub.client.send(&ToHub::Invalidate(dir.clone()));
+            self.send_hub(&ToHub::Invalidate(dir.clone()));
         }
         self.reload();
     }

@@ -155,7 +155,7 @@ impl Ui {
     /// Tell the hub which directories this Lister has cached.
     pub fn report_cache(&self) {
         let paths = self.caches.dirs.borrow().paths();
-        let _ = self.hub.client.send(&ToHub::CacheReport(paths));
+        self.send_hub(&ToHub::CacheReport(paths));
     }
 
     /// Drop the whole cache and tell the hub.

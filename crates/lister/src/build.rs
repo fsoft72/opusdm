@@ -540,7 +540,7 @@ fn wire_stat_bar(ui: &Rc<Ui>, star_btn: &gtk::Button) {
     {
         let ui = ui.clone();
         star_btn.connect_clicked(move |_| {
-            let _ = ui.hub.client.send(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
+            ui.send_hub(&ToHub::SpawnLister { start_path: Some(ui.cwd_path()) });
         });
     }
     {
@@ -548,7 +548,7 @@ fn wire_stat_bar(ui: &Rc<Ui>, star_btn: &gtk::Button) {
         let gesture = gtk::GestureClick::new();
         gesture.connect_released(move |_, _, _, _| {
             let next = ui_for_click.hub.roles.borrow().next_role(ui_for_click.hub.id);
-            let _ = ui_for_click.hub.client.send(&ToHub::SetRole(next));
+            ui_for_click.send_hub(&ToHub::SetRole(next));
         });
         ui.status_bar.role_badge.add_controller(gesture);
     }
@@ -739,7 +739,7 @@ fn wire_window_signals(ui: &Rc<Ui>) {
         let focus = gtk::EventControllerFocus::new();
         let window = ui.window.clone();
         focus.connect_enter(move |_| {
-            let _ = ui.hub.client.send(&ToHub::FocusGained);
+            ui.send_hub(&ToHub::FocusGained);
         });
         window.add_controller(focus);
     }
@@ -747,7 +747,7 @@ fn wire_window_signals(ui: &Rc<Ui>) {
         let ui = ui.clone();
         ui.window.clone().connect_close_request(move |_| {
             crate::dlog!("close request, sending Goodbye to hub");
-            let _ = ui.hub.client.send(&ToHub::Goodbye);
+            ui.send_hub(&ToHub::Goodbye);
             crate::sidecar::stop(&ui);
             glib::Propagation::Proceed
         });

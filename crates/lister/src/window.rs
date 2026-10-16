@@ -17,6 +17,15 @@ use std::rc::Rc;
 const FOCUS_ROW_RETRY_MS: u64 = 20;
 /// Tries to focus the cursor row before giving up.
 const FOCUS_ROW_TRIES: u32 = 10;
+/// Seconds a flashed message stays in the message line.
+const FLASH_SECS: u64 = 4;
+
+/// The variant name of `msg`, for log lines (the payload can be large).
+fn hub_message_name(msg: &ToHub) -> String {
+    let text = format!("{msg:?}");
+    let end = text.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(text.len());
+    text[..end].to_string()
+}
 
 /// Whether the keyboard focus currently sits in a text field, where a plain
 /// letter is a character rather than a shortcut.
@@ -332,7 +341,7 @@ impl Ui {
         crate::sidecar::follow(self);
         self.update_gauge(dir);
         self.refresh_icon_view();
-        let _ = self.hub.client.send(&ToHub::PathChanged(dir.to_path_buf()));
+        self.send_hub(&ToHub::PathChanged(dir.to_path_buf()));
     }
 
     /// Bring the store in line with `new_rows` (name order) by replacing only
@@ -557,13 +566,13 @@ impl Ui {
             ToLister::ConfirmPrompt { req_id, message } => {
                 let ui = self.clone();
                 opusdm_ui::requester(&self.window, "Confirm", &message, None, &[("OK", true), ("Cancel", false)], move |ok| {
-                    let _ = ui.hub.client.send(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
+                    ui.send_hub(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
                 });
             }
             ToLister::AlertPrompt { req_id, message } => {
                 let ui = self.clone();
                 opusdm_ui::requester(&self.window, "Alert", &message, None, &[("OK", true)], move |ok| {
-                    let _ = ui.hub.client.send(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
+                    ui.send_hub(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
                 });
             }
             ToLister::RemoteTransfer { op, srcs, dest_dir } => self.run_remote_transfer(op, srcs, dest_dir),
@@ -634,7 +643,7 @@ impl Ui {
                 *self.hub.bindings.borrow_mut() = new_bindings;
             }
             ToLister::QuerySelection => {
-                let _ = self.hub.client.send(&opusdm_ipc::ToHub::SelectionReply {
+                self.send_hub(&opusdm_ipc::ToHub::SelectionReply {
                     paths: self.selected_paths(),
                     cwd: self.cwd_path(),
                 });
@@ -660,11 +669,35 @@ impl Ui {
     }
 
     /// Hand a function to the hub (`ToHub::RunFunction` or `RunFunctionById`)
-    /// and show the busy indicator until it reports Done or Failed.
+    /// and show the busy indicator until it reports Done or Failed. A
+    /// request that cannot be sent stops the indicator again at once.
     pub fn start_run(&self, request: opusdm_ipc::ToHub) {
         self.busy.start();
         self.refresh_busy();
-        let _ = self.hub.client.send(&request);
+        if !self.send_hub(&request) {
+            self.run_finished();
+        }
+    }
+
+    /// Send `msg` to the hub. A failure is logged and flashed in the message
+    /// line, and `false` is returned so the caller can undo what it started.
+    pub fn send_hub(&self, msg: &ToHub) -> bool {
+        let Err(e) = self.hub.client.send(msg) else { return true };
+        opusdm_ipc::err_log!("opusdm-lister", "cannot send {} to the hub: {e}", hub_message_name(msg));
+        self.flash(&format!("lost the connection to the hub: {e}"));
+        false
+    }
+
+    /// Show `text` in the transient message line for a few seconds.
+    pub fn flash(&self, text: &str) {
+        self.status_bar.job_line.set_text(text);
+        let line = self.status_bar.job_line.clone();
+        let expected = text.to_string();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(FLASH_SECS), move || {
+            if line.text() == expected {
+                line.set_text("");
+            }
+        });
     }
 
     /// A function finished or failed: update the indicator.
@@ -805,7 +838,7 @@ impl Ui {
             }
             None => cwd.join(&row.name),
         };
-        let _ = self.hub.client.send(&ToHub::SpawnLister { start_path: Some(target) });
+        self.send_hub(&ToHub::SpawnLister { start_path: Some(target) });
     }
 
     /// Put the keyboard cursor on `pos` and make that row the only
@@ -901,7 +934,7 @@ impl Ui {
             crate::actions::flash(self, "no other SOURCE/DEST Lister to switch to");
             return;
         };
-        let _ = self.hub.client.send(&ToHub::PresentLister(target));
+        self.send_hub(&ToHub::PresentLister(target));
     }
 
     /// Point the inotify watch at `dir`, or drop it when auto-refresh is off or
@@ -936,5 +969,17 @@ impl Ui {
         let css_data = crate::theme::generate_css(&s);
         self.css_provider.load_from_data(&css_data);
         crate::icons::set_icon_colour(&s.theme.colors.toolbar_button_fg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_messages_are_logged_by_their_variant_name() {
+        assert_eq!(hub_message_name(&ToHub::Goodbye), "Goodbye");
+        assert_eq!(hub_message_name(&ToHub::PathChanged(PathBuf::from("/a b"))), "PathChanged");
+        assert_eq!(hub_message_name(&ToHub::SpawnLister { start_path: None }), "SpawnLister");
     }
 }

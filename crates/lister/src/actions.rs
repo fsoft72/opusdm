@@ -362,7 +362,7 @@ pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: Fi
             ("Cancel", Resolution::Cancel),
         ],
         move |resolution| {
-            let _ = ui.hub.client.send(&ToHub::ConflictReply { req_id, resolution });
+            ui.send_hub(&ToHub::ConflictReply { req_id, resolution });
         },
     );
 }
@@ -393,14 +393,7 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>, permanent:
 
 /// Show `text` in the transient message line for a few seconds.
 pub fn flash(ui: &Rc<Ui>, text: &str) {
-    ui.status_bar.job_line.set_text(text);
-    let line = ui.status_bar.job_line.clone();
-    let expected = text.to_string();
-    glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
-        if line.text() == expected {
-            line.set_text("");
-        }
-    });
+    ui.flash(text);
 }
 
 /// A small modal name-entry dialog. Calls `on_ok` with the entered text.

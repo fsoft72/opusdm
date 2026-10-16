@@ -200,18 +200,30 @@ pub fn open_batch_rename_dialog(ui: &Rc<Ui>) {
     open_rules_dialog(ui, "Batch Rename", "Apply Rename", Rc::new(rename_in_place));
 }
 
-/// Rename every changed entry inside the current directory.
+/// Rename every changed entry inside the current directory. The renames
+/// run on a worker thread; a failure shows every error in a requester.
 fn rename_in_place(ui: &Rc<Ui>, mappings: Vec<(String, String)>) {
-    let (renamed_count, errors) = rename_all(&ui.cwd_path(), &mappings);
-    ui.reload();
-    if errors.is_empty() {
-        crate::actions::flash(ui, &format!("Successfully renamed {renamed_count} item(s)"));
-    } else {
-        crate::actions::flash(
-            ui,
-            &format!("Renamed {renamed_count} item(s) with {} error(s)", errors.len()),
-        );
-    }
+    let dir = ui.cwd_path();
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let result = gtk::gio::spawn_blocking(move || rename_all(&dir, &mappings)).await;
+        ui.reload();
+        let Ok((renamed_count, errors)) = result else {
+            return crate::actions::flash(&ui, "batch rename failed: the worker thread panicked");
+        };
+        let (headline, detail) = rename_summary(renamed_count, &errors);
+        let Some(detail) = detail else { return crate::actions::flash(&ui, &headline) };
+        opusdm_ipc::err_log!("opusdm-lister", "batch rename: {headline}\n{detail}");
+        opusdm_ui::requester(&ui.window, "Batch Rename", &headline, Some(&detail), &[("OK", ())], |_| {});
+    });
+}
+
+/// The result of a batch rename for the user: a headline, plus every error
+/// on its own line when there were any.
+fn rename_summary(renamed: usize, errors: &[String]) -> (String, Option<String>) {
+    if errors.is_empty() { return (format!("Successfully renamed {renamed} item(s)"), None); }
+    let headline = format!("Renamed {renamed} item(s) with {} error(s)", errors.len());
+    (headline, Some(errors.join("\n")))
 }
 
 /// Apply `(old, new)` renames inside `dir` without ever replacing a file.
@@ -549,6 +561,18 @@ mod tests {
         assert_eq!((n, errs.len()), (1, 1));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
         assert!(dir.path().join("x").exists() && dir.path().join("b").exists());
+    }
+
+    #[test]
+    fn the_summary_lists_every_error() {
+        assert_eq!(rename_summary(3, &[]), ("Successfully renamed 3 item(s)".to_string(), None));
+        let errors = vec!["a -> x: File exists".to_string(), "b: cannot restore, left as /d/.opusdm-rename-1-1: EIO".to_string()];
+        let (headline, detail) = rename_summary(1, &errors);
+        assert_eq!(headline, "Renamed 1 item(s) with 2 error(s)");
+        let detail = detail.expect("the errors are listed");
+        for e in &errors {
+            assert!(detail.contains(e.as_str()), "{detail}");
+        }
     }
 
     #[test]
