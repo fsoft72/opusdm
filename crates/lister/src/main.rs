@@ -48,6 +48,7 @@ mod hotkey_editor;
 mod hidden;
 mod hotkeys;
 mod icons;
+mod inbound;
 mod job_submit;
 mod keys;
 mod link_dialogs;

@@ -7,7 +7,7 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib::{self, BoxedAnyObject};
 use gtk::prelude::*;
-use opusdm_ipc::{ListerId, Settings, ToHub, ToLister};
+use opusdm_ipc::{ListerId, Settings, ToHub};
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -148,6 +148,22 @@ pub struct NavHistory {
     pub list: gtk::ListBox,
 }
 
+/// Where the Lister has been and where it is going: the back / forward
+/// history with its widgets, and the background read in flight.
+pub struct Navigation {
+    /// Back / forward history.
+    pub history: RefCell<crate::history::History>,
+    /// Back / forward buttons and the history drop-down.
+    pub widgets: NavHistory,
+    /// Bumped on every `navigate_to`; an in-flight background listing whose
+    /// generation no longer matches was superseded by a later navigation and
+    /// its result is dropped instead of applied.
+    pub generation: Cell<u64>,
+    /// Cancels the background read of the navigation in flight, so a read
+    /// superseded before its worker started is skipped.
+    pub cancel: RefCell<crate::background::CancelToken>,
+}
+
 /// Type-to-find: the text typed so far and the idle timeout that closes it.
 pub struct Typeahead {
     /// Text typed so far; empty when no search is open.
@@ -208,13 +224,8 @@ pub struct Ui {
     /// change rather than re-registered, so providers don't stack up on the
     /// display.
     pub css_provider: gtk::CssProvider,
-    /// Bumped on every `navigate_to`; an in-flight background listing whose
-    /// generation no longer matches was superseded by a later navigation and
-    /// its result is dropped instead of applied.
-    pub nav_generation: Cell<u64>,
-    /// Cancels the background read of the navigation in flight, so a read
-    /// superseded before its worker started is skipped.
-    pub nav_cancel: RefCell<crate::background::CancelToken>,
+    /// Back / forward history and the navigation in flight.
+    pub nav: Navigation,
     /// Names selected when a job last started or the selection was last
     /// cleared, for Reselect.
     pub last_selection: RefCell<Vec<String>>,
@@ -236,10 +247,6 @@ pub struct Ui {
     pub busy: crate::busy::Busy,
     /// Open FTP / SFTP connections (F-39).
     pub remote: crate::remote_ui::RemoteState,
-    /// Back / forward history.
-    pub history: RefCell<crate::history::History>,
-    /// Back / forward buttons and the history drop-down.
-    pub nav_history: NavHistory,
     /// Whether the latest mouse button press in the window held Ctrl, so a
     /// Ctrl+double click on a folder opens it in a new Lister. Key presses
     /// reset it, so keyboard activation always stays in this Lister.
@@ -306,7 +313,7 @@ impl Ui {
             self.terminal.sync_cwd(dir);
         }
         *self.cwd.borrow_mut() = dir.to_path_buf();
-        self.history.borrow_mut().push(dir.to_path_buf());
+        self.nav.history.borrow_mut().push(dir.to_path_buf());
         self.refresh_history_ui();
         // A "Use" format only lives in the directory it was applied in.
         if self.format_state.temp.borrow().as_ref().is_some_and(|(p, _)| p != dir) {
@@ -545,133 +552,6 @@ impl Ui {
         self.status_bar.label.set_text(&crate::status_format::format_status(&format, &info));
     }
 
-    /// Handle a message from the hub.
-    pub fn apply_inbound(self: &Rc<Self>, msg: ToLister) {
-        crate::dlog!("hub msg: {msg:?}");
-        match msg {
-            ToLister::RoleChanged { source, dests, source_locked } => {
-                *self.hub.roles.borrow_mut() = Roles { source, dests, source_locked };
-                self.update_status();
-                crate::actions::sync_role_buttons(self);
-            }
-            ToLister::InvalidatePath(p) => {
-                if self.caches.dirs.borrow_mut().remove(&p) {
-                    self.report_cache();
-                }
-                if p == *self.cwd.borrow() {
-                    self.reload();
-                }
-            }
-            ToLister::Present => self.window.present(),
-            ToLister::SetHidden(hidden) => self.set_hidden(hidden),
-            ToLister::Shutdown => self.window.close(),
-            // Progress is shown centrally by the hub's progress window now.
-            ToLister::JobProgress { .. } => {}
-            ToLister::ConfirmPrompt { req_id, message } => {
-                let ui = self.clone();
-                opusdm_ui::requester(&self.window, "Confirm", &message, None, &[("OK", true), ("Cancel", false)], move |ok| {
-                    ui.send_hub(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
-                });
-            }
-            ToLister::AlertPrompt { req_id, message } => {
-                let ui = self.clone();
-                opusdm_ui::requester(&self.window, "Alert", &message, None, &[("OK", true)], move |ok| {
-                    ui.send_hub(&opusdm_ipc::ToHub::ConfirmReply { req_id, ok });
-                });
-            }
-            ToLister::RemoteTransfer { op, srcs, dest_dir } => self.run_remote_transfer(op, srcs, dest_dir),
-            ToLister::JobDone { job_id, outcome, errors } => {
-                crate::actions::on_job_done(self, job_id, &outcome, &errors);
-            }
-            ToLister::ConflictPrompt { req_id, path, src, dst, .. } => {
-                crate::actions::on_conflict(self, req_id, &path, src, dst);
-            }
-            ToLister::SettingsUpdate(new_settings) => {
-                let names_changed = {
-                    let old = self.hub.settings.borrow();
-                    old.theme.icon_set != new_settings.theme.icon_set
-                        || old.appearance.type_indicators != new_settings.appearance.type_indicators
-                };
-                *self.hub.settings.borrow_mut() = *new_settings;
-                let capacity = self.hub.settings.borrow().behavior.cache_capacity();
-                self.caches.dirs.borrow_mut().set_capacity(capacity);
-                self.report_cache();
-                self.update_status();
-                opusdm_ui::apply_theme_mode(self.hub.settings.borrow().appearance.theme_mode);
-                self.update_css_for_colors();
-                self.view.icon_field.set_icon_set(self.hub.settings.borrow().theme.icon_set.clone());
-                // Auto-refresh may have just been switched on or off.
-                let cwd = self.cwd.borrow().clone();
-                self.sync_watch(&cwd);
-                // Name-column text is built at bind time, so glyph and
-                // indicator changes only show after the rows are rebound.
-                if names_changed {
-                    self.touch_rows();
-                }
-            }
-            ToLister::Pong => {}
-            ToLister::FreeCaches => self.free_caches(),
-            ToLister::OutputOpen { id, title } => crate::output_window::open(self, id, &title),
-            ToLister::OutputLine { id, line } => crate::output_window::append(self, id, &format!("{line}\n")),
-            ToLister::OutputEnd { id, exit } => crate::output_window::end(self, id, exit),
-            ToLister::ScanDir { path, select, mode } => {
-                self.window.present();
-                // The toggle button drives the view, so its state follows.
-                match mode.as_deref() {
-                    Some("icons") => self.view.mode_toggle.set_active(true),
-                    Some("details") => self.view.mode_toggle.set_active(false),
-                    _ => {}
-                }
-                let ui = self.clone();
-                self.navigate(&path, true, move || {
-                    if let Some(name) = &select {
-                        ui.view.selection.unselect_all();
-                        ui.select_names(std::slice::from_ref(name));
-                    }
-                });
-            }
-            ToLister::GoTo { path } => {
-                self.window.present();
-                self.navigate_to(&path);
-            }
-            ToLister::CacheList(entries) => crate::cache_list::show(self, entries),
-            ToLister::FormatsUpdate(new_formats) => {
-                *self.hub.formats.borrow_mut() = new_formats;
-                self.on_formats_changed();
-            }
-            ToLister::FunctionsUpdate(new_functions) => {
-                *self.hub.functions.borrow_mut() = new_functions;
-            }
-            ToLister::BindingsUpdate(new_bindings) => {
-                *self.hub.hotkeys.borrow_mut() = crate::hotkeys::HotkeyMap::from_hotkeys(&new_bindings.hotkeys);
-                *self.hub.bindings.borrow_mut() = new_bindings;
-            }
-            ToLister::QuerySelection => {
-                self.send_hub(&opusdm_ipc::ToHub::SelectionReply {
-                    paths: self.selected_paths(),
-                    cwd: self.cwd_path(),
-                });
-            }
-            ToLister::CheckFitResult { dest_dir, needed, free, fits, percent } => {
-                crate::checkfit_ui::show_result(self, &dest_dir, needed, free, fits, percent);
-            }
-            ToLister::CheckFitFailed { message } => {
-                crate::actions::flash(self, &format!("check fit failed: {message}"));
-            }
-            // Step output is shown by the Manage Functions window's Test;
-            // a run from here only reports how it ended.
-            ToLister::FunctionOutput { .. } | ToLister::FunctionStepDone { .. } => {}
-            ToLister::FunctionFailed { step_idx, error } => {
-                self.run_finished();
-                crate::actions::flash(self, &format!("function failed at step {step_idx}: {error}"));
-            }
-            ToLister::FunctionDone => {
-                self.run_finished();
-                crate::actions::flash(self, "function finished");
-            }
-        }
-    }
-
     /// Hand a function to the hub (`ToHub::RunFunction` or `RunFunctionById`)
     /// and show the busy indicator until it reports Done or Failed. A
     /// request that cannot be sent stops the indicator again at once.
@@ -702,7 +582,7 @@ impl Ui {
             crate::dlog!("Goodbye not sent: {e}");
         }
         crate::sidecar::stop(self);
-        self.nav_cancel.borrow().cancel();
+        self.nav.cancel.borrow().cancel();
         self.caches.size_scan.borrow().cancel();
         self.remote.shutdown();
         if let Some(watcher) = &self.hub.watcher {
@@ -723,7 +603,7 @@ impl Ui {
     }
 
     /// A function finished or failed: update the indicator.
-    fn run_finished(&self) {
+    pub(crate) fn run_finished(&self) {
         self.busy.finish();
         self.refresh_busy();
     }
@@ -961,7 +841,7 @@ impl Ui {
 
     /// Point the inotify watch at `dir`, or drop it when auto-refresh is off or
     /// the path is a virtual archive (nothing on disk to watch).
-    fn sync_watch(&self, dir: &Path) {
+    pub(crate) fn sync_watch(&self, dir: &Path) {
         let Some(watcher) = &self.hub.watcher else { return };
         let enabled = self.hub.settings.borrow().behavior.auto_refresh;
         if enabled && crate::archive::parse_archive_path(dir).is_none() && crate::remote::url_of(dir).is_none() {

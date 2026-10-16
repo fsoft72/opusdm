@@ -17,7 +17,7 @@ impl Ui {
     /// view only when it differs from what is shown. `on_done` runs once the
     /// final listing is on screen.
     pub fn navigate(self: &Rc<Self>, dir: &Path, use_cache: bool, on_done: impl Fn() + 'static) {
-        let history_before = self.history.borrow().clone();
+        let history_before = self.nav.history.borrow().clone();
         self.navigate_from(dir, use_cache, history_before, on_done);
     }
 
@@ -42,8 +42,8 @@ impl Ui {
             return;
         }
         let previous = self.cwd_path();
-        let gen = self.nav_generation.get() + 1;
-        self.nav_generation.set(gen);
+        let gen = self.nav.generation.get() + 1;
+        self.nav.generation.set(gen);
 
         let is_archive = crate::archive::parse_archive_path(dir).is_some() || remote_url.is_some();
         let cached = if use_cache && !is_archive { self.caches.dirs.borrow_mut().get(dir) } else { None };
@@ -56,7 +56,7 @@ impl Ui {
         // The worker pool reuses its threads, and a read that was superseded
         // before it started is skipped through the cancel token.
         let cancel = crate::background::CancelToken::new();
-        self.nav_cancel.replace(cancel.clone()).cancel();
+        self.nav.cancel.replace(cancel.clone()).cancel();
         let read = move |_: &crate::background::CancelToken| {
             if let (Some(url), Some(session)) = (crate::remote::url_of(&dir_owned), session.as_ref()) {
                 crate::remote_ui::read_rows(session, &url)
@@ -71,7 +71,7 @@ impl Ui {
         let dir_owned = dir.to_path_buf();
         crate::background::run_cancellable(&cancel, read, move |result: io::Result<Vec<Row>>| {
             // Superseded by a later navigation while this was loading.
-            if this.nav_generation.get() != gen {
+            if this.nav.generation.get() != gen {
                 return;
             }
             // A failed read leaves the previous listing on screen; callers that
@@ -110,7 +110,7 @@ impl Ui {
                 self.apply_navigation(dir, Err(e));
                 // The move never happened: undo its history step, and if the
                 // cached rows were already shown, go back where we were.
-                *self.history.borrow_mut() = history_before;
+                *self.nav.history.borrow_mut() = history_before;
                 self.refresh_history_ui();
                 if cached.is_some() && previous != dir {
                     self.navigate_to(&previous);
@@ -168,8 +168,8 @@ impl Ui {
 
     /// Go to the previous history entry.
     pub fn history_back(self: &Rc<Self>) {
-        let before = self.history.borrow().clone();
-        let target = self.history.borrow_mut().back();
+        let before = self.nav.history.borrow().clone();
+        let target = self.nav.history.borrow_mut().back();
         if let Some(dir) = target {
             self.navigate_from(&dir, true, before, || {});
         }
@@ -177,8 +177,8 @@ impl Ui {
 
     /// Go to the next history entry.
     pub fn history_forward(self: &Rc<Self>) {
-        let before = self.history.borrow().clone();
-        let target = self.history.borrow_mut().forward();
+        let before = self.nav.history.borrow().clone();
+        let target = self.nav.history.borrow_mut().forward();
         if let Some(dir) = target {
             self.navigate_from(&dir, true, before, || {});
         }
@@ -186,8 +186,8 @@ impl Ui {
 
     /// Go to history entry `index`.
     pub fn history_jump(self: &Rc<Self>, index: usize) {
-        let before = self.history.borrow().clone();
-        let target = self.history.borrow_mut().jump(index);
+        let before = self.nav.history.borrow().clone();
+        let target = self.nav.history.borrow_mut().jump(index);
         if let Some(dir) = target {
             self.navigate_from(&dir, true, before, || {});
         }
@@ -197,10 +197,10 @@ impl Ui {
     /// the current entry in bold).
     pub fn refresh_history_ui(&self) {
         use gtk::prelude::*;
-        let history = self.history.borrow();
-        self.nav_history.back.set_sensitive(history.can_back());
-        self.nav_history.forward.set_sensitive(history.can_forward());
-        let list = &self.nav_history.list;
+        let history = self.nav.history.borrow();
+        self.nav.widgets.back.set_sensitive(history.can_back());
+        self.nav.widgets.forward.set_sensitive(history.can_forward());
+        let list = &self.nav.widgets.list;
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
@@ -224,14 +224,14 @@ pub fn install_history(ui: &Rc<Ui>, popover: &gtk::Popover) {
     use gtk::prelude::*;
     {
         let weak = Rc::downgrade(ui);
-        ui.nav_history.back.connect_clicked(move |_| {
+        ui.nav.widgets.back.connect_clicked(move |_| {
             let Some(ui) = weak.upgrade() else { return };
             ui.history_back();
         });
     }
     {
         let weak = Rc::downgrade(ui);
-        ui.nav_history.forward.connect_clicked(move |_| {
+        ui.nav.widgets.forward.connect_clicked(move |_| {
             let Some(ui) = weak.upgrade() else { return };
             ui.history_forward();
         });
@@ -239,9 +239,9 @@ pub fn install_history(ui: &Rc<Ui>, popover: &gtk::Popover) {
     {
         let weak = Rc::downgrade(ui);
         let popover = popover.clone();
-        ui.nav_history.list.connect_row_activated(move |_, row| {
+        ui.nav.widgets.list.connect_row_activated(move |_, row| {
             let Some(ui_for_click) = weak.upgrade() else { return };
-            let len = ui_for_click.history.borrow().entries().len();
+            let len = ui_for_click.nav.history.borrow().entries().len();
             // Rows are listed newest first.
             let Some(index) = len.checked_sub(1 + row.index() as usize) else { return };
             popover.popdown();
