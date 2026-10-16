@@ -145,6 +145,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
     state._wire_pdf(pdf_channels);
     state._sync_strip();
     state._wire_fullscreen();
+    state._wire_close();
     _spawn_loops(&state, load_rx, answer_rx, video_rx, pick_rx);
     if sidecar { sidecar::follow_stdin(&state); }
     window.present();
@@ -154,32 +155,31 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
 
 /// Handle what the worker threads and the other widgets send, on the main thread.
 fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, answer_rx: async_channel::Receiver<PageAnswer>, video_rx: async_channel::Receiver<VideoNotice>, pick_rx: async_channel::Receiver<PathBuf>) {
-    let s = state.clone();
-    glib::spawn_future_local(async move {
-        while let Ok((generation, result)) = load_rx.recv().await {
-            if generation == s.generation.get() { s._picture_loaded(result); }
-        }
+    _listen(state, load_rx, |s, (generation, result)| {
+        if generation == s.generation.get() { s._picture_loaded(result); }
     });
-    let s = state.clone();
-    glib::spawn_future_local(async move {
-        while let Ok((generation, result)) = answer_rx.recv().await {
-            if generation == s.generation.get() { s._pdf_page_loaded(result); }
-        }
+    _listen(state, answer_rx, |s, (generation, result)| {
+        if generation == s.generation.get() { s._pdf_page_loaded(result); }
     });
-    let s = state.clone();
-    glib::spawn_future_local(async move {
-        while let Ok(notice) = video_rx.recv().await {
-            s._video_notice(notice);
-        }
+    _listen(state, video_rx, |s, notice| s._video_notice(notice));
+    _listen(state, pick_rx, |s, path| {
+        let jumped = {
+            let mut g = s.gallery.borrow_mut();
+            g.position(&path).is_some_and(|i| g.jump_to(i))
+        };
+        if jumped { s.show_current(); }
     });
-    let s = state.clone();
+}
+
+/// Hand every message of `rx` to `handle` on the main thread. The loop holds
+/// the state weakly, so it never keeps a closed window alive: it ends when
+/// the state is gone or the channel is closed.
+fn _listen<T: 'static>(state: &Rc<State>, rx: async_channel::Receiver<T>, handle: impl Fn(&Rc<State>, T) + 'static) {
+    let weak = Rc::downgrade(state);
     glib::spawn_future_local(async move {
-        while let Ok(path) = pick_rx.recv().await {
-            let jumped = {
-                let mut g = s.gallery.borrow_mut();
-                g.position(&path).is_some_and(|i| g.jump_to(i))
-            };
-            if jumped { s.show_current(); }
+        while let Ok(message) = rx.recv().await {
+            let Some(state) = weak.upgrade() else { return };
+            handle(&state, message);
         }
     });
 }
@@ -350,8 +350,9 @@ impl State {
         self._cancel_timer();
         let Some((_, kind)) = self._current() else { return };
         if !self.slideshow.borrow().wants_timer(kind) { return; }
-        let this = self.clone();
+        let weak = Rc::downgrade(self);
         let id = glib::timeout_add_local_once(Duration::from_secs(SLIDESHOW_SECS), move || {
+            let Some(this) = weak.upgrade() else { return };
             this.slide_timer.borrow_mut().take();
             this._step(true);
         });
@@ -424,14 +425,33 @@ impl State {
             if n == 2 { w.set_fullscreened(!w.is_fullscreen()); }
         });
         self.stack.add_controller(click);
-        let this = self.clone();
+        let weak = Rc::downgrade(self);
         self.window.connect_fullscreened_notify(move |w| {
+            let Some(this) = weak.upgrade() else { return };
             let visible = !w.is_fullscreen();
             this._sync_strip();
             this.info.set_visible(visible);
             this.video.bar.set_visible(visible);
             this._sync_pdf_panels();
         });
+    }
+
+    /// Closing the window stops what still runs: the slideshow timer, the
+    /// video and the picture loads.
+    fn _wire_close(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.window.connect_close_request(move |_| {
+            if let Some(this) = weak.upgrade() { this._shutdown(); }
+            glib::Propagation::Proceed
+        });
+    }
+
+    /// Stop the slideshow, the video and the picture loads; the loops that
+    /// wait for their answers end.
+    fn _shutdown(&self) {
+        self._cancel_timer();
+        self.video.stop();
+        self.load_tx.close();
     }
 
     /// Ask before moving the file on screen to the trash.

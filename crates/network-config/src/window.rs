@@ -104,24 +104,36 @@ pub fn open(app: &gtk::Application) {
     let (layout, list_buttons) = app_state.layout();
     window.set_child(Some(&layout));
     app_state.wire(&list_buttons);
-    {
-        let a = app_state.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(done) = done_rx.recv().await {
-                a.on_done(done);
-            }
-        });
-    }
-    let watch_rx = watch::spawn_profiles(MANAGER_IDENTIFIER);
-    {
-        let a = app_state.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(msg) = watch_rx.recv().await {
-                a.on_watch(msg);
-            }
-        });
-    }
+    let weak = Rc::downgrade(&app_state);
+    listen(&weak, done_rx, App::on_done);
+    listen(&weak, watch::spawn_profiles(MANAGER_IDENTIFIER), App::on_watch);
+    keep_until_closed(&window, app_state);
     window.present();
+}
+
+/// Hand every message of `rx` to `handle` on the app. The loop holds the app
+/// weakly and ends once the window is gone or the channel is closed.
+fn listen<T: 'static>(weak: &Weak<App>, rx: async_channel::Receiver<T>, handle: fn(&Rc<App>, T)) {
+    let weak = weak.clone();
+    glib::spawn_future_local(async move {
+        while let Ok(message) = rx.recv().await {
+            let Some(a) = weak.upgrade() else { return };
+            handle(&a, message);
+        }
+    });
+}
+
+/// Hold the only strong reference to `app` until `window` really closes
+/// (after the unsaved-changes question). Dropping it then ends the worker
+/// thread and the loops.
+fn keep_until_closed(window: &gtk::ApplicationWindow, app: Rc<App>) {
+    let slot = RefCell::new(Some(app));
+    // Connected after `App::wire`: it runs only when that handler lets the
+    // close go on.
+    window.connect_close_request(move |_| {
+        slot.borrow_mut().take();
+        glib::Propagation::Proceed
+    });
 }
 
 impl App {

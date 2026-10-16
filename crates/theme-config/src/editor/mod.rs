@@ -1,9 +1,9 @@
 //! The Theme Editor: a window that edits the folder of an installed theme.
 //! Widgets read and write a `ThemeDraft` plus a list of pending file
-//! operations; nothing on disk changes until Save. The window and its
-//! signal handlers share one `Rc<Editor>`. That is a reference cycle which is
-//! never broken, so the editor state leaks after the window closes; it is
-//! small and the editor is opened rarely, so this is accepted.
+//! operations; nothing on disk changes until Save. The signal handlers and
+//! the preview timer hold the `Editor` weakly; the close handler holds the
+//! only strong reference and drops it when the window closes, so the editor
+//! state goes away with its window.
 //!
 //! While the editor is open, the theme it shows is previewed live on the
 //! running desktop: a timer sends the look the widgets describe to the hub
@@ -188,10 +188,10 @@ fn build_layout(window: &gtk::ApplicationWindow) -> Layout {
     Layout { list, right, status, buttons }
 }
 
-/// Run `action` on `editor` when `btn` is clicked.
+/// Run `action` on `editor` when `btn` is clicked, while the editor lives.
 fn on_click(editor: &Rc<Editor>, btn: &gtk::Button, action: impl Fn(&Rc<Editor>) + 'static) {
-    let editor = editor.clone();
-    btn.connect_clicked(move |_| action(&editor));
+    let editor = Rc::downgrade(editor);
+    btn.connect_clicked(move |_| if let Some(editor) = editor.upgrade() { action(&editor) });
 }
 
 /// Run `action` on `editor` when `btn` is clicked, once unsaved changes are
@@ -251,8 +251,11 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
 
     editor.open_active();
     {
-        let editor = editor.clone();
-        glib::timeout_add_local(PREVIEW_INTERVAL, move || editor.update_preview());
+        let editor = Rc::downgrade(&editor);
+        glib::timeout_add_local(PREVIEW_INTERVAL, move || match editor.upgrade() {
+            Some(editor) => editor.update_preview(),
+            None => glib::ControlFlow::Break,
+        });
     }
     window.present();
 }
@@ -261,9 +264,9 @@ pub fn open(app: &gtk::Application, parent: Option<&gtk::ApplicationWindow>, on_
 /// one are saved or discarded; a refused discard puts the selection back.
 fn wire_list_selection(editor: &Rc<Editor>) {
     let list = editor.list.clone();
-    let editor = editor.clone();
+    let editor = Rc::downgrade(editor);
     list.connect_row_selected(move |_, row| {
-        let Some(row) = row else { return };
+        let (Some(row), Some(editor)) = (row, editor.upgrade()) else { return };
         if editor.programmatic.get() {
             return;
         }
@@ -281,13 +284,16 @@ fn wire_list_selection(editor: &Rc<Editor>) {
 }
 
 /// Closing the window with unsaved changes asks first; a close that goes
-/// through ends the live preview.
+/// through ends the live preview and drops the editor, whose only strong
+/// reference this handler holds.
 fn wire_close_guard(editor: &Rc<Editor>) {
     let window = editor.window.clone();
-    let editor = editor.clone();
+    let owner = RefCell::new(Some(editor.clone()));
     window.connect_close_request(move |_| {
+        let Some(editor) = owner.borrow().clone() else { return glib::Propagation::Proceed };
         if editor.closing.get() || !editor.is_dirty() {
             editor.end_preview();
+            owner.borrow_mut().take();
             return glib::Propagation::Proceed;
         }
         let again = editor.clone();
