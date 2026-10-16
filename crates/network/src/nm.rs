@@ -42,8 +42,6 @@ const SECRET_NOT_STORED: u32 = SECRET_AGENT_OWNED | 0x2;
 const SECRET_AGENT_OWNED: u32 = 0x1;
 /// How long a connection may take to come up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// How often the state of a connecting connection is read.
-const CONNECT_POLL: Duration = Duration::from_millis(250);
 
 type Props = HashMap<String, OwnedValue>;
 /// `a{sv}` with no entries: the options of the calls that take none.
@@ -77,21 +75,28 @@ impl NmBackend {
         &self.conn
     }
 
-    /// A proxy for `iface` on object `path`.
+    /// A proxy for `iface` on object `path`. It does not cache properties:
+    /// the proxies here live for a call or two, and a caching proxy first
+    /// reads every property and subscribes to their changes.
     fn proxy(&self, path: &str, iface: &'static str) -> Result<Proxy<'static>, NetError> {
-        Proxy::new(&self.conn, SERVICE, path.to_string(), iface).map_err(NetError::from)
+        let proxy = zbus::blocking::proxy::Builder::<Proxy<'static>>::new(&self.conn)
+            .destination(SERVICE)?
+            .path(path.to_string())?
+            .interface(iface)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()?;
+        Ok(proxy)
     }
 
-    /// Every device with its type and state.
+    /// Every device with its type and state, one `GetAll` per device.
     fn devices(&self) -> Result<Vec<Device>, NetError> {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
         let paths: Vec<OwnedObjectPath> = nm.call("GetDevices", &())?;
         let mut out = Vec::new();
         for path in paths {
-            let dev = self.proxy(path.as_str(), DEVICE_IFACE)?;
-            let kind: u32 = dev.get_property("DeviceType")?;
-            let state: u32 = dev.get_property("State")?;
-            out.push(Device { path, kind, state });
+            let props = self.get_all(path.as_str(), DEVICE_IFACE)?;
+            let device = device_from_props(path, &props).ok_or_else(|| NetError::other("A device has no type or state"))?;
+            out.push(device);
         }
         Ok(out)
     }
@@ -146,16 +151,16 @@ impl NmBackend {
         Ok(Self::wifi_profiles(&self.all_settings()?))
     }
 
-    /// The active connections: object path, profile UUID and state.
+    /// The active connections: object path, profile UUID and state, one
+    /// `GetAll` per connection.
     fn active_connections(&self) -> Result<Vec<(OwnedObjectPath, String, u32)>, NetError> {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
         let paths: Vec<OwnedObjectPath> = nm.get_property("ActiveConnections")?;
         let mut out = Vec::new();
         for path in paths {
             // An active connection can vanish between the calls.
-            let Ok(active) = self.proxy(path.as_str(), ACTIVE_IFACE) else { continue };
-            let Ok(uuid) = active.get_property::<String>("Uuid") else { continue };
-            let state = active.get_property::<u32>("State").unwrap_or(ACTIVE_DEACTIVATED);
+            let Ok(props) = self.get_all(path.as_str(), ACTIVE_IFACE) else { continue };
+            let Some((uuid, state)) = active_from_props(&props) else { continue };
             out.push((path, uuid, state));
         }
         Ok(out)
@@ -189,19 +194,41 @@ impl NmBackend {
         conn.call::<_, _, Settings>("GetSecrets", &(setting,)).unwrap_or_default()
     }
 
-    /// Wait until the active connection is up. Returns the failure text otherwise.
+    /// Wait until the active connection is up, woken by its `StateChanged`
+    /// signal instead of polling. Returns the failure text otherwise.
     fn wait_active(&self, active: &OwnedObjectPath) -> Result<(), String> {
-        let started = Instant::now();
+        zbus::block_on(self.wait_active_async(active))
+    }
+
+    /// The body of [`Self::wait_active`]: subscribe to `StateChanged`, then
+    /// read the state, so no change slips in between; read it again on
+    /// every signal until it settles or [`CONNECT_TIMEOUT`] passes.
+    async fn wait_active_async(&self, active: &OwnedObjectPath) -> Result<(), String> {
+        use futures_lite::StreamExt;
+        let failed = |_| "Could not connect".to_string();
+        let proxy = zbus::proxy::Builder::<zbus::Proxy<'static>>::new(self.conn.inner())
+            .destination(SERVICE)
+            .and_then(|b| b.path(active.to_string()))
+            .and_then(|b| b.interface(ACTIVE_IFACE))
+            .map_err(failed)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .map_err(failed)?;
+        let mut changes = proxy.receive_signal("StateChanged").await.map_err(failed)?;
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
         loop {
             // The object is removed when the attempt fails, so a read error means it failed.
-            let state = self
-                .proxy(active.as_str(), ACTIVE_IFACE)
-                .and_then(|p| p.get_property::<u32>("State").map_err(NetError::from))
-                .unwrap_or(ACTIVE_DEACTIVATED);
-            if state == ACTIVE_ACTIVATED { return Ok(()); }
-            if state == ACTIVE_DEACTIVATED { return Err("Could not connect".to_string()); }
-            if started.elapsed() > CONNECT_TIMEOUT { return Err("Connection timed out".to_string()); }
-            std::thread::sleep(CONNECT_POLL);
+            let state = proxy.get_property::<u32>("State").await.unwrap_or(ACTIVE_DEACTIVATED);
+            if let Some(outcome) = activation_outcome(state) { return outcome; }
+            let changed = async { changes.next().await.is_some() };
+            let timed_out = async {
+                async_io::Timer::at(deadline).await;
+                false
+            };
+            if !futures_lite::future::or(changed, timed_out).await {
+                return Err("Connection timed out".to_string());
+            }
         }
     }
 
@@ -240,6 +267,33 @@ struct Device {
     path: OwnedObjectPath,
     kind: u32,
     state: u32,
+}
+
+/// The device at `path` from its `GetAll` properties; `None` without a
+/// type or a state.
+fn device_from_props(path: OwnedObjectPath, props: &Props) -> Option<Device> {
+    let kind = u32::try_from(props.get("DeviceType")?).ok()?;
+    let state = u32::try_from(props.get("State")?).ok()?;
+    Some(Device { path, kind, state })
+}
+
+/// The profile UUID and state of an active connection from its `GetAll`
+/// properties; `None` without a UUID. A missing state reads as deactivated.
+fn active_from_props(props: &Props) -> Option<(String, u32)> {
+    let uuid = String::try_from(props.get("Uuid")?.try_clone().ok()?).ok()?;
+    let state = props.get("State").and_then(|v| u32::try_from(v).ok()).unwrap_or(ACTIVE_DEACTIVATED);
+    Some((uuid, state))
+}
+
+/// How a wait for an active connection ends at `state`: `Ok` once it is
+/// activated, the failure text once it is deactivated, `None` while it is
+/// still on its way (activating or deactivating).
+fn activation_outcome(state: u32) -> Option<Result<(), String>> {
+    match state {
+        ACTIVE_ACTIVATED => Some(Ok(())),
+        ACTIVE_DEACTIVATED => Some(Err("Could not connect".to_string())),
+        _ => None,
+    }
 }
 
 /// Whether the profile has a key that is not stored in it.
@@ -519,6 +573,47 @@ mod tests {
     fn a_new_profile_leaves_its_key_to_the_secret_agent() {
         let s = new_profile("home", Some(("wpa-psk", "secret")));
         assert_eq!(u32::try_from(s["802-11-wireless-security"]["psk-flags"].clone()).unwrap(), SECRET_AGENT_OWNED);
+    }
+
+    /// Properties as one `GetAll` returns them.
+    fn props(pairs: Vec<(&str, Value<'static>)>) -> Props {
+        pairs.into_iter().map(|(k, v)| (k.to_string(), OwnedValue::try_from(v).unwrap())).collect()
+    }
+
+    #[test]
+    fn a_device_is_read_from_one_get_all() {
+        let path = OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/3").unwrap();
+        let all = props(vec![("DeviceType", Value::from(DEVICE_WIFI)), ("State", Value::from(100u32)), ("Interface", Value::from("wlan0"))]);
+        let dev = device_from_props(path.clone(), &all).unwrap();
+        assert_eq!((dev.path, dev.kind, dev.state), (path.clone(), DEVICE_WIFI, 100));
+        assert!(device_from_props(path, &props(vec![("State", Value::from(100u32))])).is_none());
+    }
+
+    #[test]
+    fn an_active_connection_is_read_from_one_get_all() {
+        let all = props(vec![("Uuid", Value::from("abc")), ("State", Value::from(ACTIVE_ACTIVATED))]);
+        assert_eq!(active_from_props(&all), Some(("abc".to_string(), ACTIVE_ACTIVATED)));
+        let no_state = props(vec![("Uuid", Value::from("abc"))]);
+        assert_eq!(active_from_props(&no_state), Some(("abc".to_string(), ACTIVE_DEACTIVATED)));
+        assert_eq!(active_from_props(&props(vec![("State", Value::from(1u32))])), None);
+    }
+
+    /// Needs NetworkManager on the system bus; read only. Run with
+    /// `cargo test -p opusdm-network -- --ignored`.
+    #[test]
+    #[ignore]
+    fn the_live_state_and_profiles_can_be_read() {
+        let nm = NmBackend::connect().unwrap();
+        nm.state().unwrap();
+        ProfileBackend::list(&nm).unwrap();
+    }
+
+    #[test]
+    fn only_activated_and_deactivated_end_the_wait() {
+        assert_eq!(activation_outcome(ACTIVE_ACTIVATED), Some(Ok(())));
+        assert_eq!(activation_outcome(ACTIVE_DEACTIVATED), Some(Err("Could not connect".to_string())));
+        assert_eq!(activation_outcome(ACTIVE_ACTIVATING), None);
+        assert_eq!(activation_outcome(3), None, "deactivating keeps waiting for the end");
     }
 
     #[test]
