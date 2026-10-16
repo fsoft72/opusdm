@@ -476,15 +476,36 @@ impl Editor {
         Some((c.slug.clone(), c.tabs.collect(&c.saved), ops))
     }
 
-    /// Save the open theme in place; with `apply`, also make it the active
-    /// theme. Either way the saved look becomes the preview's baseline when
-    /// the theme is (now) the active one, so closing the editor keeps it.
+    /// The widgets that wait while a theme is written: the whole window
+    /// content, so nothing is edited between the snapshot and the reload.
+    fn busy(&self) -> impl Fn(bool) + 'static {
+        crate::background::busy_widgets(self.window.child().into_iter().collect())
+    }
+
+    /// Save the open theme in place, on a worker thread; with `apply`, also
+    /// make it the active theme.
     fn save(self: &Rc<Self>, apply: bool) {
         let Some((slug, draft, ops)) = self.snapshot() else { return };
-        if let Err(e) = write_theme(&slug, &draft, Some(&slug), &ops) {
-            self.status.set_text(&format!("Save failed: {e}"));
-            return;
-        }
+        self.status.set_text("Saving...");
+        let weak = Rc::downgrade(self);
+        let target = slug.clone();
+        crate::background::run_blocking(
+            self.busy(),
+            move || write_theme(&target, &draft, Some(&target), &ops).map(|_| ()).map_err(|e| e.to_string()),
+            move |result| {
+                let Some(editor) = weak.upgrade() else { return };
+                match result.and_then(|r| r) {
+                    Ok(()) => editor.saved(slug, apply),
+                    Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
+                }
+            },
+        );
+    }
+
+    /// Theme `slug` was written: reopen it and, with `apply`, make it the
+    /// active theme. Either way the saved look becomes the preview's baseline
+    /// when the theme is (now) the active one, so closing the editor keeps it.
+    fn saved(self: &Rc<Self>, slug: String, apply: bool) {
         let loaded = self.reload(&slug);
         (self.on_saved)(slug.clone());
         let message = if apply {
@@ -528,17 +549,20 @@ impl Editor {
                 }
                 let mut copy = draft.clone();
                 copy.label = label.trim().to_string();
-                match write_theme(&slug, &copy, Some(&source), &ops) {
-                    Ok(_) => {
-                        editor.refresh_list(Some(&slug));
-                        let loaded = editor.reload(&slug);
-                        (editor.on_saved)(slug);
-                        if loaded {
-                            editor.status.set_text("Saved as a copy.");
+                editor.status.set_text("Saving...");
+                let (source, ops, target) = (source.clone(), ops.clone(), slug.clone());
+                let weak = Rc::downgrade(&editor);
+                crate::background::run_blocking(
+                    editor.busy(),
+                    move || write_theme(&target, &copy, Some(&source), &ops).map(|_| ()).map_err(|e| e.to_string()),
+                    move |result| {
+                        let Some(editor) = weak.upgrade() else { return };
+                        match result.and_then(|r| r) {
+                            Ok(()) => editor.opened(slug, "Saved as a copy."),
+                            Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
                         }
-                    }
-                    Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
-                }
+                    },
+                );
             },
         );
     }
@@ -565,10 +589,19 @@ impl Editor {
             if !go {
                 return;
             }
-            match draft::duplicate_theme(&source, &label) {
-                Ok(slug) => editor.opened(slug, "Duplicated."),
-                Err(e) => editor.status.set_text(&format!("Cannot duplicate: {e}")),
-            }
+            editor.status.set_text("Duplicating...");
+            let (source, weak) = (source.clone(), Rc::downgrade(&editor));
+            crate::background::run_blocking(
+                editor.busy(),
+                move || draft::duplicate_theme(&source, &label).map_err(|e| e.to_string()),
+                move |result| {
+                    let Some(editor) = weak.upgrade() else { return };
+                    match result.and_then(|r| r) {
+                        Ok(slug) => editor.opened(slug, "Duplicated."),
+                        Err(e) => editor.status.set_text(&format!("Cannot duplicate: {e}")),
+                    }
+                },
+            );
         });
     }
 

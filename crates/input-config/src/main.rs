@@ -7,7 +7,7 @@ mod ui;
 
 use gtk4 as gtk;
 use gtk::prelude::*;
-use opusdm_input_config::backend::{for_session, session_problem};
+use opusdm_input_config::backend::session_problem;
 
 /// Load the shared OpusDM look (theme mode, fonts).
 fn apply_theme() {
@@ -26,7 +26,7 @@ fn main() -> gtk::glib::ExitCode {
         apply_theme();
         match session_problem() {
             Some(problem) => ui::open_problem(app, &problem),
-            None => ui::open(app, for_session()),
+            None => ui::open(app),
         }
     });
     app.run()

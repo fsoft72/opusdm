@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use crate::backend::ScreenBackend;
+use crate::parse::Parsed;
 use crate::{store, Layout, Monitor, ScreenError};
 
 /// Where the session is.
@@ -31,7 +32,19 @@ impl<B: ScreenBackend> Session<B> {
     /// Start a session on what the system has now.
     pub fn open(backend: B) -> Result<Self, ScreenError> {
         let parsed = backend.query()?;
-        Ok(Self { backend, monitors: parsed.monitors, committed: parsed.layout.clone(), edited: parsed.layout, previous: None, state: State::Idle })
+        Ok(Self::from_parsed(backend, parsed))
+    }
+
+    /// Start a session on `parsed`, a query of `backend` made elsewhere
+    /// (on a worker thread).
+    pub fn from_parsed(backend: B, parsed: Parsed) -> Self {
+        Self { backend, monitors: parsed.monitors, committed: parsed.layout.clone(), edited: parsed.layout, previous: None, state: State::Idle }
+    }
+
+    /// The backend, for running its calls on another thread with the
+    /// two-step methods (`start_apply` / `finish_apply` and the like).
+    pub fn backend(&self) -> &B {
+        &self.backend
     }
 
     /// The connected monitors.
@@ -72,11 +85,26 @@ impl<B: ScreenBackend> Session<B> {
     /// Apply the edited layout. On success it waits for `confirm` or
     /// `revert`; on failure nothing changed on the session.
     pub fn apply(&mut self) -> Result<(), ScreenError> {
+        let layout = self.start_apply()?;
+        let result = self.backend.apply(&layout);
+        self.finish_apply(result)
+    }
+
+    /// First step of `apply`: check and place the edited layout and return
+    /// it, for the caller to hand to the backend. The session changes state
+    /// only in `finish_apply`.
+    pub fn start_apply(&mut self) -> Result<Layout, ScreenError> {
         if self.state == State::Pending { return Err(ScreenError::Session("a layout is waiting for an answer".to_string())); }
         let layout = self.edited.shifted_to_origin();
         layout.validate(&self.monitors)?;
-        self.edited = layout;
-        self.backend.apply(&self.edited)?;
+        self.edited = layout.clone();
+        Ok(layout)
+    }
+
+    /// Second step of `apply`, with what the backend said about the layout
+    /// of `start_apply`: on success it waits for `confirm` or `revert`.
+    pub fn finish_apply(&mut self, result: Result<(), ScreenError>) -> Result<(), ScreenError> {
+        result?;
         self.previous = Some(std::mem::replace(&mut self.committed, self.edited.clone()));
         self.state = State::Pending;
         Ok(())
@@ -97,11 +125,24 @@ impl<B: ScreenBackend> Session<B> {
     /// Put the previous layout back (the user said no, or did not answer). If
     /// that fails the applied layout stays and the error says so.
     pub fn revert(&mut self) -> Result<(), ScreenError> {
-        let Some(previous) = self.previous.clone() else { return Ok(()) };
-        self.backend.apply(&previous)?;
+        let Some(previous) = self.revert_target() else { return Ok(()) };
+        let result = self.backend.apply(&previous);
+        self.finish_revert(result)
+    }
+
+    /// The layout a revert puts back, or `None` when nothing waits for an
+    /// answer.
+    pub fn revert_target(&self) -> Option<Layout> {
+        self.previous.clone()
+    }
+
+    /// Second step of `revert`, with what the backend said about the layout
+    /// of `revert_target`. If it failed the applied layout stays.
+    pub fn finish_revert(&mut self, result: Result<(), ScreenError>) -> Result<(), ScreenError> {
+        result?;
+        let Some(previous) = self.previous.take() else { return Ok(()) };
         self.committed = previous.clone();
         self.edited = previous;
-        self.previous = None;
         self.state = State::Idle;
         Ok(())
     }
@@ -109,12 +150,23 @@ impl<B: ScreenBackend> Session<B> {
     /// Read the system again (a monitor was plugged in or removed). Edits
     /// are dropped. Not allowed while a layout waits for an answer.
     pub fn refresh(&mut self) -> Result<(), ScreenError> {
-        if self.state == State::Pending { return Err(ScreenError::Session("a layout is waiting for an answer".to_string())); }
+        self.start_refresh()?;
         let parsed = self.backend.query()?;
+        self.finish_refresh(parsed);
+        Ok(())
+    }
+
+    /// First step of `refresh`: whether the system may be read again now.
+    pub fn start_refresh(&self) -> Result<(), ScreenError> {
+        if self.state == State::Pending { return Err(ScreenError::Session("a layout is waiting for an answer".to_string())); }
+        Ok(())
+    }
+
+    /// Second step of `refresh`, with a new query of the backend.
+    pub fn finish_refresh(&mut self, parsed: Parsed) {
         self.monitors = parsed.monitors;
         self.committed = parsed.layout.clone();
         self.edited = parsed.layout;
-        Ok(())
     }
 }
 
@@ -213,6 +265,45 @@ mod tests {
         s.apply().unwrap();
         assert_eq!(s.committed().monitors[0].pos, (0, 0));
         assert_eq!(s.committed().monitors[1].pos, (2560, 0));
+    }
+
+    #[test]
+    fn a_two_step_apply_waits_for_the_backend_result() {
+        let mut s = session();
+        let old = s.committed().clone();
+        s.edit(modes::mirror(s.monitors(), &old).unwrap());
+        let layout = s.start_apply().unwrap();
+        assert_eq!(s.state(), State::Idle, "nothing is pending before the backend answered");
+        assert!(s.finish_apply(Err(ScreenError::Session("no".into()))).is_err());
+        assert_eq!(s.state(), State::Idle);
+        assert_eq!(s.committed(), &old);
+        s.start_apply().unwrap();
+        s.finish_apply(Ok(())).unwrap();
+        assert_eq!(s.state(), State::Pending);
+        assert_eq!(s.committed(), &layout);
+        assert_eq!(s.revert_target(), Some(old.clone()));
+        assert!(s.finish_revert(Err(ScreenError::Session("no".into()))).is_err());
+        assert_eq!(s.state(), State::Pending);
+        s.finish_revert(Ok(())).unwrap();
+        assert_eq!(s.state(), State::Idle);
+        assert_eq!(s.committed(), &old);
+        assert_eq!(s.revert_target(), None);
+    }
+
+    #[test]
+    fn a_two_step_refresh_is_refused_while_pending() {
+        let mut s = session();
+        assert!(s.start_refresh().is_ok());
+        s.edit(modes::mirror(s.monitors(), s.committed()).unwrap());
+        s.apply().unwrap();
+        assert!(s.start_refresh().is_err());
+        s.confirm(None).unwrap();
+        let mut one = two_monitor_system();
+        one.monitors.truncate(1);
+        one.layout.monitors.truncate(1);
+        s.finish_refresh(one);
+        assert_eq!(s.monitors().len(), 1);
+        assert!(!s.is_dirty());
     }
 
     #[test]
