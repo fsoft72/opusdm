@@ -1,6 +1,6 @@
 //! FTP and explicit FTPS through suppaftp.
 
-use crate::{ConnectParams, RemoteEntry, RemoteError, RemoteFs, Scheme, TIMEOUT_SECS};
+use crate::{copy_chunked, ConnectParams, RemoteEntry, RemoteError, RemoteFs, Scheme, TIMEOUT_SECS};
 use suppaftp::list::File;
 use suppaftp::native_tls::TlsConnector;
 use suppaftp::types::FileType;
@@ -104,16 +104,26 @@ impl RemoteFs for FtpFs {
 
     fn read_file(&mut self, path: &str, out: &mut dyn Write) -> Result<u64, RemoteError> {
         with_stream!(&mut self.conn, s => {
-            let mut data = s.retr_as_stream(path).map_err(failed)?;
-            let copied = std::io::copy(&mut data, out)?;
-            s.finalize_retr_stream(data).map_err(failed)?;
+            let mut stream = s.retr_as_stream(path).map_err(failed)?;
+            let copied = copy_chunked(&mut stream, out);
+            // Always read the server's reply, even after a failed or cancelled
+            // copy, so the control connection stays in step for the next command.
+            let finalized = s.finalize_retr_stream(stream).map_err(failed);
+            let copied = copied?;
+            finalized?;
             Ok(copied)
         })
     }
 
     fn write_file(&mut self, path: &str, data: &mut dyn Read) -> Result<u64, RemoteError> {
-        let mut reader = data;
-        with_stream!(&mut self.conn, s => s.put_file(path, &mut reader)).map_err(failed)
+        with_stream!(&mut self.conn, s => {
+            let mut stream = s.put_with_stream(path).map_err(failed)?;
+            let copied = copy_chunked(data, &mut stream);
+            let finalized = s.finalize_put_stream(stream).map_err(failed);
+            let copied = copied?;
+            finalized?;
+            Ok(copied)
+        })
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), RemoteError> {

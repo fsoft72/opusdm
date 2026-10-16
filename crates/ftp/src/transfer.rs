@@ -2,6 +2,7 @@
 
 use crate::{RemoteError, RemoteFs};
 use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -23,6 +24,56 @@ pub struct RemoteItem {
 /// write outside the target through `..`, a `/` or a NUL.
 pub fn safe_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+}
+
+/// The I/O error a cancelled transfer stops with. Its kind is not
+/// `Interrupted`, which copy loops retry instead of stopping.
+fn cancelled_io() -> io::Error {
+    io::Error::other("cancelled")
+}
+
+/// A local file being written by a download; refuses to go on once `cancel`
+/// is set, so a transfer stops in the middle of a file.
+struct CancelWriter<'a, W: Write> {
+    inner: W,
+    cancel: &'a AtomicBool,
+}
+
+impl<W: Write> Write for CancelWriter<'_, W> {
+    /// Write to the inner file unless the transfer was cancelled.
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) { return Err(cancelled_io()); }
+        self.inner.write(buf)
+    }
+
+    /// Flush the inner file.
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// A local file being read by an upload; refuses to go on once `cancel` is
+/// set, so a transfer stops in the middle of a file.
+struct CancelReader<'a, R: Read> {
+    inner: R,
+    cancel: &'a AtomicBool,
+}
+
+impl<R: Read> Read for CancelReader<'_, R> {
+    /// Read from the inner file unless the transfer was cancelled.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) { return Err(cancelled_io()); }
+        self.inner.read(buf)
+    }
+}
+
+/// `result` with any failure that happened after `cancel` was set reported
+/// as [`RemoteError::Cancelled`].
+fn or_cancelled<T>(result: Result<T, RemoteError>, cancel: &AtomicBool) -> Result<T, RemoteError> {
+    match result {
+        Err(_) if cancel.load(Ordering::Relaxed) => Err(RemoteError::Cancelled),
+        other => other,
+    }
 }
 
 /// Join a server directory and a name.
@@ -69,9 +120,11 @@ fn download_file(
     if cancel.load(Ordering::Relaxed) { return Err(RemoteError::Cancelled); }
     progress(remote);
     let part = part_sibling(local);
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&part)?;
-    let result = fs
-        .read_file(remote, &mut file)
+    let file = OpenOptions::new().write(true).create_new(true).open(&part)?;
+    let mut writer = CancelWriter { inner: file, cancel };
+    let read = or_cancelled(fs.read_file(remote, &mut writer), cancel);
+    let file = writer.inner;
+    let result = read
         .and_then(|_| file.sync_all().map_err(RemoteError::from))
         .and_then(|()| std::fs::rename(&part, local).map_err(RemoteError::from));
     if result.is_err() {
@@ -165,8 +218,8 @@ fn upload_item(
         }
     } else if meta.is_file() {
         progress(remote);
-        let mut file = File::open(local)?;
-        fs.write_file(remote, &mut file)?;
+        let mut reader = CancelReader { inner: File::open(local)?, cancel };
+        or_cancelled(fs.write_file(remote, &mut reader), cancel)?;
     }
     Ok(())
 }
@@ -249,7 +302,7 @@ pub fn existing_remote(fs: &mut dyn RemoteFs, dir: &str, names: &[String]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RemoteEntry;
+    use crate::{RemoteEntry, COPY_CHUNK};
     use std::collections::HashMap;
     use std::io::Write;
 
@@ -404,6 +457,77 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let err = download(&mut tree(), &items(), td.path(), &AtomicBool::new(true), &mut |_| {}).unwrap_err();
         assert_eq!(err, RemoteError::Cancelled);
+    }
+
+    /// A server that moves one file in two chunks and presses cancel in
+    /// between, as a user would during a long transfer.
+    struct CancelMidFile {
+        cancel: std::sync::Arc<AtomicBool>,
+        uploaded: Vec<u8>,
+    }
+
+    impl RemoteFs for CancelMidFile {
+        fn list(&mut self, _path: &str) -> Result<Vec<RemoteEntry>, RemoteError> {
+            Ok(Vec::new())
+        }
+        fn read_file(&mut self, _path: &str, out: &mut dyn Write) -> Result<u64, RemoteError> {
+            out.write_all(b"first")?;
+            self.cancel.store(true, Ordering::Relaxed);
+            out.write_all(b"second")?;
+            Ok(11)
+        }
+        fn write_file(&mut self, _path: &str, data: &mut dyn std::io::Read) -> Result<u64, RemoteError> {
+            let mut chunk = [0u8; 4];
+            data.read_exact(&mut chunk)?;
+            self.uploaded.extend_from_slice(&chunk);
+            self.cancel.store(true, Ordering::Relaxed);
+            data.read_to_end(&mut self.uploaded)?;
+            Ok(self.uploaded.len() as u64)
+        }
+        fn mkdir(&mut self, _path: &str) -> Result<(), RemoteError> {
+            Ok(())
+        }
+        fn remove_file(&mut self, _path: &str) -> Result<(), RemoteError> {
+            Ok(())
+        }
+        fn remove_dir(&mut self, _path: &str) -> Result<(), RemoteError> {
+            Ok(())
+        }
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn cancel_stops_a_download_in_the_middle_of_a_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("f"), b"KEEP").unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut server = CancelMidFile { cancel: cancel.clone(), uploaded: Vec::new() };
+        let item = vec![RemoteItem { path: "/f".into(), name: "f".into(), is_dir: false }];
+        let err = download(&mut server, &item, td.path(), &cancel, &mut |_| {}).unwrap_err();
+        assert_eq!(err, RemoteError::Cancelled);
+        assert_eq!(std::fs::read(td.path().join("f")).unwrap(), b"KEEP");
+        assert_eq!(std::fs::read_dir(td.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cancel_stops_an_upload_in_the_middle_of_a_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("f"), vec![1u8; 64 * 1024]).unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut server = CancelMidFile { cancel: cancel.clone(), uploaded: Vec::new() };
+        let err = upload(&mut server, &[td.path().join("f")], "/up", &cancel, &mut |_| {}).unwrap_err();
+        assert_eq!(err, RemoteError::Cancelled);
+        assert!(server.uploaded.len() < 64 * 1024, "the whole file was sent");
+    }
+
+    /// The chunked copy moves everything and counts the bytes.
+    #[test]
+    fn copy_chunked_moves_every_byte() {
+        let data: Vec<u8> = (0..(COPY_CHUNK * 2 + 17)).map(|i| i as u8).collect();
+        let mut out = Vec::new();
+        let n = crate::copy_chunked(&mut &data[..], &mut out).unwrap();
+        assert_eq!(n, data.len() as u64);
+        assert_eq!(out, data);
     }
 
     #[test]

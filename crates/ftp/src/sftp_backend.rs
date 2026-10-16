@@ -1,7 +1,7 @@
 //! SFTP through libssh2.
 
 use crate::book::{load_known_hosts, HostCheck};
-use crate::{ConnectParams, RemoteEntry, RemoteError, RemoteFs, TIMEOUT_SECS};
+use crate::{copy_chunked, ConnectParams, RemoteEntry, RemoteError, RemoteFs, TIMEOUT_SECS};
 use ssh2::{HashType, Session, Sftp};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -105,12 +105,12 @@ impl RemoteFs for SftpFs {
 
     fn read_file(&mut self, path: &str, out: &mut dyn Write) -> Result<u64, RemoteError> {
         let mut file = self.sftp.open(Path::new(path)).map_err(failed)?;
-        Ok(std::io::copy(&mut file, out)?)
+        Ok(copy_chunked(&mut file, out)?)
     }
 
     fn write_file(&mut self, path: &str, data: &mut dyn Read) -> Result<u64, RemoteError> {
         let mut file = self.sftp.create(Path::new(path)).map_err(failed)?;
-        Ok(std::io::copy(data, &mut file)?)
+        Ok(copy_chunked(data, &mut file)?)
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), RemoteError> {

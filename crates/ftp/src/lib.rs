@@ -126,3 +126,27 @@ pub fn connect(params: &ConnectParams) -> Result<Box<dyn RemoteFs>, RemoteError>
 
 /// Seconds to wait for a connection or a reply.
 pub(crate) const TIMEOUT_SECS: u64 = 30;
+
+/// Buffer size of a file transfer. Much larger than `io::copy`'s 8 KiB, so a
+/// high-latency link does far fewer round trips.
+pub(crate) const COPY_CHUNK: usize = 256 * 1024;
+
+/// Copy `reader` into `writer` in `COPY_CHUNK` pieces; returns the bytes
+/// copied. Any error ends the copy, so a reader or writer that refuses to go
+/// on (a cancelled transfer) stops it in the middle of a file.
+pub(crate) fn copy_chunked(reader: &mut dyn Read, writer: &mut dyn Write) -> std::io::Result<u64> {
+    let mut buf = vec![0u8; COPY_CHUNK];
+    let mut total = 0u64;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        writer.write_all(&buf[..n])?;
+        total += n as u64;
+    }
+    writer.flush()?;
+    Ok(total)
+}
