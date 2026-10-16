@@ -1794,3 +1794,48 @@ fn accept_loop_stops_when_the_owner_loop_is_gone() {
     );
     assert_eq!(calls, 1);
 }
+
+#[test]
+fn a_lister_that_stops_reading_is_disconnected_instead_of_queueing_forever() {
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut stalled = connect(&path);
+    send(&mut stalled, &ToHub::Register { pid: 1, initial_path: "/s".into() }).unwrap();
+    let _welcome: Welcome = recv(&mut stalled).unwrap().unwrap();
+    // An unregistered peer gets no broadcasts, so it can flood without reading.
+    let mut flooder = connect(&path);
+    let long = PathBuf::from("/x".repeat(500));
+    for _ in 0..(WRITER_QUEUE * 2) {
+        send(&mut flooder, &ToHub::Invalidate(long.clone())).unwrap();
+    }
+    let gone = next_matching(&handle, Duration::from_secs(5), |ev| matches!(ev, HubEvent::ListerGone(_)).then_some(()));
+    assert!(gone.is_some(), "the stalled Lister was not disconnected");
+}
+
+#[test]
+fn a_full_writer_queue_shuts_the_connection_down() {
+    let (hub_side, mut peer) = UnixStream::pair().unwrap();
+    let (tx, _rx) = sync_channel::<OutMsg>(1);
+    let conn = Conn { tx, shutdown: hub_side, registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() };
+    assert!(conn.queue(1, ToLister::Pong));
+    assert!(!conn.queue(1, ToLister::Pong), "the queue is full");
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    assert!(recv::<_, ToLister>(&mut peer).unwrap().is_none(), "the peer sees the end of the connection");
+}
+
+#[test]
+fn a_broadcast_is_encoded_once_and_written_as_a_normal_frame() {
+    let (hub_side, mut peer) = UnixStream::pair().unwrap();
+    let (tx, rx) = sync_channel::<OutMsg>(4);
+    let mut conns = HashMap::new();
+    conns.insert(1, Conn { tx, shutdown: hub_side.try_clone().unwrap(), registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() });
+    broadcast(&conns, &ToLister::InvalidatePath("/a".into()));
+    drop(conns);
+    assert!(matches!(rx.try_recv(), Ok(OutMsg::Encoded(_))));
+    let (tx, rx) = sync_channel::<OutMsg>(4);
+    tx.send(OutMsg::Encoded(serde_json::to_vec(&ToLister::InvalidatePath("/b".into())).unwrap().into())).unwrap();
+    drop(tx);
+    writer_loop(hub_side, rx);
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    assert!(matches!(recv::<_, ToLister>(&mut peer).unwrap(), Some(ToLister::InvalidatePath(p)) if p == std::path::Path::new("/b")));
+}

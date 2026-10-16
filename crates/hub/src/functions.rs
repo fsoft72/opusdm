@@ -118,7 +118,7 @@ pub enum FnEvent {
     Alert { step_idx: usize, message: String, reply: Sender<bool> },
     /// A `Run` step with a window: the program's output. The window outlives
     /// the function, so these events are routed by `(run_id, step_idx)`.
-    Window { step_idx: usize, title: String, msg: WindowMsg },
+    Window { step_idx: usize, msg: WindowMsg },
     /// A script asks the hub something only the hub knows (the open Listers,
     /// the saved Functions) or to act on a Lister; `reply` gets the answer. A
     /// dropped `reply` fails the script's call.
@@ -169,8 +169,8 @@ pub fn run_job_inline(
 /// What a `Run` output window is told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowMsg {
-    /// The program started: open the window.
-    Open,
+    /// The program started: open the window, titled `title`.
+    Open { title: String },
     /// One line of its output.
     Line(String),
     /// It ended with this exit code (`None` when killed by a signal).
@@ -773,19 +773,19 @@ fn run_run(
 
     let title = argv.join(" ");
     // Sent before the step ends, so the hub knows who owns the window.
-    let _ = events_tx.send((run_id, FnEvent::Window { step_idx, title: title.clone(), msg: WindowMsg::Open }));
+    let _ = events_tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Open { title } }));
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let stream = |reader: Box<dyn std::io::Read + Send>| {
-        let (tx, title) = (events_tx.clone(), title.clone());
+        let tx = events_tx.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(reader).lines().map_while(Result::ok) {
-                let _ = tx.send((run_id, FnEvent::Window { step_idx, title: title.clone(), msg: WindowMsg::Line(line) }));
+                let _ = tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Line(line) }));
             }
         })
     };
     let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
-    let window = WindowRun { run_id, step_idx, title, events_tx: events_tx.clone() };
+    let window = WindowRun { run_id, step_idx, events_tx: events_tx.clone() };
     if wait {
         let code = window.finish(child, readers, cancel).map_err(|e| format!("Run: '{}': {e}", argv[0]))?;
         let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: code }));
@@ -805,7 +805,6 @@ fn run_run(
 struct WindowRun {
     run_id: u64,
     step_idx: usize,
-    title: String,
     events_tx: Sender<(u64, FnEvent)>,
 }
 
@@ -823,7 +822,7 @@ impl WindowRun {
             }
         }
         let code = waited.as_ref().ok().and_then(ExitStatus::code);
-        let closed = FnEvent::Window { step_idx: self.step_idx, title: self.title, msg: WindowMsg::Closed(code) };
+        let closed = FnEvent::Window { step_idx: self.step_idx, msg: WindowMsg::Closed(code) };
         let _ = self.events_tx.send((self.run_id, closed));
         waited.map(|status| status.code())
     }

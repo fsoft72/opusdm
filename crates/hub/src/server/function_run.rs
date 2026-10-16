@@ -174,8 +174,8 @@ impl Hub {
             self.function_job(run_id, spec, done);
             return;
         }
-        if let crate::functions::FnEvent::Window { step_idx, msg, .. } = &ev {
-            self.run_window_event(run_id, *step_idx, msg.clone(), &ev);
+        if let crate::functions::FnEvent::Window { step_idx, msg } = ev {
+            self.run_window_event(run_id, step_idx, msg);
             return;
         }
         if let crate::functions::FnEvent::Confirm { message, reply, .. } = ev {
@@ -301,11 +301,11 @@ impl Hub {
     /// Route one output-window event. `Open` records which Lister owns the
     /// window (the one that started the run); later events go to it even
     /// after the run itself has finished. A run nobody watches has no window.
-    pub(super) fn run_window_event(&mut self, run_id: u64, step_idx: usize, msg: crate::functions::WindowMsg, ev: &crate::functions::FnEvent) {
+    pub(super) fn run_window_event(&mut self, run_id: u64, step_idx: usize, msg: crate::functions::WindowMsg) {
         use crate::functions::WindowMsg;
         let key = (run_id, step_idx);
         let id = run_id * 1000 + step_idx as u64;
-        if msg == WindowMsg::Open {
+        if matches!(msg, WindowMsg::Open { .. }) {
             // A run the hub started on its own (global hotkey, script event)
             // has no requester: its window goes to the SOURCE Lister, if any.
             let owner = self.runs.requester(run_id).flatten().or_else(|| {
@@ -319,18 +319,17 @@ impl Hub {
             }
         }
         let Some(&cid) = self.output_windows.get(&key) else { return };
-        let message = match (msg, ev) {
-            (WindowMsg::Open, crate::functions::FnEvent::Window { title, .. }) => ToLister::OutputOpen { id, title: title.clone() },
-            (WindowMsg::Line(line), _) => ToLister::OutputLine { id, line },
-            (WindowMsg::Closed(exit), _) => {
+        let message = match msg {
+            WindowMsg::Open { title } => ToLister::OutputOpen { id, title },
+            WindowMsg::Line(line) => ToLister::OutputLine { id, line },
+            WindowMsg::Closed(exit) => {
                 self.output_windows.remove(&key);
                 ToLister::OutputEnd { id, exit }
             }
-            _ => return,
         };
-        match self.conns.get_mut(&cid) {
+        match self.conns.get(&cid) {
             Some(c) => {
-                let _ = c.tx.send(message.into());
+                c.queue(cid, message);
             }
             None => {
                 self.output_windows.remove(&key);

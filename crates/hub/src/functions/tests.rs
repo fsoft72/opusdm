@@ -677,7 +677,7 @@ fn run_with_a_window_streams_output_and_reports_the_exit() {
     let td = tempfile::tempdir().unwrap();
     let events = run_events(&run_args("sh -c 'echo one; echo two >&2; exit 3'", &["window"]), &ctx(&[], td.path().to_str().unwrap()));
     let msgs: Vec<&WindowMsg> = events.iter().filter_map(|e| match e { FnEvent::Window { msg, .. } => Some(msg), _ => None }).collect();
-    assert_eq!(msgs.first(), Some(&&WindowMsg::Open));
+    assert!(matches!(msgs.first(), Some(WindowMsg::Open { title }) if title.contains("echo one")));
     assert!(msgs.contains(&&WindowMsg::Line("one".into())) && msgs.contains(&&WindowMsg::Line("two".into())));
     assert_eq!(msgs.last(), Some(&&WindowMsg::Closed(Some(3))));
     // Not waiting: the step itself succeeded.
