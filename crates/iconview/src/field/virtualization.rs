@@ -178,8 +178,9 @@ impl IconField {
             it.set_cursor(cur == Some(i));
             let (x, y, _, _) = rects.get(i).copied().unwrap_or((0.0, 0.0, 0.0, 0.0));
             self.inner.layout.fixed.put(it.widget(), x, y);
-            let this = self.clone();
+            let weak = self.downgrade();
             it.connect_edit_committed(move |new_name| {
+                let Some(this) = weak.upgrade() else { return };
                 for cb in this.inner.events.on_rename_requested.borrow().iter() {
                     cb(i, new_name.clone());
                 }

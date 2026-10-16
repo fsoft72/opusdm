@@ -23,8 +23,9 @@ pub(super) fn install_controllers(field: &IconField) {
 fn install_click_controller(field: &IconField) {
     let click = gtk::GestureClick::new();
     click.set_button(gtk::gdk::BUTTON_PRIMARY);
-    let this = field.clone();
+    let weak = field.downgrade();
     click.connect_pressed(move |g, n_press, x, y| {
+        let Some(this) = weak.upgrade() else { return };
         let hit = this.item_at(x, y);
         let state = g.current_event_state();
         let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
@@ -47,18 +48,20 @@ fn install_rubber_band_controller(field: &IconField) {
     let drag = gtk::GestureDrag::new();
     drag.set_button(gtk::gdk::BUTTON_PRIMARY);
     let start: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
-    let this = field.clone();
+    let weak = field.downgrade();
     let start_b = start.clone();
     drag.connect_drag_begin(move |_, x, y| {
+        let Some(this) = weak.upgrade() else { return };
         if this.item_at(x, y).is_some() {
             start_b.set(None);
             return;
         }
         start_b.set(Some((x, y)));
     });
-    let this = field.clone();
+    let weak = field.downgrade();
     let start_u = start.clone();
     drag.connect_drag_update(move |g, ox, oy| {
+        let Some(this) = weak.upgrade() else { return };
         let Some((sx, sy)) = start_u.get() else {
             return;
         };
@@ -76,8 +79,9 @@ fn install_rubber_band_controller(field: &IconField) {
 fn install_key_controller(field: &IconField) {
     field.inner.layout.fixed.set_focusable(true);
     let key = gtk::EventControllerKey::new();
-    let this = field.clone();
+    let weak = field.downgrade();
     key.connect_key_pressed(move |_, keyval, _, state| {
+        let Some(this) = weak.upgrade() else { return gtk::glib::Propagation::Proceed };
         use gtk::gdk::Key;
         let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
@@ -137,8 +141,9 @@ fn install_dnd_controllers(field: &IconField) {
     // Drag source: export the selection as a uri-list for other windows.
     let src = gtk::DragSource::new();
     src.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
-    let this = field.clone();
+    let weak = field.downgrade();
     src.connect_prepare(move |src, x, y| {
+        let this = weak.upgrade()?;
         crate::dbg_log!("icon field drag prepare at ({x}, {y})");
         // In Free mode a primary-button drag is an internal reposition, not
         // an inter-window file drag; leaving this on would let the DnD
@@ -179,8 +184,9 @@ fn install_dnd_controllers(field: &IconField) {
         gtk::gdk::FileList::static_type(),
         gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
     );
-    let this = field.clone();
+    let weak = field.downgrade();
     target.connect_drop(move |t, value, x, y| {
+        let Some(this) = weak.upgrade() else { return false };
         crate::dbg_log!("icon field drop fired at ({x}, {y}), value type={:?}", value.type_());
         let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
             crate::dbg_log!("icon field drop: value is not a FileList");
@@ -205,8 +211,9 @@ fn install_dnd_controllers(field: &IconField) {
 fn install_context_menu_controller(field: &IconField) {
     let rclick = gtk::GestureClick::new();
     rclick.set_button(gtk::gdk::BUTTON_SECONDARY);
-    let this = field.clone();
+    let weak = field.downgrade();
     rclick.connect_pressed(move |_, _, x, y| {
+        let Some(this) = weak.upgrade() else { return };
         let hit = this.item_at(x, y);
         if let Some(i) = hit {
             if !this.selected_indices().contains(&i) {
@@ -224,8 +231,9 @@ fn install_context_menu_controller(field: &IconField) {
 /// Ctrl+scroll zoom controller.
 fn install_zoom_controller(field: &IconField) {
     let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-    let this = field.clone();
+    let weak = field.downgrade();
     scroll.connect_scroll(move |c, _dx, dy| {
+        let Some(this) = weak.upgrade() else { return gtk::glib::Propagation::Proceed };
         if !c.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK) {
             return gtk::glib::Propagation::Proceed;
         }
@@ -242,8 +250,9 @@ fn install_zoom_controller(field: &IconField) {
 fn install_reposition_controller(field: &IconField) {
     let rdrag = gtk::GestureDrag::new();
     rdrag.set_button(gtk::gdk::BUTTON_PRIMARY);
-    let this = field.clone();
+    let weak = field.downgrade();
     rdrag.connect_drag_begin(move |g, x, y| {
+        let Some(this) = weak.upgrade() else { return };
         // Ctrl+drag is a file drag to other windows, never a reposition.
         if g.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK) {
             this.inner.layout.reposition_active.set(false);
@@ -251,12 +260,14 @@ fn install_reposition_controller(field: &IconField) {
         }
         this.begin_reposition(x, y);
     });
-    let this = field.clone();
+    let weak = field.downgrade();
     rdrag.connect_drag_update(move |_, ox, oy| {
+        let Some(this) = weak.upgrade() else { return };
         this.update_reposition(ox, oy);
     });
-    let this = field.clone();
+    let weak = field.downgrade();
     rdrag.connect_drag_end(move |_, ox, oy| {
+        let Some(this) = weak.upgrade() else { return };
         this.end_reposition(ox, oy);
     });
     field.inner.layout.fixed.add_controller(rdrag);

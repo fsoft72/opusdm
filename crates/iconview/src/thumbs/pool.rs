@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 
 /// Upper bound on worker threads, whatever the core count.
 const MAX_WORKERS: usize = 4;
@@ -36,10 +35,12 @@ pub struct ThumbResult {
     pub generation: u64,
 }
 
-/// The worker pool handle. Dropping it closes the queue; workers drain and exit.
+/// The worker pool handle. Dropping it closes the queue and marks every
+/// queued request stale; the workers finish the job in hand, skip the rest
+/// and exit on their own. The drop never waits for them, since it runs on
+/// the GTK thread and a job can take seconds (a video frame, a PDF page).
 pub struct ThumbPool {
     tx: Option<Sender<ThumbRequest>>,
-    handles: Vec<JoinHandle<()>>,
     generation: Arc<AtomicU64>,
 }
 
@@ -53,12 +54,11 @@ impl ThumbPool {
         let (out_tx, out_rx) = async_channel::unbounded::<ThumbResult>();
         let generation = Arc::new(AtomicU64::new(0));
 
-        let mut handles = Vec::with_capacity(workers);
         for i in 0..workers {
             let rx = Arc::clone(&rx);
             let out_tx = out_tx.clone();
             let generation = Arc::clone(&generation);
-            let handle = std::thread::Builder::new()
+            std::thread::Builder::new()
                 .name(format!("thumb-{i}"))
                 .spawn(move || loop {
                     let req = match rx.lock().map(|g| g.recv()) {
@@ -100,10 +100,9 @@ impl ThumbPool {
                     }
                 })
                 .expect("spawn thumb worker");
-            handles.push(handle);
         }
 
-        (ThumbPool { tx: Some(tx), handles, generation }, out_rx)
+        (ThumbPool { tx: Some(tx), generation }, out_rx)
     }
 
     /// Queue a request. Silently dropped after the pool is shut down.
@@ -131,10 +130,8 @@ impl ThumbPool {
 
 impl Drop for ThumbPool {
     fn drop(&mut self) {
+        self.bump_generation();
         self.tx.take();
-        for h in self.handles.drain(..) {
-            let _ = h.join();
-        }
     }
 }
 

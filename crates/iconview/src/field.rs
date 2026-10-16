@@ -23,7 +23,7 @@ use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 /// A list of listener closures with signature `F`.
 type Listeners<F> = RefCell<Vec<Box<F>>>;
@@ -107,7 +107,24 @@ pub struct IconField {
     pub(super) inner: Rc<Inner>,
 }
 
+/// A weak handle to an `IconField`, held by the closures on widgets the
+/// field owns so they do not keep it (and its thumbnail workers) alive.
+#[derive(Clone)]
+pub(super) struct WeakIconField(Weak<Inner>);
+
+impl WeakIconField {
+    /// The field, while some strong handle still holds it.
+    pub(super) fn upgrade(&self) -> Option<IconField> {
+        self.0.upgrade().map(|inner| IconField { inner })
+    }
+}
+
 impl IconField {
+    /// A weak handle to this field, for signal handlers.
+    pub(super) fn downgrade(&self) -> WeakIconField {
+        WeakIconField(Rc::downgrade(&self.inner))
+    }
+
     /// A new field in grid mode, 64px icons.
     pub fn new() -> IconField {
         let fixed = gtk::Fixed::new();
@@ -163,25 +180,34 @@ impl IconField {
         let field = IconField { inner };
         crate::style::install();
 
-        // Drain finished thumbnails on the main loop.
+        // Drain finished thumbnails on the main loop. The loop ends when the
+        // field is gone: dropping it drops the pool, whose workers then close
+        // the channel.
         if let Some(rx) = thumb_rx {
-            let this = field.clone();
+            let weak = field.downgrade();
             gtk::glib::spawn_future_local(async move {
                 while let Ok(res) = rx.recv().await {
+                    let Some(this) = weak.upgrade() else { break };
                     this.apply_thumb_result(res);
                 }
             });
         }
 
         // Re-flow when the visible width changes or the field is first shown.
-        let this = field.clone();
-        field.inner.layout.scroller.hadjustment().connect_page_size_notify(move |_| this.relayout());
-        let this = field.clone();
-        field.inner.layout.fixed.connect_map(move |_| this.relayout());
+        let weak = field.downgrade();
+        field.inner.layout.scroller.hadjustment().connect_page_size_notify(move |_| {
+            if let Some(this) = weak.upgrade() { this.relayout(); }
+        });
+        let weak = field.downgrade();
+        field.inner.layout.fixed.connect_map(move |_| {
+            if let Some(this) = weak.upgrade() { this.relayout(); }
+        });
         // Scrolling doesn't move anything, just changes which items need a
         // live widget once virtualized - a cheap resync, not a full relayout.
-        let this = field.clone();
-        field.inner.layout.scroller.vadjustment().connect_value_changed(move |_| this.sync_realized());
+        let weak = field.downgrade();
+        field.inner.layout.scroller.vadjustment().connect_value_changed(move |_| {
+            if let Some(this) = weak.upgrade() { this.sync_realized(); }
+        });
 
         // Install interaction controllers (click, drag, key, dnd, context menu, scroll, reposition).
         controllers::install_controllers(&field);
@@ -873,6 +899,7 @@ mod tests {
             ("field_reload_cancels_drag", field_reload_cancels_drag),
             ("field_group_entry", field_group_entry),
             ("field_virtualization", field_virtualization),
+            ("field_closures_hold_no_strong_refs", field_closures_hold_no_strong_refs),
         ];
         let failed: Vec<&str> =
             scenarios.iter().filter(|(_, run)| std::panic::catch_unwind(*run).is_err()).map(|(name, _)| *name).collect();
@@ -1309,6 +1336,22 @@ mod tests {
         fg.update_reposition(40.0, 20.0);
         fg.end_reposition(40.0, 20.0);
         assert_eq!(*group_log.borrow(), vec![(PathBuf::from("group:tools"), (340.0, 220.0))]);
+    }
+
+    /// The signal handlers and the thumbnail drain loop hold the field and
+    /// its items weakly, so dropping the last handle frees them.
+    fn field_closures_hold_no_strong_refs() {
+        let item = IconItem::new(&entries(1)[0], 64, &no_icons());
+        assert_eq!(item.strong_count(), 1, "an item's own handlers must not keep it alive");
+        let f = IconField::new();
+        f.set_entries(&entries(3));
+        f.inner.layout.scroller.set_size_request(400, 400);
+        f.relayout();
+        assert!(!f.inner.layout.realized.borrow().is_empty());
+        assert_eq!(Rc::strong_count(&f.inner), 1, "the field's handlers must not keep it alive");
+        let weak = Rc::downgrade(&f.inner);
+        drop(f);
+        assert!(weak.upgrade().is_none());
     }
 
     /// Only the visible items of a big field have widgets.
