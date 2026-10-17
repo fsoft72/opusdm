@@ -59,6 +59,8 @@ struct Popup {
     timer: Rc<RefCell<Option<glib::SourceId>>>,
     /// Popup time; `None` for ever.
     expire: Rc<Cell<Option<u32>>>,
+    /// Whether the pointer is over the popup right now.
+    hovered: Rc<Cell<bool>>,
 }
 
 impl Popup {
@@ -104,14 +106,16 @@ impl Popups {
     pub fn show(&self, n: Notification, expire: Option<u32>) {
         let up = self.shown.borrow().iter().position(|p| p.id == n.id);
         if let Some(i) = up {
-            let (window, expire_cell, timer) = {
+            let (window, expire_cell, timer, hovered) = {
                 let shown = self.shown.borrow();
-                (shown[i].window.clone(), shown[i].expire.clone(), shown[i].timer.clone())
+                (shown[i].window.clone(), shown[i].expire.clone(), shown[i].timer.clone(), shown[i].hovered.get())
             };
             expire_cell.set(expire);
             window.set_child(Some(&self.content(&n)));
             set_critical_class(&window, n.urgency);
-            self.start_timer(n.id, &timer, expire);
+            // While hovered the timer stays stopped; leaving starts it with
+            // the new time.
+            self.start_timer(n.id, &timer, timer_time(hovered, expire));
             self.relayout();
             return;
         }
@@ -167,7 +171,13 @@ impl Popups {
             window.connect_realize(set_x11_type);
             window.connect_map(add_x11_states);
         }
-        let popup = Popup { id: n.id, window: window.clone(), timer: Rc::new(RefCell::new(None)), expire: Rc::new(Cell::new(expire)) };
+        let popup = Popup {
+            id: n.id,
+            window: window.clone(),
+            timer: Rc::new(RefCell::new(None)),
+            expire: Rc::new(Cell::new(expire)),
+            hovered: Rc::new(Cell::new(false)),
+        };
         self.watch_hover(&popup);
         self.start_timer(n.id, &popup.timer, expire);
         self.shown.borrow_mut().insert(0, popup);
@@ -263,10 +273,15 @@ impl Popups {
     /// Pause the timer while the pointer is over the popup.
     fn watch_hover(&self, popup: &Popup) {
         let motion = gtk::EventControllerMotion::new();
-        let timer = popup.timer.clone();
-        motion.connect_enter(move |_, _, _| stop(&timer));
+        let (timer, hovered) = (popup.timer.clone(), popup.hovered.clone());
+        motion.connect_enter(move |_, _, _| {
+            hovered.set(true);
+            stop(&timer);
+        });
         let (me, timer, expire, id) = (self.me.borrow().clone(), popup.timer.clone(), popup.expire.clone(), popup.id);
+        let hovered = popup.hovered.clone();
         motion.connect_leave(move |_| {
+            hovered.set(false);
             if let Some(me) = me.upgrade() { me.start_timer(id, &timer, expire.get()); }
         });
         popup.window.add_controller(motion);
@@ -325,6 +340,13 @@ impl Popups {
         self.area.set(Some(area));
         area
     }
+}
+
+/// How long a popup's timer should run from now: never while the pointer is
+/// over it (`hovered`), else its `expire` time.
+fn timer_time(hovered: bool, expire: Option<u32>) -> Option<u32> {
+    if hovered { return None; }
+    expire
 }
 
 /// Cancel the timer in `timer`, if any.
@@ -515,4 +537,21 @@ fn read_x11_area() -> Result<Rect, Box<dyn std::error::Error>> {
 /// The first monitor GDK knows, else a stand-in.
 fn first_monitor() -> Rect {
     gdk::Display::default().as_ref().map(opusdm_ui::list_monitors).and_then(|m| m.first().copied()).unwrap_or(FALLBACK_AREA)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hovered_popup_keeps_its_timer_stopped() {
+        assert_eq!(timer_time(true, Some(5000)), None);
+        assert_eq!(timer_time(true, None), None);
+    }
+
+    #[test]
+    fn a_popup_not_hovered_runs_for_its_expire_time() {
+        assert_eq!(timer_time(false, Some(5000)), Some(5000));
+        assert_eq!(timer_time(false, None), None);
+    }
 }
