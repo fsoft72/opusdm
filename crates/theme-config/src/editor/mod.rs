@@ -460,7 +460,10 @@ impl Editor {
             self.busy(),
             move || write_theme(&target, &draft, Some(&target), &ops).map(|_| ()).map_err(|e| e.to_string()),
             move |result| {
-                let Some(editor) = weak.upgrade() else { return };
+                let Some(editor) = weak.upgrade() else {
+                    opusdm_ipc::err_log!("opusdm-theme-config", "the editor was closed before the save finished: the theme '{slug}' is written but not applied");
+                    return;
+                };
                 match result.and_then(|r| r) {
                     Ok(()) => editor.saved(slug, apply),
                     Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
@@ -523,7 +526,10 @@ impl Editor {
                     editor.busy(),
                     move || write_theme(&target, &copy, Some(&source), &ops).map(|_| ()).map_err(|e| e.to_string()),
                     move |result| {
-                        let Some(editor) = weak.upgrade() else { return };
+                        let Some(editor) = weak.upgrade() else {
+                            opusdm_ipc::err_log!("opusdm-theme-config", "the editor was closed before the copy finished: the theme '{slug}' is written but not opened");
+                            return;
+                        };
                         match result.and_then(|r| r) {
                             Ok(()) => editor.opened(slug, "Saved as a copy."),
                             Err(e) => editor.status.set_text(&format!("Save failed: {e}")),
@@ -562,7 +568,10 @@ impl Editor {
                 editor.busy(),
                 move || draft::duplicate_theme(&source, &label).map_err(|e| e.to_string()),
                 move |result| {
-                    let Some(editor) = weak.upgrade() else { return };
+                    let Some(editor) = weak.upgrade() else {
+                        opusdm_ipc::err_log!("opusdm-theme-config", "the editor was closed before the duplicate finished");
+                        return;
+                    };
                     match result.and_then(|r| r) {
                         Ok(slug) => editor.opened(slug, "Duplicated."),
                         Err(e) => editor.status.set_text(&format!("Cannot duplicate: {e}")),

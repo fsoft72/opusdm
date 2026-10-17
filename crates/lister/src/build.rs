@@ -67,7 +67,10 @@ pub fn run(connected: Connected, start: PathBuf, select: Vec<String>) -> glib::E
         let weak = Rc::downgrade(&ui);
         glib::spawn_future_local(async move {
             while let Ok(inb) = inbox.recv().await {
-                let Some(ui) = weak.upgrade() else { break };
+                let Some(ui) = weak.upgrade() else {
+                    opusdm_ipc::err_log!("opusdm-lister", "the window is gone: the hub inbox loop stops");
+                    break;
+                };
                 match inb {
                     Inbound::Msg(m) => ui.apply_inbound(m),
                     Inbound::HubGone => {
@@ -964,7 +967,10 @@ fn build_window(
         let weak = Rc::downgrade(&ui);
         glib::spawn_future_local(async move {
             while let Ok(dir) = watch_rx.recv().await {
-                let Some(ui) = weak.upgrade() else { break };
+                let Some(ui) = weak.upgrade() else {
+                    opusdm_ipc::err_log!("opusdm-lister", "the window is gone: the folder watch loop stops");
+                    break;
+                };
                 ui.on_directory_changed(&dir);
             }
         });

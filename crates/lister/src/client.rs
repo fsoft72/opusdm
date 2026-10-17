@@ -170,7 +170,12 @@ pub fn start_reader(mut stream: UnixStream) -> async_channel::Receiver<Inbound> 
                         return;
                     }
                 }
-                Ok(None) | Err(_) => {
+                Ok(None) => {
+                    let _ = tx.send_blocking(Inbound::HubGone);
+                    return;
+                }
+                Err(e) => {
+                    opusdm_ipc::err_log!("opusdm-lister", "cannot read from the hub, closing the window: {e}");
                     let _ = tx.send_blocking(Inbound::HubGone);
                     return;
                 }
