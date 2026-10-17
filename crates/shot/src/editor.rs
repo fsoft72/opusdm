@@ -14,7 +14,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use image::RgbaImage;
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// A drag shorter than this many pixels does not create a line or arrow.
@@ -663,7 +663,7 @@ fn copy_to_clipboard(ui: &Ui) {
 }
 
 /// Save a PNG in `~/Pictures/Screenshots` and close.
-fn quick_save(ui: &Ui) {
+fn quick_save(ui: &Rc<Ui>) {
     let Some(img) = final_image(ui) else { return };
     let Some(home) = dirs::home_dir() else {
         show_error(ui, "cannot find the home directory for the quick save");
@@ -677,13 +677,8 @@ fn quick_save(ui: &Ui) {
         }
     };
     let stem = export::quick_stem(now.year(), now.month() as u32, now.day_of_month() as u32, now.hour() as u32, now.minute() as u32, now.second() as u32);
-    match export::quick_save(&img, &home.join(export::QUICK_SAVE_DIR), &stem) {
-        Ok(path) => {
-            opusdm_ipc::err_log!("opusdm-shot", "saved {}", path.display());
-            ui.window.close();
-        }
-        Err(e) => show_error(ui, &e),
-    }
+    let dir = home.join(export::QUICK_SAVE_DIR);
+    save_in_background(ui, move || export::quick_save(&img, &dir, &stem));
 }
 
 /// Ask for a file name and save in the chosen format, then close.
@@ -717,14 +712,47 @@ fn save_as(ui: &Rc<Ui>) {
         let Some(path) = file.path() else {
             return show_error(&ui2, "the chosen location is not a local file");
         };
-        let (path, chosen) = resolve_target(path, format);
+        let (target, chosen) = resolve_target(path.clone(), format);
         let options = options_for(&ui2, chosen);
-        match export::save(&img, &path, &options) {
-            Ok(()) => {
+        if !needs_overwrite_confirm(&path, &target) {
+            return save_in_background(&ui2, move || export::save(&img, &target, &options).map(|()| target));
+        }
+        // The dialog asked about `path`, not about the name with the
+        // extension added, so ask before replacing that one.
+        let message = format!("{} already exists. Replace it?", target.display());
+        let ui3 = ui2.clone();
+        opusdm_ui::requester(&ui2.window, "Replace file?", &message, None, &[("Replace", true), ("Cancel", false)], move |replace| {
+            if !replace { return; }
+            let (img, target) = (img.clone(), target.clone());
+            save_in_background(&ui3, move || export::save(&img, &target, &options).map(|()| target));
+        });
+    });
+}
+
+/// Run `work` (encode and write, giving the path written) off the GTK thread,
+/// then close the window, or show the error and keep the image open. The
+/// window is insensitive meanwhile, and the application is held so closing
+/// it cannot end the process halfway through the write.
+fn save_in_background(ui: &Rc<Ui>, work: impl FnOnce() -> Result<PathBuf, String> + Send + 'static) {
+    ui.window.set_sensitive(false);
+    show_info(ui, "Saving...");
+    let hold = ui.window.application().map(|app| app.hold());
+    let handle = gio::spawn_blocking(work);
+    let ui = Rc::downgrade(ui);
+    glib::spawn_future_local(async move {
+        let result = handle.await.unwrap_or_else(|_| Err("the save task failed".to_string()));
+        drop(hold);
+        let Some(ui) = ui.upgrade() else {
+            if let Err(e) = &result { opusdm_ipc::err_log!("opusdm-shot", "{e}"); }
+            return;
+        };
+        ui.window.set_sensitive(true);
+        match result {
+            Ok(path) => {
                 opusdm_ipc::err_log!("opusdm-shot", "saved {}", path.display());
-                ui2.window.close();
+                ui.window.close();
             }
-            Err(e) => show_error(&ui2, &e),
+            Err(e) => show_error(&ui, &e),
         }
     });
 }
@@ -736,6 +764,13 @@ fn resolve_target(path: PathBuf, fallback: Format) -> (PathBuf, Format) {
     let mut name = path.into_os_string();
     name.push(format!(".{}", fallback.extension()));
     (PathBuf::from(name), fallback)
+}
+
+/// Whether writing `target` would replace an entry the save dialog never
+/// asked about: the dialog confirmed `chosen`, and `target` is another name
+/// (the extension was added) that already exists.
+fn needs_overwrite_confirm(chosen: &Path, target: &Path) -> bool {
+    target != chosen && std::fs::symlink_metadata(target).is_ok()
 }
 
 #[cfg(test)]
@@ -754,6 +789,25 @@ mod tests {
         assert_eq!((p, f), (PathBuf::from("/tmp/a.webp"), Format::WebP));
         let (p, f) = resolve_target(PathBuf::from("/tmp/a.txt"), Format::Png);
         assert_eq!((p, f), (PathBuf::from("/tmp/a.txt.png"), Format::Png));
+    }
+
+    #[test]
+    fn an_existing_file_behind_the_added_extension_needs_a_confirm() {
+        let dir = tempfile::tempdir().unwrap();
+        let chosen = dir.path().join("a");
+        let (target, _) = resolve_target(chosen.clone(), Format::WebP);
+        assert!(!needs_overwrite_confirm(&chosen, &target), "nothing to replace yet");
+        std::fs::write(&target, b"old").unwrap();
+        assert!(needs_overwrite_confirm(&chosen, &target));
+    }
+
+    #[test]
+    fn the_name_the_dialog_confirmed_needs_no_second_confirm() {
+        let dir = tempfile::tempdir().unwrap();
+        let chosen = dir.path().join("a.png");
+        std::fs::write(&chosen, b"old").unwrap();
+        let (target, _) = resolve_target(chosen.clone(), Format::WebP);
+        assert!(!needs_overwrite_confirm(&chosen, &target));
     }
 
     #[test]
