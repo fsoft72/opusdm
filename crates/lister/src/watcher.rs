@@ -40,17 +40,24 @@ impl Inotify {
         Ok(Self { fd: InotifyFd::new(libc::IN_CLOEXEC)?, current: Mutex::new(None) })
     }
 
-    /// Replace the installed watch with one on `dir`. Passing a path that
-    /// cannot be watched (a deleted directory, a virtual archive path) just
-    /// clears the watch.
-    fn rewatch(&self, dir: Option<&Path>) {
+    /// Replace the installed watch with one on `dir`. A path that cannot be
+    /// watched (a deleted directory, the kernel watch limit) leaves no watch
+    /// and returns the error.
+    fn rewatch(&self, dir: &Path) -> io::Result<()> {
         let mut guard = self.current.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((wd, _)) = guard.take() {
             self.fd.rm_watch(wd);
         }
-        let Some(dir) = dir else { return };
-        if let Ok(wd) = self.fd.add_watch(dir, WATCH_MASK) {
-            *guard = Some((wd, dir.to_path_buf()));
+        let wd = self.fd.add_watch(dir, WATCH_MASK)?;
+        *guard = Some((wd, dir.to_path_buf()));
+        Ok(())
+    }
+
+    /// Remove the installed watch, if any.
+    fn clear(&self) {
+        let mut guard = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((wd, _)) = guard.take() {
+            self.fd.rm_watch(wd);
         }
     }
 
@@ -90,14 +97,15 @@ impl DirWatcher {
         Ok((DirWatcher { inotify, tx }, rx))
     }
 
-    /// Watch `dir` instead of whatever was being watched before.
-    pub fn watch(&self, dir: &Path) {
-        self.inotify.rewatch(Some(dir));
+    /// Watch `dir` instead of whatever was being watched before. On error
+    /// nothing is watched (see [`is_watch_limit`] for the common cause).
+    pub fn watch(&self, dir: &Path) -> io::Result<()> {
+        self.inotify.rewatch(dir)
     }
 
     /// Stop reporting changes until the next [`watch`](Self::watch).
     pub fn unwatch(&self) {
-        self.inotify.rewatch(None);
+        self.inotify.clear();
     }
 
     /// Stop for good: drop the watch and close the notice channel, which
@@ -106,6 +114,12 @@ impl DirWatcher {
         self.unwatch();
         self.tx.close();
     }
+}
+
+/// Whether a [`DirWatcher::watch`] error means the user's inotify watch limit
+/// (`fs.inotify.max_user_watches`) is used up.
+pub fn is_watch_limit(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(libc::ENOSPC)
 }
 
 /// The watcher thread: wait, drain, coalesce, notify, repeat.
@@ -162,7 +176,7 @@ mod tests {
     fn reports_a_file_created_in_the_watched_directory() {
         let td = tempfile::tempdir().unwrap();
         let (watcher, rx) = DirWatcher::start(Duration::from_millis(50)).unwrap();
-        watcher.watch(td.path());
+        watcher.watch(td.path()).unwrap();
 
         std::fs::write(td.path().join("new.txt"), b"hi").unwrap();
 
@@ -174,7 +188,7 @@ mod tests {
     fn a_burst_of_writes_collapses_into_few_notices() {
         let td = tempfile::tempdir().unwrap();
         let (watcher, rx) = DirWatcher::start(Duration::from_millis(80)).unwrap();
-        watcher.watch(td.path());
+        watcher.watch(td.path()).unwrap();
 
         for i in 0..200 {
             std::fs::write(td.path().join(format!("f{i:03}")), b"x").unwrap();
@@ -195,7 +209,7 @@ mod tests {
         let watched = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         let (watcher, rx) = DirWatcher::start(Duration::from_millis(50)).unwrap();
-        watcher.watch(watched.path());
+        watcher.watch(watched.path()).unwrap();
 
         std::fs::write(other.path().join("elsewhere.txt"), b"hi").unwrap();
         assert!(wait_for(&rx, 1).is_none());
@@ -209,7 +223,7 @@ mod tests {
     fn unwatch_stops_the_notices() {
         let td = tempfile::tempdir().unwrap();
         let (watcher, rx) = DirWatcher::start(Duration::from_millis(50)).unwrap();
-        watcher.watch(td.path());
+        watcher.watch(td.path()).unwrap();
         std::fs::write(td.path().join("a"), b"1").unwrap();
         assert!(wait_for(&rx, 5).is_some());
 
@@ -225,10 +239,24 @@ mod tests {
     fn stop_closes_the_channel_so_the_receiver_loop_ends() {
         let td = tempfile::tempdir().unwrap();
         let (watcher, rx) = DirWatcher::start(Duration::from_millis(50)).unwrap();
-        watcher.watch(td.path());
+        watcher.watch(td.path()).unwrap();
         watcher.stop();
         std::fs::write(td.path().join("late"), b"1").unwrap();
         assert!(rx.recv_blocking().is_err(), "a stopped watcher sends nothing and closes the channel");
+    }
+
+    #[test]
+    fn a_failed_watch_is_reported_and_clears_the_old_one() {
+        let td = tempfile::tempdir().unwrap();
+        let (watcher, rx) = DirWatcher::start(Duration::from_millis(50)).unwrap();
+        watcher.watch(td.path()).unwrap();
+        let err = watcher.watch(&td.path().join("missing")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(!is_watch_limit(&err));
+        assert!(is_watch_limit(&io::Error::from_raw_os_error(libc::ENOSPC)));
+
+        std::fs::write(td.path().join("old"), b"1").unwrap();
+        assert!(wait_for(&rx, 1).is_none(), "the previous watch is gone");
     }
 
     #[test]
@@ -236,8 +264,8 @@ mod tests {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         let (watcher, rx) = DirWatcher::start(Duration::from_millis(50)).unwrap();
-        watcher.watch(a.path());
-        watcher.watch(b.path());
+        watcher.watch(a.path()).unwrap();
+        watcher.watch(b.path()).unwrap();
 
         std::fs::write(a.path().join("stale"), b"1").unwrap();
         assert!(wait_for(&rx, 1).is_none(), "the old directory must be dropped");

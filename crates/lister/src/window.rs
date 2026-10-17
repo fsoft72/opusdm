@@ -844,10 +844,14 @@ impl Ui {
     pub(crate) fn sync_watch(&self, dir: &Path) {
         let Some(watcher) = &self.hub.watcher else { return };
         let enabled = self.hub.settings.borrow().behavior.auto_refresh;
-        if enabled && crate::archive::parse_archive_path(dir).is_none() && crate::remote::url_of(dir).is_none() {
-            watcher.watch(dir);
-        } else {
+        if !enabled || crate::archive::parse_archive_path(dir).is_some() || crate::remote::url_of(dir).is_some() {
             watcher.unwatch();
+            return;
+        }
+        let Err(e) = watcher.watch(dir) else { return };
+        opusdm_ipc::err_log!("opusdm-lister", "auto-refresh off for {}: {e}", dir.display());
+        if crate::watcher::is_watch_limit(&e) {
+            self.flash("auto-refresh off: inotify watch limit reached (fs.inotify.max_user_watches)");
         }
     }
 
