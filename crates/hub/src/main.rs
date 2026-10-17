@@ -99,7 +99,9 @@ fn main() {
 
     opusdm_hub::channels::send_or_log(&handle.cmd_tx, server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup), "hub command");
 
-    children::install_sigchld(handle.cmd_tx.clone());
+    if let Err(e) = children::install_sigchld(handle.cmd_tx.clone()) {
+        opusdm_ipc::err_log!("opusdm-hub", "cannot watch for exited children (SIGCHLD), they are not reaped: {e}");
+    }
 
     // Open the first Lister at $HOME, unless Settings turned it off.
     if desktop_settings.open_lister_at_start {

@@ -72,17 +72,16 @@ pub fn spawn_lister_from_dir(
     Ok(cmd.spawn()?.id())
 }
 
-/// Reap exited children and notify the owner loop by pid.
-pub fn install_sigchld(cmd_tx: Sender<HubCmd>) {
+/// Reap exited children and notify the owner loop by pid. Fails when the
+/// SIGCHLD handler or its thread cannot be set up: exited children then stay
+/// zombies and closed Listers are only noticed by their socket.
+pub fn install_sigchld(cmd_tx: Sender<HubCmd>) -> io::Result<()> {
     use signal_hook::consts::SIGCHLD;
     use signal_hook::iterator::Signals;
+    let mut signals = Signals::new([SIGCHLD])?;
     std::thread::Builder::new()
         .name("opusdm-sigchld".into())
         .spawn(move || {
-            let mut signals = match Signals::new([SIGCHLD]) {
-                Ok(s) => s,
-                Err(_) => return,
-            };
             for _ in &mut signals {
                 loop {
                     let mut status: libc::c_int = 0;
@@ -97,8 +96,8 @@ pub fn install_sigchld(cmd_tx: Sender<HubCmd>) {
                     }
                 }
             }
-        })
-        .expect("spawn sigchld thread");
+        })?;
+    Ok(())
 }
 
 /// `path` (a `PATH` value) with `dir` in front, unchanged when `dir` is
