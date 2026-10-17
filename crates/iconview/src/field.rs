@@ -388,7 +388,7 @@ impl IconField {
             let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
                 continue;
             };
-            if !tracker.begin(&entry.path) {
+            if !tracker.begin(&entry.path, entry.modified) {
                 continue;
             }
             pool.submit(crate::thumbs::ThumbRequest {
@@ -396,6 +396,7 @@ impl IconField {
                 path: entry.path.clone(),
                 kind,
                 size,
+                modified: entry.modified,
                 generation,
             });
         }
@@ -423,7 +424,8 @@ impl IconField {
 
     /// Turn a finished thumbnail into a texture and show it, unless the entry
     /// list moved on (generation bumped) or the path is no longer listed. A
-    /// failure is remembered so the path is not asked for again.
+    /// failure is remembered so the path is not asked for again. A result for
+    /// an older modification time of the file is dropped.
     fn apply_thumb_result(&self, res: crate::thumbs::ThumbResult) {
         let Some(pool) = self.inner.thumb_pool.as_ref() else { return };
         if res.generation != pool.generation() { return; }
@@ -435,7 +437,10 @@ impl IconField {
                 })
                 .ok()
         });
-        self.inner.layout.thumb_tracker.borrow_mut().finish(&res.path, texture.is_some());
+        // The file was edited and asked for again while this was made.
+        if !self.inner.layout.thumb_tracker.borrow_mut().finish(&res.path, res.modified, texture.is_some()) {
+            return;
+        }
         let Some(texture) = texture else { return };
         // A refresh may have moved the entry since the request was made.
         let index = {
@@ -446,6 +451,11 @@ impl IconField {
             }
         };
         let Some(index) = index else { return };
+        // The listing moved on to another version of the file: this
+        // thumbnail shows the old content.
+        if self.inner.layout.entries.borrow().get(index).is_some_and(|e| e.modified != res.modified) {
+            return;
+        }
         if let Some(item) = self.inner.layout.realized.borrow().get(&index) {
             item.set_thumbnail(&texture);
         }

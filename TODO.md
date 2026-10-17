@@ -36,7 +36,7 @@
   leaving and re-entering the folder. The Lister uses only `refresh_entries`, so F5 does not clear the failed set.
   A missing or busy `ffmpeg` / `pdftoppm` leaves the generic icon until then. Fix idea: F5 clears the failed set.
 
-- [ ] An edited file can show its old thumbnail
+- [x] (done, checked in Xephyr; see CHANGES.md 2026-10-17) An edited file can show its old thumbnail
 
   If a file is edited while its thumbnail request is pending, `begin()` refuses a new request and the old result is
   applied by path. The stale thumbnail stays until the next mtime change. Narrow race, low priority.

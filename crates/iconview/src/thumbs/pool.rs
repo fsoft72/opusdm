@@ -19,6 +19,9 @@ pub struct ThumbRequest {
     pub path: PathBuf,
     pub kind: ThumbKind,
     pub size: ThumbSize,
+    /// Modification time of the entry the request was made for, handed back
+    /// in the result so a thumbnail of an older version is not shown.
+    pub modified: i64,
     /// Generation the request was submitted under. Checked against the
     /// pool's current generation before any decoding starts, so a request
     /// made stale by a directory change is skipped instead of paying for a
@@ -33,6 +36,8 @@ pub struct ThumbResult {
     pub index: usize,
     pub path: PathBuf,
     pub size: ThumbSize,
+    /// The `modified` of the request.
+    pub modified: i64,
     pub png: Option<Vec<u8>>,
     pub generation: u64,
 }
@@ -73,13 +78,17 @@ impl ThumbPool {
                         // on since this was queued. Skip the decode entirely.
                         continue;
                     }
-                    let ThumbRequest { index, path, kind, size, generation: _ } = req;
-                    let png = match cache::load_valid(&path, size) {
+                    let ThumbRequest { index, path, kind, size, modified, generation: _ } = req;
+                    let cached = cache::load_valid(&path, size);
+                    // Read before the decode: an edit during it must not
+                    // cache the old picture under the new time.
+                    let made_at = cache::source_mtime(&path).unwrap_or(0);
+                    let png = match cached {
                         Some(bytes) => Some(bytes),
                         None => match generate::generate(&path, kind, size.px()) {
                             Ok(bytes) => {
                                 // The thumbnail is still shown; only the disk cache misses out.
-                                if let Err(e) = cache::store(&path, size, &bytes) {
+                                if let Err(e) = cache::store_made_at(&path, size, &bytes, made_at) {
                                     opusdm_ipc::err_log!(
                                         "iconview",
                                         "cannot cache the thumbnail of {}: {e}",
@@ -98,7 +107,7 @@ impl ThumbPool {
                             }
                         },
                     };
-                    let res = ThumbResult { index, path, size, png, generation: gen_at_start };
+                    let res = ThumbResult { index, path, size, modified, png, generation: gen_at_start };
                     // The receiver is gone only when the field was dropped.
                     if out_tx.send_blocking(res).is_err() {
                         break;
@@ -160,10 +169,12 @@ mod tests {
             path: src.clone(),
             kind: ThumbKind::Image,
             size: ThumbSize::Normal,
+            modified: 42,
             generation: pool.generation(),
         });
         let res = rx.recv_blocking().expect("a result");
         assert_eq!(res.index, 3);
+        assert_eq!(res.modified, 42, "the result names the version it was made for");
         assert_eq!(res.path, src);
         assert!(res.png.expect("a png").windows(4).any(|w| w == b"IDAT"));
 
@@ -184,6 +195,7 @@ mod tests {
             path: src.clone(),
             kind: ThumbKind::Image,
             size: ThumbSize::Normal,
+            modified: 42,
             generation: pool.generation(),
         });
         let res = rx.recv_blocking().expect("a failure result, not silence");

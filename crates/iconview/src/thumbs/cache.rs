@@ -24,7 +24,8 @@ pub fn cache_path(path: &Path, size: ThumbSize) -> Option<PathBuf> {
     Some(cache_root()?.join("thumbnails").join(size.dir_name()).join(format!("{hex}.png")))
 }
 
-fn source_mtime(path: &Path) -> Option<i64> {
+/// The modification time of `path` in whole seconds, as `Thumb::MTime` holds it.
+pub(crate) fn source_mtime(path: &Path) -> Option<i64> {
     let m = std::fs::metadata(path).ok()?;
     let t = m.modified().ok()?;
     Some(t.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64)
@@ -47,6 +48,13 @@ pub fn load_valid(path: &Path, size: ThumbSize) -> Option<Vec<u8>> {
 /// and `Thumb::URI`. Atomic: a uniquely named temp file in the same folder is
 /// renamed into place, so workers storing the same entry never share one.
 pub fn store(path: &Path, size: ThumbSize, png: &[u8]) -> io::Result<()> {
+    store_made_at(path, size, png, source_mtime(path).unwrap_or(0))
+}
+
+/// [`store`] with `Thumb::MTime` set to `mtime`: the modification time read
+/// before the thumbnail was made. A file edited while it was being decoded
+/// then gets a stale tag, not the old picture under its new time.
+pub fn store_made_at(path: &Path, size: ThumbSize, png: &[u8], mtime: i64) -> io::Result<()> {
     let cp = cache_path(path, size)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no cache directory"))?;
     let dir = cp.parent().expect("cache_path always has a parent");
@@ -56,7 +64,7 @@ pub fn store(path: &Path, size: ThumbSize, png: &[u8]) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
-    let mtime = source_mtime(path).unwrap_or(0).to_string();
+    let mtime = mtime.to_string();
     let uri = file_uri(path);
     let stamped = png_text::insert_text(png, &[("Thumb::MTime", &mtime), ("Thumb::URI", &uri)])
         .unwrap_or_else(|| png.to_vec());
@@ -103,6 +111,23 @@ mod tests {
         // Move the source's mtime forward: the cached tag no longer matches.
         filetime::set_file_mtime(&src, filetime::FileTime::from_unix_time(1_700_000_999, 0)).unwrap();
         assert!(load_valid(&src, ThumbSize::Normal).is_none());
+
+        std::env::remove_var("XDG_CACHE_HOME");
+    }
+
+    #[test]
+    fn a_thumbnail_made_before_an_edit_is_not_valid_after_it() {
+        let _env_guard = crate::test_env_lock();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CACHE_HOME", td.path().join("cache"));
+        let src = td.path().join("pic.png");
+        std::fs::write(&src, b"old content").unwrap();
+        filetime::set_file_mtime(&src, filetime::FileTime::from_unix_time(1_700_000_000, 0)).unwrap();
+        let made_at = source_mtime(&src).unwrap();
+        // The file is edited while its old content is being decoded.
+        filetime::set_file_mtime(&src, filetime::FileTime::from_unix_time(1_700_000_005, 0)).unwrap();
+        store_made_at(&src, ThumbSize::Normal, &tests_tiny_png(), made_at).unwrap();
+        assert!(load_valid(&src, ThumbSize::Normal).is_none(), "the old picture must not pass for the new file");
 
         std::env::remove_var("XDG_CACHE_HOME");
     }
