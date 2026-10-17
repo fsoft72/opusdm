@@ -76,6 +76,43 @@ fn ping_gets_pong_without_registering() {
 }
 
 #[test]
+fn an_unregistered_connection_cannot_take_a_role() {
+    let (_td, listener, path) = bind_temp();
+    let _h = spawn_server(listener, Box::new(|_p| {}));
+    // A tool window (or any one-shot client) never registers: Lister-only
+    // requests from it are ignored.
+    let mut tool = connect(&path);
+    send(&mut tool, &ToHub::FocusGained).unwrap();
+    send(&mut tool, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+    send(&mut tool, &ToHub::Ping).unwrap();
+    assert!(matches!(recv::<_, ToLister>(&mut tool).unwrap(), Some(ToLister::Pong)));
+
+    let mut a = connect(&path);
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+    assert_eq!(welcome.source, None, "the tool connection became SOURCE");
+    assert!(welcome.dests.is_empty(), "the tool connection became a DEST");
+}
+
+#[test]
+fn a_repeated_register_is_ignored() {
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut a = connect(&path);
+    let register = ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION };
+    send(&mut a, &register).unwrap();
+    let _w: Welcome = recv(&mut a).unwrap().unwrap();
+    send(&mut a, &register).unwrap();
+    send(&mut a, &ToHub::Ping).unwrap();
+    // No second Welcome (it would not decode as a `ToLister`) before the Pong.
+    assert!(matches!(recv::<_, ToLister>(&mut a).unwrap(), Some(ToLister::Pong)));
+    let registered = std::iter::from_fn(|| handle.evt_rx.recv_timeout(Duration::from_millis(200)).ok())
+        .filter(|ev| matches!(ev, HubEvent::ListerRegistered { .. }))
+        .count();
+    assert_eq!(registered, 1, "the repeat announced the Lister again");
+}
+
+#[test]
 fn two_listers_focus_toggles_source_dest() {
     let (_td, listener, path) = bind_temp();
     let _h = spawn_server(listener, Box::new(|_p| {}));
@@ -195,6 +232,8 @@ fn leave_out_from_a_lister_emits_left_out_add_for_existing_paths_only() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut c = connect(&path);
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let _w: Welcome = recv(&mut c).unwrap().unwrap();
 
     // A path that does not exist (e.g. inside an archive) is refused.
     send(&mut c, &ToHub::LeaveOut { paths: vec![td.path().join("archive.zip#inner/x")] }).unwrap();

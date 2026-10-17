@@ -489,6 +489,11 @@ impl Hub {
 
     /// A message arrived from Lister connection `cid`.
     fn lister_msg(&mut self, cid: u64, msg: ToHub) {
+        let registered = self.conns.get(&cid).is_some_and(|c| c.registered);
+        if let Some(name) = lister_only(&msg).filter(|_| !registered) {
+            opusdm_ipc::err_log!("hub", "conn {cid}: {name} ignored, it is not a registered Lister");
+            return;
+        }
         match msg {
             ToHub::Ping => {
                 self.send_to(cid, ToLister::Pong);
@@ -532,6 +537,12 @@ impl Hub {
 
             ToHub::JumpTo { lister, path } => {
                 self.send_to_lister(lister.0, ToLister::GoTo { path });
+            }
+
+            ToHub::Register { pid, .. } if registered => {
+                // A second Welcome, `ListerOpened` and visible-spawn slot
+                // would all be wrong: the first registration stands.
+                opusdm_ipc::err_log!("hub", "conn {cid} (pid {pid}) registered again, ignored");
             }
 
             ToHub::Register { pid, initial_path, version } => {
@@ -1401,6 +1412,29 @@ fn drop_conn(
         send_or_log(evt_tx, HubEvent::AllListersGone, "GTK event");
     }
     true
+}
+
+/// The name of `msg` when it only makes sense from a registered Lister: it
+/// acts on the sender as a Lister (its role, focus, folder, caches,
+/// selection) or starts work on its behalf. `None` for everything else: tool
+/// windows and one-shot clients (Manage Functions, theme-config,
+/// `opusdm-hub --run`, ...) never register, and their requests (settings,
+/// bindings, Function runs, replies, spawning) stay open to them.
+fn lister_only(msg: &ToHub) -> Option<&'static str> {
+    let name = match msg {
+        ToHub::FocusGained => "FocusGained",
+        ToHub::SetRole(_) => "SetRole",
+        ToHub::LockRole => "LockRole",
+        ToHub::UnlockRole => "UnlockRole",
+        ToHub::PathChanged(_) => "PathChanged",
+        ToHub::CacheReport(_) => "CacheReport",
+        ToHub::SelectionReply { .. } => "SelectionReply",
+        ToHub::RunJob { .. } => "RunJob",
+        ToHub::CheckFit { .. } => "CheckFit",
+        ToHub::LeaveOut { .. } => "LeaveOut",
+        _ => return None,
+    };
+    Some(name)
 }
 
 fn apply_role(
