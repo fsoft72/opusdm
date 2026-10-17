@@ -1,7 +1,9 @@
-//! The Markdown area: a read-only text view that shows the rendered file.
+//! The Markdown area: a read-only text view that shows the rendered file, or
+//! an EPUB book turned into Markdown.
 
 use crate::font_scale::DOC_TEXT_CLASS;
-use crate::loader::load_within;
+use crate::epub::Book;
+use crate::loader::{decode_within, load_within};
 use crate::markdown::{indent_tag, parse};
 use crate::text_doc::{create_match_tags, create_syntax_tags, set_doc_dark, TextDoc, TextSearch};
 use gtk4 as gtk;
@@ -11,6 +13,7 @@ use gtk::glib;
 use gtk::pango;
 use gtk::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -50,6 +53,8 @@ pub struct MarkdownView {
     search: TextSearch,
     /// Folder of the file on screen, to resolve relative links.
     base: RefCell<PathBuf>,
+    /// Pictures of the book on screen, by image address; empty for a file.
+    pictures: RefCell<HashMap<String, glib::Bytes>>,
 }
 
 impl MarkdownView {
@@ -68,7 +73,7 @@ impl MarkdownView {
         let root = gtk::ScrolledWindow::new();
         root.set_vexpand(true);
         root.set_child(Some(&view));
-        let this = Rc::new(MarkdownView { root, view, links: RefCell::new(Vec::new()), search: TextSearch::default(), base: RefCell::new(PathBuf::new()) });
+        let this = Rc::new(MarkdownView { root, view, links: RefCell::new(Vec::new()), search: TextSearch::default(), base: RefCell::new(PathBuf::new()), pictures: RefCell::new(HashMap::new()) });
         this._wire_links();
         this
     }
@@ -84,9 +89,18 @@ impl MarkdownView {
         if size > MAX_BYTES { return Err(format!("the file is too big ({} MiB, the limit is {} MiB)", size / (1024 * 1024), MAX_BYTES / (1024 * 1024))); }
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         *self.base.borrow_mut() = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        self.pictures.borrow_mut().clear();
         self._fill(&String::from_utf8_lossy(&bytes));
         self.view.grab_focus();
         Ok(())
+    }
+
+    /// Show `book`, read from the file at `path`; its pictures come from memory.
+    pub fn show_book(&self, path: &Path, book: Book) {
+        *self.base.borrow_mut() = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        *self.pictures.borrow_mut() = book.pictures;
+        self._fill(&book.markdown);
+        self.view.grab_focus();
     }
 
     /// Replace the text with the rendering of `source`, scrolled to the top.
@@ -119,22 +133,27 @@ impl MarkdownView {
         self.root.vadjustment().set_value(0.0);
     }
 
-    /// The picture at `url` (a file, from the folder of the text) as a widget;
+    /// The picture at `url` (a picture of the book, or a file from the folder
+    /// of the text) as a widget;
     /// `None` for an address on the web or a name that is not a file. The
     /// picture is decoded, scaled down, on a worker and appears when ready;
     /// one that cannot be decoded is replaced by its `[image: alt]` text.
     fn _picture(&self, url: &str, alt: &str) -> Option<gtk::Box> {
         if url.contains("://") { return None; }
         let name = gtk::glib::Uri::unescape_string(url, None)?;
+        let in_book = self.pictures.borrow().get(name.as_str()).cloned();
         let path = self.base.borrow().join(name.as_str());
-        if !path.is_file() {
+        if in_book.is_none() && !path.is_file() {
             opusdm_ipc::err_log!("viewer", "cannot load picture {}: not a file", path.display());
             return None;
         }
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.set_tooltip_text(Some(alt).filter(|a| !a.is_empty()));
         let handle = gio::spawn_blocking(move || {
-            let decoded = load_within(&path, MAX_DECODE_PX);
+            let decoded = match &in_book {
+                Some(bytes) => decode_within(bytes, MAX_DECODE_PX),
+                None => load_within(&path, MAX_DECODE_PX),
+            };
             (path, decoded)
         });
         let weak = holder.downgrade();

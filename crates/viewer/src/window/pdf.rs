@@ -177,10 +177,10 @@ impl State {
         self._current().is_some_and(|(_, kind)| kind.is_paged())
     }
 
-    /// The Markdown or source text on screen, if one is.
+    /// The Markdown text, EPUB book or source text on screen, if one is.
     fn _text_doc(&self) -> Option<&dyn TextDoc> {
         match self._current()?.1 {
-            MediaKind::Markdown => Some(self.markdown.as_ref()),
+            MediaKind::Markdown | MediaKind::Ebook => Some(self.markdown.as_ref()),
             MediaKind::Source => Some(self.source.as_ref()),
             _ => None,
         }

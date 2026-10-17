@@ -43,7 +43,7 @@ pub enum Action {
 pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
     let video = kind == MediaKind::Video;
     let source = kind == MediaKind::Source;
-    let text = kind == MediaKind::Markdown || source;
+    let text = matches!(kind, MediaKind::Markdown | MediaKind::Ebook) || source;
     let pdf = kind.is_paged();
     let action = match key {
         Key::plus | Key::KP_Add | Key::equal if !video && !text => Action::ZoomIn,
@@ -194,6 +194,13 @@ mod tests {
         }
         for key in [Key::Right, Key::KP_Right, Key::Down, Key::KP_Down] {
             assert_eq!(map(key, Pdf), Some(Action::NextPage));
+        }
+    }
+
+    #[test]
+    fn a_book_has_the_keys_of_a_markdown_text() {
+        for key in [Key::plus, Key::minus, Key::_0, Key::r, Key::Left, Key::Right, Key::space, Key::Page_Down, Key::F9, Key::l, Key::n] {
+            assert_eq!(map(key, MediaKind::Ebook), map(key, Markdown), "{key:?}");
         }
     }
 

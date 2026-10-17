@@ -276,6 +276,8 @@ const IMAGE_PATTERN: &str = "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg;*.bmp;*.ico;*
 const PDF_PATTERN: &str = "*.pdf";
 /// Extensions of the comic books the default type opens with `opusdm-viewer`.
 const COMIC_PATTERN: &str = "*.cbz;*.cbr";
+/// Extension of the EPUB books the default type opens with `opusdm-viewer`.
+const EBOOK_PATTERN: &str = "*.epub";
 /// Extensions of the Markdown texts the default type opens with `opusdm-viewer`.
 const MARKDOWN_PATTERN: &str = "*.md;*.markdown";
 /// Extensions and names of the source and plain texts the default type opens with `opusdm-viewer`.
@@ -288,7 +290,7 @@ const PLAYER_OPEN: &str = "exec:opusdm-player {f}";
 const PLAYER_LOOP: &str = "exec:opusdm-player --loop {f}";
 
 /// The types a new installation starts with: audio and video files open with
-/// `opusdm-player`, pictures, PDF documents, comic books, Markdown and source texts with `opusdm-viewer`. They use inline `exec:` references, so no saved Function is
+/// `opusdm-player`, pictures, PDF documents, comic books, EPUB books, Markdown and source texts with `opusdm-viewer`. They use inline `exec:` references, so no saved Function is
 /// needed.
 pub fn default_filetypes() -> FileTypes {
     let player_type = |name: &str, pattern: &str| FileType {
@@ -301,7 +303,7 @@ pub fn default_filetypes() -> FileTypes {
         rule: MatchRule::Glob { pattern: pattern.to_string() },
         actions: Actions { dblclick: Some(VIEWER_OPEN.to_string()), drop: None, menu: vec![] },
     };
-    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), viewer_type("Image file", IMAGE_PATTERN), viewer_type("PDF file", PDF_PATTERN), viewer_type("Comic file", COMIC_PATTERN), viewer_type("Markdown file", MARKDOWN_PATTERN), viewer_type("Source file", SOURCE_PATTERN)] }
+    FileTypes { types: vec![player_type("Audio file", AUDIO_PATTERN), player_type("Video file", VIDEO_PATTERN), viewer_type("Image file", IMAGE_PATTERN), viewer_type("PDF file", PDF_PATTERN), viewer_type("Comic file", COMIC_PATTERN), viewer_type("Ebook file", EBOOK_PATTERN), viewer_type("Markdown file", MARKDOWN_PATTERN), viewer_type("Source file", SOURCE_PATTERN)] }
 }
 
 /// Write [`default_filetypes`] to the standard path when `filetypes.json` does
@@ -550,6 +552,7 @@ mod tests {
         assert_eq!(list.find(&facts("photo.PNG", 1, b"")).unwrap().name, "Image file");
         assert_eq!(list.find(&facts("manual.Pdf", 1, b"")).unwrap().name, "PDF file");
         assert_eq!(list.find(&facts("Issue 01.CBR", 1, b"")).unwrap().name, "Comic file");
+        assert_eq!(list.find(&facts("novel.epub", 1, b"")).unwrap().name, "Ebook file");
         assert_eq!(list.find(&facts("README.MD", 1, b"")).unwrap().name, "Markdown file");
     }
 
@@ -561,7 +564,7 @@ mod tests {
             for r in refs {
                 let FuncRef::Exec { line } = parse(&r) else { panic!("{}: {r} is not an exec reference", t.name) };
                 let words = crate::cli::tokenize(&line).unwrap();
-                let program = if matches!(t.name.as_str(), "Image file" | "PDF file" | "Comic file" | "Markdown file" | "Source file") { "opusdm-viewer" } else { "opusdm-player" };
+                let program = if matches!(t.name.as_str(), "Image file" | "PDF file" | "Comic file" | "Ebook file" | "Markdown file" | "Source file") { "opusdm-viewer" } else { "opusdm-player" };
                 assert_eq!(words.first().map(String::as_str), Some(program), "{r}");
                 assert_eq!(words.last().map(String::as_str), Some("{f}"), "{r}");
             }

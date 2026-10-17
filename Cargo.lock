@@ -3105,6 +3105,7 @@ dependencies = [
  "opusdm-media-ui",
  "opusdm-ui",
  "pulldown-cmark",
+ "quick-xml",
  "tempfile",
  "unicode-width",
  "zip",

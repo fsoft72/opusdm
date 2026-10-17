@@ -18,6 +18,7 @@ gtk4.workspace = true
 async-channel.workspace = true
 hayro = "0.8"
 pulldown-cmark = { version = "0.13", default-features = false }
+quick-xml = { version = "0.41", features = ["escape-html"] }
 unicode-width = "0.2"
 opusdm-highlight = { path = "../highlight" }
 

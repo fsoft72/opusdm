@@ -106,6 +106,7 @@ impl Strip {
         let text = match kind_or_image(path) {
             MediaKind::Video => "VIDEO".to_string(),
             MediaKind::Markdown => "MD".to_string(),
+            MediaKind::Ebook => "EPUB".to_string(),
             MediaKind::Source => _source_label(path),
             _ => "...".to_string(),
         };
@@ -119,7 +120,7 @@ impl Strip {
 
     /// Ask the worker for a thumbnail, once per picture.
     fn _request(&self, path: &Path) {
-        if matches!(kind_or_image(path), MediaKind::Video | MediaKind::Markdown | MediaKind::Source) { return; }
+        if matches!(kind_or_image(path), MediaKind::Video | MediaKind::Markdown | MediaKind::Source | MediaKind::Ebook) { return; }
         if !self.requested.borrow_mut().insert(path.to_path_buf()) { return; }
         if self.requests.send(path.to_path_buf()).is_err() { opusdm_ipc::err_log!("viewer", "the thumbnail worker stopped"); }
     }

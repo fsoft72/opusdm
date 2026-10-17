@@ -5,6 +5,7 @@
 mod pdf;
 mod sidecar;
 
+use crate::epub;
 use crate::delete::{remove_permanently, try_trash, SystemRemover, TrashStep};
 use crate::font_scale::FontScale;
 use crate::gallery::Gallery;
@@ -21,6 +22,7 @@ use crate::strip::Strip;
 use crate::video_view::{VideoNotice, VideoView};
 use gtk4 as gtk;
 use gtk::gdk;
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -226,6 +228,10 @@ impl State {
                 self.video.stop();
                 self._show_text(&path, kind);
             }
+            MediaKind::Ebook => {
+                self.video.stop();
+                self._load_book(&path);
+            }
             MediaKind::Video => match self.video.open(&path) {
                 Ok(()) => self.stack.set_visible_child_name("video"),
                 Err(e) => self._show_error(&format!("Cannot play {}: {e}", _name(&path))),
@@ -241,6 +247,29 @@ impl State {
             MediaKind::Markdown => (self.markdown.show(path), "markdown"),
             _ => (self.source.show(path), "source"),
         };
+        self._text_shown(path, result, page);
+    }
+
+    /// Read an EPUB book on a worker and show it in the Markdown view when it
+    /// arrives, if it is still the file on screen.
+    fn _load_book(self: &Rc<Self>, path: &Path) {
+        let generation = self.generation.get();
+        let target = path.to_path_buf();
+        let handle = gio::spawn_blocking(move || epub::open(&target));
+        let (weak, path) = (Rc::downgrade(self), path.to_path_buf());
+        glib::spawn_future_local(async move {
+            let result = handle.await.unwrap_or_else(|_| Err("the book reader stopped".to_string()));
+            let Some(this) = weak.upgrade() else {
+                return opusdm_ipc::err_log!("viewer", "the window closed before {} was read", path.display());
+            };
+            if this.generation.get() != generation { return; }
+            let shown = result.map(|book| this.markdown.show_book(&path, book));
+            this._text_shown(&path, shown, "markdown");
+        });
+    }
+
+    /// A text was put in its view (`page` of the stack), or failed to.
+    fn _text_shown(self: &Rc<Self>, path: &Path, result: Result<(), String>, page: &str) {
         match result {
             Ok(()) => {
                 self.stack.set_visible_child_name(page);
@@ -316,6 +345,7 @@ impl State {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
             (MediaKind::Markdown, _) => format!("markdown{}", self.font.label()),
+            (MediaKind::Ebook, _) => format!("epub{}", self.font.label()),
             (MediaKind::Source, _) => format!("{}{}", self.source.detail(), self.font.label()),
             (MediaKind::Pdf | MediaKind::Comic, _) if self.pages.get() == 0 => "loading".to_string(),
             (MediaKind::Image | MediaKind::Pdf | MediaKind::Comic, _) => match self.image.size() {

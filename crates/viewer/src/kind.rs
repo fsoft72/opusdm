@@ -11,6 +11,8 @@ pub const VIDEO_EXTS: [&str; 11] = ["mp4", "mkv", "webm", "avi", "mov", "m4v", "
 pub const PDF_EXT: &str = "pdf";
 /// Comic book extensions (lower case).
 pub const COMIC_EXTS: [&str; 2] = ["cbz", "cbr"];
+/// EPUB book extension (lower case).
+pub const EPUB_EXT: &str = "epub";
 /// Markdown extensions (lower case).
 pub const MARKDOWN_EXTS: [&str; 2] = ["md", "markdown"];
 /// Source code and plain text extensions (lower case).
@@ -36,6 +38,8 @@ pub enum MediaKind {
     Pdf,
     /// A comic book archive (`.cbz`, `.cbr`), shown one page at a time like a PDF.
     Comic,
+    /// An EPUB book, shown as one reflowed text like a Markdown file.
+    Ebook,
     /// A Markdown text, shown rendered and scrolled.
     Markdown,
     /// Source code or plain text, shown syntax coloured and scrolled.
@@ -49,7 +53,7 @@ impl MediaKind {
     }
 }
 
-/// Picture, video, PDF, comic, Markdown or source by extension (case-insensitive), or
+/// Picture, video, PDF, comic, EPUB, Markdown or source by extension (case-insensitive), or
 /// source by a known file name (`Makefile`); `None` for anything else.
 pub fn kind_of(path: &Path) -> Option<MediaKind> {
     let name = path.file_name()?.to_string_lossy().to_lowercase();
@@ -59,6 +63,7 @@ pub fn kind_of(path: &Path) -> Option<MediaKind> {
     if VIDEO_EXTS.contains(&ext.as_str()) { return Some(MediaKind::Video); }
     if ext == PDF_EXT { return Some(MediaKind::Pdf); }
     if COMIC_EXTS.contains(&ext.as_str()) { return Some(MediaKind::Comic); }
+    if ext == EPUB_EXT { return Some(MediaKind::Ebook); }
     if MARKDOWN_EXTS.contains(&ext.as_str()) { return Some(MediaKind::Markdown); }
     if SOURCE_EXTS.contains(&ext.as_str()) { return Some(MediaKind::Source); }
     None
@@ -104,6 +109,7 @@ mod tests {
         assert_eq!(kind_of(Path::new("manual.PDF")), Some(MediaKind::Pdf));
         assert_eq!(kind_of(Path::new("Dylan Dog 001.cbr")), Some(MediaKind::Comic));
         assert_eq!(kind_of(Path::new("x/Y.CBZ")), Some(MediaKind::Comic));
+        assert_eq!(kind_of(Path::new("The Goal.EPUB")), Some(MediaKind::Ebook));
         assert_eq!(kind_of(Path::new("README.MD")), Some(MediaKind::Markdown));
         assert_eq!(kind_of(Path::new("a/b.markdown")), Some(MediaKind::Markdown));
         assert_eq!(kind_of(Path::new("notes.txt")), Some(MediaKind::Source));
@@ -173,7 +179,7 @@ mod tests {
     fn only_pdf_and_comics_are_paged() {
         assert!(MediaKind::Pdf.is_paged());
         assert!(MediaKind::Comic.is_paged());
-        for kind in [MediaKind::Image, MediaKind::Video, MediaKind::Markdown, MediaKind::Source] {
+        for kind in [MediaKind::Image, MediaKind::Video, MediaKind::Markdown, MediaKind::Source, MediaKind::Ebook] {
             assert!(!kind.is_paged(), "{kind:?}");
         }
     }
@@ -185,6 +191,14 @@ mod tests {
         let MatchRule::Glob { pattern } = &comic.rule else { panic!("Comic file type is not a glob") };
         let globs: Vec<String> = COMIC_EXTS.iter().map(|e| format!("*.{e}")).collect();
         assert_eq!(pattern, &globs.join(";"));
+    }
+
+    #[test]
+    fn the_default_ebook_type_matches_the_epub_extension() {
+        let types = default_filetypes();
+        let book = types.types.iter().find(|t| t.name == "Ebook file").expect("default Ebook file type");
+        let MatchRule::Glob { pattern } = &book.rule else { panic!("Ebook file type is not a glob") };
+        assert_eq!(pattern, &format!("*.{EPUB_EXT}"));
     }
 
     #[test]

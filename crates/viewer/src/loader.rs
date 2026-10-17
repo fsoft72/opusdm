@@ -43,6 +43,20 @@ pub fn load_within(path: &Path, px: i32) -> Result<RawImage, String> {
     load_thumb(path, px)
 }
 
+/// Decode a picture held in memory, scaled down to fit a `px` x `px` box
+/// (never scaled up), turned as its EXIF orientation says. Safe to call from
+/// any thread.
+pub fn decode_within(data: &glib::Bytes, px: i32) -> Result<RawImage, String> {
+    let stream = gtk4::gio::MemoryInputStream::from_bytes(data);
+    let pixbuf = upright(Pixbuf::from_stream(&stream, gtk4::gio::Cancellable::NONE).map_err(|e| e.message().to_string())?);
+    let (w, h) = (pixbuf.width(), pixbuf.height());
+    if w <= px && h <= px { return Ok(RawImage::from_pixbuf(&pixbuf)); }
+    let scale = px as f64 / w.max(h) as f64;
+    let (sw, sh) = (((w as f64 * scale).round() as i32).max(1), ((h as f64 * scale).round() as i32).max(1));
+    let scaled = pixbuf.scale_simple(sw, sh, gtk4::gdk_pixbuf::InterpType::Bilinear).ok_or("the picture cannot be scaled")?;
+    Ok(RawImage::from_pixbuf(&scaled))
+}
+
 /// `pixbuf` with the EXIF orientation the loader found applied (phone
 /// pictures are stored sideways), or as it is when there is none.
 pub(crate) fn upright(pixbuf: Pixbuf) -> Pixbuf {
@@ -151,6 +165,19 @@ mod tests {
         let raw = load_within(&small, 10).unwrap();
         assert_eq!((raw.width, raw.height), (4, 2));
         assert!(load_within(&dir.path().join("missing.png"), 10).is_err());
+    }
+
+    #[test]
+    fn decode_within_reads_memory_and_scales_big_pictures_down_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        write_png(&file, 40, 20);
+        let bytes = glib::Bytes::from(&std::fs::read(&file).unwrap()[..]);
+        let raw = decode_within(&bytes, 10).unwrap();
+        assert_eq!((raw.width, raw.height), (10, 5));
+        let raw = decode_within(&bytes, 100).unwrap();
+        assert_eq!((raw.width, raw.height), (40, 20));
+        assert!(decode_within(&glib::Bytes::from(b"junk"), 10).is_err());
     }
 
     #[test]
