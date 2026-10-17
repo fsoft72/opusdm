@@ -76,6 +76,26 @@ fn ping_gets_pong_without_registering() {
 }
 
 #[test]
+fn the_server_starts_from_the_config_it_is_given() {
+    let mut settings = opusdm_ipc::Settings::default();
+    settings.look_version += 1000;
+    let functions = vec![opusdm_ipc::Function::new("given")];
+    let config = crate::startup_config::StartupConfig {
+        settings: settings.clone(),
+        desktop: DesktopSettings::default(),
+        functions: functions.clone(),
+    };
+    let opts = ServerOptions { global_keys: false, ..ServerOptions::production_with(config) };
+    let (_td, listener, path) = bind_temp();
+    let _h = spawn_server_with(listener, Box::new(|_p| {}), opts);
+    let mut a = connect(&path);
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+    assert_eq!(welcome.settings, settings);
+    assert_eq!(welcome.functions, functions);
+}
+
+#[test]
 fn an_unregistered_connection_cannot_take_a_role() {
     let (_td, listener, path) = bind_temp();
     let _h = spawn_server(listener, Box::new(|_p| {}));

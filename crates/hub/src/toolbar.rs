@@ -9,7 +9,6 @@
 //! and button banks in `groups_ui.rs`.
 
 use crate::server::{HubCmd, HubEvent, ServerHandle};
-use super::settings;
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
@@ -36,7 +35,9 @@ const QUIT_ACK_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
 const QUIT_IO_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Build and run the desktop application. Returns on quit.
-pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
+/// `config` is what the hub read at startup; later changes arrive as
+/// `HubEvent`s.
+pub fn run(handle: ServerHandle, _sock_path: PathBuf, config: opusdm_hub::startup_config::StartupConfig) -> glib::ExitCode {
     let app = gtk::Application::builder()
         .application_id("org.opusdm.Hub")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
@@ -56,7 +57,7 @@ pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
     let cmd_tx = handle.cmd_tx;
     app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| {
-        build_ui(app, cmd_tx.clone(), ui_rx.clone());
+        build_ui(app, cmd_tx.clone(), ui_rx.clone(), config.clone());
     });
     app.run_with_args::<&str>(&[])
 }
@@ -173,13 +174,18 @@ fn apply_virtual_screens(count: u32) {
     }
 }
 
-fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
-    let desktop_settings = opusdm_hub::desktop_settings::load();
+fn build_ui(
+    app: &gtk::Application,
+    cmd_tx: Sender<HubCmd>,
+    ui_rx: async_channel::Receiver<HubEvent>,
+    config: opusdm_hub::startup_config::StartupConfig,
+) {
+    let desktop_settings = config.desktop;
     apply_virtual_screens(desktop_settings.virtual_screens);
     let io = opusdm_hub::io_worker::IoWorker::new("opusdm-hub-io");
     apply_compositor(&io, &desktop_settings);
     opusdm_hub::snap::start(desktop_settings.snap_enabled);
-    let initial_settings = settings::load_settings();
+    let initial_settings = config.settings;
     crate::background::install(&initial_settings.theme.background);
     opusdm_ui::apply_theme_mode(initial_settings.appearance.theme_mode);
 
@@ -188,7 +194,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
     );
 
     let banks = Rc::new(RefCell::new(opusdm_ipc::Banks::load()));
-    let functions = Rc::new(RefCell::new(opusdm_ipc::function::load_functions()));
+    let functions = Rc::new(RefCell::new(config.functions));
     let bank_windows = crate::bank_windows::BankWindows::new(banks.clone(), functions.clone(), cmd_tx.clone());
 
     let widgets = Rc::new(Widgets {

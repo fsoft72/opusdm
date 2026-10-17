@@ -154,6 +154,10 @@ pub struct ServerOptions {
     pub initial_formats: Option<FormatStore>,
     /// Functions to start with. `None` loads `functions.json` from disk.
     pub initial_functions: Option<Vec<opusdm_ipc::function::Function>>,
+    /// Settings to start with. `None` loads `settings.json` from disk.
+    pub initial_settings: Option<opusdm_ipc::Settings>,
+    /// Desktop settings to start with. `None` loads `desktop.json` from disk.
+    pub initial_desktop: Option<DesktopSettings>,
 }
 
 impl Default for ServerOptions {
@@ -164,6 +168,8 @@ impl Default for ServerOptions {
             initial_bindings: Some(Bindings::default()),
             initial_formats: Some(FormatStore::default()),
             initial_functions: None,
+            initial_settings: None,
+            initial_desktop: None,
         }
     }
 }
@@ -171,7 +177,25 @@ impl Default for ServerOptions {
 impl ServerOptions {
     /// Options for the real hub: load the bindings from disk.
     pub fn production() -> Self {
-        Self { global_keys: true, initial_bindings: None, initial_formats: None, initial_functions: None }
+        Self {
+            global_keys: true,
+            initial_bindings: None,
+            initial_formats: None,
+            initial_functions: None,
+            initial_settings: None,
+            initial_desktop: None,
+        }
+    }
+
+    /// [`ServerOptions::production`] starting from the config the hub
+    /// already read, instead of reading those files again.
+    pub fn production_with(config: crate::startup_config::StartupConfig) -> Self {
+        Self {
+            initial_functions: Some(config.functions),
+            initial_settings: Some(config.settings),
+            initial_desktop: Some(config.desktop),
+            ..Self::production()
+        }
     }
 }
 
@@ -1232,7 +1256,7 @@ fn owner_loop(
     let (fe_tx, fe_rx) = channel::<(u64, crate::functions::FnEvent)>();
     spawn_forwarder("opusdm-function-events", fe_rx, owner_tx.clone(), |(id, ev)| OwnerMsg::FunctionEvent(id, ev));
 
-    let current_desktop = desktop_settings::load();
+    let current_desktop = opts.initial_desktop.unwrap_or_else(desktop_settings::load);
     opusdm_ipc::debug_log!(
         "hub",
         "desktop settings loaded (icon size {})",
@@ -1242,7 +1266,7 @@ fn owner_loop(
         conns: HashMap::new(),
         next_conn: 1,
         roles: RoleState::default(),
-        current_settings: settings::load_settings(),
+        current_settings: opts.initial_settings.unwrap_or_else(settings::load_settings),
         current_desktop,
         hidden: false,
         visible_spawns_pending: 0,

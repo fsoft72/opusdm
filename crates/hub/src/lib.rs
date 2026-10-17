@@ -22,6 +22,7 @@ pub mod roles;
 pub mod server;
 pub mod remote;
 pub mod startup_apps;
+pub mod startup_config;
 pub mod tray_start;
 pub mod tray_start_wl;
 pub mod settings;
