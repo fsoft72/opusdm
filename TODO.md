@@ -134,7 +134,7 @@
   with `temp_env_var` while libtest runs them in parallel. A shared lock around them (as `crate::test_env_lock()` in
   iconview) fixes it.
 
-- [ ] Path bar: typing fast while a folder is suggested can leave suggested text in the path
+- [x] (done 2026-10-17: GTK dropped the selection on a late PRIMARY ownership notice; see CHANGES.md) Path bar: typing fast while a folder is suggested can leave suggested text in the path
 
   Reported by the owner (it happens in daily use) and seen in Xephyr on 2026-10-17: typing a long path quickly in the
   path bar (a second Lister on `/ramdisk`, the path of a scratch folder typed with XTest at about 20 keys a second)

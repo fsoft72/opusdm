@@ -63,6 +63,20 @@ pub fn suggest(text: &str) -> Option<String> {
     Some(format!("{}/", &first[prefix.len()..]))
 }
 
+/// Where the look-ahead `ghost` starts when it must be selected again: it is
+/// still the end of `text`, the cursor (`cursor`, in characters) sits right
+/// before it and nothing is selected. GTK drops the selection of an entry when
+/// it believes the X11 PRIMARY selection was lost, which a late ownership
+/// notice can make it believe while the user types fast; the next key would
+/// then be inserted before the ghost instead of replacing it. `None` when
+/// there is nothing to restore (no ghost, still selected, removed, or a cursor
+/// the user moved).
+pub fn ghost_to_restore(text: &str, cursor: i32, has_selection: bool, ghost: &str) -> Option<i32> {
+    if ghost.is_empty() || has_selection || !text.ends_with(ghost) { return None; }
+    let start = (text.chars().count() - ghost.chars().count()) as i32;
+    (cursor == start).then_some(start)
+}
+
 /// Whether the directory entry is a folder. The type comes from `read_dir`
 /// itself; only a symbolic link is followed with a `stat`.
 fn is_folder(entry: &std::fs::DirEntry) -> bool {
@@ -77,6 +91,32 @@ fn is_folder(entry: &std::fs::DirEntry) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_ghost_that_lost_its_selection_is_selected_again() {
+        // "/a/s" typed, "ub/" suggested; GTK dropped the selection.
+        assert_eq!(ghost_to_restore("/a/sub/", 4, false, "ub/"), Some(4));
+    }
+
+    #[test]
+    fn a_ghost_is_left_alone_when_it_is_still_selected_or_gone() {
+        assert_eq!(ghost_to_restore("/a/sub/", 4, true, "ub/"), None, "still selected");
+        assert_eq!(ghost_to_restore("/a/sub/", 4, false, ""), None, "no ghost");
+        assert_eq!(ghost_to_restore("/a/s", 4, false, "ub/"), None, "the ghost text was removed");
+        assert_eq!(ghost_to_restore("/a/sub/x", 4, false, "ub/"), None, "the ghost is not at the end any more");
+    }
+
+    #[test]
+    fn a_cursor_the_user_moved_is_not_overridden() {
+        assert_eq!(ghost_to_restore("/a/sub/", 3, false, "ub/"), None, "Left arrow");
+        assert_eq!(ghost_to_restore("/a/sub/", 7, false, "ub/"), None, "End: the user took the suggestion");
+    }
+
+    #[test]
+    fn positions_count_characters_not_bytes() {
+        // "/è/s" is 4 characters but 5 bytes.
+        assert_eq!(ghost_to_restore("/è/sub/", 4, false, "ub/"), Some(4));
+    }
 
     /// Temp tree: alpha/, alpine/, .hidden/, beta/ and a plain file `alfile`.
     fn tree() -> tempfile::TempDir {

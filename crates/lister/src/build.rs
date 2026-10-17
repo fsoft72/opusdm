@@ -586,7 +586,7 @@ fn ghost_is_active(entry: &gtk::Entry, ghost: &str) -> bool {
 
 /// Look-ahead for the path bar. While the user types, the folder name that
 /// completes the last component (see `pathcomplete::suggest`) is appended as
-/// selected text. TAB accepts it (cursor to the end, focus stays in the bar),
+/// selected text (selected again if GTK drops the selection). TAB accepts it (cursor to the end, focus stays in the bar),
 /// typing on replaces it, Backspace removes it and Enter accepts it and goes
 /// to the completed folder.
 fn wire_path_completion(entry: &gtk::Entry) {
@@ -598,6 +598,14 @@ fn wire_path_completion(entry: &gtk::Entry) {
     {
         let (entry, ghost, typing) = (entry.clone(), ghost.clone(), typing.clone());
         key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+            // GTK may have dropped the selection of the suggestion (see
+            // `pathcomplete::ghost_to_restore`): select it again before the
+            // key is handled, so typing replaces it and Enter / TAB accept it.
+            let restore = crate::pathcomplete::ghost_to_restore(&entry.text(), entry.position(), entry.selection_bounds().is_some(), &ghost.borrow());
+            if let Some(start) = restore {
+                crate::dlog!("path bar: the suggestion lost its selection, selected again");
+                entry.select_region(start, -1);
+            }
             let plain = !state.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK);
             if keyval == gdk::Key::Tab && plain && ghost_is_active(&entry, &ghost.borrow()) {
                 ghost.borrow_mut().clear();
@@ -617,7 +625,11 @@ fn wire_path_completion(entry: &gtk::Entry) {
     {
         let ghost = ghost.clone();
         entry.connect_changed(move |entry| {
-            if applying.get() || !typing.get() { return; }
+            if applying.get() { return; }
+            // Any other change replaced or removed the suggestion: forget it,
+            // so a stale one is never selected again.
+            ghost.borrow_mut().clear();
+            if !typing.get() { return; }
             let typed = entry.text().to_string();
             let request = requests.next();
             // Listing the folder can be slow (network mounts, huge folders),
