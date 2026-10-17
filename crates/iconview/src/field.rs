@@ -53,6 +53,7 @@ pub(super) struct LayoutState {
     pub(super) realized: RefCell<HashMap<usize, IconItem>>,
     /// Thumbnail textures survive an item being de-realized and re-realized,
     /// so scrolling away and back doesn't re-request or lose a thumbnail.
+    /// Capped by `sync_realized`, which drops the ones farthest away.
     pub(super) thumb_cache: RefCell<HashMap<usize, gtk::gdk::Texture>>,
     /// Thumbnail paths already queued, or failed, in this generation, so a
     /// scroll does not re-submit them.

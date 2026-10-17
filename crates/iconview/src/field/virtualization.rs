@@ -9,8 +9,17 @@ use crate::item::IconItem;
 use crate::types::{IconEntry, IconKind, LayoutMode};
 use gtk4 as gtk;
 use gtk::prelude::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
+
+/// Most thumbnail textures kept in memory (about 256 KB each). Past it the
+/// ones farthest from the viewport are dropped; their PNGs stay in the disk
+/// cache, so scrolling back only costs a cheap reload.
+const MAX_CACHED_TEXTURES: usize = 600;
+
+/// What an over-full texture cache is trimmed down to, so the trim does not
+/// run again on every scroll step.
+const TRIMMED_TEXTURES: usize = MAX_CACHED_TEXTURES * 3 / 4;
 
 impl IconField {
     pub(super) fn rebuild_arranger(&self) {
@@ -146,6 +155,7 @@ impl IconField {
     pub(crate) fn sync_realized(&self) {
         let n = self.inner.layout.entries.borrow().len();
         let wanted = self.wanted_indices(n);
+        trim_texture_cache(&mut self.inner.layout.thumb_cache.borrow_mut(), &wanted);
         let mut realized = self.inner.layout.realized.borrow_mut();
 
         let stale: Vec<usize> = realized.keys().copied().filter(|i| !wanted.contains(i)).collect();
@@ -202,5 +212,55 @@ impl IconField {
         // Items newly in range may have no thumbnail yet (e.g. scrolled in
         // without ever being submitted).
         self.request_missing_thumbs();
+    }
+}
+
+/// Once `cache` holds more than `MAX_CACHED_TEXTURES`, drop the entries
+/// farthest from the `wanted` range until `TRIMMED_TEXTURES` are left. Wanted
+/// entries are never dropped.
+fn trim_texture_cache<T>(cache: &mut HashMap<usize, T>, wanted: &BTreeSet<usize>) {
+    if cache.len() <= MAX_CACHED_TEXTURES { return; }
+    let (Some(&lo), Some(&hi)) = (wanted.first(), wanted.last()) else {
+        cache.clear();
+        return;
+    };
+    let distance = |i: usize| if i < lo { lo - i } else { i.saturating_sub(hi) };
+    let mut far: Vec<usize> = cache.keys().copied().filter(|i| !wanted.contains(i)).collect();
+    far.sort_unstable_by_key(|&i| std::cmp::Reverse(distance(i)));
+    let excess = cache.len().saturating_sub(TRIMMED_TEXTURES);
+    for i in far.into_iter().take(excess) {
+        cache.remove(&i);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_small_cache_is_left_alone() {
+        let mut cache: HashMap<usize, ()> = (0..MAX_CACHED_TEXTURES).map(|i| (i, ())).collect();
+        trim_texture_cache(&mut cache, &BTreeSet::from([0]));
+        assert_eq!(cache.len(), MAX_CACHED_TEXTURES);
+    }
+
+    #[test]
+    fn an_overfull_cache_drops_the_farthest_textures_first() {
+        // Scrolled through 2000 items, now looking at 1000..1050.
+        let mut cache: HashMap<usize, ()> = (0..2000).map(|i| (i, ())).collect();
+        let wanted: BTreeSet<usize> = (1000..1050).collect();
+        trim_texture_cache(&mut cache, &wanted);
+        assert_eq!(cache.len(), TRIMMED_TEXTURES);
+        assert!(wanted.iter().all(|i| cache.contains_key(i)), "visible thumbnails stay");
+        assert!(!cache.contains_key(&0) && !cache.contains_key(&1999), "far ends go first");
+        assert!(cache.contains_key(&999) && cache.contains_key(&1050), "neighbours stay");
+    }
+
+    #[test]
+    fn wanted_textures_survive_even_past_the_cap() {
+        let mut cache: HashMap<usize, ()> = (0..MAX_CACHED_TEXTURES + 10).map(|i| (i, ())).collect();
+        let wanted: BTreeSet<usize> = (0..MAX_CACHED_TEXTURES + 10).collect();
+        trim_texture_cache(&mut cache, &wanted);
+        assert_eq!(cache.len(), MAX_CACHED_TEXTURES + 10);
     }
 }
