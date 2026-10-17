@@ -33,6 +33,7 @@ pub fn run(connected: Connected, start: PathBuf, select: Vec<String>) -> glib::E
         start,
         select,
         inbox: Some(inbox),
+        ui: None,
     })));
 
     let app = gtk::Application::builder()
@@ -56,6 +57,9 @@ pub fn run(connected: Connected, start: PathBuf, select: Vec<String>) -> glib::E
         // initialized" before this point.
         opusdm_ui::apply_theme_mode(st.settings.appearance.theme_mode);
         let ui = build_window(app, st.client.clone(), st.id, st.roles.clone(), st.settings.clone(), st.bindings.clone(), st.formats.clone(), st.functions.clone());
+        // The widget handlers only hold a `Weak<Ui>`: this is the strong
+        // reference that keeps the window alive until the app quits.
+        st.ui = Some(ui.clone());
         let to_select = st.select.clone();
         let ui_for_select = ui.clone();
         ui.navigate(&st.start, true, move || ui_for_select.select_names(&to_select));
@@ -93,6 +97,8 @@ struct StartState {
     /// Names to select once `start` is listed (a file shown in its folder).
     select: Vec<String>,
     inbox: Option<async_channel::Receiver<Inbound>>,
+    /// The built window, owned here for the whole run of the application.
+    ui: Option<Rc<Ui>>,
 }
 
 /// The top stat bar: D/F/B counts, gauge, "new Lister" star, role pin and the
