@@ -147,7 +147,7 @@
   so is not replaced by the next character). Fix with a regression test on the decision logic (pull it out of the
   GTK handlers) and a check in Xephyr typing at full speed.
 
-- [ ] Desktop menu cut off at the bottom of the screen
+- [x] (done 2026-10-17: the menu was measured while hidden, size 0; see CHANGES.md) Desktop menu cut off at the bottom of the screen
 
   Reported by the owner, seen in Xephyr on 2026-10-17 (1280x800): a right-click on the desktop near the bottom edge
   (y 720) opened the menu with its last entries (About, Desktop, Quit) below the screen. `popup_at` in

@@ -65,17 +65,27 @@ fn content_size(menu: &gtk::Box) -> (i32, i32) {
     (w.max(0), h.max(0))
 }
 
+/// Top left corner of a menu of size `menu` opened at `click`, moved so the
+/// whole menu stays inside an `area` (both `(width, height)`); a menu bigger
+/// than the area starts at its edge.
+fn menu_origin(click: (f64, f64), menu: (i32, i32), area: (i32, i32)) -> (i32, i32) {
+    let max_x = (area.0 - menu.0).max(0);
+    let max_y = (area.1 - menu.1).max(0);
+    ((click.0 as i32).clamp(0, max_x), (click.1 as i32).clamp(0, max_y))
+}
+
 /// Place `menu` at `(x, y)` inside `overlay`, clamped so it never runs past
-/// the overlay's edge, and show it. `w`/`h` are fallbacks, used only when the
-/// menu cannot report its own natural size.
+/// the overlay's edge, and show it. The menu is shown before it is measured:
+/// GTK gives a hidden widget a size of 0, which let a tall menu run off the
+/// bottom edge. `w`/`h` are fallbacks, used only when the menu still reports
+/// a smaller size. Margin and visibility change in the same main-loop turn,
+/// so the menu is never drawn at the unclamped place.
 pub(crate) fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, w: i32, h: i32) {
-    let (mw, mh) = content_size(menu);
-    let (mw, mh) = (mw.max(w), mh.max(h));
-    let max_x = (overlay.width() - mw).max(0);
-    let max_y = (overlay.height() - mh).max(0);
-    menu.set_margin_start((x as i32).clamp(0, max_x));
-    menu.set_margin_top((y as i32).clamp(0, max_y));
     menu.set_visible(true);
+    let (mw, mh) = content_size(menu);
+    let (left, top) = menu_origin((x, y), (mw.max(w), mh.max(h)), (overlay.width(), overlay.height()));
+    menu.set_margin_start(left);
+    menu.set_margin_top(top);
 }
 
 /// Re-clamp an already placed `menu` so it fits inside `overlay` using its
@@ -503,4 +513,26 @@ pub(crate) fn show_about_dialog(parent: &gtk::ApplicationWindow) {
         &[("OK", ())],
         |_| {},
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_menu_near_the_bottom_edge_is_moved_up_by_its_real_height() {
+        // The background menu is about 400 px tall: a click 80 px above the
+        // bottom of an 800 px desktop must open it at 400, not at 500.
+        assert_eq!(menu_origin((1199.0, 719.0), (163, 401), (1278, 798)), (1115, 397));
+    }
+
+    #[test]
+    fn a_menu_with_room_opens_at_the_click() {
+        assert_eq!(menu_origin((100.0, 50.0), (163, 401), (1278, 798)), (100, 50));
+    }
+
+    #[test]
+    fn a_menu_taller_than_the_desktop_starts_at_the_top() {
+        assert_eq!(menu_origin((10.0, 300.0), (163, 900), (1278, 798)), (10, 0));
+    }
 }
