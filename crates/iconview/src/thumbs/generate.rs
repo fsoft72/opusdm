@@ -100,6 +100,7 @@ fn generate_pdf(path: &Path, px: i32) -> io::Result<Vec<u8>> {
                 .args(["-png", "-singlefile", "-scale-to"])
                 .arg(px.to_string())
                 .arg(path),
+            TIMEOUT,
         )?,
         PdfTool::Pdftocairo => run_with_timeout(
             Command::new("pdftocairo")
@@ -107,6 +108,7 @@ fn generate_pdf(path: &Path, px: i32) -> io::Result<Vec<u8>> {
                 .arg(px.to_string())
                 .arg(path)
                 .arg("-"),
+            TIMEOUT,
         )?,
     };
     non_empty_png(out)
@@ -122,6 +124,7 @@ fn generate_video(path: &Path, px: i32) -> io::Result<Vec<u8>> {
                 .arg(path)
                 .args(["-o", "-", "-c", "png", "-s"])
                 .arg(px.to_string()),
+            TIMEOUT,
         )?,
         // No `-ss`: seeking past the end of a very short clip yields no frame.
         // The first frame is always a keyframe and good enough for an icon.
@@ -132,6 +135,7 @@ fn generate_video(path: &Path, px: i32) -> io::Result<Vec<u8>> {
                 .args(["-frames:v", "1", "-f", "image2", "-c:v", "png", "-vf"])
                 .arg(format!("scale={px}:-1"))
                 .arg("-"),
+            TIMEOUT,
         )?,
     };
     non_empty_png(out)
@@ -145,36 +149,43 @@ fn non_empty_png(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
     }
 }
 
-/// Run `cmd` capturing stdout, killing it after `TIMEOUT`.
-fn run_with_timeout(cmd: &mut Command) -> io::Result<Vec<u8>> {
+/// Run `cmd` capturing stdout, killing it after `timeout`.
+///
+/// Stdout is drained on a helper thread while the child runs: a PNG larger
+/// than the pipe buffer (64 KiB) would otherwise block the child on write
+/// until the timeout killed it.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Vec<u8>> {
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        return Err(io::Error::other("generator stdout was not captured"));
+    };
+    let reader = std::thread::Builder::new().name("thumb-stdout".into()).spawn(move || {
+        let mut out = Vec::new();
+        io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
+    })?;
     let start = Instant::now();
-    loop {
-        match child.try_wait()? {
-            Some(status) => {
-                let mut out = Vec::new();
-                if let Some(mut so) = child.stdout.take() {
-                    io::Read::read_to_end(&mut so, &mut out)?;
-                }
-                if !status.success() {
-                    return Err(io::Error::other("generator exited non-zero"));
-                }
-                return Ok(out);
-            }
-            None => {
-                if start.elapsed() >= TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "generator timed out"));
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
+        if start.elapsed() >= timeout {
+            // Killing closes the pipe, so the reader thread ends too.
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "generator timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let out = reader.join().map_err(|_| io::Error::other("generator stdout reader panicked"))??;
+    if !status.success() {
+        return Err(io::Error::other("generator exited non-zero"));
     }
+    Ok(out)
 }
 
 impl ThumbKind {
@@ -229,6 +240,27 @@ mod tests {
         let fake_pdf = td.path().join("x.pdf");
         std::fs::write(&fake_pdf, b"%PDF-1.4\n").unwrap();
         let _ = generate(&fake_pdf, ThumbKind::Pdf, 128);
+    }
+
+    #[test]
+    fn output_larger_than_the_pipe_buffer_is_read_while_running() {
+        // 256 KiB is well past the 64 KiB pipe buffer: a child writing it
+        // blocks until someone reads, so reading only after exit times out.
+        const BYTES: usize = 256 * 1024;
+        let out = run_with_timeout(
+            Command::new("head").args(["-c", &BYTES.to_string(), "/dev/zero"]),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(out.len(), BYTES);
+    }
+
+    #[test]
+    fn a_hung_child_is_killed_after_the_timeout() {
+        let start = Instant::now();
+        let err = run_with_timeout(Command::new("sleep").arg("30"), Duration::from_millis(200)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(10));
     }
 
     /// Real PDF and video generation. Ignored by default because it needs
