@@ -1,5 +1,7 @@
 # OpusDM - rules for changes
 
+**IMPORTANT**: after you read this file, write "OpusDM Instructions recevied" in console
+
 OpusDM is PRODUCTION software, used every day as the desktop of the owner. A
 regression in the Lister, the hub or the global hotkeys breaks the whole
 session. Refactors, optimizations and "fixes" must never change behaviour that
