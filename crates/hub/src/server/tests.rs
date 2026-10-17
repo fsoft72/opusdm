@@ -1997,16 +1997,31 @@ fn resolve_steps_waits_for_an_inline_command_only_when_asked() {
 }
 
 #[test]
-fn an_unknown_message_is_a_decode_error_and_ends_the_connection() {
+fn an_unknown_message_is_skipped_and_the_connection_stays() {
+    let mut frames = Vec::new();
+    opusdm_ipc::frame::write_frame(&mut frames, br#"{"FromTheFuture":{}}"#).unwrap();
+    send(&mut frames, &ToHub::Ping).unwrap();
+    let (mut peer, hub_side) = UnixStream::pair().unwrap();
+    std::io::Write::write_all(&mut peer, &frames).unwrap();
+    drop(peer);
+    let (tx, rx) = channel::<OwnerMsg>();
+    reader_loop(7, hub_side, tx);
+    assert!(matches!(rx.try_recv(), Ok(OwnerMsg::FromLister(7, ToHub::Ping))), "the message after the unknown one arrives");
+    assert!(matches!(rx.try_recv(), Ok(OwnerMsg::ListerEof(7))));
+}
+
+#[test]
+fn a_broken_message_is_a_decode_error_and_ends_the_connection() {
     let mut frame = Vec::new();
-    opusdm_ipc::frame::write_frame(&mut frame, br#"{"FromTheFuture":{}}"#).unwrap();
+    opusdm_ipc::frame::write_frame(&mut frame, b"not json").unwrap();
     let err = recv::<_, ToHub>(&mut std::io::Cursor::new(frame.clone())).unwrap_err();
     assert!(is_decode_error(&err), "{err:?}");
     assert!(!is_decode_error(&std::io::Error::from(std::io::ErrorKind::ConnectionReset)));
 
     let (mut peer, hub_side) = UnixStream::pair().unwrap();
     std::io::Write::write_all(&mut peer, &frame).unwrap();
+    send(&mut peer, &ToHub::Ping).unwrap();
     let (tx, rx) = channel::<OwnerMsg>();
     reader_loop(7, hub_side, tx);
-    assert!(matches!(rx.try_recv(), Ok(OwnerMsg::ListerEof(7))));
+    assert!(matches!(rx.try_recv(), Ok(OwnerMsg::ListerEof(7))), "nothing after a broken frame is read");
 }

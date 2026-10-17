@@ -1,7 +1,7 @@
 //! Socket link to the hub: a shared write half plus a reader thread that
 //! forwards every `ToLister` onto an async channel the GTK loop drains.
 
-use opusdm_ipc::frame::{recv, send};
+use opusdm_ipc::frame::{recv, recv_tolerant, send, Received};
 use opusdm_ipc::function::Function;
 use opusdm_ipc::{Bindings, FormatStore, ListerId, Role, Settings, ToHub, ToLister, Welcome};
 use std::io;
@@ -164,11 +164,16 @@ pub fn start_reader(mut stream: UnixStream) -> async_channel::Receiver<Inbound> 
     std::thread::Builder::new()
         .name("opusdm-lister-reader".into())
         .spawn(move || loop {
-            match recv::<_, ToLister>(&mut stream) {
-                Ok(Some(msg)) => {
+            match recv_tolerant::<_, ToLister>(&mut stream) {
+                Ok(Some(Received::Msg(msg))) => {
                     if tx.send_blocking(Inbound::Msg(msg)).is_err() {
                         return;
                     }
+                }
+                // A newer hub sent something this Lister does not know: skip
+                // it and keep the window, the rest of the protocol still works.
+                Ok(Some(Received::Unknown(tag))) => {
+                    opusdm_ipc::err_log!("opusdm-lister", "ignoring hub message {tag}: this Lister does not know it (another OpusDM version?)");
                 }
                 Ok(None) => {
                     let _ = tx.send_blocking(Inbound::HubGone);
@@ -281,6 +286,18 @@ mod tests {
             other => panic!("{other:?}"),
         }
         server.join().unwrap();
+    }
+
+    #[test]
+    fn reader_skips_an_unknown_hub_message_and_keeps_the_window() {
+        let (mut hub, lister) = std::os::unix::net::UnixStream::pair().unwrap();
+        opusdm_ipc::frame::write_frame(&mut hub, br#"{"FromTheFuture":{"x":1}}"#).unwrap();
+        opusdm_ipc::frame::write_frame(&mut hub, br#""AlsoNew""#).unwrap();
+        send(&mut hub, &ToLister::Pong).unwrap();
+        drop(hub);
+        let inbox = start_reader(lister);
+        assert!(matches!(inbox.recv_blocking(), Ok(Inbound::Msg(ToLister::Pong))), "the known message after the unknown ones arrives");
+        assert!(matches!(inbox.recv_blocking(), Ok(Inbound::HubGone)));
     }
 
     #[test]

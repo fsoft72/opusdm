@@ -11,7 +11,7 @@ use crate::desktop_settings;
 use opusdm_fsops::{CancelToken, Progress};
 use opusdm_ipc::bindings::{self, Bindings};
 use opusdm_ipc::format::{self, FormatStore};
-use opusdm_ipc::frame::{recv, send};
+use opusdm_ipc::frame::{recv, recv_tolerant, send, Received};
 use opusdm_ipc::function::{FnStep, FunctionId, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
 use std::collections::HashMap;
@@ -1414,15 +1414,22 @@ fn is_decode_error(e: &std::io::Error) -> bool {
 }
 
 /// Read connection `cid` until it ends, passing every message to the owner
-/// loop. A message the hub cannot decode ends the connection with a log line,
-/// so a client built from another OpusDM version is not dropped silently.
+/// loop. A message of an unknown variant (a newer client) is skipped with a
+/// log line; one the hub cannot decode at all ends the connection with a log
+/// line, so a client built from another OpusDM version is not dropped silently.
 fn reader_loop(cid: u64, mut stream: UnixStream, owner_tx: Sender<OwnerMsg>) {
     loop {
-        match recv::<_, ToHub>(&mut stream) {
-            Ok(Some(msg)) => {
+        match recv_tolerant::<_, ToHub>(&mut stream) {
+            Ok(Some(Received::Msg(msg))) => {
                 if owner_tx.send(OwnerMsg::FromLister(cid, msg)).is_err() {
                     return;
                 }
+                continue;
+            }
+            // A newer client sent something this hub does not know: skip it
+            // and keep the connection.
+            Ok(Some(Received::Unknown(tag))) => {
+                opusdm_ipc::err_log!("hub", "connection {cid}: ignoring message {tag}, this hub does not know it (another OpusDM version?)");
                 continue;
             }
             Ok(None) => {}

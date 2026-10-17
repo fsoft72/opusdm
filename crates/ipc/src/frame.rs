@@ -57,6 +57,42 @@ pub fn recv<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<Option<T>> {
     }
 }
 
+/// One frame read by [`recv_tolerant`].
+#[derive(Debug, PartialEq)]
+pub enum Received<T> {
+    /// A message this build can decode.
+    Msg(T),
+    /// A message of an enum variant this build does not know (a peer built
+    /// from a newer OpusDM), with the variant name.
+    Unknown(String),
+}
+
+/// Like [`recv`], but a message whose enum variant this build does not know
+/// is returned as [`Received::Unknown`] instead of an error, so the caller
+/// can skip it and keep the connection. A known variant with bad fields, or
+/// a frame that is not JSON, is still an error.
+pub fn recv_tolerant<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<Option<Received<T>>> {
+    let Some(bytes) = read_frame(r)? else { return Ok(None) };
+    match serde_json::from_slice::<T>(&bytes) {
+        Ok(msg) => Ok(Some(Received::Msg(msg))),
+        Err(e) => match _unknown_variant(&bytes, &e) {
+            Some(tag) => Ok(Some(Received::Unknown(tag))),
+            None => Err(io::Error::other(e)),
+        },
+    }
+}
+
+/// The variant name of `bytes` when `e` says the variant is unknown: the
+/// string of a unit variant, or the only key of `{"Variant": ...}`.
+fn _unknown_variant(bytes: &[u8], e: &serde_json::Error) -> Option<String> {
+    if !e.to_string().starts_with("unknown variant") { return None; }
+    match serde_json::from_slice::<serde_json::Value>(bytes).ok()? {
+        serde_json::Value::String(tag) => Some(tag),
+        serde_json::Value::Object(map) if map.len() == 1 => map.keys().next().cloned(),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +150,48 @@ mod tests {
         let mut cur = Cursor::new((MAX_FRAME + 1).to_be_bytes().to_vec());
         let err = read_frame(&mut cur).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    enum Old {
+        Ping,
+        Line { text: String },
+    }
+
+    #[derive(serde::Serialize)]
+    enum New {
+        Ping,
+        Line { text: String },
+        Waiting { step: usize },
+        Gone,
+    }
+
+    fn frames(msgs: &[New]) -> Cursor<Vec<u8>> {
+        let mut buf = Vec::new();
+        for m in msgs {
+            send(&mut buf, m).unwrap();
+        }
+        Cursor::new(buf)
+    }
+
+    #[test]
+    fn tolerant_recv_skips_unknown_variants_and_keeps_reading() {
+        let mut cur = frames(&[New::Waiting { step: 2 }, New::Ping, New::Gone, New::Line { text: "x".into() }]);
+        assert_eq!(recv_tolerant::<_, Old>(&mut cur).unwrap(), Some(Received::Unknown("Waiting".into())));
+        assert_eq!(recv_tolerant::<_, Old>(&mut cur).unwrap(), Some(Received::Msg(Old::Ping)));
+        assert_eq!(recv_tolerant::<_, Old>(&mut cur).unwrap(), Some(Received::Unknown("Gone".into())));
+        assert_eq!(recv_tolerant::<_, Old>(&mut cur).unwrap(), Some(Received::Msg(Old::Line { text: "x".into() })));
+        assert_eq!(recv_tolerant::<_, Old>(&mut cur).unwrap(), None);
+    }
+
+    #[test]
+    fn tolerant_recv_still_fails_on_a_broken_known_message() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, br#"{"Line":{"txt":"x"}}"#).unwrap();
+        write_frame(&mut buf, b"not json").unwrap();
+        let mut cur = Cursor::new(buf);
+        assert!(recv_tolerant::<_, Old>(&mut cur).is_err(), "a known variant with a wrong field is an error");
+        assert!(recv_tolerant::<_, Old>(&mut cur).is_err(), "a frame that is not JSON is an error");
     }
 
     #[test]
