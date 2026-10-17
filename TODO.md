@@ -30,7 +30,7 @@
   (before, the run only stopped at its next step). An editor started with wait dies when the Lister that started the
   function is closed. Decide if this is wanted; if not, only stop the steps that have not started.
 
-- [ ] Failed thumbnails are not retried by a reload (F5)
+- [x] (done, checked in Xephyr; see CHANGES.md 2026-10-17; Reload is Ctrl+R) Failed thumbnails are not retried by a reload (F5)
 
   Since `4c24cc5` a failed thumbnail is retried only when the file mtime or the icon size bucket changes, or after
   leaving and re-entering the folder. The Lister uses only `refresh_entries`, so F5 does not clear the failed set.

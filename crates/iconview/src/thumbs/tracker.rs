@@ -44,6 +44,12 @@ impl ThumbTracker {
     pub fn retain_failed(&mut self, keep: impl Fn(&Path) -> bool) {
         self.failed.retain(|p| keep(p));
     }
+
+    /// Forget every failure, so each path may be asked for again (a reload
+    /// asked by the user: a missing or busy tool may work now).
+    pub fn forget_failed(&mut self) {
+        self.failed.clear();
+    }
 }
 
 #[cfg(test)]
@@ -81,6 +87,17 @@ mod tests {
         t.retain_failed(|p| p == Path::new("/x.pdf"));
         assert!(!t.begin(Path::new("/x.pdf")));
         assert!(t.begin(Path::new("/y.pdf")));
+    }
+
+    #[test]
+    fn forget_failed_lets_every_failure_retry_but_keeps_pending() {
+        let mut t = ThumbTracker::default();
+        t.begin(Path::new("/x.pdf"));
+        t.finish(Path::new("/x.pdf"), false);
+        t.begin(Path::new("/busy.mkv"));
+        t.forget_failed();
+        assert!(t.begin(Path::new("/x.pdf")));
+        assert!(!t.begin(Path::new("/busy.mkv")), "a request in flight is not queued twice");
     }
 
     #[test]

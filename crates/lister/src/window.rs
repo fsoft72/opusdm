@@ -546,6 +546,14 @@ impl Ui {
         self.navigate(&cwd, false, move || this.select_names(&selected));
     }
 
+    /// The Reload command (Ctrl+R): [`Ui::reload`], and the thumbnails that
+    /// failed are asked for again. Automatic reloads (watcher, jobs) keep
+    /// skipping them.
+    pub fn reload_by_user(self: &Rc<Self>) {
+        self.view.icon_field.retry_failed_thumbs();
+        self.reload();
+    }
+
     /// Answer the hub hiding (`true`) or revealing (`false`) the desktop:
     /// minimize this window, or bring it back if the hub minimized it.
     pub fn set_hidden(&self, hidden: bool) {

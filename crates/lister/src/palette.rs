@@ -84,7 +84,7 @@ pub fn execute_command(ui: &Rc<Ui>, cmd_id: CommandId) {
         CommandId::ListerFormat => crate::format_editor::open(ui),
         CommandId::SetShowPattern => crate::format_editor::set_pattern(ui, crate::format_editor::PatternKind::Show),
         CommandId::SetHidePattern => crate::format_editor::set_pattern(ui, crate::format_editor::PatternKind::Hide),
-        CommandId::Reload => ui.reload(),
+        CommandId::Reload => ui.reload_by_user(),
 
         // Selection
         CommandId::SelectAll => {

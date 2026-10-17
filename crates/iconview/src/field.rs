@@ -401,6 +401,15 @@ impl IconField {
         }
     }
 
+    /// Ask again for the thumbnails that failed (a reload asked by the user:
+    /// `ffmpeg` or `pdftoppm` may be installed or idle now). Requests still in
+    /// flight are not queued twice. Automatic refreshes (a watcher event) do
+    /// not call this, so a broken file is not decoded on every change.
+    pub fn retry_failed_thumbs(&self) {
+        self.inner.layout.thumb_tracker.borrow_mut().forget_failed();
+        self.request_missing_thumbs();
+    }
+
     /// Queue thumbnail jobs for the wanted entries under a fresh generation,
     /// discarding results still in flight for the previous entry list.
     fn request_thumbs(&self) {
@@ -1308,6 +1317,8 @@ mod tests {
         }]);
         // "rs" is not previewable, so no job is queued and nothing panics.
         f_on.set_icon_size(200);
+        f_on.retry_failed_thumbs();
+        f_off.retry_failed_thumbs();
     }
 
     /// Inter-window drag rules and moving one icon.
