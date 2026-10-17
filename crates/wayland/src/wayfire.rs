@@ -17,6 +17,8 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -25,6 +27,10 @@ pub const ENV_SOCKET: &str = "WAYFIRE_SOCKET";
 
 /// Largest message accepted from the socket, a guard against garbage.
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+
+/// Longest wait for one request to be written or answered: a stalled
+/// compositor must not hang the caller forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A rectangle in pixels.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -74,11 +80,10 @@ pub struct State {
 }
 
 impl State {
-    /// Read windows and outputs from the running Wayfire.
+    /// Read windows and outputs from the running Wayfire, on a new
+    /// connection.
     pub fn read() -> Result<State, String> {
-        let views = call("window-rules/list-views", json!({}))?;
-        let outputs = call("window-rules/list-outputs", json!({}))?;
-        Ok(State::from_json(&views, &outputs))
+        Client::connect()?.state()
     }
 
     /// Build a state from the replies of `list-views` and `list-outputs`.
@@ -206,7 +211,8 @@ pub fn under_wayfire() -> bool {
     socket_path().is_some()
 }
 
-/// Open a new connection to the IPC socket.
+/// Open a new connection to the IPC socket, with no timeout (the event
+/// stream may stay silent for hours).
 fn connect() -> Result<UnixStream, String> {
     let path = socket_path().ok_or_else(|| format!("{ENV_SOCKET} is not set or the socket is missing"))?;
     UnixStream::connect(&path).map_err(|e| format!("cannot connect to {}: {e}", path.display()))
@@ -244,26 +250,74 @@ fn checked(method: &str, reply: Value) -> Result<Value, String> {
     }
 }
 
-/// Send one request on a new connection and return the reply.
-pub fn call(method: &str, data: Value) -> Result<Value, String> {
-    let mut stream = connect()?;
-    send(&mut stream, method, data)?;
-    checked(method, receive(&mut stream)?)
+/// One request connection: any number of requests, one after the other,
+/// each bounded by a timeout.
+pub struct Client {
+    stream: UnixStream,
 }
 
-/// Call `on_change` with the current state, then again after every event
-/// Wayfire sends, from a thread of its own. Returns once the thread runs;
-/// the thread stops (with a log line) when Wayfire goes away.
+impl Client {
+    /// Connect to the running Wayfire.
+    pub fn connect() -> Result<Client, String> {
+        Client::with_timeout(connect()?, REQUEST_TIMEOUT)
+    }
+
+    /// Wrap `stream`, bounding every read and write by `timeout`.
+    fn with_timeout(stream: UnixStream, timeout: Duration) -> Result<Client, String> {
+        stream.set_read_timeout(Some(timeout)).map_err(|e| format!("cannot set the read timeout: {e}"))?;
+        stream.set_write_timeout(Some(timeout)).map_err(|e| format!("cannot set the write timeout: {e}"))?;
+        Ok(Client { stream })
+    }
+
+    /// Send request `method` with `data` and return the reply.
+    pub fn request(&mut self, method: &str, data: Value) -> Result<Value, String> {
+        send(&mut self.stream, method, data)?;
+        let reply = receive(&mut self.stream).map_err(|e| format!("{method}: {e}"))?;
+        checked(method, reply)
+    }
+
+    /// Read windows and outputs.
+    pub fn state(&mut self) -> Result<State, String> {
+        let views = self.request("window-rules/list-views", json!({}))?;
+        let outputs = self.request("window-rules/list-outputs", json!({}))?;
+        Ok(State::from_json(&views, &outputs))
+    }
+}
+
+/// Send one request on a new connection and return the reply.
+pub fn call(method: &str, data: Value) -> Result<Value, String> {
+    Client::connect()?.request(method, data)
+}
+
+/// Call `on_change` with the current state, then again after every burst of
+/// events Wayfire sends, from threads of its own. Returns once they run;
+/// they stop (with a log line) when Wayfire goes away.
+///
+/// One thread only reads the event stream; the other waits for it, drops
+/// every event already queued (a window drag sends dozens), and re-reads the
+/// state once on a request connection it keeps open.
 pub fn watch(mut on_change: impl FnMut(&State) + Send + 'static) -> Result<(), String> {
     let mut stream = connect()?;
     send(&mut stream, "window-rules/events/watch", json!({}))?;
     checked("window-rules/events/watch", receive(&mut stream)?)?;
+    let (tx, rx) = mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("opusdm-wayfire-events".into())
+        .spawn(move || loop {
+            if let Err(e) = receive(&mut stream) {
+                opusdm_ipc::err_log!("opusdm-wayland", "Wayfire event watch stopped: {e}");
+                return;
+            }
+            if tx.send(()).is_err() { return; }
+        })
+        .map_err(|e| format!("cannot start the Wayfire event thread: {e}"))?;
     std::thread::Builder::new()
         .name("opusdm-wayfire".into())
         .spawn(move || {
+            let mut client: Option<Client> = None;
             let mut last: Option<State> = None;
             loop {
-                match State::read() {
+                match read_state(&mut client) {
                     Ok(state) if last.as_ref() != Some(&state) => {
                         on_change(&state);
                         last = Some(state);
@@ -271,14 +325,29 @@ pub fn watch(mut on_change: impl FnMut(&State) + Send + 'static) -> Result<(), S
                     Ok(_) => {}
                     Err(e) => opusdm_ipc::err_log!("opusdm-wayland", "Wayfire state not read: {e}"),
                 }
-                if let Err(e) = receive(&mut stream) {
-                    opusdm_ipc::err_log!("opusdm-wayland", "Wayfire event watch stopped: {e}");
-                    return;
-                }
+                if !wait_and_drain(&rx) { return; }
             }
         })
         .map_err(|e| format!("cannot start the Wayfire thread: {e}"))?;
     Ok(())
+}
+
+/// Read the state on `client`, connecting first when there is none. A
+/// failed read drops the connection, so the next one starts afresh.
+fn read_state(client: &mut Option<Client>) -> Result<State, String> {
+    if client.is_none() { *client = Some(Client::connect()?); }
+    let Some(c) = client.as_mut() else { return Err("no Wayfire connection".into()) };
+    let state = c.state();
+    if state.is_err() { *client = None; }
+    state
+}
+
+/// Block until at least one event arrived on `rx`, then drop all the others
+/// already queued. `false` once the event thread has stopped.
+fn wait_and_drain(rx: &mpsc::Receiver<()>) -> bool {
+    if rx.recv().is_err() { return false; }
+    while rx.try_recv().is_ok() {}
+    true
 }
 
 /// Raise and focus window `id`.
@@ -298,10 +367,11 @@ pub fn set_minimized(id: u32, minimized: bool) -> Result<(), String> {
 
 /// Show desktop `index` on the main output.
 pub fn switch_desktop(index: u32) -> Result<(), String> {
-    let state = State::read()?;
+    let mut client = Client::connect()?;
+    let state = client.state()?;
     let o = state.main_output().ok_or("Wayfire reports no output")?;
     let (x, y) = workspace_at(index, o.grid);
-    call("vswitch/set-workspace", json!({ "x": x, "y": y, "output-id": o.id })).map(drop)
+    client.request("vswitch/set-workspace", json!({ "x": x, "y": y, "output-id": o.id })).map(drop)
 }
 
 /// Where window `id` goes to be on desktop `index` of its output, without
@@ -318,9 +388,10 @@ pub fn geometry_on_desktop(state: &State, id: u32, index: u32) -> Result<Rect, S
 
 /// Move window `id` to desktop `index`; the desktop shown does not change.
 pub fn move_to_desktop(id: u32, index: u32) -> Result<(), String> {
-    let g = geometry_on_desktop(&State::read()?, id, index)?;
+    let mut client = Client::connect()?;
+    let g = geometry_on_desktop(&client.state()?, id, index)?;
     let geometry = json!({ "x": g.x, "y": g.y, "width": g.w, "height": g.h });
-    call("window-rules/configure-view", json!({ "id": id, "geometry": geometry })).map(drop)
+    client.request("window-rules/configure-view", json!({ "id": id, "geometry": geometry })).map(drop)
 }
 
 #[cfg(test)]
@@ -387,6 +458,41 @@ mod tests {
     #[test]
     fn frames_carry_a_little_endian_length() {
         assert_eq!(frame(b"{}"), vec![2, 0, 0, 0, b'{', b'}']);
+    }
+
+    #[test]
+    fn a_burst_of_events_is_drained_in_one_wait() {
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..5 { tx.send(()).unwrap(); }
+        assert!(wait_and_drain(&rx));
+        assert!(rx.try_recv().is_err());
+        tx.send(()).unwrap();
+        drop(tx);
+        assert!(wait_and_drain(&rx));
+        assert!(!wait_and_drain(&rx));
+    }
+
+    #[test]
+    fn a_silent_compositor_times_the_request_out() {
+        let (ours, _peer) = UnixStream::pair().unwrap();
+        let mut client = Client::with_timeout(ours, Duration::from_millis(50)).unwrap();
+        let err = client.request("window-rules/list-views", json!({})).unwrap_err();
+        assert!(err.starts_with("window-rules/list-views: read failed"), "{err}");
+    }
+
+    #[test]
+    fn one_client_serves_several_requests() {
+        let (ours, mut peer) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            for i in 0..2 {
+                receive(&mut peer).unwrap();
+                peer.write_all(&frame(json!({ "n": i }).to_string().as_bytes())).unwrap();
+            }
+        });
+        let mut client = Client::with_timeout(ours, Duration::from_secs(5)).unwrap();
+        assert_eq!(client.request("a", json!({})).unwrap()["n"], 0);
+        assert_eq!(client.request("b", json!({})).unwrap()["n"], 1);
+        server.join().unwrap();
     }
 
     #[test]
