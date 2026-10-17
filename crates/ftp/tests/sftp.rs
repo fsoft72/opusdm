@@ -130,8 +130,8 @@ fn first_connection_asks_to_trust_the_host_then_browses_and_downloads() {
     // Copy a file and a folder to a local destination.
     let local = tempfile::tempdir().unwrap();
     let items = vec![
-        RemoteItem { path: format!("{root}/hello.txt"), name: "hello.txt".into(), is_dir: false },
-        RemoteItem { path: format!("{root}/sub"), name: "sub".into(), is_dir: true },
+        RemoteItem { path: format!("{root}/hello.txt"), name: "hello.txt".into(), is_dir: false, is_symlink: false },
+        RemoteItem { path: format!("{root}/sub"), name: "sub".into(), is_dir: true, is_symlink: false },
     ];
     download(fs.as_mut(), &items, local.path(), &AtomicBool::new(false), &mut |_| {}).unwrap();
     assert_eq!(std::fs::read(local.path().join("hello.txt")).unwrap(), b"hello over sftp");
@@ -182,8 +182,36 @@ fn upload_and_remove_round_trip_on_the_server() {
     opusdm_ftp::upload(fs.as_mut(), &[local.path().join("d")], &root, &AtomicBool::new(false), &mut |_| {}).unwrap();
     assert_eq!(opusdm_ftp::existing_remote(fs.as_mut(), &root, &["d".to_string(), "x".to_string()]).unwrap(), vec!["d".to_string()]);
 
-    let item = RemoteItem { path: format!("{root}/d"), name: "d".into(), is_dir: true };
+    let item = RemoteItem { path: format!("{root}/d"), name: "d".into(), is_dir: true, is_symlink: false };
     opusdm_ftp::remove_tree(fs.as_mut(), &[item], &AtomicBool::new(false), &mut |_| {}).unwrap();
     assert!(!remote.path().join("d").exists());
+    fs.close();
+}
+
+#[test]
+fn removing_a_link_to_a_folder_keeps_the_folder() {
+    let Some(server) = start() else {
+        eprintln!("skipped: no usable sshd on this machine");
+        return;
+    };
+    let params = params(&server);
+    trust_host(&params.known_hosts, "127.0.0.1", server.port, &match connect(&params) {
+        Err(RemoteError::UnknownHost { fingerprint, .. }) => fingerprint,
+        _ => panic!("expected UnknownHost"),
+    })
+    .unwrap();
+    let mut fs = connect(&params).unwrap();
+
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::create_dir(remote.path().join("target")).unwrap();
+    std::fs::write(remote.path().join("target/keep.txt"), b"K").unwrap();
+    std::os::unix::fs::symlink(remote.path().join("target"), remote.path().join("link")).unwrap();
+    let root = remote.path().to_string_lossy().into_owned();
+
+    let items = opusdm_ftp::resolve_items(fs.as_mut(), &[format!("{root}/link")]).unwrap();
+    assert!(items[0].is_symlink && items[0].is_dir);
+    opusdm_ftp::remove_tree(fs.as_mut(), &items, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    assert!(std::fs::symlink_metadata(remote.path().join("link")).is_err(), "the link is gone");
+    assert_eq!(std::fs::read(remote.path().join("target/keep.txt")).unwrap(), b"K");
     fs.close();
 }
