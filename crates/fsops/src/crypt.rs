@@ -211,9 +211,11 @@ fn commit_part(part: &Path, target: &Path) -> Result<(), CryptError> {
 }
 
 /// Every regular file under `src` paired with its target below `dest`.
-/// A directory keeps its tree; a file lands directly in `dest`. Entries that
-/// are neither files nor directories are reported through `errors`.
-fn plan(srcs: &[PathBuf], dest: &Path, encrypt: bool, errors: &mut Vec<(PathBuf, String)>) -> Vec<(PathBuf, PathBuf)> {
+/// A directory keeps its tree; a file lands directly in `dest`. A selected
+/// entry that is neither a file nor a directory, and every folder entry that
+/// cannot be read, is reported through `errors`; links and special files
+/// inside a folder are counted in `skipped`.
+fn plan(srcs: &[PathBuf], dest: &Path, encrypt: bool, errors: &mut Vec<(PathBuf, String)>, skipped: &mut u64) -> Vec<(PathBuf, PathBuf)> {
     let mut out = Vec::new();
     for src in srcs {
         let Some(name) = src.file_name().map(|n| n.to_string_lossy().into_owned()) else {
@@ -230,8 +232,19 @@ fn plan(srcs: &[PathBuf], dest: &Path, encrypt: bool, errors: &mut Vec<(PathBuf,
         if meta.is_dir() {
             let root = dest.join(&name);
             for entry in walkdir::WalkDir::new(src).follow_links(false).sort_by_file_name() {
-                let Ok(entry) = entry else { continue };
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        let path = e.path().map(Path::to_path_buf).unwrap_or_else(|| src.clone());
+                        errors.push((path, e.to_string()));
+                        continue;
+                    }
+                };
+                if entry.file_type().is_dir() {
+                    continue;
+                }
                 if !entry.file_type().is_file() {
+                    *skipped += 1;
                     continue;
                 }
                 let rel = entry.path().strip_prefix(src).unwrap_or(entry.path());
@@ -257,11 +270,12 @@ pub fn run_crypt(srcs: &[PathBuf], dest_dir: &Path, password: &str, encrypt: boo
         errors.push((dest_dir.to_path_buf(), "the password must not be empty".into()));
         return Progress::Done { copied: 0, skipped: 0, cancelled: false, errors };
     }
-    let work = plan(srcs, dest_dir, encrypt, &mut errors);
+    let mut skipped = 0u64;
+    let work = plan(srcs, dest_dir, encrypt, &mut errors, &mut skipped);
     let mut done = 0u64;
     for (src, target) in &work {
         if cancel.is_cancelled() {
-            return Progress::Done { copied: done, skipped: 0, cancelled: true, errors };
+            return Progress::Done { copied: done, skipped, cancelled: true, errors };
         }
         let size = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
         let _ = tx.send(Progress::File {
@@ -281,11 +295,11 @@ pub fn run_crypt(srcs: &[PathBuf], dest_dir: &Path, password: &str, encrypt: boo
         }
         match crypt_file(src, target, password, encrypt, cancel) {
             Ok(()) => done += 1,
-            Err(CryptError::Cancelled) => return Progress::Done { copied: done, skipped: 0, cancelled: true, errors },
+            Err(CryptError::Cancelled) => return Progress::Done { copied: done, skipped, cancelled: true, errors },
             Err(e) => errors.push((src.clone(), e.to_string())),
         }
     }
-    Progress::Done { copied: done, skipped: 0, cancelled: false, errors }
+    Progress::Done { copied: done, skipped, cancelled: false, errors }
 }
 
 #[cfg(test)]
@@ -492,5 +506,31 @@ mod tests {
         let free = td.path().join("b.enc");
         commit_part(&part, &free).unwrap();
         assert_eq!(std::fs::read(&free).unwrap(), b"sealed");
+    }
+
+    /// Links inside a folder are counted as skipped and an unreadable
+    /// subfolder is reported, never ignored. (The unreadable part passes
+    /// trivially as root.)
+    #[test]
+    fn folder_entries_left_out_are_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let (src, dest) = (td.path().join("d"), td.path().join("out"));
+        std::fs::create_dir_all(src.join("locked")).unwrap();
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        std::fs::write(src.join("locked/b.txt"), b"b").unwrap();
+        std::os::unix::fs::symlink("a.txt", src.join("link")).unwrap();
+        std::fs::set_permissions(src.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(src.join("locked")).is_ok();
+        let (mut errors, mut skipped) = (Vec::new(), 0u64);
+        let work = plan(std::slice::from_ref(&src), &dest, true, &mut errors, &mut skipped);
+        std::fs::set_permissions(src.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(skipped, 1, "the link");
+        assert!(work.iter().any(|(s, _)| s == &src.join("a.txt")));
+        if !readable {
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!(errors[0].0, src.join("locked"));
+        }
     }
 }

@@ -147,20 +147,26 @@ fn put_back(item: &TrashItem, target: &Path) -> Result<PathBuf, String> {
 
 /// Copy `src` to `target` on another disk with the copy engine, then delete
 /// `src`. `target` does not exist (checked by the caller); a conflict that
-/// still shows up is skipped, never overwritten.
+/// still shows up stops the restore, never overwritten. Anything short of a
+/// complete copy is an error, so the caller keeps the trash info.
 fn move_across(src: &Path, target: &Path) -> Result<(), String> {
     let (dir, name) = match (target.parent(), target.file_name()) {
         (Some(d), Some(n)) => (d, n.to_string_lossy().into_owned()),
         _ => return Err(format!("cannot restore to {}", target.display())),
     };
     let (tx, rx) = std::sync::mpsc::channel::<Progress>();
-    // Dropping a conflict's reply sender makes the engine skip that entry.
+    // Dropping a conflict's reply sender makes the engine cancel the job.
     let drain = std::thread::spawn(move || rx.into_iter().for_each(drop));
     let opts = TransferOpts { names: Some(vec![name]), ..TransferOpts::default() };
     let done = copy_tree_opts(&[src.to_path_buf()], dir, &tx, &CancelToken::new(), true, &opts);
     drop(tx);
-    let _ = drain.join();
+    if drain.join().is_err() {
+        return Err("the restore progress reader crashed".to_string());
+    }
+    let partly = || format!("{} was only partly restored (something was already there); the rest is still in the trash", target.display());
     match done {
+        Progress::Done { cancelled: true, .. } => Err(partly()),
+        Progress::Done { skipped, errors, .. } if skipped > 0 && errors.is_empty() => Err(partly()),
         Progress::Done { errors, .. } if errors.is_empty() && fs::symlink_metadata(target).is_ok() => Ok(()),
         Progress::Done { errors, .. } => match errors.first() {
             Some((path, msg)) => Err(format!("{}: {msg}", path.display())),
@@ -396,6 +402,24 @@ mod tests {
         move_across(&src, &target).unwrap();
         assert_eq!(fs::read_to_string(target.join("sub/f")).unwrap(), "x");
         assert!(!src.exists());
+    }
+
+    /// A conflict inside a cross-disk restore stops it and is reported, so
+    /// the caller keeps the trash info of what is left in the trash.
+    #[test]
+    fn move_across_reports_a_partial_restore() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a"), "a").unwrap();
+        fs::write(src.join("sub/f"), "x").unwrap();
+        let target = td.path().join("out/renamed");
+        fs::create_dir_all(target.join("sub")).unwrap();
+        fs::write(target.join("sub/f"), "theirs").unwrap();
+
+        assert!(move_across(&src, &target).is_err());
+        assert_eq!(fs::read_to_string(target.join("sub/f")).unwrap(), "theirs");
+        assert!(src.join("sub/f").exists(), "what was not restored stays in the trash");
     }
 
     #[test]

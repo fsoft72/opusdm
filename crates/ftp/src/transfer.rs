@@ -174,35 +174,49 @@ fn download_dir(
     Ok(())
 }
 
+/// What an upload sent and what it left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Uploaded {
+    /// The remote path of every top-level item, in order.
+    pub made: Vec<String>,
+    /// Local symbolic links and special files that were not sent. A Move
+    /// must not delete its sources when this is not empty.
+    pub skipped: Vec<PathBuf>,
+}
+
 /// Upload the local files and folders in `local` into the remote directory
 /// `remote_dir`. A folder keeps its tree; symbolic links and other special
-/// files are skipped. Returns the remote path of every top-level item.
+/// files are not sent and are listed in [`Uploaded::skipped`]. A folder that
+/// cannot be read fails the upload.
 pub fn upload(
     fs: &mut dyn RemoteFs,
     local: &[PathBuf],
     remote_dir: &str,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&str),
-) -> Result<Vec<String>, RemoteError> {
-    let mut made = Vec::with_capacity(local.len());
+) -> Result<Uploaded, RemoteError> {
+    let mut out = Uploaded { made: Vec::with_capacity(local.len()), skipped: Vec::new() };
     for path in local {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if !safe_name(&name) {
             return Err(RemoteError::Failed(format!("{}: not a usable file name", path.display())));
         }
         let target = join_remote(remote_dir, &name);
-        upload_item(fs, path, &target, cancel, progress, 0)?;
-        made.push(target);
+        upload_item(fs, path, &target, cancel, progress, &mut out.skipped, 0)?;
+        out.made.push(target);
     }
-    Ok(made)
+    Ok(out)
 }
 
+/// Upload one local entry to `remote`, a folder with its whole tree. Links
+/// and special files are added to `skipped`.
 fn upload_item(
     fs: &mut dyn RemoteFs,
     local: &Path,
     remote: &str,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&str),
+    skipped: &mut Vec<PathBuf>,
     depth: usize,
 ) -> Result<(), RemoteError> {
     if cancel.load(Ordering::Relaxed) {
@@ -214,16 +228,19 @@ fn upload_item(
             return Err(RemoteError::Failed(format!("{}: folders nested too deep", local.display())));
         }
         fs.mkdir(remote)?;
-        let mut children: Vec<_> = std::fs::read_dir(local)?.filter_map(Result::ok).collect();
+        let unreadable = |e: io::Error| RemoteError::Failed(format!("{}: {e}", local.display()));
+        let mut children = std::fs::read_dir(local).map_err(unreadable)?.collect::<io::Result<Vec<_>>>().map_err(unreadable)?;
         children.sort_by_key(|c| c.file_name());
         for child in children {
             let name = child.file_name().to_string_lossy().into_owned();
-            upload_item(fs, &child.path(), &join_remote(remote, &name), cancel, progress, depth + 1)?;
+            upload_item(fs, &child.path(), &join_remote(remote, &name), cancel, progress, skipped, depth + 1)?;
         }
     } else if meta.is_file() {
         progress(remote);
         let mut reader = CancelReader { inner: File::open(local)?, cancel };
         or_cancelled(fs.write_file(remote, &mut reader), cancel)?;
+    } else {
+        skipped.push(local.to_path_buf());
     }
     Ok(())
 }
@@ -563,12 +580,32 @@ mod tests {
         let mut fake = Fake::default();
         fake.dirs.insert("/up".into(), Vec::new());
         fake.files.insert("/up/top.txt".into(), b"old".to_vec());
-        let made = upload(&mut fake, &[td.path().join("d"), td.path().join("top.txt")], "/up", &AtomicBool::new(false), &mut |_| {}).unwrap();
-        assert_eq!(made, vec!["/up/d".to_string(), "/up/top.txt".to_string()]);
+        let sent = upload(&mut fake, &[td.path().join("d"), td.path().join("top.txt")], "/up", &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(sent.made, vec!["/up/d".to_string(), "/up/top.txt".to_string()]);
+        assert_eq!(sent.skipped, vec![td.path().join("d/link")], "the skipped link is reported");
         assert_eq!(fake.files["/up/d/a.txt"], b"AAA");
         assert_eq!(fake.files["/up/d/sub/b.txt"], b"BB");
         assert_eq!(fake.files["/up/top.txt"], b"T");
         assert!(!fake.files.contains_key("/up/d/link"), "links are skipped");
+    }
+
+    /// A folder that cannot be read fails the upload instead of being sent
+    /// as empty. (Passes trivially as root, which reads anything.)
+    #[test]
+    fn upload_fails_on_an_unreadable_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join("d/locked")).unwrap();
+        std::fs::write(td.path().join("d/locked/f"), b"x").unwrap();
+        std::fs::set_permissions(td.path().join("d/locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(td.path().join("d/locked")).is_ok();
+        let mut fake = Fake::default();
+        fake.dirs.insert("/up".into(), Vec::new());
+        let result = upload(&mut fake, &[td.path().join("d")], "/up", &AtomicBool::new(false), &mut |_| {});
+        std::fs::set_permissions(td.path().join("d/locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !readable {
+            assert!(result.is_err(), "{result:?}");
+        }
     }
 
     #[test]
