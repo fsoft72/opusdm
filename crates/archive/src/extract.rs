@@ -4,6 +4,7 @@ use crate::error::{ArchiveError, Result};
 use crate::names;
 use crate::reader::{EntryKind, Reader};
 use crate::writer::DiskWriter;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
@@ -59,7 +60,9 @@ fn _write_zeros(out: &mut dyn Write, mut count: u64) -> Result<()> {
 
 /// Extract `only` (names, folders take everything below them) or the whole
 /// archive into the existing folder `dest`. Existing files are never
-/// overwritten. `cancel` is polled before every entry and every data block.
+/// overwritten, and a hard link whose target was not written by this same
+/// extraction is refused. `cancel` is polled before every entry and every
+/// data block.
 pub fn extract(archive: &Path, dest: &Path, only: Option<&[String]>, cancel: &dyn Fn() -> bool) -> Result<Extracted> {
     if !dest.is_dir() {
         return Err(ArchiveError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} is not a folder", dest.display()))));
@@ -74,6 +77,9 @@ pub fn extract(archive: &Path, dest: &Path, only: Option<&[String]>, cancel: &dy
     let mut writer = DiskWriter::new()?;
     let mut done = Extracted::default();
     let mut hits = vec![false; selection.as_ref().map_or(0, Vec::len)];
+    // Names of the files written by this extraction, the only valid hard
+    // link targets.
+    let mut written: HashSet<String> = HashSet::new();
     while reader.next_header()? {
         if cancel() {
             return Err(ArchiveError::Cancelled);
@@ -102,6 +108,11 @@ pub fn extract(archive: &Path, dest: &Path, only: Option<&[String]>, cancel: &dy
             }
             continue;
         }
+        // A hard link may only point at a file this extraction wrote: one to
+        // a file already in `dest` would let the entry's data rewrite it.
+        if link.as_ref().is_some_and(|l| !written.contains(l)) {
+            return Err(ArchiveError::UnsafePath(name));
+        }
         let entry = writer
             .write_header(&reader, dest, &name, link.as_deref())
             .and_then(|()| _copy_to_disk(&mut reader, &mut writer, cancel))
@@ -118,6 +129,7 @@ pub fn extract(archive: &Path, dest: &Path, only: Option<&[String]>, cancel: &dy
         }
         if !is_dir {
             done.written += 1;
+            written.insert(name);
         }
     }
     writer.close()?;

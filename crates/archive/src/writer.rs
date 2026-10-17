@@ -44,7 +44,10 @@ impl DiskWriter {
     /// path (and hard link target) to live inside `dest`. `name` and `link`
     /// are the already normalised and checked names. The caller must have
     /// checked that the target does not exist: with `NO_OVERWRITE` libarchive
-    /// reports success for an existing file and then rejects its data.
+    /// reports success for an existing file and then rejects its data. It
+    /// must also have checked that `link` names a file written by the same
+    /// extraction: libarchive links to whatever is there and then writes the
+    /// entry's data (pax hard links may carry some) into it.
     pub fn write_header(&mut self, reader: &Reader, dest: &Path, name: &str, link: Option<&str>) -> Result<()> {
         let entry = reader.raw_entry();
         let target = _c_path(&dest.join(name))?;
