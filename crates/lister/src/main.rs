@@ -22,6 +22,7 @@ mod extract_dialog;
 mod crypt_dialog;
 mod cli_dialog;
 mod clip;
+mod close_guard;
 mod commands;
 mod config_cache;
 mod columns;

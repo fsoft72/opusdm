@@ -75,6 +75,8 @@ pub fn run(connected: Connected, start: PathBuf, select: Vec<String>) -> glib::E
                     Inbound::Msg(m) => ui.apply_inbound(m),
                     Inbound::HubGone => {
                         crate::dlog!("hub connection lost, closing window");
+                        // Nobody is left to stop a program: never ask.
+                        ui.close_guard.borrow_mut().allow_close();
                         ui.window.close();
                         break;
                     }
@@ -548,6 +550,7 @@ fn assemble_ui(
         ctrl_click: Cell::new(false),
         sidecar: RefCell::new(None),
         progress,
+        close_guard: RefCell::new(crate::close_guard::CloseGuard::default()),
     })
 }
 
@@ -771,8 +774,23 @@ fn wire_window_signals(ui: &Rc<Ui>) {
     {
         let weak = Rc::downgrade(ui);
         ui.window.connect_close_request(move |_| {
-            if let Some(ui) = weak.upgrade() { ui.shutdown(); }
-            glib::Propagation::Proceed
+            let Some(ui) = weak.upgrade() else {
+                opusdm_ipc::err_log!("opusdm-lister", "close request after the Lister was gone");
+                return glib::Propagation::Proceed;
+            };
+            // A program a Function of this Lister waits on: ask first.
+            let step = ui.close_guard.borrow_mut().on_close_request();
+            match step {
+                crate::close_guard::CloseStep::Proceed => {
+                    ui.shutdown();
+                    glib::Propagation::Proceed
+                }
+                crate::close_guard::CloseStep::Ask(programs) => {
+                    crate::close_guard::ask(&ui, &programs);
+                    glib::Propagation::Stop
+                }
+                crate::close_guard::CloseStep::Wait => glib::Propagation::Stop,
+            }
         });
     }
 }

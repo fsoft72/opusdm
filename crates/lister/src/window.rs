@@ -266,6 +266,9 @@ pub struct Ui {
     /// The progress panel over the window (a slow archive being opened);
     /// while it is shown the rest of the window takes no input.
     pub progress: crate::progress_panel::ProgressPanel,
+    /// Programs that Functions of this Lister wait on: closing the window
+    /// asks about them first.
+    pub close_guard: RefCell<crate::close_guard::CloseGuard>,
 }
 
 impl Ui {

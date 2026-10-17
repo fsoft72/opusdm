@@ -18,7 +18,11 @@ impl Ui {
             ToLister::RoleChanged { source, dests, source_locked } => self.on_roles(Roles { source, dests, source_locked }),
             ToLister::Present => self.window.present(),
             ToLister::SetHidden(hidden) => self.set_hidden(hidden),
-            ToLister::Shutdown => self.window.close(),
+            ToLister::Shutdown => {
+                // The session ends: closing must not wait for a question.
+                self.close_guard.borrow_mut().allow_close();
+                self.window.close();
+            }
             ToLister::ScanDir { path, select, mode } => self.on_scan_dir(&path, select, mode.as_deref()),
             ToLister::GoTo { path } => {
                 self.window.present();
@@ -70,8 +74,14 @@ impl Ui {
                 self.on_function_end(&format!("function failed at step {step_idx}: {error}"));
             }
             ToLister::FunctionDone => self.on_function_end("function finished"),
-            ToLister::FunctionWaiting { run_id, program } => crate::dlog!("function run {run_id} waits for {program}"),
-            ToLister::FunctionWaitEnded { run_id } => crate::dlog!("function run {run_id} no longer waits"),
+            ToLister::FunctionWaiting { run_id, program } => {
+                crate::dlog!("function run {run_id} waits for {program}");
+                self.close_guard.borrow_mut().waiting(run_id, program);
+            }
+            ToLister::FunctionWaitEnded { run_id } => {
+                crate::dlog!("function run {run_id} no longer waits");
+                self.close_guard.borrow_mut().wait_ended(run_id);
+            }
         }
     }
 

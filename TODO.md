@@ -24,7 +24,7 @@
   Lister stays in A with no message. With back/forward the history position has already moved, so the buttons can
   disagree with the folder on screen. Fix idea: a reload of the current folder must not supersede a pending navigation.
 
-- [ ] (hub part done 2026-10-17: the default is now to leave the program running; the Lister close dialog is next) Closing a Lister kills the programs of its `Run ... wait` steps
+- [x] (done 2026-10-17, see CHANGES.md: the Lister asks Leave Open / Stop Program / Cancel; a Lister that just goes away leaves the program running) Closing a Lister kills the programs of its `Run ... wait` steps
 
   Since `9bc12cd` `FunctionRuns::forget_connection` cancels the run and `wait_or_kill` kills the waited child
   (before, the run only stopped at its next step). An editor started with wait dies when the Lister that started the
@@ -124,10 +124,15 @@
   After Enter in the path bar, a click on an icon (icon view) leaves the focus in the entry, so Backspace and Alt+Left
   edit the path text instead of going to the parent / back. The list view takes the focus. Seen on master `0756545` too.
 
-- [ ] Flaky test: `opusdm_polkit::helper::tests::a_wrong_password_ends_in_an_error_and_failure`
+- [ ] Flaky tests: `opusdm_polkit::helper::tests::a_wrong_password_ends_in_an_error_and_failure`
 
   Failed once in `cargo test --workspace` with `Text file busy` (ETXTBSY: a test helper script is executed while
   another test thread still has a file open for writing). Passed on the next run.
+
+  Also flaky: `opusdm_ipc::sockpath::tests::env_override_wins` / `tmp_fallback_shape` (1 failure in 6 runs of
+  `cargo test -p opusdm-ipc` on 2026-10-17): the three `sockpath` tests change `OPUSDM_SOCK` and `XDG_RUNTIME_DIR`
+  with `temp_env_var` while libtest runs them in parallel. A shared lock around them (as `crate::test_env_lock()` in
+  iconview) fixes it.
 
 - [ ] Path bar: typing fast while a folder is suggested can leave suggested text in the path
 
