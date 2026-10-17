@@ -51,7 +51,7 @@ pub fn generate_css(settings: &Settings) -> String {
          .row-dir > label {{ color: {dir_fg}; }} \
          .row-file > label {{ color: {file_fg}; }} \
          .pin-btn {{ min-height: 0; min-width: 0; padding: 2px 6px; }} \
-         button.opus-btn {{ \
+         button.opus-btn, menubutton.opus-btn > button {{ \
              min-height: 30px; \
              min-width: 32px; \
              padding: 3px 6px; \
@@ -65,14 +65,15 @@ pub fn generate_css(settings: &Settings) -> String {
              background: linear-gradient(to bottom, alpha({btn_bg}, 0.95), alpha({btn_bg}, 0.75)); \
              box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.2); \
          }} \
-         button.opus-btn:hover {{ \
+         button.opus-btn:hover, menubutton.opus-btn > button:hover {{ \
              border-top: 1px solid rgba(255, 255, 255, 0.7); \
              border-left: 1px solid rgba(255, 255, 255, 0.7); \
              border-right: 1px solid rgba(0, 0, 0, 0.7); \
              border-bottom: 1px solid rgba(0, 0, 0, 0.7); \
              background: linear-gradient(to bottom, alpha({btn_bg}, 1.0), alpha({btn_bg}, 0.85)); \
          }} \
-         button.opus-btn:active, button.opus-btn:checked {{ \
+         button.opus-btn:active, button.opus-btn:checked, \
+         menubutton.opus-btn > button:active, menubutton.opus-btn > button:checked {{ \
              border-top: 1px solid rgba(0, 0, 0, 0.7); \
              border-left: 1px solid rgba(0, 0, 0, 0.7); \
              border-right: 1px solid rgba(255, 255, 255, 0.5); \
@@ -258,8 +259,18 @@ mod tests {
         let css = generate_css(&settings);
         assert!(css.contains("alpha(#102030, 0.95)"));
         assert!(css.contains("color: #405060;"));
-        let buttons = &css[css.find("button.opus-btn {").unwrap()..css.find("columnview > listview > row {").unwrap()];
+        let buttons = &css[css.find("button.opus-btn, menubutton.opus-btn > button {").unwrap()..css.find("columnview > listview > row {").unwrap()];
         assert!(!buttons.contains("@theme_bg_color"));
+    }
+
+    #[test]
+    fn menu_buttons_get_the_same_bevel_as_the_toolbar_buttons() {
+        // A MenuButton is `menubutton.opus-btn > button`: the bevel must reach
+        // the inner button or "Menu" and History stay flat next to the others.
+        let css = generate_css(&Settings::default());
+        assert!(css.contains("button.opus-btn, menubutton.opus-btn > button {"));
+        assert!(css.contains("menubutton.opus-btn > button:hover"));
+        assert!(css.contains("menubutton.opus-btn > button:checked"));
     }
 
     #[test]
