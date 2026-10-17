@@ -11,7 +11,7 @@
 //! tells all of that but the icons: the pager draws the real window boxes on
 //! the right desktop, and windows can be moved to another desktop.
 
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex, OnceLock};
 
 use opusdm_wayland::wayfire;
 use opusdm_wayland::Snapshot;
@@ -121,40 +121,77 @@ fn client(t: &opusdm_wayland::Toplevel) -> ClientWin {
 /// Switch to workspace `index`. `false` when not on Wayland (the caller then
 /// takes the X11 path).
 pub fn switch_desktop(index: u32) -> bool {
-    if wayfire::under_wayfire() { return with_wayfire("switch desktop", || wayfire::switch_desktop(index)); }
+    if wayfire::under_wayfire() { return with_wayfire("switch desktop", move || wayfire::switch_desktop(index)); }
     with_session(|s| s.activate_workspace(index as usize))
 }
 
 /// Raise and focus window `id`; `false` when not on Wayland.
 pub fn activate_window(id: u32) -> bool {
-    if wayfire::under_wayfire() { return with_wayfire("activate window", || wayfire::focus(id)); }
+    if wayfire::under_wayfire() { return with_wayfire("activate window", move || wayfire::focus(id)); }
     with_session(|s| s.activate(id))
 }
 
 /// Minimize window `id`; `false` when not on Wayland.
 pub fn iconify_window(id: u32) -> bool {
-    if wayfire::under_wayfire() { return with_wayfire("minimize window", || wayfire::set_minimized(id, true)); }
+    if wayfire::under_wayfire() { return with_wayfire("minimize window", move || wayfire::set_minimized(id, true)); }
     with_session(|s| s.minimize(id))
 }
 
 /// Ask window `id` to close, like its close button; `false` when not on
 /// Wayland.
 pub fn close_window(id: u32) -> bool {
-    if wayfire::under_wayfire() { return with_wayfire("close window", || wayfire::close(id)); }
+    if wayfire::under_wayfire() { return with_wayfire("close window", move || wayfire::close(id)); }
     with_session(|s| s.close(id))
 }
 
 /// Move window `id` to desktop `index`; `false` when not on Wayland. Only
 /// Wayfire can do it: no Wayland protocol moves another client's window.
 pub fn move_window_to_desktop(id: u32, index: u32) -> bool {
-    if wayfire::under_wayfire() { return with_wayfire("move window to desktop", || wayfire::move_to_desktop(id, index)); }
+    if wayfire::under_wayfire() { return with_wayfire("move window to desktop", move || wayfire::move_to_desktop(id, index)); }
     opusdm_ipc::session::is_wayland()
 }
 
-/// Run the Wayfire request `f`, logging a failure. Always `true`.
-fn with_wayfire(what: &str, f: impl FnOnce() -> Result<(), String>) -> bool {
-    if let Err(e) = f() {
-        opusdm_ipc::err_log!("opusdm-panel", "Wayfire: {what} failed: {e}");
+/// A Wayfire request queued for the worker thread.
+type WayfireJob = Box<dyn FnOnce() + Send>;
+
+/// Queue of the worker thread that runs Wayfire requests in click order;
+/// `None` when the thread could not be started.
+static WAYFIRE_JOBS: OnceLock<Option<mpsc::Sender<WayfireJob>>> = OnceLock::new();
+
+/// Start the worker thread behind [`WAYFIRE_JOBS`].
+fn start_wayfire_worker() -> Option<mpsc::Sender<WayfireJob>> {
+    let (tx, rx) = mpsc::channel::<WayfireJob>();
+    let spawned = std::thread::Builder::new().name("opusdm-wayfire-call".into()).spawn(move || {
+        while let Ok(job) = rx.recv() {
+            job();
+        }
+    });
+    match spawned {
+        Ok(_) => Some(tx),
+        Err(e) => {
+            opusdm_ipc::err_log!("opusdm-panel", "cannot start the Wayfire request thread: {e}");
+            None
+        }
+    }
+}
+
+/// Run the Wayfire request `f` on the worker thread, so a slow compositor
+/// never blocks the GTK thread, logging a failure. Runs `f` in place when
+/// the worker is not available. Always `true`.
+fn with_wayfire(what: &'static str, f: impl FnOnce() -> Result<(), String> + Send + 'static) -> bool {
+    let job: WayfireJob = Box::new(move || {
+        if let Err(e) = f() {
+            opusdm_ipc::err_log!("opusdm-panel", "Wayfire: {what} failed: {e}");
+        }
+    });
+    match WAYFIRE_JOBS.get_or_init(start_wayfire_worker) {
+        Some(tx) => {
+            if let Err(mpsc::SendError(job)) = tx.send(job) {
+                opusdm_ipc::err_log!("opusdm-panel", "Wayfire request thread gone, running {what} in place");
+                job();
+            }
+        }
+        None => job(),
     }
     true
 }

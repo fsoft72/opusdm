@@ -46,6 +46,10 @@ pub const FADE_MS_RANGE: (u32, u32) = (0, 10_000);
 /// Default colour of a solid background.
 pub const DEFAULT_SOLID: &str = "#2e3436";
 
+/// Height of the panel strip, in pixels. Shared by the panel itself and by
+/// everything that keeps clear of it (dock, runner, desktop windows).
+pub const PANEL_HEIGHT: i32 = 40;
+
 /// Which screen edge the panel (`opusdm-hub`'s dock bar) is docked to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

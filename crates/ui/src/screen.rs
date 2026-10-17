@@ -153,7 +153,7 @@ pub type MonitorRect = (i32, i32, i32, i32);
 /// Shared callback that receives the monitor list after a change.
 type MonitorsCallback = Rc<dyn Fn(Vec<MonitorRect>)>;
 
-/// Call `on_change` with the current `list_monitors` result result every time the
+/// Call `on_change` with the current `list_monitors` result every time the
 /// monitor list changes (hotplug) or any monitor's geometry changes
 /// (resolution switch, or a mirror layout toggled at runtime). Not called
 /// immediately - callers already apply the initial layout at startup.
@@ -198,9 +198,144 @@ where
     }
 }
 
+/// Call `on_change` with the settled monitor layout every time it really
+/// changes, following both [`watch_monitors`] and [`watch_screen_size`].
+///
+/// One mode switch fires several of those signals in a row (the monitor
+/// list, each monitor's geometry, the root `ConfigureNotify`); they are
+/// coalesced into a single idle callback, and a layout equal to the last one
+/// delivered (or to the layout at subscription time) is dropped. On a
+/// single-monitor screen the size reported by the root window wins over
+/// GDK's own geometry, which can lag a Xephyr host-window resize forever.
+///
+/// Not called immediately - callers already apply the initial layout.
+pub fn watch_layout<F>(display: &gdk::Display, on_change: F)
+where
+    F: Fn(Vec<MonitorRect>) + 'static,
+{
+    let tracker = Rc::new(RefCell::new(LayoutTracker::new(list_monitors(display))));
+    let on_change: MonitorsCallback = Rc::new(on_change);
+    let schedule = {
+        let display = display.clone();
+        let tracker = tracker.clone();
+        Rc::new(move || {
+            let display = display.clone();
+            let tracker = tracker.clone();
+            let on_change = on_change.clone();
+            glib::idle_add_local_once(move || {
+                let settled = tracker.borrow_mut().settle(list_monitors(&display));
+                if let Some(rects) = settled {
+                    on_change(rects);
+                }
+            });
+        })
+    };
+    {
+        let (tracker, schedule) = (tracker.clone(), schedule.clone());
+        watch_monitors(display, move |_| {
+            if tracker.borrow_mut().note_change() {
+                schedule();
+            }
+        });
+    }
+    watch_screen_size(move |w, h| {
+        if tracker.borrow_mut().note_screen_size((w, h)) {
+            schedule();
+        }
+    });
+}
+
+/// Coalescing state behind [`watch_layout`]: which layout was delivered
+/// last, the latest root-window size, and whether a settle is already queued.
+#[derive(Debug)]
+struct LayoutTracker {
+    last: Vec<MonitorRect>,
+    screen: Option<(i32, i32)>,
+    scheduled: bool,
+}
+
+impl LayoutTracker {
+    /// Start from the layout the caller already applied.
+    fn new(initial: Vec<MonitorRect>) -> Self {
+        Self { last: initial, screen: None, scheduled: false }
+    }
+
+    /// Record a GDK monitor change. Returns whether a settle must be
+    /// scheduled (false when one is already queued).
+    fn note_change(&mut self) -> bool {
+        !std::mem::replace(&mut self.scheduled, true)
+    }
+
+    /// Record the root window's new size, then behave like [`Self::note_change`].
+    fn note_screen_size(&mut self, size: (i32, i32)) -> bool {
+        self.screen = Some(size);
+        self.note_change()
+    }
+
+    /// Resolve the queued changes against GDK's current `gdk_rects`: the new
+    /// layout when it differs from the last one delivered, else `None`.
+    fn settle(&mut self, gdk_rects: Vec<MonitorRect>) -> Option<Vec<MonitorRect>> {
+        self.scheduled = false;
+        let rects = fit_to_screen(gdk_rects, self.screen);
+        if rects == self.last { return None; }
+        self.last = rects.clone();
+        Some(rects)
+    }
+}
+
+/// Overlay the root-window `screen` size on GDK's `rects`. With one monitor
+/// (or none) the monitor is the root window, so its size is `screen`; a
+/// multi-head list is kept as is, since there GDK's geometry is current and
+/// `screen` is only the primary monitor's size.
+fn fit_to_screen(rects: Vec<MonitorRect>, screen: Option<(i32, i32)>) -> Vec<MonitorRect> {
+    let Some((w, h)) = screen else { return rects };
+    if rects.len() > 1 { return rects; }
+    let (x, y) = rects.first().map(|r| (r.0, r.1)).unwrap_or((0, 0));
+    vec![(x, y, w, h)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_burst_of_changes_schedules_one_settle() {
+        let mut t = LayoutTracker::new(vec![(0, 0, 1024, 768)]);
+        assert!(t.note_change());
+        assert!(!t.note_change());
+        assert!(!t.note_screen_size((1280, 900)));
+        assert_eq!(t.settle(vec![(0, 0, 1024, 768)]), Some(vec![(0, 0, 1280, 900)]));
+        assert!(t.note_change());
+    }
+
+    #[test]
+    fn an_unchanged_layout_is_not_delivered() {
+        let mut t = LayoutTracker::new(vec![(0, 0, 1920, 1080)]);
+        t.note_change();
+        assert_eq!(t.settle(vec![(0, 0, 1920, 1080)]), None);
+        t.note_change();
+        assert_eq!(t.settle(vec![(0, 0, 1920, 1080), (1920, 0, 1280, 1024)]).map(|r| r.len()), Some(2));
+        t.note_change();
+        assert_eq!(t.settle(vec![(0, 0, 1920, 1080), (1920, 0, 1280, 1024)]), None);
+    }
+
+    #[test]
+    fn a_stale_gdk_list_keeps_the_root_size() {
+        let mut t = LayoutTracker::new(vec![(0, 0, 1024, 768)]);
+        t.note_screen_size((1280, 900));
+        assert_eq!(t.settle(vec![(0, 0, 1024, 768)]), Some(vec![(0, 0, 1280, 900)]));
+        // A later GDK notification still carrying the old size changes nothing.
+        t.note_change();
+        assert_eq!(t.settle(vec![(0, 0, 1024, 768)]), None);
+    }
+
+    #[test]
+    fn the_screen_size_only_overrides_a_single_monitor() {
+        let two = vec![(0, 0, 1920, 1080), (1920, 0, 1280, 1024)];
+        assert_eq!(fit_to_screen(two.clone(), Some((1920, 1080))), two);
+        assert_eq!(fit_to_screen(vec![(0, 0, 800, 600)], None), vec![(0, 0, 800, 600)]);
+        assert_eq!(fit_to_screen(Vec::new(), Some((800, 600))), vec![(0, 0, 800, 600)]);
+    }
 
     #[test]
     fn distinct_rects_pass_through_unchanged() {

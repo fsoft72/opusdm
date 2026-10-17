@@ -13,7 +13,7 @@ use x11rb::protocol::xproto::{AtomEnum, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
 
 /// Height of the panel strip, in pixels.
-pub const PANEL_HEIGHT: i32 = 40;
+pub use opusdm_ipc::PANEL_HEIGHT;
 
 /// Background colour of the panel strip, `0xRRGGBB`. Used by the CSS and as
 /// the background of the XEmbed tray icon containers, which the icons

@@ -9,11 +9,10 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 
-/// Every entry the Run window can start: applications first, then commands.
-pub fn load_entries() -> Vec<Entry> {
-    let mut entries = app_entries();
-    entries.extend(scan_path(&std::env::var_os("PATH").unwrap_or_default()));
-    entries
+/// The executables on this process's `PATH`. Stats every file of every
+/// directory, so it belongs on a worker thread, not the GTK one.
+pub fn path_commands() -> Vec<Entry> {
+    scan_path(&std::env::var_os("PATH").unwrap_or_default())
 }
 
 /// The desktop file ids of `items`, folders flattened in menu order.
@@ -30,7 +29,7 @@ pub fn flatten_menu(items: &[MenuItem]) -> Vec<String> {
 
 /// The applications of the custom menu (`menu.json`) when it lists any, else
 /// every installed application a menu would show.
-fn app_entries() -> Vec<Entry> {
+pub fn app_entries() -> Vec<Entry> {
     let ids = opusdm_ipc::menu::load_menu_config().map(|cfg| flatten_menu(&cfg.items)).unwrap_or_default();
     if !ids.is_empty() {
         let infos = opusdm_apps::apps::resolve(&ids).into_iter().map(|e| e.info);

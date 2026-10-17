@@ -1,21 +1,17 @@
 //! The Run window: an input box with a list of suggestions under it.
 
 use crate::launch;
-use crate::search::{self, Entry, Kind, Suggestion};
+use crate::search::{self, Catalog, Entry, Kind, Suggestion};
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_ipc::PanelPosition;
+use opusdm_ipc::{PanelPosition, PANEL_HEIGHT};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Width of the window in pixels.
 const WINDOW_WIDTH: i32 = 600;
-
-/// Height of the hub panel strip, which the window sits under when the panel
-/// is at the top (the same value the panel crate uses).
-const PANEL_HEIGHT: i32 = 40;
 
 /// Padding around the window content.
 const WINDOW_PADDING: i32 = 8;
@@ -41,7 +37,8 @@ struct State {
     input: gtk::Entry,
     list: gtk::ListBox,
     error: gtk::Label,
-    entries: Vec<Entry>,
+    /// What can be started; grows once the PATH scan is done.
+    catalog: RefCell<Catalog>,
     suggestions: RefCell<Vec<Suggestion>>,
 }
 
@@ -53,9 +50,16 @@ pub fn top_left(monitor: (i32, i32, i32, i32), width: i32, panel: PanelPosition)
     (x + (w - width).max(0) / 2, y + below_panel)
 }
 
-/// Open the Run window for `app`, or close it when it is already open (a
-/// second launch of the hotkey toggles it).
-pub fn open(app: &gtk::Application, entries: Vec<Entry>, panel: PanelPosition) {
+/// Open the Run window for `app` with `entries`, or close it when it is
+/// already open (a second launch of the hotkey toggles it). The entries
+/// `load_more` returns are added once it is done; it runs on a worker
+/// thread, and only when the window opens.
+pub fn open(
+    app: &gtk::Application,
+    entries: Vec<Entry>,
+    load_more: impl FnOnce() -> Vec<Entry> + Send + 'static,
+    panel: PanelPosition,
+) {
     if let Some(window) = app.windows().first() {
         window.close();
         return;
@@ -95,11 +99,33 @@ pub fn open(app: &gtk::Application, entries: Vec<Entry>, panel: PanelPosition) {
     root.append(&list);
     window.set_child(Some(&root));
 
-    let state = Rc::new(State { window: window.clone(), input: input.clone(), list: list.clone(), error, entries, suggestions: RefCell::new(Vec::new()) });
+    let catalog = RefCell::new(Catalog::new(entries));
+    let state = Rc::new(State { window: window.clone(), input: input.clone(), list: list.clone(), error, catalog, suggestions: RefCell::new(Vec::new()) });
     wire(&state);
+    load_in_background(&state, load_more);
     place_on_map(&window, panel);
     window.present();
     input.grab_focus();
+}
+
+/// Run `load_more` on a worker thread and add what it returns to the
+/// catalog of `state`, refreshing the list when text is typed already.
+fn load_in_background(state: &Rc<State>, load_more: impl FnOnce() -> Vec<Entry> + Send + 'static) {
+    let weak = Rc::downgrade(state);
+    glib::spawn_future_local(async move {
+        let more = match gio::spawn_blocking(load_more).await {
+            Ok(more) => more,
+            Err(_) => {
+                opusdm_ipc::err_log!("opusdm-run", "loading the commands on PATH panicked");
+                return;
+            }
+        };
+        let Some(state) = weak.upgrade() else { return };
+        state.catalog.borrow_mut().extend(more);
+        if !state.input.text().trim().is_empty() {
+            refresh(&state);
+        }
+    });
 }
 
 /// Connect the input, the list, the keys and the focus handling.
@@ -179,10 +205,11 @@ fn refresh(state: &Rc<State>) {
     while let Some(row) = state.list.first_child() {
         state.list.remove(&row);
     }
-    let found = search::suggest(&state.entries, &state.input.text(), search::MAX_SUGGESTIONS);
+    let catalog = state.catalog.borrow();
+    let found = search::suggest(&catalog, &state.input.text(), search::MAX_SUGGESTIONS);
     let mut previous: Option<Kind> = None;
     for suggestion in &found {
-        let entry = &state.entries[suggestion.entry];
+        let entry = &catalog.entries()[suggestion.entry];
         state.list.append(&build_row(entry, previous != Some(entry.kind)));
         previous = Some(entry.kind);
     }
@@ -233,7 +260,8 @@ fn run(state: &Rc<State>, index: Option<usize>) {
     let chosen = index.and_then(|i| state.suggestions.borrow().get(i).cloned());
     let result = match chosen {
         Some(Suggestion { entry, args }) => {
-            let entry = &state.entries[entry];
+            let catalog = state.catalog.borrow();
+            let entry = &catalog.entries()[entry];
             match entry.kind {
                 Kind::App => launch::launch_app(&entry.id),
                 Kind::Command => launch::command_argv(&entry.id, &args).and_then(|argv| launch::spawn_detached(&argv)),

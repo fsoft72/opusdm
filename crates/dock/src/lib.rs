@@ -482,20 +482,12 @@ impl Dock {
         *self.config_monitor.borrow_mut() = Some(monitor);
     }
 
-    /// Follow the primary monitor across hotplug and screen size changes.
+    /// Follow the primary monitor across hotplug and screen size changes,
+    /// once per settled layout change.
     fn watch_monitors(self: &Rc<Self>) {
-        if let Some(display) = gtk::gdk::Display::default() {
-            let dock = self.clone();
-            opusdm_ui::watch_monitors(&display, move |rects| dock.set_monitor(rects));
-        }
+        let Some(display) = gtk::gdk::Display::default() else { return };
         let dock = self.clone();
-        opusdm_ui::watch_screen_size(move |_w, _h| {
-            let rects = gtk::gdk::Display::default()
-                .as_ref()
-                .map(opusdm_ui::list_monitors)
-                .unwrap_or_default();
-            dock.set_monitor(rects);
-        });
+        opusdm_ui::watch_layout(&display, move |rects| dock.set_monitor(rects));
     }
 
     /// Re-dock onto the first of `rects`, when it changed.
@@ -517,18 +509,48 @@ fn set_margins(widget: &impl IsA<gtk::Widget>, margin: i32) {
     widget.set_margin_bottom(margin);
 }
 
+/// Background of the dock window, `0xRRGGBB` (the panel's colour).
+const DOCK_BACKGROUND: u32 = 0x2e3436;
+
+/// Colour of the thin border around the dock, `0xRRGGBB`.
+const DOCK_BORDER_COLOR: u32 = 0x555753;
+
+/// Background of the app item under the pointer, `0xRRGGBB`.
+const DOCK_HOVER: u32 = 0x3c4043;
+
+/// Corner radius of the hover highlight, in pixels.
+const DOCK_HOVER_RADIUS: i32 = 6;
+
 /// The dock stylesheet: opaque background, thin border, hover highlight.
+fn dock_css() -> String {
+    format!(
+        "window {{ background-color: #{DOCK_BACKGROUND:06x}; border: {border}px solid #{DOCK_BORDER_COLOR:06x}; }}\n\
+         .opusdm-dock-item:hover {{ background-color: #{DOCK_HOVER:06x}; border-radius: {DOCK_HOVER_RADIUS}px; }}",
+        border = placement::BORDER,
+    )
+}
+
+/// Install [`dock_css`] for the whole display.
 fn install_css() {
     let Some(display) = gtk::gdk::Display::default() else { return };
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(&format!(
-        "window {{ background-color: #2e3436; border: {border}px solid #555753; }}\n\
-         .opusdm-dock-item:hover {{ background-color: #3c4043; border-radius: 6px; }}",
-        border = placement::BORDER,
-    ));
+    provider.load_from_data(&dock_css());
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stylesheet_is_built_from_the_named_colours() {
+        let css = dock_css();
+        assert!(css.contains("window { background-color: #2e3436; "), "{css}");
+        assert!(css.contains(&format!("border: {}px solid #555753;", placement::BORDER)), "{css}");
+        assert!(css.contains(".opusdm-dock-item:hover { background-color: #3c4043; border-radius: 6px; }"), "{css}");
+    }
 }

@@ -255,14 +255,18 @@ fn observe(tx: &async_channel::Sender<EwmhEvent>) -> Result<(), Box<dyn std::err
             if !watched.contains(&e.window) {
                 continue;
             }
-            // A window drag sends a burst: collapse it into one snapshot.
+            // A window drag sends a burst: collapse it into one snapshot of
+            // just the windows it names.
+            let mut moved = vec![e.window];
             while let Some(next) = conn.poll_for_event()? {
-                if !matches!(next, Event::ConfigureNotify(_)) {
+                let Event::ConfigureNotify(n) = next else {
                     pending = Some(next);
                     break;
-                }
+                };
+                moved.push(n.window);
             }
-            emit_geometries(&conn, root, &watched, &mut cache, tx);
+            let ids = moved_clients(&moved, &watched, &cache.order);
+            emit_geometries(&conn, root, &ids, &mut cache, tx);
             continue;
         }
         let Event::PropertyNotify(e) = event else { continue };
@@ -305,38 +309,51 @@ fn emit_desktops(
     let _ = tx.send_blocking(EwmhEvent::Desktops { count, current, names });
 }
 
-/// Send the current rectangle of every watched, still existing client, and
-/// keep it in `cache`.
+/// The watched clients named in a burst of `ConfigureNotify` windows
+/// `moved`, once each and in client list `order`.
+fn moved_clients(moved: &[Window], watched: &HashSet<Window>, order: &[Window]) -> Vec<Window> {
+    order.iter().copied().filter(|xid| watched.contains(xid) && moved.contains(xid)).collect()
+}
+
+/// Send the current rectangle of each of `ids` that still exists, and keep
+/// it in `cache`.
 fn emit_geometries(
     conn: &RustConnection,
     root: Window,
-    watched: &HashSet<Window>,
+    ids: &[Window],
     cache: &mut ClientCache,
     tx: &async_channel::Sender<EwmhEvent>,
 ) {
-    let rects: Vec<(u32, WinRect)> = cache
-        .order
-        .iter()
-        .copied()
-        .filter(|xid| watched.contains(xid))
-        .filter_map(|xid| read_rect(conn, root, xid).map(|r| (xid, r)))
-        .collect();
+    if ids.is_empty() { return; }
+    let rects = read_rects(conn, root, ids);
     for (xid, rect) in &rects {
         cache.set_rect(*xid, *rect);
     }
     let _ = tx.send_blocking(EwmhEvent::Geometries(rects));
 }
 
-/// Read the client area of `xid` in root coordinates; `None` if it vanished.
-fn read_rect(conn: &RustConnection, root: Window, xid: Window) -> Option<WinRect> {
-    let geo = conn.get_geometry(xid).ok()?.reply().ok()?;
-    let pos = conn.translate_coordinates(xid, root, 0, 0).ok()?.reply().ok()?;
-    Some(WinRect {
-        x: i32::from(pos.dst_x),
-        y: i32::from(pos.dst_y),
-        w: u32::from(geo.width),
-        h: u32::from(geo.height),
-    })
+/// Read the client area of each of `ids` in root coordinates, skipping the
+/// ones that vanished. All requests go out before the first reply is
+/// awaited, so the batch costs one round trip instead of two per window.
+fn read_rects(conn: &RustConnection, root: Window, ids: &[Window]) -> Vec<(Window, WinRect)> {
+    let cookies: Vec<_> = ids
+        .iter()
+        .map(|&xid| (xid, conn.get_geometry(xid).ok(), conn.translate_coordinates(xid, root, 0, 0).ok()))
+        .collect();
+    cookies
+        .into_iter()
+        .filter_map(|(xid, geo, pos)| {
+            let geo = geo?.reply().ok()?;
+            let pos = pos?.reply().ok()?;
+            let rect = WinRect {
+                x: i32::from(pos.dst_x),
+                y: i32::from(pos.dst_y),
+                w: u32::from(geo.width),
+                h: u32::from(geo.height),
+            };
+            Some((xid, rect))
+        })
+        .collect()
 }
 
 fn emit_active(
@@ -442,7 +459,7 @@ fn read_client(
 
     let pid = property_card(conn, xid, atoms._NET_WM_PID).filter(|p| *p != 0);
 
-    let rect = read_rect(conn, root, xid).unwrap_or_default();
+    let rect = read_rects(conn, root, &[xid]).first().map(|(_, r)| *r).unwrap_or_default();
 
     Some(ClientWin { xid, title, desktop, minimized, pid, icon, app_id: None, rect })
 }
@@ -587,6 +604,15 @@ mod tests {
         let rect = WinRect { x: 5, y: 6, w: 7, h: 8 };
         cache.set_rect(1, rect);
         assert_eq!(cache.snapshot()[0].rect, rect);
+    }
+
+    #[test]
+    fn a_configure_burst_names_each_watched_client_once_in_list_order() {
+        let watched: HashSet<Window> = [1, 2, 3].into_iter().collect();
+        let order = [3, 1, 2, 4];
+        // 9 is not watched, 4 is listed but not watched (yet).
+        assert_eq!(moved_clients(&[1, 9, 3, 1, 4, 3], &watched, &order), vec![3, 1]);
+        assert!(moved_clients(&[9], &watched, &order).is_empty());
     }
 
     #[test]
