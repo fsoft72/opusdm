@@ -2,6 +2,8 @@
 //! polkit helper for the chosen user and shows what PAM asks (the password
 //! prompt, errors, notices). A wrong password starts a new helper run and
 //! keeps the dialog open; success, Cancel or a cancel from polkitd close it.
+//! A helper that keeps failing before it asks anything is not restarted
+//! forever: after a few runs the dialog shows the error and waits.
 
 use crate::agent::{AgentMsg, Outcome, Request};
 use crate::helper::{HelperEvent, Session, HELPER_PATH};
@@ -25,6 +27,28 @@ const MESSAGE_CHARS: i32 = 50;
 const DEFAULT_PROMPT: &str = "Password:";
 /// Shown when PAM refuses without a message of its own.
 const WRONG_PASSWORD: &str = "Authentication failed. Please try again.";
+/// Shown when the helper keeps failing before it asks for a password.
+const HELPER_KEEPS_FAILING: &str = "The polkit helper failed before asking for a password.";
+/// Helper runs in a row that may fail before showing a prompt; after these
+/// the dialog stops restarting the helper.
+const MAX_UNPROMPTED_FAILURES: u32 = 3;
+
+/// What to do when a helper run reports failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterFailure {
+    /// Start a new helper run.
+    Retry,
+    /// Stop restarting: the helper fails before it can ask anything.
+    GiveUp,
+}
+
+/// Decide what follows a failed helper run. A run that showed a prompt is a
+/// wrong answer and is retried; `unprompted_failures` counts the runs in a
+/// row (this one included) that failed before any prompt.
+fn after_failure(prompted: bool, unprompted_failures: u32) -> AfterFailure {
+    if prompted || unprompted_failures < MAX_UNPROMPTED_FAILURES { return AfterFailure::Retry; }
+    AfterFailure::GiveUp
+}
 
 /// Dialog-specific style, added to the shared OpusDM theme.
 pub const POLKIT_CSS: &str = ".polkit-title { font-weight: bold; font-size: 115%; } \
@@ -82,6 +106,10 @@ struct Dialog {
     run: Cell<u64>,
     /// Whether PAM sent an error during the current run.
     run_had_error: Cell<bool>,
+    /// Whether PAM asked for an answer during the current run.
+    run_prompted: Cell<bool>,
+    /// Helper runs in a row that failed before asking anything.
+    unprompted_failures: Cell<u32>,
     finished: Cell<bool>,
 }
 
@@ -138,6 +166,8 @@ impl Dialog {
             session: RefCell::new(None),
             run: Cell::new(0),
             run_had_error: Cell::new(false),
+            run_prompted: Cell::new(false),
+            unprompted_failures: Cell::new(0),
             finished: Cell::new(false),
         });
         dialog.wire(&cancel);
@@ -155,7 +185,12 @@ impl Dialog {
         cancel.connect_clicked(move |_| if let Some(d) = weak.upgrade() { d.finish(Outcome::Cancelled) });
         if let Some(choice) = &self.user_choice {
             let weak = Rc::downgrade(self);
-            choice.connect_selected_notify(move |_| if let Some(d) = weak.upgrade() { d.start_run() });
+            choice.connect_selected_notify(move |_| {
+                let Some(d) = weak.upgrade() else { return };
+                // Another user is a fresh start: the helper may work for them.
+                d.unprompted_failures.set(0);
+                d.start_run();
+            });
         }
         let keys = gtk::EventControllerKey::new();
         let weak = Rc::downgrade(self);
@@ -185,6 +220,7 @@ impl Dialog {
         let run = self.run.get() + 1;
         self.run.set(run);
         self.run_had_error.set(false);
+        self.run_prompted.set(false);
         self.set_answering(false);
         let (session, events) = match Session::start(Path::new(HELPER_PATH), self.selected_user(), &self.cookie) {
             Ok(started) => started,
@@ -216,17 +252,33 @@ impl Dialog {
             }
             HelperEvent::Info(text) => self.show_status(&text, false),
             HelperEvent::Success => self.finish(Outcome::Authenticated),
-            HelperEvent::Failure => {
-                if !self.run_had_error.get() {
-                    self.show_status(WRONG_PASSWORD, true);
-                }
-                self.start_run();
-            }
+            HelperEvent::Failure => self.on_failure(),
         }
+    }
+
+    /// A helper run failed: retry after a wrong answer, but stop restarting
+    /// a helper that keeps failing before it asks anything.
+    fn on_failure(self: &Rc<Self>) {
+        let prompted = self.run_prompted.get();
+        let unprompted = if prompted { 0 } else { self.unprompted_failures.get() + 1 };
+        self.unprompted_failures.set(unprompted);
+        if after_failure(prompted, unprompted) == AfterFailure::GiveUp {
+            self.session.replace(None);
+            opusdm_ipc::err_log!("opusdm-polkit", "{HELPER_PATH} failed {unprompted} times before asking for a password");
+            if !self.run_had_error.get() {
+                self.show_status(HELPER_KEEPS_FAILING, true);
+            }
+            return;
+        }
+        if !self.run_had_error.get() {
+            self.show_status(if prompted { WRONG_PASSWORD } else { HELPER_KEEPS_FAILING }, true);
+        }
+        self.start_run();
     }
 
     /// Let the user answer PAM's `prompt`, the typing hidden unless `visible`.
     fn ask(&self, prompt: &str, visible: bool) {
+        self.run_prompted.set(true);
         self.prompt.set_text(prompt.trim());
         self.entry.set_visibility(visible);
         self.set_answering(true);
@@ -397,5 +449,19 @@ mod tests {
     #[test]
     fn a_monitor_smaller_than_the_dialog_keeps_its_corner() {
         assert_eq!(centered((10, 20, 300, 200), (440, 300)), (10, 20));
+    }
+
+    #[test]
+    fn a_failure_after_a_prompt_is_always_retried() {
+        assert_eq!(after_failure(true, 0), AfterFailure::Retry);
+        assert_eq!(after_failure(true, MAX_UNPROMPTED_FAILURES + 5), AfterFailure::Retry);
+    }
+
+    #[test]
+    fn a_helper_failing_before_any_prompt_is_given_up_after_the_limit() {
+        assert_eq!(after_failure(false, 1), AfterFailure::Retry);
+        assert_eq!(after_failure(false, MAX_UNPROMPTED_FAILURES - 1), AfterFailure::Retry);
+        assert_eq!(after_failure(false, MAX_UNPROMPTED_FAILURES), AfterFailure::GiveUp);
+        assert_eq!(after_failure(false, MAX_UNPROMPTED_FAILURES + 1), AfterFailure::GiveUp);
     }
 }
