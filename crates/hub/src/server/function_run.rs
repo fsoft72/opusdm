@@ -293,7 +293,7 @@ impl Hub {
     /// drops `done`, which fails the step.
     pub(super) fn function_job(&mut self, run_id: u64, spec: opusdm_fsops::JobSpec, done: Sender<crate::functions::JobResult>) {
         let Some(requester) = self.runs.requester(run_id) else { return };
-        self.submit_job(requester, spec, Some(done));
+        self.submit_job(requester, spec, Some(done), 0);
     }
 
     /// Route one output-window event. `Open` records which Lister owns the

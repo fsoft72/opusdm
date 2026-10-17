@@ -130,6 +130,7 @@ pub fn create_here(ui: &Rc<Ui>, file: bool) {
             srcs: Vec::new(),
             dest_dir: Some(ui_clone.cwd_path()),
             options: JobOptions::default(),
+            tag: 0,
         });
     });
 }

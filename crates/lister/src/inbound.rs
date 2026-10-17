@@ -40,7 +40,7 @@ impl Ui {
             ToLister::ConfirmPrompt { req_id, message } => self.ask_for_hub("Confirm", &message, &[("OK", true), ("Cancel", false)], req_id),
             ToLister::AlertPrompt { req_id, message } => self.ask_for_hub("Alert", &message, &[("OK", true)], req_id),
             ToLister::ConflictPrompt { req_id, path, src, dst, .. } => crate::actions::on_conflict(self, req_id, &path, src, dst),
-            ToLister::JobDone { job_id, outcome, errors } => crate::actions::on_job_done(self, job_id, &outcome, &errors),
+            ToLister::JobDone { job_id, outcome, errors, tag } => crate::actions::on_job_done(self, job_id, tag, &outcome, &errors),
             ToLister::RemoteTransfer { op, srcs, dest_dir } => self.run_remote_transfer(op, srcs, dest_dir),
             ToLister::CheckFitResult { dest_dir, needed, free, fits, percent } => {
                 crate::checkfit_ui::show_result(self, &dest_dir, needed, free, fits, percent);

@@ -2,9 +2,10 @@
 //! (every format libarchive reads, see `opusdm-archive`).
 
 use crate::model::{Row, RowAttrs};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
@@ -252,25 +253,49 @@ fn _extract_one(arch: &Path, inner_file: &str, temp_dir: &Path) -> io::Result<Pa
 /// Preview folders created by [`extract_single_file_temp`] in this process.
 static PREVIEW_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// Extraction folders still needed by jobs in flight, each with the number of
-/// `JobDone` replies it waits for (one per DEST Lister the job fans out to).
-static SCRATCH: Mutex<VecDeque<(tempfile::TempDir, usize)>> = Mutex::new(VecDeque::new());
-
-/// Keep `dir` alive until `jobs` jobs have finished (see [`scratch_job_done`]).
-pub fn keep_scratch(dir: tempfile::TempDir, jobs: usize) {
-    SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).push_back((dir, jobs.max(1)));
+/// One extraction folder still needed by jobs in flight.
+struct ScratchDir {
+    /// Deleted from disk when dropped.
+    _dir: tempfile::TempDir,
+    /// The `ToHub::RunJob` tag of the jobs that read from the folder.
+    tag: u64,
+    /// `JobDone` replies still expected (one per DEST Lister the job fans out to).
+    waiting: usize,
 }
 
-/// A job finished: the oldest extraction folder has one reply fewer to wait
-/// for, and is deleted when none is left. Jobs that were cancelled before they
-/// started leave their folder until [`cleanup_temp_dirs`] runs at exit.
-pub fn scratch_job_done() {
+/// Extraction folders still needed by jobs in flight.
+static SCRATCH: Mutex<Vec<ScratchDir>> = Mutex::new(Vec::new());
+
+/// The next `RunJob` tag handed out by [`keep_scratch`]. Starts at 1: `0`
+/// means an untagged job.
+static NEXT_SCRATCH_TAG: AtomicU64 = AtomicU64::new(1);
+
+/// Keep `dir` alive until `jobs` jobs have finished, and return the tag to
+/// send with them in `ToHub::RunJob` (see [`scratch_job_done`]).
+pub fn keep_scratch(dir: tempfile::TempDir, jobs: usize) -> u64 {
+    let tag = NEXT_SCRATCH_TAG.fetch_add(1, Ordering::Relaxed);
+    SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).push(ScratchDir { _dir: dir, tag, waiting: jobs.max(1) });
+    tag
+}
+
+/// A job with `tag` finished (or was cancelled, even before it started): its
+/// extraction folder has one reply fewer to wait for, and is deleted when none
+/// is left. Other jobs never touch the folder; untagged ones (`0`) do nothing.
+pub fn scratch_job_done(tag: u64) {
+    if tag == 0 { return; }
     let mut scratch = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
-    let Some((_, waiting)) = scratch.front_mut() else { return };
-    *waiting -= 1;
-    if *waiting == 0 {
-        scratch.pop_front();
+    let Some(pos) = scratch.iter().position(|s| s.tag == tag) else { return };
+    scratch[pos].waiting -= 1;
+    if scratch[pos].waiting == 0 {
+        scratch.remove(pos);
     }
+}
+
+/// The jobs of `tag` will never be sent (the user cancelled them): delete
+/// their extraction folder now.
+pub fn release_scratch(tag: u64) {
+    if tag == 0 { return; }
+    SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).retain(|s| s.tag != tag);
 }
 
 /// Remove every preview and extraction folder this process created (call when
@@ -537,11 +562,42 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         let dir = tempfile::Builder::new().tempdir_in(td.path()).unwrap();
         let dir_path = dir.path().to_path_buf();
-        keep_scratch(dir, 2);
-        scratch_job_done();
+        let tag = keep_scratch(dir, 2);
+        scratch_job_done(tag);
         assert!(dir_path.exists(), "one of two replies is not enough");
-        scratch_job_done();
+        scratch_job_done(tag);
         assert!(!dir_path.exists(), "gone after the last reply");
-        scratch_job_done(); // no folder left: must not panic
+        scratch_job_done(tag); // no folder left: must not panic
+    }
+
+    #[test]
+    fn an_unrelated_job_does_not_release_a_scratch_folder() {
+        let td = tempfile::tempdir().unwrap();
+        let first = tempfile::Builder::new().tempdir_in(td.path()).unwrap();
+        let first_path = first.path().to_path_buf();
+        let second = tempfile::Builder::new().tempdir_in(td.path()).unwrap();
+        let second_path = second.path().to_path_buf();
+        let first_tag = keep_scratch(first, 1);
+        let second_tag = keep_scratch(second, 1);
+        assert_ne!(first_tag, second_tag);
+        assert_ne!(first_tag, 0, "0 is the untagged value");
+
+        // An untagged job (a quick Delete) and the newer folder's own job end.
+        scratch_job_done(0);
+        scratch_job_done(second_tag);
+        assert!(first_path.exists(), "the oldest folder was released by another job");
+        assert!(!second_path.exists(), "its own job ended");
+        scratch_job_done(first_tag);
+        assert!(!first_path.exists());
+    }
+
+    #[test]
+    fn a_dropped_job_releases_its_scratch_folder() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = tempfile::Builder::new().tempdir_in(td.path()).unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let tag = keep_scratch(dir, 3);
+        release_scratch(tag);
+        assert!(!dir_path.exists(), "a job that is never sent leaves nothing to wait for");
     }
 }

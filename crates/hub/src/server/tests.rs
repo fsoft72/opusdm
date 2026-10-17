@@ -464,7 +464,7 @@ fn remote_jobs_are_handed_back_to_the_requester_with_the_destination_resolved() 
     recv_until(&mut dst, |m| matches!(m, ToLister::CacheList(_)).then_some(()));
 
     // Remote destination, local source: bounced with the DEST path.
-    send(&mut src, &ToHub::RunJob { op: Op::Copy, srcs: vec!["/tmp/a".into()], dest_dir: None, options: Default::default() }).unwrap();
+    send(&mut src, &ToHub::RunJob { op: Op::Copy, srcs: vec!["/tmp/a".into()], dest_dir: None, options: Default::default(), tag: 0 }).unwrap();
     let (op, srcs, dest) = recv_until(&mut src, |m| match m {
         ToLister::RemoteTransfer { op, srcs, dest_dir } => Some((op, srcs, dest_dir)),
         _ => None,
@@ -472,12 +472,44 @@ fn remote_jobs_are_handed_back_to_the_requester_with_the_destination_resolved() 
     assert_eq!((op, srcs, dest), (Op::Copy, vec!["/tmp/a".into()], "sftp://me@host/in".into()));
 
     // Remote source with an explicit destination (Delete): bounced too.
-    send(&mut src, &ToHub::RunJob { op: Op::Delete, srcs: vec!["sftp://me@host/x".into()], dest_dir: Some("sftp://me@host/".into()), options: Default::default() }).unwrap();
+    send(&mut src, &ToHub::RunJob { op: Op::Delete, srcs: vec!["sftp://me@host/x".into()], dest_dir: Some("sftp://me@host/".into()), options: Default::default(), tag: 0 }).unwrap();
     let op = recv_until(&mut src, |m| match m {
         ToLister::RemoteTransfer { op, .. } => Some(op),
         _ => None,
     });
     assert_eq!(op, Op::Delete);
+}
+
+#[test]
+fn job_done_echoes_the_tag_of_its_run_job() {
+    let (_td, listener, path) = bind_temp();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+    let (mut a, _id) = register(&path, 1, "/a");
+    let work = tempfile::tempdir().unwrap();
+
+    // A job the engine runs: its JobDone carries the request's tag.
+    let make = ToHub::RunJob {
+        op: Op::MakeDir { name: "made".into() },
+        srcs: vec![],
+        dest_dir: Some(work.path().to_path_buf()),
+        options: Default::default(),
+        tag: 41,
+    };
+    send(&mut a, &make).unwrap();
+    let tag = recv_until(&mut a, |m| match m {
+        ToLister::JobDone { tag, .. } => Some(tag),
+        _ => None,
+    });
+    assert_eq!(tag, 41);
+
+    // A request refused before any job starts is tagged too.
+    let refused = ToHub::RunJob { op: Op::Copy, srcs: vec!["/tmp/a".into()], dest_dir: None, options: Default::default(), tag: 42 };
+    send(&mut a, &refused).unwrap();
+    let (job_id, tag) = recv_until(&mut a, |m| match m {
+        ToLister::JobDone { job_id, tag, .. } => Some((job_id, tag)),
+        _ => None,
+    });
+    assert_eq!((job_id, tag), (0, 42));
 }
 
 /// Run a Confirm step from one Lister and answer the question with `ok`.

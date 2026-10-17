@@ -53,6 +53,7 @@ fn copy_source_to_dest_lands_file() {
             srcs: vec![src_dir.join("payload.txt")],
             dest_dir: None,
             options: opusdm_ipc::JobOptions::default(),
+            tag: 0,
         },
     )
     .unwrap();
@@ -124,6 +125,7 @@ fn copy_fans_out_to_all_locked_dests() {
             srcs: vec![src.join("f.txt")],
             dest_dir: None,
             options: opusdm_ipc::JobOptions::default(),
+            tag: 0,
         },
     )
     .unwrap();
@@ -198,6 +200,7 @@ fn duplicate_job_with_options_creates_a_copy_next_to_the_source() {
             srcs: vec![td.path().join("f.txt")],
             dest_dir: Some(td.path().to_path_buf()),
             options: opusdm_ipc::JobOptions::default(),
+            tag: 0,
         },
     )
     .unwrap();

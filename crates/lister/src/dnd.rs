@@ -149,9 +149,9 @@ fn submit_dropped(ui: &Rc<Ui>, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<Path
     crate::background::run_blocking(extract, move |result| match result {
         Ok(extracted) => {
             // The drop makes this Lister the requester: one JobDone comes back.
-            crate::archive::keep_scratch(scratch, 1);
+            let tag = crate::archive::keep_scratch(scratch, 1);
             ready.extend(extracted);
-            crate::job_submit::submit_job(&ui, op, ready, dest_dir, opusdm_ipc::JobOptions::default());
+            crate::job_submit::submit_tagged_job(&ui, op, ready, dest_dir, opusdm_ipc::JobOptions::default(), tag);
         }
         Err(e) => crate::actions::flash(&ui, &format!("extraction failed: {e}")),
     });

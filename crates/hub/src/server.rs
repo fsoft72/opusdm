@@ -403,6 +403,8 @@ struct JobMeta {
     src_parents: Vec<PathBuf>,
     /// A Function step waiting for this job: told the outcome on `Done`.
     waiter: Option<Sender<crate::functions::JobResult>>,
+    /// The requester's `ToHub::RunJob` tag, echoed in `JobDone` (`0` = none).
+    tag: u64,
 }
 
 /// All mutable hub state, owned by the owner loop. Splitting the loop's big
@@ -602,8 +604,8 @@ impl Hub {
 
             ToHub::SpawnLister { start_path } => self.spawn_lister(start_path),
 
-            ToHub::RunJob { op, srcs, dest_dir, options } => {
-                self.lister_run_job(cid, op, srcs, dest_dir, options);
+            ToHub::RunJob { op, srcs, dest_dir, options, tag } => {
+                self.lister_run_job(cid, op, srcs, dest_dir, options, tag);
             }
 
             ToHub::RunFunction { steps } => match self.run_source_for(cid) {
@@ -1022,7 +1024,8 @@ impl Hub {
 
     /// `ToHub::RunJob` from a Lister: resolve the destinations (a `None`
     /// destination fans out from the SOURCE to every DEST Lister's current
-    /// directory), validate, and submit each job to the engine.
+    /// directory), validate, and submit each job to the engine. Every
+    /// `JobDone` the request produces, refusals included, carries `tag`.
     fn lister_run_job(
         &mut self,
         cid: u64,
@@ -1030,10 +1033,11 @@ impl Hub {
         srcs: Vec<PathBuf>,
         dest_dir: Option<PathBuf>,
         options: opusdm_ipc::JobOptions,
+        tag: u64,
     ) {
         let fail = |conns: &mut HashMap<u64, Conn>, msg: String| {
             if let Some(c) = conns.get(&cid) {
-                c.queue(cid, ToLister::JobDone { job_id: 0, outcome: Outcome::Error { message: msg }, errors: Vec::new() });
+                c.queue(cid, ToLister::JobDone { job_id: 0, outcome: Outcome::Error { message: msg }, errors: Vec::new(), tag });
             }
         };
         // A `None` destination means a button Copy/Move: the requester
@@ -1077,20 +1081,21 @@ impl Hub {
                 dest_dir,
                 options: options.clone(),
             };
-            self.submit_job(Some(cid), spec, None);
+            self.submit_job(Some(cid), spec, None, tag);
         }
     }
 
     /// Hand `spec` to the job engine on behalf of `requester` (a connection
     /// id, or `None` for a hub-originated job) and start tracking it.
     /// `waiter`, when set, is told the outcome on `Done` (a Function step).
-    fn submit_job(&mut self, requester: Option<u64>, spec: opusdm_fsops::JobSpec, waiter: Option<Sender<crate::functions::JobResult>>) {
+    /// `tag` is echoed in the requester's `JobDone` (`0` = untagged).
+    fn submit_job(&mut self, requester: Option<u64>, spec: opusdm_fsops::JobSpec, waiter: Option<Sender<crate::functions::JobResult>>, tag: u64) {
         let src_parents: Vec<PathBuf> = spec.srcs.iter().filter_map(|s| s.parent().map(PathBuf::from)).collect();
         let (op, dest_dir) = (spec.op.clone(), spec.dest_dir.clone());
         let out = self.engine.submit(requester.map(ListerId), spec);
         self.jobs.insert(
             out.job_id,
-            JobMeta { requester, op, totals: ProgressTotals::default(), dest_dir, src_parents, waiter },
+            JobMeta { requester, op, totals: ProgressTotals::default(), dest_dir, src_parents, waiter, tag },
         );
     }
 
@@ -1109,7 +1114,7 @@ impl Hub {
                     return true;
                 }
                 let spec = opusdm_fsops::JobSpec { op, srcs, dest_dir, options: Default::default() };
-                self.submit_job(None, spec, None);
+                self.submit_job(None, spec, None, 0);
             }
 
             HubCmd::CancelJob(id) => self.engine.cancel(id),
@@ -1196,7 +1201,7 @@ impl Hub {
                 }
                 // `meta` still borrows `self.jobs`: send through the field.
                 if let Some((r, c)) = requester.and_then(|r| self.conns.get(&r).map(|c| (r, c))) {
-                    c.queue(r, ToLister::JobDone { job_id, outcome, errors });
+                    c.queue(r, ToLister::JobDone { job_id, outcome, errors, tag: meta.tag });
                 }
                 send_or_log(&self.evt_tx, HubEvent::JobFinished { job_id, ok: !cancelled && err_count == 0, errors: err_count, cancelled }, "GTK event");
                 // Refresh every Lister showing an affected directory.

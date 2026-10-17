@@ -199,6 +199,11 @@ pub enum ToHub {
         dest_dir: Option<PathBuf>,
         #[serde(default)]
         options: JobOptions,
+        /// Opaque value the hub copies into every `ToLister::JobDone` this
+        /// request produces, so the Lister can tell its own jobs apart. `0`
+        /// (also what an older Lister sends) means untagged.
+        #[serde(default)]
+        tag: u64,
     },
     /// Ask whether `srcs` fit in the free space at `dest_dir` (`None` = the
     /// DEST Lister's directory). Answered by `ToLister::CheckFitResult` or
@@ -520,6 +525,10 @@ pub enum ToLister {
         job_id: u64,
         outcome: Outcome,
         errors: Vec<(PathBuf, String)>,
+        /// The `tag` of the `ToHub::RunJob` that asked for the job; `0` for an
+        /// untagged request (and from an older hub).
+        #[serde(default)]
+        tag: u64,
     },
     /// A destination entry exists; the Lister must prompt and reply.
     ConflictPrompt {
@@ -629,6 +638,7 @@ mod tests {
             srcs: vec!["/a".into(), "/b".into()],
             dest_dir: Some("/dst".into()),
             options: JobOptions::default(),
+            tag: 7,
         });
         roundtrip_tohub(ToHub::RunJob {
             op: Op::CopyAs { new_names: vec!["x".into()] },
@@ -639,18 +649,21 @@ mod tests {
                 include_glob: Some("*.rs".into()),
                 ..JobOptions::default()
             },
+            tag: 0,
         });
         roundtrip_tohub(ToHub::RunJob {
             op: Op::Duplicate,
             srcs: vec![],
             dest_dir: None,
             options: JobOptions::default(),
+            tag: 0,
         });
         roundtrip_tohub(ToHub::RunJob {
             op: Op::Move,
             srcs: vec![],
             dest_dir: None,
             options: JobOptions::default(),
+            tag: 0,
         });
         roundtrip_tohub(ToHub::CheckFit { srcs: vec!["/a".into()], dest_dir: None });
         roundtrip_tohub(ToHub::SpawnLister { start_path: Some("/etc".into()) });
@@ -738,6 +751,7 @@ mod tests {
             job_id: 1,
             outcome: Outcome::Ok { copied: 9, skipped: 0 },
             errors: vec![("/x".into(), "permission denied".into())],
+            tag: 7,
         });
         roundtrip_tolister(ToLister::ConflictPrompt {
             req_id: 2,
@@ -936,8 +950,16 @@ mod tests {
                 srcs: vec!["/a".into()],
                 dest_dir: None,
                 options: JobOptions::default(),
+                tag: 0,
             }
         );
+    }
+
+    #[test]
+    fn job_done_without_tag_decodes_as_untagged() {
+        let json = r#"{"JobDone":{"job_id":4,"outcome":{"Ok":{"copied":1,"skipped":0}},"errors":[]}}"#;
+        let msg: ToLister = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ToLister::JobDone { job_id: 4, tag: 0, .. }), "{msg:?}");
     }
 
     #[test]

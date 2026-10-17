@@ -121,7 +121,7 @@ fn make_in_cwd(ui: &Rc<Ui>, title: &str, op: fn(String) -> Op) {
     let ui = ui.clone();
     let win = ui.window.clone();
     prompt(&win, title, "", move |name| {
-        let job = ToHub::RunJob { op: op(name), srcs: Vec::new(), dest_dir: Some(ui.cwd_path()), options: opusdm_ipc::JobOptions::default() };
+        let job = ToHub::RunJob { op: op(name), srcs: Vec::new(), dest_dir: Some(ui.cwd_path()), options: opusdm_ipc::JobOptions::default(), tag: 0 };
         if let Err(e) = ui.hub.client.send(&job) {
             flash(&ui, &format!("lost the connection to the hub: {e}"));
         }
@@ -258,8 +258,8 @@ pub fn transfer_from_archive(ui: &Rc<Ui>, op: Op, arch: PathBuf, inner: String) 
         Ok(extracted) => {
             // One JobDone comes back per DEST Lister the job fans out to.
             let dests = ui.hub.roles.borrow().dests.len();
-            crate::archive::keep_scratch(scratch, dests);
-            crate::job_submit::submit_job(&ui, op, extracted, None, opusdm_ipc::JobOptions::default());
+            let tag = crate::archive::keep_scratch(scratch, dests);
+            crate::job_submit::submit_tagged_job(&ui, op, extracted, None, opusdm_ipc::JobOptions::default(), tag);
         }
         Err(e) => flash(&ui, &format!("extraction failed: {e}")),
     });
@@ -279,8 +279,9 @@ pub fn sync_role_buttons(ui: &Rc<Ui>) {
     ui.status_bar.role_guard.set(false);
 }
 
-/// Finish a job: clear the line, show errors, reload the view.
-pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(PathBuf, String)]) {
+/// Finish a job: clear the line, show errors, reload the view, and release
+/// the archive scratch folder of the request `tag` once its last job is done.
+pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, tag: u64, outcome: &Outcome, errors: &[(PathBuf, String)]) {
     match outcome {
         Outcome::Error { message } => flash(ui, &format!("job failed: {message}")),
         _ if !errors.is_empty() => {
@@ -289,7 +290,7 @@ pub fn on_job_done(ui: &Rc<Ui>, _job_id: u64, outcome: &Outcome, errors: &[(Path
         }
         _ => ui.status_bar.job_line.set_text(""),
     }
-    crate::archive::scratch_job_done();
+    crate::archive::scratch_job_done(tag);
     // A job changes sizes: forget the ones calculated before.
     ui.caches.sizes.borrow_mut().clear();
     ui.reload();

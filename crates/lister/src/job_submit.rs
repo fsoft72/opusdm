@@ -35,10 +35,25 @@ pub fn submit_job(
     dest_dir: Option<PathBuf>,
     options: JobOptions,
 ) {
+    submit_tagged_job(ui, op, srcs, dest_dir, options, 0);
+}
+
+/// [`submit_job`] with a `RunJob` tag, which the hub echoes in every
+/// `JobDone` of the request (`0` = untagged). A tag from
+/// [`crate::archive::keep_scratch`] has its scratch folder released when
+/// the user cancels the pattern requester, as no job will ever end for it.
+pub fn submit_tagged_job(
+    ui: &Rc<Ui>,
+    op: Op,
+    srcs: Vec<PathBuf>,
+    dest_dir: Option<PathBuf>,
+    options: JobOptions,
+    tag: u64,
+) {
     ui.remember_selection();
     let enabled = ui.hub.settings.borrow().behavior.recursive_filter;
     if !wants_filter(enabled, &op, &srcs) {
-        send(ui, op, srcs, dest_dir, options);
+        send(ui, op, srcs, dest_dir, options, tag);
         return;
     }
     let ui_clone = ui.clone();
@@ -49,6 +64,7 @@ pub fn submit_job(
         &[("OK", true), ("Cancel", false)],
         move |ok, text| {
             if !ok {
+                crate::archive::release_scratch(tag);
                 return;
             }
             let mut options = options.clone();
@@ -56,14 +72,14 @@ pub fn submit_job(
             if !pattern.is_empty() {
                 options.include_glob = Some(pattern.to_string());
             }
-            send(&ui_clone, op.clone(), srcs.clone(), dest_dir.clone(), options);
+            send(&ui_clone, op.clone(), srcs.clone(), dest_dir.clone(), options, tag);
         },
     );
 }
 
 /// Put the job on the wire.
-fn send(ui: &Rc<Ui>, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf>, options: JobOptions) {
-    ui.send_hub(&ToHub::RunJob { op, srcs, dest_dir, options });
+fn send(ui: &Rc<Ui>, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<PathBuf>, options: JobOptions, tag: u64) {
+    ui.send_hub(&ToHub::RunJob { op, srcs, dest_dir, options, tag });
 }
 
 #[cfg(test)]

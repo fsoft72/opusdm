@@ -261,7 +261,7 @@ pub fn map_progress(
             } else {
                 Outcome::Ok { copied: *copied, skipped: *skipped }
             };
-            Some(ToLister::JobDone { job_id, outcome, errors: errors.clone() })
+            Some(ToLister::JobDone { job_id, outcome, errors: errors.clone(), tag: 0 })
         }
     }
 }
