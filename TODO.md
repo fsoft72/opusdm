@@ -85,6 +85,46 @@
   `crates/viewer` `_wire_keys` and the other strong handlers keep `State` alive. It works, but if someone converts
   them to `Weak` the viewer dies like the Lister did. Give `State` an explicit owner (as `StartState.ui` in the Lister).
 
-- [ ] Weak captures of the Lister dialogs were not audited
+- [x] (audited 2026-10-17, no code changed; follow-ups below) Weak captures of the Lister dialogs were not audited
 
   `find_dialog.rs`, `scripts_ui.rs`, `script_editor.rs`: check who owns each `Weak` target for the whole feature.
+  Result:
+  - `find_dialog.rs`: `Dialog` is owned by the window's `connect_close_request` handler (the one strong clone), the
+    `Dialog` does not own the window, no cycle. The weak handlers can upgrade for the whole life of the window. OK.
+  - `scripts_ui.rs`: `Host` is owned by the Scripts window's `connect_destroy` handler (`keep`). `Editor`s are owned by
+    `Host.editors` and removed by `editor_closed`. OK while the Scripts window is open.
+  - `script_editor.rs`: `Editor.host` is `Weak<Host>` and every handler holds `Weak<Editor>`. When the Scripts window
+    closes, its `close_request` closes the editors; an editor with unsaved changes asks Save / Discard / Cancel and,
+    on Cancel, stays open while the Scripts window (and `Host.editors`) goes away. Checked in Xephyr: the editor still
+    works (typing, Save, Ctrl+S wrote the file), so something else keeps it alive, but no explicit owner was found.
+    See the follow-up below.
+  - All three files return silently when a `Weak::upgrade()` fails (`if let Some(..) = weak.upgrade()`), against rule
+    2 of `CLAUDE.md`. See the follow-up below.
+
+- [ ] Script Editor: no explicit owner once the Scripts window is closed
+
+  After Close on the Scripts window and Cancel on an unsaved editor, `Host` and `Host.editors` are gone and every
+  handler of the editor holds a `Weak<Editor>`. It works today (checked in Xephyr), but by an owner nobody chose. Give
+  the open editors an explicit owner for the whole run (or keep `Host` alive while an editor is open). Lifetime change:
+  needs the owner's go-ahead and a check in the running session.
+
+- [ ] Silent `Weak::upgrade()` failures in `find_dialog.rs`, `scripts_ui.rs`, `script_editor.rs`
+
+  Each handler does `if let Some(x) = weak.upgrade()` with no `else`: a dead target is invisible in the log. Add
+  `err_log!` on the failure path (logging only, no lifetime change).
+
+- [ ] Icon view: the spacing grows after a watcher refresh
+
+  In a folder in icon view, a change on disk that triggers `on_directory_changed` (e.g. `chmod` of a file) re-lays out
+  the icons with a wider horizontal spacing; Ctrl+R puts the normal spacing back. Seen in Xephyr on master `0756545`
+  as well, so it is older than the 2026-10-17 thumbnail fixes.
+
+- [ ] Icon view: clicking an icon does not take the keyboard focus from the path bar
+
+  After Enter in the path bar, a click on an icon (icon view) leaves the focus in the entry, so Backspace and Alt+Left
+  edit the path text instead of going to the parent / back. The list view takes the focus. Seen on master `0756545` too.
+
+- [ ] Flaky test: `opusdm_polkit::helper::tests::a_wrong_password_ends_in_an_error_and_failure`
+
+  Failed once in `cargo test --workspace` with `Text file busy` (ETXTBSY: a test helper script is executed while
+  another test thread still has a file open for writing). Passed on the next run.
