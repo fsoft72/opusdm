@@ -2,6 +2,8 @@
 
 use gtk4 as gtk;
 use gtk::prelude::*;
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 /// Live Shift-key state, queried directly from the seat rather than trusted
@@ -36,13 +38,32 @@ pub fn paths_to_uri_list(paths: &[PathBuf]) -> String {
 }
 
 /// Parse a `text/uri-list`: skip `#` comments and non-`file:` URIs, decode `%`.
+///
+/// This is the one decoder for every `file://` list (drag-and-drop and the
+/// clipboard of the Lister and the desktop). An optional `localhost` (or this
+/// machine's) host is stripped; URIs naming another host are skipped, since
+/// their path does not exist here. Decoded bytes are kept as they are, so a
+/// non-UTF-8 name (`%E9`) maps back to the same file.
 pub fn uris_to_paths(text: &str) -> Vec<PathBuf> {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|l| l.strip_prefix("file://"))
-        .map(|rest| PathBuf::from(percent_decode(rest)))
+        .filter_map(local_path_part)
+        .map(|path| PathBuf::from(OsString::from_vec(percent_decode(path.as_bytes()))))
         .collect()
+}
+
+/// The path part of a `file://` URI body (`host/path` or `/path`), or `None`
+/// when the host is not this machine.
+fn local_path_part(rest: &str) -> Option<&str> {
+    if rest.starts_with('/') {
+        return Some(rest);
+    }
+    let slash = rest.find('/')?;
+    let host = &rest[..slash];
+    let local = host.eq_ignore_ascii_case("localhost") || host == gtk::glib::host_name().as_str();
+    local.then_some(&rest[slash..])
 }
 
 fn percent_encode_path(s: &str) -> String {
@@ -58,14 +79,16 @@ fn percent_encode_path(s: &str) -> String {
     out
 }
 
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
+/// Decode `%XX` escapes into raw bytes. A `%` not followed by two hex digits
+/// is kept literally. Works on bytes only, so it never splits a char.
+fn percent_decode(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
+        let escape = (bytes[i] == b'%').then(|| bytes.get(i + 1..i + 3)).flatten();
+        if let Some(&[hi, lo]) = escape {
+            if let (Some(hi), Some(lo)) = (hex_value(hi), hex_value(lo)) {
+                out.push(hi << 4 | lo);
                 i += 3;
                 continue;
             }
@@ -73,7 +96,12 @@ fn percent_decode(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
+}
+
+/// The value of one ASCII hex digit.
+fn hex_value(b: u8) -> Option<u8> {
+    (b as char).to_digit(16).map(|v| v as u8)
 }
 
 #[cfg(test)]
@@ -94,5 +122,28 @@ mod tests {
     fn ignores_comments_and_non_file_uris() {
         let text = "# comment\r\nhttp://example.com/x\r\nfile:///ok\r\n";
         assert_eq!(uris_to_paths(text), vec![PathBuf::from("/ok")]);
+    }
+
+    #[test]
+    fn broken_escape_before_a_multibyte_char_does_not_panic() {
+        // `%1` followed by the two-byte `é`: slicing the &str by byte index
+        // used to cut into the char and panic.
+        assert_eq!(uris_to_paths("file:///tmp/a%1é\r\n"), vec![PathBuf::from("/tmp/a%1é")]);
+        assert_eq!(uris_to_paths("file:///tmp/%é\r\n"), vec![PathBuf::from("/tmp/%é")]);
+        assert_eq!(uris_to_paths("file:///tmp/x%\r\n"), vec![PathBuf::from("/tmp/x%")]);
+    }
+
+    #[test]
+    fn non_utf8_bytes_are_kept_as_raw_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let got = uris_to_paths("file:///tmp/caf%E9.txt\r\n");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].as_os_str().as_bytes(), b"/tmp/caf\xe9.txt");
+    }
+
+    #[test]
+    fn localhost_host_is_stripped_and_remote_hosts_are_skipped() {
+        assert_eq!(uris_to_paths("file://localhost/etc/hosts\r\n"), vec![PathBuf::from("/etc/hosts")]);
+        assert!(uris_to_paths("file://otherbox.example/etc/hosts\r\n").is_empty());
     }
 }
