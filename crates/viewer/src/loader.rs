@@ -34,6 +34,15 @@ pub fn load_thumb(path: &Path, px: i32) -> Result<RawImage, String> {
     Ok(RawImage::from_pixbuf(&upright(pixbuf)))
 }
 
+/// Decode the picture scaled down to fit a `px` x `px` box, or at its own
+/// size when it already fits (never scaled up), turned as its EXIF
+/// orientation says. Safe to call from any thread.
+pub fn load_within(path: &Path, px: i32) -> Result<RawImage, String> {
+    let (_, w, h) = Pixbuf::file_info(path).ok_or_else(|| format!("{} is not a picture this viewer can read", path.display()))?;
+    if w <= px && h <= px { return load_raw(path); }
+    load_thumb(path, px)
+}
+
 /// `pixbuf` with the EXIF orientation the loader found applied (phone
 /// pictures are stored sideways), or as it is when there is none.
 fn upright(pixbuf: Pixbuf) -> Pixbuf {
@@ -128,6 +137,20 @@ mod tests {
         write_png(&file, 40, 20);
         let thumb = load_thumb(&file, 10).unwrap();
         assert_eq!((thumb.width, thumb.height), (10, 5));
+    }
+
+    #[test]
+    fn load_within_scales_big_pictures_down_but_never_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.png");
+        write_png(&big, 40, 20);
+        let raw = load_within(&big, 10).unwrap();
+        assert_eq!((raw.width, raw.height), (10, 5));
+        let small = dir.path().join("small.png");
+        write_png(&small, 4, 2);
+        let raw = load_within(&small, 10).unwrap();
+        assert_eq!((raw.width, raw.height), (4, 2));
+        assert!(load_within(&dir.path().join("missing.png"), 10).is_err());
     }
 
     #[test]

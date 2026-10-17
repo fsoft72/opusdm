@@ -1,11 +1,13 @@
 //! The Markdown area: a read-only text view that shows the rendered file.
 
 use crate::font_scale::DOC_TEXT_CLASS;
+use crate::loader::load_within;
 use crate::markdown::{indent_tag, parse};
 use crate::text_doc::{create_match_tags, create_syntax_tags, set_doc_dark, TextDoc, TextSearch};
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
+use gtk::glib;
 use gtk::pango;
 use gtk::prelude::*;
 use std::cell::RefCell;
@@ -26,6 +28,9 @@ const LINK_COLOR: &str = "#4a90ff";
 const RULE_COLOR: &str = "#888888";
 /// Widest a picture is drawn, in pixels; a wider one is scaled down.
 const MAX_IMAGE_WIDTH: i32 = 800;
+/// Biggest side a picture is decoded at: room for a tall picture while a
+/// huge photo never costs its full size in memory.
+const MAX_DECODE_PX: i32 = 2 * MAX_IMAGE_WIDTH;
 /// Deepest indent tag created (matches `markdown::indent_tag`).
 const MAX_INDENT: usize = 6;
 
@@ -115,25 +120,47 @@ impl MarkdownView {
     }
 
     /// The picture at `url` (a file, from the folder of the text) as a widget;
-    /// `None` for an address on the web or a file that cannot be read.
-    fn _picture(&self, url: &str, alt: &str) -> Option<gtk::Picture> {
+    /// `None` for an address on the web or a name that is not a file. The
+    /// picture is decoded, scaled down, on a worker and appears when ready;
+    /// one that cannot be decoded is replaced by its `[image: alt]` text.
+    fn _picture(&self, url: &str, alt: &str) -> Option<gtk::Box> {
         if url.contains("://") { return None; }
         let name = gtk::glib::Uri::unescape_string(url, None)?;
         let path = self.base.borrow().join(name.as_str());
-        let texture = match gdk::Texture::from_filename(&path) {
-            Ok(t) => t,
-            Err(e) => {
-                opusdm_ipc::err_log!("viewer", "cannot load picture {}: {e}", path.display());
-                return None;
-            }
-        };
-        let (w, h) = (texture.width(), texture.height());
-        let (w, h) = if w > MAX_IMAGE_WIDTH { (MAX_IMAGE_WIDTH, (h as i64 * MAX_IMAGE_WIDTH as i64 / w as i64) as i32) } else { (w, h) };
-        let picture = gtk::Picture::for_paintable(&texture);
-        picture.set_can_shrink(true);
-        picture.set_size_request(w, h);
-        picture.set_tooltip_text(Some(alt).filter(|a| !a.is_empty()));
-        Some(picture)
+        if !path.is_file() {
+            opusdm_ipc::err_log!("viewer", "cannot load picture {}: not a file", path.display());
+            return None;
+        }
+        let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        holder.set_tooltip_text(Some(alt).filter(|a| !a.is_empty()));
+        let handle = gio::spawn_blocking(move || {
+            let decoded = load_within(&path, MAX_DECODE_PX);
+            (path, decoded)
+        });
+        let weak = holder.downgrade();
+        let alt = alt.to_string();
+        glib::spawn_future_local(async move {
+            let decoded = handle.await;
+            // The text was replaced meanwhile: nothing left to fill.
+            let Some(holder) = weak.upgrade() else { return };
+            let (path, decoded) = match decoded {
+                Ok(done) => done,
+                Err(_) => return holder.append(&gtk::Label::new(Some(&format!("[image: {alt}]")))),
+            };
+            let raw = match decoded {
+                Ok(raw) => raw,
+                Err(e) => {
+                    opusdm_ipc::err_log!("viewer", "cannot load picture {}: {e}", path.display());
+                    return holder.append(&gtk::Label::new(Some(&format!("[image: {alt}]"))));
+                }
+            };
+            let (w, h) = display_size(raw.width as i32, raw.height as i32);
+            let picture = gtk::Picture::for_paintable(&raw.texture(0));
+            picture.set_can_shrink(true);
+            picture.set_size_request(w, h);
+            holder.append(&picture);
+        });
+        Some(holder)
     }
 
     /// Target of the link under the widget point (`x`, `y`), if any.
@@ -198,6 +225,13 @@ impl TextDoc for MarkdownView {
     }
 }
 
+/// The size a `w` x `h` picture is drawn at: as it is, or scaled down to
+/// `MAX_IMAGE_WIDTH` wide keeping its proportions.
+fn display_size(w: i32, h: i32) -> (i32, i32) {
+    if w <= MAX_IMAGE_WIDTH { return (w, h); }
+    (MAX_IMAGE_WIDTH, (h as i64 * MAX_IMAGE_WIDTH as i64 / w as i64) as i32)
+}
+
 /// The tags of `markdown::Run`, by name.
 fn _create_tags(buffer: &gtk::TextBuffer) {
     for (i, scale) in HEADING_SCALES.iter().enumerate() {
@@ -218,4 +252,16 @@ fn _create_tags(buffer: &gtk::TextBuffer) {
     create_syntax_tags(buffer);
     // The match tags are created last: they win over every other tag.
     create_match_tags(buffer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrow_pictures_keep_their_size_and_wide_ones_are_scaled_down() {
+        assert_eq!(display_size(640, 480), (640, 480));
+        assert_eq!(display_size(MAX_IMAGE_WIDTH, 10), (MAX_IMAGE_WIDTH, 10));
+        assert_eq!(display_size(1600, 1200), (MAX_IMAGE_WIDTH, 600));
+    }
 }
