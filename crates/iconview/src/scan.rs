@@ -90,15 +90,10 @@ pub fn entry_for_path(path: &Path) -> IconEntry {
 }
 
 /// Sort entries for a tidy grid: directories first, then files, each block by
-/// name case-insensitively.
+/// name case-insensitively. The lowercase key is built once per entry, not
+/// twice per comparison.
 pub fn sort_dirs_first(entries: &mut [IconEntry]) {
-    entries.sort_by(|a, b| {
-        let a_dir = a.kind == IconKind::Dir;
-        let b_dir = b.kind == IconKind::Dir;
-        b_dir
-            .cmp(&a_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    entries.sort_by_cached_key(|e| (e.kind != IconKind::Dir, e.name.to_lowercase()));
 }
 
 #[cfg(test)]

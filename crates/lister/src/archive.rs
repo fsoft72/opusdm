@@ -31,15 +31,22 @@ pub fn is_archive_file(path: &Path) -> bool {
 
 /// Parse a virtual archive path formatted like `/path/to/archive.zip#sub/dir`.
 /// Returns `(archive_path, inner_path)`.
+///
+/// The archive ends at the first `#` whose prefix names an archive, so a `#`
+/// in a parent folder name (`/music/C#/a.zip#sub`) is skipped and a `#` in the
+/// inner path is kept. The archive path keeps its raw (maybe non-UTF-8) bytes.
 pub fn parse_archive_path(path: &Path) -> Option<(PathBuf, String)> {
-    let s = path.to_string_lossy();
-    if let Some((arch_str, inner_str)) = s.split_once('#') {
-        let arch_path = PathBuf::from(arch_str);
-        if is_archive_file(&arch_path) {
-            return Some((arch_path, inner_str.trim_matches('/').to_string()));
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    bytes.iter().enumerate().filter(|&(_, &b)| b == b'#').find_map(|(i, _)| {
+        let arch_path = Path::new(OsStr::from_bytes(&bytes[..i]));
+        if !is_archive_file(arch_path) {
+            return None;
         }
-    }
-    None
+        let inner = String::from_utf8_lossy(&bytes[i + 1..]);
+        Some((arch_path.to_path_buf(), inner.trim_matches('/').to_string()))
+    })
 }
 
 /// Construct a virtual archive path from an archive path and inner path.
@@ -319,6 +326,28 @@ mod tests {
         let (arch, inner) = parse_archive_path(p_root).unwrap();
         assert_eq!(arch, PathBuf::from("/home/user/test.zip"));
         assert_eq!(inner, "");
+    }
+
+    #[test]
+    fn archive_path_parsing_skips_a_hash_in_a_folder_name() {
+        let (arch, inner) = parse_archive_path(Path::new("/music/C#/take#2.zip#sub")).unwrap();
+        assert_eq!(arch, PathBuf::from("/music/C#/take#2.zip"));
+        assert_eq!(inner, "sub");
+        // A `#` after the archive belongs to the inner path.
+        let (arch, inner) = parse_archive_path(Path::new("/a.zip#notes#1/f.txt")).unwrap();
+        assert_eq!(arch, PathBuf::from("/a.zip"));
+        assert_eq!(inner, "notes#1/f.txt");
+        assert!(parse_archive_path(Path::new("/music/C#/plain")).is_none());
+    }
+
+    #[test]
+    fn archive_path_parsing_keeps_non_utf8_archive_names() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let p = Path::new(OsStr::from_bytes(b"/tmp/caf\xe9.zip#sub"));
+        let (arch, inner) = parse_archive_path(p).unwrap();
+        assert_eq!(arch.as_os_str().as_bytes(), b"/tmp/caf\xe9.zip");
+        assert_eq!(inner, "sub");
     }
 
     /// Delete the preview folder holding `file` (tests run in parallel, so they

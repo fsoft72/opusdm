@@ -26,12 +26,14 @@ pub struct ThumbRequest {
     pub generation: u64,
 }
 
-/// A produced thumbnail, as PNG bytes (texture creation is the caller's job).
+/// A finished thumbnail request, as PNG bytes (texture creation is the
+/// caller's job). `png` is `None` when the thumbnail could not be made, so
+/// the caller can stop asking for it.
 pub struct ThumbResult {
     pub index: usize,
     pub path: PathBuf,
     pub size: ThumbSize,
-    pub png: Vec<u8>,
+    pub png: Option<Vec<u8>>,
     pub generation: u64,
 }
 
@@ -76,7 +78,14 @@ impl ThumbPool {
                         Some(bytes) => Some(bytes),
                         None => match generate::generate(&path, kind, size.px()) {
                             Ok(bytes) => {
-                                let _ = cache::store(&path, size, &bytes);
+                                // The thumbnail is still shown; only the disk cache misses out.
+                                if let Err(e) = cache::store(&path, size, &bytes) {
+                                    opusdm_ipc::err_log!(
+                                        "iconview",
+                                        "cannot cache the thumbnail of {}: {e}",
+                                        path.display()
+                                    );
+                                }
                                 Some(bytes)
                             }
                             Err(e) => {
@@ -89,14 +98,10 @@ impl ThumbPool {
                             }
                         },
                     };
-                    if let Some(png) = png {
-                        let _ = out_tx.send_blocking(ThumbResult {
-                            index,
-                            path,
-                            size,
-                            png,
-                            generation: gen_at_start,
-                        });
+                    let res = ThumbResult { index, path, size, png, generation: gen_at_start };
+                    // The receiver is gone only when the field was dropped.
+                    if out_tx.send_blocking(res).is_err() {
+                        break;
                     }
                 })
                 .expect("spawn thumb worker");
@@ -160,7 +165,31 @@ mod tests {
         let res = rx.recv_blocking().expect("a result");
         assert_eq!(res.index, 3);
         assert_eq!(res.path, src);
-        assert!(res.png.windows(4).any(|w| w == b"IDAT"));
+        assert!(res.png.expect("a png").windows(4).any(|w| w == b"IDAT"));
+
+        std::env::remove_var("XDG_CACHE_HOME");
+    }
+
+    #[test]
+    fn pool_reports_a_failed_thumbnail() {
+        let _env_guard = crate::test_env_lock();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CACHE_HOME", td.path().join("cache"));
+        let src = td.path().join("not-an-image.png");
+        std::fs::write(&src, b"garbage").unwrap();
+
+        let (pool, rx) = ThumbPool::new();
+        pool.submit(ThumbRequest {
+            index: 7,
+            path: src.clone(),
+            kind: ThumbKind::Image,
+            size: ThumbSize::Normal,
+            generation: pool.generation(),
+        });
+        let res = rx.recv_blocking().expect("a failure result, not silence");
+        assert_eq!(res.index, 7);
+        assert_eq!(res.path, src);
+        assert!(res.png.is_none());
 
         std::env::remove_var("XDG_CACHE_HOME");
     }

@@ -4,8 +4,10 @@ pub mod cache;
 pub mod generate;
 pub mod png_text;
 mod pool;
+mod tracker;
 
 pub use pool::{ThumbPool, ThumbRequest, ThumbResult};
+pub(crate) use tracker::ThumbTracker;
 
 /// What kind of preview a file gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
