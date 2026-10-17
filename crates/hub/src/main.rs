@@ -13,7 +13,7 @@ mod input_apply;
 mod screen_hotplug;
 mod toolbar;
 
-use opusdm_hub::{children, server, settings};
+use opusdm_hub::{children, server};
 
 use children::AcquireOutcome;
 use opusdm_ipc::sockpath::hub_sock_path;
@@ -45,6 +45,10 @@ fn main() {
         opusdm_ipc::debug_log!("opusdm-hub", "wrote the default hotkeys");
     }
 
+    // Read once, here: the server, the desktop and the startup code below
+    // all start from the same copy.
+    let config = opusdm_hub::startup_config::StartupConfig::load();
+
     let handle = server::spawn_server_with(
         listener,
         Box::new(move |start: Option<std::path::PathBuf>| {
@@ -52,7 +56,7 @@ fn main() {
                 opusdm_ipc::err_log!("opusdm-hub", "cannot spawn lister: {e}");
             }
         }),
-        server::ServerOptions::production(),
+        server::ServerOptions::production_with(config.clone()),
     );
 
     // Answer "show in folder" requests from browsers and other programs.
@@ -90,7 +94,7 @@ fn main() {
 
     // Launch the Startup Apps of Settings, each after its own wait time,
     // unless the hub was restarted with --no-startup-apps.
-    let desktop_settings = opusdm_hub::desktop_settings::load();
+    let desktop_settings = &config.desktop;
     if opusdm_hub::startup_apps::skipped_by_args(&args) {
         opusdm_ipc::debug_log!("opusdm-hub", "startup apps skipped ({})", opusdm_hub::startup_apps::NO_STARTUP_APPS_ARG);
     } else {
@@ -99,7 +103,9 @@ fn main() {
 
     opusdm_hub::channels::send_or_log(&handle.cmd_tx, server::HubCmd::EmitScriptEvent(opusdm_ipc::bindings::ScriptEvent::Startup), "hub command");
 
-    children::install_sigchld(handle.cmd_tx.clone());
+    if let Err(e) = children::install_sigchld(handle.cmd_tx.clone()) {
+        opusdm_ipc::err_log!("opusdm-hub", "cannot watch for exited children (SIGCHLD), they are not reaped: {e}");
+    }
 
     // Open the first Lister at $HOME, unless Settings turned it off.
     if desktop_settings.open_lister_at_start {
@@ -109,6 +115,6 @@ fn main() {
         }
     }
 
-    let code = toolbar::run(handle, sock_path);
+    let code = toolbar::run(handle, sock_path, config);
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }

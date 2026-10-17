@@ -14,7 +14,7 @@
 //! that blocks (`exec`, `confirm`, `alert`, `sleep`) stops at once.
 
 use crate::functions::{recv_or_cancel, run_step, wait_or_kill, FnEvent, NoAnswer, CANCELLED};
-use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source};
+use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Script, Source};
 use opusdm_fsops::CancelToken;
 use opusdm_ipc::function::{expand_text, keys, schema, FnStep, InternalArgs, InternalCmd, SelectionCtx, BOOL_TRUE};
 use serde_json::{json, Map, Value};
@@ -35,6 +35,11 @@ const MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
 
 /// How long a script waits for the hub to answer a [`ScriptQuery`].
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// VM "clock cycles" (Boa's per-instruction cost) a script runs between two
+/// checks for a cancelled run: small enough to stop within milliseconds,
+/// large enough that the check costs nothing measurable.
+const CANCEL_CHECK_BUDGET: u32 = 1 << 16;
 
 /// What a script asks the hub (see [`FnEvent::ScriptQuery`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +113,7 @@ pub fn run_script(
             cancel: cancel.clone(),
         })
     });
-    let result = execute(&code, &name);
+    let result = execute(&code, &name, cancel);
     let host = HOSTS.with(|h| h.borrow_mut().pop()).expect("the script's host is still there");
     *source = host.source;
     result.map_err(|e| format!("script \"{name}\": {e}"))?;
@@ -117,18 +122,43 @@ pub fn run_script(
 }
 
 /// Run `code` in a fresh engine with `opus` defined. The error is the text
-/// to show: the exception, or the syntax error with its position.
-fn execute(code: &str, name: &str) -> Result<(), String> {
+/// to show: the exception, the syntax error with its position, or
+/// [`CANCELLED`] when `cancel` stopped the script.
+fn execute(code: &str, name: &str, cancel: &CancelToken) -> Result<(), String> {
     let mut context = Context::default();
     context
         .register_global_callable(js_string!("__opusHost"), 2, NativeFunction::from_fn_ptr(host_call))
         .map_err(|e| format!("cannot set up the engine: {e}"))?;
     context.eval(Source::from_bytes(PRELUDE)).map_err(|e| format!("cannot set up opus: {}", error_text(e, &mut context)))?;
     let file = PathBuf::from(format!("{name}.js"));
-    let outcome = context.eval(Source::from_bytes(code).with_path(&file));
+    let script = Script::parse(Source::from_bytes(code).with_path(&file), None, &mut context)
+        .map_err(|e| error_text(e, &mut context))?;
+    let outcome = evaluate_cancellable(&script, &mut context, cancel)?;
     // Promises (`async` functions) settle here; a rejection is an error too.
     let outcome = outcome.and_then(|_| context.run_jobs());
     outcome.map(|_| ()).map_err(|e| error_text(e, &mut context))
+}
+
+/// Evaluate `script`, checking `cancel` every [`CANCEL_CHECK_BUDGET`] VM
+/// cycles: the cancel check of the `opus.*` calls never runs in a loop of
+/// pure JavaScript (`while (true) {}`). Boa's budgeted evaluation yields that
+/// often; it is polled here on the calling thread, and dropped when the run
+/// is cancelled (the caller then drops the engine). Code run from a native
+/// callback or a promise job is not budgeted by Boa and only stops at its
+/// next `opus.*` call.
+fn evaluate_cancellable(script: &Script, context: &mut Context, cancel: &CancelToken) -> Result<JsResult<JsValue>, String> {
+    use std::future::Future;
+    use std::task::{Poll, Waker};
+    let mut evaluation = std::pin::pin!(script.evaluate_async_with_budget(context, CANCEL_CHECK_BUDGET));
+    let mut poll_cx = std::task::Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(outcome) = evaluation.as_mut().poll(&mut poll_cx) {
+            return Ok(outcome);
+        }
+        if cancel.is_cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+    }
 }
 
 /// The text of a JavaScript error: `Name: message` for an `Error`, the value

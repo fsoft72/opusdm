@@ -305,7 +305,7 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
                 }
             }
             if left_out_moved {
-                save_leftout(&widgets.desktop.leftout.borrow());
+                save_leftout(&widgets);
             }
             for id in moved_groups {
                 save_group(&widgets, &id);
@@ -497,12 +497,16 @@ pub(crate) fn launch_entry(widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconE
     }
 }
 
-/// Persist the left-out store, logging (not failing) on error: the in-memory
-/// state stays valid and the next change tries again.
-pub(crate) fn save_leftout(left: &opusdm_ipc::LeftOut) {
-    if let Err(e) = left.save() {
-        opusdm_ipc::err_log!("hub", "cannot save {}: {e}", opusdm_ipc::leftout::leftout_path().display());
-    }
+/// Persist a snapshot of the left-out store on the background worker (the
+/// save fsyncs, and runs on every icon drag), logging (not failing) on error:
+/// the in-memory state stays valid and the next change tries again.
+pub(crate) fn save_leftout(widgets: &Widgets) {
+    let left = widgets.desktop.leftout.borrow().clone();
+    widgets.io.submit(move || {
+        if let Err(e) = left.save() {
+            opusdm_ipc::err_log!("hub", "cannot save {}: {e}", opusdm_ipc::leftout::leftout_path().display());
+        }
+    });
 }
 
 /// Start (or restart) the inotify watch on `dir` and the local future that
@@ -513,7 +517,8 @@ pub(crate) fn spawn_desktop_watch(
     field: &opusdm_iconview::IconField,
     dir: &Path,
 ) {
-    // Drop the old watch first so its thread exits before we start another.
+    // Drop the old watch first: that closes its channel, so its reload loop
+    // below ends and its thread exits on its own.
     *widgets.desktop.watch.borrow_mut() = None;
     match opusdm_hub::desktop_files::DesktopWatch::start(dir.to_path_buf()) {
         Ok((watch, rx)) => {
@@ -526,6 +531,11 @@ pub(crate) fn spawn_desktop_watch(
                 // once; the shared reload gate drops any read superseded by a
                 // later one (from here or from `reload_desktop_field`).
                 while rx.recv().await.is_ok() {
+                    // A notice queued before the watch was dropped (the
+                    // folder changed) must not show the old folder again.
+                    if rx.is_closed() {
+                        break;
+                    }
                     let ticket = widgets.desktop.reload_gate.begin();
                     let field = field.clone();
                     let dir = dir.clone();

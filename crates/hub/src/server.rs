@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 
 mod function_run;
 mod function_runs;
+mod output_windows;
 mod persist;
+pub use persist::FLUSH_TIMEOUT as PERSIST_FLUSH_TIMEOUT;
 
 use function_run::{only_scripts, NO_SOURCE_ERROR};
 use function_runs::FunctionRuns;
@@ -152,6 +154,10 @@ pub struct ServerOptions {
     pub initial_formats: Option<FormatStore>,
     /// Functions to start with. `None` loads `functions.json` from disk.
     pub initial_functions: Option<Vec<opusdm_ipc::function::Function>>,
+    /// Settings to start with. `None` loads `settings.json` from disk.
+    pub initial_settings: Option<opusdm_ipc::Settings>,
+    /// Desktop settings to start with. `None` loads `desktop.json` from disk.
+    pub initial_desktop: Option<DesktopSettings>,
 }
 
 impl Default for ServerOptions {
@@ -162,6 +168,8 @@ impl Default for ServerOptions {
             initial_bindings: Some(Bindings::default()),
             initial_formats: Some(FormatStore::default()),
             initial_functions: None,
+            initial_settings: None,
+            initial_desktop: None,
         }
     }
 }
@@ -169,7 +177,25 @@ impl Default for ServerOptions {
 impl ServerOptions {
     /// Options for the real hub: load the bindings from disk.
     pub fn production() -> Self {
-        Self { global_keys: true, initial_bindings: None, initial_formats: None, initial_functions: None }
+        Self {
+            global_keys: true,
+            initial_bindings: None,
+            initial_formats: None,
+            initial_functions: None,
+            initial_settings: None,
+            initial_desktop: None,
+        }
+    }
+
+    /// [`ServerOptions::production`] starting from the config the hub
+    /// already read, instead of reading those files again.
+    pub fn production_with(config: crate::startup_config::StartupConfig) -> Self {
+        Self {
+            initial_functions: Some(config.functions),
+            initial_settings: Some(config.settings),
+            initial_desktop: Some(config.desktop),
+            ..Self::production()
+        }
     }
 }
 
@@ -435,9 +461,9 @@ struct Hub {
     conflict_owners: HashMap<u64, u64>,
     /// Pending `Confirm` questions: request id to (answer channel, asked Lister).
     confirms: HashMap<u64, (Sender<bool>, u64)>,
-    /// Which Lister shows each `Run` output window, by `(run id, step)`. It
-    /// outlives the function run that opened it.
-    output_windows: HashMap<(u64, usize), u64>,
+    /// Which Lister shows each `Run` output window, and its window id, by
+    /// `(run id, step)`. It outlives the function run that opened it.
+    output_windows: output_windows::OutputWindows,
     next_req: u64,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
@@ -488,6 +514,11 @@ impl Hub {
 
     /// A message arrived from Lister connection `cid`.
     fn lister_msg(&mut self, cid: u64, msg: ToHub) {
+        let registered = self.conns.get(&cid).is_some_and(|c| c.registered);
+        if let Some(name) = lister_only(&msg).filter(|_| !registered) {
+            opusdm_ipc::err_log!("hub", "conn {cid}: {name} ignored, it is not a registered Lister");
+            return;
+        }
         match msg {
             ToHub::Ping => {
                 self.send_to(cid, ToLister::Pong);
@@ -531,6 +562,12 @@ impl Hub {
 
             ToHub::JumpTo { lister, path } => {
                 self.send_to_lister(lister.0, ToLister::GoTo { path });
+            }
+
+            ToHub::Register { pid, .. } if registered => {
+                // A second Welcome, `ListerOpened` and visible-spawn slot
+                // would all be wrong: the first registration stands.
+                opusdm_ipc::err_log!("hub", "conn {cid} (pid {pid}) registered again, ignored");
             }
 
             ToHub::Register { pid, initial_path, version } => {
@@ -1104,6 +1141,9 @@ impl Hub {
             HubCmd::Shutdown => {
                 self.run_shutdown_hooks();
                 self.broadcast(ToLister::Shutdown);
+                // The process exits soon after: a Set* save still queued
+                // would be lost, or leave a `.tmp` behind.
+                persist::flush(&self.persist_tx, persist::FLUSH_TIMEOUT);
                 return false;
             }
 
@@ -1216,7 +1256,7 @@ fn owner_loop(
     let (fe_tx, fe_rx) = channel::<(u64, crate::functions::FnEvent)>();
     spawn_forwarder("opusdm-function-events", fe_rx, owner_tx.clone(), |(id, ev)| OwnerMsg::FunctionEvent(id, ev));
 
-    let current_desktop = desktop_settings::load();
+    let current_desktop = opts.initial_desktop.unwrap_or_else(desktop_settings::load);
     opusdm_ipc::debug_log!(
         "hub",
         "desktop settings loaded (icon size {})",
@@ -1226,7 +1266,7 @@ fn owner_loop(
         conns: HashMap::new(),
         next_conn: 1,
         roles: RoleState::default(),
-        current_settings: settings::load_settings(),
+        current_settings: opts.initial_settings.unwrap_or_else(settings::load_settings),
         current_desktop,
         hidden: false,
         visible_spawns_pending: 0,
@@ -1254,7 +1294,7 @@ fn owner_loop(
         replies: HashMap::new(),
         conflict_owners: HashMap::new(),
         confirms: HashMap::new(),
-        output_windows: HashMap::new(),
+        output_windows: output_windows::OutputWindows::new(),
         next_req: 1,
         evt_tx,
         on_spawn,
@@ -1397,6 +1437,29 @@ fn drop_conn(
         send_or_log(evt_tx, HubEvent::AllListersGone, "GTK event");
     }
     true
+}
+
+/// The name of `msg` when it only makes sense from a registered Lister: it
+/// acts on the sender as a Lister (its role, focus, folder, caches,
+/// selection) or starts work on its behalf. `None` for everything else: tool
+/// windows and one-shot clients (Manage Functions, theme-config,
+/// `opusdm-hub --run`, ...) never register, and their requests (settings,
+/// bindings, Function runs, replies, spawning) stay open to them.
+fn lister_only(msg: &ToHub) -> Option<&'static str> {
+    let name = match msg {
+        ToHub::FocusGained => "FocusGained",
+        ToHub::SetRole(_) => "SetRole",
+        ToHub::LockRole => "LockRole",
+        ToHub::UnlockRole => "UnlockRole",
+        ToHub::PathChanged(_) => "PathChanged",
+        ToHub::CacheReport(_) => "CacheReport",
+        ToHub::SelectionReply { .. } => "SelectionReply",
+        ToHub::RunJob { .. } => "RunJob",
+        ToHub::CheckFit { .. } => "CheckFit",
+        ToHub::LeaveOut { .. } => "LeaveOut",
+        _ => return None,
+    };
+    Some(name)
 }
 
 fn apply_role(

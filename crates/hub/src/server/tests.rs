@@ -76,6 +76,63 @@ fn ping_gets_pong_without_registering() {
 }
 
 #[test]
+fn the_server_starts_from_the_config_it_is_given() {
+    let mut settings = opusdm_ipc::Settings::default();
+    settings.look_version += 1000;
+    let functions = vec![opusdm_ipc::Function::new("given")];
+    let config = crate::startup_config::StartupConfig {
+        settings: settings.clone(),
+        desktop: DesktopSettings::default(),
+        functions: functions.clone(),
+    };
+    let opts = ServerOptions { global_keys: false, ..ServerOptions::production_with(config) };
+    let (_td, listener, path) = bind_temp();
+    let _h = spawn_server_with(listener, Box::new(|_p| {}), opts);
+    let mut a = connect(&path);
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+    assert_eq!(welcome.settings, settings);
+    assert_eq!(welcome.functions, functions);
+}
+
+#[test]
+fn an_unregistered_connection_cannot_take_a_role() {
+    let (_td, listener, path) = bind_temp();
+    let _h = spawn_server(listener, Box::new(|_p| {}));
+    // A tool window (or any one-shot client) never registers: Lister-only
+    // requests from it are ignored.
+    let mut tool = connect(&path);
+    send(&mut tool, &ToHub::FocusGained).unwrap();
+    send(&mut tool, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+    send(&mut tool, &ToHub::Ping).unwrap();
+    assert!(matches!(recv::<_, ToLister>(&mut tool).unwrap(), Some(ToLister::Pong)));
+
+    let mut a = connect(&path);
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let welcome: Welcome = recv(&mut a).unwrap().unwrap();
+    assert_eq!(welcome.source, None, "the tool connection became SOURCE");
+    assert!(welcome.dests.is_empty(), "the tool connection became a DEST");
+}
+
+#[test]
+fn a_repeated_register_is_ignored() {
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut a = connect(&path);
+    let register = ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION };
+    send(&mut a, &register).unwrap();
+    let _w: Welcome = recv(&mut a).unwrap().unwrap();
+    send(&mut a, &register).unwrap();
+    send(&mut a, &ToHub::Ping).unwrap();
+    // No second Welcome (it would not decode as a `ToLister`) before the Pong.
+    assert!(matches!(recv::<_, ToLister>(&mut a).unwrap(), Some(ToLister::Pong)));
+    let registered = std::iter::from_fn(|| handle.evt_rx.recv_timeout(Duration::from_millis(200)).ok())
+        .filter(|ev| matches!(ev, HubEvent::ListerRegistered { .. }))
+        .count();
+    assert_eq!(registered, 1, "the repeat announced the Lister again");
+}
+
+#[test]
 fn two_listers_focus_toggles_source_dest() {
     let (_td, listener, path) = bind_temp();
     let _h = spawn_server(listener, Box::new(|_p| {}));
@@ -195,6 +252,8 @@ fn leave_out_from_a_lister_emits_left_out_add_for_existing_paths_only() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));
     let mut c = connect(&path);
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let _w: Welcome = recv(&mut c).unwrap().unwrap();
 
     // A path that does not exist (e.g. inside an archive) is refused.
     send(&mut c, &ToHub::LeaveOut { paths: vec![td.path().join("archive.zip#inner/x")] }).unwrap();
@@ -1528,6 +1587,38 @@ fn shutdown_and_wait_acknowledges_only_after_the_hooks_finished() {
     ack_rx.recv_timeout(Duration::from_secs(5)).expect("no acknowledgement");
     let lines = std::fs::read_to_string(&marker).map(|s| s.lines().count()).unwrap_or(0);
     assert_eq!(lines, 1, "the ack came before the Shutdown hook finished");
+}
+
+#[test]
+fn shutdown_and_wait_acknowledges_only_after_pending_saves_are_on_disk() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(opusdm_ipc::Bindings::default()));
+    let mut c = connect(&path);
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let _w: Welcome = recv(&mut c).unwrap().unwrap();
+
+    // Many saves queue up on the persist thread; the last one is what the
+    // user saw before choosing Quit.
+    const SAVES: usize = 150;
+    for i in 0..SAVES {
+        let f = opusdm_ipc::Function::new(format!("saved {i}"));
+        send(&mut c, &ToHub::SetFunctions(vec![f])).unwrap();
+    }
+    let last = format!("saved {}", SAVES - 1);
+    let seen = next_matching(&handle, Duration::from_secs(5), |ev| match ev {
+        HubEvent::FunctionsChanged(fs) if fs.first().is_some_and(|f| f.name == last) => Some(()),
+        _ => None,
+    });
+    assert!(seen.is_some(), "the hub never applied the last save");
+
+    let (ack_tx, ack_rx) = channel();
+    handle.cmd_tx.send(HubCmd::ShutdownAndWait(ack_tx)).unwrap();
+    ack_rx.recv_timeout(Duration::from_secs(10)).expect("no acknowledgement");
+    let on_disk = opusdm_ipc::function::load_functions();
+    assert_eq!(on_disk.first().map(|f| f.name.as_str()), Some(last.as_str()), "the ack came before the last save was written");
 }
 
 #[test]

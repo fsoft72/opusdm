@@ -144,21 +144,30 @@ impl JobEngine {
     }
 
     /// Note that `job_id` finished; start the next queued job if any.
-    /// Returns the id of the job that was started, if one was.
+    /// Returns the id of the job that was started, if one was. A job that
+    /// never ran (a cancelled queued one) frees no slot, so it starts nothing.
     pub fn on_done(&mut self, job_id: u64) -> Option<u64> {
-        self.running.remove(&job_id);
+        self.running.remove(&job_id)?;
         let QueuedJob { job_id: next_id, requester, spec } = self.queue.pop_front()?;
         self.start(next_id, requester, spec);
         Some(next_id)
     }
 
-    /// Cancel a job. A running job's token is set; a queued job is discarded.
+    /// Cancel a job. A running job's token is set; a queued job is discarded
+    /// and reported as a cancelled `Done`, so whoever tracks it (the hub's
+    /// `JobMeta`, a waiting Function step) sees it end like any other job.
     pub fn cancel(&mut self, job_id: u64) {
         if let Some(r) = self.running.get(&job_id) {
             r.cancel.cancel();
             return;
         }
+        let before = self.queue.len();
         self.queue.retain(|q| q.job_id != job_id);
+        if self.queue.len() == before { return; }
+        let done = Progress::Done { copied: 0, skipped: 0, cancelled: true, errors: Vec::new() };
+        if self.progress_tx.send((job_id, done)).is_err() {
+            opusdm_ipc::err_log!("hub", "job {job_id}: cancelled while queued, but nobody reads job progress");
+        }
     }
 
     fn start(&mut self, job_id: u64, requester: Option<ListerId>, spec: JobSpec) {
@@ -336,6 +345,34 @@ mod tests {
         let next = eng.on_done(first_done);
         assert!(next.is_some(), "a queued job should start");
         assert_eq!(eng.running_count(), MAX_CONCURRENT);
+    }
+
+    #[test]
+    fn cancelling_a_queued_job_reports_done_cancelled() {
+        let gate = Arc::new(Barrier::new(MAX_CONCURRENT + 1));
+        let g2 = gate.clone();
+        let runner: Runner = Arc::new(move |_spec, _tx, _cancel| {
+            g2.wait();
+        });
+        let (ptx, prx) = channel::<(u64, Progress)>();
+        let mut eng = JobEngine::new(runner, ptx);
+        for _ in 0..MAX_CONCURRENT {
+            assert!(eng.submit(None, spec()).started);
+        }
+        let queued = eng.submit(None, spec());
+        assert!(!queued.started);
+
+        eng.cancel(queued.job_id);
+        let (job_id, ev) = prx.recv_timeout(std::time::Duration::from_secs(5)).expect("a Done for the queued job");
+        assert_eq!(job_id, queued.job_id);
+        assert!(matches!(ev, Progress::Done { cancelled: true, copied: 0, skipped: 0, .. }));
+        assert_eq!(eng.requester_of(queued.job_id), None);
+
+        // The hub answers that Done with `on_done`: a job that never ran must
+        // not start another one past the cap.
+        assert_eq!(eng.on_done(queued.job_id), None);
+        assert_eq!(eng.running_count(), MAX_CONCURRENT);
+        gate.wait();
     }
 
     #[test]

@@ -8,11 +8,18 @@ use std::rc::Rc;
 use super::toolbar::Widgets;
 use super::{desktop_menu::*, desktop_windows::*};
 
-/// Persist group `id`, logging (not failing) on error.
+/// Persist a snapshot of group `id` on the background worker (the save
+/// fsyncs, and runs on every icon drag), logging (not failing) on error.
 pub(crate) fn save_group(widgets: &Widgets, id: &str) {
-    if let Err(e) = widgets.desktop.groups.borrow().save_group(id) {
-        opusdm_ipc::err_log!("hub", "cannot save group {id}: {e}");
-    }
+    // Only the one group is copied: the save writes just its file.
+    let one = widgets.desktop.groups.borrow().get(id).cloned();
+    let groups = opusdm_ipc::Groups { groups: one.into_iter().collect() };
+    let id = id.to_string();
+    widgets.io.submit(move || {
+        if let Err(e) = groups.save_group(&id) {
+            opusdm_ipc::err_log!("hub", "cannot save group {id}: {e}");
+        }
+    });
 }
 
 /// After any change to the groups: bring the open group windows and the
