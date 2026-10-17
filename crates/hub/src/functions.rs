@@ -22,6 +22,11 @@ const CANCEL_POLL: Duration = Duration::from_millis(50);
 /// Most lines one output-window message carries.
 const OUTPUT_BATCH_LINES: usize = 256;
 
+/// Most bytes of text one output-window message carries (a batch is flushed
+/// once its lines add up to this), so a message stays far below the frame
+/// limit (`opusdm_ipc::frame::MAX_FRAME`) whatever the line length.
+const OUTPUT_BATCH_BYTES: usize = 256 * 1024;
+
 /// Longest an output line waits in a batch before it is sent to the window.
 const OUTPUT_BATCH_DELAY: Duration = Duration::from_millis(50);
 
@@ -802,7 +807,7 @@ fn run_run(
     drop(line_tx);
     let tx = events_tx.clone();
     let output = std::thread::spawn(move || {
-        batch_lines(line_rx, OUTPUT_BATCH_LINES, OUTPUT_BATCH_DELAY, |lines| {
+        batch_lines(line_rx, OUTPUT_BATCH_LINES, OUTPUT_BATCH_BYTES, OUTPUT_BATCH_DELAY, |lines| {
             let _ = tx.send((run_id, FnEvent::Window { step_idx, msg: WindowMsg::Lines(lines) }));
         });
     });
@@ -849,11 +854,13 @@ impl WindowRun {
 
 /// Collect the lines arriving on `lines` into batches and hand each one to
 /// `flush`, so a chatty program costs one message per batch instead of one
-/// per line. A batch is flushed once it holds `max_lines` lines, once its
+/// per line. A batch is flushed once it holds `max_lines` lines or `max_bytes`
+/// bytes of text (a single longer line goes out alone), once its
 /// first line has waited `max_delay`, and when every sender is gone, which
 /// is also when this returns. An empty batch is never flushed.
-fn batch_lines(lines: Receiver<String>, max_lines: usize, max_delay: Duration, mut flush: impl FnMut(Vec<String>)) {
+fn batch_lines(lines: Receiver<String>, max_lines: usize, max_bytes: usize, max_delay: Duration, mut flush: impl FnMut(Vec<String>)) {
     let mut batch = Vec::new();
+    let mut bytes = 0usize;
     let mut deadline: Option<std::time::Instant> = None;
     loop {
         let received = match deadline {
@@ -865,8 +872,9 @@ fn batch_lines(lines: Receiver<String>, max_lines: usize, max_delay: Duration, m
                 if batch.is_empty() {
                     deadline = Some(std::time::Instant::now() + max_delay);
                 }
+                bytes += line.len();
                 batch.push(line);
-                if batch.len() < max_lines { continue; }
+                if batch.len() < max_lines && bytes < max_bytes { continue; }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
@@ -875,6 +883,7 @@ fn batch_lines(lines: Receiver<String>, max_lines: usize, max_delay: Duration, m
             }
         }
         flush(std::mem::take(&mut batch));
+        bytes = 0;
         deadline = None;
     }
 }

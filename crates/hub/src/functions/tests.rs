@@ -850,7 +850,7 @@ fn batch_lines_sends_lines_already_waiting_as_one_batch() {
     }
     drop(tx);
     let mut batches = Vec::new();
-    batch_lines(rx, 100, Duration::from_millis(50), |b| batches.push(b));
+    batch_lines(rx, 100, usize::MAX, Duration::from_millis(50), |b| batches.push(b));
     assert_eq!(batches, vec![vec!["l0", "l1", "l2", "l3", "l4"]]);
 }
 
@@ -862,15 +862,27 @@ fn batch_lines_caps_a_batch_at_max_lines() {
     }
     drop(tx);
     let mut sizes = Vec::new();
-    batch_lines(rx, 10, Duration::from_secs(60), |b| sizes.push(b.len()));
+    batch_lines(rx, 10, usize::MAX, Duration::from_secs(60), |b| sizes.push(b.len()));
     assert_eq!(sizes, vec![10, 10, 5]);
+}
+
+#[test]
+fn batch_lines_caps_a_batch_at_max_bytes() {
+    let (tx, rx) = channel::<String>();
+    for _ in 0..5 {
+        tx.send("x".repeat(40)).unwrap();
+    }
+    drop(tx);
+    let mut sizes = Vec::new();
+    batch_lines(rx, 100, 100, Duration::from_secs(60), |b| sizes.push(b.len()));
+    assert_eq!(sizes, vec![3, 2], "a batch closes once it holds 100 bytes");
 }
 
 #[test]
 fn batch_lines_flushes_a_waiting_line_after_the_delay() {
     let (tx, rx) = channel::<String>();
     let (out_tx, out_rx) = channel::<Vec<String>>();
-    let batcher = std::thread::spawn(move || batch_lines(rx, 100, Duration::from_millis(20), |b| out_tx.send(b).unwrap()));
+    let batcher = std::thread::spawn(move || batch_lines(rx, 100, usize::MAX, Duration::from_millis(20), |b| out_tx.send(b).unwrap()));
     tx.send("first".into()).unwrap();
     // The sender stays open: only the delay can flush the line.
     let got = out_rx.recv_timeout(Duration::from_secs(5)).expect("the line is flushed without a second one");

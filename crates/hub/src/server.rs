@@ -380,14 +380,25 @@ impl From<Welcome> for OutMsg {
 /// Owns one Lister's write half; runs on its own thread so a blocking
 /// `send()` (a non-reading peer, a full socket buffer) never stalls the
 /// owner loop.
-fn writer_loop(mut stream: UnixStream, rx: Receiver<OutMsg>) {
+///
+/// A failed write ends the connection: the socket is shut down so the reader
+/// reports the end and the hub drops it, instead of leaving a Lister that
+/// stays connected but never receives anything again. An oversized frame
+/// (`InvalidData`) is logged; a peer that simply went away is not an error.
+fn writer_loop(mut stream: UnixStream, rx: Receiver<OutMsg>, cid: u64) {
     for msg in rx {
         let result = match msg {
             OutMsg::Welcome(w) => send(&mut stream, &*w),
             OutMsg::ToLister(m) => send(&mut stream, &m),
             OutMsg::Encoded(bytes) => opusdm_ipc::frame::write_frame(&mut stream, &bytes),
         };
-        if result.is_err() {
+        if let Err(e) = result {
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                opusdm_ipc::err_log!("hub", "connection {cid}: cannot write a message ({e}): disconnecting it");
+            } else {
+                opusdm_ipc::debug_log!("hub", "connection {cid}: write failed ({e}): closing");
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Both);
             break;
         }
     }
@@ -492,7 +503,7 @@ impl Hub {
         let (tx, writer_rx) = sync_channel::<OutMsg>(WRITER_QUEUE);
         let writer_spawned = std::thread::Builder::new()
             .name(format!("opusdm-writer-{cid}"))
-            .spawn(move || writer_loop(write_stream, writer_rx));
+            .spawn(move || writer_loop(write_stream, writer_rx, cid));
         if let Err(e) = writer_spawned {
             opusdm_ipc::err_log!("hub", "cannot spawn writer thread for conn {cid}: {e}");
             return;

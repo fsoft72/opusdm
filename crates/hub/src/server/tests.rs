@@ -1958,9 +1958,21 @@ fn a_broadcast_is_encoded_once_and_written_as_a_normal_frame() {
     let (tx, rx) = sync_channel::<OutMsg>(4);
     tx.send(OutMsg::Encoded(serde_json::to_vec(&ToLister::InvalidatePath("/b".into())).unwrap().into())).unwrap();
     drop(tx);
-    writer_loop(hub_side, rx);
+    writer_loop(hub_side, rx, 1);
     peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     assert!(matches!(recv::<_, ToLister>(&mut peer).unwrap(), Some(ToLister::InvalidatePath(p)) if p == std::path::Path::new("/b")));
+}
+
+#[test]
+fn a_write_that_fails_closes_the_connection_instead_of_leaving_it_deaf() {
+    let (hub_side, mut peer) = UnixStream::pair().unwrap();
+    let (tx, rx) = sync_channel::<OutMsg>(2);
+    let too_big = vec![b'x'; opusdm_ipc::frame::MAX_FRAME as usize + 1];
+    tx.send(OutMsg::Encoded(too_big.into())).unwrap();
+    drop(tx);
+    writer_loop(hub_side, rx, 1);
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    assert!(recv::<_, ToLister>(&mut peer).unwrap().is_none(), "the peer sees the end of the connection");
 }
 
 #[test]
