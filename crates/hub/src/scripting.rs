@@ -13,7 +13,7 @@
 //! is cancelled (its Lister closed) fails at the next `opus` call; a call
 //! that blocks (`exec`, `confirm`, `alert`, `sleep`) stops at once.
 
-use crate::functions::{recv_or_cancel, run_step, wait_or_kill, FnEvent, NoAnswer, CANCELLED};
+use crate::functions::{recv_or_cancel, run_step, wait_announced, FnEvent, NoAnswer, CANCELLED};
 use boa_engine::{js_string, Context, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Script, Source};
 use opusdm_fsops::CancelToken;
 use opusdm_ipc::function::{expand_text, keys, schema, FnStep, InternalArgs, InternalCmd, SelectionCtx, BOOL_TRUE};
@@ -718,7 +718,7 @@ fn exec(host: &Snapshot, payload: &Value) -> Result<Value, String> {
     let stderr = collect(Box::new(child.stderr.take().expect("piped stderr")));
     // A cancelled program's readers are not joined: a process it started
     // may still hold the pipes open.
-    let status = wait_or_kill(&mut child, &host.cancel).map_err(|e| format!("exec {program}: {e}"))?;
+    let status = wait_announced(host.run_id, host.step_idx, program, &mut child, &host.events_tx, &host.cancel).map_err(|e| format!("exec {program}: {e}"))?;
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
     Ok(json!({

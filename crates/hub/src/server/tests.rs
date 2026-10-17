@@ -1939,7 +1939,7 @@ fn a_lister_that_stops_reading_is_disconnected_instead_of_queueing_forever() {
 fn a_full_writer_queue_shuts_the_connection_down() {
     let (hub_side, mut peer) = UnixStream::pair().unwrap();
     let (tx, _rx) = sync_channel::<OutMsg>(1);
-    let conn = Conn { tx, shutdown: hub_side, registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() };
+    let conn = Conn { tx, shutdown: hub_side, registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new(), version: opusdm_ipc::PROTOCOL_VERSION };
     assert!(conn.queue(1, ToLister::Pong));
     assert!(!conn.queue(1, ToLister::Pong), "the queue is full");
     peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
@@ -1951,7 +1951,7 @@ fn a_broadcast_is_encoded_once_and_written_as_a_normal_frame() {
     let (hub_side, mut peer) = UnixStream::pair().unwrap();
     let (tx, rx) = sync_channel::<OutMsg>(4);
     let mut conns = HashMap::new();
-    conns.insert(1, Conn { tx, shutdown: hub_side.try_clone().unwrap(), registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() });
+    conns.insert(1, Conn { tx, shutdown: hub_side.try_clone().unwrap(), registered: true, pid: 0, path: PathBuf::new(), cache_paths: Vec::new(), version: opusdm_ipc::PROTOCOL_VERSION });
     broadcast(&conns, &ToLister::InvalidatePath("/a".into()));
     drop(conns);
     assert!(matches!(rx.try_recv(), Ok(OutMsg::Encoded(_))));
@@ -2024,4 +2024,90 @@ fn a_broken_message_is_a_decode_error_and_ends_the_connection() {
     let (tx, rx) = channel::<OwnerMsg>();
     reader_loop(7, hub_side, tx);
     assert!(matches!(rx.try_recv(), Ok(OwnerMsg::ListerEof(7))), "nothing after a broken frame is read");
+}
+
+/// Register a Lister speaking `version` on a fresh server and start a run of
+/// `steps` from it, its selection answered with `cwd`. Returns the server
+/// handle (keep it alive) and the connection.
+fn lister_running(version: u32, steps: Vec<opusdm_ipc::function::FnStep>, cwd: &std::path::Path) -> (tempfile::TempDir, ServerHandle, UnixStream) {
+    let (td, listener, path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut c = connect(&path);
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: cwd.to_path_buf(), version }).unwrap();
+    let _w: Welcome = recv(&mut c).unwrap().unwrap();
+    send(&mut c, &ToHub::FocusGained).unwrap();
+    send(&mut c, &ToHub::RunFunction { steps }).unwrap();
+    loop {
+        match recv::<_, ToLister>(&mut c).unwrap().expect("the hub hung up") {
+            ToLister::QuerySelection => break,
+            _ => continue,
+        }
+    }
+    send(&mut c, &ToHub::SelectionReply { paths: vec![], cwd: cwd.to_path_buf() }).unwrap();
+    (td, handle, c)
+}
+
+/// An External step running `sh -c script`.
+fn sh_step(script: &str) -> opusdm_ipc::function::FnStep {
+    opusdm_ipc::function::FnStep::External { argv: vec!["sh".into(), "-c".into(), script.into()], cwd_source: true }
+}
+
+/// Every message up to the end of the run (`FunctionDone` / `FunctionFailed`).
+fn messages_until_the_end(c: &mut UnixStream) -> Vec<ToLister> {
+    c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut got = Vec::new();
+    loop {
+        let msg = recv::<_, ToLister>(c).unwrap().expect("the hub hung up");
+        let end = matches!(msg, ToLister::FunctionDone | ToLister::FunctionFailed { .. });
+        got.push(msg);
+        if end { return got; }
+    }
+}
+
+#[test]
+fn a_waited_program_is_announced_only_to_listers_that_know_the_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_td, _h, mut new) = lister_running(opusdm_ipc::PROTOCOL_VERSION, vec![sh_step("true")], dir.path());
+    let got = messages_until_the_end(&mut new);
+    assert!(got.iter().any(|m| matches!(m, ToLister::FunctionWaiting { program, .. } if program == "sh")), "{got:?}");
+    assert!(got.iter().any(|m| matches!(m, ToLister::FunctionWaitEnded { .. })), "{got:?}");
+
+    let (_td, _h, mut old) = lister_running(opusdm_ipc::FUNCTION_WAIT_PROTOCOL - 1, vec![sh_step("true")], dir.path());
+    let got = messages_until_the_end(&mut old);
+    assert!(!got.iter().any(|m| matches!(m, ToLister::FunctionWaiting { .. } | ToLister::FunctionWaitEnded { .. })), "an older Lister would close: {got:?}");
+    assert!(matches!(got.last(), Some(ToLister::FunctionDone)));
+}
+
+#[test]
+fn stop_functions_kills_the_waited_program() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_td, _h, mut c) = lister_running(opusdm_ipc::PROTOCOL_VERSION, vec![sh_step("sleep 30")], dir.path());
+    loop {
+        if matches!(recv::<_, ToLister>(&mut c).unwrap().unwrap(), ToLister::FunctionWaiting { .. }) { break; }
+    }
+    let started = std::time::Instant::now();
+    send(&mut c, &ToHub::StopFunctions).unwrap();
+    let got = messages_until_the_end(&mut c);
+    assert!(started.elapsed() < Duration::from_secs(5), "the program was not killed");
+    assert!(matches!(got.last(), Some(ToLister::FunctionFailed { error, .. }) if error.contains("cancelled")), "{got:?}");
+}
+
+#[test]
+fn a_lister_that_goes_away_leaves_the_waited_program_running_and_the_run_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    let steps = vec![sh_step("sleep 0.5; touch first"), sh_step("touch second")];
+    let (_td, _h, mut c) = lister_running(opusdm_ipc::PROTOCOL_VERSION, steps, dir.path());
+    loop {
+        if matches!(recv::<_, ToLister>(&mut c).unwrap().unwrap(), ToLister::FunctionWaiting { .. }) { break; }
+    }
+    drop(c);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !first.exists() {
+        assert!(std::time::Instant::now() < deadline, "the program was killed: {first:?} never appeared");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!second.exists(), "the steps after the program did not run");
 }

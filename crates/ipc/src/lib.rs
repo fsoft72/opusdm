@@ -76,6 +76,6 @@ pub use proto::{
     Appearance, Behavior, Secret, CacheEntry, ColorSettings, FileMeta, JobOptions, ListerId, Op, Outcome, Resolution, Role,
     Settings, ThemeMode, ToHub, ToLister, Welcome, AUTO_REFRESH_DEBOUNCE_RANGE_MS,
     CACHE_SIZE_RANGE, CURRENT_LOOK_VERSION, DEFAULT_CACHE_SIZE, DEFAULT_STATUS_FORMAT,
-    PROTOCOL_VERSION, protocol_mismatch,
+    FUNCTION_WAIT_PROTOCOL, PROTOCOL_VERSION, protocol_mismatch,
 };
 pub use theme::{IconSetId, Theme};

@@ -251,6 +251,8 @@ impl Hub {
             FnEvent::StepDone { step_idx, exit_code } => ToLister::FunctionStepDone { step_idx, exit_code },
             FnEvent::Failed { step_idx, error } => ToLister::FunctionFailed { step_idx, error },
             FnEvent::AllDone => ToLister::FunctionDone,
+            FnEvent::Waiting { program, .. } => ToLister::FunctionWaiting { run_id, program },
+            FnEvent::WaitEnded { .. } => ToLister::FunctionWaitEnded { run_id },
             // Requests and actions: handled before this point.
             FnEvent::Job { .. }
             | FnEvent::Window { .. }
@@ -283,6 +285,11 @@ impl Hub {
             }
             return;
         };
+        // An older Lister closes its window on a message it cannot decode.
+        let wait_msg = matches!(msg, ToLister::FunctionWaiting { .. } | ToLister::FunctionWaitEnded { .. });
+        if wait_msg && !self.speaks(requester, opusdm_ipc::FUNCTION_WAIT_PROTOCOL) {
+            return;
+        }
         self.send_to(requester, msg);
     }
 

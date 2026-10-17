@@ -70,6 +70,8 @@ impl Ui {
                 self.on_function_end(&format!("function failed at step {step_idx}: {error}"));
             }
             ToLister::FunctionDone => self.on_function_end("function finished"),
+            ToLister::FunctionWaiting { run_id, program } => crate::dlog!("function run {run_id} waits for {program}"),
+            ToLister::FunctionWaitEnded { run_id } => crate::dlog!("function run {run_id} no longer waits"),
         }
     }
 

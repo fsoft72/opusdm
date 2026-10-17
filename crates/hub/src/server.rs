@@ -11,7 +11,7 @@ use crate::desktop_settings;
 use opusdm_fsops::{CancelToken, Progress};
 use opusdm_ipc::bindings::{self, Bindings};
 use opusdm_ipc::format::{self, FormatStore};
-use opusdm_ipc::frame::{recv, recv_tolerant, send, Received};
+use opusdm_ipc::frame::{recv_tolerant, send, Received};
 use opusdm_ipc::function::{FnStep, FunctionId, SelectionCtx};
 use opusdm_ipc::{DesktopSettings, ListerId, Op, Outcome, Resolution, ToHub, ToLister, Welcome};
 use std::collections::HashMap;
@@ -332,6 +332,9 @@ struct Conn {
     path: PathBuf,
     /// The directories this Lister reported as cached.
     cache_paths: Vec<PathBuf>,
+    /// The [`opusdm_ipc::PROTOCOL_VERSION`] the client registered with (0
+    /// before `Register`): messages newer than it are not sent to it.
+    version: u32,
 }
 
 impl Conn {
@@ -510,7 +513,7 @@ impl Hub {
         }
         self.conns.insert(
             cid,
-            Conn { tx, shutdown, registered: false, pid: 0, path: PathBuf::new(), cache_paths: Vec::new() },
+            Conn { tx, shutdown, registered: false, pid: 0, path: PathBuf::new(), cache_paths: Vec::new(), version: 0 },
         );
         let owner_tx = owner_tx.clone();
         let spawned = std::thread::Builder::new()
@@ -587,7 +590,7 @@ impl Hub {
                 if let Some(warning) = opusdm_ipc::protocol_mismatch(version) {
                     opusdm_ipc::err_log!("hub", "Lister pid {pid}: {warning}");
                 }
-                self.register_lister(cid, pid, initial_path)
+                self.register_lister(cid, pid, initial_path, version)
             }
 
             ToHub::FocusGained => {
@@ -636,6 +639,11 @@ impl Hub {
 
             ToHub::RunFunctionHeadless { id } => {
                 self.run_headless(&id);
+            }
+
+            ToHub::StopFunctions => {
+                let stopped = self.runs.stop_runs_of(cid);
+                opusdm_ipc::debug_log!("hub", "conn {cid} asked to stop its function runs: {stopped:?}");
             }
 
             ToHub::LeaveOut { paths } => self.leave_out(paths),
@@ -720,6 +728,11 @@ impl Hub {
         c.queue(cid, msg);
     }
 
+    /// Whether connection `cid` registered with protocol `version` or later.
+    fn speaks(&self, cid: u64, version: u32) -> bool {
+        self.conns.get(&cid).is_some_and(|c| c.version >= version)
+    }
+
     /// [`Self::send_to`], only when `cid` is a registered Lister.
     fn send_to_lister(&self, cid: u64, msg: ToLister) {
         if self.conns.get(&cid).is_some_and(|c| c.registered) {
@@ -745,10 +758,11 @@ impl Hub {
 
     /// `cid` registered: send its `Welcome`, announce it, share the roles and,
     /// while everything is hidden, decide whether it brings the desktop back.
-    fn register_lister(&mut self, cid: u64, pid: u32, initial_path: PathBuf) {
+    fn register_lister(&mut self, cid: u64, pid: u32, initial_path: PathBuf, version: u32) {
         if let Some(c) = self.conns.get_mut(&cid) {
             c.registered = true;
             c.pid = pid;
+            c.version = version;
             c.path = initial_path.clone();
             c.queue(
                 cid,

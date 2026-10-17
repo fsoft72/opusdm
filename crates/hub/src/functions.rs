@@ -60,13 +60,23 @@ pub(crate) fn recv_or_cancel<T>(rx: &Receiver<T>, cancel: &CancelToken) -> Resul
 /// Wait for `child` to exit (safe against the SIGCHLD reaper, see
 /// `opusdm_ipc::reaped`), killing it when `cancel` is set. A cancelled wait
 /// fails with [`CANCELLED`] once the killed child is reaped.
+///
+/// A cancel that spares programs (`CancelToken::cancel_sparing_programs`, the
+/// requesting Lister went away) does not kill: the wait goes on until the
+/// program ends by itself, and the caller's run stops at its next check.
 pub(crate) fn wait_or_kill(child: &mut Child, cancel: &CancelToken) -> Result<ExitStatus, String> {
     let mut lost_since = None;
+    let mut spared = false;
     loop {
         if let Some(status) = opusdm_ipc::reaped::poll_exit(child, &mut lost_since).map_err(|e| format!("wait failed: {e}"))? {
             return Ok(status);
         }
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() && cancel.spares_programs() {
+            if !spared {
+                spared = true;
+                opusdm_ipc::err_log!("hub", "run cancelled (its Lister closed): pid {} is left running, the run stops when it ends", child.id());
+            }
+        } else if cancel.is_cancelled() {
             if let Err(e) = child.kill() {
                 opusdm_ipc::err_log!("hub", "cannot kill cancelled pid {}: {e}", child.id());
             }
@@ -77,6 +87,23 @@ pub(crate) fn wait_or_kill(child: &mut Child, cancel: &CancelToken) -> Result<Ex
         }
         std::thread::sleep(CANCEL_POLL);
     }
+}
+
+/// [`wait_or_kill`] for a program step `step_idx` of run `run_id` waits on,
+/// with [`FnEvent::Waiting`] before and [`FnEvent::WaitEnded`] after, so the
+/// requesting Lister knows a program of its runs is still open.
+pub(crate) fn wait_announced(
+    run_id: u64,
+    step_idx: usize,
+    program: &str,
+    child: &mut Child,
+    events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
+) -> Result<ExitStatus, String> {
+    let _ = events_tx.send((run_id, FnEvent::Waiting { step_idx, program: program.to_string() }));
+    let waited = wait_or_kill(child, cancel);
+    let _ = events_tx.send((run_id, FnEvent::WaitEnded { step_idx }));
+    waited
 }
 
 /// One event a running Function reports, tagged with its `run_id` by the
@@ -134,6 +161,10 @@ pub enum FnEvent {
     /// the saved Functions) or to act on a Lister; `reply` gets the answer. A
     /// dropped `reply` fails the script's call.
     ScriptQuery { query: crate::scripting::ScriptQuery, reply: Sender<crate::scripting::QueryReply> },
+    /// A step started waiting for `program` to end.
+    Waiting { step_idx: usize, program: String },
+    /// That wait is over (the program ended, was killed, or the wait failed).
+    WaitEnded { step_idx: usize },
     /// Every step finished successfully.
     AllDone,
 }
@@ -813,14 +844,14 @@ fn run_run(
     });
     let window = WindowRun { run_id, step_idx, events_tx: events_tx.clone() };
     if wait {
-        let code = window.finish(child, output, cancel).map_err(|e| format!("Run: '{}': {e}", argv[0]))?;
+        let code = window.finish(child, output, cancel, Some(&argv[0])).map_err(|e| format!("Run: '{}': {e}", argv[0]))?;
         let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: code }));
         return if code == Some(0) { Ok(()) } else { Err(format!("Run: '{}' exited with {code:?}", argv[0])) };
     }
     // Not waited for: the program outlives the step, so the run's cancel
     // does not stop it.
     std::thread::spawn(move || {
-        let _ = window.finish(child, output, &CancelToken::new());
+        let _ = window.finish(child, output, &CancelToken::new(), None);
     });
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
@@ -840,8 +871,13 @@ impl WindowRun {
     /// exit code (`None` when killed by a signal), or why the wait failed.
     /// The output of a cancelled program is not waited for: a process it
     /// started may still hold the pipes open.
-    fn finish(self, mut child: Child, output: std::thread::JoinHandle<()>, cancel: &CancelToken) -> Result<Option<i32>, String> {
-        let waited = wait_or_kill(&mut child, cancel);
+    /// With `waited_by_step` (the program name) the step waits for it and
+    /// the wait is announced (see [`wait_announced`]).
+    fn finish(self, mut child: Child, output: std::thread::JoinHandle<()>, cancel: &CancelToken, waited_by_step: Option<&str>) -> Result<Option<i32>, String> {
+        let waited = match waited_by_step {
+            Some(program) => wait_announced(self.run_id, self.step_idx, program, &mut child, &self.events_tx, cancel),
+            None => wait_or_kill(&mut child, cancel),
+        };
         if waited.is_ok() {
             let _ = output.join();
         }
@@ -962,7 +998,7 @@ fn run_external(
     let readers = [stream(Box::new(stdout)), stream(Box::new(stderr))];
     // A cancelled program's readers are not joined: a process it started
     // may still hold the pipes open.
-    let status = wait_or_kill(&mut child, cancel).map_err(|e| format!("'{}': {e}", expanded[0]))?;
+    let status = wait_announced(run_id, step_idx, &expanded[0], &mut child, events_tx, cancel).map_err(|e| format!("'{}': {e}", expanded[0]))?;
     for r in readers {
         let _ = r.join();
     }

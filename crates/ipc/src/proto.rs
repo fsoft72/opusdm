@@ -8,7 +8,14 @@ use std::path::PathBuf;
 /// in `ToHub::Register` and `Welcome`. Bump it whenever a message changes in
 /// a way an older peer cannot decode. A peer that predates versioning sends
 /// no field and decodes as version 0.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// First [`PROTOCOL_VERSION`] whose Listers know
+/// `ToLister::FunctionWaiting` / `ToLister::FunctionWaitEnded` and
+/// `ToHub::StopFunctions`. The hub sends the two messages only to Listers that
+/// registered with at least this version, because an older Lister closes its
+/// window on a message it cannot decode.
+pub const FUNCTION_WAIT_PROTOCOL: u32 = 3;
 
 /// A warning text when a peer speaks protocol `peer` instead of
 /// [`PROTOCOL_VERSION`], or `None` when both agree. A mismatch is only
@@ -237,6 +244,11 @@ pub enum ToHub {
     /// hotkey does. Sent by `opusdm-hub --run` (a compositor keybind on
     /// Wayland). No reply.
     RunFunctionHeadless { id: crate::function::FunctionId },
+    /// Kill the programs that the Function runs started by this Lister are
+    /// waiting on, and cancel those runs. Sent before the window closes when
+    /// the user chose to stop them; a Lister that just goes away leaves its
+    /// waited programs running. No reply.
+    StopFunctions,
     /// Leave `paths` out on the desktop as permanent icons. Sent by a Lister
     /// (context menu). The hub refuses the whole request when any path is not
     /// absolute or does not exist, and otherwise emits `HubEvent::LeftOutAdd`.
@@ -557,6 +569,13 @@ pub enum ToLister {
     FunctionFailed { step_idx: usize, error: String },
     /// Every step of a running Function finished successfully.
     FunctionDone,
+    /// A step of Function run `run_id` (started by this Lister) waits for
+    /// `program` to end. Sent only to Listers of [`FUNCTION_WAIT_PROTOCOL`] or
+    /// later.
+    FunctionWaiting { run_id: u64, program: String },
+    /// Run `run_id` no longer waits for the program of its last
+    /// `FunctionWaiting` (it ended, or the wait failed).
+    FunctionWaitEnded { run_id: u64 },
     /// The bindings changed: the full new `Bindings`, replacing the ones
     /// from `Welcome`.
     BindingsUpdate(crate::bindings::Bindings),
@@ -680,6 +699,7 @@ mod tests {
         roundtrip_tohub(ToHub::SelectionReply { paths: vec!["/a".into()], cwd: "/home/x".into() });
         roundtrip_tohub(ToHub::RunFunctionById { id: "fn-1".into() });
         roundtrip_tohub(ToHub::RunFunctionHeadless { id: "exec:opusdm-run".into() });
+        roundtrip_tohub(ToHub::StopFunctions);
         roundtrip_tohub(ToHub::SetFunctions(vec![crate::function::Function::new("f")]));
         roundtrip_tohub(ToHub::QueryConfig);
         roundtrip_tohub(ToHub::SetBindings(crate::bindings::Bindings {
@@ -776,6 +796,8 @@ mod tests {
         roundtrip_tolister(ToLister::FunctionStepDone { step_idx: 0, exit_code: Some(0) });
         roundtrip_tolister(ToLister::FunctionFailed { step_idx: 1, error: "boom".into() });
         roundtrip_tolister(ToLister::FunctionDone);
+        roundtrip_tolister(ToLister::FunctionWaiting { run_id: 4, program: "gedit".into() });
+        roundtrip_tolister(ToLister::FunctionWaitEnded { run_id: 4 });
         roundtrip_tolister(ToLister::BindingsUpdate(crate::bindings::Bindings::default()));
         roundtrip_tolister(ToLister::OutputOpen { id: 7, title: "ls -l".into() });
         roundtrip_tolister(ToLister::OutputLines { id: 7, lines: vec!["x".into(), "y".into()] });

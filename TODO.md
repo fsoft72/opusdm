@@ -24,7 +24,7 @@
   Lister stays in A with no message. With back/forward the history position has already moved, so the buttons can
   disagree with the folder on screen. Fix idea: a reload of the current folder must not supersede a pending navigation.
 
-- [ ] Closing a Lister kills the programs of its `Run ... wait` steps
+- [ ] (hub part done 2026-10-17: the default is now to leave the program running; the Lister close dialog is next) Closing a Lister kills the programs of its `Run ... wait` steps
 
   Since `9bc12cd` `FunctionRuns::forget_connection` cancels the run and `wait_or_kill` kills the waited child
   (before, the run only stopped at its next step). An editor started with wait dies when the Lister that started the
@@ -74,7 +74,7 @@
   reads them again at submit. A DEST added in between: the folder is deleted after the first `JobDone` while the second
   job still reads it. A DEST removed, or a remote DEST (`RemoteTransfer`, no `JobDone`): the folder stays until quit.
 
-- [ ] Mixed hub / Lister versions: unknown messages close the window without a log
+- [x] (done 2026-10-17: unknown variants are skipped with a log, `PROTOCOL_VERSION` 3, new messages only sent to Listers that know them) Mixed hub / Lister versions: unknown messages close the window without a log
 
   `OutputLines` and `JobDone.tag` are new variants (protocol 2). An older Lister that cannot decode one used to end
   silently; it now logs the read error but still closes the window. Consider ignoring an unknown variant, and bump

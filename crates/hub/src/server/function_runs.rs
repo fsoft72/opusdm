@@ -22,7 +22,9 @@ pub(super) struct FunctionRuns {
     /// Which connection to route a running Function's events back to, kept
     /// alive from the moment execution starts until `FunctionDone`/`Failed`.
     requesters: HashMap<u64, Option<u64>>,
-    /// Set when a run's requester goes away: the run stops at its next step.
+    /// Set when a run's requester goes away (the run stops at its next step,
+    /// a program it waits on is left running) or asks to stop it (the
+    /// program is killed).
     cancels: HashMap<u64, CancelToken>,
     next_id: u64,
     /// Where the executor threads send their events.
@@ -98,8 +100,30 @@ impl FunctionRuns {
         self.pending.remove(&run_id).map(|run| (run_id, run))
     }
 
+    /// Connection `cid` asked to stop the Functions it started
+    /// (`ToHub::StopFunctions`): cancel them and kill the programs they wait
+    /// on. Returns the ids of the cancelled runs, sorted.
+    pub(super) fn stop_runs_of(&mut self, cid: u64) -> Vec<u64> {
+        let mut stopped: Vec<u64> = self
+            .requesters
+            .iter()
+            .filter(|(_, requester)| **requester == Some(cid))
+            .map(|(run_id, _)| *run_id)
+            .collect();
+        stopped.sort_unstable();
+        for run_id in &stopped {
+            if let Some(cancel) = self.cancels.get(run_id) {
+                cancel.cancel();
+            }
+        }
+        stopped
+    }
+
     /// Connection `cid` dropped. Pending runs waiting on it can never
-    /// complete and are removed; running Functions it started are cancelled.
+    /// complete and are removed; running Functions it started are cancelled,
+    /// but a program one of them waits on is left running (the user may be
+    /// working in it): the run stops once it ends. A Lister that wants them
+    /// killed sends `ToHub::StopFunctions` first.
     /// Returns the ids of the removed pending runs.
     pub(super) fn forget_connection(&mut self, cid: u64) -> Vec<u64> {
         let doomed: Vec<u64> = self
@@ -119,7 +143,7 @@ impl FunctionRuns {
         for (run_id, requester) in &self.requesters {
             if *requester == Some(cid) {
                 if let Some(cancel) = self.cancels.remove(run_id) {
-                    cancel.cancel();
+                    cancel.cancel_sparing_programs();
                 }
             }
         }
@@ -183,6 +207,31 @@ mod tests {
         assert_eq!(r.requester(9), None);
         // The SOURCE side no longer waits for the dropped run.
         assert!(r.take_selection(3, Vec::new(), PathBuf::new()).is_none());
+    }
+
+    #[test]
+    fn a_dropped_connection_spares_the_programs_its_runs_wait_on() {
+        let mut r = runs();
+        let token = r.start(9, Some(4));
+        r.forget_connection(4);
+        assert!(token.is_cancelled());
+        assert!(token.spares_programs(), "the default on a vanished Lister is to leave the program running");
+    }
+
+    #[test]
+    fn stop_runs_of_kills_only_that_connection_and_wins_over_the_drop() {
+        let mut r = runs();
+        let mine = r.start(9, Some(4));
+        let mine_too = r.start(7, Some(4));
+        let other = r.start(8, Some(5));
+        let headless = r.start(6, None);
+        assert_eq!(r.stop_runs_of(4), vec![7, 9]);
+        assert!(mine.is_cancelled() && !mine.spares_programs());
+        assert!(mine_too.is_cancelled());
+        assert!(!other.is_cancelled() && !headless.is_cancelled());
+        // The window closes right after: the drop must not soften the stop.
+        r.forget_connection(4);
+        assert!(!mine.spares_programs());
     }
 
     #[test]

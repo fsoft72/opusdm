@@ -891,3 +891,64 @@ fn batch_lines_flushes_a_waiting_line_after_the_delay() {
     batcher.join().unwrap();
     assert!(out_rx.try_recv().is_err(), "no empty batch on close");
 }
+
+/// Run `steps` in a scratch folder (also their cwd) and cancel the run,
+/// sparing its programs, after `after`. Returns the events, how long the run
+/// took and the folder.
+fn run_spared_after(steps: &[FnStep], after: std::time::Duration) -> (Vec<FnEvent>, std::time::Duration, tempfile::TempDir) {
+    let td = tempfile::tempdir().unwrap();
+    let src = ctx(&[], td.path().to_str().unwrap());
+    let cancel = CancelToken::new();
+    let (tx, rx) = channel();
+    let started = std::time::Instant::now();
+    let worker = {
+        let (steps, run_cancel) = (steps.to_vec(), cancel.clone());
+        std::thread::spawn(move || run_steps_cancellable(1, &steps, &src, None, &tx, &run_cancel))
+    };
+    std::thread::sleep(after);
+    cancel.cancel_sparing_programs();
+    let mut events = Vec::new();
+    while let Ok((_, ev)) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        events.push(ev);
+    }
+    let took = started.elapsed();
+    worker.join().unwrap();
+    (events, took, td)
+}
+
+/// An External step running `sh -c script` in the source folder.
+fn sh(script: &str) -> FnStep {
+    FnStep::External { argv: vec!["sh".into(), "-c".into(), script.into()], cwd_source: true }
+}
+
+#[test]
+fn a_waited_program_is_announced_before_and_after_the_wait() {
+    let (tx, rx) = channel();
+    run_steps(1, &[sh("true")], &ctx(&[], "/tmp"), None, &tx);
+    drop(tx);
+    let events = drain(rx);
+    let waiting = events.iter().position(|e| matches!(e, FnEvent::Waiting { step_idx: 0, program } if program == "sh"));
+    let ended = events.iter().position(|e| matches!(e, FnEvent::WaitEnded { step_idx: 0 }));
+    assert!(waiting.is_some() && ended.is_some() && waiting < ended, "Waiting then WaitEnded");
+    assert!(matches!(events.last(), Some(FnEvent::AllDone)));
+}
+
+#[test]
+fn a_sparing_cancel_leaves_the_waited_program_running_and_skips_the_next_steps() {
+    let steps = vec![sh("sleep 0.6; touch first"), sh("touch second")];
+    let (events, took, dir) = run_spared_after(&steps, std::time::Duration::from_millis(150));
+    assert!(took >= std::time::Duration::from_millis(600), "the program was not killed: {took:?}");
+    assert!(dir.path().join("first").exists(), "the program ran to its end");
+    assert!(!dir.path().join("second").exists(), "the run stopped after it");
+    assert!(events.iter().any(|e| matches!(e, FnEvent::WaitEnded { step_idx: 0 })));
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 1, error }) if error.contains("cancelled")));
+}
+
+#[test]
+fn a_sparing_cancel_leaves_a_run_window_program_running() {
+    let (events, took, dir) = run_spared_after(&run_args("sh -c 'sleep 0.6; touch first'", &["window", "wait"]), std::time::Duration::from_millis(150));
+    assert!(took >= std::time::Duration::from_millis(600), "the program was not killed: {took:?}");
+    assert!(dir.path().join("first").exists());
+    assert!(events.iter().any(|e| matches!(e, FnEvent::Waiting { step_idx: 0, .. })));
+    assert!(events.iter().any(|e| matches!(e, FnEvent::Window { msg: WindowMsg::Closed(Some(0)), .. })), "the window sees a normal end");
+}
