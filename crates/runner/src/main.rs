@@ -26,8 +26,10 @@ fn main() -> gtk::glib::ExitCode {
             apply_theme();
         }
         let panel = opusdm_ipc::settings::load_desktop_settings("opusdm-run").panel_position;
-        let entries = if app.windows().is_empty() { sources::load_entries() } else { Vec::new() };
-        ui::open(app, entries, panel);
+        let entries = if app.windows().is_empty() { sources::app_entries() } else { Vec::new() };
+        // The PATH scan stats thousands of files: it runs on a worker and
+        // its commands join the list when it is done.
+        ui::open(app, entries, sources::path_commands, panel);
     });
     app.run()
 }
