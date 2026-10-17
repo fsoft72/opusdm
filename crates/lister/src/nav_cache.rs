@@ -18,17 +18,19 @@ impl Ui {
     /// final listing is on screen.
     pub fn navigate(self: &Rc<Self>, dir: &Path, use_cache: bool, on_done: impl Fn() + 'static) {
         let history_before = self.nav.history.borrow().clone();
-        self.navigate_from(dir, use_cache, history_before, on_done);
+        self.navigate_from(dir, use_cache, false, history_before, on_done);
     }
 
     /// [`Ui::navigate`] with the history as it was before the caller moved
     /// its position (back / forward / menu move it before loading). If the
     /// directory cannot be read that history is put back, so the buttons keep
-    /// matching what is on screen.
-    fn navigate_from(
+    /// matching what is on screen. With `restore` the folder comes back as
+    /// it was when it was left (scroll, cursor, selection).
+    pub(crate) fn navigate_from(
         self: &Rc<Self>,
         dir: &Path,
         use_cache: bool,
+        restore: bool,
         history_before: crate::history::History,
         on_done: impl Fn() + 'static,
     ) {
@@ -38,10 +40,15 @@ impl Ui {
         let remote_url = crate::remote::url_of(dir);
         if let Some(url) = remote_url.as_ref().filter(|u| self.remote_session(u).is_none()) {
             let target = dir.to_path_buf();
-            self.ensure_remote(url, move |ui| ui.navigate_from(&target, false, history_before, on_done));
+            self.ensure_remote(url, move |ui| ui.navigate_from(&target, false, restore, history_before, on_done));
             return;
         }
         let previous = self.cwd_path();
+        // Leaving a folder: remember where the user was in it. A reload of
+        // the folder on screen is not leaving it.
+        if previous != dir {
+            self.save_view();
+        }
         let gen = self.nav.generation.get() + 1;
         self.nav.generation.set(gen);
 
@@ -49,6 +56,9 @@ impl Ui {
         let cached = if use_cache && !is_archive { self.caches.dirs.borrow_mut().get(dir) } else { None };
         if let Some(rows) = &cached {
             self.apply_navigation(dir, Ok(rows.clone()));
+            if restore {
+                self.restore_view(dir);
+            }
         }
 
         let dir_owned = dir.to_path_buf();
@@ -77,7 +87,7 @@ impl Ui {
             // A failed read leaves the previous listing on screen; callers that
             // act on the new listing (select an entry, restore a selection)
             // must not run against the wrong folder.
-            if this.finish_listing(&dir_owned, result, cached, previous, history_before) {
+            if this.finish_listing(&dir_owned, result, cached, restore, previous, history_before) {
                 on_done();
             }
         });
@@ -90,6 +100,7 @@ impl Ui {
         dir: &Path,
         result: io::Result<Vec<Row>>,
         cached: Option<Listing>,
+        restore: bool,
         previous: std::path::PathBuf,
         history_before: crate::history::History,
     ) -> bool {
@@ -128,8 +139,13 @@ impl Ui {
             self.caches.dirs.borrow_mut().put(dir.to_path_buf(), rows.clone());
             self.report_cache();
         }
+        let was_shown = cached.is_some();
         self.apply_navigation(dir, Ok(rows));
         self.select_names(&selected);
+        // Nothing was shown yet (no cache, an archive): this is the arrival.
+        if restore && !was_shown {
+            self.restore_view(dir);
+        }
         true
     }
 
@@ -171,7 +187,7 @@ impl Ui {
         let before = self.nav.history.borrow().clone();
         let target = self.nav.history.borrow_mut().back();
         if let Some(dir) = target {
-            self.navigate_from(&dir, true, before, || {});
+            self.navigate_from(&dir, true, true, before, || {});
         }
     }
 
@@ -180,7 +196,7 @@ impl Ui {
         let before = self.nav.history.borrow().clone();
         let target = self.nav.history.borrow_mut().forward();
         if let Some(dir) = target {
-            self.navigate_from(&dir, true, before, || {});
+            self.navigate_from(&dir, true, true, before, || {});
         }
     }
 
@@ -189,7 +205,7 @@ impl Ui {
         let before = self.nav.history.borrow().clone();
         let target = self.nav.history.borrow_mut().jump(index);
         if let Some(dir) = target {
-            self.navigate_from(&dir, true, before, || {});
+            self.navigate_from(&dir, true, true, before, || {});
         }
     }
 

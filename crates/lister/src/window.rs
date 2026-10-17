@@ -13,6 +13,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// How often, and how far apart, a restored scroll offset is retried while
+/// the list is still being laid out.
+const RESTORE_SCROLL_TRIES: u32 = 25;
+const RESTORE_SCROLL_RETRY_MS: u64 = 20;
+
 /// Milliseconds between the tries to focus the cursor row.
 const FOCUS_ROW_RETRY_MS: u64 = 20;
 /// Tries to focus the cursor row before giving up.
@@ -162,6 +167,9 @@ pub struct Navigation {
     /// Cancels the background read of the navigation in flight, so a read
     /// superseded before its worker started is skipped.
     pub cancel: RefCell<crate::background::CancelToken>,
+    /// Scroll, cursor and selection of the folders left behind, for Back /
+    /// Forward / Parent.
+    pub saved: RefCell<crate::viewpos::SavedViews>,
 }
 
 /// Type-to-find: the text typed so far and the idle timeout that closes it.
@@ -277,10 +285,75 @@ impl Ui {
         self.terminal.toggle();
     }
 
+    /// The scroll adjustment of the view on screen (list or icons).
+    fn active_adjustment(&self) -> Option<gtk::Adjustment> {
+        match self.view.mode.get() {
+            ViewMode::Icons => self.view.icon_field.widget().downcast_ref::<gtk::ScrolledWindow>().map(|w| w.vadjustment()),
+            _ => Some(gtk::prelude::ScrollableExt::vadjustment(&self.view.column_view)).flatten(),
+        }
+    }
+
+    /// Remember where the user is in the folder on screen, so a later Back /
+    /// Forward / Parent to it can restore it.
+    pub(crate) fn save_view(&self) {
+        let Some(adj) = self.active_adjustment() else {
+            crate::dlog!("save_view: no scroll adjustment");
+            return;
+        };
+        let cursor = self.row_at(self.view.cursor.get()).map(|r| r.name.clone());
+        let view = crate::viewpos::SavedView { scroll: adj.value(), cursor, selected: self.selected_names() };
+        self.nav.saved.borrow_mut().put(&self.cwd_path(), view);
+    }
+
+    /// Put the folder on screen back as it was when it was left: selection,
+    /// cursor and scroll offset. Does nothing for a folder never left.
+    pub(crate) fn restore_view(self: &Rc<Self>, dir: &Path) {
+        let Some(saved) = self.nav.saved.borrow().get(dir) else { return };
+        self.select_names(&saved.selected);
+        let cursor = saved.cursor.as_ref().and_then(|name| (0..self.view.selection.n_items()).find(|&i| self.row_at(i).is_some_and(|r| &r.name == name)));
+        if let Some(pos) = cursor {
+            self.view.cursor.set(pos);
+        }
+        let Some(adj) = self.active_adjustment() else { return };
+        // The list is laid out after the rows are in: wait until it is tall
+        // enough to reach the saved offset, but not for ever.
+        let gen = self.nav.generation.get();
+        let weak = Rc::downgrade(self);
+        let tries = Cell::new(RESTORE_SCROLL_TRIES);
+        glib::timeout_add_local(std::time::Duration::from_millis(RESTORE_SCROLL_RETRY_MS), move || {
+            let Some(ui) = weak.upgrade() else {
+                opusdm_ipc::err_log!("opusdm-lister", "restore scroll: the Lister window is gone");
+                return glib::ControlFlow::Break;
+            };
+            // Another navigation started: that folder owns the scroll now.
+            if ui.nav.generation.get() != gen {
+                return glib::ControlFlow::Break;
+            }
+            if adj.upper() - adj.page_size() >= saved.scroll - 0.5 {
+                adj.set_value(saved.scroll);
+                return glib::ControlFlow::Break;
+            }
+            tries.set(tries.get() - 1);
+            if tries.get() == 0 {
+                crate::dlog!("restore scroll: the list never got tall enough for {}", saved.scroll);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
     /// Go to `dir` (see [`Ui::navigate`]): a cached listing shows at once and
     /// the disk is re-read on a background thread.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
         self.navigate(dir, true, || {});
+    }
+
+    /// [`Ui::navigate_to`] that puts the folder back as it was when it was
+    /// left (scroll, cursor, selection), for Parent.
+    pub fn navigate_restoring(self: &Rc<Self>, dir: &Path) {
+        let history_before = self.nav.history.borrow().clone();
+        self.navigate_from(dir, true, true, history_before, || {});
     }
 
     /// Apply a listing produced by `navigate_to`'s background read.

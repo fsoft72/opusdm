@@ -529,6 +529,7 @@ fn assemble_ui(
             },
             generation: Cell::new(0),
             cancel: RefCell::new(crate::background::CancelToken::new()),
+            saved: RefCell::new(crate::viewpos::SavedViews::default()),
         },
         typeahead: Typeahead { buffer: RefCell::new(String::new()), timer: RefCell::new(None) },
         hidden_btn: RefCell::new(None),

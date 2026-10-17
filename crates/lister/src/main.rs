@@ -25,6 +25,7 @@ mod clip;
 mod commands;
 mod config_cache;
 mod columns;
+mod viewpos;
 mod context_menu;
 mod dircache;
 mod dnd;

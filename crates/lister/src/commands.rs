@@ -163,7 +163,7 @@ pub fn rename_selection(ui: &Rc<Ui>) {
 pub fn go_parent(ui: &Rc<Ui>) {
     let parent = crate::navpath::parent(&ui.cwd.borrow());
     if let Some(p) = parent {
-        ui.navigate_to(&p);
+        ui.navigate_restoring(&p);
     }
 }
 
