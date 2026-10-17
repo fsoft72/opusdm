@@ -54,6 +54,9 @@ pub(super) struct LayoutState {
     /// Thumbnail textures survive an item being de-realized and re-realized,
     /// so scrolling away and back doesn't re-request or lose a thumbnail.
     pub(super) thumb_cache: RefCell<HashMap<usize, gtk::gdk::Texture>>,
+    /// Thumbnail paths already queued, or failed, in this generation, so a
+    /// scroll does not re-submit them.
+    pub(super) thumb_tracker: RefCell<crate::thumbs::ThumbTracker>,
     /// A single worst-case item box (see `worst_case_box`), cached per icon
     /// size so the arrangement never reflows as items realize/de-realize.
     pub(super) size_cache: RefCell<Option<(i32, ItemBox)>>,
@@ -156,6 +159,7 @@ impl IconField {
                 fixed,
                 realized: RefCell::new(HashMap::new()),
                 thumb_cache: RefCell::new(HashMap::new()),
+                thumb_tracker: RefCell::new(crate::thumbs::ThumbTracker::default()),
                 size_cache: RefCell::new(None),
                 entries: RefCell::new(Vec::new()),
                 mode: Cell::new(LayoutMode::Grid),
@@ -299,6 +303,17 @@ impl IconField {
 
         self.apply_pinned();
 
+        // An edited (or vanished) file gets another try at its thumbnail.
+        {
+            let unchanged: std::collections::HashSet<&std::path::Path> = old
+                .iter()
+                .enumerate()
+                .filter(|&(i, e)| remap(i).is_some_and(|ni| thumbnail_still_valid(e, &entries[ni])))
+                .map(|(_, e)| e.path.as_path())
+                .collect();
+            self.inner.layout.thumb_tracker.borrow_mut().retain_failed(|p| unchanged.contains(p));
+        }
+
         // Re-key cached thumbnails to the new indices; entries that kept
         // their path and modification time keep their thumbnail.
         {
@@ -338,9 +353,10 @@ impl IconField {
     /// the thumbnail cache, limited to `wanted_indices()` (plus its one-page
     /// padding) so a huge directory doesn't queue thousands of decodes for
     /// entries that are nowhere near the viewport. `sync_realized` submits
-    /// the rest as items scroll into range. Keeps the current generation: an
-    /// in-flight result for a stale path is still dropped by
-    /// `apply_thumb_result`'s per-entry path check.
+    /// the rest as items scroll into range. Paths already in flight or that
+    /// failed in this generation are skipped (see `ThumbTracker`). Keeps the
+    /// current generation: an in-flight result is matched back to its entry
+    /// by path in `apply_thumb_result`.
     pub(super) fn request_missing_thumbs(&self) {
         let Some(pool) = self.inner.thumb_pool.as_ref() else {
             return;
@@ -348,6 +364,7 @@ impl IconField {
         let generation = pool.generation();
         let size = crate::types::ThumbSize::for_icon(self.inner.layout.icon_size.get());
         let cache = self.inner.layout.thumb_cache.borrow();
+        let mut tracker = self.inner.layout.thumb_tracker.borrow_mut();
         let entries = self.inner.layout.entries.borrow();
         let wanted = self.wanted_indices(entries.len());
         for index in wanted {
@@ -360,6 +377,9 @@ impl IconField {
             let Some(kind) = crate::thumbs::wanted(entry.ext.as_deref()) else {
                 continue;
             };
+            if !tracker.begin(&entry.path) {
+                continue;
+            }
             pool.submit(crate::thumbs::ThumbRequest {
                 index,
                 path: entry.path.clone(),
@@ -377,37 +397,41 @@ impl IconField {
             return;
         };
         pool.bump_generation();
+        self.inner.layout.thumb_tracker.borrow_mut().reset();
         self.request_missing_thumbs();
     }
 
     /// Turn a finished thumbnail into a texture and show it, unless the entry
-    /// list moved on (generation bumped) or the row now holds a different path.
+    /// list moved on (generation bumped) or the path is no longer listed. A
+    /// failure is remembered so the path is not asked for again.
     fn apply_thumb_result(&self, res: crate::thumbs::ThumbResult) {
-        let Some(pool) = self.inner.thumb_pool.as_ref() else {
-            return;
-        };
-        if res.generation != pool.generation() {
-            return;
-        }
-        {
+        let Some(pool) = self.inner.thumb_pool.as_ref() else { return };
+        if res.generation != pool.generation() { return; }
+        let texture = res.png.and_then(|png| {
+            let bytes = gtk::glib::Bytes::from_owned(png);
+            gtk::gdk::Texture::from_bytes(&bytes)
+                .map_err(|e| {
+                    opusdm_ipc::err_log!("iconview", "thumbnail of {} unreadable: {e}", res.path.display())
+                })
+                .ok()
+        });
+        self.inner.layout.thumb_tracker.borrow_mut().finish(&res.path, texture.is_some());
+        let Some(texture) = texture else { return };
+        // A refresh may have moved the entry since the request was made.
+        let index = {
             let entries = self.inner.layout.entries.borrow();
-            let Some(entry) = entries.get(res.index) else {
-                return;
-            };
-            if entry.path != res.path {
-                return;
+            match entries.get(res.index) {
+                Some(e) if e.path == res.path => Some(res.index),
+                _ => entries.iter().position(|e| e.path == res.path),
             }
-        }
-        let bytes = gtk::glib::Bytes::from_owned(res.png);
-        let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) else {
-            return;
         };
-        if let Some(item) = self.inner.layout.realized.borrow().get(&res.index) {
+        let Some(index) = index else { return };
+        if let Some(item) = self.inner.layout.realized.borrow().get(&index) {
             item.set_thumbnail(&texture);
         }
         // Cached regardless of realization, so scrolling this index back
         // into view doesn't need a fresh thumbnail job.
-        self.inner.layout.thumb_cache.borrow_mut().insert(res.index, texture);
+        self.inner.layout.thumb_cache.borrow_mut().insert(index, texture);
     }
 
     /// Switch arrangement strategy.
