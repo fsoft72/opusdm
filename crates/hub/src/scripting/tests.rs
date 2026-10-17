@@ -319,6 +319,30 @@ fn cancelling_stops_a_confirm_or_alert_nobody_answers() {
 }
 
 #[test]
+fn cancelling_stops_a_pure_javascript_loop() {
+    let codes = [
+        "while (true) {}",
+        "function spin() { for (;;) {} } spin();",
+        // A catch in the script cannot swallow the cancel.
+        "for (;;) { try { while (true) {} } catch (e) {} }",
+        "async function main() { while (true) {} } main();",
+    ];
+    for code in codes {
+        let (result, took) = run_cancelled_mid_call(code);
+        assert!(took < Duration::from_secs(10), "{code} was not stopped: {took:?}");
+        assert!(result.unwrap_err().contains("cancelled"), "{code}");
+    }
+}
+
+#[test]
+fn a_long_loop_that_is_not_cancelled_runs_to_the_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = run("let n = 0; for (let i = 0; i < 300000; i++) { n += i; } opus.log(n);", ctx(&[], dir.path()));
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(r.log, ["44999850000"]);
+}
+
+#[test]
 fn every_call_of_the_prelude_has_an_op() {
     const CALL: &str = "call(\"";
     let called: Vec<&str> = PRELUDE.match_indices(CALL).filter_map(|(at, _)| PRELUDE[at + CALL.len()..].split('"').next()).collect();
