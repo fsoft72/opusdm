@@ -17,9 +17,33 @@ pub fn from_raw(raw: u32) -> u32 {
     ((raw as u64 * 100 + NORM as u64 / 2) / NORM as u64) as u32
 }
 
+/// The channel volumes `current` scaled so the loudest one becomes `target`,
+/// keeping the balance between them (what `pa_cvolume_scale` does). When
+/// every channel is silent there is no balance to keep and all get `target`.
+pub fn scale_channels(current: &[u32], target: u32) -> Vec<u32> {
+    let loudest = current.iter().copied().max().unwrap_or(0);
+    if loudest == 0 { return vec![target; current.len()]; }
+    current.iter().map(|&c| ((c as u64 * target as u64 + loudest as u64 / 2) / loudest as u64) as u32).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaling_keeps_the_balance_between_channels() {
+        // Left at 100%, right at 50%: setting 50% halves both.
+        assert_eq!(scale_channels(&[NORM, NORM / 2], NORM / 2), vec![NORM / 2, NORM / 4]);
+        // Raising never puts the loudest channel above the target.
+        assert_eq!(scale_channels(&[NORM / 4, NORM / 2], NORM), vec![NORM / 2, NORM]);
+    }
+
+    #[test]
+    fn scaling_silent_or_equal_channels_sets_them_all() {
+        assert_eq!(scale_channels(&[0, 0], to_raw(30)), vec![to_raw(30); 2]);
+        assert_eq!(scale_channels(&[NORM; 6], to_raw(70)), vec![to_raw(70); 6]);
+        assert!(scale_channels(&[], NORM).is_empty());
+    }
 
     #[test]
     fn known_points() {
