@@ -3,8 +3,8 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt;
-use std::path::PathBuf;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
 
 /// Live Shift-key state, queried directly from the seat rather than trusted
 /// off the drop event's modifier bits. During a cross-process drag the
@@ -30,9 +30,22 @@ pub fn shift_held(widget: &impl IsA<gtk::Widget>) -> bool {
 pub fn paths_to_uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
     for p in paths {
-        out.push_str("file://");
-        out.push_str(&percent_encode_path(&p.to_string_lossy()));
+        out.push_str(&file_uri(p));
         out.push_str("\r\n");
+    }
+    out
+}
+
+/// The canonical `file://` URI for `path`: each raw byte percent-encoded
+/// except the RFC 3986 unreserved set, with `/` kept. Works on the raw bytes,
+/// so a non-UTF-8 name survives (and matches the freedesktop thumbnail key).
+pub fn file_uri(path: &Path) -> String {
+    let mut out = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
     }
     out
 }
@@ -64,19 +77,6 @@ fn local_path_part(rest: &str) -> Option<&str> {
     let host = &rest[..slash];
     let local = host.eq_ignore_ascii_case("localhost") || host == gtk::glib::host_name().as_str();
     local.then_some(&rest[slash..])
-}
-
-fn percent_encode_path(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// Decode `%XX` escapes into raw bytes. A `%` not followed by two hex digits
@@ -139,6 +139,15 @@ mod tests {
         let got = uris_to_paths("file:///tmp/caf%E9.txt\r\n");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].as_os_str().as_bytes(), b"/tmp/caf\xe9.txt");
+    }
+
+    #[test]
+    fn non_utf8_names_round_trip_through_the_uri_list() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let p = PathBuf::from(OsStr::from_bytes(b"/tmp/caf\xe9 #1.txt"));
+        assert_eq!(file_uri(&p), "file:///tmp/caf%E9%20%231.txt");
+        assert_eq!(uris_to_paths(&paths_to_uri_list(std::slice::from_ref(&p))), vec![p]);
     }
 
     #[test]

@@ -2,27 +2,13 @@
 //! where `<md5>` is the MD5 of the canonical `file://` URI. Validity is the
 //! `Thumb::MTime` tEXt tag matching the source file's mtime.
 
+use crate::dnd::file_uri;
 use crate::thumbs::png_text;
 use crate::types::ThumbSize;
 use md5::{Digest, Md5};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
-
-/// The canonical `file://` URI for `path`: absolute, each byte percent-encoded
-/// except the RFC 3986 unreserved set, with `/` preserved.
-pub fn uri_for(path: &Path) -> String {
-    let mut out = String::from("file://");
-    for byte in path.to_string_lossy().as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(*byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
 
 fn cache_root() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
@@ -33,7 +19,7 @@ fn cache_root() -> Option<PathBuf> {
 
 /// The absolute cache file path for `path` at `size`.
 pub fn cache_path(path: &Path, size: ThumbSize) -> Option<PathBuf> {
-    let digest = Md5::digest(uri_for(path).as_bytes());
+    let digest = Md5::digest(file_uri(path).as_bytes());
     let hex = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
     Some(cache_root()?.join("thumbnails").join(size.dir_name()).join(format!("{hex}.png")))
 }
@@ -71,7 +57,7 @@ pub fn store(path: &Path, size: ThumbSize, png: &[u8]) -> io::Result<()> {
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
     let mtime = source_mtime(path).unwrap_or(0).to_string();
-    let uri = uri_for(path);
+    let uri = file_uri(path);
     let stamped = png_text::insert_text(png, &[("Thumb::MTime", &mtime), ("Thumb::URI", &uri)])
         .unwrap_or_else(|| png.to_vec());
     // `NamedTempFile` is created 0600 and removed again if anything fails.
@@ -89,15 +75,15 @@ mod tests {
     #[test]
     fn uri_matches_the_freedesktop_example() {
         let p = Path::new("/home/jens/photos/me.png");
-        assert_eq!(uri_for(p), "file:///home/jens/photos/me.png");
-        let digest = Md5::digest(uri_for(p).as_bytes());
+        assert_eq!(file_uri(p), "file:///home/jens/photos/me.png");
+        let digest = Md5::digest(file_uri(p).as_bytes());
         let hex = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
         assert_eq!(hex, "c6ee772d9e49320e97ec29a7eb5b1697");
     }
 
     #[test]
     fn uri_percent_encodes_spaces() {
-        assert_eq!(uri_for(Path::new("/tmp/a b.png")), "file:///tmp/a%20b.png");
+        assert_eq!(file_uri(Path::new("/tmp/a b.png")), "file:///tmp/a%20b.png");
     }
 
     #[test]
@@ -111,7 +97,7 @@ mod tests {
 
         store(&src, ThumbSize::Normal, &tests_tiny_png()).unwrap();
         let got = load_valid(&src, ThumbSize::Normal).expect("fresh cache is valid");
-        assert_eq!(png_text::read_text(&got, "Thumb::URI").as_deref(), Some(uri_for(&src).as_str()));
+        assert_eq!(png_text::read_text(&got, "Thumb::URI").as_deref(), Some(file_uri(&src).as_str()));
         assert_eq!(png_text::read_text(&got, "Thumb::MTime").as_deref(), Some("1700000000"));
 
         // Move the source's mtime forward: the cached tag no longer matches.
