@@ -20,16 +20,33 @@ pub struct RawImage {
     pub bytes: Vec<u8>,
 }
 
-/// Decode the whole picture. Safe to call from any thread.
+/// Decode the whole picture, turned as its EXIF orientation says. Safe to
+/// call from any thread.
 pub fn load_raw(path: &Path) -> Result<RawImage, String> {
     let pixbuf = Pixbuf::from_file(path).map_err(|e| e.message().to_string())?;
-    Ok(RawImage::from_pixbuf(&pixbuf))
+    Ok(RawImage::from_pixbuf(&upright(pixbuf)))
 }
 
-/// Decode the picture scaled to fit a `px` x `px` box. Safe to call from any thread.
+/// Decode the picture scaled to fit a `px` x `px` box, turned as its EXIF
+/// orientation says. Safe to call from any thread.
 pub fn load_thumb(path: &Path, px: i32) -> Result<RawImage, String> {
     let pixbuf = Pixbuf::from_file_at_scale(path, px, px, true).map_err(|e| e.message().to_string())?;
-    Ok(RawImage::from_pixbuf(&pixbuf))
+    Ok(RawImage::from_pixbuf(&upright(pixbuf)))
+}
+
+/// Decode the picture scaled down to fit a `px` x `px` box, or at its own
+/// size when it already fits (never scaled up), turned as its EXIF
+/// orientation says. Safe to call from any thread.
+pub fn load_within(path: &Path, px: i32) -> Result<RawImage, String> {
+    let (_, w, h) = Pixbuf::file_info(path).ok_or_else(|| format!("{} is not a picture this viewer can read", path.display()))?;
+    if w <= px && h <= px { return load_raw(path); }
+    load_thumb(path, px)
+}
+
+/// `pixbuf` with the EXIF orientation the loader found applied (phone
+/// pictures are stored sideways), or as it is when there is none.
+fn upright(pixbuf: Pixbuf) -> Pixbuf {
+    pixbuf.apply_embedded_orientation().unwrap_or(pixbuf)
 }
 
 impl RawImage {
@@ -123,6 +140,20 @@ mod tests {
     }
 
     #[test]
+    fn load_within_scales_big_pictures_down_but_never_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.png");
+        write_png(&big, 40, 20);
+        let raw = load_within(&big, 10).unwrap();
+        assert_eq!((raw.width, raw.height), (10, 5));
+        let small = dir.path().join("small.png");
+        write_png(&small, 4, 2);
+        let raw = load_within(&small, 10).unwrap();
+        assert_eq!((raw.width, raw.height), (4, 2));
+        assert!(load_within(&dir.path().join("missing.png"), 10).is_err());
+    }
+
+    #[test]
     fn rotation_swaps_the_sides_and_moves_the_red_pixel() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.png");
@@ -140,6 +171,51 @@ mod tests {
         assert_eq!(half.pixel_bytes_at(3, 1), [255, 0, 0]);
         let none = raw.rotated_pixbuf(0);
         assert_eq!(none.pixel_bytes_at(0, 0), [255, 0, 0]);
+    }
+
+    /// Write a 16 x 8 JPEG, left half red and right half blue, tagged with
+    /// the EXIF `orientation` (an APP1 segment spliced in after SOI).
+    fn write_jpeg_with_orientation(path: &Path, orientation: u8) {
+        let pixbuf = Pixbuf::new(Colorspace::Rgb, false, 8, 16, 8).unwrap();
+        pixbuf.fill(0x0000ffff);
+        for y in 0..8 {
+            for x in 0..8 {
+                pixbuf.put_pixel(x, y, 255, 0, 0, 255);
+            }
+        }
+        let jpeg = pixbuf.save_to_bufferv("jpeg", &[("quality", "95")]).unwrap();
+        // TIFF little endian, one IFD entry: Orientation (0x0112), SHORT, 1.
+        let mut exif = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+        exif.extend_from_slice(&[orientation, 0, 0, 0, 0, 0, 0, 0]);
+        let len = (exif.len() + 2) as u16;
+        let mut out = jpeg[..2].to_vec();
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&exif);
+        out.extend_from_slice(&jpeg[2..]);
+        std::fs::write(path, out).unwrap();
+    }
+
+    /// Whether the RGB pixel at `at` of `raw` is mostly red.
+    fn is_red(raw: &RawImage, (x, y): (u32, u32)) -> bool {
+        let channels = if raw.has_alpha { 4 } else { 3 };
+        let offset = (y * raw.rowstride as u32 + x * channels) as usize;
+        raw.bytes[offset] > 200 && raw.bytes[offset + 2] < 60
+    }
+
+    #[test]
+    fn exif_orientation_is_applied_to_full_pictures_and_thumbnails() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("phone.jpg");
+        // 6: the camera was turned, show the picture turned 90 degrees clockwise.
+        write_jpeg_with_orientation(&file, 6);
+        let raw = load_raw(&file).unwrap();
+        assert_eq!((raw.width, raw.height), (8, 16));
+        // The red left half ends at the top.
+        assert!(is_red(&raw, (4, 2)));
+        assert!(!is_red(&raw, (4, 13)));
+        let thumb = load_thumb(&file, 8).unwrap();
+        assert_eq!((thumb.width, thumb.height), (4, 8));
     }
 
     #[test]

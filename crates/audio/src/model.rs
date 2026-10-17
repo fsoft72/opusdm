@@ -19,7 +19,8 @@ pub struct AudioDevice {
     /// Human readable name.
     pub description: String,
     pub kind: Kind,
-    /// Average over the channels. Can be above 100 when another tool raised it.
+    /// The loudest channel (setting it scales the others along, keeping the
+    /// balance). Can be above 100 when another tool raised it.
     pub volume_percent: u32,
     pub muted: bool,
     pub is_default: bool,

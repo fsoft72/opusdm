@@ -47,7 +47,8 @@ enum Msg {
 
 /// One item of a list answer, sent from the libpulse callback.
 enum Item {
-    Device(AudioDevice, u8),
+    /// A device and the raw volume of each of its channels.
+    Device(AudioDevice, Vec<u32>),
     End,
     Failed,
 }
@@ -67,8 +68,8 @@ struct Pulse {
     // Field order matters: the context must drop before the mainloop.
     ctx: Context,
     ml: Mainloop,
-    /// Channel count of every device seen by the last `list`.
-    channels: HashMap<(Kind, u32), u8>,
+    /// Raw channel volumes of every device seen by the last `list`.
+    channels: HashMap<(Kind, u32), Vec<u32>>,
 }
 
 impl Drop for Pulse {
@@ -158,12 +159,12 @@ impl Pulse {
     }
 
     /// Every sink, with its channel count.
-    fn list_sinks(&mut self, default: Option<String>) -> Result<Vec<(AudioDevice, u8)>, AudioError> {
+    fn list_sinks(&mut self, default: Option<String>) -> Result<Vec<(AudioDevice, Vec<u32>)>, AudioError> {
         let (tx, rx) = mpsc::channel();
         self.ml.lock();
         self.ctx.introspect().get_sink_info_list(move |r| {
             let item = match r {
-                ListResult::Item(i) => Item::Device(sink_device(i, default.as_deref()), i.volume.len()),
+                ListResult::Item(i) => Item::Device(sink_device(i, default.as_deref()), raw_channels(&i.volume)),
                 ListResult::End => Item::End,
                 ListResult::Error => Item::Failed,
             };
@@ -174,13 +175,13 @@ impl Pulse {
     }
 
     /// Every source that is not a monitor, with its channel count.
-    fn list_sources(&mut self, default: Option<String>) -> Result<Vec<(AudioDevice, u8)>, AudioError> {
+    fn list_sources(&mut self, default: Option<String>) -> Result<Vec<(AudioDevice, Vec<u32>)>, AudioError> {
         let (tx, rx) = mpsc::channel();
         self.ml.lock();
         self.ctx.introspect().get_source_info_list(move |r| {
             let item = match r {
                 ListResult::Item(i) => match source_device(i, default.as_deref()) {
-                    Some(d) => Item::Device(d, i.volume.len()),
+                    Some(d) => Item::Device(d, raw_channels(&i.volume)),
                     None => return,
                 },
                 ListResult::End => Item::End,
@@ -192,13 +193,18 @@ impl Pulse {
         collect(&rx)
     }
 
-    /// Outputs first, then inputs. Remembers each device's channel count.
+    /// Outputs first, then inputs. Remembers each device's channel volumes.
     fn list(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
         let (sink_default, source_default) = self.defaults()?;
         let mut all = self.list_sinks(sink_default)?;
         all.extend(self.list_sources(source_default)?);
-        self.channels = all.iter().map(|(d, c)| (d.key(), *c)).collect();
-        Ok(all.into_iter().map(|(d, _)| d).collect())
+        let mut devices = Vec::with_capacity(all.len());
+        self.channels.clear();
+        for (d, channels) in all {
+            self.channels.insert(d.key(), channels);
+            devices.push(d);
+        }
+        Ok(devices)
     }
 
     /// Wait for the success flag of a set call. A refusal because the device is
@@ -220,11 +226,11 @@ impl Pulse {
         }
     }
 
-    /// Set one volume on every channel of a device.
+    /// Set the volume of a device: its loudest channel gets `percent` and
+    /// the others keep their balance to it.
     fn set_volume(&mut self, kind: Kind, index: u32, percent: u32) -> Result<(), AudioError> {
-        let channels = self.channels.get(&(kind, index)).copied().unwrap_or(DEFAULT_CHANNELS);
-        let mut cv = ChannelVolumes::default();
-        cv.set(channels, Volume(volume::to_raw(percent)));
+        let current = self.channels.get(&(kind, index)).cloned().unwrap_or_else(|| vec![0; DEFAULT_CHANNELS as usize]);
+        let cv = channel_volumes(&volume::scale_channels(&current, volume::to_raw(percent)));
         let (tx, rx) = mpsc::channel();
         let done = Box::new(move |ok: bool| {
             let _ = tx.send(ok);
@@ -271,6 +277,21 @@ impl Pulse {
     }
 }
 
+/// The raw volume of each channel of `cv`.
+fn raw_channels(cv: &ChannelVolumes) -> Vec<u32> {
+    cv.get().iter().map(|v| v.0).collect()
+}
+
+/// A libpulse volume with one channel per value of `raw`.
+fn channel_volumes(raw: &[u32]) -> ChannelVolumes {
+    let mut cv = ChannelVolumes::default();
+    cv.set_len(raw.len() as u8);
+    for (slot, &value) in cv.get_mut().iter_mut().zip(raw) {
+        *slot = Volume(value);
+    }
+    cv
+}
+
 /// A sink as the panel model.
 fn sink_device(i: &SinkInfo, default: Option<&str>) -> AudioDevice {
     let name = i.name.as_deref().unwrap_or("").to_string();
@@ -280,7 +301,7 @@ fn sink_device(i: &SinkInfo, default: Option<&str>) -> AudioDevice {
         description: i.description.as_deref().unwrap_or("").to_string(),
         name,
         kind: Kind::Output,
-        volume_percent: volume::from_raw(i.volume.avg().0),
+        volume_percent: volume::from_raw(i.volume.max().0),
         muted: i.mute,
         is_default,
     }
@@ -298,14 +319,14 @@ fn source_device(i: &SourceInfo, default: Option<&str>) -> Option<AudioDevice> {
         description: i.description.as_deref().unwrap_or("").to_string(),
         name,
         kind: Kind::Input,
-        volume_percent: volume::from_raw(i.volume.avg().0),
+        volume_percent: volume::from_raw(i.volume.max().0),
         muted: i.mute,
         is_default,
     })
 }
 
 /// Read list items until the end marker.
-fn collect(rx: &Receiver<Item>) -> Result<Vec<(AudioDevice, u8)>, AudioError> {
+fn collect(rx: &Receiver<Item>) -> Result<Vec<(AudioDevice, Vec<u32>)>, AudioError> {
     let mut out = Vec::new();
     loop {
         match rx.recv_timeout(Duration::from_secs(CALL_TIMEOUT_SECS)) {
