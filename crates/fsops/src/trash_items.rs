@@ -165,7 +165,7 @@ fn move_across(src: &Path, target: &Path) -> Result<(), String> {
 
 /// Delete `item` for good, with its info file.
 pub fn erase(item: &TrashItem) -> Result<(), String> {
-    let errors = remove_recursive(&item.file());
+    let errors = remove_recursive(&item.file(), &CancelToken::new());
     if let Some((path, msg)) = errors.first() {
         return Err(format!("{}: {msg} ({} error(s))", path.display(), errors.len()));
     }
@@ -187,7 +187,7 @@ pub fn empty(trash: &Path) -> Vec<(PathBuf, String)> {
             }
         };
         for entry in entries.flatten() {
-            errors.extend(remove_recursive(&entry.path()));
+            errors.extend(remove_recursive(&entry.path(), &CancelToken::new()));
         }
     }
     let sizes = trash.join(DIRECTORY_SIZES);
