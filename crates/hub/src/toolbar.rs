@@ -28,8 +28,8 @@ use super::{desktop_windows::*, groups_ui::*};
 /// area, which otherwise clamps the desktop windows a strip short).
 const PANEL_STRUT_SETTLE_DELAYS_MS: [u64; 2] = [600, 1600];
 
-/// Extra time, on top of the Shutdown hooks' own cap, the quit waits for the
-/// server to acknowledge it has shut down.
+/// Extra time, on top of the Shutdown hooks' and the settings saves' own
+/// caps, the quit waits for the server to acknowledge it has shut down.
 const QUIT_ACK_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Longest the quit waits for the desktop saves still queued.
@@ -316,7 +316,8 @@ pub(crate) fn request_quit(widgets: &Rc<Widgets>) {
 }
 
 /// Wait, off the GTK thread so the desktop keeps drawing, for the server to
-/// run its Shutdown hooks and for the queued desktop saves (each capped): the
+/// run its Shutdown hooks and write its pending saves, and for the queued
+/// desktop saves (each capped): the
 /// process exits right after the quit and would kill a hook still running or
 /// lose a save.
 async fn wait_for_shutdown(widgets: &Widgets) {
@@ -327,7 +328,7 @@ async fn wait_for_shutdown(widgets: &Widgets) {
     }
     let io = widgets.io.clone();
     let waited = gio::spawn_blocking(move || {
-        let cap = opusdm_hub::script_events::SHUTDOWN_HOOK_TIMEOUT + QUIT_ACK_SLACK;
+        let cap = opusdm_hub::script_events::SHUTDOWN_HOOK_TIMEOUT + crate::server::PERSIST_FLUSH_TIMEOUT + QUIT_ACK_SLACK;
         if server_up && done_rx.recv_timeout(cap).is_err() {
             opusdm_ipc::err_log!("opusdm-hub", "the hub server did not finish shutting down in {cap:?}");
         }

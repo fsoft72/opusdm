@@ -1531,6 +1531,38 @@ fn shutdown_and_wait_acknowledges_only_after_the_hooks_finished() {
 }
 
 #[test]
+fn shutdown_and_wait_acknowledges_only_after_pending_saves_are_on_disk() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server_with(listener, Box::new(|_p| {}), with_bindings(opusdm_ipc::Bindings::default()));
+    let mut c = connect(&path);
+    send(&mut c, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let _w: Welcome = recv(&mut c).unwrap().unwrap();
+
+    // Many saves queue up on the persist thread; the last one is what the
+    // user saw before choosing Quit.
+    const SAVES: usize = 150;
+    for i in 0..SAVES {
+        let f = opusdm_ipc::Function::new(format!("saved {i}"));
+        send(&mut c, &ToHub::SetFunctions(vec![f])).unwrap();
+    }
+    let last = format!("saved {}", SAVES - 1);
+    let seen = next_matching(&handle, Duration::from_secs(5), |ev| match ev {
+        HubEvent::FunctionsChanged(fs) if fs.first().is_some_and(|f| f.name == last) => Some(()),
+        _ => None,
+    });
+    assert!(seen.is_some(), "the hub never applied the last save");
+
+    let (ack_tx, ack_rx) = channel();
+    handle.cmd_tx.send(HubCmd::ShutdownAndWait(ack_tx)).unwrap();
+    ack_rx.recv_timeout(Duration::from_secs(10)).expect("no acknowledgement");
+    let on_disk = opusdm_ipc::function::load_functions();
+    assert_eq!(on_disk.first().map(|f| f.name.as_str()), Some(last.as_str()), "the ack came before the last save was written");
+}
+
+#[test]
 fn set_hidden_tells_listers_and_the_gtk_side_once_and_toggle_flips_it() {
     let (_td, listener, path) = bind_temp();
     let handle = spawn_server(listener, Box::new(|_p| {}));

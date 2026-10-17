@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 mod function_run;
 mod function_runs;
 mod persist;
+pub use persist::FLUSH_TIMEOUT as PERSIST_FLUSH_TIMEOUT;
 
 use function_run::{only_scripts, NO_SOURCE_ERROR};
 use function_runs::FunctionRuns;
@@ -1104,6 +1105,9 @@ impl Hub {
             HubCmd::Shutdown => {
                 self.run_shutdown_hooks();
                 self.broadcast(ToLister::Shutdown);
+                // The process exits soon after: a Set* save still queued
+                // would be lost, or leave a `.tmp` behind.
+                persist::flush(&self.persist_tx, persist::FLUSH_TIMEOUT);
                 return false;
             }
 
