@@ -167,10 +167,19 @@ fn install_dnd_controllers(field: &IconField) {
             return None;
         }
         let payload = crate::dnd::paths_to_uri_list(&paths);
+        *this.inner.layout.file_drag.borrow_mut() = paths;
         Some(gtk::gdk::ContentProvider::for_bytes(
             "text/uri-list",
             &gtk::glib::Bytes::from(payload.as_bytes()),
         ))
+    });
+    // The drag is over (dropped, cancelled or failed): forget it and unlight
+    // the folder it was over.
+    let weak = field.downgrade();
+    src.connect_drag_end(move |_, _, _| {
+        let Some(this) = weak.upgrade() else { return };
+        this.inner.layout.file_drag.borrow_mut().clear();
+        this.set_drop_hover(None);
     });
     field.inner.layout.fixed.add_controller(src);
 
@@ -184,9 +193,39 @@ fn install_dnd_controllers(field: &IconField) {
         gtk::gdk::FileList::static_type(),
         gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
     );
+    // A drag that started in this field proposes Move (Copy with Ctrl) over a
+    // folder and nothing elsewhere. Any other drag keeps the default action:
+    // Copy when the source offers it.
+    let weak = field.downgrade();
+    let hover = move |t: &gtk::DropTarget, x: f64, y: f64| -> gtk::gdk::DragAction {
+        let Some(this) = weak.upgrade() else { return gtk::gdk::DragAction::empty() };
+        if this.inner.layout.file_drag.borrow().is_empty() {
+            let offered = t.current_drop().map(|d| d.actions()).unwrap_or(gtk::gdk::DragAction::COPY);
+            return if offered.contains(gtk::gdk::DragAction::COPY) { gtk::gdk::DragAction::COPY } else { gtk::gdk::DragAction::MOVE };
+        }
+        let folder = this.folder_drop_target(x, y);
+        this.set_drop_hover(folder);
+        match folder {
+            None => gtk::gdk::DragAction::empty(),
+            Some(_) if crate::dnd::ctrl_held(&this.inner.layout.fixed) => gtk::gdk::DragAction::COPY,
+            Some(_) => gtk::gdk::DragAction::MOVE,
+        }
+    };
+    let hover_motion = hover.clone();
+    target.connect_enter(move |t, x, y| hover(t, x, y));
+    target.connect_motion(move |t, x, y| hover_motion(t, x, y));
+    let weak = field.downgrade();
+    target.connect_leave(move |_| {
+        if let Some(this) = weak.upgrade() {
+            this.set_drop_hover(None);
+        }
+    });
     let weak = field.downgrade();
     target.connect_drop(move |t, value, x, y| {
         let Some(this) = weak.upgrade() else { return false };
+        if !this.inner.layout.file_drag.borrow().is_empty() {
+            return this.drop_on_folder(value, x, y);
+        }
         crate::dbg_log!("icon field drop fired at ({x}, {y}), value type={:?}", value.type_());
         let Ok(file_list) = value.get::<gtk::gdk::FileList>() else {
             crate::dbg_log!("icon field drop: value is not a FileList");

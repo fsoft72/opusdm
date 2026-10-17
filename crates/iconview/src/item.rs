@@ -196,6 +196,11 @@ impl IconItem {
         self.inner.root.upcast_ref()
     }
 
+    /// Toggle the `drop-target` style class (a folder a drag is over).
+    pub fn set_drop_target(&self, on: bool) {
+        toggle_class(&self.inner.root, "drop-target", on);
+    }
+
     /// Toggle the `selected` style class.
     pub fn set_selected(&self, on: bool) {
         toggle_class(&self.inner.root, "selected", on);

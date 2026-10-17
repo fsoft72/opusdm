@@ -84,6 +84,12 @@ pub(super) struct LayoutState {
     pub(super) reposition_active: Cell<bool>,
     /// While a reposition drag is live: (item index, its position at drag start).
     pub(super) drag_bases: RefCell<Vec<(usize, (f64, f64))>>,
+    /// Paths of the files being dragged out of this field right now; empty
+    /// when no such drag runs. A drop that arrives while this is set comes
+    /// from this same field (it can target a folder of the field).
+    pub(super) file_drag: RefCell<Vec<PathBuf>>,
+    /// Folder item lit as the drop target of a drag from this field.
+    pub(super) drop_hover: Cell<Option<usize>>,
 }
 
 /// Selection and keyboard-cursor state, independent of how items are laid out.
@@ -99,6 +105,7 @@ pub(super) struct Events {
     pub(super) on_activate: Listeners<dyn Fn(usize)>,
     pub(super) on_background_activate: Listeners<dyn Fn()>,
     pub(super) on_drop_uris: Listeners<dyn Fn(Vec<PathBuf>, i32, bool)>,
+    pub(super) on_drop_on_folder: Listeners<dyn Fn(Vec<PathBuf>, usize, bool)>,
     pub(super) on_context_menu: Listeners<dyn Fn(i32, f64, f64)>,
     pub(super) on_rename_requested: Listeners<dyn Fn(usize, String)>,
     pub(super) on_zoom_requested: Listeners<dyn Fn(i32)>,
@@ -174,6 +181,8 @@ impl IconField {
                 item_rects: RefCell::new(Vec::new()),
                 reposition_active: Cell::new(false),
                 drag_bases: RefCell::new(Vec::new()),
+                file_drag: RefCell::new(Vec::new()),
+                drop_hover: Cell::new(None),
             },
             selection: SelectionState {
                 selected: RefCell::new(BTreeSet::new()),
@@ -185,6 +194,7 @@ impl IconField {
                 on_activate: RefCell::new(Vec::new()),
                 on_background_activate: RefCell::new(Vec::new()),
                 on_drop_uris: RefCell::new(Vec::new()),
+                on_drop_on_folder: RefCell::new(Vec::new()),
                 on_context_menu: RefCell::new(Vec::new()),
                 on_rename_requested: RefCell::new(Vec::new()),
                 on_zoom_requested: RefCell::new(Vec::new()),
@@ -545,6 +555,14 @@ impl IconField {
         self.inner.events.on_drop_uris.borrow_mut().push(Rc::new(f));
     }
 
+    /// Register a listener for files dragged out of this field and dropped on
+    /// one of its folders: (dropped paths, folder index, Ctrl held = copy).
+    /// While it is dragged over a folder the item gets the `drop-target`
+    /// style class; a drop on a file or on the background is ignored.
+    pub fn connect_drop_on_folder(&self, f: impl Fn(Vec<PathBuf>, usize, bool) + 'static) {
+        self.inner.events.on_drop_on_folder.borrow_mut().push(Rc::new(f));
+    }
+
     /// Register a context-menu listener: (index or `-1`, x, y).
     pub fn connect_context_menu(&self, f: impl Fn(i32, f64, f64) + 'static) {
         self.inner.events.on_context_menu.borrow_mut().push(Rc::new(f));
@@ -616,6 +634,49 @@ impl IconField {
         }
         for cb in listeners(&self.inner.events.on_drop_uris) {
             cb(paths.clone(), target, shift);
+        }
+    }
+
+    /// The folder under Fixed-space point (`x`, `y`) that a drag started in
+    /// this field may be dropped on: a directory that is not itself dragged.
+    pub(super) fn folder_drop_target(&self, x: f64, y: f64) -> Option<usize> {
+        let i = self.item_at(x, y)?;
+        let entries = self.inner.layout.entries.borrow();
+        let entry = entries.get(i)?;
+        let dragged = self.inner.layout.file_drag.borrow().contains(&entry.path);
+        (entry.kind == crate::types::IconKind::Dir && !dragged).then_some(i)
+    }
+
+    /// A drop of files dragged out of this field: when it lands on a folder
+    /// the listeners get the paths, the folder and whether Ctrl is held (copy).
+    /// Returns whether the drop was accepted; a drop elsewhere is refused.
+    pub(super) fn drop_on_folder(&self, value: &gtk::glib::Value, x: f64, y: f64) -> bool {
+        self.set_drop_hover(None);
+        let Some(folder) = self.folder_drop_target(x, y) else { return false };
+        let Ok(file_list) = value.get::<gtk::gdk::FileList>() else { return false };
+        let paths: Vec<PathBuf> = file_list.files().into_iter().filter_map(|f| f.path()).collect();
+        if paths.is_empty() {
+            return false;
+        }
+        let copy = crate::dnd::ctrl_held(&self.inner.layout.fixed);
+        for cb in listeners(&self.inner.events.on_drop_on_folder) {
+            cb(paths.clone(), folder, copy);
+        }
+        true
+    }
+
+    /// Light `hover` (a folder index) as the drop target and unlight the
+    /// previous one. `None` clears the highlight.
+    pub(super) fn set_drop_hover(&self, hover: Option<usize>) {
+        let old = self.inner.layout.drop_hover.replace(hover);
+        if old == hover {
+            return;
+        }
+        if let Some(item) = old.and_then(|i| self.item_at_index(i)) {
+            item.set_drop_target(false);
+        }
+        if let Some(item) = hover.and_then(|i| self.item_at_index(i)) {
+            item.set_drop_target(true);
         }
     }
 
@@ -923,6 +984,7 @@ mod tests {
             ("icon_item_left_out_badge", icon_item_left_out_badge),
             ("field_entries_and_modes", field_entries_and_modes),
             ("field_icon_set_switch", field_icon_set_switch),
+            ("field_folder_drop_target", field_folder_drop_target),
             ("field_selection", field_selection),
             ("field_rubber_band_and_cursor", field_rubber_band_and_cursor),
             ("field_drop", field_drop),
@@ -1148,6 +1210,30 @@ mod tests {
         assert_eq!(paths, vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b c.txt")]);
         assert_eq!(target, -1);
         assert!(shift);
+    }
+
+    /// Only a folder that is not itself dragged is a drop target.
+    fn field_folder_drop_target() {
+        let f = IconField::new();
+        let mut list = entries(3);
+        list[1].kind = IconKind::Dir;
+        list[2].kind = IconKind::Dir;
+        f.set_entries(&list);
+        f.inner.layout.scroller.set_size_request(600, 400);
+        f.relayout();
+        let center = |i: usize| {
+            let (x, y, w, h) = f.inner.layout.item_rects.borrow()[i];
+            (x + w / 2.0, y + h / 2.0)
+        };
+        let (x0, y0) = center(0);
+        let (x1, y1) = center(1);
+        let (x2, y2) = center(2);
+        assert_eq!(f.folder_drop_target(x0, y0), None, "a file is no target");
+        assert_eq!(f.folder_drop_target(x1, y1), Some(1));
+        *f.inner.layout.file_drag.borrow_mut() = vec![PathBuf::from("/tmp/file2.txt")];
+        assert_eq!(f.folder_drop_target(x2, y2), None, "a dragged folder is no target");
+        assert_eq!(f.folder_drop_target(x1, y1), Some(1));
+        assert_eq!(f.folder_drop_target(-5.0, -5.0), None, "the background is no target");
     }
 
     /// Dragging moves the whole selection and fires move-icons.

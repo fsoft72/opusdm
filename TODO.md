@@ -1,7 +1,7 @@
 # TODO items
 
 
-- [ ]  Select files / dirs and drag and drop them inside a folder in the same lister
+- [x]  (done, needs a manual check in the desktop session) Select files / dirs and drag and drop them inside a folder in the same lister
 
   It shouuld be possible to select multiple files / folders and then drag and drop them
   into a folder in the same lister (without DEST)

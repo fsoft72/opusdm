@@ -7,8 +7,85 @@ use gtk::gdk;
 use gtk::prelude::*;
 use opusdm_iconview::IconField;
 use opusdm_ipc::Op;
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+
+thread_local! {
+    /// The files being dragged out of a column view in this process, and that
+    /// view. A drop on the same view can target one of its folders.
+    static LIST_DRAG: RefCell<Option<(gtk::glib::WeakRef<gtk::ColumnView>, Vec<PathBuf>)>> = const { RefCell::new(None) };
+    /// The row widget lit as the drop target of that drag.
+    static LIST_DROP_ROW: RefCell<Option<gtk::glib::WeakRef<gtk::Widget>>> = const { RefCell::new(None) };
+}
+
+/// A drag of `paths` starts in `view`.
+pub fn begin_list_drag(view: &gtk::ColumnView, paths: Vec<PathBuf>) {
+    LIST_DRAG.with(|d| *d.borrow_mut() = Some((view.downgrade(), paths)));
+}
+
+/// The drag that started in a column view is over: forget it and unlight the row.
+pub fn end_list_drag() {
+    LIST_DRAG.with(|d| *d.borrow_mut() = None);
+    _light_row(None);
+}
+
+/// The files being dragged out of `view`, if a drag from it is running.
+fn _list_drag_paths(view: &gtk::ColumnView) -> Option<Vec<PathBuf>> {
+    LIST_DRAG.with(|d| {
+        let d = d.borrow();
+        let (weak, paths) = d.as_ref()?;
+        (weak.upgrade().as_ref() == Some(view)).then(|| paths.clone())
+    })
+}
+
+/// Light `row` as the drop target and unlight the previous one (`None` clears).
+fn _light_row(row: Option<&gtk::Widget>) {
+    LIST_DROP_ROW.with(|cur| {
+        let mut cur = cur.borrow_mut();
+        let old = cur.as_ref().and_then(|w| w.upgrade());
+        if old.as_ref() == row {
+            return;
+        }
+        if let Some(old) = old {
+            crate::columns::set_row_drop_target(&old, false);
+        }
+        if let Some(row) = row {
+            crate::columns::set_row_drop_target(row, true);
+        }
+        *cur = row.map(|r| r.downgrade());
+    });
+}
+
+/// The folder row under `y` that `dragged` may be dropped on, with its path
+/// and widget: a directory that is not itself dragged.
+fn _folder_at(ui: &Ui, view: &gtk::ColumnView, y: f64, dragged: &[PathBuf]) -> Option<(PathBuf, gtk::Widget)> {
+    let (pos, widget) = crate::columns::row_at_y(view, y)?;
+    let row = ui.row_at(pos)?;
+    let path = ui.cwd_path().join(&row.name);
+    (row.is_dir && !dragged.contains(&path)).then_some((path, widget))
+}
+
+/// The action a drag over the column view proposes at `y`. A drag that
+/// started in this view is Move (Copy with Ctrl) over a folder and refused
+/// elsewhere; any other drag is Copy, Move with Shift.
+fn _list_hover_action(weak: &Weak<Ui>, view: &gtk::ColumnView, y: f64) -> gdk::DragAction {
+    let Some(dragged) = _list_drag_paths(view) else {
+        let shift = opusdm_iconview::dnd::shift_held(view);
+        return if shift { gdk::DragAction::MOVE } else { gdk::DragAction::COPY };
+    };
+    let Some(ui) = weak.upgrade() else {
+        opusdm_ipc::err_log!("opusdm-lister", "column view drop hover: the Lister window is gone");
+        return gdk::DragAction::empty();
+    };
+    let folder = _folder_at(&ui, view, y, &dragged);
+    _light_row(folder.as_ref().map(|(_, w)| w));
+    match folder {
+        None => gdk::DragAction::empty(),
+        Some(_) if opusdm_iconview::dnd::ctrl_held(view) => gdk::DragAction::COPY,
+        Some(_) => gdk::DragAction::MOVE,
+    }
+}
 
 /// Attach a drop target to the column view. The drag source lives per-cell
 /// in `columns.rs`, since it needs the row actually under the pointer rather
@@ -29,27 +106,39 @@ pub fn attach(ui: &Rc<Ui>, view: &gtk::ColumnView) {
     // its cursor) tracks Shift as it's pressed/released while hovering.
     {
         let view = view.clone();
+        let weak = Rc::downgrade(ui);
         target.connect_enter(move |_, x, y| {
-            let shift = opusdm_iconview::dnd::shift_held(&view);
-            crate::dlog!("column view drop: enter at ({x}, {y}) shift={shift}");
-            if shift { gdk::DragAction::MOVE } else { gdk::DragAction::COPY }
+            crate::dlog!("column view drop: enter at ({x}, {y})");
+            _list_hover_action(&weak, &view, y)
         });
     }
     {
         let view = view.clone();
-        target.connect_motion(move |_, _x, _y| {
-            let shift = opusdm_iconview::dnd::shift_held(&view);
-            if shift { gdk::DragAction::MOVE } else { gdk::DragAction::COPY }
-        });
+        let weak = Rc::downgrade(ui);
+        target.connect_motion(move |_, _x, y| _list_hover_action(&weak, &view, y));
     }
     target.connect_leave(|_| {
         crate::dlog!("column view drop: leave");
+        _light_row(None);
     });
     {
         let weak = Rc::downgrade(ui);
         let view = view.clone();
         target.connect_drop(move |t, value, x, y| {
-            let Some(ui) = weak.upgrade() else { return false };
+            let Some(ui) = weak.upgrade() else {
+                opusdm_ipc::err_log!("opusdm-lister", "column view drop: the Lister window is gone");
+                return false;
+            };
+            _light_row(None);
+            if let Some(dragged) = _list_drag_paths(&view) {
+                // A drag from this view: only a folder row takes it.
+                let Some((dest, _)) = _folder_at(&ui, &view, y, &dragged) else {
+                    crate::dlog!("column view drop: own drag dropped away from a folder, ignored");
+                    return false;
+                };
+                drop_on_folder(&ui, dragged, dest, opusdm_iconview::dnd::ctrl_held(&view));
+                return true;
+            }
             crate::dlog!("column view drop: fired at ({x}, {y}), value type={:?}", value.type_());
             let Ok(file_list) = value.get::<gdk::FileList>() else {
                 crate::dlog!("column view drop: value is not a FileList");
@@ -93,6 +182,47 @@ pub fn attach_field(ui: &Rc<Ui>, field: &IconField) {
         crate::dlog!("icon field drop: op={op:?} srcs={srcs:?} dest={dest_dir:?}");
         submit_dropped(&ui, op, srcs, dest_dir);
     });
+}
+
+/// Wire the drop of files dragged out of the icon view onto one of its
+/// folders: Move, or Copy with Ctrl held. Dragging a file out of an archive
+/// view is handled by `submit_dropped` as for any other drop.
+pub fn attach_field_folders(ui: &Rc<Ui>, field: &IconField) {
+    let weak = Rc::downgrade(ui);
+    let field_weak = field.downgrade();
+    field.connect_drop_on_folder(move |srcs, folder, copy| {
+        let Some(ui) = weak.upgrade() else {
+            opusdm_ipc::err_log!("opusdm-lister", "icon field folder drop: the Lister window is gone");
+            return;
+        };
+        let Some(entry) = field_weak.upgrade().and_then(|f| f.entry(folder)) else {
+            opusdm_ipc::err_log!("opusdm-lister", "icon field folder drop: folder {folder} is no longer listed");
+            return;
+        };
+        drop_on_folder(&ui, srcs, entry.path, copy);
+    });
+}
+
+/// Drop `srcs` on the folder `dest`: Move, or Copy when `copy` is set.
+pub fn drop_on_folder(ui: &Rc<Ui>, srcs: Vec<PathBuf>, dest: PathBuf, copy: bool) {
+    if crate::archive::parse_archive_path(&dest).is_some() {
+        crate::actions::flash(ui, "cannot drop into an archive");
+        return;
+    }
+    let srcs = _without_dest(srcs, &dest);
+    crate::dlog!("folder drop: copy={copy} srcs={srcs:?} dest={dest:?}");
+    if srcs.is_empty() {
+        crate::actions::flash(ui, "nothing to drop there");
+        return;
+    }
+    let op = if copy { Op::Copy } else { Op::Move };
+    submit_dropped(ui, op, srcs, Some(dest));
+}
+
+/// `srcs` without the folder `dest` itself and the folders that contain it:
+/// a folder cannot be dropped into itself.
+fn _without_dest(srcs: Vec<PathBuf>, dest: &std::path::Path) -> Vec<PathBuf> {
+    srcs.into_iter().filter(|s| !dest.starts_with(s)).collect()
 }
 
 /// Sources of a drop split into real paths and entries of archives: the
@@ -160,6 +290,12 @@ fn submit_dropped(ui: &Rc<Ui>, op: Op, srcs: Vec<PathBuf>, dest_dir: Option<Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_is_never_dropped_into_itself_or_below_itself() {
+        let srcs = vec![PathBuf::from("/a/x"), PathBuf::from("/a/y"), PathBuf::from("/a")];
+        assert_eq!(_without_dest(srcs, std::path::Path::new("/a/x")), vec![PathBuf::from("/a/y")]);
+    }
 
     #[test]
     fn archive_entries_are_grouped_per_archive() {

@@ -836,6 +836,7 @@ fn wire_icon_view(ui: &Rc<Ui>, view_toggle: &gtk::ToggleButton) {
     }
 
     crate::dnd::attach_field(ui, &ui.view.icon_field);
+    crate::dnd::attach_field_folders(ui, &ui.view.icon_field);
     let icon_field = ui.view.icon_field.clone();
     {
         let weak = Rc::downgrade(ui);

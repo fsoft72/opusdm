@@ -87,6 +87,8 @@ pub fn generate_css(settings: &Settings) -> String {
          .row-dir, .row-file {{ padding: 0 4px; border: 1px solid transparent; }} \
          .cell-selected {{ background-color: {sel_bg}; color: {sel_fg}; }} \
          .cell-selected > label {{ color: {sel_fg}; }} \
+         .row-dir.drop-target, .row-file.drop-target {{ background-color: {sel_bg}; color: {sel_fg}; box-shadow: inset 0 0 0 2px {sel_fg}; }} \
+         .row-dir.drop-target > label, .row-file.drop-target > label {{ color: {sel_fg}; }} \
          .filter-bar {{ background: alpha(@theme_bg_color, 0.8); border-bottom: 1px solid rgba(0, 0, 0, 0.2); padding: 2px 4px; }} \
          .dim-label {{ opacity: 0.7; font-size: 0.85em; }} \
          .palette-search {{ font-size: 1.1em; padding: 4px; }} \

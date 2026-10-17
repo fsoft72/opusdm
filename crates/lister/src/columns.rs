@@ -28,6 +28,34 @@ pub fn row_widget(view: &gtk::ColumnView, pos: u32) -> Option<gtk::Widget> {
     })
 }
 
+/// The row of `view` under the vertical position `y` (in `view` space): its
+/// position in the selection model and its widget, while one is built.
+pub fn row_at_y(view: &gtk::ColumnView, y: f64) -> Option<(u32, gtk::Widget)> {
+    NAME_ITEMS.with(|items| {
+        items.borrow().iter().filter_map(|w| w.upgrade()).find_map(|item| {
+            let row = item.child().filter(|c| c.is_ancestor(view))?.parent()?.parent()?;
+            let bounds = row.compute_bounds(view)?;
+            (y >= bounds.y() as f64 && y < (bounds.y() + bounds.height()) as f64).then(|| (item.position(), row))
+        })
+    })
+}
+
+/// Light or unlight the drop-target highlight of a whole row widget. The
+/// class goes on each cell's child, where `row-dir` / `row-file` paint.
+pub fn set_row_drop_target(row: &gtk::Widget, on: bool) {
+    let mut cell = row.first_child();
+    while let Some(c) = cell {
+        if let Some(inner) = c.first_child() {
+            if on {
+                inner.add_css_class("drop-target");
+            } else {
+                inner.remove_css_class("drop-target");
+            }
+        }
+        cell = c.next_sibling();
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum ColKind {
     Name,
@@ -138,6 +166,7 @@ where
         }
         let payload = opusdm_iconview::dnd::paths_to_uri_list(&paths);
         crate::dlog!("drag prepare: payload={payload:?}");
+        crate::dnd::begin_list_drag(&ui.view.column_view, paths);
         Some(gtk::gdk::ContentProvider::for_bytes("text/uri-list", &gtk::glib::Bytes::from(payload.as_bytes())))
     });
     src.connect_drag_begin(move |_, _| {
@@ -145,6 +174,7 @@ where
     });
     src.connect_drag_end(move |_, _, delete| {
         crate::dlog!("drag end, delete={delete}");
+        crate::dnd::end_list_drag();
     });
     src.connect_drag_cancel(move |_, _, reason| {
         crate::dlog!("drag cancel: {reason:?}");
@@ -242,6 +272,8 @@ where
     // spans its text, so painting it alone left the icon and the space
     // after the name in the list's ground colour.
     let Some(cell) = item.child() else { return };
+    // A recycled cell must not keep the highlight of a drag over its old row.
+    cell.remove_css_class("drop-target");
     cell.remove_css_class("row-dir");
     cell.remove_css_class("row-file");
     cell.add_css_class(if row.is_dir { "row-dir" } else { "row-file" });

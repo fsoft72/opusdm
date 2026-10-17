@@ -26,6 +26,15 @@ pub fn shift_held(widget: &impl IsA<gtk::Widget>) -> bool {
     pointer_state.is_some_and(has_shift) || keyboard_state.is_some_and(has_shift)
 }
 
+/// Live Ctrl-key state, queried from the seat like [`shift_held`].
+pub fn ctrl_held(widget: &impl IsA<gtk::Widget>) -> bool {
+    let seat = widget.display().default_seat();
+    let has_ctrl = |m: gtk::gdk::ModifierType| m.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+    let pointer = seat.as_ref().and_then(|s| s.pointer()).map(|d| d.modifier_state());
+    let keyboard = seat.as_ref().and_then(|s| s.keyboard()).map(|d| d.modifier_state());
+    pointer.is_some_and(has_ctrl) || keyboard.is_some_and(has_ctrl)
+}
+
 /// Build a `text/uri-list` payload (CRLF-separated, trailing CRLF).
 pub fn paths_to_uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
