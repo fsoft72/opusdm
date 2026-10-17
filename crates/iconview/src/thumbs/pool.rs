@@ -78,7 +78,14 @@ impl ThumbPool {
                         Some(bytes) => Some(bytes),
                         None => match generate::generate(&path, kind, size.px()) {
                             Ok(bytes) => {
-                                let _ = cache::store(&path, size, &bytes);
+                                // The thumbnail is still shown; only the disk cache misses out.
+                                if let Err(e) = cache::store(&path, size, &bytes) {
+                                    opusdm_ipc::err_log!(
+                                        "iconview",
+                                        "cannot cache the thumbnail of {}: {e}",
+                                        path.display()
+                                    );
+                                }
                                 Some(bytes)
                             }
                             Err(e) => {

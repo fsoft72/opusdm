@@ -58,7 +58,8 @@ pub fn load_valid(path: &Path, size: ThumbSize) -> Option<Vec<u8>> {
 }
 
 /// Write `png` into the cache for `path` at `size`, stamping `Thumb::MTime`
-/// and `Thumb::URI`. Atomic: a sibling `tmp` file is renamed into place.
+/// and `Thumb::URI`. Atomic: a uniquely named temp file in the same folder is
+/// renamed into place, so workers storing the same entry never share one.
 pub fn store(path: &Path, size: ThumbSize, png: &[u8]) -> io::Result<()> {
     let cp = cache_path(path, size)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no cache directory"))?;
@@ -73,14 +74,11 @@ pub fn store(path: &Path, size: ThumbSize, png: &[u8]) -> io::Result<()> {
     let uri = uri_for(path);
     let stamped = png_text::insert_text(png, &[("Thumb::MTime", &mtime), ("Thumb::URI", &uri)])
         .unwrap_or_else(|| png.to_vec());
-    let tmp = cp.with_extension(format!("tmp{}", std::process::id()));
-    std::fs::write(&tmp, &stamped)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, &cp)
+    // `NamedTempFile` is created 0600 and removed again if anything fails.
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    io::Write::write_all(&mut tmp, &stamped)?;
+    tmp.persist(&cp).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -119,6 +117,31 @@ mod tests {
         // Move the source's mtime forward: the cached tag no longer matches.
         filetime::set_file_mtime(&src, filetime::FileTime::from_unix_time(1_700_000_999, 0)).unwrap();
         assert!(load_valid(&src, ThumbSize::Normal).is_none());
+
+        std::env::remove_var("XDG_CACHE_HOME");
+    }
+
+    #[test]
+    fn concurrent_stores_of_one_entry_all_succeed_and_leave_no_temp_files() {
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 50;
+        let _env_guard = crate::test_env_lock();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CACHE_HOME", td.path().join("cache"));
+        let src = td.path().join("pic.png");
+        std::fs::write(&src, b"source bytes").unwrap();
+        let png = tests_tiny_png();
+
+        let failures: usize = std::thread::scope(|s| {
+            let workers: Vec<_> = (0..THREADS)
+                .map(|_| s.spawn(|| (0..ROUNDS).filter(|_| store(&src, ThumbSize::Normal, &png).is_err()).count()))
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).sum()
+        });
+        assert_eq!(failures, 0, "a worker's rename lost its temp file to another worker");
+        assert!(load_valid(&src, ThumbSize::Normal).is_some());
+        let dir = cache_path(&src, ThumbSize::Normal).unwrap().parent().unwrap().to_path_buf();
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 1, "only the entry itself is left");
 
         std::env::remove_var("XDG_CACHE_HOME");
     }
