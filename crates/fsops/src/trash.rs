@@ -6,6 +6,7 @@
 //! and the deletion date, so file managers can restore it.
 
 use crate::cancel::CancelToken;
+use crate::rename::rename_noreplace;
 use crate::types::Progress;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
@@ -163,16 +164,19 @@ fn move_into(path: &Path, trash: &Path, info_path: &Path) -> Result<PathBuf, Str
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("cannot write {}: {e}", info_file.display())),
         };
-        if fs::symlink_metadata(&dest).is_ok() {
-            let _ = fs::remove_file(&info_file);
-            continue;
+        // The rename itself refuses an entry already in `files/` (one left
+        // without its info, or one that appeared just now): try the next name.
+        let moved = f.write_all(content.as_bytes()).and_then(|_| f.sync_all()).and_then(|_| rename_noreplace(path, &dest));
+        match moved {
+            Ok(()) => return Ok(dest),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&info_file);
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&info_file);
+                return Err(format!("cannot move to the trash: {e}"));
+            }
         }
-        let moved = f.write_all(content.as_bytes()).and_then(|_| f.sync_all()).and_then(|_| fs::rename(path, &dest));
-        if let Err(e) = moved {
-            let _ = fs::remove_file(&info_file);
-            return Err(format!("cannot move to the trash: {e}"));
-        }
-        return Ok(dest);
     }
     Err(format!("no free name for {name:?} in the trash"))
 }
@@ -268,6 +272,25 @@ mod tests {
 
         assert_eq!(second, trash.join("files/note.2.txt"));
         assert_eq!(fs::read_to_string(&second).unwrap(), "b");
+        assert!(trash.join("info/note.2.txt.trashinfo").exists());
+    }
+
+    /// An entry already in `files/` without its info file is never replaced:
+    /// the trashed file takes the next free name.
+    #[test]
+    fn an_orphan_in_the_trash_is_never_replaced() {
+        let td = tempfile::tempdir().unwrap();
+        let trash = td.path().join("Trash");
+        fs::create_dir_all(trash.join("files")).unwrap();
+        fs::write(trash.join("files/note.txt"), b"orphan").unwrap();
+        let file = td.path().join("note.txt");
+        fs::write(&file, b"mine").unwrap();
+
+        let dest = trash_one(&file, Some(&trash)).unwrap();
+
+        assert_eq!(dest, trash.join("files/note.2.txt"));
+        assert_eq!(fs::read(trash.join("files/note.txt")).unwrap(), b"orphan");
+        assert!(!trash.join("info/note.txt.trashinfo").exists(), "the reserved info is dropped");
         assert!(trash.join("info/note.2.txt.trashinfo").exists());
     }
 

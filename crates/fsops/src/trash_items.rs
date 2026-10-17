@@ -5,6 +5,7 @@
 use crate::cancel::CancelToken;
 use crate::copy::copy_tree_opts;
 use crate::delete::remove_recursive;
+use crate::rename::rename_noreplace;
 use crate::trash::home_trash;
 use crate::types::{Progress, TransferOpts};
 use std::ffi::OsStr;
@@ -124,14 +125,20 @@ pub fn restore_to(item: &TrashItem, dir: &Path) -> Result<PathBuf, String> {
 /// Move the trashed entry of `item` to `target` (creating its folder), then
 /// drop the info file. Another disk is reached by copy and delete.
 fn put_back(item: &TrashItem, target: &Path) -> Result<PathBuf, String> {
-    if fs::symlink_metadata(target).is_ok() {
-        return Err(format!("{} already exists", target.display()));
-    }
+    let exists = || format!("{} already exists", target.display());
     let parent = target.parent().ok_or("cannot restore to the root folder")?;
     fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    match fs::rename(item.file(), target) {
+    // The rename itself refuses an existing target, so nothing created
+    // there in the meantime is ever replaced.
+    match rename_noreplace(&item.file(), target) {
         Ok(()) => {}
-        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => move_across(&item.file(), target)?,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(exists()),
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            if fs::symlink_metadata(target).is_ok() {
+                return Err(exists());
+            }
+            move_across(&item.file(), target)?
+        }
         Err(e) => return Err(format!("cannot restore {}: {e}", target.display())),
     }
     remove_info(item).map_err(|e| format!("restored, but its trash info is left: {e}"))?;

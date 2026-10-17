@@ -190,15 +190,24 @@ fn crypt_file(src: &Path, target: &Path, password: &str, encrypt: bool, cancel: 
     let result = result.and_then(|_| output.sync_all().map_err(CryptError::from));
     drop(output);
     match result {
-        Ok(()) => std::fs::rename(&part, target).map_err(|e| {
-            crate::cleanup::remove_partial(&part);
-            CryptError::from(e)
-        }),
+        Ok(()) => commit_part(&part, target),
         Err(e) => {
             crate::cleanup::remove_partial(&part);
             Err(e)
         }
     }
+}
+
+/// Rename the finished `part` file to `target` without ever replacing an
+/// entry that appeared at `target` while the data was written. On failure
+/// the part file is removed.
+fn commit_part(part: &Path, target: &Path) -> Result<(), CryptError> {
+    let Err(e) = crate::rename::rename_noreplace(part, target) else { return Ok(()) };
+    crate::cleanup::remove_partial(part);
+    if e.kind() == std::io::ErrorKind::AlreadyExists {
+        return Err(CryptError::Io(format!("{} already exists", target.display())));
+    }
+    Err(CryptError::from(e))
 }
 
 /// Every regular file under `src` paired with its target below `dest`.
@@ -465,5 +474,23 @@ mod tests {
         assert_eq!(job(Op::Encrypt { password: pw() }, vec![src.join("a.txt")], &enc).unwrap().0, 1);
         assert_eq!(job(Op::Decrypt { password: pw() }, vec![enc.join("a.txt.enc")], &back).unwrap().0, 1);
         assert_eq!(std::fs::read(back.join("a.txt")).unwrap(), b"through the engine");
+    }
+
+    /// A target that appeared while the data was being written is never
+    /// replaced: the commit fails and the part file is removed.
+    #[test]
+    fn commit_part_never_replaces_a_target_that_appeared_meanwhile() {
+        let td = tempfile::tempdir().unwrap();
+        let (part, target) = (td.path().join(".a.enc.part"), td.path().join("a.enc"));
+        std::fs::write(&part, b"sealed").unwrap();
+        std::fs::write(&target, b"theirs").unwrap();
+        assert!(matches!(commit_part(&part, &target), Err(CryptError::Io(m)) if m.contains("already exists")));
+        assert_eq!(std::fs::read(&target).unwrap(), b"theirs");
+        assert!(!part.exists());
+
+        std::fs::write(&part, b"sealed").unwrap();
+        let free = td.path().join("b.enc");
+        commit_part(&part, &free).unwrap();
+        assert_eq!(std::fs::read(&free).unwrap(), b"sealed");
     }
 }
