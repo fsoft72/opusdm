@@ -46,7 +46,7 @@
   Since `91135e0` the viewer decodes Markdown pictures with gdk-pixbuf on a worker. Formats that
   `gdk::Texture::from_filename` read but gdk-pixbuf does not (avif, jxl, heif) now show the alt text.
 
-- [ ] Run window: selection jumps to the first row when the PATH scan ends
+- [x] (done, checked in Xephyr; see CHANGES.md 2026-10-17) Run window: selection jumps to the first row when the PATH scan ends
 
   `crates/runner/src/ui.rs` calls `refresh()` when the scan finishes and text is already typed; it resets the
   selection to row 0, also when the user picked another row with the arrow keys. Keep the selected entry.

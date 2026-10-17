@@ -123,7 +123,11 @@ fn load_in_background(state: &Rc<State>, load_more: impl FnOnce() -> Vec<Entry> 
         let Some(state) = weak.upgrade() else { return };
         state.catalog.borrow_mut().extend(more);
         if !state.input.text().trim().is_empty() {
+            // The catalog only grows at its end, so the entry index of the
+            // selected row is still valid: keep the row the user picked.
+            let picked = selected_entry(&state);
             refresh(&state);
+            select_entry(&state, picked);
         }
     });
 }
@@ -218,6 +222,27 @@ fn refresh(state: &Rc<State>) {
         state.list.select_row(Some(&row));
     }
     *state.suggestions.borrow_mut() = found;
+}
+
+/// The catalog index of the entry on the selected row, if any.
+fn selected_entry(state: &State) -> Option<usize> {
+    let index = state.list.selected_row()?.index();
+    state.suggestions.borrow().get(usize::try_from(index).ok()?).map(|s| s.entry)
+}
+
+/// Select the row of `entry` when it is still in the list; otherwise the
+/// selection [`refresh`] made (the first row) stays.
+fn select_entry(state: &State, entry: Option<usize>) {
+    let Some(index) = row_of_entry(&state.suggestions.borrow(), entry) else { return };
+    if let Some(row) = state.list.row_at_index(index as i32) {
+        state.list.select_row(Some(&row));
+    }
+}
+
+/// The position of `entry` among `found`, if it is there.
+fn row_of_entry(found: &[Suggestion], entry: Option<usize>) -> Option<usize> {
+    let entry = entry?;
+    found.iter().position(|s| s.entry == entry)
 }
 
 /// One suggestion row: the kind label (only on the first row of a run of the
@@ -334,5 +359,21 @@ mod tests {
     #[test]
     fn a_monitor_narrower_than_the_window_keeps_the_left_edge() {
         assert_eq!(top_left((0, 0, 400, 300), 600, PanelPosition::Bottom), (0, 0));
+    }
+
+    fn found(entries: &[usize]) -> Vec<Suggestion> {
+        entries.iter().map(|&entry| Suggestion { entry, args: String::new() }).collect()
+    }
+
+    #[test]
+    fn the_picked_entry_keeps_its_row_after_the_scan() {
+        // The scan added entry 7 above the picked entry 3.
+        assert_eq!(row_of_entry(&found(&[7, 1, 3]), Some(3)), Some(2));
+    }
+
+    #[test]
+    fn a_picked_entry_no_longer_listed_falls_back_to_the_first_row() {
+        assert_eq!(row_of_entry(&found(&[7, 1]), Some(3)), None);
+        assert_eq!(row_of_entry(&found(&[7, 1]), None), None);
     }
 }
