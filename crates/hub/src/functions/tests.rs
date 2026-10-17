@@ -233,6 +233,32 @@ fn a_cancelled_run_stops_before_its_next_step() {
 }
 
 #[test]
+fn a_file_job_step_stops_waiting_when_its_run_is_cancelled() {
+    // The job engine holds the job (queued) and never answers `done`: the
+    // step must still end once the run is cancelled.
+    let steps = vec![FnStep::Internal { cmd: InternalCmd::Delete, args: InternalArgs::default() }];
+    let src = ctx(&["/tmp/opusdm-never-deleted"], "/tmp");
+    let (tx, rx) = channel();
+    let cancel = CancelToken::new();
+    let held_done = std::thread::scope(|scope| {
+        let (steps, src, cancel) = (&steps, &src, &cancel);
+        let runner = scope.spawn(move || run_steps_cancellable(1, steps, src, None, &tx, cancel));
+        let held = loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a Job event") {
+                (_, FnEvent::Job { done, .. }) => break done,
+                _ => continue,
+            }
+        };
+        cancel.cancel();
+        runner.join().unwrap();
+        held
+    });
+    drop(held_done);
+    let events = drain(rx);
+    assert!(matches!(events.last(), Some(FnEvent::Failed { step_idx: 0, error }) if error.contains(CANCELLED)));
+}
+
+#[test]
 fn copy_conflict_is_relayed_and_skip_keeps_the_destination() {
     let (content, asked, events) = copy_with_conflict(Some(Resolution::Skip));
     assert_eq!(content, b"existing");

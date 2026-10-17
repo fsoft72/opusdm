@@ -275,12 +275,12 @@ pub(crate) fn run_step(
             InternalCmd::Rename => run_rename(run_id, step_idx, args, source, dest, events_tx),
             InternalCmd::MakeDir => run_make_entry(run_id, step_idx, false, args, source, dest, events_tx),
             InternalCmd::NewFile => run_make_entry(run_id, step_idx, true, args, source, dest, events_tx),
-            InternalCmd::Copy => run_file_job(run_id, step_idx, FileJob::Copy, args, source, dest, events_tx),
-            InternalCmd::Move => run_file_job(run_id, step_idx, FileJob::Move, args, source, dest, events_tx),
-            InternalCmd::Delete => run_file_job(run_id, step_idx, FileJob::Delete, args, source, dest, events_tx),
-            InternalCmd::CopyAs => run_file_job(run_id, step_idx, FileJob::CopyAs, args, source, dest, events_tx),
-            InternalCmd::MoveAs => run_file_job(run_id, step_idx, FileJob::MoveAs, args, source, dest, events_tx),
-            InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, source, dest, events_tx),
+            InternalCmd::Copy => run_file_job(run_id, step_idx, FileJob::Copy, args, source, dest, events_tx, cancel),
+            InternalCmd::Move => run_file_job(run_id, step_idx, FileJob::Move, args, source, dest, events_tx, cancel),
+            InternalCmd::Delete => run_file_job(run_id, step_idx, FileJob::Delete, args, source, dest, events_tx, cancel),
+            InternalCmd::CopyAs => run_file_job(run_id, step_idx, FileJob::CopyAs, args, source, dest, events_tx, cancel),
+            InternalCmd::MoveAs => run_file_job(run_id, step_idx, FileJob::MoveAs, args, source, dest, events_tx, cancel),
+            InternalCmd::Duplicate => run_file_job(run_id, step_idx, FileJob::Duplicate, args, source, dest, events_tx, cancel),
         },
         FnStep::External { argv, cwd_source } => {
             run_external(run_id, step_idx, ExternalCall { argv, script: None, cwd_source: *cwd_source }, source, dest, events_tx, cancel)
@@ -633,7 +633,8 @@ impl FileJob {
 }
 
 /// Run a Copy/Move/Delete/Copy As/Move As/Duplicate step: describe the job
-/// and wait for the hub's job engine to finish it.
+/// and wait for the hub's job engine to finish it, or for `cancel`.
+#[allow(clippy::too_many_arguments)]
 fn run_file_job(
     run_id: u64,
     step_idx: usize,
@@ -642,6 +643,7 @@ fn run_file_job(
     source: &SelectionCtx,
     dest: Option<&SelectionCtx>,
     events_tx: &Sender<(u64, FnEvent)>,
+    cancel: &CancelToken,
 ) -> Result<(), String> {
     let label = job.cmd().label();
     let op = match job {
@@ -679,10 +681,13 @@ fn run_file_job(
     events_tx
         .send((run_id, FnEvent::Job { step_idx, spec, done: done_tx }))
         .map_err(|_| format!("{label}: the hub is gone"))?;
-    let (copied, skipped) = done_rx
-        .recv()
-        .map_err(|_| format!("{label}: the job was dropped"))?
-        .map_err(|e| format!("{label}: {e}"))?;
+    // A cancelled run stops waiting at once; the job itself is cancelled by
+    // whoever cancelled the run (or keeps its own progress window).
+    let (copied, skipped) = match recv_or_cancel(&done_rx, cancel) {
+        Ok(result) => result.map_err(|e| format!("{label}: {e}"))?,
+        Err(NoAnswer::Cancelled) => return Err(format!("{label}: {CANCELLED}")),
+        Err(NoAnswer::Dropped) => return Err(format!("{label}: the job was dropped")),
+    };
     let _ = events_tx.send((run_id, FnEvent::Output { step_idx, line: format!("{label}: {copied} copied, {skipped} skipped") }));
     let _ = events_tx.send((run_id, FnEvent::StepDone { step_idx, exit_code: Some(0) }));
     Ok(())
