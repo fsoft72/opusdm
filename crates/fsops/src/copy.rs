@@ -537,17 +537,23 @@ fn run_copy_task(shared: &CopyShared, task: CopyTask) {
 
 /// Walk the plan: create directories and links inline, dispatch file copies.
 /// Small files go to `pool`, everything else is copied on this thread.
-fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&WorkerPool<CopyTask>>) {
+/// Returns the (source, destination) pairs of the directories it created,
+/// parents first, so their mode and mtime can be applied once they are full.
+fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&WorkerPool<CopyTask>>) -> Vec<(PathBuf, PathBuf)> {
+    let mut created = Vec::new();
     for item in &plan.items {
         if shared.cancel.is_cancelled() {
             shared.cancelled.store(true, Ordering::SeqCst);
-            return;
+            return created;
         }
         match item {
-            Item::Dir { rel, .. } => {
+            Item::Dir { rel, abs } => {
                 let dir = dest_dir.join(rel);
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    shared.push_error(dir, e.to_string());
+                // A folder that is already there keeps its own mode and mtime.
+                if dir.is_dir() { continue; }
+                match std::fs::create_dir_all(&dir) {
+                    Ok(()) => created.push((abs.clone(), dir)),
+                    Err(e) => shared.push_error(dir, e.to_string()),
                 }
             }
             Item::Symlink { rel, abs, target } => {
@@ -566,7 +572,7 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
                         }
                         Decision::Cancel => {
                             shared.abort();
-                            return;
+                            return created;
                         }
                     }
                 }
@@ -591,7 +597,7 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
                         }
                         Decision::Cancel => {
                             shared.abort();
-                            return;
+                            return created;
                         }
                     }
                 }
@@ -621,7 +627,7 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
                         }
                         Decision::Cancel => {
                             shared.abort();
-                            return;
+                            return created;
                         }
                     }
                 }
@@ -633,6 +639,7 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
             }
         }
     }
+    created
 }
 
 /// Recreate `srcs` under `dest_dir`. Returns the `Progress::Done` to send.
@@ -721,7 +728,7 @@ fn copy_tree_workers(
         WorkerPool::new(workers, "opusdm-copy", move |task| run_copy_task(&shared, task))
     });
 
-    run_plan(&plan, dest_dir, &shared, pool.as_ref());
+    let created_dirs = run_plan(&plan, dest_dir, &shared, pool.as_ref());
     if let Some(p) = pool {
         p.join();
     }
@@ -729,6 +736,8 @@ fn copy_tree_workers(
 
     let cancelled = shared.cancelled.load(Ordering::SeqCst);
     let mut errors = shared.take_errors();
+    // Only now that every file is in: a read-only folder would refuse them.
+    errors.extend(apply_dir_attrs(&created_dirs));
 
     if delete_src_after && errors.is_empty() && !cancelled {
         // The new directory entries must reach the disk before the only
@@ -747,6 +756,23 @@ fn copy_tree_workers(
         cancelled,
         errors,
     }
+}
+
+/// Give each created destination folder the permission bits and mtime of its
+/// source folder, deepest first. Returns one error per folder that failed.
+fn apply_dir_attrs(created: &[(PathBuf, PathBuf)]) -> Vec<(PathBuf, String)> {
+    let mut errors = Vec::new();
+    for (src, dst) in created.iter().rev() {
+        let applied = std::fs::metadata(src).and_then(|meta| {
+            std::fs::set_permissions(dst, meta.permissions())?;
+            let atime = filetime::FileTime::from_last_access_time(&meta);
+            filetime::set_file_times(dst, atime, filetime::FileTime::from_last_modification_time(&meta))
+        });
+        if let Err(e) = applied {
+            errors.push((dst.clone(), format!("cannot set folder mode or time: {e}")));
+        }
+    }
+    errors
 }
 
 /// Call `fsync` on `dest_dir` and on every planned directory below it, so the
@@ -1051,6 +1077,44 @@ mod tests {
             assert!(!src.join("moved.txt").exists(), "workers={workers}");
             assert_eq!(fs::read(dst.join("s/moved.txt")).unwrap(), b"MOVED");
             assert_eq!(fs::read(dst.join("s/kept.txt")).unwrap(), b"OLD");
+        }
+    }
+
+    /// A copied folder keeps the mode and mtime of its source, even a
+    /// read-only one, while a folder already at the destination keeps its own.
+    #[test]
+    fn copy_keeps_folder_mode_and_mtime() {
+        for workers in WORKER_MODES {
+            let td = tempfile::tempdir().unwrap();
+            let src = td.path().join("s");
+            let dst = td.path().join("d");
+            fs::create_dir_all(src.join("private/ro")).unwrap();
+            fs::create_dir_all(src.join("merged")).unwrap();
+            fs::create_dir_all(dst.join("s/merged")).unwrap();
+            fs::write(src.join("private/ro/f.txt"), b"x").unwrap();
+            fs::set_permissions(dst.join("s/merged"), fs::Permissions::from_mode(0o751)).unwrap();
+            let old = filetime::FileTime::from_unix_time(1_000_000_000, 0);
+            fs::set_permissions(src.join("private/ro"), fs::Permissions::from_mode(0o500)).unwrap();
+            fs::set_permissions(src.join("private"), fs::Permissions::from_mode(0o700)).unwrap();
+            for dir in ["private/ro", "private"] {
+                filetime::set_file_mtime(src.join(dir), old).unwrap();
+            }
+
+            let (copied, _, _, errors) = run_copy_workers(vec![src.clone()], dst.clone(), Resolution::Skip, workers);
+
+            assert!(errors.is_empty(), "workers={workers}: {errors:?}");
+            assert_eq!(copied, 1);
+            let meta = |rel: &str| fs::metadata(dst.join(rel)).unwrap();
+            assert_eq!(meta("s/private").permissions().mode() & 0o7777, 0o700, "workers={workers}");
+            assert_eq!(meta("s/private/ro").permissions().mode() & 0o7777, 0o500, "workers={workers}");
+            assert_eq!(meta("s/merged").permissions().mode() & 0o7777, 0o751, "workers={workers}");
+            for rel in ["s/private", "s/private/ro"] {
+                assert_eq!(filetime::FileTime::from_last_modification_time(&meta(rel)), old, "{rel}");
+            }
+            assert_eq!(fs::read(dst.join("s/private/ro/f.txt")).unwrap(), b"x");
+            // Let the temp dirs clean up.
+            fs::set_permissions(src.join("private/ro"), fs::Permissions::from_mode(0o700)).unwrap();
+            fs::set_permissions(dst.join("s/private/ro"), fs::Permissions::from_mode(0o700)).unwrap();
         }
     }
 
