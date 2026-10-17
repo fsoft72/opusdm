@@ -8,7 +8,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// inotify events worth a reload: an entry appearing, disappearing, being
@@ -82,10 +81,12 @@ pub fn desktop_dir() -> Option<PathBuf> {
 
 /// A background inotify watch on one directory. Sends `()` on the returned
 /// channel (coalesced) whenever the directory's contents change. The watch
-/// stops when this value is dropped.
+/// stops when this value is dropped: the channel is closed at once (so a
+/// notice still queued is never acted on) and the thread exits by itself.
 pub struct DesktopWatch {
     stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
+    /// Kept to close the channel on drop.
+    tx: async_channel::Sender<()>,
 }
 
 impl DesktopWatch {
@@ -97,18 +98,23 @@ impl DesktopWatch {
         let (tx, rx) = async_channel::unbounded::<()>();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
-        let handle = std::thread::spawn(move || watch_loop(&inotify, &stop_thread, &tx));
+        let tx_thread = tx.clone();
+        // Detached: the thread owns the inotify fd and the sender, and exits
+        // by itself (within one idle poll) once `stop` is set.
+        std::thread::Builder::new()
+            .name("opusdm-desktop-watch".into())
+            .spawn(move || watch_loop(&inotify, &stop_thread, &tx_thread))?;
 
-        Ok((DesktopWatch { stop, handle: Some(handle) }, rx))
+        Ok((DesktopWatch { stop, tx }, rx))
     }
 }
 
 impl Drop for DesktopWatch {
+    /// Ask the thread to stop without waiting for it: the drop runs on the
+    /// GTK thread, and joining would block it for up to one idle poll.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        self.tx.close();
     }
 }
 
@@ -159,6 +165,21 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let (w, _rx) = DesktopWatch::start(td.path().to_path_buf()).unwrap();
         drop(w);
+    }
+
+    #[test]
+    fn dropping_a_watch_does_not_wait_for_its_thread() {
+        // The GTK thread drops the watch on every desktop rebuild: it must
+        // not sit out the watcher's idle poll.
+        let td = tempfile::tempdir().unwrap();
+        let (w, rx) = DesktopWatch::start(td.path().to_path_buf()).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let start = std::time::Instant::now();
+        drop(w);
+        assert!(start.elapsed() < Duration::from_millis(100), "drop took {:?}", start.elapsed());
+        // The channel closes with the drop, so a notice the detached thread
+        // still sends is never acted on.
+        assert!(rx.is_closed());
     }
 
     #[test]

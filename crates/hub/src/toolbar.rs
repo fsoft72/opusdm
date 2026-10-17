@@ -28,6 +28,13 @@ use super::{desktop_windows::*, groups_ui::*};
 /// area, which otherwise clamps the desktop windows a strip short).
 const PANEL_STRUT_SETTLE_DELAYS_MS: [u64; 2] = [600, 1600];
 
+/// Extra time, on top of the Shutdown hooks' own cap, the quit waits for the
+/// server to acknowledge it has shut down.
+const QUIT_ACK_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Longest the quit waits for the desktop saves still queued.
+const QUIT_IO_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Build and run the desktop application. Returns on quit.
 pub fn run(handle: ServerHandle, _sock_path: PathBuf) -> glib::ExitCode {
     let app = gtk::Application::builder()
@@ -144,6 +151,8 @@ pub(crate) struct Widgets {
     /// The saved Functions, kept in step with the hub by `HubEvent::FunctionsChanged`.
     pub(crate) functions: Rc<RefCell<Vec<opusdm_ipc::function::Function>>>,
     pub(crate) bank_windows: crate::bank_windows::BankWindows,
+    /// Runs the blocking saves and compositor reloads off the GTK thread.
+    pub(crate) io: opusdm_hub::io_worker::IoWorker,
 }
 
 impl Widgets {
@@ -167,7 +176,8 @@ fn apply_virtual_screens(count: u32) {
 fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel::Receiver<HubEvent>) {
     let desktop_settings = opusdm_hub::desktop_settings::load();
     apply_virtual_screens(desktop_settings.virtual_screens);
-    opusdm_hub::compositor::apply(&desktop_settings);
+    let io = opusdm_hub::io_worker::IoWorker::new("opusdm-hub-io");
+    apply_compositor(&io, &desktop_settings);
     opusdm_hub::snap::start(desktop_settings.snap_enabled);
     let initial_settings = settings::load_settings();
     crate::background::install(&initial_settings.theme.background);
@@ -199,6 +209,7 @@ fn build_ui(app: &gtk::Application, cmd_tx: Sender<HubCmd>, ui_rx: async_channel
         bank_windows,
         set_panel_position: RefCell::new(None),
         set_dock_layout: RefCell::new(None),
+        io,
     });
 
     // Build one desktop window per monitor, primary first.
@@ -289,22 +300,52 @@ pub(crate) fn request_quit(widgets: &Rc<Widgets>) {
             }
             widgets.quitting.set(true);
             widgets.bank_windows.begin_shutdown();
-            // Wait for the Shutdown hooks (capped): the process exits right
-            // after this returns and would kill a hook still running.
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            if widgets.cmd_tx.send(HubCmd::ShutdownAndWait(done_tx)).is_ok() {
-                let cap = opusdm_hub::script_events::SHUTDOWN_HOOK_TIMEOUT + std::time::Duration::from_secs(1);
-                let _ = done_rx.recv_timeout(cap);
-            }
-            let app = widgets.primary_window().application();
-            for dw in widgets.windows.borrow().iter() {
-                dw.window.close();
-            }
-            if let Some(app) = app {
-                app.quit();
-            }
+            let widgets = widgets.clone();
+            glib::spawn_future_local(async move {
+                wait_for_shutdown(&widgets).await;
+                let app = widgets.primary_window().application();
+                for dw in widgets.windows.borrow().iter() {
+                    dw.window.close();
+                }
+                if let Some(app) = app {
+                    app.quit();
+                }
+            });
         },
     );
+}
+
+/// Wait, off the GTK thread so the desktop keeps drawing, for the server to
+/// run its Shutdown hooks and for the queued desktop saves (each capped): the
+/// process exits right after the quit and would kill a hook still running or
+/// lose a save.
+async fn wait_for_shutdown(widgets: &Widgets) {
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let server_up = widgets.cmd_tx.send(HubCmd::ShutdownAndWait(done_tx)).is_ok();
+    if !server_up {
+        opusdm_ipc::err_log!("opusdm-hub", "the hub server is gone, quitting without its Shutdown hooks");
+    }
+    let io = widgets.io.clone();
+    let waited = gio::spawn_blocking(move || {
+        let cap = opusdm_hub::script_events::SHUTDOWN_HOOK_TIMEOUT + QUIT_ACK_SLACK;
+        if server_up && done_rx.recv_timeout(cap).is_err() {
+            opusdm_ipc::err_log!("opusdm-hub", "the hub server did not finish shutting down in {cap:?}");
+        }
+        if !io.flush(QUIT_IO_FLUSH_TIMEOUT) {
+            opusdm_ipc::err_log!("opusdm-hub", "desktop saves still pending after {QUIT_IO_FLUSH_TIMEOUT:?}, quitting anyway");
+        }
+    })
+    .await;
+    if waited.is_err() {
+        opusdm_ipc::err_log!("opusdm-hub", "the quit wait panicked, quitting anyway");
+    }
+}
+
+/// Re-render the picom config and reload picom on the background worker:
+/// it waits for `pkill`, which must not freeze the desktop.
+fn apply_compositor(io: &opusdm_hub::io_worker::IoWorker, ds: &opusdm_ipc::DesktopSettings) {
+    let ds = ds.clone();
+    io.submit(move || opusdm_hub::compositor::apply(&ds));
 }
 
 /// Apply one hub event to the GTK side.
@@ -367,11 +408,8 @@ fn reassert_desktop_windows(widgets: &Rc<Widgets>) {
 
 /// Change the left-out icons with `edit`, save them and reload the desktop.
 fn update_leftout(widgets: &Rc<Widgets>, edit: impl FnOnce(&mut opusdm_ipc::LeftOut)) {
-    {
-        let mut left = widgets.desktop.leftout.borrow_mut();
-        edit(&mut left);
-        save_leftout(&left);
-    }
+    edit(&mut widgets.desktop.leftout.borrow_mut());
+    save_leftout(widgets);
     reload_desktop_field(widgets);
 }
 
@@ -387,7 +425,7 @@ fn apply_desktop_settings(widgets: &Rc<Widgets>, ds: opusdm_ipc::DesktopSettings
         apply_virtual_screens(ds.virtual_screens);
     }
     if changes.transparency {
-        opusdm_hub::compositor::apply(&ds);
+        apply_compositor(&widgets.io, &ds);
     }
     if changes.snap {
         opusdm_hub::snap::set_enabled(ds.snap_enabled);

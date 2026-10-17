@@ -246,11 +246,8 @@ pub(crate) fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opu
         let btn = menu_button("Put Away");
         btn.connect_clicked(move |_| {
             menu_ref.set_visible(false);
-            {
-                let mut left = widgets.desktop.leftout.borrow_mut();
-                left.remove(std::slice::from_ref(&path));
-                save_leftout(&left);
-            }
+            widgets.desktop.leftout.borrow_mut().remove(std::slice::from_ref(&path));
+            save_leftout(&widgets);
             reload_desktop_field(&widgets);
         });
         menu.append(&btn);

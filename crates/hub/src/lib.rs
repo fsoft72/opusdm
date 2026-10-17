@@ -12,6 +12,7 @@ pub mod desktop_files;
 pub mod file_manager;
 pub mod folder_handler;
 pub mod fullscreen;
+pub mod io_worker;
 pub mod desktop_settings;
 pub mod functions;
 pub mod jobs;
