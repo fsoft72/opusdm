@@ -4,13 +4,13 @@ use crate::cancel::CancelToken;
 use crate::types::Progress;
 use opusdm_ipc::glob::GlobSet;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use walkdir::WalkDir;
 
-/// Recursively delete every path in `srcs`. Read-only files are retried once
-/// after adding write permission. Failures are collected, not fatal.
+/// Recursively delete every path in `srcs`. Failures are collected, not
+/// fatal. `cancel` is honoured inside a tree too, so one huge folder can be
+/// stopped.
 pub fn run_delete(srcs: &[PathBuf], tx: &Sender<Progress>, cancel: &CancelToken) -> Progress {
     let mut removed = 0u64;
     let mut errors: Vec<(PathBuf, String)> = Vec::new();
@@ -28,7 +28,11 @@ pub fn run_delete(srcs: &[PathBuf], tx: &Sender<Progress>, cancel: &CancelToken)
             file_bytes_done: 0,
             file_bytes_total: 0,
         });
-        let tree_errors = remove_recursive(src);
+        let tree_errors = remove_recursive(src, cancel);
+        if cancel.is_cancelled() {
+            errors.extend(tree_errors);
+            return Progress::Done { copied: removed, skipped: 0, cancelled: true, errors };
+        }
         if tree_errors.is_empty() {
             removed += 1;
         } else {
@@ -94,16 +98,20 @@ enum Step {
     RemoveDir(PathBuf),
 }
 
-/// Remove a file or directory tree, chmod-retrying read-only entries once.
-/// One unreadable subdirectory or one file that resists deletion does not
-/// abort the rest of the tree: every failure is collected and the walk
-/// continues. An explicit stack replaces call-stack recursion so a very deep
-/// tree can't overflow the worker thread's stack.
-pub(crate) fn remove_recursive(root: &Path) -> Vec<(PathBuf, String)> {
+/// Remove a file or directory tree. One unreadable subdirectory or one file
+/// that resists deletion does not abort the rest of the tree: every failure
+/// is collected and the walk continues. Permissions are never changed: the
+/// parent folder decides whether an entry can be removed, and a chmod would
+/// follow a symlink to a file outside the tree. The walk stops as soon as
+/// `cancel` is set, leaving the rest in place. An explicit stack replaces
+/// call-stack recursion so a very deep tree can't overflow the worker
+/// thread's stack.
+pub(crate) fn remove_recursive(root: &Path, cancel: &CancelToken) -> Vec<(PathBuf, String)> {
     let mut errors = Vec::new();
     let mut stack = vec![Step::Visit(root.to_path_buf())];
 
     while let Some(step) = stack.pop() {
+        if cancel.is_cancelled() { break; }
         match step {
             Step::Visit(path) => {
                 let meta = match std::fs::symlink_metadata(&path) {
@@ -128,7 +136,7 @@ pub(crate) fn remove_recursive(root: &Path) -> Vec<(PathBuf, String)> {
                             Err(e) => errors.push((path.clone(), e.to_string())),
                         }
                     }
-                } else if let Err(e) = remove_file_retrying(&path, &meta) {
+                } else if let Err(e) = std::fs::remove_file(&path) {
                     errors.push((path, e.to_string()));
                 }
             }
@@ -140,20 +148,6 @@ pub(crate) fn remove_recursive(root: &Path) -> Vec<(PathBuf, String)> {
         }
     }
     errors
-}
-
-/// Remove one file, retrying once after adding write permission if the
-/// first attempt fails (read-only entries).
-fn remove_file_retrying(path: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            let mut perm = meta.permissions();
-            perm.set_mode(perm.mode() | 0o200);
-            std::fs::set_permissions(path, perm)?;
-            std::fs::remove_file(path)
-        }
-    }
 }
 
 /// Create one empty file (`file == true`) or one directory under `dest_dir`.
@@ -273,6 +267,48 @@ mod tests {
             _ => panic!(),
         }
         assert!(!root.exists());
+    }
+
+    /// A link that cannot be removed (its folder is read-only) must not get
+    /// its target, outside the tree, made writable.
+    #[test]
+    fn a_failed_delete_never_changes_a_link_target() {
+        let td = tempfile::tempdir().unwrap();
+        let outside = td.path().join("outside.txt");
+        fs::write(&outside, b"x").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o400)).unwrap();
+        let root = td.path().join("victim");
+        fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let done = drive_delete(vec![root.clone()]);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
+        if !nix_is_root() {
+            assert!(matches!(done, Progress::Done { errors, .. } if !errors.is_empty()));
+        }
+        assert_eq!(fs::metadata(&outside).unwrap().permissions().mode() & 0o777, 0o400);
+    }
+
+    /// A cancelled token stops the walk inside a tree and leaves it alone.
+    #[test]
+    fn cancel_stops_inside_a_tree() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("big");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        for i in 0..20 {
+            fs::write(root.join("sub").join(format!("f{i}")), b"x").unwrap();
+        }
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert!(remove_recursive(&root, &cancel).is_empty());
+        assert_eq!(fs::read_dir(root.join("sub")).unwrap().count(), 20);
+
+        let (tx, _rx) = channel::<Progress>();
+        let done = run_delete(std::slice::from_ref(&root), &tx, &cancel);
+        assert!(matches!(done, Progress::Done { cancelled: true, copied: 0, .. }));
+        assert!(root.join("sub/f0").exists());
     }
 
     #[cfg(unix)]

@@ -201,6 +201,69 @@ fn a_symlink_cannot_redirect_a_later_entry_out_of_the_folder() {
     assert!(!outside.join("evil.txt").exists());
 }
 
+/// A pax tar holding the hard link `name` to `target`, carrying `body` as
+/// data (a crafted archive: tar tools write hard links with no data, and
+/// libarchive honours such data only in the pax format).
+fn _tar_with_hardlink(name: &str, target: &str, body: &[u8]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    // A pax record is "<length> size=<n>\n", the length counting itself.
+    let rest = format!(" size={}\n", body.len());
+    let mut len = rest.len();
+    while len != rest.len() + len.to_string().len() {
+        len = rest.len() + len.to_string().len();
+    }
+    let record = format!("{len}{rest}");
+    let mut pax = tar::Header::new_ustar();
+    pax.set_entry_type(tar::EntryType::XHeader);
+    pax.set_path("PaxHeaders/evil").unwrap();
+    pax.set_mode(0o644);
+    pax.set_size(record.len() as u64);
+    pax.set_cksum();
+    builder.append(&pax, record.as_bytes()).unwrap();
+    let mut header = tar::Header::new_ustar();
+    header.set_entry_type(tar::EntryType::Link);
+    header.set_mode(0o644);
+    header.set_size(body.len() as u64);
+    header.set_path(name).unwrap();
+    header.set_link_name(target).unwrap();
+    header.set_cksum();
+    builder.append(&header, body).unwrap();
+    builder.into_inner().unwrap()
+}
+
+#[test]
+fn a_hardlink_cannot_rewrite_a_file_already_in_the_folder() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path().join("out");
+    fs::create_dir(&dest).unwrap();
+    fs::write(dest.join("notes.txt"), "mine").unwrap();
+    let arch = _put(td.path(), "hl.tar", &_tar_with_hardlink("evil", "notes.txt", b"evil"));
+    let err = extract(&arch, &dest, None, &_never).unwrap_err();
+    assert!(matches!(err, ArchiveError::UnsafePath(_)), "{err}");
+    assert_eq!(fs::read_to_string(dest.join("notes.txt")).unwrap(), "mine");
+    assert!(!dest.join("evil").exists());
+}
+
+#[test]
+fn a_hardlink_to_a_file_of_the_same_archive_is_extracted() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path().join("out");
+    fs::create_dir(&dest).unwrap();
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut file = tar::Header::new_gnu();
+    file.set_size(4);
+    file.set_mode(0o644);
+    builder.append_data(&mut file, "a.txt", &b"data"[..]).unwrap();
+    let mut link = tar::Header::new_gnu();
+    link.set_entry_type(tar::EntryType::Link);
+    link.set_size(0);
+    builder.append_link(&mut link, "b.txt", "a.txt").unwrap();
+    let arch = _put(td.path(), "ok.tar", &builder.into_inner().unwrap());
+    let done = extract(&arch, &dest, None, &_never).unwrap();
+    assert_eq!(done.written, 2);
+    assert_eq!(fs::read_to_string(dest.join("b.txt")).unwrap(), "data");
+}
+
 #[test]
 fn cancel_stops_the_extraction() {
     let td = tempfile::tempdir().unwrap();

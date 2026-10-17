@@ -689,7 +689,7 @@ impl Ui {
             if row.is_dir {
                 self.navigate_to(&target);
             } else {
-                let item = opusdm_ftp::RemoteItem { path: url.join(&row.name).path, name: row.name.clone(), is_dir: false };
+                let item = opusdm_ftp::RemoteItem { path: url.join(&row.name).path, name: row.name.clone(), is_dir: false, is_symlink: false };
                 self.download_remote(&url, vec![item], |ui, paths| {
                     if let Some(path) = paths.first() {
                         ui.open_with_default(path);

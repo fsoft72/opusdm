@@ -113,7 +113,8 @@ fn prepare(plan: &Plan, src: &Option<SharedFs>, dst: &Option<SharedFs>) -> Resul
 
 /// Stage two, on a worker thread: the transfer itself. `skip` lists the
 /// existing names the user chose not to overwrite. A Move deletes its sources
-/// only after the copy part succeeded.
+/// only after the copy part succeeded and left nothing out. Returns the local
+/// links and special files an upload did not send.
 fn execute(
     plan: &Plan,
     prepared: Prepared,
@@ -122,7 +123,7 @@ fn execute(
     dst: &Option<SharedFs>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&str),
-) -> Result<(), RemoteError> {
+) -> Result<Vec<PathBuf>, RemoteError> {
     match plan {
         Plan::Download { dest, delete_source, .. } => {
             let items = without(prepared.items, |i| i.name.clone(), skip);
@@ -130,37 +131,45 @@ fn execute(
             if *delete_source {
                 with_fs(src, |fs| opusdm_ftp::remove_tree(fs, &items, cancel, progress))?;
             }
-            Ok(())
+            Ok(Vec::new())
         }
         Plan::Upload { locals, dest, delete_source } => {
             let locals = without(locals.clone(), |p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), skip);
-            with_fs(dst, |fs| opusdm_ftp::upload(fs, &locals, &dest.path, cancel, progress).map(|_| ()))?;
-            if *delete_source {
-                for local in &locals {
-                    let removed = if local.is_dir() { std::fs::remove_dir_all(local) } else { std::fs::remove_file(local) };
-                    removed.map_err(|e| RemoteError::Failed(format!("{}: {e}", local.display())))?;
-                }
+            let sent = with_fs(dst, |fs| opusdm_ftp::upload(fs, &locals, &dest.path, cancel, progress))?;
+            if !*delete_source { return Ok(sent.skipped); }
+            if let Some(first) = sent.skipped.first() {
+                return Err(RemoteError::Failed(format!(
+                    "{} link(s) or special file(s) were not uploaded (first: {}), so the local sources were kept",
+                    sent.skipped.len(),
+                    first.display()
+                )));
             }
-            Ok(())
+            for local in &locals {
+                let is_dir = std::fs::symlink_metadata(local).is_ok_and(|m| m.is_dir());
+                let removed = if is_dir { std::fs::remove_dir_all(local) } else { std::fs::remove_file(local) };
+                removed.map_err(|e| RemoteError::Failed(format!("{}: {e}", local.display())))?;
+            }
+            Ok(Vec::new())
         }
         Plan::Relay { dest, delete_source, .. } => {
             let items = without(prepared.items, |i| i.name.clone(), skip);
             let scratch = remote::new_download_dir()?;
             let result = (|| {
                 let local = with_fs(src, |fs| opusdm_ftp::download(fs, &items, &scratch, cancel, progress))?;
-                with_fs(dst, |fs| opusdm_ftp::upload(fs, &local, &dest.path, cancel, progress).map(|_| ()))?;
+                let sent = with_fs(dst, |fs| opusdm_ftp::upload(fs, &local, &dest.path, cancel, progress))?;
                 if *delete_source {
                     with_fs(src, |fs| opusdm_ftp::remove_tree(fs, &items, cancel, progress))?;
                 }
-                Ok(())
+                Ok(sent.skipped)
             })();
             let _ = std::fs::remove_dir_all(&scratch);
             result
         }
-        Plan::Remove { .. } => with_fs(src, |fs| opusdm_ftp::remove_tree(fs, &prepared.items, cancel, progress)),
+        Plan::Remove { .. } => with_fs(src, |fs| opusdm_ftp::remove_tree(fs, &prepared.items, cancel, progress)).map(|()| Vec::new()),
         Plan::Create { dest, name, file } => {
             let path = dest.join(name).path;
-            with_fs(dst, |fs| if *file { fs.write_file(&path, &mut std::io::empty()).map(|_| ()) } else { fs.mkdir(&path) })
+            with_fs(dst, |fs| if *file { fs.write_file(&path, &mut std::io::empty()).map(|_| ()) } else { fs.mkdir(&path) })?;
+            Ok(Vec::new())
         }
     }
 }
@@ -177,7 +186,7 @@ fn servers(plan: &Plan) -> (Option<RemoteUrl>, Option<RemoteUrl>) {
 /// Messages from the transfer worker to the window.
 enum Msg {
     File(String),
-    Done(Result<(), RemoteError>),
+    Done(Result<Vec<PathBuf>, RemoteError>),
 }
 
 impl Ui {
@@ -309,10 +318,15 @@ impl Ui {
         );
     }
 
-    /// Report the outcome and refresh everything that may have changed.
-    fn finish_transfer(self: &Rc<Self>, result: Result<(), RemoteError>, touched: &[PathBuf]) {
+    /// Report the outcome (with the entries an upload left out) and refresh
+    /// everything that may have changed.
+    fn finish_transfer(self: &Rc<Self>, result: Result<Vec<PathBuf>, RemoteError>, touched: &[PathBuf]) {
         match result {
-            Ok(()) => crate::actions::flash(self, "transfer complete"),
+            Ok(skipped) if skipped.is_empty() => crate::actions::flash(self, "transfer complete"),
+            Ok(skipped) => crate::actions::flash(
+                self,
+                &format!("transfer complete, {} link(s) or special file(s) not sent (first: {})", skipped.len(), skipped[0].display()),
+            ),
             Err(RemoteError::Cancelled) => crate::actions::flash(self, "transfer cancelled"),
             Err(e) => crate::actions::flash(self, &format!("transfer failed: {e}")),
         }
@@ -499,7 +513,7 @@ mod tests {
         with_fs(fs, |f| f.read_file(path, &mut out)).ok().map(|_| out)
     }
 
-    fn run(plan: &Plan, skip: &[String], src: &Option<SharedFs>, dst: &Option<SharedFs>) -> (Prepared, Result<(), RemoteError>) {
+    fn run(plan: &Plan, skip: &[String], src: &Option<SharedFs>, dst: &Option<SharedFs>) -> (Prepared, Result<Vec<PathBuf>, RemoteError>) {
         let prepared = prepare(plan, src, dst).unwrap();
         let again = Prepared { items: prepared.items.clone(), existing: prepared.existing.clone() };
         (prepared, execute(plan, again, skip, src, dst, &AtomicBool::new(false), &mut |_| {}))
@@ -523,6 +537,25 @@ mod tests {
         assert_eq!(content(&dst, "/in/old.txt").unwrap(), b"keep");
         assert!(!td.path().join("new.txt").exists(), "a Move deletes what it sent");
         assert!(td.path().join("old.txt").exists(), "and keeps what it skipped");
+    }
+
+    /// An Upload-Move that could not send a link keeps the whole local
+    /// folder instead of deleting what was never uploaded.
+    #[test]
+    fn upload_move_keeps_the_sources_when_something_was_skipped() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("d")).unwrap();
+        std::fs::write(td.path().join("d/f"), b"F").unwrap();
+        std::os::unix::fs::symlink("f", td.path().join("d/link")).unwrap();
+        let dst = shared(&[("/in", None)]);
+        let plan = Plan::Upload { locals: vec![td.path().join("d")], dest: RemoteUrl::parse("sftp://h/in").unwrap(), delete_source: true };
+        let (_, result) = run(&plan, &[], &None, &dst);
+        assert!(matches!(result, Err(RemoteError::Failed(m)) if m.contains("kept")));
+        assert_eq!(content(&dst, "/in/d/f").unwrap(), b"F");
+        assert!(td.path().join("d/f").exists() && td.path().join("d/link").is_symlink());
+
+        let copy = Plan::Upload { locals: vec![td.path().join("d")], dest: RemoteUrl::parse("sftp://h/in").unwrap(), delete_source: false };
+        assert_eq!(run(&copy, &[], &None, &dst).1.unwrap(), vec![td.path().join("d/link")]);
     }
 
     #[test]

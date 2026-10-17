@@ -136,7 +136,7 @@ fn anonymous_login_lists_and_downloads() {
     assert_eq!(entries[1].size, 11);
 
     let local = tempfile::tempdir().unwrap();
-    let items = vec![RemoteItem { path: "/readme.txt".into(), name: "readme.txt".into(), is_dir: false }];
+    let items = vec![RemoteItem { path: "/readme.txt".into(), name: "readme.txt".into(), is_dir: false, is_symlink: false }];
     download(fs.as_mut(), &items, local.path(), &AtomicBool::new(false), &mut |_| {}).unwrap();
     assert_eq!(std::fs::read(local.path().join("readme.txt")).unwrap(), b"hello world");
     fs.close();
@@ -155,7 +155,7 @@ fn a_missing_file_fails_and_leaves_nothing_behind() {
     let (port, _state) = start();
     let mut fs = connect(&params(port, "", None)).unwrap();
     let local = tempfile::tempdir().unwrap();
-    let items = vec![RemoteItem { path: "/nope".into(), name: "nope".into(), is_dir: false }];
+    let items = vec![RemoteItem { path: "/nope".into(), name: "nope".into(), is_dir: false, is_symlink: false }];
     assert!(download(fs.as_mut(), &items, local.path(), &AtomicBool::new(false), &mut |_| {}).is_err());
     assert!(!local.path().join("nope").exists());
 }
