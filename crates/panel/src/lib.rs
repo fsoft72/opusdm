@@ -176,8 +176,6 @@ fn build_bar_window(
         });
     }
 
-    install_css();
-
     let bar = gtk::CenterBox::new();
     bar.add_css_class("opusdm-panel");
     bar.set_height_request(window::PANEL_HEIGHT);
@@ -333,25 +331,17 @@ pub fn attach(
         })
     };
 
+    // Every bar shares one stylesheet: install it once, not per rebuild.
+    install_css();
     let display = gtk::gdk::Display::default();
     rebuild(display.as_ref().map(opusdm_ui::list_monitors).unwrap_or_default());
 
+    // One coalesced callback per real layout change: a mode switch fires the
+    // GDK monitor signals and the root `ConfigureNotify` (which also covers
+    // Xephyr, where GDK's list lags a host-window resize) several times.
     if let Some(display) = display.as_ref() {
         let rebuild = rebuild.clone();
-        opusdm_ui::watch_monitors(display, move |rects| rebuild(rects));
-    }
-    // Mirrors opusdm-hub's toolbar.rs: under Xephyr, GDK's monitor list can
-    // lag a host-window resize, so also re-scan on the reliable root
-    // `ConfigureNotify` signal, not just GDK's own change notifications.
-    {
-        let rebuild = rebuild.clone();
-        opusdm_ui::watch_screen_size(move |_w, _h| {
-            let rects = gtk::gdk::Display::default()
-                .as_ref()
-                .map(opusdm_ui::list_monitors)
-                .unwrap_or_default();
-            rebuild(rects);
-        });
+        opusdm_ui::watch_layout(display, move |rects| rebuild(rects));
     }
 
     // Drain the EWMH observer into every bar's widgets.

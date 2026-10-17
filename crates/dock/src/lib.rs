@@ -482,20 +482,12 @@ impl Dock {
         *self.config_monitor.borrow_mut() = Some(monitor);
     }
 
-    /// Follow the primary monitor across hotplug and screen size changes.
+    /// Follow the primary monitor across hotplug and screen size changes,
+    /// once per settled layout change.
     fn watch_monitors(self: &Rc<Self>) {
-        if let Some(display) = gtk::gdk::Display::default() {
-            let dock = self.clone();
-            opusdm_ui::watch_monitors(&display, move |rects| dock.set_monitor(rects));
-        }
+        let Some(display) = gtk::gdk::Display::default() else { return };
         let dock = self.clone();
-        opusdm_ui::watch_screen_size(move |_w, _h| {
-            let rects = gtk::gdk::Display::default()
-                .as_ref()
-                .map(opusdm_ui::list_monitors)
-                .unwrap_or_default();
-            dock.set_monitor(rects);
-        });
+        opusdm_ui::watch_layout(&display, move |rects| dock.set_monitor(rects));
     }
 
     /// Re-dock onto the first of `rects`, when it changed.
