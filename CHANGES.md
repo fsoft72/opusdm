@@ -1,5 +1,8 @@
 # Changes
 
+## 2026-10-17
+- Tooling: new `scripts/clear.sh` frees disk space on demand. It deletes the `target/` of every agent worktree in `.claude/worktrees/` and the incremental caches of the main `target/`; `--all` also runs `cargo clean` on the workspace, `--dry-run` only prints what would go. It refuses to run while `cargo` or `rustc` is running and never touches sources or branches. Checked: `sh -n`, `--dry-run`, `--dry-run --all`, unknown option (exit 2). NOT run for real.
+
 ## 2026-10-16
 - Fixes from `OPTIMIZE.md` (all 27 items ticked, one commit per item, five parallel branches merged into master plus one follow-up pass). Highlights:
   - **fsops / ftp / archive:** a cross-filesystem Move no longer deletes the sources the user skipped; copied symlinks ask before replacing an entry and are renamed into place; files and folders are fsynced before a Move deletes the source; FTP/SFTP downloads go to a temp file (new `RemoteError::Cancelled`) and copy in 256 KiB chunks that cancel mid-file; compress drains the tool's stderr while it runs; extract removes a partly written entry.
