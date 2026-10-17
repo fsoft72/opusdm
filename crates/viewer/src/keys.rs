@@ -1,4 +1,4 @@
-//! Key bindings: what a key does depends on whether a picture, a PDF, a video or a text shows.
+//! Key bindings: what a key does depends on whether a picture, a PDF or a comic, a video or a text shows.
 
 use crate::kind::MediaKind;
 use gtk4::gdk::Key;
@@ -44,7 +44,7 @@ pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
     let video = kind == MediaKind::Video;
     let source = kind == MediaKind::Source;
     let text = kind == MediaKind::Markdown || source;
-    let pdf = kind == MediaKind::Pdf;
+    let pdf = kind.is_paged();
     let action = match key {
         Key::plus | Key::KP_Add | Key::equal if !video && !text => Action::ZoomIn,
         Key::minus | Key::KP_Subtract if !video && !text => Action::ZoomOut,
@@ -97,7 +97,7 @@ pub fn page_after(action: Action, current: usize, count: usize) -> Option<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use MediaKind::{Image, Markdown, Pdf, Source, Video};
+    use MediaKind::{Comic, Image, Markdown, Pdf, Source, Video};
 
     #[test]
     fn arrows_move_on_pictures_and_seek_on_videos() {
@@ -194,6 +194,13 @@ mod tests {
         }
         for key in [Key::Right, Key::KP_Right, Key::Down, Key::KP_Down] {
             assert_eq!(map(key, Pdf), Some(Action::NextPage));
+        }
+    }
+
+    #[test]
+    fn a_comic_has_the_page_keys_of_a_pdf() {
+        for key in [Key::Page_Down, Key::Page_Up, Key::Home, Key::End, Key::F9, Key::Left, Key::Right, Key::Up, Key::Down, Key::space, Key::plus, Key::r] {
+            assert_eq!(map(key, Comic), map(key, Pdf), "{key:?}");
         }
     }
 

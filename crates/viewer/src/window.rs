@@ -218,7 +218,7 @@ impl State {
                     let _ = tx.send_blocking((generation, load_raw(&path)));
                 });
             }
-            MediaKind::Pdf => {
+            MediaKind::Pdf | MediaKind::Comic => {
                 self.video.stop();
                 self._request_page(&path);
             }
@@ -307,7 +307,7 @@ impl State {
         self.show_current();
     }
 
-    /// `name - 3/12 - 1920x1080 - 125%` (with `page 2/10` for a PDF), plus a slideshow mark.
+    /// `name - 3/12 - 1920x1080 - 125%` (with `page 2/10` for a PDF or a comic), plus a slideshow mark.
     fn _update_info(&self) {
         let Some((path, kind)) = self._current() else { return };
         let (index, len) = { let g = self.gallery.borrow(); (g.index() + 1, g.len()) };
@@ -317,8 +317,8 @@ impl State {
             (MediaKind::Video, _) => "video".to_string(),
             (MediaKind::Markdown, _) => format!("markdown{}", self.font.label()),
             (MediaKind::Source, _) => format!("{}{}", self.source.detail(), self.font.label()),
-            (MediaKind::Pdf, _) if self.pages.get() == 0 => "loading".to_string(),
-            (MediaKind::Image | MediaKind::Pdf, _) => match self.image.size() {
+            (MediaKind::Pdf | MediaKind::Comic, _) if self.pages.get() == 0 => "loading".to_string(),
+            (MediaKind::Image | MediaKind::Pdf | MediaKind::Comic, _) => match self.image.size() {
                 Some((w, h)) => format!("{}{w}x{h}  -  {}{}", self._page_label(kind), self.image.zoom_label(), if self.image.is_smooth() { "" } else { "  -  pixels" }),
                 None => "loading".to_string(),
             },
@@ -327,9 +327,9 @@ impl State {
         self.info.set_text(&format!("{}  -  {position}{detail}{mark}", _name(&path)));
     }
 
-    /// `page 2/10  -  ` for a PDF, nothing for a picture.
+    /// `page 2/10  -  ` for a PDF or a comic, nothing for a picture.
     fn _page_label(&self, kind: MediaKind) -> String {
-        if kind != MediaKind::Pdf { return String::new(); }
+        if !kind.is_paged() { return String::new(); }
         format!("page {}/{}  -  ", self.page.get() + 1, self.pages.get())
     }
 

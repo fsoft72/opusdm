@@ -3098,6 +3098,7 @@ dependencies = [
  "async-channel",
  "gtk4",
  "hayro",
+ "opusdm-archive",
  "opusdm-highlight",
  "opusdm-ipc",
  "opusdm-media",
@@ -3106,6 +3107,7 @@ dependencies = [
  "pulldown-cmark",
  "tempfile",
  "unicode-width",
+ "zip",
 ]
 
 [[package]]

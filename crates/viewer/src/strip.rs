@@ -1,5 +1,6 @@
 //! The thumbnail strip: one button per file, thumbnails made by a worker thread.
 
+use crate::comic;
 use crate::kind::{kind_or_image, MediaKind};
 use crate::loader::{load_thumb, RawImage};
 use crate::pdf::render_thumb;
@@ -156,6 +157,7 @@ fn _start_worker() -> (mpsc::Sender<PathBuf>, async_channel::Receiver<ThumbResul
         for path in req_rx {
             let result = match kind_or_image(&path) {
                 MediaKind::Pdf => render_thumb(&path, THUMB_PX),
+                MediaKind::Comic => comic::render_thumb(&path, THUMB_PX),
                 _ => load_thumb(&path, THUMB_PX),
             };
             if res_tx.send_blocking((path, result)).is_err() { break; }

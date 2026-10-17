@@ -33,6 +33,24 @@ pub fn extract_entry(archive: &Path, name: &str, out: &mut dyn Write) -> Result<
     Err(ArchiveError::NotFound(wanted))
 }
 
+/// The data of every file of `archive` whose normalised name `wanted`
+/// accepts, as `(name, bytes)` in archive order. One pass over the archive,
+/// so a solid archive is decompressed once.
+pub fn read_files(archive: &Path, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut reader = Reader::open(archive)?;
+    let mut files = Vec::new();
+    while reader.next_header()? {
+        let name = names::normalize(&reader.entry_path());
+        if reader.entry_kind() != EntryKind::File || !wanted(&name) {
+            continue;
+        }
+        let mut data = Vec::with_capacity(reader.entry_size() as usize);
+        _copy_data(&mut reader, &mut data)?;
+        files.push((name, data));
+    }
+    Ok(files)
+}
+
 /// Write the data of the reader's current entry to `out`, filling the holes
 /// of sparse entries with zeros.
 fn _copy_data(reader: &mut Reader, out: &mut dyn Write) -> Result<()> {

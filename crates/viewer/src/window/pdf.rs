@@ -172,6 +172,11 @@ impl State {
         matches!(self._current(), Some((_, MediaKind::Pdf)))
     }
 
+    /// True while a document shown one page at a time (PDF, comic) is on screen.
+    fn _is_paged(&self) -> bool {
+        self._current().is_some_and(|(_, kind)| kind.is_paged())
+    }
+
     /// The Markdown or source text on screen, if one is.
     fn _text_doc(&self) -> Option<&dyn TextDoc> {
         match self._current()?.1 {
@@ -181,7 +186,8 @@ impl State {
         }
     }
 
-    /// A new file is on screen: reset the PDF side; the bar shows only for a PDF.
+    /// A new file is on screen: reset the PDF side; the bar shows only for a
+    /// PDF, a comic or a text.
     pub(super) fn _pdf_file_changed(&self) {
         self.pdf.panel.clear();
         self.pdf.hits.borrow_mut().clear();
@@ -191,31 +197,36 @@ impl State {
         self.pdf.links.borrow_mut().clear();
         self.pdf.reveal_hit.set(false);
         self.pdf.land_bottom.set(false);
-        self.image.set_page_scroll(self._is_pdf());
+        self.image.set_page_scroll(self._is_paged());
         self._sync_pdf_panels();
         self._sync_page_buttons();
     }
 
     /// Show or hide the bar and the page panel for the file on screen and the
-    /// full screen state; start the thumbnails when the panel shows.
+    /// full screen state; start the thumbnails when the panel shows. A comic
+    /// has the page widgets but no search.
     pub(super) fn _sync_pdf_panels(&self) {
-        let pdf = self._is_pdf();
-        let searchable = pdf || self._text_doc().is_some();
-        self.pdf.bar.pages.set_visible(pdf);
-        self.pdf.bar.page_prev.set_visible(pdf);
-        self.pdf.bar.page_next.set_visible(pdf);
-        self.pdf.bar.dark_box.set_visible(!pdf);
+        let paged = self._is_paged();
+        let searchable = self._is_pdf() || self._text_doc().is_some();
+        let bar = &self.pdf.bar;
+        bar.pages.set_visible(paged);
+        bar.page_prev.set_visible(paged);
+        bar.page_next.set_visible(paged);
+        bar.dark_box.set_visible(!paged);
+        for widget in [bar.entry.upcast_ref::<gtk::Widget>(), bar.prev.upcast_ref(), bar.next.upcast_ref(), bar.status.upcast_ref()] {
+            widget.set_visible(searchable);
+        }
         let full = self.window.is_fullscreen();
-        let searching = !self.pdf.bar.entry.text().is_empty() || self.pdf.bar.entry_has_focus(&self.window);
-        self.pdf.bar.root.set_visible(searchable && (!full || searching));
-        let panel = pdf && !full && self.pdf.bar.pages.is_active();
+        let searching = searchable && (!bar.entry.text().is_empty() || bar.entry_has_focus(&self.window));
+        bar.root.set_visible((paged || searchable) && (!full || searching));
+        let panel = paged && !full && bar.pages.is_active();
         self.pdf.panel.root.set_visible(panel);
         if panel { self.pdf.panel.start_thumbnails(); }
     }
 
-    /// The zoom buttons of the bar: the page of a PDF, the font of a text.
+    /// The zoom buttons of the bar: the page of a PDF or a comic, the font of a text.
     fn _zoom_document(&self, bigger: bool) {
-        match (self._is_pdf(), bigger) {
+        match (self._is_paged(), bigger) {
             (true, true) => self.image.zoom_in(),
             (true, false) => self.image.zoom_out(),
             (false, _) => self.font.change(bigger),
@@ -280,7 +291,8 @@ impl State {
 
     /// [`Self::_pdf_go_to`]; `bottom` shows the page from its bottom.
     fn _pdf_go_to_at(self: &Rc<Self>, index: usize, reveal: bool, bottom: bool) {
-        let Some((path, MediaKind::Pdf)) = self._current() else { return };
+        let Some((path, kind)) = self._current() else { return };
+        if !kind.is_paged() { return; }
         if index >= self.pages.get() { return; }
         if index == self.page.get() {
             if reveal { self._refresh_marks(true); }

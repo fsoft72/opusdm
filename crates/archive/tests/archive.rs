@@ -1,6 +1,6 @@
 //! Behaviour of the archive crate on real archives built by the tests.
 
-use opusdm_archive::{extract, extract_entry, list, ArchiveError, EntryKind};
+use opusdm_archive::{extract, extract_entry, list, read_files, ArchiveError, EntryKind};
 use std::cell::Cell;
 use std::fs;
 use std::io::Write;
@@ -96,6 +96,17 @@ fn every_format_extracts_one_entry_with_an_odd_name() {
             extract_entry(&arch, name, &mut out).unwrap_or_else(|e| panic!("{label} {name}: {e}"));
             assert_eq!(out, body.as_bytes(), "{label} {name}");
         }
+    }
+}
+
+#[test]
+fn every_format_reads_the_wanted_files_in_one_pass() {
+    let td = tempfile::tempdir().unwrap();
+    for (label, arch) in _all(td.path()) {
+        let mut files = read_files(&arch, &|name| name != "-dash.txt").unwrap_or_else(|e| panic!("{label}: {e}"));
+        files.sort();
+        let expected = vec![("st[ar]*.txt".to_string(), b"star".to_vec()), ("sub/a.txt".to_string(), b"nested".to_vec())];
+        assert_eq!(files, expected, "{label}");
     }
 }
 

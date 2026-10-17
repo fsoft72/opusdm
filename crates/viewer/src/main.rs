@@ -1,9 +1,10 @@
-//! `opusdm-viewer`: shows the pictures, PDF files, Markdown texts, source texts and videos given on the
+//! `opusdm-viewer`: shows the pictures, PDF files, comic books, Markdown texts, source texts and videos given on the
 //! command line, files and whole folders. With `--sidecar` it follows the
 //! paths a Lister writes on its standard input instead.
 //! See `docs/superpowers/specs/2026-10-05-viewer-gallery-design.md`.
 
 mod args;
+mod comic;
 mod delete;
 mod font_scale;
 mod gallery;

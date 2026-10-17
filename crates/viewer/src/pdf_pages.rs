@@ -1,7 +1,9 @@
-//! The page panel of a PDF: one thumbnail button per page, in a column on the
+//! The page panel of a PDF or a comic book: one thumbnail button per page, in a column on the
 //! left. The thumbnails are rendered by a worker thread, only once the panel
 //! is shown, and a new document stops the worker of the old one.
 
+use crate::comic;
+use crate::kind::{kind_of, MediaKind};
 use crate::loader::RawImage;
 use crate::pdf::{open, render_page_cached};
 use gtk4 as gtk;
@@ -148,6 +150,7 @@ fn _render_order(count: usize, first: usize) -> impl Iterator<Item = usize> {
 
 /// Worker body: render every page small, stop when the generation changes.
 fn _render_thumbs(path: &Path, count: usize, first: usize, generation: u64, flag: &AtomicU64, answers: &async_channel::Sender<ThumbAnswer>) {
+    if kind_of(path) == Some(MediaKind::Comic) { return _render_comic_thumbs(path, count, first, generation, flag, answers); }
     let pdf = match open(path) {
         Ok(pdf) => pdf,
         Err(e) => return opusdm_ipc::err_log!("viewer", "page thumbnails of {}: {e}", path.display()),
@@ -158,6 +161,19 @@ fn _render_thumbs(path: &Path, count: usize, first: usize, generation: u64, flag
         let Some(page) = pdf.pages().get(index) else { return };
         let scale = THUMB_WIDTH as f32 / page.render_dimensions().0.max(1.0);
         let result = render_page_cached(&pdf, index, scale, &cache).map(|p| p.raw);
+        if answers.send_blocking((generation, index, result)).is_err() { return; }
+    }
+}
+
+/// [`_render_thumbs`] for a comic book.
+fn _render_comic_thumbs(path: &Path, count: usize, first: usize, generation: u64, flag: &AtomicU64, answers: &async_channel::Sender<ThumbAnswer>) {
+    let comic = match comic::open(path) {
+        Ok(comic) => comic,
+        Err(e) => return opusdm_ipc::err_log!("viewer", "page thumbnails of {}: {e}", path.display()),
+    };
+    for index in _render_order(count.min(comic.count()), first) {
+        if flag.load(Ordering::SeqCst) != generation { return; }
+        let result = comic::render_page_thumb(&comic, index, THUMB_WIDTH);
         if answers.send_blocking((generation, index, result)).is_err() { return; }
     }
 }
@@ -197,5 +213,15 @@ mod tests {
         assert_eq!(pages, vec![1, 2, 0]);
         _render_thumbs(&path, 3, 0, 0, &flag, &tx);
         assert!(rx.try_recv().is_err(), "an old generation renders nothing");
+    }
+
+    #[test]
+    fn comic_pages_get_thumbnails_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::comic::tests::sample_cbz(dir.path());
+        let (tx, rx) = async_channel::unbounded();
+        _render_thumbs(&path, 3, 2, 1, &AtomicU64::new(1), &tx);
+        let pages: Vec<usize> = std::iter::from_fn(|| rx.try_recv().ok()).map(|(_, i, r)| { assert_eq!(r.unwrap().width, THUMB_WIDTH as u32); i }).collect();
+        assert_eq!(pages, vec![2, 0, 1]);
     }
 }

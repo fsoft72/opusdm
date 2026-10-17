@@ -2,6 +2,8 @@
 //! A worker thread keeps the open document, so turning a page does not parse
 //! the file again; it answers with plain bytes (`RawImage`), like the picture loader.
 
+use crate::comic;
+use crate::kind::{kind_of, MediaKind};
 use crate::loader::RawImage;
 use crate::pdf_links::{page_links, Link};
 use hayro::hayro_interpret::InterpreterSettings;
@@ -111,6 +113,7 @@ fn _newest(mut request: PageRequest, rx: &mpsc::Receiver<PageRequest>) -> PageRe
 /// `None` when the channels close.
 fn _serve_document(request: PageRequest, rx: &mpsc::Receiver<PageRequest>, answers: &async_channel::Sender<PageAnswer>) -> Option<PageRequest> {
     let mut request = _newest(request, rx);
+    if kind_of(&request.path) == Some(MediaKind::Comic) { return _serve_comic(request, rx, answers); }
     let pdf = match open(&request.path) {
         Ok(pdf) => pdf,
         Err(e) => {
@@ -122,6 +125,23 @@ fn _serve_document(request: PageRequest, rx: &mpsc::Receiver<PageRequest>, answe
     loop {
         let result = render_page_cached(&pdf, request.index, PAGE_SCALE, &cache);
         answers.send_blocking((request.generation, result)).ok()?;
+        let next = _newest(rx.recv().ok()?, rx);
+        if next.path != request.path { return Some(next); }
+        request = next;
+    }
+}
+
+/// [`_serve_document`] for a comic book: its pages are read once and kept.
+fn _serve_comic(mut request: PageRequest, rx: &mpsc::Receiver<PageRequest>, answers: &async_channel::Sender<PageAnswer>) -> Option<PageRequest> {
+    let comic = match comic::open(&request.path) {
+        Ok(comic) => comic,
+        Err(e) => {
+            answers.send_blocking((request.generation, Err(e))).ok()?;
+            return rx.recv().ok();
+        }
+    };
+    loop {
+        answers.send_blocking((request.generation, comic::render_page(&comic, request.index))).ok()?;
         let next = _newest(rx.recv().ok()?, rx);
         if next.path != request.path { return Some(next); }
         request = next;
@@ -224,6 +244,24 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let thumb = render_thumb(&write_pdf(dir.path(), 1), 100).unwrap();
         assert_eq!((thumb.width, thumb.height), (100, 50));
+    }
+
+    #[test]
+    fn the_worker_serves_comics_and_goes_back_to_pdf_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let comic = crate::comic::tests::sample_cbz(dir.path());
+        let pdf = write_pdf(dir.path(), 2);
+        let (answer_tx, answer_rx) = async_channel::unbounded();
+        let requests = start_worker(answer_tx);
+        for (generation, path, index, count, width) in [(1, &comic, 1, 3, Some(20)), (2, &comic, 2, 3, Some(30)), (3, &pdf, 0, 2, None), (4, &comic, 0, 3, Some(10))] {
+            requests.send(PageRequest { generation, path: path.clone(), index }).unwrap();
+            let (got, result) = answer_rx.recv_blocking().unwrap();
+            let page = result.unwrap();
+            assert_eq!((got, page.count), (generation, count));
+            if let Some(width) = width { assert_eq!(page.raw.width, width); }
+        }
+        requests.send(PageRequest { generation: 5, path: dir.path().join("missing.cbz"), index: 0 }).unwrap();
+        assert!(answer_rx.recv_blocking().unwrap().1.is_err());
     }
 
     #[test]

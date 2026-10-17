@@ -10,7 +10,7 @@ mod reader;
 mod writer;
 
 pub use error::{ArchiveError, Result};
-pub use extract::{extract, extract_entry, Extracted};
+pub use extract::{extract, extract_entry, read_files, Extracted};
 pub use names::is_archive_name;
 pub use reader::EntryKind;
 

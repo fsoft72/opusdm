@@ -45,7 +45,7 @@ pub fn load_within(path: &Path, px: i32) -> Result<RawImage, String> {
 
 /// `pixbuf` with the EXIF orientation the loader found applied (phone
 /// pictures are stored sideways), or as it is when there is none.
-fn upright(pixbuf: Pixbuf) -> Pixbuf {
+pub(crate) fn upright(pixbuf: Pixbuf) -> Pixbuf {
     pixbuf.apply_embedded_orientation().unwrap_or(pixbuf)
 }
 
