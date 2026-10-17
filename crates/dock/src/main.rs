@@ -4,9 +4,6 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 
-/// Panel strip height assumed when running without the hub.
-const PANEL_HEIGHT: i32 = 40;
-
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.Dock").build();
     app.connect_startup(|_| opusdm_ui::set_app_icon());
@@ -16,7 +13,7 @@ fn main() -> gtk::glib::ExitCode {
             position: desktop.dock_position,
             icon_size: desktop.dock_icon_size,
             panel: desktop.panel_position,
-            panel_height: PANEL_HEIGHT,
+            panel_height: opusdm_ipc::PANEL_HEIGHT,
         };
         // The setter is dropped: the standalone dock never re-lays out live.
         let _ = opusdm_dock::attach(app, layout);

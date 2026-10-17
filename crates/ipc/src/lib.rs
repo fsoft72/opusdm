@@ -59,7 +59,7 @@ pub mod timefmt;
 
 pub use desktop::{
     background_css, is_background_image, is_background_media, is_background_video, path_to_file_url, BACKGROUND_IMAGE_EXTS, BACKGROUND_VIDEO_EXTS, Background, BackgroundEntry, BackgroundMode, DesktopSettings, ImageFit, FADE_MS_RANGE, INTERVAL_SECS_RANGE,
-    DockPosition, PanelPosition, StartupApp, DOCK_ICON_SIZE_RANGE, STARTUP_WAIT_SECS_RANGE, VIRTUAL_SCREENS_RANGE, WINDOW_OPACITY_RANGE,
+    DockPosition, PanelPosition, StartupApp, PANEL_HEIGHT, DOCK_ICON_SIZE_RANGE, STARTUP_WAIT_SECS_RANGE, VIRTUAL_SCREENS_RANGE, WINDOW_OPACITY_RANGE,
     GRADIENT_ANGLE_MAX, GRID_GAP_RANGE, GRID_SPACING_RANGE, ICON_SIZE_RANGE,
 };
 pub use bindings::Bindings;

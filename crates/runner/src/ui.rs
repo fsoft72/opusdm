@@ -6,16 +6,12 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_ipc::PanelPosition;
+use opusdm_ipc::{PanelPosition, PANEL_HEIGHT};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Width of the window in pixels.
 const WINDOW_WIDTH: i32 = 600;
-
-/// Height of the hub panel strip, which the window sits under when the panel
-/// is at the top (the same value the panel crate uses).
-const PANEL_HEIGHT: i32 = 40;
 
 /// Padding around the window content.
 const WINDOW_PADDING: i32 = 8;
