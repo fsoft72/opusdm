@@ -317,7 +317,7 @@ struct CopyShared {
     /// Copy only files missing at the destination or newer than it.
     newer: bool,
     /// Source paths copied so far; `Some` only for a Move, which deletes
-    /// exactly those when some sources were skipped.
+    /// exactly those afterwards.
     copied_srcs: Option<Mutex<Vec<PathBuf>>>,
     /// Flush every copied file to disk before counting it as done. Set for a
     /// Move, whose sources are deleted afterwards.
@@ -637,7 +637,7 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
 
 /// Recreate `srcs` under `dest_dir`. Returns the `Progress::Done` to send.
 ///
-/// `delete_src_after` removes each source tree once fully copied - the
+/// `delete_src_after` removes each copied source once the copy is done - the
 /// cross-filesystem Move path.
 pub fn copy_tree(
     srcs: &[PathBuf],
@@ -651,10 +651,10 @@ pub fn copy_tree(
 
 /// [`copy_tree`] with a filter, `update`/`newer` flags and per-source names.
 ///
-/// When `delete_src_after` is set and `opts` is partial or any file was
-/// skipped (filter, flags or a conflict answered with Skip), only the source
-/// files that were actually copied are removed (then the directories that
-/// became empty), so a Move never destroys what it skipped.
+/// When `delete_src_after` is set, only the source files that were actually
+/// copied are removed (then the directories that became empty), so a Move
+/// never destroys what it skipped (filter, flags, a conflict answered with
+/// Skip) or what appeared in the source after the scan.
 pub fn copy_tree_opts(
     srcs: &[PathBuf],
     dest_dir: &Path,
@@ -736,16 +736,9 @@ fn copy_tree_workers(
         errors.extend(sync_dest_dirs(&plan, dest_dir));
     }
     if delete_src_after && errors.is_empty() && !cancelled {
-        let partial_move = opts.is_partial() || shared.skipped.load(Ordering::SeqCst) > 0;
-        if partial_move {
-            errors.extend(remove_copied(&plan, &shared.take_copied()));
-        } else {
-            for src in srcs {
-                if let Err(e) = remove_any(src) {
-                    errors.push((src.clone(), e.to_string()));
-                }
-            }
-        }
+        // Only what was copied goes: a skipped file, or one created in the
+        // source after the scan, stays where it is.
+        errors.extend(remove_copied(&plan, &shared.take_copied()));
     }
 
     Progress::Done {
@@ -775,7 +768,7 @@ fn sync_dest_dirs(plan: &Plan, dest_dir: &Path) -> Vec<(PathBuf, String)> {
 
 /// Delete the source files in `copied`, then the planned source directories
 /// that are now empty (deepest first). Directories that still hold skipped
-/// files stay.
+/// files, or files created after the scan, stay.
 fn remove_copied(plan: &Plan, copied: &[PathBuf]) -> Vec<(PathBuf, String)> {
     let mut errors = Vec::new();
     for path in copied {
@@ -784,9 +777,12 @@ fn remove_copied(plan: &Plan, copied: &[PathBuf]) -> Vec<(PathBuf, String)> {
         }
     }
     for item in plan.items.iter().rev() {
-        if let Item::Dir { abs, .. } = item {
-            // Fails when the directory is not empty, which is the point.
-            let _ = std::fs::remove_dir(abs);
+        let Item::Dir { abs, .. } = item else { continue };
+        match std::fs::remove_dir(abs) {
+            Ok(()) => {}
+            // A folder that still holds something is kept, which is the point.
+            Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) || e.raw_os_error() == Some(libc::EEXIST) => {}
+            Err(e) => errors.push((abs.clone(), e.to_string())),
         }
     }
     errors
@@ -811,16 +807,6 @@ fn ask_conflict(tx: &Sender<Progress>, dst: &Path, src: &Path) -> Option<Resolut
 /// dangles, so a broken symlink can still be shown in a conflict prompt.
 fn entry_metadata(p: &Path) -> io::Result<std::fs::Metadata> {
     std::fs::metadata(p).or_else(|_| std::fs::symlink_metadata(p))
-}
-
-/// Remove a file or a directory tree.
-fn remove_any(p: &Path) -> io::Result<()> {
-    let meta = std::fs::symlink_metadata(p)?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(p)
-    } else {
-        std::fs::remove_file(p)
-    }
 }
 
 #[cfg(test)]
@@ -1066,6 +1052,36 @@ mod tests {
             assert_eq!(fs::read(dst.join("s/moved.txt")).unwrap(), b"MOVED");
             assert_eq!(fs::read(dst.join("s/kept.txt")).unwrap(), b"OLD");
         }
+    }
+
+    /// A file that shows up in the source while a cross-filesystem Move runs
+    /// was never copied, so the Move must leave it (and its folder) alone.
+    #[test]
+    fn move_keeps_a_source_file_that_appeared_after_the_scan() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(dst.join("s")).unwrap();
+        fs::write(src.join("f.txt"), b"NEW").unwrap();
+        fs::write(dst.join("s/f.txt"), b"OLD").unwrap();
+
+        let (tx, rx) = channel::<Progress>();
+        let (s2, d2) = (vec![src.clone()], dst.clone());
+        let worker = thread::spawn(move || copy_tree_with_workers(&s2, &d2, &tx, &CancelToken::new(), true, 1));
+        while let Ok(ev) = rx.recv() {
+            if let Progress::Conflict { reply, .. } = ev {
+                // The job is past its scan and waiting: a new file lands now.
+                fs::write(src.join("late.txt"), b"LATE").unwrap();
+                reply.send(Resolution::Overwrite).unwrap();
+            }
+        }
+        let Progress::Done { copied, skipped, errors, .. } = worker.join().unwrap() else { panic!("expected Done") };
+        assert_eq!((copied, skipped), (1, 0));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(fs::read(dst.join("s/f.txt")).unwrap(), b"NEW");
+        assert!(!src.join("f.txt").exists(), "the copied file is moved");
+        assert_eq!(fs::read(src.join("late.txt")).unwrap(), b"LATE", "the late file survives");
     }
 
     /// A move with no conflict still removes the whole source tree.

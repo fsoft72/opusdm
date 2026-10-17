@@ -41,8 +41,8 @@ impl TransferOpts {
     }
 
     /// Whether the options alone may leave some source files untouched, so a
-    /// Move must delete only what it copied. Conflicts answered with Skip are
-    /// tracked separately by the copy engine.
+    /// Move cannot rename whole trees and must go through the copy engine
+    /// (which always deletes only what it copied).
     pub fn is_partial(&self) -> bool {
         self.update || self.newer || self.glob.is_some()
     }
