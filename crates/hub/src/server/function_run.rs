@@ -302,26 +302,22 @@ impl Hub {
     pub(super) fn run_window_event(&mut self, run_id: u64, step_idx: usize, msg: crate::functions::WindowMsg) {
         use crate::functions::WindowMsg;
         let key = (run_id, step_idx);
-        let id = run_id * 1000 + step_idx as u64;
         if matches!(msg, WindowMsg::Open { .. }) {
             // A run the hub started on its own (global hotkey, script event)
             // has no requester: its window goes to the SOURCE Lister, if any.
             let owner = self.runs.requester(run_id).flatten().or_else(|| {
                 self.roles.source().map(|l| l.0).filter(|cid| self.conns.get(cid).is_some_and(|c| c.registered))
             });
-            match owner {
-                Some(cid) => {
-                    self.output_windows.insert(key, cid);
-                }
-                None => return,
-            }
+            let Some(cid) = owner else { return };
+            self.output_windows.open(key, cid);
         }
-        let Some(&cid) = self.output_windows.get(&key) else { return };
+        let Some(window) = self.output_windows.get(key) else { return };
+        let (cid, id) = (window.owner, window.id);
         let message = match msg {
             WindowMsg::Open { title } => ToLister::OutputOpen { id, title },
             WindowMsg::Lines(lines) => ToLister::OutputLines { id, lines },
             WindowMsg::Closed(exit) => {
-                self.output_windows.remove(&key);
+                self.output_windows.close(key);
                 ToLister::OutputEnd { id, exit }
             }
         };
@@ -329,9 +325,7 @@ impl Hub {
             Some(c) => {
                 c.queue(cid, message);
             }
-            None => {
-                self.output_windows.remove(&key);
-            }
+            None => self.output_windows.close(key),
         }
     }
 
@@ -438,7 +432,7 @@ impl Hub {
         // A question to a closed Lister is never answered: dropping the sender
         // fails the waiting step instead of hanging it.
         self.confirms.retain(|_, (_, owner)| *owner != cid);
-        self.output_windows.retain(|_, owner| *owner != cid);
+        self.output_windows.forget_owner(cid);
         // Dropping the reply senders releases the jobs waiting on this Lister.
         let orphaned: Vec<u64> =
             self.conflict_owners.iter().filter(|(_, owner)| **owner == cid).map(|(req, _)| *req).collect();

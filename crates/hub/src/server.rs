@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod function_run;
 mod function_runs;
+mod output_windows;
 mod persist;
 pub use persist::FLUSH_TIMEOUT as PERSIST_FLUSH_TIMEOUT;
 
@@ -436,9 +437,9 @@ struct Hub {
     conflict_owners: HashMap<u64, u64>,
     /// Pending `Confirm` questions: request id to (answer channel, asked Lister).
     confirms: HashMap<u64, (Sender<bool>, u64)>,
-    /// Which Lister shows each `Run` output window, by `(run id, step)`. It
-    /// outlives the function run that opened it.
-    output_windows: HashMap<(u64, usize), u64>,
+    /// Which Lister shows each `Run` output window, and its window id, by
+    /// `(run id, step)`. It outlives the function run that opened it.
+    output_windows: output_windows::OutputWindows,
     next_req: u64,
     evt_tx: Sender<HubEvent>,
     on_spawn: SpawnFn,
@@ -1269,7 +1270,7 @@ fn owner_loop(
         replies: HashMap::new(),
         conflict_owners: HashMap::new(),
         confirms: HashMap::new(),
-        output_windows: HashMap::new(),
+        output_windows: output_windows::OutputWindows::new(),
         next_req: 1,
         evt_tx,
         on_spawn,
