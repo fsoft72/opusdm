@@ -5,6 +5,7 @@ use crate::errors::FsError;
 use opusdm_ipc::glob::GlobSet;
 use std::collections::HashSet;
 use std::io;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -18,6 +19,10 @@ pub enum Item {
     /// A symbolic link to recreate verbatim (target not followed), with its
     /// absolute source path.
     Symlink { rel: PathBuf, abs: PathBuf, target: PathBuf },
+    /// A named pipe (FIFO), recreated empty instead of being read.
+    Fifo { rel: PathBuf, abs: PathBuf },
+    /// A socket or a device file: never opened, reported as skipped.
+    Special { rel: PathBuf, abs: PathBuf },
 }
 
 /// The full result of scanning all sources.
@@ -37,7 +42,7 @@ pub fn scan(srcs: &[PathBuf]) -> io::Result<Plan> {
 
 /// [`scan`] with a file-name filter and per-source renames.
 ///
-/// - `glob`: only regular files and symlinks whose name matches are kept.
+/// - `glob`: only files, symlinks and special files whose name matches are kept.
 ///   Directories are always walked, but one that ends up with no kept entry
 ///   is left out of the plan.
 /// - `names`: source `i` is planned under `names[i]` instead of its own name.
@@ -77,14 +82,21 @@ pub fn scan_with(
                     continue;
                 }
             }
+            let abs = entry.path().to_path_buf();
             if ft.is_symlink() {
-                let target = std::fs::read_link(entry.path())?;
-                plan.items.push(Item::Symlink { rel, abs: entry.path().to_path_buf(), target });
-            } else {
+                let target = std::fs::read_link(&abs)?;
+                plan.items.push(Item::Symlink { rel, abs, target });
+            } else if ft.is_file() {
                 let size = entry.metadata().map_err(io::Error::other)?.len();
                 plan.total_files += 1;
                 plan.total_bytes += size;
-                plan.items.push(Item::File { rel, abs: entry.path().to_path_buf(), size });
+                plan.items.push(Item::File { rel, abs, size });
+            } else if ft.is_fifo() {
+                // Opening a FIFO for reading blocks until a writer shows up.
+                plan.items.push(Item::Fifo { rel, abs });
+            } else {
+                // Sockets and devices: copying `/dev/zero` would never end.
+                plan.items.push(Item::Special { rel, abs });
             }
         }
     }
@@ -105,12 +117,12 @@ fn renamed_rel(rel: &Path, new_name: &str) -> PathBuf {
     PathBuf::from(new_name).join(rest)
 }
 
-/// Remove every `Dir` that is not an ancestor of a kept file or symlink.
+/// Remove every `Dir` that is not an ancestor of a kept non-directory entry.
 fn drop_empty_dirs(plan: &mut Plan) {
     let mut needed: HashSet<PathBuf> = HashSet::new();
     for item in &plan.items {
         let rel = match item {
-            Item::File { rel, .. } | Item::Symlink { rel, .. } => rel,
+            Item::File { rel, .. } | Item::Symlink { rel, .. } | Item::Fifo { rel, .. } | Item::Special { rel, .. } => rel,
             Item::Dir { .. } => continue,
         };
         needed.extend(rel.ancestors().skip(1).map(Path::to_path_buf));
@@ -186,6 +198,25 @@ mod tests {
         assert!(plan.items.iter().any(|i| matches!(i, Item::Symlink { rel, .. } if rel == &PathBuf::from("d/link.txt"))));
     }
 
+    /// A FIFO and a socket are planned as special entries, never as regular
+    /// files to open and read.
+    #[test]
+    fn fifos_and_sockets_are_not_planned_as_files() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("d");
+        fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("pipe");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let _sock = std::os::unix::net::UnixListener::bind(root.join("sock")).unwrap();
+
+        let plan = scan(&[root]).unwrap();
+        assert_eq!((plan.total_files, plan.total_bytes), (0, 0));
+        assert!(plan.items.iter().any(|i| matches!(i, Item::Fifo { rel, .. } if rel == &PathBuf::from("d/pipe"))));
+        assert!(plan.items.iter().any(|i| matches!(i, Item::Special { rel, .. } if rel == &PathBuf::from("d/sock"))));
+        assert!(!plan.items.iter().any(|i| matches!(i, Item::File { .. })));
+    }
+
     #[test]
     fn glob_keeps_matching_files_and_only_needed_dirs() {
         let td = tempfile::tempdir().unwrap();
@@ -229,7 +260,11 @@ mod tests {
             .items
             .iter()
             .map(|i| match i {
-                Item::Dir { rel, .. } | Item::File { rel, .. } | Item::Symlink { rel, .. } => rel.clone(),
+                Item::Dir { rel, .. }
+                | Item::File { rel, .. }
+                | Item::Symlink { rel, .. }
+                | Item::Fifo { rel, .. }
+                | Item::Special { rel, .. } => rel.clone(),
             })
             .collect();
         assert_eq!(rels, vec![PathBuf::from("new"), PathBuf::from("new/f"), PathBuf::from("h.txt")]);

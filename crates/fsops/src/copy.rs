@@ -73,7 +73,7 @@ fn copy_file_synced(
     cancel: &CancelToken,
     on_bytes: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
-    let mut reader = std::fs::File::open(src)?;
+    let mut reader = open_regular(src)?;
     // A symlink, bind mount or alternate spelling can make DEST the very
     // inode we are reading; truncating it would destroy the source.
     if overwrite && is_same_file(&reader, dst) {
@@ -111,6 +111,54 @@ fn copy_file_synced(
     });
     if finish.is_err() {
         drop(writer);
+        crate::cleanup::remove_partial(&out);
+    }
+    finish
+}
+
+/// Open `src` for reading and make sure it is a regular file. The open does
+/// not block, so a FIFO without a writer is refused instead of hanging the
+/// job; a device such as `/dev/zero` is refused instead of copied forever.
+fn open_regular(src: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(src)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("not a regular file: {}", src.display())));
+    }
+    // Back to normal blocking reads for the copy itself.
+    let fd = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+/// Create a FIFO at `dst` with the permission bits and mtime of the FIFO
+/// `src`. Like [`create_symlink`], `overwrite` makes it under a temp name and
+/// renames it into place; without it an existing `dst` gives `AlreadyExists`.
+fn create_fifo(src: &Path, dst: &Path, overwrite: bool) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(src)?;
+    let out = if overwrite { temp_sibling(dst) } else { dst.to_path_buf() };
+    let c_out = std::ffi::CString::new(out.as_os_str().as_bytes()).map_err(io::Error::other)?;
+    if unsafe { libc::mkfifo(c_out.as_ptr(), (meta.mode() & 0o7777) as libc::mode_t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let finish = (|| {
+        // mkfifo applies the umask; set the exact bits afterwards.
+        std::fs::set_permissions(&out, meta.permissions())?;
+        // The `set_file_*` helpers may open the file, and opening a FIFO
+        // blocks; the no-follow variant is a plain `utimensat` on the path.
+        let atime = filetime::FileTime::from_last_access_time(&meta);
+        filetime::set_symlink_file_times(&out, atime, filetime::FileTime::from_last_modification_time(&meta))?;
+        if overwrite {
+            std::fs::rename(&out, dst)?;
+        }
+        Ok(())
+    })();
+    if finish.is_err() {
         crate::cleanup::remove_partial(&out);
     }
     finish
@@ -527,6 +575,36 @@ fn run_plan(plan: &Plan, dest_dir: &Path, shared: &CopyShared, pool: Option<&Wor
                     Err(e) => shared.push_error(link, e.to_string()),
                 }
             }
+            Item::Fifo { rel, abs } => {
+                let dst = dest_dir.join(rel);
+                if !shared.passes_flags(abs, &dst) {
+                    shared.skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                let mut overwrite = shared.overwrite_all.load(Ordering::SeqCst);
+                if !overwrite && std::fs::symlink_metadata(&dst).is_ok() {
+                    match shared.decide(&dst, abs) {
+                        Decision::Copy { overwrite: o } => overwrite = o,
+                        Decision::Skip => {
+                            shared.skipped.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        Decision::Cancel => {
+                            shared.abort();
+                            return;
+                        }
+                    }
+                }
+                match create_fifo(abs, &dst, overwrite) {
+                    Ok(()) => shared.record_copied(abs),
+                    Err(e) => shared.push_error(dst, e.to_string()),
+                }
+            }
+            Item::Special { .. } => {
+                // Sockets and devices are never opened or recreated, and a
+                // Move leaves them (and their folders) in place.
+                shared.skipped.fetch_add(1, Ordering::Relaxed);
+            }
             Item::File { rel, abs, size } => {
                 let dst = dest_dir.join(rel);
                 if !shared.passes_flags(abs, &dst) {
@@ -795,6 +873,73 @@ mod tests {
         copy_file(&src, &dst, true, &CancelToken::new(), &mut |_| {}).unwrap();
         assert_eq!(fs::read(&dst).unwrap(), b"new");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    /// Make a FIFO at `path` for a test.
+    fn mkfifo(path: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o640) }, 0);
+    }
+
+    /// Copying a FIFO directly is refused at once instead of blocking for a
+    /// writer.
+    #[test]
+    fn copy_file_refuses_a_fifo_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipe = dir.path().join("pipe");
+        mkfifo(&pipe);
+        let err = copy_file(&pipe, &dir.path().join("out"), false, &CancelToken::new(), &mut |_| {}).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!dir.path().join("out").exists());
+    }
+
+    /// A tree with a FIFO and a socket copies without hanging: the FIFO is
+    /// recreated, the socket is skipped.
+    #[test]
+    fn copy_recreates_fifos_and_skips_sockets() {
+        for workers in WORKER_MODES {
+            let td = tempfile::tempdir().unwrap();
+            let src = td.path().join("s");
+            let dst = td.path().join("d");
+            fs::create_dir_all(&src).unwrap();
+            fs::create_dir_all(&dst).unwrap();
+            fs::write(src.join("f.txt"), b"x").unwrap();
+            mkfifo(&src.join("pipe"));
+            let _sock = std::os::unix::net::UnixListener::bind(src.join("sock")).unwrap();
+
+            let (copied, skipped, cancelled, errors) =
+                run_copy_workers(vec![src.clone()], dst.clone(), Resolution::Skip, workers);
+
+            assert!(errors.is_empty(), "workers={workers}: {errors:?}");
+            assert_eq!((copied, skipped, cancelled), (1, 1, false), "workers={workers}");
+            use std::os::unix::fs::FileTypeExt;
+            let ft = fs::symlink_metadata(dst.join("s/pipe")).unwrap().file_type();
+            assert!(ft.is_fifo(), "workers={workers}");
+            assert_eq!(fs::symlink_metadata(dst.join("s/pipe")).unwrap().permissions().mode() & 0o777, 0o640);
+            assert!(!dst.join("s/sock").exists(), "workers={workers}");
+        }
+    }
+
+    /// A Move keeps the socket it skipped (and its folder) and moves the rest.
+    #[test]
+    fn move_leaves_skipped_special_files_in_place() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("s");
+        let dst = td.path().join("d");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("f.txt"), b"x").unwrap();
+        mkfifo(&src.join("pipe"));
+        let _sock = std::os::unix::net::UnixListener::bind(src.join("sock")).unwrap();
+
+        let (_, skipped, _, errors) = run_transfer_workers(vec![src.clone()], dst.clone(), Resolution::Skip, 1, true);
+
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(skipped, 1);
+        assert!(src.join("sock").exists(), "the socket stays");
+        assert!(!src.join("f.txt").exists() && fs::symlink_metadata(src.join("pipe")).is_err());
+        assert_eq!(fs::read(dst.join("s/f.txt")).unwrap(), b"x");
     }
 
     /// Worker counts covering both the inline path and the pooled path, so
