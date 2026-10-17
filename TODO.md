@@ -57,7 +57,7 @@
   larger than the only active output, or a root that did not shrink after a monitor was removed, panel and dock get the
   wrong width or height. Does not happen when the framebuffer equals the monitor.
 
-- [ ] network-config: an unrelated job failure cancels "Save then close"
+- [x] (done, unit tests only; see CHANGES.md 2026-10-17) network-config: an unrelated job failure cancels "Save then close"
 
   `crates/network-config/src/closing.rs:44`, called on any `Done::Failed`, clears `close_after_save`. If the user
   chose Save while closing and another job (for example a List) fails first, the save works but the window stays open.

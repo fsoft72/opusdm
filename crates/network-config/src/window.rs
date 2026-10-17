@@ -257,6 +257,9 @@ impl App {
 
     /// One report of the worker thread.
     fn on_done(self: &Rc<Self>, done: Done) {
+        // Only the save the close waits for keeps the window open; another
+        // job that fails (a List, a Load) must not cancel "Save then close".
+        if done.is_failed_save() { self.update_close(CloseState::failed); }
         match done {
             Done::Listed(list) => self.on_listed(list),
             Done::Loaded(loaded) => {
@@ -286,7 +289,6 @@ impl App {
                 self.send(Job::List);
             }
             Done::Failed(what, e) => {
-                self.update_close(CloseState::failed);
                 self.show_error(&format!("{what}: {}", e.text()));
             }
         }

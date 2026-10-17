@@ -40,7 +40,8 @@ impl CloseState {
         true
     }
 
-    /// A job failed: the window stays open, so the user sees the error.
+    /// The save failed: the window stays open, so the user sees the error.
+    /// Only call it for a failed save, not for any other job.
     pub fn failed(&mut self) {
         self.close_after_save = false;
     }

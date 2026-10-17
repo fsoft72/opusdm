@@ -45,12 +45,22 @@ pub enum Done {
     Failed(String, NetError),
 }
 
+/// What a failed [`Job::Save`] reports in [`Done::Failed`].
+pub const SAVING: &str = "Saving";
+
+impl Done {
+    /// Whether this is the failure of a [`Job::Save`].
+    pub fn is_failed_save(&self) -> bool {
+        matches!(self, Done::Failed(what, _) if what == SAVING)
+    }
+}
+
 /// Run one job.
 pub fn run_job(backend: &dyn ProfileBackend, job: Job) -> Done {
     let (what, result) = match job {
         Job::List => ("Reading the connections", backend.list().map(Done::Listed)),
         Job::Load(uuid) => ("Opening the connection", backend.load(&uuid).map(|l| Done::Loaded(Box::new(l)))),
-        Job::Save { profile, base, files } => ("Saving", save(backend, &profile, base.as_ref(), &files).map(|_| Done::Saved(profile.uuid.clone()))),
+        Job::Save { profile, base, files } => (SAVING, save(backend, &profile, base.as_ref(), &files).map(|_| Done::Saved(profile.uuid.clone()))),
         Job::Delete(uuid) => ("Deleting", backend.delete(&uuid).map(|_| Done::Deleted(uuid))),
         Job::Activate { uuid, password } => ("Connecting", backend.activate(&uuid, password.as_deref()).map(|_| Done::Switched(uuid))),
         Job::Deactivate(uuid) => ("Disconnecting", backend.deactivate(&uuid).map(|_| Done::Switched(uuid))),
@@ -107,6 +117,17 @@ mod tests {
         *fake.fail.lock().unwrap() = Some(NetError::other("Not authorized"));
         assert!(matches!(run_job(&fake, Job::List), Done::Failed(what, e) if what.contains("Reading") && e.text() == "Not authorized"));
         assert!(matches!(run_job(&fake, Job::Deactivate("u".into())), Done::Failed(_, _)));
+    }
+
+    #[test]
+    fn only_a_failed_save_is_a_failed_save() {
+        let fake = FakeProfiles::default();
+        let p = Profile::new(ProfileKind::Ethernet).unwrap();
+        *fake.fail.lock().unwrap() = Some(NetError::other("Not authorized"));
+        assert!(run_job(&fake, Job::Save { profile: Box::new(p), base: None, files: Vec::new() }).is_failed_save());
+        assert!(!run_job(&fake, Job::List).is_failed_save(), "a failed List must not cancel Save then close");
+        assert!(!run_job(&fake, Job::Load("u".into())).is_failed_save());
+        assert!(!run_job(&fake, Job::Delete("u".into())).is_failed_save());
     }
 
     #[test]
