@@ -82,19 +82,41 @@ pub struct Sysfs {
 }
 
 impl Sysfs {
-    /// The first backlight under `root` that has a readable, non zero
-    /// `max_brightness`.
+    /// The best backlight under `root` that has a readable, non zero
+    /// `max_brightness`: by its `type` (see [`backlight_rank`]), then by
+    /// name, so a vendor or firmware interface wins over a raw one whatever
+    /// the folder names.
     pub fn find(root: &Path) -> Result<Self, BrightnessError> {
         let io = |path: &Path, e: std::io::Error| BrightnessError::Io { path: path.display().to_string(), reason: e.to_string() };
-        let mut dirs: Vec<PathBuf> = fs::read_dir(root).map_err(|e| io(root, e))?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        let mut dirs: Vec<(u8, PathBuf)> = fs::read_dir(root)
+            .map_err(|e| io(root, e))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .map(|dir| (backlight_rank(fs::read_to_string(dir.join("type")).ok().as_deref()), dir))
+            .collect();
         dirs.sort();
-        let found = dirs.into_iter().find(|d| read_number(&d.join("max_brightness")).is_ok_and(|max| max > 0));
+        let found = dirs.into_iter().map(|(_, dir)| dir).find(|d| read_number(&d.join("max_brightness")).is_ok_and(|max| max > 0));
         found.map(|dir| Self { dir }).ok_or_else(|| BrightnessError::Unavailable(format!("no backlight in {}", root.display())))
     }
 
     /// The raw maximum of this backlight.
     fn max(&self) -> Result<u32, BrightnessError> {
         read_number(&self.dir.join("max_brightness"))
+    }
+}
+
+/// How good a backlight is by the content of its sysfs `type` file, lower
+/// first, in the order the kernel ABI (sysfs-class-backlight) asks
+/// userspace to prefer: `firmware` (a standard firmware interface such as
+/// `acpi_video0`), then `platform` (a vendor interface such as
+/// `dell_backlight`), then `raw` (the GPU registers, `intel_backlight`,
+/// `amdgpu_bl0`). A missing or unknown type comes last.
+fn backlight_rank(kind: Option<&str>) -> u8 {
+    match kind.map(str::trim) {
+        Some("firmware") => 0,
+        Some("platform") => 1,
+        Some("raw") => 2,
+        _ => 3,
     }
 }
 
@@ -285,6 +307,34 @@ mod tests {
         assert!(matches!(Sysfs::find(td.path()), Err(BrightnessError::Unavailable(_))));
         backlight(td.path(), "ok", "5", "10");
         assert!(Sysfs::find(td.path()).unwrap().dir.ends_with("ok"));
+    }
+
+    /// A backlight like [`backlight`] whose `type` file says `kind`.
+    fn typed_backlight(root: &Path, name: &str, kind: &str) -> PathBuf {
+        let dir = backlight(root, name, "5", "10");
+        fs::write(dir.join("type"), format!("{kind}\n")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sysfs_prefers_firmware_then_platform_then_raw_over_the_name_order() {
+        let td = tempfile::tempdir().unwrap();
+        // "amdgpu_bl0" comes first by name.
+        typed_backlight(td.path(), "amdgpu_bl0", "raw");
+        typed_backlight(td.path(), "dell_backlight", "platform");
+        assert!(Sysfs::find(td.path()).unwrap().dir.ends_with("dell_backlight"));
+        typed_backlight(td.path(), "zz_firmware", "firmware");
+        assert!(Sysfs::find(td.path()).unwrap().dir.ends_with("zz_firmware"));
+    }
+
+    #[test]
+    fn sysfs_ranks_a_missing_or_unknown_type_last() {
+        let td = tempfile::tempdir().unwrap();
+        backlight(td.path(), "a_untyped", "5", "10");
+        typed_backlight(td.path(), "b_odd", "something");
+        typed_backlight(td.path(), "c_raw", "raw");
+        assert!(Sysfs::find(td.path()).unwrap().dir.ends_with("c_raw"));
+        assert_eq!(backlight_rank(None), backlight_rank(Some("something")));
     }
 
     #[test]
