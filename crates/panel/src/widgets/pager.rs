@@ -178,7 +178,7 @@ const PLACEHOLDER_STEP: f64 = 4.0;
 /// miniature. A window without a known rectangle (Wayland does not tell it)
 /// gets a cascaded placeholder box instead.
 fn scaled_rect(st: &PagerState, c: &ClientWin, index: u32, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
-    if c.rect.w <= 0 || c.rect.h <= 0 {
+    if c.rect.w == 0 || c.rect.h == 0 {
         if opusdm_ipc::session::is_x11() {
             return None;
         }
@@ -190,7 +190,7 @@ fn scaled_rect(st: &PagerState, c: &ClientWin, index: u32, width: i32, height: i
 /// Cascaded placeholder box of `c`, by its place among the windows of desktop
 /// `index` that have no rectangle: same size, shifted one step each.
 fn placeholder_rect(st: &PagerState, c: &ClientWin, index: u32, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
-    let blind: Vec<u32> = st.clients.iter().filter(|c| shown_on(c, index) && (c.rect.w <= 0 || c.rect.h <= 0)).map(|c| c.xid).collect();
+    let blind: Vec<u32> = st.clients.iter().filter(|c| shown_on(c, index) && (c.rect.w == 0 || c.rect.h == 0)).map(|c| c.xid).collect();
     let n = blind.iter().position(|xid| *xid == c.xid)?;
     let (w, h) = (f64::from(width) * PLACEHOLDER_SIZE, f64::from(height) * PLACEHOLDER_SIZE);
     let last = blind.len().saturating_sub(1).max(1) as f64;
