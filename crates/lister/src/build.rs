@@ -514,6 +514,7 @@ fn assemble_ui(
             role_guard: Cell::new(false),
             job_line: message.job_line,
             totals: Cell::new((0, 0, 0)),
+            byte_unit: Cell::new(crate::status_format::ByteUnit::default()),
             gauge: stat.gauge,
             gauge_generation: Rc::new(Cell::new(0)),
             busy_spinner: message.busy_spinner,
@@ -573,6 +574,20 @@ fn wire_stat_bar(ui: &Rc<Ui>, star_btn: &gtk::Button) {
             ui.send_hub(&ToHub::SetRole(next));
         });
         ui.status_bar.role_badge.add_controller(gesture);
+    }
+    {
+        // Click on the D/F/B line: bytes -> megabytes -> gigabytes -> bytes.
+        let weak = Rc::downgrade(ui);
+        let gesture = gtk::GestureClick::new();
+        gesture.connect_released(move |_, _, _, _| {
+            let Some(ui) = weak.upgrade() else {
+                opusdm_ipc::err_log!("opusdm-lister", "status line clicked but the Lister window is gone");
+                return;
+            };
+            ui.status_bar.byte_unit.set(ui.status_bar.byte_unit.get().next());
+            ui.update_status();
+        });
+        ui.status_bar.label.add_controller(gesture);
     }
 }
 

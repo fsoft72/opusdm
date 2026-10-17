@@ -1,5 +1,38 @@
 //! Expansion of the status bar format string (`Behavior::status_format`).
 
+/// How the byte totals (`%b`, `%B`) are written. A click on the status line
+/// cycles through them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ByteUnit {
+    /// The plain number of bytes.
+    #[default]
+    Bytes,
+    /// Megabytes, written by `format_size_as`.
+    Megabytes,
+    /// Gigabytes, written by `format_size_as`.
+    Gigabytes,
+}
+
+impl ByteUnit {
+    /// The unit after this one: bytes, megabytes, gigabytes, bytes again.
+    pub fn next(self) -> ByteUnit {
+        match self {
+            ByteUnit::Bytes => ByteUnit::Megabytes,
+            ByteUnit::Megabytes => ByteUnit::Gigabytes,
+            ByteUnit::Gigabytes => ByteUnit::Bytes,
+        }
+    }
+
+    /// `bytes` written in this unit, with the same scaling the file sizes use.
+    fn write(self, bytes: u64) -> String {
+        match self {
+            ByteUnit::Bytes => bytes.to_string(),
+            ByteUnit::Megabytes => crate::model::format_size_as(crate::model::SizeFormat::Megabytes, false, bytes),
+            ByteUnit::Gigabytes => crate::model::format_size_as(crate::model::SizeFormat::Gigabytes, false, bytes),
+        }
+    }
+}
+
 /// The numbers and path a status format can show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatusInfo {
@@ -17,6 +50,8 @@ pub struct StatusInfo {
     pub sel_bytes: u64,
     /// The directory shown by the Lister.
     pub path: String,
+    /// The unit of `%b` and `%B`.
+    pub unit: ByteUnit,
 }
 
 /// Expand `format` with the values in `info`.
@@ -36,10 +71,10 @@ pub fn format_status(format: &str, info: &StatusInfo) -> String {
         match chars.next() {
             Some('d') => out.push_str(&info.dirs.to_string()),
             Some('f') => out.push_str(&info.files.to_string()),
-            Some('b') => out.push_str(&info.bytes.to_string()),
+            Some('b') => out.push_str(&info.unit.write(info.bytes)),
             Some('D') => out.push_str(&info.sel_dirs.to_string()),
             Some('F') => out.push_str(&info.sel_files.to_string()),
-            Some('B') => out.push_str(&info.sel_bytes.to_string()),
+            Some('B') => out.push_str(&info.unit.write(info.sel_bytes)),
             Some('s') => out.push_str(&(info.sel_dirs + info.sel_files).to_string()),
             Some('p') => out.push_str(&info.path),
             Some('%') => out.push('%'),
@@ -67,6 +102,7 @@ mod tests {
             sel_files: 2,
             sel_bytes: 300,
             path: "/tmp".to_string(),
+            unit: ByteUnit::Bytes,
         }
     }
 
@@ -79,6 +115,22 @@ mod tests {
     fn uppercase_codes_are_the_selection() {
         assert_eq!(format_status("%D/%F/%B", &info()), "1/2/300");
         assert_eq!(format_status("%s selected", &info()), "3 selected");
+    }
+
+    #[test]
+    fn the_unit_cycles_bytes_mega_giga() {
+        assert_eq!(ByteUnit::Bytes.next(), ByteUnit::Megabytes);
+        assert_eq!(ByteUnit::Megabytes.next(), ByteUnit::Gigabytes);
+        assert_eq!(ByteUnit::Gigabytes.next(), ByteUnit::Bytes);
+    }
+
+    #[test]
+    fn byte_totals_follow_the_unit() {
+        let mut i = StatusInfo { bytes: 3 * 1024 * 1024, sel_bytes: 1024 * 1024 * 1024, ..info() };
+        i.unit = ByteUnit::Megabytes;
+        assert_eq!(format_status("%B/%b", &i), "1024.00 MB/3.00 MB");
+        i.unit = ByteUnit::Gigabytes;
+        assert_eq!(format_status("%B/%b", &i), "1.00 GB/0.00 GB");
     }
 
     #[test]

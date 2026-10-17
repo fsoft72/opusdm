@@ -96,6 +96,8 @@ pub struct StatusBar {
     pub job_line: gtk::Label,
     /// Cached directory totals: (total_dirs, total_files, total_bytes)
     pub totals: Cell<(u32, u32, u64)>,
+    /// Unit of the byte totals; a click on the status line cycles it.
+    pub byte_unit: Cell<crate::status_format::ByteUnit>,
     /// Used-space gauge; visible only when the format asks for it.
     pub gauge: gtk::LevelBar,
     /// Counts gauge requests so a slow `statvfs` cannot overwrite a newer one.
@@ -667,6 +669,7 @@ impl Ui {
             sel_files,
             sel_bytes,
             path: self.cwd.borrow().to_string_lossy().into_owned(),
+            unit: self.status_bar.byte_unit.get(),
         };
         self.status_bar.label.set_text(&crate::status_format::format_status(&format, &info));
     }
