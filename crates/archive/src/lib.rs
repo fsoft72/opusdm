@@ -34,9 +34,20 @@ pub struct Entry {
 /// Every entry of `archive`, in archive order. The archive root entry (`./`)
 /// is left out.
 pub fn list(archive: &Path) -> Result<Vec<Entry>> {
+    list_watched(archive, &mut |_, _| true)
+}
+
+/// [`list`] that reports its progress: `step(entries, bytes_read)` is called
+/// after every entry with the entries found so far and the bytes read from
+/// the archive file (compare with its size). Returning `false` stops the
+/// read with [`ArchiveError::Cancelled`].
+pub fn list_watched(archive: &Path, step: &mut dyn FnMut(u64, u64) -> bool) -> Result<Vec<Entry>> {
     let mut reader = Reader::open(archive)?;
     let mut entries = Vec::new();
     while reader.next_header()? {
+        if !step(entries.len() as u64, reader.bytes_read()) {
+            return Err(ArchiveError::Cancelled);
+        }
         let path = names::normalize(&reader.entry_path());
         if path.is_empty() {
             continue;

@@ -1,15 +1,34 @@
 //! Navigation with the directory cache: show the cached listing at once, then
 //! re-read the disk and update the view only if it changed.
 
+use crate::background::CancelToken;
 use crate::model::{read_dir_rows, Listing, Row};
 use crate::window::Ui;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::ToHub;
+use std::cell::Cell;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// How long an archive read runs before the progress panel shows up.
+const PROGRESS_SHOW_DELAY: Duration = Duration::from_millis(400);
+/// How often the progress panel is refreshed while it is shown.
+const PROGRESS_TICK: Duration = Duration::from_millis(100);
+
+/// The panel message while an archive is read.
+fn progress_message(name: &str, entries: u64) -> String {
+    match entries {
+        0 => format!("Opening {name}..."),
+        1 => format!("Opening {name}: 1 entry read"),
+        n => format!("Opening {name}: {n} entries read"),
+    }
+}
 
 impl Ui {
     /// Go to `dir`. With `use_cache` a cached listing is shown immediately;
@@ -51,6 +70,8 @@ impl Ui {
         }
         let gen = self.nav.generation.get() + 1;
         self.nav.generation.set(gen);
+        // This navigation supersedes the archive read the panel shows, if any.
+        self.progress.hide();
 
         let is_archive = crate::archive::parse_archive_path(dir).is_some() || remote_url.is_some();
         let cached = if use_cache && !is_archive { self.caches.dirs.borrow_mut().get(dir) } else { None };
@@ -67,23 +88,34 @@ impl Ui {
         // before it started is skipped through the cancel token.
         let cancel = crate::background::CancelToken::new();
         self.nav.cancel.replace(cancel.clone()).cancel();
-        let read = move |_: &crate::background::CancelToken| {
+        let progress = Arc::new(crate::archive::ReadProgress::default());
+        let worker_progress = progress.clone();
+        let read = move |cancel: &crate::background::CancelToken| {
             if let (Some(url), Some(session)) = (crate::remote::url_of(&dir_owned), session.as_ref()) {
                 crate::remote_ui::read_rows(session, &url)
             } else if let Some((arch, inner)) = crate::archive::parse_archive_path(&dir_owned) {
-                crate::archive::read_archive_rows(&arch, &inner)
+                crate::archive::read_archive_rows_watched(&arch, &inner, &worker_progress, cancel)
             } else {
                 read_dir_rows(&dir_owned)
             }
         };
 
+        // Cleared when the result arrives, so a late progress timer does
+        // not show the panel for a read that is already over.
+        let loading = Rc::new(Cell::new(true));
+        if let Some((arch, _)) = crate::archive::parse_archive_path(dir) {
+            self.watch_archive_read(arch, progress, &cancel, &loading, history_before.clone());
+        }
+
         let this = self.clone();
         let dir_owned = dir.to_path_buf();
         crate::background::run_cancellable(&cancel, read, move |result: io::Result<Vec<Row>>| {
+            loading.set(false);
             // Superseded by a later navigation while this was loading.
             if this.nav.generation.get() != gen {
                 return;
             }
+            this.progress.hide();
             // A failed read leaves the previous listing on screen; callers that
             // act on the new listing (select an entry, restore a selection)
             // must not run against the wrong folder.
@@ -91,6 +123,78 @@ impl Ui {
                 on_done();
             }
         });
+    }
+
+    /// Show the progress panel for the read of archive `arch` if it is still
+    /// going after [`PROGRESS_SHOW_DELAY`] (a cached or small archive never
+    /// shows it), then refresh it until the read ends. The read is over when
+    /// `loading` is cleared or `cancel` is cancelled (a newer navigation, or
+    /// the panel's Cancel, see [`Ui::cancel_archive_read`]).
+    fn watch_archive_read(
+        self: &Rc<Self>,
+        arch: PathBuf,
+        progress: Arc<crate::archive::ReadProgress>,
+        cancel: &CancelToken,
+        loading: &Rc<Cell<bool>>,
+        history_before: crate::history::History,
+    ) {
+        let (weak, cancel, loading) = (Rc::downgrade(self), cancel.clone(), loading.clone());
+        glib::timeout_add_local_once(PROGRESS_SHOW_DELAY, move || {
+            if cancel.is_cancelled() || !loading.get() { return; }
+            let Some(ui) = weak.upgrade() else {
+                opusdm_ipc::err_log!("opusdm-lister", "archive progress: the Lister window is gone");
+                return;
+            };
+            let name = arch.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let total = match std::fs::metadata(&arch) {
+                Ok(m) => m.len(),
+                Err(e) => {
+                    crate::dlog!("archive progress: no size for {}: {e}", arch.display());
+                    0
+                }
+            };
+            {
+                let (weak, cancel, loading, name) = (Rc::downgrade(&ui), cancel.clone(), loading.clone(), name.clone());
+                ui.progress.show(&format!("Opening {name}..."), move || {
+                    let Some(ui) = weak.upgrade() else {
+                        opusdm_ipc::err_log!("opusdm-lister", "archive progress: Cancel pressed but the Lister window is gone");
+                        return;
+                    };
+                    ui.cancel_archive_read(&cancel, &loading, history_before.clone(), &name);
+                });
+            }
+            let weak = Rc::downgrade(&ui);
+            let tick = move || {
+                if cancel.is_cancelled() || !loading.get() { return glib::ControlFlow::Break; }
+                let Some(ui) = weak.upgrade() else {
+                    opusdm_ipc::err_log!("opusdm-lister", "archive progress: the Lister window is gone");
+                    return glib::ControlFlow::Break;
+                };
+                let entries = progress.entries.load(Ordering::Relaxed);
+                let bytes = progress.bytes.load(Ordering::Relaxed);
+                ui.progress.set_message(&progress_message(&name, entries));
+                ui.progress.set_fraction((total > 0).then(|| bytes as f64 / total as f64));
+                glib::ControlFlow::Continue
+            };
+            glib::timeout_add_local(PROGRESS_TICK, tick);
+        });
+    }
+
+    /// The user cancelled the archive read the panel shows: stop it, stay in
+    /// the folder on screen and undo the history step of the move.
+    fn cancel_archive_read(&self, cancel: &CancelToken, loading: &Cell<bool>, history_before: crate::history::History, name: &str) {
+        if cancel.is_cancelled() || !loading.get() {
+            crate::dlog!("archive progress: Cancel for a read that is already over");
+            self.progress.hide();
+            return;
+        }
+        crate::dlog!("archive progress: opening {name} cancelled by the user");
+        cancel.cancel();
+        self.progress.hide();
+        *self.nav.history.borrow_mut() = history_before;
+        self.refresh_history_ui();
+        self.refresh_path_entry();
+        self.flash(&format!("opening {name} cancelled"));
     }
 
     /// Handle the disk read that follows a navigation. `cached` is the
@@ -265,4 +369,16 @@ pub fn install_history(ui: &Rc<Ui>, popover: &gtk::Popover) {
         });
     }
     ui.refresh_history_ui();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_progress_message_counts_the_entries_read() {
+        assert_eq!(progress_message("a.tar.bz2", 0), "Opening a.tar.bz2...");
+        assert_eq!(progress_message("a.tar.bz2", 1), "Opening a.tar.bz2: 1 entry read");
+        assert_eq!(progress_message("a.tar.bz2", 1200), "Opening a.tar.bz2: 1200 entries read");
+    }
 }

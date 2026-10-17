@@ -51,6 +51,8 @@ pub fn generate_css(settings: &Settings) -> String {
          .row-dir > label {{ color: {dir_fg}; }} \
          .row-file > label {{ color: {file_fg}; }} \
          .pin-btn {{ min-height: 0; min-width: 0; padding: 2px 6px; }} \
+         .opus-progress {{ padding: 14px 18px; border: 1px solid rgba(0, 0, 0, 0.6); border-radius: 6px; \
+             box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45); }} \
          button.opus-btn, menubutton.opus-btn > button {{ \
              min-height: 30px; \
              min-width: 32px; \

@@ -263,6 +263,9 @@ pub struct Ui {
     pub ctrl_click: Cell<bool>,
     /// The Sidecar viewer following the selection, while one is open.
     pub sidecar: RefCell<Option<crate::sidecar::Sidecar>>,
+    /// The progress panel over the window (a slow archive being opened);
+    /// while it is shown the rest of the window takes no input.
+    pub progress: crate::progress_panel::ProgressPanel,
 }
 
 impl Ui {

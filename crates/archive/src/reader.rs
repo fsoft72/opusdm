@@ -129,6 +129,13 @@ impl Reader {
         (!ptr.is_null()).then(|| Self::_text(ptr))
     }
 
+    /// Bytes read so far from the archive file itself (before any
+    /// decompression), for a progress bar against the file size.
+    pub fn bytes_read(&self) -> u64 {
+        // SAFETY: valid handle; filter -1 is the raw file reader.
+        unsafe { ffi::archive_filter_bytes(self.raw, -1).max(0) as u64 }
+    }
+
     /// Raw pointer of the current entry, for the disk writer of this crate.
     pub(crate) fn raw_entry(&self) -> *mut ffi::Struct_archive_entry {
         self.entry

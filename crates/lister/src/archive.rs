@@ -60,10 +60,25 @@ pub fn make_archive_path(arch_path: &Path, inner: &str) -> PathBuf {
     }
 }
 
-/// Read all items contained in an archive.
-pub fn read_archive_entries(arch_path: &Path) -> io::Result<Vec<ArchiveItem>> {
+/// How far the read of an archive listing is, written by the worker and
+/// read by the GTK thread for the progress panel.
+#[derive(Default, Debug)]
+pub struct ReadProgress {
+    /// Entries found so far.
+    pub entries: AtomicU64,
+    /// Bytes read from the archive file so far.
+    pub bytes: AtomicU64,
+}
+
+/// Read all items contained in an archive, updating `progress` as it goes;
+/// stops once `cancel` is cancelled.
+fn _read_entries_watched(arch_path: &Path, progress: &ReadProgress, cancel: &crate::background::CancelToken) -> io::Result<Vec<ArchiveItem>> {
     _check_supported(arch_path)?;
-    let entries = opusdm_archive::list(arch_path)?;
+    let entries = opusdm_archive::list_watched(arch_path, &mut |found, bytes| {
+        progress.entries.store(found, Ordering::Relaxed);
+        progress.bytes.store(bytes, Ordering::Relaxed);
+        !cancel.is_cancelled()
+    })?;
     Ok(entries.into_iter().map(ArchiveItem::from).collect())
 }
 
@@ -81,9 +96,16 @@ impl From<opusdm_archive::Entry> for ArchiveItem {
     }
 }
 
-/// Read rows for the given inner prefix within an archive.
-pub fn read_archive_rows(arch_path: &Path, inner_prefix: &str) -> io::Result<Vec<Row>> {
-    let items = LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).get(arch_path, read_archive_entries)?;
+/// Read rows for the given inner prefix within an archive. `progress` is
+/// updated while the archive is read and the read stops once `cancel` is
+/// cancelled (a cancelled read is not cached).
+pub fn read_archive_rows_watched(
+    arch_path: &Path,
+    inner_prefix: &str,
+    progress: &ReadProgress,
+    cancel: &crate::background::CancelToken,
+) -> io::Result<Vec<Row>> {
+    let items = LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).get(arch_path, |p| _read_entries_watched(p, progress, cancel))?;
     Ok(_rows_in(&items, inner_prefix))
 }
 
@@ -464,6 +486,25 @@ mod tests {
         cache.get(&paths[0], load).unwrap();
         assert_eq!(loads.get(), 4, "the first archive was evicted");
         assert!(cache.get(&td.path().join("missing.zip"), load).is_err());
+    }
+
+    #[test]
+    fn a_watched_read_reports_progress_and_a_cancelled_one_is_not_cached() {
+        let td = tempfile::tempdir().unwrap();
+        fixture(td.path());
+        let arch = td.path().join("a.tar");
+        let cancel = crate::background::CancelToken::new();
+        cancel.cancel();
+        let progress = ReadProgress::default();
+        let Err(err) = read_archive_rows_watched(&arch, "", &progress, &cancel) else { panic!("a cancelled read must fail") };
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted, "{err}");
+
+        let rows = read_archive_rows_watched(&arch, "", &progress, &crate::background::CancelToken::new()).unwrap();
+        let mut names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["-dash.txt", "st[ar]*.txt", "sub"], "the cancelled read left no empty listing in the cache");
+        assert!(progress.entries.load(Ordering::Relaxed) >= 2);
+        assert!(progress.bytes.load(Ordering::Relaxed) > 0);
     }
 
     #[test]

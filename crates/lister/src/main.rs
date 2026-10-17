@@ -60,6 +60,7 @@ mod navpath;
 mod open_default;
 mod output_window;
 mod palette;
+mod progress_panel;
 mod passwd;
 mod reselect;
 mod scripts_editor;

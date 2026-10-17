@@ -171,6 +171,8 @@ impl TerminalDrawer {
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval != gdk::Key::F4 { return glib::Propagation::Proceed; }
             let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
+            // The progress panel mutes the window, the drawer included.
+            if ui.progress.is_active() { return glib::Propagation::Stop; }
             ui.toggle_terminal();
             glib::Propagation::Stop
         });

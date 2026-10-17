@@ -1,6 +1,6 @@
 //! Behaviour of the archive crate on real archives built by the tests.
 
-use opusdm_archive::{extract, extract_entry, list, read_files, ArchiveError, EntryKind};
+use opusdm_archive::{extract, extract_entry, list, list_watched, read_files, ArchiveError, EntryKind};
 use std::cell::Cell;
 use std::fs;
 use std::io::Write;
@@ -84,6 +84,37 @@ fn every_format_lists_the_same_names() {
         let nested = entries.iter().find(|e| e.path == "sub/a.txt").unwrap();
         assert_eq!(nested.size, 6, "{label}");
         assert!(entries.iter().all(|e| !e.path.starts_with("./") && !e.path.ends_with('/')), "{label}");
+    }
+}
+
+#[test]
+fn a_watched_listing_reports_entries_and_bytes_read() {
+    let td = tempfile::tempdir().unwrap();
+    let arch = _tar_gz(td.path());
+    let size = fs::metadata(&arch).unwrap().len();
+    let mut steps: Vec<(u64, u64)> = Vec::new();
+    let entries = list_watched(&arch, &mut |found, bytes| {
+        steps.push((found, bytes));
+        true
+    })
+    .unwrap();
+    assert_eq!(entries, list(&arch).unwrap(), "same result as a plain listing");
+    assert!(!steps.is_empty());
+    assert!(steps.windows(2).all(|w| w[0].0 <= w[1].0 && w[0].1 <= w[1].1), "progress never goes back: {steps:?}");
+    assert!(steps.iter().all(|&(_, bytes)| bytes > 0 && bytes <= size), "bytes are counted in the archive file: {steps:?}");
+}
+
+#[test]
+fn a_watched_listing_stops_when_asked() {
+    let td = tempfile::tempdir().unwrap();
+    for (label, arch) in _all(td.path()) {
+        let calls = Cell::new(0);
+        let result = list_watched(&arch, &mut |_, _| {
+            calls.set(calls.get() + 1);
+            false
+        });
+        assert!(matches!(result, Err(ArchiveError::Cancelled)), "{label}: {result:?}");
+        assert_eq!(calls.get(), 1, "{label}: stops at the first entry");
     }
 }
 

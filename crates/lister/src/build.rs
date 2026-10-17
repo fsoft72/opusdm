@@ -426,6 +426,7 @@ struct Parts {
     terminal: Rc<crate::terminal::TerminalDrawer>,
     message: MessageRowWidgets,
     nav: NavBarWidgets,
+    progress: crate::progress_panel::ProgressPanel,
 }
 
 /// Start the inotify watcher: one instance per Lister, started even when
@@ -469,7 +470,7 @@ fn assemble_ui(
     user_menu_btn.set_tooltip_text(Some("User menu"));
     user_menu_btn.add_css_class("opus-btn");
 
-    let Parts { window, stat, button_row, view_toggle, view, terminal, message, nav } = parts;
+    let Parts { window, stat, button_row, view_toggle, view, terminal, message, nav, progress } = parts;
     let cache_capacity = settings.behavior.cache_capacity();
     Rc::new(Ui {
         window,
@@ -546,6 +547,7 @@ fn assemble_ui(
         user_menu_btn,
         ctrl_click: Cell::new(false),
         sidecar: RefCell::new(None),
+        progress,
     })
 }
 
@@ -782,6 +784,15 @@ fn wire_keys(ui: &Rc<Ui>) {
     let key_ctrl = gtk::EventControllerKey::new();
     key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
         let Some(ui_for_keys) = weak.upgrade() else { return glib::Propagation::Proceed };
+        // The progress panel mutes the window: Escape is its Cancel, every
+        // other key is swallowed (the panel's own button still gets Enter /
+        // Space before this bubble-phase handler).
+        if ui_for_keys.progress.is_active() {
+            if keyval == gdk::Key::Escape {
+                ui_for_keys.progress.cancel();
+            }
+            return glib::Propagation::Stop;
+        }
         let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let alt = state.contains(gdk::ModifierType::ALT_MASK);
@@ -952,14 +963,20 @@ fn build_window(
     root.append(&message.container);
     let nav = build_nav_bar();
     root.append(&nav.container);
-    window.set_child(Some(&root));
+    // The progress panel floats over the whole content, centered; it is part
+    // of the window, so it moves with it and has no frame of its own.
+    let progress = crate::progress_panel::ProgressPanel::new(&root);
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&root));
+    overlay.add_overlay(progress.widget());
+    window.set_child(Some(&overlay));
 
     let (watcher, watch_rx) = start_watcher(&settings);
     let star_btn = stat.star_btn.clone();
     let history_popover = nav.history_popover.clone();
     let column_view = view.column_view.clone();
     let nav_for_wiring = nav.clone();
-    let parts = Parts { window, stat, button_row: button_row.clone(), view_toggle: view_toggle.clone(), view, terminal: terminal.clone(), message, nav };
+    let parts = Parts { window, stat, button_row: button_row.clone(), view_toggle: view_toggle.clone(), view, terminal: terminal.clone(), message, nav, progress };
     let ui = assemble_ui(parts, client, id, roles, settings, bindings, formats, functions, watcher);
 
     // Drain coalesced watch notices on the GTK thread.

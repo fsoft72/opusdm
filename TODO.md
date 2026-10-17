@@ -7,6 +7,15 @@
   into a folder in the same lister (without DEST)
   While dragging, the folder that can become the target should be highlighted
 
+- [x] (done, checked in Xephyr; see CHANGES.md 2026-10-17) Opening a big tar.bz2 archive in lister has no feedback
+
+  When trying to open a big tar.bz2 archive in lister, there is no feedback and the user
+  doesn't know anything is happening.
+  Create a new feature inside lister: a small progress window INSIDE the lister (centered
+  vertically) with a message (that can change while operations proceed), progress bar (if possible) and a "Cancel" button to abort the task.
+  The small progress window cannot be moved (borderless) and it moves along with the lister.
+  When the small window is shown, all other buttons and event on the litser are muted
+
 
 - [ ] Reload must not cancel a navigation to another folder
 
