@@ -17,6 +17,8 @@ use std::rc::Rc;
 /// the list is still being laid out.
 const RESTORE_SCROLL_TRIES: u32 = 25;
 const RESTORE_SCROLL_RETRY_MS: u64 = 20;
+/// Ticks a refresh keeps the scroll offset in place (see `keep_scroll`).
+const KEEP_SCROLL_TRIES: u32 = 6;
 
 /// Milliseconds between the tries to focus the cursor row.
 const FOCUS_ROW_RETRY_MS: u64 = 20;
@@ -343,6 +345,32 @@ impl Ui {
         });
     }
 
+    /// After rows were added or removed in the folder on screen (a delete, a
+    /// watcher event), put the scroll offset back to `value`: the list may
+    /// jump while it re-lays out. The adjustment clamps the value when the
+    /// list got shorter. Retried a few times since the layout is not done yet.
+    fn keep_scroll(self: &Rc<Self>, value: f64) {
+        let Some(adj) = self.active_adjustment() else { return };
+        let gen = self.nav.generation.get();
+        let weak = Rc::downgrade(self);
+        let tries = Cell::new(KEEP_SCROLL_TRIES);
+        glib::timeout_add_local(std::time::Duration::from_millis(RESTORE_SCROLL_RETRY_MS), move || {
+            let Some(ui) = weak.upgrade() else {
+                opusdm_ipc::err_log!("opusdm-lister", "keep scroll: the Lister window is gone");
+                return glib::ControlFlow::Break;
+            };
+            // Another navigation started: that folder owns the scroll now.
+            if ui.nav.generation.get() != gen {
+                return glib::ControlFlow::Break;
+            }
+            if (adj.value() - value).abs() > 0.5 {
+                adj.set_value(value);
+            }
+            tries.set(tries.get() - 1);
+            if tries.get() == 0 { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+        });
+    }
+
     /// Go to `dir` (see [`Ui::navigate`]): a cached listing shows at once and
     /// the disk is re-read on a background thread.
     pub fn navigate_to(self: &Rc<Self>, dir: &Path) {
@@ -408,7 +436,11 @@ impl Ui {
         self.sync_watch(dir);
         self.status_bar.totals.set((visible.dirs, visible.files, visible.bytes));
         if same_dir {
+            let scroll = self.active_adjustment().map(|a| a.value());
             self.replace_changed_rows(&new_rows);
+            if let Some(value) = scroll {
+                self.keep_scroll(value);
+            }
             // Keep the cursor where it was unless its row is gone.
             let last = new_rows.len().saturating_sub(1) as u32;
             self.view.cursor.set(self.view.cursor.get().min(last));
