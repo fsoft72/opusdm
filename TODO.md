@@ -128,3 +128,16 @@
 
   Failed once in `cargo test --workspace` with `Text file busy` (ETXTBSY: a test helper script is executed while
   another test thread still has a file open for writing). Passed on the next run.
+
+- [ ] Path bar: typing fast while a folder is suggested can leave suggested text in the path
+
+  Reported by the owner (it happens in daily use) and seen in Xephyr on 2026-10-17: typing a long path quickly in the
+  path bar (a second Lister on `/ramdisk`, the path of a scratch folder typed with XTest at about 20 keys a second)
+  ended with a text that looked right at both ends, but Enter did not go there and the bar went back to `/ramdisk`;
+  the same path typed at about 8 keys a second, with Delete before Enter, worked. The look-ahead is
+  `wire_path_completion` in `crates/lister/src/build.rs`: each keystroke starts a `pathcomplete::suggest` on a worker
+  and the answer is inserted as selected text when the entry still holds the typed text with the cursor at its end.
+  The `typing` flag is set on key press and cleared on key release, which can come out of order when keys overlap.
+  To find: which interleaving of keystrokes, worker answers and the IM leaves suggested text that is not selected (and
+  so is not replaced by the next character). Fix with a regression test on the decision logic (pull it out of the
+  GTK handlers) and a check in Xephyr typing at full speed.
