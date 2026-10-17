@@ -141,3 +141,12 @@
   To find: which interleaving of keystrokes, worker answers and the IM leaves suggested text that is not selected (and
   so is not replaced by the next character). Fix with a regression test on the decision logic (pull it out of the
   GTK handlers) and a check in Xephyr typing at full speed.
+
+- [ ] Desktop menu cut off at the bottom of the screen
+
+  Reported by the owner, seen in Xephyr on 2026-10-17 (1280x800): a right-click on the desktop near the bottom edge
+  (y 720) opened the menu with its last entries (About, Desktop, Quit) below the screen. `popup_at` in
+  `crates/hub/src/desktop_menu.rs` clamps the menu with the fixed estimate `DESKTOP_MENU_H = 300`, but the menu is
+  now about 390 px tall (it grew: About, the Desktop submenu, Quit). Fix: clamp with the measured height of the menu
+  (or let the popover flip up), not a constant, and add a test of the clamping with a menu taller than the space below
+  the click. Check the same for `DESKTOP_MENU_W` and the right edge.
