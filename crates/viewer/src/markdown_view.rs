@@ -151,9 +151,13 @@ impl MarkdownView {
         holder.set_tooltip_text(Some(alt).filter(|a| !a.is_empty()));
         let handle = gio::spawn_blocking(move || {
             let decoded = match &in_book {
-                Some(bytes) => decode_within(bytes, MAX_DECODE_PX),
-                None => load_within(&path, MAX_DECODE_PX),
+                Some(bytes) => decode_within(bytes, MAX_DECODE_PX).map(Decoded::Raw),
+                None => load_within(&path, MAX_DECODE_PX).map(Decoded::Raw),
             };
+            // gdk-pixbuf cannot read it: GTK may have a loader of its own
+            // (avif, jxl, heif through glycin). Decoded at full size, as the
+            // viewer did before the scaled decode.
+            let decoded = decoded.or_else(|e| _gtk_texture(in_book.as_ref(), &path).map(Decoded::Texture).ok_or(e));
             (path, decoded)
         });
         let weak = holder.downgrade();
@@ -166,15 +170,16 @@ impl MarkdownView {
                 Ok(done) => done,
                 Err(_) => return holder.append(&gtk::Label::new(Some(&format!("[image: {alt}]")))),
             };
-            let raw = match decoded {
-                Ok(raw) => raw,
+            let texture = match decoded {
+                Ok(Decoded::Raw(raw)) => raw.texture(0),
+                Ok(Decoded::Texture(texture)) => texture,
                 Err(e) => {
                     opusdm_ipc::err_log!("viewer", "cannot load picture {}: {e}", path.display());
                     return holder.append(&gtk::Label::new(Some(&format!("[image: {alt}]"))));
                 }
             };
-            let (w, h) = display_size(raw.width as i32, raw.height as i32);
-            let picture = gtk::Picture::for_paintable(&raw.texture(0));
+            let (w, h) = display_size(texture.width(), texture.height());
+            let picture = gtk::Picture::for_paintable(&texture);
             picture.set_can_shrink(true);
             picture.set_size_request(w, h);
             holder.append(&picture);
@@ -244,6 +249,22 @@ impl TextDoc for MarkdownView {
     }
 }
 
+/// A picture decoded on the worker: by gdk-pixbuf (scaled down), or by
+/// GTK when gdk-pixbuf has no loader for its format.
+enum Decoded {
+    Raw(crate::loader::RawImage),
+    Texture(gdk::Texture),
+}
+
+/// The picture decoded by GTK's own loaders, from the bytes of the book or
+/// from `path`; `None` when GTK cannot read it either. Safe on a worker.
+fn _gtk_texture(in_book: Option<&glib::Bytes>, path: &Path) -> Option<gdk::Texture> {
+    match in_book {
+        Some(bytes) => gdk::Texture::from_bytes(bytes).ok(),
+        None => gdk::Texture::from_filename(path).ok(),
+    }
+}
+
 /// The size a `w` x `h` picture is drawn at: as it is, or scaled down to
 /// `MAX_IMAGE_WIDTH` wide keeping its proportions.
 fn display_size(w: i32, h: i32) -> (i32, i32) {
@@ -282,5 +303,19 @@ mod tests {
         assert_eq!(display_size(640, 480), (640, 480));
         assert_eq!(display_size(MAX_IMAGE_WIDTH, 10), (MAX_IMAGE_WIDTH, 10));
         assert_eq!(display_size(1600, 1200), (MAX_IMAGE_WIDTH, 600));
+    }
+
+    #[test]
+    fn gtk_decodes_a_picture_from_the_book_or_a_file_and_rejects_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pic.png");
+        gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 6, 4).unwrap().savev(&path, "png", &[]).unwrap();
+        let bytes = glib::Bytes::from_owned(std::fs::read(&path).unwrap());
+        assert_eq!(_gtk_texture(None, &path).map(|t| (t.width(), t.height())), Some((6, 4)));
+        assert_eq!(_gtk_texture(Some(&bytes), Path::new("/no/such/file")).map(|t| t.width()), Some(6));
+        let garbage = dir.path().join("bad.avif");
+        std::fs::write(&garbage, b"not a picture").unwrap();
+        assert!(_gtk_texture(None, &garbage).is_none());
+        assert!(_gtk_texture(Some(&glib::Bytes::from_static(b"nope")), &garbage).is_none());
     }
 }

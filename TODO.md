@@ -41,7 +41,7 @@
   If a file is edited while its thumbnail request is pending, `begin()` refuses a new request and the old result is
   applied by path. The stale thumbnail stays until the next mtime change. Narrow race, low priority.
 
-- [ ] Markdown pictures in formats only GTK reads show `[image: alt]`
+- [x] (done; the GTK-only branch cannot be exercised here, see CHANGES.md 2026-10-17) Markdown pictures in formats only GTK reads show `[image: alt]`
 
   Since `91135e0` the viewer decodes Markdown pictures with gdk-pixbuf on a worker. Formats that
   `gdk::Texture::from_filename` read but gdk-pixbuf does not (avif, jxl, heif) now show the alt text.
