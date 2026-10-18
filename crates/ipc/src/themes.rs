@@ -4,7 +4,7 @@
 //! imports archives).
 
 use crate::desktop::{BackgroundMode, ImageFit};
-use crate::look::{Fonts, ThemeSurfaces};
+use crate::look::{Fonts, ThemeHub, ThemeSurfaces};
 use crate::proto::{Appearance, ColorSettings};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -170,6 +170,7 @@ pub struct CustomThemeData {
     pub background: Option<ThemeBackground>,
     pub fonts: Option<Fonts>,
     pub surfaces: Option<ThemeSurfaces>,
+    pub hub: Option<ThemeHub>,
 }
 
 /// Whether `name` is a bare file name: non-empty, not `.` / `..`, and with

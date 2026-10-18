@@ -175,7 +175,10 @@ fn prune_theme_assets(root: &Path) {
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
     });
-    prune_dir(&root.join("backgrounds"), opusdm_ipc::desktop::is_background_image);
+    // `backgrounds/` also holds the start menu icon, which may be an SVG.
+    prune_dir(&root.join("backgrounds"), |p| {
+        opusdm_ipc::desktop::is_background_image(p) || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+    });
     prune_dir(&root.join(opusdm_ipc::themes::WALLPAPERS_DIR), opusdm_ipc::desktop::is_background_image);
 }
 
@@ -387,6 +390,7 @@ mod tests {
             ("fonts/ok.ttf", &b"f"[..]),
             ("fonts/evil.sh", b"s"),
             ("backgrounds/ok.png", b"p"),
+            ("backgrounds/hub-menu-icon.svg", b"<svg/>"),
             ("backgrounds/readme.txt", b"t"),
             ("sounds/a.wav", b"w"),
         ]);
@@ -398,6 +402,7 @@ mod tests {
         assert!(dir.join("fonts/ok.ttf").is_file());
         assert!(!dir.join("fonts/evil.sh").exists());
         assert!(dir.join("backgrounds/ok.png").is_file());
+        assert!(dir.join("backgrounds/hub-menu-icon.svg").is_file());
         assert!(!dir.join("backgrounds/readme.txt").exists());
         assert!(dir.join("sounds/a.wav").is_file(), "sounds are an opaque container");
     }

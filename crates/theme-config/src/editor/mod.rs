@@ -14,6 +14,7 @@ mod asset_list;
 mod colours;
 mod fonts;
 mod general;
+mod hub;
 mod icons;
 mod optional;
 mod pictures;
@@ -44,6 +45,7 @@ struct Tabs {
     colours: colours::ColoursTab,
     fonts: fonts::FontsTab,
     pictures: pictures::PicturesTab,
+    hub: hub::HubTab,
 }
 
 impl Tabs {
@@ -60,11 +62,13 @@ impl Tabs {
         notebook.append_page(&fonts.root, Some(&gtk::Label::new(Some("Fonts"))));
         let pictures = pictures::PicturesTab::new(window, slug, draft, ops);
         notebook.append_page(&pictures.root, Some(&gtk::Label::new(Some("Pictures"))));
+        let hub = hub::HubTab::new(window, draft);
+        notebook.append_page(&hub.root, Some(&gtk::Label::new(Some("Hub"))));
         let icons = icons::IconsTab::new(window, slug, ops);
         notebook.append_page(&icons.root, Some(&gtk::Label::new(Some("Icons"))));
         let sounds = sounds::SoundsTab::new(window, slug, ops);
         notebook.append_page(&sounds.root, Some(&gtk::Label::new(Some("Sounds"))));
-        Self { notebook, general, colours, fonts, pictures }
+        Self { notebook, general, colours, fonts, pictures, hub }
     }
 
     /// The draft the widgets describe now: `base` with each tab's changes
@@ -75,6 +79,7 @@ impl Tabs {
         self.colours.collect_into(&mut draft);
         self.fonts.collect_into(&mut draft);
         self.pictures.collect_into(&mut draft);
+        self.hub.collect_into(&mut draft);
         draft
     }
 }

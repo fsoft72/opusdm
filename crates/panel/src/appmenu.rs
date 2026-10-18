@@ -7,15 +7,11 @@
 
 use gtk4 as gtk;
 use gtk::gdk;
-use gtk::glib;
 use gtk::prelude::*;
 use crate::widgets;
 use opusdm_apps::apps;
 use opusdm_ipc::{MenuItem, PanelPosition};
 use std::process::Command;
-
-// Embedded at compile-time so the binary has zero runtime file dependencies.
-const BALL_PNG: &[u8] = include_bytes!("../../../assets/ball.png");
 
 /// A flat, left-aligned menu row with an icon.
 fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
@@ -74,6 +70,7 @@ fn custom_app_row(id: &str, popover: &gtk::Popover) -> Option<gtk::Button> {
 fn attach_quick_apps_menu(btn: &gtk::Button, id: &str, menu: &gtk::Popover) {
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
+    popover.add_css_class(crate::hub_look::MENU_CLASS);
     let add = gtk::Button::with_label("Add to quick apps");
     add.add_css_class("flat");
     popover.set_child(Some(&add));
@@ -150,11 +147,7 @@ fn fill_custom(custom: &gtk::Box, popover: &gtk::Popover) {
 /// top panel and upwards from a bottom one (`position`).
 pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::MenuButton {
     let button = gtk::MenuButton::new();
-    let ball_bytes = glib::Bytes::from_static(BALL_PNG);
-    let ball_texture = gdk::Texture::from_bytes(&ball_bytes).expect("valid ball.png asset");
-    let ball_image = gtk::Image::from_paintable(Some(&ball_texture));
-    ball_image.set_pixel_size(18);
-    button.set_child(Some(&ball_image));
+    button.set_child(Some(&crate::hub_look::new_menu_image()));
     button.add_css_class("flat");
     set_direction(&button, position);
 

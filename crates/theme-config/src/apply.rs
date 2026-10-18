@@ -4,7 +4,7 @@
 //! (light / dark, behaviour, desktop background) are copied through. No GTK,
 //! no I/O beyond resolving picture paths - fully unit-testable.
 
-use opusdm_ipc::look::{SurfaceImage, Surfaces, ThemeSurface};
+use opusdm_ipc::look::{HubBar, HubLook, SurfaceImage, Surfaces, ThemeHub, ThemeSurface};
 use opusdm_ipc::themes::CustomThemeData;
 use crate::writer::ThemeDraft;
 use opusdm_ipc::{IconSetId, Settings, Theme, CURRENT_LOOK_VERSION};
@@ -32,6 +32,7 @@ pub fn resolve_look(slug: &str, data: &CustomThemeData, prefs: &Settings) -> Set
         behavior: prefs.behavior.clone(),
         fonts: data.fonts.clone().unwrap_or_default(),
         surfaces,
+        hub: data.hub.as_ref().map(|h| merge_hub(h, slug)).unwrap_or_default(),
         look_version: CURRENT_LOOK_VERSION,
     }
 }
@@ -54,6 +55,7 @@ pub fn resolve_draft(slug: &str, draft: &ThemeDraft, prefs: &Settings) -> Settin
     if let Some(requester) = &draft.requester {
         settings.surfaces.requester = requester.clone();
     }
+    settings.hub = draft.hub.clone();
     settings
 }
 
@@ -62,7 +64,27 @@ pub fn resolve_draft(slug: &str, draft: &ThemeDraft, prefs: &Settings) -> Settin
 pub fn same_look(a: &Settings, b: &Settings) -> bool {
     let mut b_appearance = b.appearance.clone();
     b_appearance.theme_mode = a.appearance.theme_mode;
-    a.theme.colors == b.theme.colors && a.appearance == b_appearance && a.fonts == b.fonts && a.surfaces == b.surfaces
+    a.theme.colors == b.theme.colors && a.appearance == b_appearance && a.fonts == b.fonts && a.surfaces == b.surfaces && a.hub == b.hub
+}
+
+/// The hub look theme `slug` sets. Picture names that are not bare file names
+/// are ignored, like in [`merge_surface`]; colours that are not hex colours
+/// fall back to their defaults.
+pub(crate) fn merge_hub(theme: &ThemeHub, slug: &str) -> HubLook {
+    let plain = |name: &String| opusdm_ipc::themes::is_plain_file_name(name);
+    let bar = theme.bar.as_ref().map(|t| {
+        let mut image = SurfaceImage::default();
+        if let Some(fit) = t.fit {
+            image.fit = fit;
+        }
+        image.image_path = t.image.as_ref().filter(|n| plain(n)).map(|n| opusdm_ipc::themes::background_image_path(slug, n));
+        HubBar { kind: t.kind, color: t.color.clone(), start: t.start.clone(), end: t.end.clone(), angle: t.angle, image }.sanitized()
+    });
+    HubLook {
+        bar,
+        menu_icon: theme.menu_icon.as_ref().filter(|n| plain(n)).map(|n| opusdm_ipc::themes::background_image_path(slug, n)),
+        menu_font: theme.menu_font.clone(),
+    }
 }
 
 /// Overwrite the parts of `target` that `theme` sets. An image name that is
@@ -126,6 +148,28 @@ mod tests {
         assert!(s.appearance.monospace_list && !s.appearance.type_indicators);
         assert_eq!(s.appearance.theme_mode, ThemeMode::Light);
         assert_eq!(s.fonts.list.family, "Iosevka");
+    }
+
+    #[test]
+    fn hub_look_resolves_under_the_theme_backgrounds_folder_and_is_part_of_the_look() {
+        use opusdm_ipc::look::{ThemeHubBar, HubBarKind};
+        let _guard = ENV_LOCK.lock().unwrap();
+        let td = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", td.path());
+        let data = CustomThemeData {
+            hub: Some(ThemeHub {
+                bar: Some(ThemeHubBar { kind: HubBarKind::Image, image: Some("hub-bar.png".into()), color: "red".into(), ..ThemeHubBar::default() }),
+                menu_icon: Some("../evil.png".into()),
+                menu_font: None,
+            }),
+            ..CustomThemeData::default()
+        };
+        let s = resolve_look("t", &data, &prefs());
+        let bar = s.hub.bar.clone().unwrap();
+        assert!(bar.image.image_path.unwrap().ends_with("themes/t/backgrounds/hub-bar.png"));
+        assert_eq!(bar.color, HubBar::default().color, "a bad colour falls back");
+        assert_eq!(s.hub.menu_icon, None, "a name that is a path is ignored");
+        assert!(!same_look(&s, &resolve_look("t", &CustomThemeData::default(), &prefs())));
     }
 
     #[test]

@@ -45,6 +45,7 @@ pub fn load_draft(slug: &str) -> Result<ThemeDraft, String> {
         fonts: data.fonts,
         lister: surface(surfaces.lister.as_ref()),
         requester: surface(surfaces.requester.as_ref()),
+        hub: data.hub.as_ref().map(|h| crate::apply::merge_hub(h, slug)).unwrap_or_default(),
     })
 }
 

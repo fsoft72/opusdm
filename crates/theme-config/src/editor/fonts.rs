@@ -16,14 +16,14 @@ use std::rc::Rc;
 const MAX_SIZE: f64 = 72.0;
 
 /// One family entry plus size spin button.
-struct FontRow {
+pub(super) struct FontRow {
     family: gtk::Entry,
     size: gtk::SpinButton,
 }
 
 impl FontRow {
     /// Attach a labelled row to `grid` at `row`, seeded from `spec`.
-    fn new(grid: &gtk::Grid, row: i32, caption: &str, spec: &FontSpec) -> Self {
+    pub(super) fn new(grid: &gtk::Grid, row: i32, caption: &str, spec: &FontSpec) -> Self {
         let label = gtk::Label::builder().label(caption).xalign(0.0).build();
         let family = gtk::Entry::builder().text(&spec.family).placeholder_text("system default").hexpand(true).build();
         let size = gtk::SpinButton::with_range(0.0, MAX_SIZE, 1.0);
@@ -35,7 +35,7 @@ impl FontRow {
     }
 
     /// The font the row describes now.
-    fn read(&self) -> FontSpec {
+    pub(super) fn read(&self) -> FontSpec {
         FontSpec { family: self.family.text().trim().to_string(), size: self.size.value_as_int().max(0) as u32 }
     }
 }

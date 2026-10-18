@@ -5,7 +5,7 @@
 //! Editor.
 
 use opusdm_ipc::desktop::BACKGROUND_IMAGE_EXTS;
-use opusdm_ipc::look::{Fonts, SurfaceImage, ThemeSurface, ThemeSurfaces};
+use opusdm_ipc::look::{Fonts, HubLook, SurfaceImage, ThemeHub, ThemeHubBar, ThemeSurface, ThemeSurfaces};
 use opusdm_ipc::theme::DEFAULT_THEME_SLUG;
 use opusdm_ipc::themes::{
     is_plain_file_name, legacy_wallpaper, theme_dir, themes_dir, valid_slug, CustomThemeData, ThemeManifest, WALLPAPERS_DIR,
@@ -23,6 +23,9 @@ const PREVIEW_FILE: &str = "preview.png";
 /// The icon files a theme provides, without the `.png` extension.
 pub const ICON_NAMES: [&str; 12] =
     ["archive", "audio", "broken", "code", "dir", "exec", "file", "image", "pdf", "symlink", "text", "video"];
+
+/// Extensions (lower case) accepted for the start menu icon.
+pub const HUB_ICON_EXTS: [&str; 2] = ["png", "svg"];
 
 /// Extensions (lower case) accepted for files in `fonts/`.
 pub const FONT_EXTS: [&str; 2] = ["ttf", "otf"];
@@ -43,6 +46,7 @@ pub struct ThemeDraft {
     pub fonts: Option<Fonts>,
     pub lister: Option<SurfaceImage>,
     pub requester: Option<SurfaceImage>,
+    pub hub: HubLook,
 }
 
 /// A change to the files carried by a theme, applied in order on top of the
@@ -98,6 +102,16 @@ fn has_ext(path: &Path, exts: &[&str]) -> bool {
 pub fn validate_draft(draft: &ThemeDraft, ops: &[AssetOp]) -> Result<(), BuildError> {
     if draft.label.trim().is_empty() {
         return Err(BuildError::Invalid("the theme needs a name".to_string()));
+    }
+    let hub_pictures = draft.hub.bar.iter().filter_map(|b| b.image.image_path.as_ref()).map(|p| (p, &BACKGROUND_IMAGE_EXTS[..]));
+    let menu_icon = draft.hub.menu_icon.iter().map(|p| (p, &HUB_ICON_EXTS[..]));
+    for (src, exts) in hub_pictures.chain(menu_icon) {
+        if !has_ext(src, exts) {
+            return Err(BuildError::Invalid(format!("{} must be one of: {}", src.display(), exts.join(", "))));
+        }
+        if !src.is_file() {
+            return Err(BuildError::Invalid(format!("{} does not exist", src.display())));
+        }
     }
     for op in ops {
         let (src, exts): (Option<&PathBuf>, &[&str]) = match op {
@@ -209,6 +223,7 @@ fn stage(slug: &str, draft: &ThemeDraft, source_slug: Option<&str>, ops: &[Asset
         background: None,
         fonts: draft.fonts.clone(),
         surfaces: theme_surfaces(draft, &backgrounds)?,
+        hub: theme_hub(&draft.hub, &backgrounds)?,
     };
     if let Some(source) = source_slug {
         for part in ["icons", "fonts", "sounds", WALLPAPERS_DIR] {
@@ -257,6 +272,26 @@ fn theme_surfaces(draft: &ThemeDraft, backgrounds: &Path) -> Result<Option<Theme
         lister: draft.lister.as_ref().map(|s| theme_surface(s, backgrounds, "lister")).transpose()?,
         requester: draft.requester.as_ref().map(|s| theme_surface(s, backgrounds, "requester")).transpose()?,
     }))
+}
+
+/// The `hub` section, or `None` when the draft sets nothing about the hub.
+/// Pictures are copied into `backgrounds/` as `hub-bar.<ext>` and
+/// `hub-menu-icon.<ext>`.
+fn theme_hub(hub: &HubLook, backgrounds: &Path) -> Result<Option<ThemeHub>, BuildError> {
+    if *hub == HubLook::default() {
+        return Ok(None);
+    }
+    let bar = hub
+        .bar
+        .as_ref()
+        .map(|b| -> Result<ThemeHubBar, BuildError> {
+            let b = b.clone().sanitized();
+            let image = b.image.image_path.as_ref().map(|p| copy_picture(p, backgrounds, "hub-bar")).transpose()?;
+            Ok(ThemeHubBar { kind: b.kind, color: b.color, start: b.start, end: b.end, angle: b.angle, image, fit: Some(b.image.fit) })
+        })
+        .transpose()?;
+    let menu_icon = hub.menu_icon.as_ref().map(|p| copy_picture(p, backgrounds, "hub-menu-icon")).transpose()?;
+    Ok(Some(ThemeHub { bar, menu_icon, menu_font: hub.menu_font.clone() }))
 }
 
 /// One surface as a theme section, copying its picture (named `stem.<ext>`).
@@ -379,6 +414,49 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("backgrounds/lister.png")).unwrap(), b"l.png");
         let lister = data.surfaces.unwrap().lister.unwrap();
         assert_eq!((lister.image.as_deref(), lister.fit), (Some("lister.png"), Some(ImageFit::Center)));
+    }
+
+    #[test]
+    fn the_hub_look_is_written_with_its_pictures_and_loads_back() {
+        use opusdm_ipc::look::{FontSpec, HubBar, HubBarKind, HubLook};
+        let _g = ENV_LOCK.lock().unwrap();
+        let td = scratch_config();
+        let mut d = draft("Hub");
+        d.hub = HubLook {
+            bar: Some(HubBar {
+                kind: HubBarKind::Image,
+                image: SurfaceImage { image_path: Some(picture(td.path(), "bar.png")), fit: ImageFit::Tile },
+                ..HubBar::default()
+            }),
+            menu_icon: Some(picture(td.path(), "m.svg")),
+            menu_font: Some(FontSpec { family: "Cantarell".into(), size: 13 }),
+        };
+        let dir = write_theme("hub", &d, None, &[]).unwrap();
+        assert_eq!(std::fs::read(dir.join("backgrounds/hub-bar.png")).unwrap(), b"bar.png");
+        assert_eq!(std::fs::read(dir.join("backgrounds/hub-menu-icon.svg")).unwrap(), b"m.svg");
+        let hub = load_theme_data("hub").hub.unwrap();
+        assert_eq!(hub.menu_icon.as_deref(), Some("hub-menu-icon.svg"));
+        assert_eq!(hub.bar.unwrap().image.as_deref(), Some("hub-bar.png"));
+    }
+
+    #[test]
+    fn a_draft_without_hub_settings_writes_no_hub_section() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let _td = scratch_config();
+        write_theme("nohub", &draft("No Hub"), None, &[]).unwrap();
+        assert!(load_theme_data("nohub").hub.is_none());
+    }
+
+    #[test]
+    fn a_menu_icon_that_is_not_png_or_svg_is_rejected() {
+        use opusdm_ipc::look::HubLook;
+        let _g = ENV_LOCK.lock().unwrap();
+        let td = scratch_config();
+        let mut d = draft("T");
+        d.hub = HubLook { menu_icon: Some(picture(td.path(), "m.jpg")), ..HubLook::default() };
+        assert!(validate_draft(&d, &[]).is_err());
+        d.hub.menu_icon = Some("/no/such/m.png".into());
+        assert!(validate_draft(&d, &[]).is_err());
     }
 
     #[test]

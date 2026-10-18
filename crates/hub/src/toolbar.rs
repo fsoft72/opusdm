@@ -188,6 +188,8 @@ fn build_ui(
     let initial_settings = config.settings;
     crate::background::install(&initial_settings.theme.background);
     opusdm_ui::apply_theme_mode(initial_settings.appearance.theme_mode);
+    // Before the panel is attached: its bars read the look when built.
+    opusdm_panel::set_hub_look(&initial_settings.hub);
 
     let desired_desktop_dir = opusdm_hub::desktop_files::effective_desktop_dir(
         desktop_settings.desktop_dir.as_deref(),
@@ -367,6 +369,7 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
                 field.set_icon_set(theme.icon_set);
             }
         }
+        HubEvent::HubLookChanged(look) => opusdm_panel::set_hub_look(&look),
         HubEvent::HiddenChanged(hidden) => apply_hidden(widgets, hidden),
         HubEvent::FunctionsChanged(functions) => {
             *widgets.functions.borrow_mut() = functions;

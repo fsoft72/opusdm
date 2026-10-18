@@ -46,7 +46,7 @@ fn existing_credits(slug: &str) -> (Option<String>, Option<String>) {
 }
 
 /// Install the look of the current settings (colours, appearance, fonts,
-/// Lister and requester pictures) as theme `req.slug`, replacing any theme
+/// Lister and requester pictures, hub look) as theme `req.slug`, replacing any theme
 /// with that slug. Returns the installed folder.
 pub fn save_theme(req: &BuildRequest) -> Result<PathBuf, BuildError> {
     let s = req.settings;
@@ -60,6 +60,7 @@ pub fn save_theme(req: &BuildRequest) -> Result<PathBuf, BuildError> {
         fonts: Some(s.fonts.clone()),
         lister: Some(s.surfaces.lister.clone()),
         requester: Some(s.surfaces.requester.clone()),
+        hub: s.hub.clone(),
     };
     write_theme(req.slug, &draft, Some(req.source_slug), &[])
 }

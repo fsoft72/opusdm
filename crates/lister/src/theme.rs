@@ -342,6 +342,7 @@ mod tests {
                 ui: opusdm_ipc::look::FontSpec { family: "Cantarell".into(), size: 10 },
                 list: opusdm_ipc::look::FontSpec { family: "Iosevka".into(), size: 12 },
             },
+            hub: Default::default(),
             surfaces: {
                 let mut surfaces = opusdm_ipc::look::Surfaces::default();
                 surfaces.lister.image_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));

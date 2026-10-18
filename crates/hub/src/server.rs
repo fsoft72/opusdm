@@ -77,6 +77,8 @@ pub enum HubEvent {
     /// Theme changed (from `opusdm-settings`). Carries the new theme; the GTK
     /// side repaints the desktop background and re-renders desktop icons.
     ThemeChanged(Box<opusdm_ipc::Theme>),
+    /// The hub (panel) look of the active theme changed.
+    HubLookChanged(Box<opusdm_ipc::look::HubLook>),
     /// Appearance changed (from `opusdm-settings`). Carries the new value;
     /// the GTK side applies `appearance.theme_mode` live via
     /// `opusdm_ui::apply_theme_mode`.
@@ -988,6 +990,7 @@ impl Hub {
         self.broadcast(ToLister::SettingsUpdate(Box::new(self.current_settings.clone())));
         send_or_log(&self.evt_tx, HubEvent::ThemeChanged(Box::new(self.current_settings.theme.clone())), "GTK event");
         send_or_log(&self.evt_tx, HubEvent::AppearanceChanged(self.current_settings.appearance.clone()), "GTK event");
+        send_or_log(&self.evt_tx, HubEvent::HubLookChanged(Box::new(self.current_settings.hub.clone())), "GTK event");
     }
 
     /// Hide or reveal the desktop environment. Does nothing when the state

@@ -23,15 +23,15 @@ const THUMB_WIDTH: i32 = 200;
 const THUMB_HEIGHT: i32 = 120;
 
 /// Picture chooser for one surface: path, Choose button, fit and thumbnail.
-struct SurfacePicker {
-    root: gtk::Box,
+pub(super) struct SurfacePicker {
+    pub(super) root: gtk::Box,
     path: gtk::Entry,
     fit: gtk::DropDown,
 }
 
 impl SurfacePicker {
     /// Build the picker seeded from `initial`; `window` parents the file chooser.
-    fn new(window: &gtk::ApplicationWindow, initial: &SurfaceImage) -> Self {
+    pub(super) fn new(window: &gtk::ApplicationWindow, initial: &SurfaceImage) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         let path = gtk::Entry::builder().hexpand(true).editable(false).placeholder_text("no picture").build();
         if let Some(p) = &initial.image_path {
@@ -89,7 +89,7 @@ impl SurfacePicker {
     }
 
     /// The picture and fit the widgets currently describe.
-    fn read(&self) -> SurfaceImage {
+    pub(super) fn read(&self) -> SurfaceImage {
         let text = self.path.text().to_string();
         SurfaceImage {
             image_path: (!text.is_empty()).then(|| PathBuf::from(text)),

@@ -29,6 +29,7 @@ mod notify_client;
 mod sysmon_model;
 mod devices_model;
 mod ewmh;
+mod hub_look;
 mod sni;
 mod systray;
 mod transient_message;
@@ -37,6 +38,7 @@ mod window;
 mod wl_windows;
 pub mod widgets;
 
+pub use hub_look::set_hub_look;
 pub use window::PANEL_HEIGHT;
 
 use window::Placement;

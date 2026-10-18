@@ -463,6 +463,8 @@ pub struct Settings {
     pub fonts: crate::look::Fonts,
     /// Background pictures for the Lister file list and for requesters.
     pub surfaces: crate::look::Surfaces,
+    /// The hub (panel) look: bar paint, start menu icon and font.
+    pub hub: crate::look::HubLook,
     /// Which look model wrote this file: 0 (missing) for files older than
     /// [`CURRENT_LOOK_VERSION`].
     pub look_version: u32,
@@ -954,6 +956,11 @@ mod tests {
                     fit: crate::desktop::ImageFit::Tile,
                 },
                 requester: crate::look::SurfaceImage::default(),
+            },
+            hub: crate::look::HubLook {
+                bar: Some(crate::look::HubBar::default()),
+                menu_icon: Some("/tmp/m.svg".into()),
+                menu_font: Some(crate::look::FontSpec { family: "Cantarell".into(), size: 13 }),
             },
             look_version: CURRENT_LOOK_VERSION,
         };
