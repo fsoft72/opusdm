@@ -42,6 +42,16 @@ while [ $# -gt 0 ]; do
 done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 
+# A relative --config-dir means relative to where the user started the script
+if [ -n "$CONFIG_DIR" ]; then
+    [ -d "$CONFIG_DIR" ] || { echo "Config folder '$CONFIG_DIR' is not a directory"; exit 1; }
+    CONFIG_DIR="$(cd "$CONFIG_DIR" && pwd)"
+fi
+
+# Work from the repository root, wherever the script was started: the build,
+# the config files and the binaries are all found from there.
+cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+
 # Configuration (overridable via args or environment)
 DISPLAY_NUM="${1:-${XEPHYR_DISPLAY:-:1}}"
 RESOLUTION="${2:-${XEPHYR_RES:-1920x1080}}"
@@ -65,8 +75,6 @@ export GDK_BACKEND=x11
 # Use DIR as the OpusDM configuration: OpusDM reads $XDG_CONFIG_HOME/opusdm,
 # so XDG_CONFIG_HOME becomes a private folder whose `opusdm` entry is DIR.
 if [ -n "$CONFIG_DIR" ]; then
-    [ -d "$CONFIG_DIR" ] || { echo "Config folder '$CONFIG_DIR' is not a directory"; exit 1; }
-    CONFIG_DIR="$(cd "$CONFIG_DIR" && pwd)"
     XDG_CONFIG_HOME="$(mktemp -d /tmp/opusdm-xephyr-config-XXXXXX)"
     ln -s "$CONFIG_DIR" "$XDG_CONFIG_HOME/opusdm"
     export XDG_CONFIG_HOME
