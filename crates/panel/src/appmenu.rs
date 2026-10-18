@@ -149,6 +149,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
     let button = gtk::MenuButton::new();
     button.set_child(Some(&crate::hub_look::new_menu_image()));
     button.add_css_class("flat");
+    button.add_css_class("opusdm-panel-menu");
     set_direction(&button, position);
 
     let popover = gtk::Popover::new();

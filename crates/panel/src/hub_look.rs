@@ -14,7 +14,7 @@ use std::cell::RefCell;
 pub const MENU_CLASS: &str = "opusdm-appmenu";
 
 /// Pixel size of the start menu button picture.
-pub const MENU_ICON_SIZE: i32 = 18;
+pub const MENU_ICON_SIZE: i32 = 36;
 
 // Embedded at compile-time so the binary has zero runtime file dependencies.
 const BALL_PNG: &[u8] = include_bytes!("../../../assets/ball.png");

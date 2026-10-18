@@ -471,6 +471,7 @@ fn install_css() {
         ".opusdm-panel {{ background-color: #{:06x}; color: #d3d7cf; }}\n{}",
         window::PANEL_BACKGROUND,
         ".opusdm-panel button { padding: 2px 8px; min-height: 0; }\n\
+         .opusdm-panel button.opusdm-panel-menu { padding: 0; }\n\
          .opusdm-panel-quickapps button { padding: 2px 3px; }\n\
          .opusdm-panel button.opusdm-panel-tray-item { padding: 2px 2px; }\n\
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
