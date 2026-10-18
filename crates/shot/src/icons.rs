@@ -23,6 +23,7 @@ pub enum Icon {
     Line,
     Arrow,
     Text,
+    Crop,
     Undo,
     Redo,
     /// A stroke as thick as the size it stands for.
@@ -87,6 +88,16 @@ pub fn paint(cr: &cairo::Context, icon: Icon, rgba: (f64, f64, f64, f64), size: 
             cr.line_to(12.0, 19.0);
             cr.stroke()
         }
+        Icon::Crop => {
+            // The two overlapping corners of a crop mark.
+            cr.move_to(7.0, 3.0);
+            cr.line_to(7.0, 17.0);
+            cr.line_to(21.0, 17.0);
+            cr.move_to(3.0, 7.0);
+            cr.line_to(17.0, 7.0);
+            cr.line_to(17.0, 21.0);
+            cr.stroke()
+        }
         Icon::Undo => undo_arrow(cr),
         Icon::Redo => {
             // The mirror image of undo.
@@ -147,7 +158,7 @@ mod tests {
 
     #[test]
     fn every_icon_paints_something() {
-        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Undo, Icon::Redo, Icon::Width(Size::Small)] {
+        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Crop, Icon::Undo, Icon::Redo, Icon::Width(Size::Small)] {
             assert!(painted(icon) > 0, "{icon:?} is blank");
         }
     }

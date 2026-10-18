@@ -6,6 +6,7 @@ use crate::config;
 use crate::export::{self, Format, Options};
 use crate::icons::{self, Icon};
 use crate::render;
+use crate::selection::{self, Area, Edges};
 use gtk4 as gtk;
 use gtk::cairo;
 use gtk::gdk;
@@ -37,6 +38,12 @@ const BAR_SPACING: i32 = 6;
 /// Dash pattern of the selection box on the canvas.
 const SELECTION_DASH: [f64; 2] = [5.0, 3.0];
 
+/// Opacity of the black layer over the part of the image the crop removes.
+const CROP_DIM_ALPHA: f64 = 0.5;
+
+/// How close (in pixels) the pointer must be to a side of the crop to grab it.
+const CROP_GRAB: f64 = 8.0;
+
 /// Gap between an annotation and its selection box.
 const SELECTION_GAP: f64 = 3.0;
 
@@ -67,6 +74,7 @@ enum Tool {
     Line,
     Arrow,
     Text,
+    Crop,
 }
 
 /// A mouse drag in progress.
@@ -76,6 +84,10 @@ enum Drag {
     Draw { start: Point },
     /// Moving the selected annotation; `last` is the offset already applied.
     Move { last: Point },
+    /// Drawing a new crop area from `start`.
+    CropNew { start: Point },
+    /// Moving the grabbed `edges` of the crop area, which was `area` at the start.
+    CropResize { edges: Edges, area: Area },
 }
 
 /// A text being typed.
@@ -96,6 +108,9 @@ struct State {
     selected: Option<usize>,
     drag: Drag,
     edit: Option<Edit>,
+    /// The part of the image to keep, in image pixels (any corner order);
+    /// `None` keeps it all. The annotations stay editable outside of it.
+    crop: Option<Area>,
 }
 
 /// The widgets the callbacks use, with the state.
@@ -165,6 +180,7 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
             selected: None,
             drag: Drag::None,
             edit: None,
+            crop: None,
         }),
     });
     ui.status.set_halign(gtk::Align::Start);
@@ -196,6 +212,7 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
         ("Line", Icon::Line, Tool::Line),
         ("Arrow", Icon::Arrow, Tool::Arrow),
         ("Text", Icon::Text, Tool::Text),
+        ("Crop: drag the area to keep (drag its sides to adjust, click to remove it)", Icon::Crop, Tool::Crop),
     ];
     let mut first: Option<gtk::ToggleButton> = None;
     for (name, icon, tool) in tools {
@@ -398,6 +415,21 @@ fn paint(ui: &Ui, cr: &cairo::Context) -> Result<(), cairo::Error> {
     cr.set_source_surface(&st.surface, 0.0, 0.0)?;
     cr.paint()?;
     render::draw(cr, st.doc.items())?;
+    if let Some((x0, y0, x1, y1)) = st.crop {
+        let (x, y, w, h) = (x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs());
+        // The dim layer is the whole image minus the crop (even-odd).
+        cr.save()?;
+        cr.set_source_rgba(0.0, 0.0, 0.0, CROP_DIM_ALPHA);
+        cr.set_fill_rule(cairo::FillRule::EvenOdd);
+        cr.rectangle(0.0, 0.0, st.base.width() as f64, st.base.height() as f64);
+        cr.rectangle(x, y, w, h);
+        cr.fill()?;
+        cr.set_source_rgb(0.25, 0.55, 1.0);
+        cr.set_line_width(1.0);
+        cr.rectangle(x, y, w, h);
+        cr.stroke()?;
+        cr.restore()?;
+    }
     let Some(item) = st.selected.and_then(|i| st.doc.items().get(i)) else { return Ok(()) };
     let (l, t, r, b) = item.bounds();
     cr.set_source_rgb(0.25, 0.55, 1.0);
@@ -426,6 +458,17 @@ fn begin_drag(ui: &Ui, p: Point) {
             let index = st.doc.add(annotation);
             st.selected = Some(index);
             st.drag = Drag::Draw { start: p };
+        }
+        Tool::Crop => {
+            st.selected = None;
+            let hit = st.crop.map(|c| (selection::hit_edges(c, p, CROP_GRAB), c));
+            st.drag = match hit {
+                Some((edges, area)) if edges.any() => Drag::CropResize { edges, area },
+                _ => {
+                    st.crop = Some((p.0, p.1, p.0, p.1));
+                    Drag::CropNew { start: p }
+                }
+            };
         }
         Tool::Text => {
             let existing = st.doc.hit_test(p).filter(|&i| matches!(st.doc.items()[i].shape, Shape::Text { .. }));
@@ -457,8 +500,18 @@ fn styled(st: &State, shape: Shape) -> Annotation {
 /// The mouse moved by `delta` since `start`.
 fn update_drag(ui: &Ui, start: Point, delta: Point, shift: bool) {
     let mut st = ui.state.borrow_mut();
-    let Some(index) = st.selected else { return };
     match st.drag {
+        Drag::CropNew { start: from } => st.crop = Some((from.0, from.1, from.0 + delta.0, from.1 + delta.1)),
+        Drag::CropResize { edges, area } => st.crop = Some(selection::resize(area, edges, delta.0, delta.1)),
+        _ => {}
+    }
+    let Some(index) = st.selected else {
+        drop(st);
+        ui.canvas.queue_draw();
+        return;
+    };
+    match st.drag {
+        Drag::CropNew { .. } | Drag::CropResize { .. } => {}
         Drag::Draw { start: from } => {
             let mut to = (start.0 + delta.0, start.1 + delta.1);
             if shift { to = annotations::snap_angle(from, to); }
@@ -486,6 +539,11 @@ fn end_drag(ui: &Ui, delta: Point) {
             st.doc.undo();
             st.selected = None;
         }
+    }
+    if matches!(st.drag, Drag::CropNew { .. } | Drag::CropResize { .. }) {
+        // A crop that is too small is a stray click: it removes the crop.
+        let bounds = (st.base.width() as i32, st.base.height() as i32);
+        if selection::crop_rect(st.crop, bounds).is_none() { st.crop = None; }
     }
     st.drag = Drag::None;
     drop(st);
@@ -641,8 +699,13 @@ fn show_info(ui: &Ui, message: &str) {
 fn final_image(ui: &Ui) -> Option<RgbaImage> {
     commit_text(ui);
     let st = ui.state.borrow();
+    let bounds = (st.base.width() as i32, st.base.height() as i32);
+    let crop = selection::crop_rect(st.crop, bounds);
     match render::render(&st.base, st.doc.items()) {
-        Ok(img) => Some(img),
+        Ok(img) => Some(match crop {
+            Some(r) => image::imageops::crop_imm(&img, r.x as u32, r.y as u32, r.w as u32, r.h as u32).to_image(),
+            None => img,
+        }),
         Err(e) => {
             drop(st);
             show_error(ui, &e);

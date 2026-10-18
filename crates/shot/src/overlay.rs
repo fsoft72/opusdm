@@ -34,6 +34,7 @@ const LABEL_GAP: f64 = 6.0;
 /// When the user releases a valid selection, `on_selected` gets the cropped
 /// image and the overlay closes; Esc closes it with no call. The selection stays
 /// adjustable after the drag: grab any side to resize it, press Enter to keep it.
+/// Ctrl+Enter, or a click of the right button, keeps the whole screen instead.
 pub fn open<F>(app: &gtk::Application, monitor: &gdk::Monitor, screen: RgbaImage, on_selected: F)
 where
     F: Fn(RgbaImage) + 'static,
@@ -107,6 +108,18 @@ where
     }
     area.add_controller(drag);
 
+    // The right button keeps the whole screen, selection or not.
+    let full = gtk::GestureClick::new();
+    full.set_button(gdk::BUTTON_SECONDARY);
+    {
+        let (window, screen, on_selected) = (window.clone(), screen.clone(), on_selected.clone());
+        full.connect_pressed(move |_, _, _, _| {
+            on_selected(screen.as_ref().clone());
+            window.close();
+        });
+    }
+    area.add_controller(full);
+
     // Show the resize cursor of the side under the pointer.
     let motion = gtk::EventControllerMotion::new();
     {
@@ -121,11 +134,16 @@ where
     let keys = gtk::EventControllerKey::new();
     {
         let (window, app, area, screen, selection) = (window.clone(), app.clone(), area.clone(), screen.clone(), selection.clone());
-        keys.connect_key_pressed(move |_, key, _, _| {
+        let on_selected = on_selected.clone();
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
             match key {
                 gdk::Key::Escape => {
                     window.close();
                     app.quit();
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter if modifiers.contains(gdk::ModifierType::CONTROL_MASK) => {
+                    on_selected(screen.as_ref().clone());
+                    window.close();
                 }
                 gdk::Key::Return | gdk::Key::KP_Enter => {
                     let Some(rect) = to_rect(&area, &screen, selection.get()) else { return glib::Propagation::Stop };
@@ -199,7 +217,7 @@ fn paint(
     }
     cr.fill()?;
 
-    let label = format!("{} x {}  (Enter: keep, Esc: cancel)", (w * image.0 / widget.0).round(), (h * image.1 / widget.1).round());
+    let label = format!("{} x {}  (Enter: keep, Ctrl+Enter or right click: whole screen, Esc: cancel)", (w * image.0 / widget.0).round(), (h * image.1 / widget.1).round());
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
     cr.set_font_size(LABEL_FONT_SIZE);
     let ly = if y > LABEL_FONT_SIZE + 2.0 * LABEL_GAP { y - LABEL_GAP } else { y + h + LABEL_FONT_SIZE + LABEL_GAP };

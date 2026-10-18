@@ -26,6 +26,13 @@ pub fn from_points(a: (f64, f64), b: (f64, f64), bounds: (i32, i32)) -> Option<R
     Some(rect)
 }
 
+/// The crop area `crop` (image pixels, any corner order) as a rectangle of an
+/// image of `bounds`, or `None` when there is no crop or it is too small.
+pub fn crop_rect(crop: Option<Area>, bounds: (i32, i32)) -> Option<Rect> {
+    let (x0, y0, x1, y1) = crop?;
+    from_points((x0, y0), (x1, y1), bounds)
+}
+
 /// How close (in pixels) the pointer must be to a side to grab it.
 pub const GRAB: f64 = 8.0;
 
@@ -124,6 +131,13 @@ mod tests {
     #[test]
     fn rejects_empty_bounds() {
         assert_eq!(from_points((0.0, 0.0), (50.0, 50.0), (0, 0)), None);
+    }
+
+    #[test]
+    fn a_crop_is_a_rect_or_nothing() {
+        assert_eq!(crop_rect(Some((50.0, 40.0, 10.0, 10.0)), (100, 100)), Some(Rect { x: 10, y: 10, w: 40, h: 30 }));
+        assert_eq!(crop_rect(Some((10.0, 10.0, 11.0, 11.0)), (100, 100)), None);
+        assert_eq!(crop_rect(None, (100, 100)), None);
     }
 
     const AREA: Area = (100.0, 100.0, 200.0, 180.0);
