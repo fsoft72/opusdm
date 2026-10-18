@@ -5,25 +5,40 @@
 # sandbox for testing OpusDM without touching the real session.
 #
 # Usage:
-#   ./xephyr-sandbox.sh [--debug] [--grid-debug] [display] [resolution]
+#   ./xephyr-sandbox.sh [--debug] [--grid-debug] [--config-dir DIR] [display] [resolution]
 #
 # Examples:
 #   ./xephyr-sandbox.sh              # :1 at 1920x1080
 #   ./xephyr-sandbox.sh :2 1920x1080
 #   ./xephyr-sandbox.sh --debug      # lister debug log in /ramdisk/opusdm.log
 #   ./xephyr-sandbox.sh --grid-debug # red box around every icon-view item
+#   ./xephyr-sandbox.sh --config-dir ~/test-config
+#                                    # use DIR as the OpusDM configuration
+#                                    # (settings.json, hotkeys.json, ...) instead
+#                                    # of ~/.config/opusdm; DIR must exist. The
+#                                    # sandbox reads and writes only DIR (also
+#                                    # picom.conf); XDG_CONFIG_HOME points to a
+#                                    # private folder, so ~/.config/mimeapps.list
+#                                    # is not touched either. Same as XEPHYR_CONFIG_DIR.
 
 set -euo pipefail
 
 DEBUG=0
 GRID_DEBUG=0
+CONFIG_DIR="${XEPHYR_CONFIG_DIR:-}"
 ARGS=()
-for a in "$@"; do
-    case "$a" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --debug) DEBUG=1 ;;
         --grid-debug) GRID_DEBUG=1 ;;
-        *) ARGS+=("$a") ;;
+        --config-dir)
+            [ $# -ge 2 ] || { echo "--config-dir needs a folder"; exit 2; }
+            CONFIG_DIR="$2"
+            shift
+            ;;
+        *) ARGS+=("$1") ;;
     esac
+    shift
 done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 
@@ -47,6 +62,17 @@ command -v "$TERMINAL" >/dev/null 2>&1 || { echo "Terminal '$TERMINAL' not found
 unset WAYLAND_DISPLAY
 export GDK_BACKEND=x11
 
+# Use DIR as the OpusDM configuration: OpusDM reads $XDG_CONFIG_HOME/opusdm,
+# so XDG_CONFIG_HOME becomes a private folder whose `opusdm` entry is DIR.
+if [ -n "$CONFIG_DIR" ]; then
+    [ -d "$CONFIG_DIR" ] || { echo "Config folder '$CONFIG_DIR' is not a directory"; exit 1; }
+    CONFIG_DIR="$(cd "$CONFIG_DIR" && pwd)"
+    XDG_CONFIG_HOME="$(mktemp -d /tmp/opusdm-xephyr-config-XXXXXX)"
+    ln -s "$CONFIG_DIR" "$XDG_CONFIG_HOME/opusdm"
+    export XDG_CONFIG_HOME
+    echo "OpusDM configuration: $CONFIG_DIR (XDG_CONFIG_HOME=$XDG_CONFIG_HOME)"
+fi
+
 CHILD_PIDS=()
 
 # Kill every process we spawned when the script exits
@@ -55,6 +81,8 @@ _cleanup() {
     for pid in "${CHILD_PIDS[@]:-}"; do
         [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     done
+    # Only the symlink to the config folder lives here; rm never follows it
+    [ -n "$CONFIG_DIR" ] && rm -rf "$XDG_CONFIG_HOME"
 }
 trap _cleanup EXIT INT TERM
 
