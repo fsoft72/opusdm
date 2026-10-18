@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-18
+- Docs (scripts): `run-x11.sh` already started Xephyr at 1920x1080 by default (`RESOLUTION="${2:-${XEPHYR_RES:-1920x1080}}"`); only the usage comment still said 1280x800 and is fixed. No behaviour change. Checked: Xephyr started with the same `-screen 1920x1080` flags reports `dimensions: 1920x1080`. The full script (hub, openbox, picom) was not run.
 - Feature (scripts): `live-update.sh --no-restart` builds and replaces the binaries in PREFIX/bin (rename install, as before) and then stops: no OpusDM process is stopped or started, running ones keep the old code, new launches use the new one. Combined with `--all` it is refused (exit 2). `--config` still reloads the window manager. Help range (`sed -n '2,29p'`) widened for the longer header. Checked: `sh -n`, `-h` output, the `--all --no-restart` refusal. NOT run end to end: the build and the sudo copy into /opt/opusdm were not executed here.
 - Feature (viewer): a picture with an alpha channel is shown over a grey checkerboard (8 px squares) instead of the black stage. `ViewPaintable::new` takes `checkered` (the image `has_alpha`); `snapshot_checkers` draws one 2x2 tile with `push_repeat` behind the texture, only inside the picture rectangle, so the black stage around it stays. Checked in Xephyr with a 64x64 RGBA PNG (red disc on transparent): the corners show the checkerboard, zoom label and stage unchanged. NOT checked: zoomed-in scrolling, rotation, PDF pages (they have alpha but an opaque white page), Wayland.
 

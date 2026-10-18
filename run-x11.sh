@@ -8,7 +8,7 @@
 #   ./xephyr-sandbox.sh [--debug] [--grid-debug] [display] [resolution]
 #
 # Examples:
-#   ./xephyr-sandbox.sh              # :1 at 1280x800
+#   ./xephyr-sandbox.sh              # :1 at 1920x1080
 #   ./xephyr-sandbox.sh :2 1920x1080
 #   ./xephyr-sandbox.sh --debug      # lister debug log in /ramdisk/opusdm.log
 #   ./xephyr-sandbox.sh --grid-debug # red box around every icon-view item
