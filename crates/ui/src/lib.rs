@@ -2,6 +2,7 @@
 //! requesters, the skeleton the larger dialogs are built on and the small
 //! form helpers (headings, rows, file picking, unsaved-changes guards).
 
+mod about;
 mod app_icon;
 mod dirty_guard;
 mod file_pick;
@@ -18,6 +19,7 @@ mod theme_mode;
 mod version;
 mod x11;
 
+pub use about::show_about;
 pub use app_icon::{set_app_icon, APP_ICON_NAME};
 pub use dirty_guard::{confirm_discard, DirtyGuard};
 pub use file_pick::{pick_file, pick_file_or_error, FileFilterSpec, FilePick};

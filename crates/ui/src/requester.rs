@@ -129,6 +129,28 @@ pub fn requester_rich<T: Clone + 'static>(
     );
 }
 
+/// Like [`requester_rich`], with `header` (a logo, say) above the body.
+pub(crate) fn requester_rich_header<T: Clone + 'static>(
+    parent: &impl IsA<gtk::Window>,
+    title: &str,
+    header: Option<gtk::Widget>,
+    body_markup: &str,
+    buttons: &[(&str, T)],
+    on_choice: impl Fn(T) + 'static,
+) {
+    let (labels, values) = _split(buttons);
+    build_with_header(
+        parent.upcast_ref(),
+        title,
+        header,
+        Body::Markup(body_markup),
+        None,
+        None,
+        &labels,
+        _by_value(values, move |value, _text| on_choice(value)),
+    );
+}
+
 /// Split the caller's `(label, value)` pairs into the two vectors `build`
 /// and the choice adapter need.
 fn _split<'a, T: Clone>(buttons: &[(&'a str, T)]) -> (Vec<&'a str>, Vec<T>) {
@@ -168,6 +190,21 @@ fn build(
     buttons: &[&str],
     on_choice: Rc<dyn Fn(usize, String)>,
 ) {
+    build_with_header(parent, title, None, body, detail, entry, buttons, on_choice);
+}
+
+/// [`build`] with an optional `header` widget (a logo, say) above the body.
+#[allow(clippy::too_many_arguments)]
+fn build_with_header(
+    parent: &gtk::Window,
+    title: &str,
+    header: Option<gtk::Widget>,
+    body: Body,
+    detail: Option<&str>,
+    entry: Option<gtk::Entry>,
+    buttons: &[&str],
+    on_choice: Rc<dyn Fn(usize, String)>,
+) {
     assert!(!buttons.is_empty(), "a requester needs at least one button");
 
     let dialog = gtk::Window::builder()
@@ -200,6 +237,10 @@ fn build(
     vbox.set_margin_bottom(12);
     vbox.set_margin_start(16);
     vbox.set_margin_end(16);
+
+    if let Some(header) = &header {
+        vbox.append(header);
+    }
 
     if !matches!(body, Body::Text("")) {
         vbox.append(&_body_label(&body));

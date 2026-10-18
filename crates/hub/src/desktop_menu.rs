@@ -498,21 +498,7 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
 }
 
 pub(crate) fn show_about_dialog(parent: &gtk::ApplicationWindow) {
-    opusdm_ui::requester_rich(
-        parent,
-        "About OpusDM",
-        &format!(
-            "<span size='xx-large' weight='bold'>OpusDM</span>\n\
-             <i>A Linux tribute to Amiga Directory Opus 5</i>\n\n\
-             Version {version}\n\n\
-             Written by Fabio Rotondo\n\
-             <a href='https://github.com/fsof72'>https://github.com/fsof72</a>\n\n\
-             <small>This software is Open Source</small>",
-            version = opusdm_ui::VERSION,
-        ),
-        &[("OK", ())],
-        |_| {},
-    );
+    opusdm_ui::show_about(parent);
 }
 
 #[cfg(test)]
