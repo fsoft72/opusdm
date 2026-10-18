@@ -321,7 +321,8 @@ impl ImageView {
         let Some(texture) = texture.as_ref() else { return };
         let Some(size) = self.size() else { return };
         let shown = screen_size(size, self.zoom.get());
-        self.picture.set_paintable(Some(&ViewPaintable::new(texture, shown, !self.smooth.get())));
+        let checkered = self.raw.borrow().as_ref().is_some_and(|r| r.has_alpha);
+        self.picture.set_paintable(Some(&ViewPaintable::new(texture, shown, !self.smooth.get(), checkered)));
     }
 
     /// Put texture, size and scroll policy in line with the zoom state.
