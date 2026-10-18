@@ -2,7 +2,7 @@
 # Build OpusDM in release mode and replace the installed version of the running
 # desktop session (the current user's Desktop Manager).
 #
-# Usage: scripts/live-update.sh [--config] [--all] [--prefix DIR]
+# Usage: scripts/live-update.sh [--config] [--all | --no-restart] [--prefix DIR]
 #   (default)  replace the binaries in PREFIX/bin and restart only opusdm-hub.
 #              Listers, dock and other windows already open keep running the
 #              old binaries until they are closed and opened again.
@@ -13,6 +13,13 @@
 #              dock, ...) and start the hub again, so everything runs the new
 #              binaries. Open OpusDM windows are closed. The new hub does not
 #              launch the Startup Apps again (--no-startup-apps).
+#   --no-restart  only build and replace the binaries; no OpusDM process is
+#              stopped or started. Processes already running keep the old code,
+#              every process started from now on uses the new one. Enough for
+#              a change limited to a tool opened on demand (viewer, shot, run);
+#              a change to the hub, the IPC or the Lister needs a restart.
+#              Cannot be combined with --all. With --config the window manager
+#              still reloads its configuration.
 #   --prefix   installation prefix, default /opt/opusdm.
 #
 # Works in the X11 and in the Wayland session: the restarted hub gets the
@@ -27,6 +34,7 @@ DIST="$REPO_ROOT/dist"
 PREFIX=/opt/opusdm
 WITH_CONFIG=0
 RESTART_ALL=0
+NO_RESTART=0
 # Every OpusDM binary that can be running. opusdm-terminal is left out on
 # purpose: killing it would end the user's shells, possibly the one running
 # this script. Open terminals pick up the new binary when opened again.
@@ -39,16 +47,19 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --config) WITH_CONFIG=1 ;;
         --all) RESTART_ALL=1 ;;
+        --no-restart) NO_RESTART=1 ;;
         --prefix)
             [ $# -ge 2 ] || { echo "live-update: --prefix needs a directory" >&2; exit 2; }
             PREFIX="$2"
             shift
             ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "live-update: unknown option $1" >&2; exit 2 ;;
     esac
     shift
 done
+
+[ "$RESTART_ALL" -eq 1 ] && [ "$NO_RESTART" -eq 1 ] && { echo "live-update: --all and --no-restart cannot be used together" >&2; exit 2; }
 
 if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
@@ -104,6 +115,12 @@ if [ "$WITH_CONFIG" -eq 1 ]; then
     elif command -v openbox >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
         openbox --reconfigure || echo "live-update: openbox --reconfigure failed" >&2
     fi
+fi
+
+# Nothing to stop or start
+if [ "$NO_RESTART" -eq 1 ]; then
+    echo "Done: binaries replaced, no process restarted (running ones keep the old code)"
+    exit 0
 fi
 
 # Without a running hub there is no session to update
