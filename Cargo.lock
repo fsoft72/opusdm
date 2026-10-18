@@ -2843,6 +2843,7 @@ dependencies = [
  "gtk4",
  "libc",
  "md-5",
+ "opusdm-apps",
  "opusdm-archive",
  "opusdm-fsops",
  "opusdm-ftp",

@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
 opusdm-ui = { path = "../ui" }
+opusdm-apps = { path = "../apps" }
 opusdm-iconview = { path = "../iconview" }
 opusdm-ftp = { path = "../ftp" }
 opusdm-fsops = { path = "../fsops" }

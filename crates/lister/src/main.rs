@@ -59,6 +59,7 @@ mod model;
 mod nav_cache;
 mod navpath;
 mod open_default;
+mod open_with;
 mod output_window;
 mod palette;
 mod progress_panel;

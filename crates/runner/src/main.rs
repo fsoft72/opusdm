@@ -5,7 +5,6 @@
 //! `docs/superpowers/specs/2026-10-05-run-dialog-design.md`.
 
 mod launch;
-mod search;
 mod sources;
 mod ui;
 

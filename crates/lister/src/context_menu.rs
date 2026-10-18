@@ -219,6 +219,8 @@ pub fn show_context_menu(
     }
 
     let tg = targets.clone();
+    menu.item("Open with...", move |ui| crate::open_with::open_with(ui, tg(ui)));
+    let tg = targets.clone();
     menu.item("Compress...", move |ui| crate::compress_dialog::open_compress(ui, tg(ui)));
     // Offered on a supported archive file (not on one already inside an archive).
     if !row.is_dir && !crate::extract_dialog::extractable(vec![target.to_path_buf()]).is_empty() {

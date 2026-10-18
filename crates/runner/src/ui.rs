@@ -1,7 +1,7 @@
 //! The Run window: an input box with a list of suggestions under it.
 
 use crate::launch;
-use crate::search::{self, Catalog, Entry, Kind, Suggestion};
+use opusdm_apps::search::{self, Catalog, Entry, Kind, Suggestion};
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;

@@ -1,9 +1,8 @@
 //! Where the Run window's suggestions come from: the OpusDM application menu
 //! and the executables on `PATH`.
 
-use crate::search::{Entry, Kind};
-use gtk4::gio;
-use gtk4::prelude::*;
+use opusdm_apps::entries::app_entry;
+use opusdm_apps::search::{Entry, Kind};
 use opusdm_ipc::MenuItem;
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -35,33 +34,7 @@ pub fn app_entries() -> Vec<Entry> {
         let infos = opusdm_apps::apps::resolve(&ids).into_iter().map(|e| e.info);
         return infos.filter_map(|info| app_entry(&info)).collect();
     }
-    gio::AppInfo::all()
-        .into_iter()
-        .filter(|info| info.should_show())
-        .filter_map(|info| info.downcast::<gio::DesktopAppInfo>().ok())
-        .filter_map(|info| app_entry(&info))
-        .collect()
-}
-
-/// The entry for one desktop application; `None` when it has no id.
-fn app_entry(info: &gio::DesktopAppInfo) -> Option<Entry> {
-    let id = info.id()?.to_string();
-    let generic = info.generic_name().map(|s| s.to_string()).unwrap_or_default();
-    let description = info.description().map(|s| s.to_string()).unwrap_or_default();
-    let mut extra = vec![generic.clone()];
-    extra.extend(info.keywords().iter().map(|k| k.to_string()));
-    if let Some(program) = info.executable().file_name() {
-        extra.push(program.to_string_lossy().to_string());
-    }
-    extra.retain(|text| !text.is_empty());
-    Some(Entry {
-        kind: Kind::App,
-        id,
-        name: info.name().to_string(),
-        comment: if generic.is_empty() { description } else { generic },
-        extra,
-        icon: info.icon().and_then(|icon| IconExt::to_string(&icon)).map(|s| s.to_string()),
-    })
+    opusdm_apps::entries::installed_entries()
 }
 
 /// The executables in the directories of `path_var` (a `PATH` value), each

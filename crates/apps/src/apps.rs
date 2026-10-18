@@ -109,3 +109,11 @@ pub fn launch_action(info: &gio::DesktopAppInfo, action: &str) {
     let ctx = ctx.as_ref().map(|c| c.upcast_ref::<gio::AppLaunchContext>());
     info.launch_action(action, ctx);
 }
+
+/// Open `files` with `app` through the display's launch context. Returns the
+/// launch error text.
+pub fn open_files(app: &gio::AppInfo, files: &[gio::File]) -> Result<(), String> {
+    let ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
+    let ctx = ctx.as_ref().map(|c| c.upcast_ref::<gio::AppLaunchContext>());
+    app.launch(files, ctx).map_err(|e| format!("cannot open with {}: {e}", app.name()))
+}

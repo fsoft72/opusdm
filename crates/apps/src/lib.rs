@@ -4,7 +4,9 @@
 //! panel, the dock, the notification popups and the polkit agent.
 
 pub mod apps;
+pub mod entries;
 pub mod icons;
 pub mod menu_defaults;
+pub mod search;
 
 pub use icons::{app_image, desktop_icon, themed_or};
