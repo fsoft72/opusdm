@@ -384,7 +384,7 @@ impl Default for DesktopSettings {
             inactive_opacity: DEFAULT_INACTIVE_OPACITY,
             active_opacity: DEFAULT_ACTIVE_OPACITY,
             startup_apps: Vec::new(),
-            open_lister_at_start: true,
+            open_lister_at_start: false,
             snap_enabled: true,
         }
     }
@@ -850,12 +850,12 @@ mod tests {
     }
 
     #[test]
-    fn the_start_lister_is_on_by_default_and_in_old_files() {
-        assert!(DesktopSettings::default().open_lister_at_start);
+    fn the_start_lister_is_off_by_default_and_in_old_files() {
+        assert!(!DesktopSettings::default().open_lister_at_start);
         let d: DesktopSettings = serde_json::from_str("{\"icon_size\": 80}").unwrap();
-        assert!(d.open_lister_at_start);
-        let d: DesktopSettings = serde_json::from_str("{\"open_lister_at_start\": false}").unwrap();
         assert!(!d.open_lister_at_start);
+        let d: DesktopSettings = serde_json::from_str("{\"open_lister_at_start\": true}").unwrap();
+        assert!(d.open_lister_at_start);
     }
 
     #[test]
