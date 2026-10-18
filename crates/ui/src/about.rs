@@ -37,10 +37,11 @@ pub fn show_about(parent: &impl IsA<gtk::Window>) {
         "About OpusDM",
         _logo(),
         &format!(
-            "<i>A Linux tribute to Amiga Directory Opus 5</i>\n\n\
+            "<i>An humble Linux tribute to Amiga Directory Opus 5</i>\n\n\
              Version {version}\n\n\
-             Written by Fabio Rotondo\n\
+             Written with respect and dedication by Fabio Rotondo\n\
              <a href='https://github.com/fsof72'>https://github.com/fsof72</a>\n\n\
+             Amiga will never die\n\n\
              <small>This software is Open Source</small>",
             version = crate::VERSION,
         ),
