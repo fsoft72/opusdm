@@ -24,3 +24,4 @@ opusdm-*.log
 .codegraph
 .superpowers/
 .claude/
+.cloudflare/
