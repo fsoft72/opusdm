@@ -565,17 +565,6 @@
       </mousebind>
     </context>
     <context name="Desktop">
-      <!-- Desktop switching with the mouse wheel requires Ctrl to be held -->
-      <mousebind button="C-Up" action="Click">
-        <action name="GoToDesktop">
-          <to>previous</to>
-        </action>
-      </mousebind>
-      <mousebind button="C-Down" action="Click">
-        <action name="GoToDesktop">
-          <to>next</to>
-        </action>
-      </mousebind>
       <mousebind button="Left" action="Press">
         <action name="Focus"/>
         <action name="Raise"/>
