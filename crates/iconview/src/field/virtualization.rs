@@ -181,6 +181,9 @@ impl IconField {
                 continue;
             };
             let it = IconItem::new(entry, size, &icon_set);
+            if self.inner.layout.desktop_entries.get() {
+                it.show_desktop_entry(entry);
+            }
             if let Some(tex) = thumb_cache.get(&i) {
                 it.set_thumbnail(tex);
             }

@@ -610,6 +610,7 @@ pub(crate) fn build_desktop_area(
             let f = opusdm_iconview::IconField::new();
             f.set_mode(opusdm_iconview::LayoutMode::Free);
             f.set_icon_set(icon_set);
+            f.set_show_desktop_entries(true);
             {
                 let f = f.clone();
                 let dir = dir.to_path_buf();

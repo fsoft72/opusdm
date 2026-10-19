@@ -1,7 +1,8 @@
 //! One icon-view item: an icon image (or thumbnail) above an editable label.
 
-use crate::types::IconEntry;
+use crate::types::{IconEntry, IconKind};
 use gtk4 as gtk;
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::RefCell;
@@ -279,6 +280,51 @@ impl IconItem {
     pub fn name(&self) -> String {
         self.inner.original_name.borrow().clone()
     }
+
+    /// Show a `.desktop` file as the application it launches: its `Name=`
+    /// (translated by GIO) as the label and its `Icon=` from the icon theme,
+    /// in place of the file name and the generic file icon. Returns `false`,
+    /// changing nothing, for any other entry and for a file GIO cannot parse.
+    /// An `Icon=` the theme lacks keeps the generic icon. The rename entry
+    /// still edits the file name (`original_name`).
+    pub fn show_desktop_entry(&self, entry: &IconEntry) -> bool {
+        let Some(info) = desktop_app_info(entry) else { return false };
+        self.inner.name_label.set_text(&info.name());
+        let size = self.inner.thumb.pixel_size();
+        if let Some(paintable) = app_icon(&info, size, self.inner.root.scale_factor()) {
+            self.inner.thumb.set_paintable(Some(&paintable));
+            self.inner.thumb.set_visible(true);
+            self.inner.icon.set_visible(false);
+        }
+        true
+    }
+
+    /// The text of the name label, for the tests.
+    #[cfg(test)]
+    pub(crate) fn label_text(&self) -> String {
+        self.inner.name_label.text().to_string()
+    }
+}
+
+/// The application a `.desktop` file entry describes, or `None` for any
+/// other entry and for a file GIO cannot parse.
+fn desktop_app_info(entry: &IconEntry) -> Option<gio::DesktopAppInfo> {
+    if entry.kind != IconKind::File || entry.ext.as_deref() != Some("desktop") {
+        return None;
+    }
+    gio::DesktopAppInfo::from_filename(&entry.path)
+}
+
+/// The `Icon=` of `info` from the icon theme at `size` px, or `None` when it
+/// has none or the theme does not know it.
+fn app_icon(info: &gio::DesktopAppInfo, size: i32, scale: i32) -> Option<gtk::IconPaintable> {
+    let icon = info.icon()?;
+    let display = gtk::gdk::Display::default()?;
+    let theme = gtk::IconTheme::for_display(&display);
+    if !theme.has_gicon(&icon) {
+        return None;
+    }
+    Some(theme.lookup_by_gicon(&icon, size, scale.max(1), gtk::TextDirection::None, gtk::IconLookupFlags::empty()))
 }
 
 fn toggle_class(w: &impl IsA<gtk::Widget>, class: &str, on: bool) {

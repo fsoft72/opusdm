@@ -65,6 +65,10 @@ pub(super) struct LayoutState {
     pub(super) mode: Cell<LayoutMode>,
     pub(super) icon_size: Cell<i32>,
     pub(super) icon_set: RefCell<opusdm_ipc::IconSetId>,
+    /// Whether `.desktop` files show their application name and icon (see
+    /// `IconItem::show_desktop_entry`). Off by default: the desktop turns it
+    /// on, a file manager shows file names.
+    pub(super) desktop_entries: Cell<bool>,
     /// Auto-slot cell size for `FreeArrange`, in pixels. Ignored in `Grid`
     /// mode. Default matches `FreeArrange::new`'s `cell`.
     pub(super) grid_spacing: Cell<i32>,
@@ -173,6 +177,7 @@ impl IconField {
                 mode: Cell::new(LayoutMode::Grid),
                 icon_size: Cell::new(crate::types::DEFAULT_ICON_SIZE),
                 icon_set: RefCell::new(opusdm_ipc::IconSetId::default()),
+                desktop_entries: Cell::new(false),
                 grid_spacing: Cell::new(96),
                 grid_gap: Cell::new(4),
                 arrange: RefCell::new(Box::new(GridArrange::new())),
@@ -510,6 +515,20 @@ impl IconField {
             self.inner.layout.thumb_cache.borrow_mut().clear();
             self.request_thumbs();
         }
+    }
+
+    /// Show `.desktop` files as the applications they launch (name and icon
+    /// from the file) instead of as files. The realized item widgets are
+    /// rebuilt to pick up the change; entries, selection and positions stay.
+    pub fn set_show_desktop_entries(&self, on: bool) {
+        if self.inner.layout.desktop_entries.get() == on {
+            return;
+        }
+        self.inner.layout.desktop_entries.set(on);
+        for (_, it) in self.inner.layout.realized.borrow_mut().drain() {
+            self.inner.layout.fixed.remove(it.widget());
+        }
+        self.relayout();
     }
 
     /// Switch the icon library used for entries without a content thumbnail.
@@ -1001,6 +1020,8 @@ mod tests {
             ("icon_item_basics", icon_item_basics),
             ("icon_item_tall_thumbnail", icon_item_tall_thumbnail),
             ("icon_item_left_out_badge", icon_item_left_out_badge),
+            ("icon_item_desktop_entry", icon_item_desktop_entry),
+            ("field_desktop_entries", field_desktop_entries),
             ("field_entries_and_modes", field_entries_and_modes),
             ("field_icon_set_switch", field_icon_set_switch),
             ("field_folder_drop_target", field_folder_drop_target),
@@ -1105,6 +1126,50 @@ mod tests {
     }
 
     /// The left-out badge keeps the item size.
+    /// A `.desktop` file entry at `dir/name` with the given contents.
+    fn desktop_file(dir: &std::path::Path, name: &str, contents: &str) -> IconEntry {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        crate::scan::entry_for_path(&path)
+    }
+
+    fn icon_item_desktop_entry() {
+        // --- IconItem: a valid .desktop file shows Name=, anything else is left alone ---
+        let td = tempfile::tempdir().unwrap();
+        let app = desktop_file(td.path(), "lubuntu-calamares.desktop",
+            "[Desktop Entry]\nType=Application\nName=Install DreamOS\nExec=true\nIcon=no-such-icon-xyz\n");
+        let it = IconItem::new(&app, 64, &no_icons());
+        assert_eq!(it.label_text(), "lubuntu-calamares.desktop");
+        assert!(it.show_desktop_entry(&app));
+        assert_eq!(it.label_text(), "Install DreamOS");
+        assert_eq!(it.name(), "lubuntu-calamares.desktop", "rename still edits the file name");
+        assert!(!it.shows_image(), "an Icon= the theme lacks keeps the generic slot");
+
+        let broken = desktop_file(td.path(), "broken.desktop", "not a desktop entry\n");
+        let it = IconItem::new(&broken, 64, &no_icons());
+        assert!(!it.show_desktop_entry(&broken));
+        assert_eq!(it.label_text(), "broken.desktop");
+
+        let text = entries(1).remove(0);
+        let it = IconItem::new(&text, 64, &no_icons());
+        assert!(!it.show_desktop_entry(&text));
+        assert_eq!(it.label_text(), "file0.txt");
+    }
+
+    fn field_desktop_entries() {
+        // --- IconField: .desktop names only when the field asks for them ---
+        let td = tempfile::tempdir().unwrap();
+        let app = desktop_file(td.path(), "app.desktop", "[Desktop Entry]\nType=Application\nName=My App\nExec=true\n");
+        let field = IconField::new();
+        field.set_entries(&[app]);
+        let label = |f: &IconField| f.inner.layout.realized.borrow().get(&0).map(|it| it.label_text());
+        assert_eq!(label(&field).as_deref(), Some("app.desktop"), "off by default");
+        field.set_show_desktop_entries(true);
+        assert_eq!(label(&field).as_deref(), Some("My App"));
+        field.set_show_desktop_entries(false);
+        assert_eq!(label(&field).as_deref(), Some("app.desktop"));
+    }
+
     fn icon_item_left_out_badge() {
         // --- IconItem: a left-out entry shows the badge without changing size ---
         let mut left = entries(1).remove(0);
