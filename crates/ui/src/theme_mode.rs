@@ -24,6 +24,51 @@ pub fn apply_theme_mode(mode: ThemeMode) {
     if settings.is_gtk_application_prefer_dark_theme() != dark {
         settings.set_gtk_application_prefer_dark_theme(dark);
     }
+    set_interface_color_scheme(&settings, dark);
+}
+
+/// GtkSettings property GTK 4.20+ reads to pick the light or dark variant of
+/// the theme; it ignores the deprecated `gtk-application-prefer-dark-theme`
+/// (GTK 4.24 drew light buttons in the panel with only that one set).
+const COLOR_SCHEME_PROPERTY: &str = "gtk-interface-color-scheme";
+
+/// Enum nick of `GtkInterfaceColorScheme` for the wanted variant.
+fn color_scheme_nick(dark: bool) -> &'static str {
+    if dark { "dark" } else { "light" }
+}
+
+/// Set `gtk-interface-color-scheme` on GTK 4.20+ (a no-op on older GTK,
+/// which lacks the property). Written only when it differs, like the other
+/// settings in [`apply_theme_mode`].
+fn set_interface_color_scheme(settings: &gtk::Settings, dark: bool) {
+    use gtk::glib;
+    use gtk::prelude::ObjectExt;
+    let Some(pspec) = settings.find_property(COLOR_SCHEME_PROPERTY) else { return };
+    let nick = color_scheme_nick(dark);
+    let Some(class) = glib::EnumClass::with_type(pspec.value_type()) else {
+        opusdm_ipc::err_log!("ui", "{COLOR_SCHEME_PROPERTY} is not an enum ({}), dark/light not applied", pspec.value_type());
+        return;
+    };
+    let Some(value) = class.to_value_by_nick(nick) else {
+        opusdm_ipc::err_log!("ui", "{COLOR_SCHEME_PROPERTY} has no value '{nick}', dark/light not applied");
+        return;
+    };
+    let current = settings.property_value(COLOR_SCHEME_PROPERTY);
+    if glib::EnumValue::from_value(&current).map(|(_, v)| v.nick()) == Some(nick) {
+        return;
+    }
+    settings.set_property_from_value(COLOR_SCHEME_PROPERTY, &value);
+}
+
+#[cfg(test)]
+mod color_scheme_tests {
+    use super::*;
+
+    #[test]
+    fn color_scheme_nick_follows_the_theme_mode() {
+        assert_eq!(color_scheme_nick(true), "dark");
+        assert_eq!(color_scheme_nick(false), "light");
+    }
 }
 
 /// Name of the accent colour [`chrome_css`] defines, for program CSS that

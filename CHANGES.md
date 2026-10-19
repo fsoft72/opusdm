@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-19
+- Fix (ui): dark mode on GTK 4.20+. `apply_theme_mode` also sets `gtk-interface-color-scheme` (`dark`/`light`), the GtkSettings property GTK 4.20+ uses to pick the theme variant; it ignores the deprecated `gtk-application-prefer-dark-theme`, so on GTK 4.24 (Ubuntu 26.10) the GTK-drawn buttons of the panel (clock, notifications, trays) were light. The property is looked up at run time (`find_property`): older GTK lacks it and nothing changes there; an unexpected type or nick is logged with `err_log!`. Written only when it differs, like the other two settings. Test: `color_scheme_nick_follows_the_theme_mode`. Checked: Xvfb session in an ubuntu:26.10 container with the dreamos-ubuntu packages (GTK 4.24.1), Openbox + opusdm-hub, skel `gtk-4.0/settings.ini` without any color-scheme key: before the fix the clock and bell buttons were light, after it they are dark. NOT checked: switching to the light theme from the settings, the running session (GTK 4.20.1), the CLAUDE.md rule 4 checklist.
 - Chore: added the MIT `LICENSE` file at the root (Copyright (c) 2026 Fabio Rotondo); `license = "MIT"` in `[workspace.package]`, inherited by every crate and xtask (`license.workspace = true`). Metadata only, no code change. Checked: `cargo metadata`.
 
 ## 2026-10-18
