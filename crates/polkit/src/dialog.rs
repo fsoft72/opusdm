@@ -6,7 +6,7 @@
 //! forever: after a few runs the dialog shows the error and waits.
 
 use crate::agent::{AgentMsg, Outcome, Request};
-use crate::helper::{HelperEvent, Session, HELPER_PATH};
+use crate::helper::{HelperEvent, Session, HELPER_PATH, HELPER_SOCKET};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
@@ -222,7 +222,7 @@ impl Dialog {
         self.run_had_error.set(false);
         self.run_prompted.set(false);
         self.set_answering(false);
-        let (session, events) = match Session::start(Path::new(HELPER_PATH), self.selected_user(), &self.cookie) {
+        let (session, events) = match Session::open(Path::new(HELPER_SOCKET), Path::new(HELPER_PATH), self.selected_user(), &self.cookie) {
             Ok(started) => started,
             Err(e) => {
                 opusdm_ipc::err_log!("opusdm-polkit", "cannot start {HELPER_PATH}: {e}");
