@@ -612,6 +612,10 @@ little and save it.
   with no or an unknown extension the format of the bar is appended. The window
   closes after a successful save; an error is shown under the image and nothing
   is lost.
+- **Scale (%):** in the bar, 1 to 400 (default 100). Save as and Quick save
+  write the image at that percentage of its size (after the crop), with the
+  same factor on width and height so the aspect ratio is kept. Copy is not
+  scaled.
 - **Quick save:** writes a PNG named `shot-YYYYMMDD-HHMMSS.png` in
   `~/Pictures/Screenshots` (created if needed, an existing name is never
   overwritten) and closes.

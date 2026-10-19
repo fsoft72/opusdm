@@ -123,6 +123,7 @@ struct Ui {
     quality: gtk::Scale,
     lossless: gtk::CheckButton,
     delay: gtk::SpinButton,
+    scale: gtk::SpinButton,
     state: RefCell<State>,
 }
 
@@ -161,6 +162,10 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     delay.set_value(config::load().delay_secs as f64);
     delay.set_tooltip_text(Some("Seconds to wait before the screen is captured, from the next launch"));
 
+    let scale = gtk::SpinButton::with_range(export::MIN_SCALE_PERCENT as f64, export::MAX_SCALE_PERCENT as f64, 1.0);
+    scale.set_value(100.0);
+    scale.set_tooltip_text(Some("Size of the saved image as a percentage of the original, keeping the aspect ratio"));
+
     let ui = Rc::new(Ui {
         window: window.clone(),
         canvas: canvas.clone(),
@@ -170,6 +175,7 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
         quality,
         lossless,
         delay,
+        scale,
         state: RefCell::new(State {
             base,
             surface,
@@ -309,6 +315,8 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar.append(&ui.format);
     bar.append(&ui.quality);
     bar.append(&ui.lossless);
+    bar.append(&gtk::Label::new(Some("Scale (%)")));
+    bar.append(&ui.scale);
     bar.append(&gtk::Label::new(Some("Delay (s)")));
     bar.append(&ui.delay);
     save_delay_on_close(&ui.window, &ui.delay);
@@ -714,6 +722,15 @@ fn final_image(ui: &Ui) -> Option<RgbaImage> {
     }
 }
 
+/// The image to write to a file: [`final_image`] scaled by the percentage of
+/// the bottom bar.
+fn image_to_save(ui: &Ui) -> Option<RgbaImage> {
+    let img = final_image(ui)?;
+    // Takes a number typed but not yet confirmed with Enter.
+    ui.scale.update();
+    Some(export::scale(img, ui.scale.value_as_int().max(0) as u32))
+}
+
 /// Put the image on the clipboard. The window stays open: without a clipboard
 /// manager the content would vanish with the process.
 fn copy_to_clipboard(ui: &Ui) {
@@ -727,7 +744,7 @@ fn copy_to_clipboard(ui: &Ui) {
 
 /// Save a PNG in `~/Pictures/Screenshots` and close.
 fn quick_save(ui: &Rc<Ui>) {
-    let Some(img) = final_image(ui) else { return };
+    let Some(img) = image_to_save(ui) else { return };
     let Some(home) = dirs::home_dir() else {
         show_error(ui, "cannot find the home directory for the quick save");
         return;
@@ -746,7 +763,7 @@ fn quick_save(ui: &Rc<Ui>) {
 
 /// Ask for a file name and save in the chosen format, then close.
 fn save_as(ui: &Rc<Ui>) {
-    let Some(img) = final_image(ui) else { return };
+    let Some(img) = image_to_save(ui) else { return };
     let format = selected_format(ui);
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     let mut default_filter = None;
