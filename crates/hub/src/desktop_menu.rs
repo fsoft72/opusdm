@@ -242,7 +242,7 @@ pub(crate) fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opu
             if opens_in_lister {
                 opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::SpawnRequested { start_path: Some(path.clone()) }, "hub command");
             } else {
-                crate::desktop_windows::open_file(&widgets.cmd_tx, &path);
+                crate::desktop_windows::open_file(&widgets.primary_window(), &widgets.cmd_tx, &path);
             }
         });
         menu.append(&btn);

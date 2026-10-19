@@ -212,15 +212,16 @@ pub(crate) fn run_file_type(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std
     true
 }
 
-/// Open the file `path` of a desktop icon. A `.desktop` file is launched, as
-/// in a group: checked before the file types, because the default "Source
-/// file" type opens `*.desktop` in the viewer (right in a Lister, wrong for a
-/// launcher on the desktop). Other files go through their file type when they
-/// have one, else to the default application.
-pub(crate) fn open_file(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) {
+/// Open the file `path` of a desktop icon. A `.desktop` file is launched
+/// after a confirmation requester over `parent`: checked before the file
+/// types, because the default "Source file" type opens `*.desktop` in the
+/// viewer (right in a Lister, wrong for a launcher on the desktop). Other
+/// files go through their file type when they have one, else to the default
+/// application.
+pub(crate) fn open_file(parent: &gtk::ApplicationWindow, cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) {
     let entry = opusdm_iconview::scan::entry_for_path(path);
     if opusdm_hub::leftout::launch_action(&entry) == opusdm_hub::leftout::LaunchAction::DesktopEntry {
-        launch_desktop_file(path);
+        launch_desktop_file(parent, path);
         return;
     }
     if run_file_type(cmd_tx, path) {
@@ -231,10 +232,11 @@ pub(crate) fn open_file(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::pa
     }
 }
 
-/// Launch the application the `.desktop` file `path` describes. A file GIO
-/// cannot parse goes to the default application instead, so it can still be
-/// looked at. Failures are logged.
-fn launch_desktop_file(path: &Path) {
+/// Ask over `parent` whether to launch the application the `.desktop` file
+/// `path` describes (its name, and the command it runs as the detail), and
+/// launch it on Launch. A file GIO cannot parse goes to the default
+/// application instead, so it can still be looked at. Failures are logged.
+fn launch_desktop_file(parent: &gtk::ApplicationWindow, path: &Path) {
     let Some(info) = gio::DesktopAppInfo::from_filename(path) else {
         opusdm_ipc::err_log!("hub", "{} is not a valid .desktop file, opening it instead", path.display());
         if let Err(e) = open_default(path) {
@@ -242,9 +244,24 @@ fn launch_desktop_file(path: &Path) {
         }
         return;
     };
-    if let Err(e) = info.launch(&[], gio::AppLaunchContext::NONE) {
-        opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", path.display());
-    }
+    let message = format!("Launch \"{}\"?", info.name());
+    let command = info.commandline().map(|c| c.display().to_string());
+    let path = path.to_path_buf();
+    opusdm_ui::requester(
+        parent,
+        "Request",
+        &message,
+        command.as_deref(),
+        &[("Launch", true), ("Cancel", false)],
+        move |confirmed| {
+            if !confirmed {
+                return;
+            }
+            if let Err(e) = info.launch(&[], gio::AppLaunchContext::NONE) {
+                opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", path.display());
+            }
+        },
+    );
 }
 
 /// The `file://` URI of `path`, escaped by GIO, so names with `#`, `%`, `?`,
@@ -278,7 +295,7 @@ pub(crate) fn wire_primary_icon_field(widgets: &Rc<Widgets>, field: &opusdm_icon
             if opusdm_hub::leftout::opens_in_lister(&entry) {
                 opusdm_hub::channels::send_or_log(&cmd_tx, HubCmd::SpawnRequested { start_path: Some(entry.path) }, "hub command");
             } else {
-                open_file(&cmd_tx, &entry.path);
+                open_file(&widgets.primary_window(), &cmd_tx, &entry.path);
             }
         });
     }
