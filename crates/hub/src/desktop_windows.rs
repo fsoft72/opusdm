@@ -212,14 +212,38 @@ pub(crate) fn run_file_type(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std
     true
 }
 
-/// Open the file `path` as a double click in a Lister would: through its
-/// file type when it has one, else with the default application.
+/// Open the file `path` of a desktop icon. A `.desktop` file is launched, as
+/// in a group: checked before the file types, because the default "Source
+/// file" type opens `*.desktop` in the viewer (right in a Lister, wrong for a
+/// launcher on the desktop). Other files go through their file type when they
+/// have one, else to the default application.
 pub(crate) fn open_file(cmd_tx: &std::sync::mpsc::Sender<HubCmd>, path: &std::path::Path) {
+    let entry = opusdm_iconview::scan::entry_for_path(path);
+    if opusdm_hub::leftout::launch_action(&entry) == opusdm_hub::leftout::LaunchAction::DesktopEntry {
+        launch_desktop_file(path);
+        return;
+    }
     if run_file_type(cmd_tx, path) {
         return;
     }
     if let Err(e) = open_default(path) {
         opusdm_ipc::err_log!("hub", "cannot open {}: {e}", path.display());
+    }
+}
+
+/// Launch the application the `.desktop` file `path` describes. A file GIO
+/// cannot parse goes to the default application instead, so it can still be
+/// looked at. Failures are logged.
+fn launch_desktop_file(path: &Path) {
+    let Some(info) = gio::DesktopAppInfo::from_filename(path) else {
+        opusdm_ipc::err_log!("hub", "{} is not a valid .desktop file, opening it instead", path.display());
+        if let Err(e) = open_default(path) {
+            opusdm_ipc::err_log!("hub", "cannot open {}: {e}", path.display());
+        }
+        return;
+    };
+    if let Err(e) = info.launch(&[], gio::AppLaunchContext::NONE) {
+        opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", path.display());
     }
 }
 
