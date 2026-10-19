@@ -6,6 +6,7 @@ members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/
 version = "0.10.0"
 edition = "2021"
 rust-version = "1.92"
+license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

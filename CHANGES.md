@@ -1,5 +1,8 @@
 # Changes
 
+## 2026-10-19
+- Chore: added the MIT `LICENSE` file at the root (Copyright (c) 2026 Fabio Rotondo); `license = "MIT"` in `[workspace.package]`, inherited by every crate and xtask (`license.workspace = true`). Metadata only, no code change. Checked: `cargo metadata`.
+
 ## 2026-10-18
 - Config (openbox): removed the `Print` and `Alt+Print` keybindings from `openbox-rc.xml`. They ran `scrot`, which is not installed ("Failed to execute child process scrot"). Screenshots are handled by OpusDM only (`Ctrl+Print` global hotkey of the hub). Checked: `xmllint` on the file. NOT done: the installed copy `/opt/opusdm/config/openbox-rc.xml` (needs sudo) and the reload of the running Openbox.
 - Feature (shot): Ctrl+Enter, or a click of the right button, while marking the area keeps the whole screen (selection or not): the overlay passes the full capture to the editor like Enter does for a selection. The label of the overlay says so. New Crop tool in the editor tool bar: drag the area to keep, drag its sides to adjust, a click without a drag removes it; the part outside is dimmed and the saved/copied image is the rendered picture cropped to it (`selection::crop_rect`, `final_image`). The crop is non-destructive: the canvas keeps the full image and annotations stay editable outside the crop; there is no undo step for it (click to remove). Tests: `a_crop_is_a_rect_or_nothing`, the crop icon in `every_icon_paints_something`; all opusdm-shot tests pass, clippy clean. NOT checked on screen: the overlay shortcuts, the Crop tool, a saved cropped file, Wayland, the CLAUDE.md rule 4 checklist (the global Print hotkey that starts opusdm-shot was not exercised).
