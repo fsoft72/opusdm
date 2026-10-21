@@ -4,7 +4,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_network::profile::Profile;
-use opusdm_network_config::session::EditSession;
+use crate::session::EditSession;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 

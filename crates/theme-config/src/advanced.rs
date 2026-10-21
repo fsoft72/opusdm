@@ -4,7 +4,7 @@
 //! changes (picking another entry, closing Settings) asks first, see
 //! `opusdm_ui::confirm_leave`.
 
-use crate::tools::{self, Action};
+use crate::tools;
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ui::EmbeddedTool;
@@ -26,18 +26,15 @@ type BuildTool = fn(&gtk::Window) -> Rc<dyn EmbeddedTool>;
 /// One entry of the list.
 struct Entry {
     label: &'static str,
-    /// The embedded tool, or `None` while the entry still opens its own window.
-    build: Option<BuildTool>,
-    /// What the placeholder button does while `build` is `None`.
-    window: Action,
+    build: BuildTool,
 }
 
 /// The entries of the list, in order.
 const ENTRIES: [Entry; 4] = [
-    Entry { label: "Hotkeys", build: Some(build_hotkeys), window: Action::Spawn("opusdm-lister", &["--edit-hotkeys"]) },
-    Entry { label: "File Types", build: Some(build_file_types), window: Action::Spawn("opusdm-lister", &["--edit-filetypes"]) },
-    Entry { label: "Input", build: Some(build_input), window: Action::Spawn("opusdm-input-config", &[]) },
-    Entry { label: "Network", build: None, window: Action::Spawn("opusdm-network-manager", &[]) },
+    Entry { label: "Hotkeys", build: build_hotkeys },
+    Entry { label: "File Types", build: build_file_types },
+    Entry { label: "Input", build: build_input },
+    Entry { label: "Network", build: build_network },
 ];
 
 /// The Hotkeys editor.
@@ -53,6 +50,11 @@ fn build_file_types(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
 /// The Input tabs (mouse, touchpad, keyboard).
 fn build_input(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
     opusdm_input_config::ui::embedded(window)
+}
+
+/// The Network connections.
+fn build_network(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
+    opusdm_network_config::window::embedded(window)
 }
 
 /// What the callbacks of the tab share.
@@ -180,31 +182,11 @@ impl Advanced {
         let entry = &ENTRIES[index];
         let name = format!("entry-{index}");
         if self.stack.child_by_name(&name).is_none() {
-            match entry.build {
-                Some(build) => {
-                    let tool = build(&window);
-                    self.stack.add_named(&tool.widget(), Some(&name));
-                    self.tools.borrow_mut()[index] = Some(tool);
-                }
-                None => {
-                    self.stack.add_named(&placeholder(entry), Some(&name));
-                }
-            }
+            let tool = (entry.build)(&window);
+            self.stack.add_named(&tool.widget(), Some(&name));
+            self.tools.borrow_mut()[index] = Some(tool);
         }
         self.stack.set_visible_child_name(&name);
         self.current.set(Some(index));
     }
-}
-
-/// The page of an entry that still opens its own window.
-fn placeholder(entry: &'static Entry) -> gtk::Box {
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    page.set_margin_top(MARGIN);
-    page.set_margin_start(MARGIN);
-    page.set_margin_end(MARGIN);
-    let button = gtk::Button::with_label(&format!("Open {}", entry.label));
-    button.set_halign(gtk::Align::Start);
-    button.connect_clicked(move |_| tools::run(&entry.window));
-    page.append(&button);
-    page
 }

@@ -3062,6 +3062,7 @@ dependencies = [
  "opusdm-input-config",
  "opusdm-ipc",
  "opusdm-lister",
+ "opusdm-network-config",
  "opusdm-themepack",
  "opusdm-ui",
  "serde",
