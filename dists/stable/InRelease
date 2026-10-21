@@ -1,0 +1,42 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Wed, 21 Oct 2026 06:39:07 +0000
+Label: OpusDM
+Origin: OpusDM
+Suite: stable
+MD5Sum:
+ e9b69221d28cf40a3a0349d48dfafb78              136 Release
+ d2d436945f4c31a0443ecf643ae598ae             1619 main/binary-amd64/Packages
+ 8cb13ab79c247b21b9e4f150241056b6              932 main/binary-amd64/Packages.gz
+SHA1:
+ d42891ebd8b82a7fe70dcd504c8340469d8c6adb              136 Release
+ 497f53ec30e5441125a31315f027a4c55ed5b0ff             1619 main/binary-amd64/Packages
+ 00b14d5e6fdf50a67d6bc8c3c5102584b5fa6808              932 main/binary-amd64/Packages.gz
+SHA256:
+ e9da2f656341c901e25f30dcfb4738f89a8f5353056248aefb0e6ecba80e8441              136 Release
+ ba1ec16a5d784c37f55db0258b3fe4dbb5fd9d178dee48e27644ed44d66e2b4f             1619 main/binary-amd64/Packages
+ 107feb755d8e5b802f9c608de11d9fe15312a579495e58a033a2cc3abf796a8c              932 main/binary-amd64/Packages.gz
+SHA512:
+ 02c07a20b1090fa0fa216399917201ece28682dd240251f0b56d7748ac319917d48f9d37283b5c60c55166c8e7f8040f2e89f266b16b7b4f1056e65189da316a              136 Release
+ 2f537e6ab4d2f8dc98f7395839eea405db12e09e528f89761f1b90a252d296ebeeed22641ffe8ad6c4f797f21e5585c83b52624fad3857beca2ee2bbe708d6c1             1619 main/binary-amd64/Packages
+ 522fd92b4941368c542ee49875e2b1345162f2bea0bb7d6f551204ec5fae601db8544a9f25f5a4f13bcdd0b735177b1d7b42de053f956a1c70c06ac570068a03              932 main/binary-amd64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEEP3KN4tqPBrvbPxfcLv3oyoOLBlkFAmrYXgsACgkQLv3oyoOL
+BllLwg/+Il9uYwha6pGfHDK5x0h250ogJwkn72ULggSCB57K6RomR2SFl3zW3pAx
+ASE4d2mMM79pbLpdpx0LKTiK6Muk8t4w42IAJCWdUU3Wbq9TKQy93fiOIRYDsjPd
+fhTDrJhJUjtQxdeh21ZqbIYmiWwRvpVhHQFgWO+rCEth0WcwqDdUiiG2jCFstgWR
+5hb1dACUoiTOOQC+eAIL1NAx9fyb3+e3dkA2mCQiQt29OsEXyB5lHw18BBX5YntA
+hjomF1Sua5faV1J8vC1fwNG+MtcB6619iEoPA+bnu/0SX5tCpwRyD6zbqxPcinZJ
+B7S4Mo5f71v3KPoSJdPofXF/uXRzimAGeExNMvfqFKqYHhbN7Jgx15Z7wRjuCQH0
+sAjlI04R9aWWbrw1NaZDNTcxbOzQ0YkXf9Vx5ndQH+DSzoujgEwI08MQlgypF2ks
+A6CLquihi2dkq5KgORfJ545UWeJ1dxSZXX8tPzacXDKmiUIaYqtxRpdw63FBn0GZ
+dhwW83qAoEuKH4QvxWwyi5716xFemvjX/TXjWEYDYVAEf94STOIUeoK4fHmryVH8
+xu28bWSjmASfpFW80rrEm0Bbv7E/Z57dbhITW5oxIcd70Z2c5RCeakLTcjKP6Yzl
+TdFot7AcMmNBqu1UtBNndwDGAa7yJ/Ih8otHDRIsHNvOZYElbpY=
+=AwI+
+-----END PGP SIGNATURE-----

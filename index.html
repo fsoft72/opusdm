@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OpusDM apt repository</title>
+<h1>OpusDM apt repository</h1>
+<p>Ubuntu 26.04 and later, amd64.</p>
+<pre>
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://fsoft72.github.io/opusdm/opusdm.gpg -o /etc/apt/keyrings/opusdm.gpg
+echo "deb [signed-by=/etc/apt/keyrings/opusdm.gpg] https://fsoft72.github.io/opusdm stable main" | sudo tee /etc/apt/sources.list.d/opusdm.list
+sudo apt update
+sudo apt install opusdm
+</pre>
