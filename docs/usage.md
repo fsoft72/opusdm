@@ -1028,7 +1028,7 @@ Settings: Wi-Fi, Ethernet, WireGuard and OpenVPN, with their IPv4 and IPv6 setti
 be imported.
 
 - **Open it:** **Configure connections...** at the bottom of the network tray, the **Network**
-  the **Network** entry in the **Advanced** tab of OpusDM Settings, or run `opusdm-network-manager`. A second launch
+  entry in the **Advanced** tab of OpusDM Settings, or run `opusdm-network-manager`. A second launch
   only raises the open window.
 - **List (left):** every connection, grouped as Ethernet, Wi-Fi, VPN and Other, with
   *Connected* / *Connecting...* next to the active ones; the search field filters by name. The
