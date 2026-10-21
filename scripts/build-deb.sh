@@ -11,7 +11,7 @@
 # live-update.sh install are interchangeable:
 #   /opt/opusdm/{bin,config,themes,opusdm-session,opusdm-session-wayland}
 #   /usr/share/{themes,applications,icons}, the three session entries and a
-#   /usr/bin/opusdm-open-folder link.
+#   /usr/bin/opusdm-* link for every command.
 # Shared library dependencies are computed with dpkg-shlibdeps, so they match
 # the Ubuntu release the package is built on.
 set -eu
@@ -62,7 +62,11 @@ for f in "$ROOT$PREFIX"/bin/opusdm-*; do
 done
 cp -r "$DIST/config" "$DIST/themes" "$ROOT$PREFIX/"
 install -m 755 "$DIST/opusdm-session" "$DIST/opusdm-session-wayland" "$ROOT$PREFIX/"
-ln -s "$PREFIX/bin/opusdm-open-folder" "$ROOT/usr/bin/opusdm-open-folder"
+# Every command is linked into /usr/bin so it is on the PATH of any session
+# (the hub finds opusdm-lister through current_exe, which resolves the link)
+for f in "$ROOT$PREFIX"/bin/opusdm-*; do
+    ln -s "$PREFIX/bin/$(basename "$f")" "$ROOT/usr/bin/$(basename "$f")"
+done
 
 # Openbox theme, icon and the hidden per-app desktop entries
 cp -r "$DIST/share/." "$ROOT/usr/share/"
