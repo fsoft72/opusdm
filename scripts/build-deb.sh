@@ -107,7 +107,7 @@ Architecture: $ARCH
 Maintainer: Fabio Rotondo <fabio.rotondo@gmail.com>
 Installed-Size: $INSTALLED_SIZE
 Depends: $SHLIBS
-Recommends: openbox, picom, labwc, wayfire, wlr-randr, grim, gnome-keyring, gstreamer1.0-gtk4, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, webp-pixbuf-loader
+Recommends: openbox, picom, labwc, wayfire, wlr-randr, grim, curl, gnome-keyring, gstreamer1.0-gtk4, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, webp-pixbuf-loader
 Homepage: https://github.com/fsoft72/opusdm
 Description: OpusDM desktop environment and file manager
  OpusDM is a desktop made of a hub, the Lister file manager, a panel and a
