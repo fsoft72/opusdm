@@ -257,6 +257,9 @@ fn show_note(note: &gtk::Label, text: &str) {
     note.set_visible(true);
 }
 
+/// Titles of the tabs shown without the Cancel and Apply row.
+const TABS_WITHOUT_BUTTONS: [&str; 3] = ["Dock", "Startup Apps", "Advanced"];
+
 fn build_window(app: &gtk::Application) {
     let desktop_data = opusdm_desktop_config::model::load();
     let (settings_data, migration_note) = migrated_settings(model::load_settings(), &desktop_data);
@@ -332,6 +335,14 @@ fn build_window(app: &gtk::Application) {
     outer.append(&notebook);
     outer.append(&note);
     outer.append(&buttons);
+    // These tabs have no use for the window-wide Cancel and Apply row.
+    notebook.connect_switch_page({
+        let buttons = buttons.clone();
+        move |notebook, page, _| {
+            let title = notebook.tab_label_text(page).unwrap_or_default();
+            buttons.set_visible(!TABS_WITHOUT_BUTTONS.contains(&title.as_str()));
+        }
+    });
     window.set_child(Some(&outer));
 
     let sections = Rc::new(Sections { theme_mode, icon_set, grid, folder, panel, screens, startup_apps, windows, bg, dock, dock_apps, behavior });
