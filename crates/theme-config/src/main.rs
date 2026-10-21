@@ -10,9 +10,10 @@ use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
 use opusdm_desktop_config::ui::{BrightnessSection, FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+mod advanced;
 mod apply;
 mod background;
 mod builder;
@@ -267,7 +268,7 @@ fn build_window(app: &gtk::Application) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM Settings")
-        .default_width(480)
+        .default_width(820)
         .default_height(680)
         .build();
     let chrome = install_chrome(settings_data.appearance.theme_mode, &look_css);
@@ -315,8 +316,8 @@ fn build_window(app: &gtk::Application) {
     tab(scrolled(&startup_page).upcast_ref(), "Startup Apps");
 
     // Advanced and System tabs: buttons that open the other tools.
-    tab(tools::build_advanced_page().upcast_ref(), "Advanced");
-    tab(tools::build_system_page().upcast_ref(), "System");
+    let (advanced_page, advanced) = advanced::build();
+    tab(advanced_page.upcast_ref(), "Advanced");
 
     let note = build_note(migration_note.as_deref());
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -352,7 +353,26 @@ fn build_window(app: &gtk::Application) {
             editor::open(&app, Some(&window), select_theme.clone());
         });
     }
+    guard_close(&window, advanced);
     window.present();
+}
+
+/// Ask before the window closes while the tool on the Advanced tab has
+/// unsaved changes. The guard owns the tab state for the whole run.
+fn guard_close(window: &gtk::ApplicationWindow, advanced: Rc<advanced::Advanced>) {
+    let allowed = Rc::new(Cell::new(false));
+    window.connect_close_request(move |w| {
+        if allowed.get() || !advanced.is_dirty() { return gtk::glib::Propagation::Proceed; }
+        let (allowed, w) = (allowed.clone(), w.clone());
+        advanced.confirm_close(
+            move || {
+                allowed.set(true);
+                w.close();
+            },
+            || {},
+        );
+        gtk::glib::Propagation::Stop
+    });
 }
 
 /// A function that rebuilds the icon-set picker with `slug` selected,
