@@ -258,7 +258,7 @@ fn show_note(note: &gtk::Label, text: &str) {
 }
 
 /// Titles of the tabs shown without the Cancel and Apply row.
-const TABS_WITHOUT_BUTTONS: [&str; 3] = ["Dock", "Startup Apps", "Advanced"];
+const TABS_WITHOUT_BUTTONS: [&str; 1] = ["Advanced"];
 
 fn build_window(app: &gtk::Application) {
     let desktop_data = opusdm_desktop_config::model::load();
