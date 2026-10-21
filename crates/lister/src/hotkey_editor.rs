@@ -474,7 +474,7 @@ pub fn embedded(window: &gtk::Window) -> Rc<HotkeysTool> {
     revert_btn.connect_clicked({
         let weak = weak.clone();
         move |_| match weak.upgrade() {
-            Some(tool) => tool.revert(),
+            Some(tool) => tool.revert(Box::new(|| {})),
             None => opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: the editor is gone, Revert ignored"),
         }
     });
@@ -580,10 +580,11 @@ impl EmbeddedTool for HotkeysTool {
         });
     }
 
-    fn revert(&self) {
+    fn revert(&self, done: Box<dyn FnOnce()>) {
         if let Some(body) = self.body.borrow().as_ref() { body.revert(); }
         self.status.set_text("");
         self.refresh_buttons();
+        done();
     }
 }
 

@@ -48,9 +48,12 @@ impl<B: Backend> Session<B> {
         errors
     }
 
-    /// Write the current settings to `path`; they stay applied.
+    /// Write the current settings to `path`; they stay applied and become
+    /// what a later revert goes back to, so a window that stays open after
+    /// Save does not undo it.
     pub fn commit(&mut self, path: &Path) -> Result<(), InputError> {
         store::save_to(path, &self.current)?;
+        self.snapshot = self.current.clone();
         self.saved = true;
         Ok(())
     }
@@ -130,14 +133,15 @@ mod tests {
     }
 
     #[test]
-    fn a_change_after_a_save_can_be_reverted() {
+    fn a_change_after_a_save_is_reverted_to_the_saved_values() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = session();
         s.change(with_speed(0.5));
         s.commit(&dir.path().join("input.json")).unwrap();
         s.change(with_speed(0.9));
-        s.revert();
-        assert_eq!(s.current().mouse.speed, 0.0);
+        assert!(s.revert().is_empty());
+        assert_eq!(s.current().mouse.speed, 0.5);
+        assert_eq!(s.backend.applied().last(), Some(&Change::MouseSpeed(0.5)));
     }
 
     #[test]

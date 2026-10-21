@@ -3059,6 +3059,7 @@ dependencies = [
  "gtk4",
  "opusdm-desktop-config",
  "opusdm-iconview",
+ "opusdm-input-config",
  "opusdm-ipc",
  "opusdm-lister",
  "opusdm-themepack",

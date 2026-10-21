@@ -23,8 +23,10 @@ pub trait EmbeddedTool {
     /// `false` when saving failed (the tool shows why and stays dirty).
     fn save(&self, done: Box<dyn FnOnce(bool)>);
 
-    /// Drop the unsaved changes and put the previous values back.
-    fn revert(&self);
+    /// Drop the unsaved changes and put the previous values back. `done` runs
+    /// when that is finished: a tool that undoes live changes on a worker
+    /// thread must not let the host quit before it is.
+    fn revert(&self, done: Box<dyn FnOnce()>);
 }
 
 /// What the user picked in the question about unsaved changes.
@@ -76,8 +78,8 @@ pub fn confirm_leave(parent: &impl IsA<gtk::Window>, tool: &Rc<dyn EmbeddedTool>
                 tool.save(Box::new(move |saved| if saved { proceed() } else { cancel() }));
             }
             LeaveStep::RevertThenProceed => {
-                tool.revert();
-                proceed();
+                let proceed = proceed.clone();
+                tool.revert(Box::new(move || proceed()));
             }
             LeaveStep::Stay => cancel(),
         }

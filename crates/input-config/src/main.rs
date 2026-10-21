@@ -3,11 +3,10 @@
 //! the previous values back. See
 //! `docs/superpowers/specs/2026-10-06-input-config-design.md`.
 
-mod ui;
-
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_input_config::backend::session_problem;
+use opusdm_input_config::ui;
 
 /// Load the shared OpusDM look (theme mode, fonts).
 fn apply_theme() {

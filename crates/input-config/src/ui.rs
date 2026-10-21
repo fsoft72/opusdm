@@ -1,4 +1,7 @@
 //! The Input window: Mouse, Touchpad and Keyboard tabs, live apply, Save and Cancel.
+//! The same tabs also run inside another window (`embedded`, the Advanced tab of
+//! Settings), where Save keeps the window open and a Revert button puts the saved
+//! values back.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -8,11 +11,11 @@ use std::time::Duration;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_input_config::backend::{for_session, GroupStatus, Status};
-use opusdm_input_config::parse::{load_xkb_lists, XkbLists};
-use opusdm_input_config::worker::{self, Reply, Request};
-use opusdm_ui::{clear_children, labeled_row, LabelWidth};
-use opusdm_input_config::{
+use crate::backend::{for_session, GroupStatus, Status};
+use crate::parse::{load_xkb_lists, XkbLists};
+use crate::worker::{self, Reply, Request};
+use opusdm_ui::{clear_children, labeled_row, EmbeddedTool, LabelWidth};
+use crate::{
     store, InputError, InputSettings, LayoutEntry, MAX_LAYOUTS, REPEAT_DELAY_MAX_MS, REPEAT_DELAY_MIN_MS, REPEAT_RATE_MAX, REPEAT_RATE_MIN,
     SPEED_MAX, SPEED_MIN,
 };
@@ -34,16 +37,40 @@ const LOADING_TEXT: &str = "Reading the input devices...";
 
 /// An edit of the settings, applied to a copy of the current ones.
 type Edit = Box<dyn FnOnce(&mut InputSettings)>;
+/// Told whether a Save asked by the host worked.
+type SaveDone = Box<dyn FnOnce(bool)>;
+
+/// Where the tabs live.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The Input window: it closes after Save and after a revert.
+    Window,
+    /// A tab of another window: nothing closes, the host asks before leaving.
+    Embedded,
+}
 
 /// What every callback of the window shares.
 struct State {
+    mode: Mode,
     /// Feeds the worker thread that owns the live session.
     requests: mpsc::Sender<Request>,
     /// The settings the controls show; every change is sent to the worker.
     current: RefCell<InputSettings>,
     window: gtk::Window,
     save: gtk::Button,
+    /// The Revert button of an embedded tool.
+    revert: Option<gtk::Button>,
     status: gtk::Label,
+    /// Holds the tabs, or the loading text.
+    slot: gtk::Box,
+    /// The settings as last saved (or read): what Revert goes back to.
+    baseline: RefCell<InputSettings>,
+    /// Which groups can be edited, kept to rebuild the tabs after a revert.
+    opened: RefCell<Option<Status>>,
+    /// Told how a Save asked by the host ended.
+    commit_done: RefCell<Option<SaveDone>>,
+    /// Told when a Revert asked by the host is finished.
+    revert_done: RefCell<Option<Box<dyn FnOnce()>>>,
     pending: RefCell<Option<Edit>>,
     timer: RefCell<Option<glib::SourceId>>,
     /// The window may close now: saved, reverted, or the worker is gone.
@@ -51,6 +78,28 @@ struct State {
 }
 
 impl State {
+    /// A state with nothing read yet: the settings are defaults until the
+    /// worker reports `Reply::Opened`.
+    fn new(mode: Mode, requests: mpsc::Sender<Request>, window: gtk::Window, save: gtk::Button, revert: Option<gtk::Button>, status: gtk::Label, slot: gtk::Box) -> Self {
+        Self {
+            mode,
+            requests,
+            current: RefCell::new(InputSettings::default()),
+            window,
+            save,
+            revert,
+            status,
+            slot,
+            baseline: RefCell::new(InputSettings::default()),
+            opened: RefCell::new(None),
+            commit_done: RefCell::new(None),
+            revert_done: RefCell::new(None),
+            pending: RefCell::new(None),
+            timer: RefCell::new(None),
+            finished: Cell::new(false),
+        }
+    }
+
     /// Show the errors of the last apply in the status line (clear it when none).
     fn show_errors(&self, errors: &[InputError]) {
         self.status.set_text(&errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"));
@@ -72,11 +121,24 @@ impl State {
             current.clone()
         };
         self.send(Request::Change(next));
+        self.refresh_revert();
+    }
+
+    /// Whether something differs from the saved settings: a change applied
+    /// or one still waiting for the debounce.
+    fn is_dirty(&self) -> bool {
+        self.pending.borrow().is_some() || self.current.borrow().clone().normalized() != *self.baseline.borrow()
+    }
+
+    /// The Revert button follows the unsaved state.
+    fn refresh_revert(&self) {
+        if let Some(revert) = &self.revert { revert.set_sensitive(self.is_dirty()); }
     }
 
     /// Like `update`, after a short pause: a slider drag sends many values.
     fn update_debounced(self: &Rc<Self>, edit: Edit) {
         *self.pending.borrow_mut() = Some(edit);
+        self.refresh_revert();
         self.cancel_timer();
         let weak = Rc::downgrade(self);
         let id = glib::timeout_add_local_once(Duration::from_millis(DEBOUNCE_MS), move || {
@@ -107,6 +169,30 @@ impl State {
         if self.send(Request::Commit(store::input_path())) { self.save.set_sensitive(false); }
     }
 
+    /// Save for the host window: like `save`, but `done` hears how it ended.
+    fn save_then(&self, done: SaveDone) {
+        *self.commit_done.borrow_mut() = Some(done);
+        self.flush();
+        if self.send(Request::Commit(store::input_path())) {
+            self.save.set_sensitive(false);
+            return;
+        }
+        let done = self.commit_done.borrow_mut().take();
+        if let Some(done) = done { done(false); }
+    }
+
+    /// Revert for the host window: drop the waiting edit and put the saved
+    /// settings back; `done` runs when the worker has finished (at once when it
+    /// is gone, nothing can be reverted then).
+    fn revert_then(&self, done: Box<dyn FnOnce()>) {
+        self.cancel_timer();
+        self.pending.borrow_mut().take();
+        *self.revert_done.borrow_mut() = Some(done);
+        if self.send(Request::Revert) { return; }
+        let done = self.revert_done.borrow_mut().take();
+        if let Some(done) = done { done(); }
+    }
+
     /// The window was closed without Save: drop the waiting edit and ask the
     /// worker to put the snapshot back. Returns whether the window may close
     /// now; otherwise it closes when the worker reports the revert.
@@ -118,25 +204,47 @@ impl State {
         false
     }
 
-    /// One reply of the worker; `slot` holds the tabs.
-    fn on_reply(self: &Rc<Self>, reply: Reply, slot: &gtk::Box) {
+    /// One reply of the worker.
+    fn on_reply(self: &Rc<Self>, reply: Reply) {
         match reply {
             Reply::Opened { status, current } => {
+                *self.baseline.borrow_mut() = current.clone();
                 *self.current.borrow_mut() = current;
-                self.fill(slot, &status);
+                *self.opened.borrow_mut() = Some(status.clone());
+                self.fill(&status);
                 self.save.set_sensitive(true);
             }
             Reply::Applied(errors) => self.show_errors(&errors),
-            Reply::Committed(Ok(())) => self.close_now(),
+            Reply::Committed(Ok(())) if self.mode == Mode::Window => self.close_now(),
+            Reply::Committed(Ok(())) => {
+                *self.baseline.borrow_mut() = self.current.borrow().clone().normalized();
+                self.status.set_text("");
+                self.save.set_sensitive(true);
+                self.refresh_revert();
+                let done = self.commit_done.borrow_mut().take();
+                if let Some(done) = done { done(true); }
+            }
             Reply::Committed(Err(e)) => {
                 self.show_errors(&[e]);
                 self.save.set_sensitive(true);
+                let done = self.commit_done.borrow_mut().take();
+                if let Some(done) = done { done(false); }
             }
             Reply::Reverted(errors) => {
-                for e in errors {
+                for e in &errors {
                     opusdm_ipc::err_log!("opusdm-input-config", "revert: {e}");
                 }
-                self.close_now();
+                if self.mode == Mode::Window { return self.close_now(); }
+                *self.current.borrow_mut() = self.baseline.borrow().clone();
+                self.show_errors(&errors);
+                let status = self.opened.borrow().clone();
+                match status {
+                    Some(status) => self.fill(&status),
+                    None => opusdm_ipc::err_log!("opusdm-input-config", "revert before the devices were read: the tabs keep their old values"),
+                }
+                self.refresh_revert();
+                let done = self.revert_done.borrow_mut().take();
+                if let Some(done) = done { done(); }
             }
         }
     }
@@ -147,8 +255,9 @@ impl State {
         self.window.close();
     }
 
-    /// Put the three tabs in `slot`, in place of the loading text.
-    fn fill(self: &Rc<Self>, slot: &gtk::Box, status: &Status) {
+    /// Put the three tabs in the slot, in place of what it holds.
+    fn fill(self: &Rc<Self>, status: &Status) {
+        let slot = &self.slot;
         clear_children(slot);
         let notebook = gtk::Notebook::new();
         notebook.set_vexpand(true);
@@ -404,17 +513,8 @@ pub fn open(app: &gtk::Application) {
     let save = shell.button("Save");
     save.set_sensitive(false);
     let window = shell.window().clone();
-    let state = Rc::new(State {
-        requests,
-        current: RefCell::new(InputSettings::default()),
-        window: window.clone(),
-        save: save.clone(),
-        status: status_label,
-        pending: RefCell::new(None),
-        timer: RefCell::new(None),
-        finished: Cell::new(false),
-    });
-    listen(&state, reply_rx, slot);
+    let state = Rc::new(State::new(Mode::Window, requests, window.clone(), save.clone(), None, status_label, slot));
+    listen(&state, reply_rx);
 
     // Any way of closing the window except Save puts the old values back.
     {
@@ -442,12 +542,12 @@ pub fn open(app: &gtk::Application) {
 }
 
 /// Hand the replies of the worker to `state` until the window is gone.
-fn listen(state: &Rc<State>, replies: async_channel::Receiver<Reply>, slot: gtk::Box) {
+fn listen(state: &Rc<State>, replies: async_channel::Receiver<Reply>) {
     let weak: Weak<State> = Rc::downgrade(state);
     glib::spawn_future_local(async move {
         while let Ok(reply) = replies.recv().await {
             let Some(state) = weak.upgrade() else { return };
-            state.on_reply(reply, &slot);
+            state.on_reply(reply);
         }
         // The worker ended: nothing can be reverted any more.
         if let Some(state) = weak.upgrade() { state.finished.set(true); }
@@ -462,4 +562,88 @@ pub fn open_problem(app: &gtk::Application, message: &str) {
     shell.content().append(&label);
     shell.close_button("Close");
     shell.present();
+}
+
+/// The Input tabs inside another window (Advanced tab of Settings): Mouse,
+/// Touchpad and Keyboard apply live, with their own Save and Revert buttons.
+pub struct InputTool {
+    root: gtk::Box,
+    /// `None` when the session cannot be edited; the page then only says why.
+    state: Option<Rc<State>>,
+}
+
+/// Open the Input tabs for the host `window`. The devices are read on a worker
+/// thread, so the tabs appear a moment after the page.
+pub fn embedded(window: &gtk::Window) -> Rc<InputTool> {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, PAGE_SPACING);
+    root.set_margin_top(PAGE_MARGIN);
+    root.set_margin_bottom(PAGE_MARGIN);
+    root.set_margin_start(PAGE_MARGIN);
+    root.set_margin_end(PAGE_MARGIN);
+    if let Some(problem) = crate::backend::session_problem() {
+        let label = gtk::Label::new(Some(&problem));
+        label.set_wrap(true);
+        label.set_xalign(0.0);
+        root.append(&label);
+        return Rc::new(InputTool { root, state: None });
+    }
+    let (reply_tx, reply_rx) = async_channel::unbounded();
+    let requests = worker::spawn(for_session, reply_tx);
+    let status_label = gtk::Label::new(None);
+    status_label.set_wrap(true);
+    status_label.set_xalign(0.0);
+    let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    slot.set_vexpand(true);
+    slot.append(&gtk::Label::new(Some(LOADING_TEXT)));
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, PAGE_SPACING);
+    buttons.set_halign(gtk::Align::End);
+    let revert = gtk::Button::with_label("Revert");
+    let save = gtk::Button::with_label("Save");
+    revert.set_sensitive(false);
+    save.set_sensitive(false);
+    buttons.append(&revert);
+    buttons.append(&save);
+    root.append(&slot);
+    root.append(&status_label);
+    root.append(&buttons);
+
+    let state = Rc::new(State::new(Mode::Embedded, requests, window.clone(), save.clone(), Some(revert.clone()), status_label, slot));
+    listen(&state, reply_rx);
+    save.connect_clicked({
+        let state = state.clone();
+        move |_| state.save_then(Box::new(|_| {}))
+    });
+    revert.connect_clicked({
+        let state = state.clone();
+        move |_| state.revert_then(Box::new(|| {}))
+    });
+    Rc::new(InputTool { root, state: Some(state) })
+}
+
+impl EmbeddedTool for InputTool {
+    fn title(&self) -> &str {
+        "Input"
+    }
+
+    fn widget(&self) -> gtk::Widget {
+        self.root.clone().upcast()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.state.as_ref().is_some_and(|s| s.is_dirty())
+    }
+
+    fn save(&self, done: Box<dyn FnOnce(bool)>) {
+        match &self.state {
+            Some(state) => state.save_then(done),
+            None => done(false),
+        }
+    }
+
+    fn revert(&self, done: Box<dyn FnOnce()>) {
+        match &self.state {
+            Some(state) => state.revert_then(done),
+            None => done(),
+        }
+    }
 }

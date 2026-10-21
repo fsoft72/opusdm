@@ -36,7 +36,7 @@ struct Entry {
 const ENTRIES: [Entry; 4] = [
     Entry { label: "Hotkeys", build: Some(build_hotkeys), window: Action::Spawn("opusdm-lister", &["--edit-hotkeys"]) },
     Entry { label: "File Types", build: Some(build_file_types), window: Action::Spawn("opusdm-lister", &["--edit-filetypes"]) },
-    Entry { label: "Input", build: None, window: Action::Spawn("opusdm-input-config", &[]) },
+    Entry { label: "Input", build: Some(build_input), window: Action::Spawn("opusdm-input-config", &[]) },
     Entry { label: "Network", build: None, window: Action::Spawn("opusdm-network-manager", &[]) },
 ];
 
@@ -48,6 +48,11 @@ fn build_hotkeys(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
 /// The File Types editor.
 fn build_file_types(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
     opusdm_lister::filetypes_ui::embedded(window)
+}
+
+/// The Input tabs (mouse, touchpad, keyboard).
+fn build_input(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
+    opusdm_input_config::ui::embedded(window)
 }
 
 /// What the callbacks of the tab share.

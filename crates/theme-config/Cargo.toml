@@ -14,6 +14,7 @@ opusdm-ipc = { path = "../ipc" }
 opusdm-themepack = { path = "../themepack" }
 opusdm-desktop-config = { path = "../desktop-config" }
 opusdm-iconview = { path = "../iconview" }
+opusdm-input-config = { path = "../input-config" }
 # Only the editors are used, so the VTE terminal is left out.
 opusdm-lister = { path = "../lister", default-features = false }
 opusdm-ui = { path = "../ui" }
