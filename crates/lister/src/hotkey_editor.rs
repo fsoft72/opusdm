@@ -12,7 +12,8 @@ use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::bindings::{self, format_key, parse_key, BindingError, Hotkey, KeyCombo};
 use opusdm_ipc::function::{Function, FunctionId};
-use std::cell::RefCell;
+use opusdm_ui::EmbeddedTool;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -102,6 +103,8 @@ struct State {
     notes: RefCell<Vec<gtk::Box>>,
     save_btn: gtk::Button,
     window: gtk::Window,
+    /// Runs after every edit and rebuild, once the validation was repainted.
+    on_change: Rc<dyn Fn()>,
 }
 
 /// Command line flag that makes the Lister open only the Edit Hotkeys window.
@@ -178,31 +181,58 @@ pub fn open_standalone(app: &gtk::Application) {
     });
 }
 
-/// Fill `shell` with the hotkey editor. `save` receives the hotkeys when
-/// Save is pressed; the caller decides what happens to the window.
-fn build_editor(shell: opusdm_ui::DialogShell, hotkeys: Vec<Hotkey>, functions: Vec<Function>, save: Rc<dyn Fn(Vec<Hotkey>)>) {
-    let shell = shell.size(640, 420).scrolled();
-    let root = shell.content();
+/// The editor body: the rows and the Add button, with what is needed to tell
+/// whether they differ from the saved hotkeys.
+struct Body {
+    state: Rc<State>,
+    root: gtk::Box,
+    /// The hotkeys as last saved (or loaded).
+    saved: RefCell<Vec<Hotkey>>,
+}
 
+impl Body {
+    /// Whether the rows differ from the saved hotkeys.
+    fn is_dirty(&self) -> bool {
+        *self.state.hotkeys.borrow() != *self.saved.borrow()
+    }
+
+    /// Whether the rows pass the validation that gates Save.
+    fn is_valid(&self) -> bool {
+        bindings::validate_hotkeys(&self.state.hotkeys.borrow(), &known_ids(&self.state.functions)).is_empty()
+    }
+
+    /// Remember the rows as the saved hotkeys.
+    fn mark_saved(&self) {
+        *self.saved.borrow_mut() = self.state.hotkeys.borrow().clone();
+    }
+
+    /// Put the saved hotkeys back in the rows.
+    fn revert(&self) {
+        *self.state.hotkeys.borrow_mut() = self.saved.borrow().clone();
+        rebuild(&self.state);
+    }
+}
+
+/// Build the editor body over `hotkeys`. `window` owns the dialogs the rows
+/// open; `save_btn` is enabled only while nothing is wrong.
+fn build_body(window: &gtk::Window, hotkeys: Vec<Hotkey>, functions: Vec<Function>, save_btn: gtk::Button, on_change: Rc<dyn Fn()>) -> Body {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let rows_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     root.append(&rows_box);
     let add_btn = gtk::Button::with_label("Add Hotkey");
     add_btn.set_halign(gtk::Align::Start);
     root.append(&add_btn);
 
-    let save_btn = shell.button("Save");
-    shell.button_spacer();
-    shell.close_button("Close");
-
+    let saved = hotkeys.clone();
     let state = Rc::new(State {
         hotkeys: RefCell::new(hotkeys),
         functions,
         rows_box,
         notes: RefCell::new(Vec::new()),
-        save_btn: save_btn.clone(),
-        window: shell.window().clone(),
+        save_btn,
+        window: window.clone(),
+        on_change,
     });
-
     {
         let state = state.clone();
         add_btn.connect_clicked(move |_| {
@@ -210,12 +240,21 @@ fn build_editor(shell: opusdm_ui::DialogShell, hotkeys: Vec<Hotkey>, functions: 
             rebuild(&state);
         });
     }
-    {
-        let state = state.clone();
-        save_btn.connect_clicked(move |_| save(state.hotkeys.borrow().clone()));
-    }
-
     rebuild(&state);
+    Body { state, root, saved: RefCell::new(saved) }
+}
+
+/// Fill `shell` with the hotkey editor. `save` receives the hotkeys when
+/// Save is pressed; the caller decides what happens to the window.
+fn build_editor(shell: opusdm_ui::DialogShell, hotkeys: Vec<Hotkey>, functions: Vec<Function>, save: Rc<dyn Fn(Vec<Hotkey>)>) {
+    let shell = shell.size(640, 420).scrolled();
+    let save_btn = shell.button("Save");
+    shell.button_spacer();
+    shell.close_button("Close");
+    let body = build_body(shell.window(), hotkeys, functions, save_btn.clone(), Rc::new(|| {}));
+    shell.content().append(&body.root);
+    let state = body.state.clone();
+    save_btn.connect_clicked(move |_| save(state.hotkeys.borrow().clone()));
     shell.present();
 }
 
@@ -244,6 +283,7 @@ fn revalidate(state: &Rc<State>) {
         fill_notes(notes, index, hotkey, &errors);
     }
     state.save_btn.set_sensitive(errors.is_empty());
+    (state.on_change)();
 }
 
 /// Replace the content of a row's `notes` box with that row's errors and its
@@ -372,6 +412,179 @@ fn capture_key(state: &Rc<State>, index: usize) {
     }
     window.add_controller(controller);
     shell.present();
+}
+
+/// The connection of the embedded editor to the hub. Nothing reads the inbox
+/// between a load and a save, so a hub that quit shows up as a failed save.
+struct Link {
+    client: Client,
+    inbox: async_channel::Receiver<Inbound>,
+    /// A save is waiting for the hub's answer.
+    saving: Cell<bool>,
+}
+
+/// The Hotkeys editor inside another window (Advanced tab of Settings): the
+/// rows, a status line and its own Save and Revert buttons. It works on the
+/// hub's copy, like the standalone window.
+pub struct HotkeysTool {
+    root: gtk::Box,
+    window: gtk::Window,
+    body: Rc<RefCell<Option<Body>>>,
+    link: RefCell<Option<Rc<Link>>>,
+    status: gtk::Label,
+    save_btn: gtk::Button,
+    revert_btn: gtk::Button,
+}
+
+/// Open the Hotkeys editor for the host `window`. The rows appear once the hub
+/// answered; if it cannot be reached the page says so.
+pub fn embedded(window: &gtk::Window) -> Rc<HotkeysTool> {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    root.set_margin_top(12);
+    root.set_margin_bottom(12);
+    root.set_margin_start(12);
+    root.set_margin_end(12);
+    let slot = gtk::ScrolledWindow::builder().vexpand(true).hexpand(true).build();
+    slot.set_child(Some(&gtk::Label::new(Some("Loading the hotkeys..."))));
+    let status = gtk::Label::new(None);
+    status.set_xalign(0.0);
+    status.set_wrap(true);
+    status.add_css_class("error");
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    let revert_btn = gtk::Button::with_label("Revert");
+    let save_btn = gtk::Button::with_label("Save");
+    save_btn.set_sensitive(false);
+    revert_btn.set_sensitive(false);
+    buttons.append(&revert_btn);
+    buttons.append(&save_btn);
+    root.append(&slot);
+    root.append(&status);
+    root.append(&buttons);
+
+    let tool = Rc::new(HotkeysTool { root, window: window.clone(), body: Rc::new(RefCell::new(None)), link: RefCell::new(None), status, save_btn: save_btn.clone(), revert_btn: revert_btn.clone() });
+    let weak = Rc::downgrade(&tool);
+    save_btn.connect_clicked({
+        let weak = weak.clone();
+        move |_| match weak.upgrade() {
+            Some(tool) => tool.save(Box::new(|_| {})),
+            None => opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: the editor is gone, Save ignored"),
+        }
+    });
+    revert_btn.connect_clicked({
+        let weak = weak.clone();
+        move |_| match weak.upgrade() {
+            Some(tool) => tool.revert(),
+            None => opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: the editor is gone, Revert ignored"),
+        }
+    });
+    tool.load(slot, weak);
+    tool
+}
+
+impl HotkeysTool {
+    /// Connect to the hub, fetch its copy and put the rows in `slot`.
+    fn load(&self, slot: gtk::ScrolledWindow, weak: std::rc::Weak<HotkeysTool>) {
+        let show_error = move |slot: &gtk::ScrolledWindow, text: String| {
+            opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: {text}");
+            slot.set_child(Some(&gtk::Label::new(Some(&text))));
+        };
+        let mut client = match Client::connect_tool(&opusdm_ipc::sockpath::hub_sock_path()) {
+            Ok(client) => client,
+            Err(e) => return show_error(&slot, format!("cannot reach the OpusDM hub: {e}")),
+        };
+        let inbox = client.take_inbox();
+        let link = Rc::new(Link { client, inbox, saving: Cell::new(false) });
+        *self.link.borrow_mut() = Some(link.clone());
+        gtk::glib::spawn_future_local(async move {
+            let result = crate::client::fetch_config(&link.client, &link.inbox).await;
+            let Some(tool) = weak.upgrade() else {
+                opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: the editor was closed before the hub answered");
+                return;
+            };
+            match result {
+                Ok((current, functions)) => {
+                    // Weak: the body owns the state that owns this closure.
+                    let (body_slot, revert_btn) = (Rc::downgrade(&tool.body), tool.revert_btn.clone());
+                    let on_change: Rc<dyn Fn()> = Rc::new(move || {
+                        let dirty = body_slot.upgrade().is_some_and(|b| b.borrow().as_ref().is_some_and(Body::is_dirty));
+                        revert_btn.set_sensitive(dirty);
+                    });
+                    let body = build_body(&tool.window, current.hotkeys, functions, tool.save_btn.clone(), on_change);
+                    slot.set_child(Some(&body.root));
+                    *tool.body.borrow_mut() = Some(body);
+                    tool.refresh_buttons();
+                }
+                Err(e) => show_error(&slot, format!("cannot read the hotkeys from the hub: {e}")),
+            }
+        });
+    }
+
+    /// Revert is available while there is something to revert.
+    fn refresh_buttons(&self) {
+        let dirty = self.body.borrow().as_ref().is_some_and(Body::is_dirty);
+        self.revert_btn.set_sensitive(dirty);
+    }
+}
+
+impl EmbeddedTool for HotkeysTool {
+    fn title(&self) -> &str {
+        "Hotkeys"
+    }
+
+    fn widget(&self) -> gtk::Widget {
+        self.root.clone().upcast()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.body.borrow().as_ref().is_some_and(Body::is_dirty)
+    }
+
+    /// Ask the hub for its copy again (the Menu and Scripts sections may have
+    /// changed since this editor started), then send it with the new hotkeys.
+    fn save(&self, done: Box<dyn FnOnce(bool)>) {
+        let (Some(link), true) = (self.link.borrow().clone(), self.body.borrow().is_some()) else {
+            self.status.set_text("The hotkeys are not loaded: nothing to save.");
+            return done(false);
+        };
+        if !self.body.borrow().as_ref().is_some_and(Body::is_valid) {
+            self.status.set_text("Fix the marked hotkeys before saving.");
+            return done(false);
+        }
+        if link.saving.replace(true) {
+            return done(false);
+        }
+        let hotkeys = self.body.borrow().as_ref().map(|b| b.state.hotkeys.borrow().clone()).unwrap_or_default();
+        let (status, revert_btn, body) = (self.status.clone(), self.revert_btn.clone(), self.body.clone());
+        gtk::glib::spawn_future_local(async move {
+            let result = async {
+                let (current, _) = crate::client::fetch_config(&link.client, &link.inbox).await?;
+                let updated = bindings::Bindings { hotkeys, ..current };
+                link.client.send(&opusdm_ipc::ToHub::SetBindings(updated)).map_err(|e| format!("lost the connection to the hub: {e}"))
+            }
+            .await;
+            link.saving.set(false);
+            match result {
+                Ok(()) => {
+                    if let Some(body) = body.borrow().as_ref() { body.mark_saved(); }
+                    revert_btn.set_sensitive(false);
+                    status.set_text("");
+                    done(true);
+                }
+                Err(e) => {
+                    opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: cannot save: {e}");
+                    status.set_text(&format!("Cannot save: {e}"));
+                    done(false);
+                }
+            }
+        });
+    }
+
+    fn revert(&self) {
+        if let Some(body) = self.body.borrow().as_ref() { body.revert(); }
+        self.status.set_text("");
+        self.refresh_buttons();
+    }
 }
 
 /// Open the "Find Key" requester: press a combination, read what it does.

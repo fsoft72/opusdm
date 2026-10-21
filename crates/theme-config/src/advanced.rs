@@ -20,8 +20,8 @@ const MARGIN: i32 = 12;
 /// Name of the stack page shown while no entry is picked.
 const EMPTY_PAGE: &str = "empty";
 
-/// Builds the tool of an entry.
-type BuildTool = fn() -> Rc<dyn EmbeddedTool>;
+/// Builds the tool of an entry for the window that hosts it.
+type BuildTool = fn(&gtk::Window) -> Rc<dyn EmbeddedTool>;
 
 /// One entry of the list.
 struct Entry {
@@ -34,11 +34,16 @@ struct Entry {
 
 /// The entries of the list, in order.
 const ENTRIES: [Entry; 4] = [
-    Entry { label: "Hotkeys", build: None, window: Action::Spawn("opusdm-lister", &["--edit-hotkeys"]) },
+    Entry { label: "Hotkeys", build: Some(build_hotkeys), window: Action::Spawn("opusdm-lister", &["--edit-hotkeys"]) },
     Entry { label: "File Types", build: None, window: Action::Spawn("opusdm-lister", &["--edit-filetypes"]) },
     Entry { label: "Input", build: None, window: Action::Spawn("opusdm-input-config", &[]) },
     Entry { label: "Network", build: None, window: Action::Spawn("opusdm-network-manager", &[]) },
 ];
+
+/// The Hotkeys editor.
+fn build_hotkeys(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
+    opusdm_lister::hotkey_editor::embedded(window)
+}
 
 /// What the callbacks of the tab share.
 pub struct Advanced {
@@ -158,12 +163,16 @@ impl Advanced {
 
     /// Show the entry `index`, building its tool the first time.
     fn show(&self, index: usize) {
+        let Some(window) = self.window() else {
+            opusdm_ipc::err_log!("theme-config", "the Advanced tab is not in a window: cannot show an entry");
+            return;
+        };
         let entry = &ENTRIES[index];
         let name = format!("entry-{index}");
         if self.stack.child_by_name(&name).is_none() {
             match entry.build {
                 Some(build) => {
-                    let tool = build();
+                    let tool = build(&window);
                     self.stack.add_named(&tool.widget(), Some(&name));
                     self.tools.borrow_mut()[index] = Some(tool);
                 }

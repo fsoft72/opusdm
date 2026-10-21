@@ -3060,6 +3060,7 @@ dependencies = [
  "opusdm-desktop-config",
  "opusdm-iconview",
  "opusdm-ipc",
+ "opusdm-lister",
  "opusdm-themepack",
  "opusdm-ui",
  "serde",

@@ -14,6 +14,8 @@ opusdm-ipc = { path = "../ipc" }
 opusdm-themepack = { path = "../themepack" }
 opusdm-desktop-config = { path = "../desktop-config" }
 opusdm-iconview = { path = "../iconview" }
+# Only the editors are used, so the VTE terminal is left out.
+opusdm-lister = { path = "../lister", default-features = false }
 opusdm-ui = { path = "../ui" }
 gtk4.workspace = true
 serde.workspace = true
