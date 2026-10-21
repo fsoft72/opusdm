@@ -35,7 +35,7 @@ struct Entry {
 /// The entries of the list, in order.
 const ENTRIES: [Entry; 4] = [
     Entry { label: "Hotkeys", build: Some(build_hotkeys), window: Action::Spawn("opusdm-lister", &["--edit-hotkeys"]) },
-    Entry { label: "File Types", build: None, window: Action::Spawn("opusdm-lister", &["--edit-filetypes"]) },
+    Entry { label: "File Types", build: Some(build_file_types), window: Action::Spawn("opusdm-lister", &["--edit-filetypes"]) },
     Entry { label: "Input", build: None, window: Action::Spawn("opusdm-input-config", &[]) },
     Entry { label: "Network", build: None, window: Action::Spawn("opusdm-network-manager", &[]) },
 ];
@@ -43,6 +43,11 @@ const ENTRIES: [Entry; 4] = [
 /// The Hotkeys editor.
 fn build_hotkeys(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
     opusdm_lister::hotkey_editor::embedded(window)
+}
+
+/// The File Types editor.
+fn build_file_types(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
+    opusdm_lister::filetypes_ui::embedded(window)
 }
 
 /// What the callbacks of the tab share.

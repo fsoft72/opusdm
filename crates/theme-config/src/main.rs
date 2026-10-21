@@ -268,7 +268,7 @@ fn build_window(app: &gtk::Application) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM Settings")
-        .default_width(820)
+        .default_width(1060)
         .default_height(680)
         .build();
     let chrome = install_chrome(settings_data.appearance.theme_mode, &look_css);
