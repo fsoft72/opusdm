@@ -139,14 +139,39 @@ fn attach_hotkeys(window: &gtk::ApplicationWindow, shared: &Rc<Shared>) {
     window.add_controller(keys);
 }
 
-/// The action whose hotkey `event` is, if any.
+/// The action whose hotkey `event` is, if any. A hotkey on `+`, `-`, `*`,
+/// `/` or a digit also fires with the same key of the numeric keypad.
 fn matching_action(shared: &Shared, event: &gdk::KeyEvent) -> Option<Action> {
     let config = shared.config();
+    let exact = |key: gdk::Key, mods: gdk::ModifierType| event.matches(key, mods) == gdk::KeyMatch::Exact;
     Action::ALL.into_iter().find(|&action| {
         let accel = config.hotkey(action);
         if accel.is_empty() { return false; }
-        gtk::accelerator_parse(&accel).is_some_and(|(key, mods)| event.matches(key, mods) == gdk::KeyMatch::Exact)
+        gtk::accelerator_parse(&accel)
+            .is_some_and(|(key, mods)| exact(key, mods) || keypad_twin(key).is_some_and(|kp| exact(kp, mods)))
     })
+}
+
+/// The numeric keypad key that types the same character as `key`, if any.
+fn keypad_twin(key: gdk::Key) -> Option<gdk::Key> {
+    let twin = match key {
+        gdk::Key::plus => gdk::Key::KP_Add,
+        gdk::Key::minus => gdk::Key::KP_Subtract,
+        gdk::Key::asterisk => gdk::Key::KP_Multiply,
+        gdk::Key::slash => gdk::Key::KP_Divide,
+        gdk::Key::_0 => gdk::Key::KP_0,
+        gdk::Key::_1 => gdk::Key::KP_1,
+        gdk::Key::_2 => gdk::Key::KP_2,
+        gdk::Key::_3 => gdk::Key::KP_3,
+        gdk::Key::_4 => gdk::Key::KP_4,
+        gdk::Key::_5 => gdk::Key::KP_5,
+        gdk::Key::_6 => gdk::Key::KP_6,
+        gdk::Key::_7 => gdk::Key::KP_7,
+        gdk::Key::_8 => gdk::Key::KP_8,
+        gdk::Key::_9 => gdk::Key::KP_9,
+        _ => return None,
+    };
+    Some(twin)
 }
 
 /// The terminal the keyboard is in, or the one used last in the current tab.
@@ -237,4 +262,26 @@ fn write_contents(term: &vte4::Terminal, file: &gio::File) -> Result<(), glib::E
     let stream = file.replace(None, false, gio::FileCreateFlags::REPLACE_DESTINATION, None::<&gio::Cancellable>)?;
     term.write_contents_sync(&stream, vte4::WriteFlags::Default, None::<&gio::Cancellable>)?;
     stream.close(None::<&gio::Cancellable>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_zoom_keys_have_a_keypad_twin() {
+        assert_eq!(keypad_twin(gdk::Key::plus), Some(gdk::Key::KP_Add));
+        assert_eq!(keypad_twin(gdk::Key::minus), Some(gdk::Key::KP_Subtract));
+        assert_eq!(keypad_twin(gdk::Key::_0), Some(gdk::Key::KP_0));
+        assert_eq!(keypad_twin(gdk::Key::t), None);
+    }
+
+    #[test]
+    fn the_default_zoom_hotkeys_have_a_keypad_twin() {
+        for action in [Action::ZoomIn, Action::ZoomOut, Action::ZoomReset] {
+            let name = action.default_hotkey().rsplit('>').next().unwrap_or_default();
+            let key = gdk::Key::from_name(name).expect("valid key name");
+            assert!(keypad_twin(key).is_some(), "{action:?}");
+        }
+    }
 }

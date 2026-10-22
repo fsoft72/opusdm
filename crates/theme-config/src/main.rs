@@ -10,9 +10,10 @@ use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
 use opusdm_desktop_config::ui::{BrightnessSection, FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+mod advanced;
 mod apply;
 mod background;
 mod builder;
@@ -95,6 +96,7 @@ impl Sections {
             dock_position: self.dock.position(),
             dock_icon_size: self.dock.icon_size(),
             virtual_screens: self.screens.count(),
+            wrap_desktops: self.screens.wrap(),
             transparency_enabled: self.windows.enabled(),
             inactive_opacity: self.windows.inactive_opacity(),
             active_opacity: self.windows.active_opacity(),
@@ -197,7 +199,7 @@ fn build_desktop_page(
     let grid = Rc::new(GridSection::new(desktop.icon_size, desktop.grid_spacing, desktop.grid_gap));
     let folder = Rc::new(FolderSection::new(desktop.desktop_dir.as_deref()));
     let panel = Rc::new(PanelSection::new(desktop.panel_position));
-    let screens = Rc::new(VirtualScreensSection::new(desktop.virtual_screens));
+    let screens = Rc::new(VirtualScreensSection::new(desktop.virtual_screens, desktop.wrap_desktops));
     for root in [&grid.root, &folder.root, &panel.root, &screens.root] {
         page.append(root);
         page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -256,6 +258,9 @@ fn show_note(note: &gtk::Label, text: &str) {
     note.set_visible(true);
 }
 
+/// Titles of the tabs shown without the Cancel and Apply row.
+const TABS_WITHOUT_BUTTONS: [&str; 1] = ["Advanced"];
+
 fn build_window(app: &gtk::Application) {
     let desktop_data = opusdm_desktop_config::model::load();
     let (settings_data, migration_note) = migrated_settings(model::load_settings(), &desktop_data);
@@ -267,7 +272,7 @@ fn build_window(app: &gtk::Application) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("OpusDM Settings")
-        .default_width(480)
+        .default_width(1060)
         .default_height(680)
         .build();
     let chrome = install_chrome(settings_data.appearance.theme_mode, &look_css);
@@ -315,8 +320,8 @@ fn build_window(app: &gtk::Application) {
     tab(scrolled(&startup_page).upcast_ref(), "Startup Apps");
 
     // Advanced and System tabs: buttons that open the other tools.
-    tab(tools::build_advanced_page().upcast_ref(), "Advanced");
-    tab(tools::build_system_page().upcast_ref(), "System");
+    let (advanced_page, advanced) = advanced::build();
+    tab(advanced_page.upcast_ref(), "Advanced");
 
     let note = build_note(migration_note.as_deref());
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -331,6 +336,14 @@ fn build_window(app: &gtk::Application) {
     outer.append(&notebook);
     outer.append(&note);
     outer.append(&buttons);
+    // These tabs have no use for the window-wide Cancel and Apply row.
+    notebook.connect_switch_page({
+        let buttons = buttons.clone();
+        move |notebook, page, _| {
+            let title = notebook.tab_label_text(page).unwrap_or_default();
+            buttons.set_visible(!TABS_WITHOUT_BUTTONS.contains(&title.as_str()));
+        }
+    });
     window.set_child(Some(&outer));
 
     let sections = Rc::new(Sections { theme_mode, icon_set, grid, folder, panel, screens, startup_apps, windows, bg, dock, dock_apps, behavior });
@@ -352,7 +365,26 @@ fn build_window(app: &gtk::Application) {
             editor::open(&app, Some(&window), select_theme.clone());
         });
     }
+    guard_close(&window, advanced);
     window.present();
+}
+
+/// Ask before the window closes while the tool on the Advanced tab has
+/// unsaved changes. The guard owns the tab state for the whole run.
+fn guard_close(window: &gtk::ApplicationWindow, advanced: Rc<advanced::Advanced>) {
+    let allowed = Rc::new(Cell::new(false));
+    window.connect_close_request(move |w| {
+        if allowed.get() || !advanced.is_dirty() { return gtk::glib::Propagation::Proceed; }
+        let (allowed, w) = (allowed.clone(), w.clone());
+        advanced.confirm_close(
+            move || {
+                allowed.set(true);
+                w.close();
+            },
+            || {},
+        );
+        gtk::glib::Propagation::Stop
+    });
 }
 
 /// A function that rebuilds the icon-set picker with `slug` selected,

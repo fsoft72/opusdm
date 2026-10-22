@@ -1,56 +1,34 @@
-//! The tabs of buttons that open the other OpusDM configuration tools (Hotkeys, File
-//! Types, Functions, Apps, Input, Screens, Network), each as its own process, and the
-//! Button Banks manager, which lives in the hub.
+//! The buttons that open the other OpusDM configuration tools (Functions,
+//! Scripts, Apps, Screens), each as its own process, and the Button Banks
+//! manager, which lives in the hub. They sit under the list of the Advanced tab.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::path::PathBuf;
 
 /// What a tool button does when clicked.
-enum Action {
+pub enum Action {
     /// Start a sibling binary with these arguments.
     Spawn(&'static str, &'static [&'static str]),
     /// Ask the running hub to open the button bank manager.
     OpenBankManager,
 }
 
-/// The buttons of the Advanced tab: label and action.
-const ADVANCED_TOOLS: [(&str, Action); 6] = [
-    ("Hotkeys", Action::Spawn("opusdm-lister", &["--edit-hotkeys"])),
-    ("File Types", Action::Spawn("opusdm-lister", &["--edit-filetypes"])),
+/// The buttons under the list of the Advanced tab: label and action.
+const TOOL_BUTTONS: [(&str, Action); 5] = [
     ("Manage Functions", Action::Spawn("opusdm-lister", &["--manage-functions"])),
     ("Scripts (JavaScript)", Action::Spawn("opusdm-lister", &["--scripts"])),
     ("Button Banks", Action::OpenBankManager),
     ("Apps", Action::Spawn("opusdm-apps-editor", &[])),
-];
-
-/// The buttons of the System tab: label and action.
-const SYSTEM_TOOLS: [(&str, Action); 3] = [
-    ("Input", Action::Spawn("opusdm-input-config", &[])),
     ("Screens", Action::Spawn("opusdm-screen", &[])),
-    ("Network", Action::Spawn("opusdm-network-manager", &[])),
 ];
 
-/// Build the page of the Advanced tab.
-pub fn build_advanced_page() -> gtk::Box {
-    build_page(&ADVANCED_TOOLS)
-}
-
-/// Build the page of the System tab.
-pub fn build_system_page() -> gtk::Box {
-    build_page(&SYSTEM_TOOLS)
-}
-
-/// Build a tab page with one button per entry of `tools`.
-fn build_page(tools: &'static [(&str, Action)]) -> gtk::Box {
+/// Build the box with one button per tool that has its own window.
+pub fn build_tool_buttons() -> gtk::Box {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    page.set_margin_top(12);
-    page.set_margin_bottom(12);
-    page.set_margin_start(12);
-    page.set_margin_end(12);
-    for (label, action) in tools {
+    for (label, action) in &TOOL_BUTTONS {
         let button = gtk::Button::with_label(label);
-        button.set_halign(gtk::Align::Start);
+        button.set_halign(gtk::Align::Fill);
         button.connect_clicked(move |_| run(action));
         page.append(&button);
     }
@@ -58,7 +36,7 @@ fn build_page(tools: &'static [(&str, Action)]) -> gtk::Box {
 }
 
 /// Run the action of a tool button.
-fn run(action: &Action) {
+pub fn run(action: &Action) {
     match action {
         Action::Spawn(bin, args) => spawn(bin, args),
         Action::OpenBankManager => open_bank_manager(),

@@ -24,7 +24,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 
-use crate::model::{apply_states, pager_order, parse_coordinates, wrapped_index, Snapshot, Toplevel, ToplevelId, Workspace};
+use crate::model::{apply_states, pager_order, parse_coordinates, stepped_index, Snapshot, Toplevel, ToplevelId, Workspace};
 
 /// Highest `wl_output` version used: 4 brings the output name.
 const OUTPUT_VERSION: u32 = 4;
@@ -197,12 +197,13 @@ impl Session {
         self.flush();
     }
 
-    /// Switch to the workspace `delta` steps from the current one, wrapping
-    /// at both ends.
-    pub fn switch_workspace(&self, delta: i32) {
+    /// Switch to the workspace `delta` steps from the current one. With
+    /// `wrap` it goes around at both ends, without it stops at the first and
+    /// the last workspace.
+    pub fn switch_workspace(&self, delta: i32, wrap: bool) {
         let snapshot = self.snapshot();
         let current = snapshot.current_workspace().unwrap_or(0);
-        if let Some(target) = wrapped_index(current, snapshot.workspaces.len(), delta) {
+        if let Some(target) = stepped_index(current, snapshot.workspaces.len(), delta, wrap) {
             self.activate_workspace(target);
         }
     }

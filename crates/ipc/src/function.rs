@@ -87,7 +87,7 @@ pub enum InternalCmd {
     Reveal,
     /// `Hide` when the desktop is showing, `Reveal` when it is hidden.
     ToggleHide,
-    /// Switch the window manager to the previous virtual desktop (wraps).
+    /// Switch the window manager to the previous virtual desktop (wraps unless turned off in the settings).
     DesktopPrev,
     /// Switch the window manager to the next virtual desktop (wraps).
     DesktopNext,

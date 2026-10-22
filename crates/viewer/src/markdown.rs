@@ -23,6 +23,16 @@ pub struct Run {
     pub link: Option<String>,
     /// A picture to show instead of the text; the text is its alt text.
     pub image: Option<String>,
+    /// Width asked for the picture by the `width` of an HTML `<img>`.
+    pub image_width: Option<i32>,
+}
+
+/// A picture written as raw HTML: `<img src=... alt=... width=...>`.
+#[derive(Debug, PartialEq, Eq)]
+struct HtmlImage {
+    src: String,
+    alt: String,
+    width: Option<i32>,
 }
 
 /// Name of the tag that indents a block `level` steps.
@@ -51,6 +61,8 @@ struct Builder {
     image: Option<String>,
     alt: String,
     table: Option<Table>,
+    /// The HTML block being read has shown a picture: it ends with a blank line.
+    html_block_images: bool,
 }
 
 /// A table being read: the cells are kept until its end, to know the widths.
@@ -92,7 +104,7 @@ impl Builder {
     fn _text(&mut self, text: &str) {
         if text.is_empty() { return; }
         let (tags, link) = (self._tags(), self.link.clone());
-        self._emit(Run { text: text.to_string(), tags, link, image: None });
+        self._emit(Run { text: text.to_string(), tags, link, image: None, image_width: None });
     }
 
     /// Add a run: in a table it goes to the cell being read (on one line).
@@ -107,7 +119,7 @@ impl Builder {
         let mut tags = self._tags();
         tags.extend(extra.iter().map(|t| t.to_string()));
         let link = self.link.clone();
-        self._emit(Run { text: text.to_string(), tags, link, image: None });
+        self._emit(Run { text: text.to_string(), tags, link, image: None, image_width: None });
     }
 
     /// True when the text so far is empty or ends with a new line.
@@ -157,6 +169,7 @@ impl Builder {
                 self._text("\n\n");
             }
             Event::TaskListMarker(done) => self._text(if done { "☑ " } else { "☐ " }),
+            Event::Html(t) | Event::InlineHtml(t) => self._html(&t),
             _ => {}
         }
     }
@@ -216,6 +229,7 @@ impl Builder {
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link => self.link = None,
             TagEnd::Image => self._end_image(),
+            TagEnd::HtmlBlock if std::mem::take(&mut self.html_block_images) => self._end_block(),
             TagEnd::TableCell => {
                 if let Some(t) = self.table.as_mut() { t.row.push(std::mem::take(&mut t.cell)); }
             }
@@ -256,9 +270,23 @@ impl Builder {
     fn _end_image(&mut self) {
         let Some(url) = self.image.take() else { return };
         let alt = std::mem::take(&mut self.alt);
+        self._image(url, alt, None);
+    }
+
+    /// Raw HTML: its `<img>` pictures are shown, the rest is dropped.
+    fn _html(&mut self, html: &str) {
+        for image in _html_images(html) {
+            self._image(image.src, image.alt, image.width);
+            if self.table.is_none() { self.html_block_images = true; }
+        }
+    }
+
+    /// A run for the picture at `url`, or the text `[image: alt]` inside a
+    /// table (a picture cannot sit in a cell).
+    fn _image(&mut self, url: String, alt: String, width: Option<i32>) {
         if self.table.is_some() { return self._text(&format!("[image: {alt}]")); }
         let (tags, link) = (self._tags(), self.link.clone());
-        self.runs.push(Run { text: alt, tags, link, image: Some(url) });
+        self.runs.push(Run { text: alt, tags, link, image: Some(url), image_width: width });
     }
 
     /// Write a finished table as a box of lines with the cells aligned.
@@ -322,8 +350,74 @@ fn _level_number(level: HeadingLevel) -> u8 {
     }
 }
 
-/// Turn Markdown text into styled runs. Raw HTML is dropped; a table is shown
-/// as rows of cells separated by `|`; an image shows as `[image: alt]`.
+/// The `<img>` tags of a piece of raw HTML that have a `src`, in order. The
+/// entities of the values are decoded; a `width` that is not a whole number
+/// of pixels (`50%`) is ignored.
+fn _html_images(html: &str) -> Vec<HtmlImage> {
+    // ASCII lowercase keeps every byte offset, so `lower` indexes `html` too.
+    let lower = html.to_ascii_lowercase();
+    let mut images = Vec::new();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("<img") {
+        let start = from + at + "<img".len();
+        from = start;
+        if !lower[start..].starts_with(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>') { continue; }
+        let (attributes, end) = _html_attributes(&html[start..]);
+        from = start + end;
+        let value = |name: &str| attributes.iter().find(|(n, _)| n == name).map(|(_, v)| _html_unescape(v));
+        let Some(src) = value("src").filter(|s| !s.trim().is_empty()) else { continue };
+        let width = value("width").and_then(|w| w.trim().trim_end_matches("px").parse::<i32>().ok()).filter(|w| *w > 0);
+        images.push(HtmlImage { src: src.trim().to_string(), alt: value("alt").unwrap_or_default(), width });
+    }
+    images
+}
+
+/// The attributes (lowercase name, raw value) of the tag that `tag` starts
+/// inside, after its name, and the byte offset just past its `>` (or the end).
+fn _html_attributes(tag: &str) -> (Vec<(String, String)>, usize) {
+    let bytes = tag.as_bytes();
+    let space_at = |i: usize| i < bytes.len() && bytes[i].is_ascii_whitespace();
+    let mut attributes = Vec::new();
+    let mut i = 0;
+    loop {
+        while space_at(i) || bytes.get(i) == Some(&b'/') { i += 1; }
+        if i >= bytes.len() { return (attributes, bytes.len()); }
+        if bytes[i] == b'>' { return (attributes, i + 1); }
+        let name_start = i;
+        while i < bytes.len() && !space_at(i) && !matches!(bytes[i], b'=' | b'>' | b'/') { i += 1; }
+        let name = tag[name_start..i].to_ascii_lowercase();
+        while space_at(i) { i += 1; }
+        if bytes.get(i) != Some(&b'=') {
+            attributes.push((name, String::new()));
+            continue;
+        }
+        i += 1;
+        while space_at(i) { i += 1; }
+        let value = match bytes.get(i) {
+            Some(&quote @ (b'"' | b'\'')) => {
+                let start = i + 1;
+                let end = tag[start..].find(quote as char).map_or(bytes.len(), |n| start + n);
+                i = (end + 1).min(bytes.len());
+                &tag[start..end]
+            }
+            _ => {
+                let start = i;
+                while i < bytes.len() && !space_at(i) && bytes[i] != b'>' { i += 1; }
+                &tag[start..i]
+            }
+        };
+        attributes.push((name, value.to_string()));
+    }
+}
+
+/// `value` with its HTML entities decoded; as it is when one is broken.
+fn _html_unescape(value: &str) -> String {
+    quick_xml::escape::unescape(value).map(|v| v.into_owned()).unwrap_or_else(|_| value.to_string())
+}
+
+/// Turn Markdown text into styled runs. Raw HTML is dropped but for its
+/// `<img>` pictures; a table is shown as rows of cells separated by `|`; an
+/// image in a table shows as `[image: alt]`.
 pub fn parse(source: &str) -> Vec<Run> {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut builder = Builder::default();
@@ -464,6 +558,52 @@ mod tests {
         let runs = parse("| a |\n|---|\n| ![pic](p.png) |\n");
         assert!(runs.iter().all(|r| r.image.is_none()));
         assert!(plain(&runs).contains("[image: pic]"));
+    }
+
+    #[test]
+    fn html_block_picture_is_a_run_with_its_width() {
+        let runs = parse("<p align=\"center\">\n  <img src=\"assets/logo.webp\" alt=\"the logo\" width=\"600\">\n</p>\n\n# Title\n");
+        let image = runs.iter().find(|r| r.image.is_some()).expect("image run");
+        assert_eq!(image.image.as_deref(), Some("assets/logo.webp"));
+        assert_eq!(image.text, "the logo");
+        assert_eq!(image.image_width, Some(600));
+        assert_eq!(plain(&runs), "the logo\n\nTitle\n\n");
+    }
+
+    #[test]
+    fn inline_html_picture_sits_in_the_paragraph() {
+        let runs = parse("before <IMG SRC='a.png'/> after\n");
+        let image = runs.iter().find(|r| r.image.is_some()).expect("image run");
+        assert_eq!(image.image.as_deref(), Some("a.png"));
+        assert_eq!(image.image_width, None);
+        assert_eq!(plain(&runs), "before  after\n\n");
+    }
+
+    #[test]
+    fn html_block_without_pictures_adds_nothing() {
+        assert_eq!(plain(&parse("<!-- note -->\n\ntext\n")), "text\n\n");
+    }
+
+    #[test]
+    fn html_picture_in_a_table_cell_is_text() {
+        let runs = parse("| a |\n|---|\n| <img src=\"p.png\" alt=\"pic\"> |\n");
+        assert!(runs.iter().all(|r| r.image.is_none()));
+        assert!(plain(&runs).contains("[image: pic]"));
+    }
+
+    #[test]
+    fn html_images_read_quotes_entities_and_bad_widths() {
+        let images = _html_images(r#"<img alt="a &amp; b" src=x.png width=50%><imgx src="no.png"><img width="20px" src='y.png' data-x><img alt="no src">"#);
+        assert_eq!(images, vec![
+            HtmlImage { src: "x.png".into(), alt: "a & b".into(), width: None },
+            HtmlImage { src: "y.png".into(), alt: String::new(), width: Some(20) },
+        ]);
+    }
+
+    #[test]
+    fn html_attributes_stop_at_an_unclosed_tag() {
+        assert_eq!(_html_attributes(" src=\"a.png").0, vec![("src".to_string(), "a.png".to_string())]);
+        assert!(_html_images("<img").is_empty());
     }
 
     #[test]

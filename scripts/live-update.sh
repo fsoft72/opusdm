@@ -3,7 +3,8 @@
 # desktop session (the current user's Desktop Manager).
 #
 # Usage: scripts/live-update.sh [--config] [--all | --no-restart] [--prefix DIR]
-#   (default)  replace the binaries in PREFIX/bin and restart only opusdm-hub.
+#   (default)  replace the binaries in PREFIX/bin, install the folder handler
+#              (opusdm-lister.desktop) and restart only opusdm-hub.
 #              Listers, dock and other windows already open keep running the
 #              old binaries until they are closed and opened again.
 #   --config   also replace PREFIX/config (Openbox, picom and labwc
@@ -53,7 +54,7 @@ while [ $# -gt 0 ]; do
             PREFIX="$2"
             shift
             ;;
-        -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "live-update: unknown option $1" >&2; exit 2 ;;
     esac
     shift
@@ -100,6 +101,14 @@ for f in "$DIST"/bin/*; do
     $SUDO install -m 755 "$f" "$PREFIX/bin/$name.new"
     $SUDO mv -f "$PREFIX/bin/$name.new" "$PREFIX/bin/$name"
 done
+
+# Folder handler, as install.sh does: without the entry the hub cannot make
+# OpusDM the default for folders and xdg-open keeps the old file manager.
+echo "Installing the folder handler"
+$SUDO mkdir -p /usr/local/bin /usr/share/applications
+$SUDO ln -sf "$PREFIX/bin/opusdm-open-folder" /usr/local/bin/opusdm-open-folder
+$SUDO install -m 644 "$DIST/opusdm-lister.desktop" /usr/share/applications/opusdm-lister.desktop
+$SUDO update-desktop-database -q /usr/share/applications 2>/dev/null || echo "live-update: update-desktop-database failed or is missing" >&2
 
 if [ "$WITH_CONFIG" -eq 1 ]; then
     echo "Installing config"

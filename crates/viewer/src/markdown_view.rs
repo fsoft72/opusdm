@@ -34,6 +34,10 @@ const MAX_IMAGE_WIDTH: i32 = 800;
 /// Biggest side a picture is decoded at: room for a tall picture while a
 /// huge photo never costs its full size in memory.
 const MAX_DECODE_PX: i32 = 2 * MAX_IMAGE_WIDTH;
+/// Seconds a picture on the web has to arrive.
+const WEB_TIMEOUT_SECS: u32 = 20;
+/// Biggest picture downloaded from the web, in bytes.
+const MAX_WEB_BYTES: u64 = 16 * 1024 * 1024;
 /// Deepest indent tag created (matches `markdown::indent_tag`).
 const MAX_INDENT: usize = 6;
 
@@ -112,7 +116,7 @@ impl MarkdownView {
         for run in parse(source) {
             let start = buffer.end_iter().offset();
             let mut at = buffer.end_iter();
-            let picture = run.image.as_deref().and_then(|url| self._picture(url, &run.text));
+            let picture = run.image.as_deref().and_then(|url| self._picture(url, &run.text, run.image_width));
             match &picture {
                 Some(picture) => {
                     let anchor = buffer.create_child_anchor(&mut at);
@@ -133,32 +137,44 @@ impl MarkdownView {
         self.root.vadjustment().set_value(0.0);
     }
 
-    /// The picture at `url` (a picture of the book, or a file from the folder
-    /// of the text) as a widget;
-    /// `None` for an address on the web or a name that is not a file. The
-    /// picture is decoded, scaled down, on a worker and appears when ready;
-    /// one that cannot be decoded is replaced by its `[image: alt]` text.
-    fn _picture(&self, url: &str, alt: &str) -> Option<gtk::Box> {
-        if url.contains("://") { return None; }
-        let name = gtk::glib::Uri::unescape_string(url, None)?;
+    /// The picture at `url` (a picture of the book, a file from the folder
+    /// of the text, or an `http(s)` address) as a widget, drawn `width`
+    /// pixels wide when it is given;
+    /// `None` for another address or a name that is not a file. The
+    /// picture is downloaded and decoded, scaled down, on a worker and
+    /// appears when ready; one that cannot be had is replaced by its
+    /// `[image: alt]` text.
+    fn _picture(&self, url: &str, alt: &str, width: Option<i32>) -> Option<gtk::Box> {
+        let web = _is_web(url).then(|| url.to_string());
+        if web.is_none() && url.contains("://") { return None; }
+        let name = match web {
+            Some(_) => String::new(),
+            None => gtk::glib::Uri::unescape_string(url, None)?.to_string(),
+        };
         let in_book = self.pictures.borrow().get(name.as_str()).cloned();
         let path = self.base.borrow().join(name.as_str());
-        if in_book.is_none() && !path.is_file() {
+        if web.is_none() && in_book.is_none() && !path.is_file() {
             opusdm_ipc::err_log!("viewer", "cannot load picture {}: not a file", path.display());
             return None;
         }
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.set_tooltip_text(Some(alt).filter(|a| !a.is_empty()));
         let handle = gio::spawn_blocking(move || {
-            let decoded = match &in_book {
+            let shown = web.clone().unwrap_or_else(|| path.display().to_string());
+            let bytes = match web.as_deref().map(_download) {
+                Some(Ok(bytes)) => Some(bytes),
+                Some(Err(e)) => return (shown, Err(e)),
+                None => in_book,
+            };
+            let decoded = match &bytes {
                 Some(bytes) => decode_within(bytes, MAX_DECODE_PX).map(Decoded::Raw),
                 None => load_within(&path, MAX_DECODE_PX).map(Decoded::Raw),
             };
             // gdk-pixbuf cannot read it: GTK may have a loader of its own
             // (avif, jxl, heif through glycin). Decoded at full size, as the
             // viewer did before the scaled decode.
-            let decoded = decoded.or_else(|e| _gtk_texture(in_book.as_ref(), &path).map(Decoded::Texture).ok_or(e));
-            (path, decoded)
+            let decoded = decoded.or_else(|e| _gtk_texture(bytes.as_ref(), &path).map(Decoded::Texture).ok_or(e));
+            (shown, decoded)
         });
         let weak = holder.downgrade();
         let alt = alt.to_string();
@@ -166,7 +182,7 @@ impl MarkdownView {
             let decoded = handle.await;
             // The text was replaced meanwhile: nothing left to fill.
             let Some(holder) = weak.upgrade() else { return };
-            let (path, decoded) = match decoded {
+            let (shown, decoded) = match decoded {
                 Ok(done) => done,
                 Err(_) => return holder.append(&gtk::Label::new(Some(&format!("[image: {alt}]")))),
             };
@@ -174,11 +190,11 @@ impl MarkdownView {
                 Ok(Decoded::Raw(raw)) => raw.texture(0),
                 Ok(Decoded::Texture(texture)) => texture,
                 Err(e) => {
-                    opusdm_ipc::err_log!("viewer", "cannot load picture {}: {e}", path.display());
+                    opusdm_ipc::err_log!("viewer", "cannot load picture {shown}: {e}");
                     return holder.append(&gtk::Label::new(Some(&format!("[image: {alt}]"))));
                 }
             };
-            let (w, h) = display_size(texture.width(), texture.height());
+            let (w, h) = display_size(texture.width(), texture.height(), width);
             let picture = gtk::Picture::for_paintable(&texture);
             picture.set_can_shrink(true);
             picture.set_size_request(w, h);
@@ -256,8 +272,29 @@ enum Decoded {
     Texture(gdk::Texture),
 }
 
-/// The picture decoded by GTK's own loaders, from the bytes of the book or
-/// from `path`; `None` when GTK cannot read it either. Safe on a worker.
+/// True for an address the viewer downloads pictures from.
+fn _is_web(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// The bytes at the `http(s)` address `url`, read by `curl` (which follows
+/// redirects to `http(s)` only), within `WEB_TIMEOUT_SECS` and
+/// `MAX_WEB_BYTES`. Blocking: run it on a worker.
+fn _download(url: &str) -> Result<glib::Bytes, String> {
+    let output = std::process::Command::new("curl")
+        .args(["--silent", "--show-error", "--fail", "--location", "--proto", "=http,https", "--proto-redir", "=http,https"])
+        .args(["--max-time", &WEB_TIMEOUT_SECS.to_string(), "--max-filesize", &MAX_WEB_BYTES.to_string()])
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run curl: {e}"))?;
+    if !output.status.success() { return Err(format!("curl failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim())); }
+    Ok(glib::Bytes::from_owned(output.stdout))
+}
+
+/// The picture decoded by GTK's own loaders, from the bytes of the book (or
+/// downloaded) or from `path`; `None` when GTK cannot read it either. Safe on a worker.
 fn _gtk_texture(in_book: Option<&glib::Bytes>, path: &Path) -> Option<gdk::Texture> {
     match in_book {
         Some(bytes) => gdk::Texture::from_bytes(bytes).ok(),
@@ -265,11 +302,13 @@ fn _gtk_texture(in_book: Option<&glib::Bytes>, path: &Path) -> Option<gdk::Textu
     }
 }
 
-/// The size a `w` x `h` picture is drawn at: as it is, or scaled down to
-/// `MAX_IMAGE_WIDTH` wide keeping its proportions.
-fn display_size(w: i32, h: i32) -> (i32, i32) {
-    if w <= MAX_IMAGE_WIDTH { return (w, h); }
-    (MAX_IMAGE_WIDTH, (h as i64 * MAX_IMAGE_WIDTH as i64 / w as i64) as i32)
+/// The size a `w` x `h` picture is drawn at: `wanted` pixels wide when it is
+/// given (the `width` of an HTML `<img>`), else as it is; never wider than
+/// `MAX_IMAGE_WIDTH`, keeping its proportions.
+fn display_size(w: i32, h: i32, wanted: Option<i32>) -> (i32, i32) {
+    let target = wanted.unwrap_or(w).min(MAX_IMAGE_WIDTH);
+    if target == w || w <= 0 { return (w, h); }
+    (target, (h as i64 * target as i64 / w as i64) as i32)
 }
 
 /// The tags of `markdown::Run`, by name.
@@ -300,9 +339,30 @@ mod tests {
 
     #[test]
     fn narrow_pictures_keep_their_size_and_wide_ones_are_scaled_down() {
-        assert_eq!(display_size(640, 480), (640, 480));
-        assert_eq!(display_size(MAX_IMAGE_WIDTH, 10), (MAX_IMAGE_WIDTH, 10));
-        assert_eq!(display_size(1600, 1200), (MAX_IMAGE_WIDTH, 600));
+        assert_eq!(display_size(640, 480, None), (640, 480));
+        assert_eq!(display_size(MAX_IMAGE_WIDTH, 10, None), (MAX_IMAGE_WIDTH, 10));
+        assert_eq!(display_size(1600, 1200, None), (MAX_IMAGE_WIDTH, 600));
+    }
+
+    #[test]
+    fn an_html_width_sets_the_size_up_to_the_widest() {
+        assert_eq!(display_size(1200, 600, Some(600)), (600, 300));
+        assert_eq!(display_size(100, 50, Some(200)), (200, 100));
+        assert_eq!(display_size(1600, 1200, Some(5000)), (MAX_IMAGE_WIDTH, 600));
+    }
+
+    #[test]
+    fn only_http_addresses_are_downloaded() {
+        assert!(_is_web("https://example.org/a.png"));
+        assert!(_is_web("HTTP://example.org/a.png"));
+        assert!(!_is_web("file:///etc/passwd"));
+        assert!(!_is_web("pics/a.png"));
+    }
+
+    #[test]
+    fn a_failed_download_is_an_error_with_a_message() {
+        let e = _download("http://127.0.0.1:9/no.png").expect_err("nothing listens on port 9");
+        assert!(e.contains("curl"), "{e}");
     }
 
     #[test]

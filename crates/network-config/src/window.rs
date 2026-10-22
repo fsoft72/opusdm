@@ -8,14 +8,15 @@ use crate::form::{EditorCtx, MARGIN, SPACING};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::glib;
-use opusdm_network::agent::MANAGER_IDENTIFIER;
+use opusdm_ui::EmbeddedTool;
+use opusdm_network::agent::{MANAGER_IDENTIFIER, SETTINGS_IDENTIFIER};
 use opusdm_network::import;
 use opusdm_network::profile::{Profile, ProfileKind};
 use opusdm_network::{watch, ProfileSummary, ProfilesMsg};
-use opusdm_network_config::closing::CloseState;
-use opusdm_network_config::groups::{grouped, state_text};
-use opusdm_network_config::session::EditSession;
-use opusdm_network_config::worker::{self, Done, Job};
+use crate::closing::CloseState;
+use crate::groups::{grouped, state_text};
+use crate::session::EditSession;
+use crate::worker::{self, Done, Job};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::mpsc;
@@ -50,7 +51,8 @@ struct ListButtons {
 
 /// What every callback of the window shares.
 pub struct App {
-    window: gtk::ApplicationWindow,
+    /// The window the dialogs belong to: the program's own, or the host's.
+    window: gtk::Window,
     /// Feeds the worker thread; `None` while NetworkManager is not reachable.
     jobs: RefCell<Option<mpsc::Sender<Job>>>,
     done_tx: async_channel::Sender<Done>,
@@ -68,11 +70,57 @@ pub struct App {
     quiet: Cell<bool>,
     /// Whether the window closes now, after the save in progress, or not.
     close: Cell<CloseState>,
+    /// Told how the save asked by a host window ended.
+    save_done: RefCell<Option<SaveDone>>,
 }
+
+/// Told whether a save asked by the host worked.
+type SaveDone = Box<dyn FnOnce(bool)>;
 
 /// Open the window of `app`.
 pub fn open(app: &gtk::Application) {
     let window = gtk::ApplicationWindow::builder().application(app).title("Network Connections").default_width(WINDOW_W).default_height(WINDOW_H).build();
+    let (app_state, layout) = build(window.upcast_ref(), MANAGER_IDENTIFIER);
+    window.set_child(Some(&layout));
+    app_state.guard_close();
+    keep_until_closed(&window, app_state);
+    window.present();
+}
+
+/// The connections of the Network program inside another window (Advanced tab
+/// of Settings): the same list and editor, which keep their own Save and
+/// Revert buttons.
+pub struct NetworkTool {
+    app: Rc<App>,
+    root: gtk::Box,
+}
+
+/// Open the Network tool for the host `window`. It reads NetworkManager on its
+/// own threads, so the list appears a moment after the page. Its secret agent
+/// has an identifier of its own, so the Network program can stay open.
+pub fn embedded(window: &gtk::Window) -> Rc<NetworkTool> {
+    install_css_once();
+    let (app, root) = build(window, SETTINGS_IDENTIFIER);
+    Rc::new(NetworkTool { app, root })
+}
+
+/// Add the error and warning styles of the Network forms to the display, once.
+fn install_css_once() {
+    thread_local! { static DONE: Cell<bool> = const { Cell::new(false) }; }
+    if DONE.with(|d| d.replace(true)) { return; }
+    let Some(display) = gtk::gdk::Display::default() else {
+        opusdm_ipc::err_log!("opusdm-network-manager", "no display: the Network styles are not installed");
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(crate::APP_CSS);
+    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+/// Build the list, the editor side and the message line for `window`, and
+/// start the threads that follow NetworkManager. The app is kept alive by the
+/// caller: everything else holds it weakly.
+fn build(window: &gtk::Window, identifier: &'static str) -> (Rc<App>, gtk::Box) {
     let (done_tx, done_rx) = async_channel::unbounded();
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Search"));
@@ -100,15 +148,14 @@ pub fn open(app: &gtk::Application) {
         selected: RefCell::new(None),
         quiet: Cell::new(false),
         close: Cell::new(CloseState::default()),
+        save_done: RefCell::new(None),
     });
     let (layout, list_buttons) = app_state.layout();
-    window.set_child(Some(&layout));
     app_state.wire(&list_buttons);
     let weak = Rc::downgrade(&app_state);
     listen(&weak, done_rx, App::on_done);
-    listen(&weak, watch::spawn_profiles(MANAGER_IDENTIFIER), App::on_watch);
-    keep_until_closed(&window, app_state);
-    window.present();
+    listen(&weak, watch::spawn_profiles(identifier), App::on_watch);
+    (app_state, layout)
 }
 
 /// Hand every message of `rx` to `handle` on the app. The loop holds the app
@@ -193,6 +240,13 @@ impl App {
         connect_button(&buttons.add, &weak, App::add_new);
         connect_button(&buttons.delete, &weak, App::delete_selected);
         connect_button(&buttons.import, &weak, App::import);
+    }
+
+    /// Ask before the program's own window closes with changes not saved. Not
+    /// used when the tool lives in a host window: the host asks, see
+    /// `NetworkTool`. Connected after `wire`, before `keep_until_closed`.
+    fn guard_close(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
             let Some(a) = weak.upgrade() else { return glib::Propagation::Proceed };
             if a.close.get().may_close(a.is_dirty()) { return glib::Propagation::Proceed; }
@@ -214,6 +268,12 @@ impl App {
         let sent = self.jobs.borrow().as_ref().is_some_and(|tx| tx.send(job).is_ok());
         if !sent { self.show_error("NetworkManager is not available"); }
         sent
+    }
+
+    /// Tell the host window how the save it asked for ended, if it asked.
+    fn finish_save(&self, saved: bool) {
+        let done = self.save_done.borrow_mut().take();
+        if let Some(done) = done { done(saved); }
     }
 
     /// Change the close state with `change`.
@@ -259,7 +319,10 @@ impl App {
     fn on_done(self: &Rc<Self>, done: Done) {
         // Only the save the close waits for keeps the window open; another
         // job that fails (a List, a Load) must not cancel "Save then close".
-        if done.is_failed_save() { self.update_close(CloseState::failed); }
+        if done.is_failed_save() {
+            self.update_close(CloseState::failed);
+            self.finish_save(false);
+        }
         match done {
             Done::Listed(list) => self.on_listed(list),
             Done::Loaded(loaded) => {
@@ -278,6 +341,7 @@ impl App {
                 *self.selected.borrow_mut() = Some(uuid.clone());
                 self.send(Job::List);
                 self.send(Job::Load(uuid));
+                self.finish_save(true);
             }
             Done::Deleted(uuid) => {
                 self.show_info("Deleted");
@@ -593,4 +657,37 @@ fn profile_row(p: &ProfileSummary) -> gtk::Box {
     state.add_css_class("dim-label");
     line.append(&state);
     line
+}
+
+impl EmbeddedTool for NetworkTool {
+    fn title(&self) -> &str {
+        "Network"
+    }
+
+    fn widget(&self) -> gtk::Widget {
+        self.root.clone().upcast()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.app.is_dirty()
+    }
+
+    /// The result arrives from the worker: `done` runs then.
+    fn save(&self, done: Box<dyn FnOnce(bool)>) {
+        if !self.app.is_dirty() { return done(true); }
+        let can_save = self.app.view.borrow().as_ref().is_some_and(|v| v.ctx.session.borrow().can_save());
+        if !can_save {
+            self.app.show_error("The connection has errors: fix them before saving");
+            return done(false);
+        }
+        *self.app.save_done.borrow_mut() = Some(done);
+        if !self.app.save() { self.app.finish_save(false); }
+    }
+
+    /// A connection never saved has nothing to go back to: it is dropped.
+    fn revert(&self, done: Box<dyn FnOnce()>) {
+        let is_new = self.app.view.borrow().as_ref().is_some_and(|v| v.ctx.session.borrow().is_new());
+        if is_new { self.app.close_editor() } else { self.app.revert() }
+        done();
+    }
 }

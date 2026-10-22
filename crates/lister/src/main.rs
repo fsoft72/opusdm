@@ -1,98 +1,7 @@
 //! opusdm-lister: one file-manager window. Spawned by opusdm-hub.
 
-mod actions;
-mod advanced_select;
-mod ansi;
-mod pathcomplete;
-mod archive;
-mod attr_dialogs;
-mod batch_rename;
-mod size_format;
-mod start_target;
-mod bookmarks_ui;
-mod background;
-mod build;
-mod busy;
-mod cache_list;
-mod checkfit_ui;
-mod client;
-mod copy_as;
-mod compress_dialog;
-mod extract_dialog;
-mod crypt_dialog;
-mod cli_dialog;
-mod clip;
-mod close_guard;
-mod commands;
-mod config_cache;
-mod columns;
-mod viewpos;
-mod context_menu;
-mod dircache;
-mod dnd;
-mod filetype_form;
-mod remote;
-mod remote_ui;
-mod remote_xfer;
-mod file_kind;
-mod filetypes_ui;
-mod filter;
-mod format_apply;
-mod format_editor;
-mod find_dialog;
-mod find_search;
-mod font_viewer;
-mod function_editor;
-mod gauge;
-mod glyphs;
-mod history;
-mod hotkey_editor;
-mod hidden;
-mod hotkeys;
-mod icons;
-mod inbound;
-mod job_submit;
-mod keys;
-mod link_dialogs;
-mod menu_editor;
-mod model;
-mod nav_cache;
-mod navpath;
-mod open_default;
-mod open_with;
-mod output_window;
-mod palette;
-mod progress_panel;
-mod passwd;
-mod reselect;
-mod scripts_editor;
-mod script_editor;
-mod scripts_ui;
-mod select_criteria;
-mod sizecache;
-mod status_format;
-mod terminal;
-mod theme;
-mod typeahead;
-mod tools;
-mod trash_ui;
-mod user_menu;
-mod watcher;
-mod image_viewer;
-mod sidecar;
-mod viewer;
-mod viewer_load;
-mod viewer_mode;
-mod viewer_search;
-mod window;
-
+use opusdm_lister::{archive, build, client, dlog, filetypes_ui, function_editor, hotkey_editor, scripts_ui, start_target, theme};
 use std::path::PathBuf;
-
-/// Debug log gated on OPUSDM_DEBUG=1: `[lister:<pid>] <msg>` on stderr.
-#[macro_export]
-macro_rules! dlog {
-    ($($arg:tt)*) => { opusdm_ipc::debug_log!("lister", $($arg)*) };
-}
 
 /// Command line flag that makes the Lister open only the File Types editor.
 const EDIT_FILETYPES_FLAG: &str = "--edit-filetypes";
@@ -159,7 +68,7 @@ fn main() {
         let code = run_hotkey_editor();
         std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
     }
-    crate::dlog!("starting");
+    dlog!("starting");
     let sock_path = match std::env::var_os(opusdm_ipc::sockpath::ENV_SOCK) {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => {
@@ -183,9 +92,9 @@ fn main() {
         }
     };
 
-    crate::dlog!("connected to hub, lister_id={:?}, start={}", connected.1, start_path.display());
+    dlog!("connected to hub, lister_id={:?}, start={}", connected.1, start_path.display());
     let code = build::run(connected, start_path, target.select);
-    crate::dlog!("event loop exited, code={code:?}");
+    dlog!("event loop exited, code={code:?}");
     archive::cleanup_temp_dirs();
     std::process::exit(if code == gtk4::glib::ExitCode::SUCCESS { 0 } else { 1 });
 }

@@ -364,7 +364,7 @@ Desktop folder are not saved; only left-out icons (see 3.21) remember where they
 ### 3.13 User Hotkeys
 
 Any saved function (see Manage Functions) can be bound to a key. Open the
-Command Palette and choose **Edit Hotkeys...** (or the **Hotkeys** button of OpusDM Settings; it opens in its own window). Each row has a key (click it,
+Command Palette and choose **Edit Hotkeys...** (or the **Hotkeys** entry in the **Advanced** tab of OpusDM Settings, which opens it on the right of the list). Each row has a key (click it,
 then press the combination; Escape cancels), what to run (a saved **Function**,
 a **Bash** command or an **Exec** program, see below) and a
 **Global** check box. Rules:
@@ -753,12 +753,22 @@ Lister preview, the Icon View thumbnails and the background picker.
   keys keep working; a bad command line exits with status 1. GIFs show their first frame.
 - **Requires** the GStreamer packages of 3.27 for videos.
 
+### 3.28b The Advanced tab of Settings
+
+The **Advanced** tab of OpusDM Settings has a list on the left and the picked tool on the right:
+**Hotkeys**, **File Types**, **Input** and **Network**. Each tool keeps its own **Save** and **Revert**
+buttons. When you pick another entry, or close Settings, while the tool on screen has changes that are
+not saved, a question asks **Save** (save and apply), **Discard** (put the previous values back) or
+**Cancel** (stay). Under the list, **Manage Functions**, **Scripts (JavaScript)**, **Button Banks**,
+**Apps** and **Screens** open their own windows. The tools also run on their own as before
+(`opusdm-lister --edit-hotkeys`, `--edit-filetypes`, `opusdm-input-config`, `opusdm-network-manager`).
+
 ### 3.29 Input Settings (`opusdm-input-config`)
 
 Sets the mouse, the touchpad and the keyboard. Every change takes effect **at once**, while the
 window is open, so you can try it.
 
-- **Open it:** the **Input** button of OpusDM Settings (Desktop menu > **Desktop** > **Settings**), the internal
+- **Open it:** the **Input** entry in the **Advanced** tab of OpusDM Settings (Desktop menu > **Desktop** > **Settings**; it opens on the right of the list), the internal
   command **Input Settings** (CLI word `input-settings`, usable in any function or hotkey), or run
   `opusdm-input-config`.
 - **Mouse** tab (every mouse): pointer speed (-1 to 1), flat acceleration (no acceleration curve),
@@ -1018,7 +1028,7 @@ Settings: Wi-Fi, Ethernet, WireGuard and OpenVPN, with their IPv4 and IPv6 setti
 be imported.
 
 - **Open it:** **Configure connections...** at the bottom of the network tray, the **Network**
-  button in the **System** tab of OpusDM Settings, or run `opusdm-network-manager`. A second launch
+  entry in the **Advanced** tab of OpusDM Settings, or run `opusdm-network-manager`. A second launch
   only raises the open window.
 - **List (left):** every connection, grouped as Ethernet, Wi-Fi, VPN and Other, with
   *Connected* / *Connecting...* next to the active ones; the search field filters by name. The

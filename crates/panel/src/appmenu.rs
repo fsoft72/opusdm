@@ -13,6 +13,9 @@ use opusdm_apps::apps;
 use opusdm_ipc::{MenuItem, PanelPosition};
 use std::process::Command;
 
+/// Width of the menu popover, in pixels.
+const MENU_WIDTH: i32 = 520;
+
 /// A flat, left-aligned menu row with an icon.
 fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
     let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -34,11 +37,18 @@ fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
     btn
 }
 
+/// True when `name` matches the search `filter` (case-insensitive substring);
+/// an empty filter matches everything.
+fn matches_filter(name: &str, filter: &str) -> bool {
+    filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
+}
+
 /// A menu row for a custom-menu app entry, resolved by desktop file id (or
-/// absolute path). `None` when `id` is not installed, so the caller can skip
-/// it rather than show a dead entry.
-fn custom_app_row(id: &str, popover: &gtk::Popover) -> Option<gtk::Button> {
+/// absolute path). `None` when `id` is not installed or its name does not match
+/// `filter`, so the caller can skip it rather than show a dead entry.
+fn custom_app_row(id: &str, popover: &gtk::Popover, filter: &str) -> Option<gtk::Button> {
     let entry = apps::resolve(&[id.to_string()]).into_iter().next()?;
+    if !matches_filter(entry.info.name().as_str(), filter) { return None; }
     let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let image = match entry.info.icon() {
         Some(icon) => gtk::Image::from_gicon(&icon),
@@ -98,20 +108,24 @@ fn attach_quick_apps_menu(btn: &gtk::Button, id: &str, menu: &gtk::Popover) {
 }
 
 /// Render one level of the custom menu tree into `into`: apps as rows,
-/// folders as expanders nesting their own items.
-fn build_custom_items(items: &[MenuItem], into: &gtk::Box, popover: &gtk::Popover) {
+/// folders as expanders nesting their own items. Only apps matching `filter`
+/// are shown; a folder left with no rows is not shown at all, and while a
+/// filter is active the surviving folders are opened.
+fn build_custom_items(items: &[MenuItem], into: &gtk::Box, popover: &gtk::Popover, filter: &str) {
     for item in items {
         match item {
             MenuItem::App { id } => {
-                if let Some(row) = custom_app_row(id, popover) {
+                if let Some(row) = custom_app_row(id, popover, filter) {
                     into.append(&row);
                 }
             }
             MenuItem::Folder { name, items } => {
                 let inner = gtk::Box::new(gtk::Orientation::Vertical, 1);
                 inner.set_margin_start(12);
-                build_custom_items(items, &inner, popover);
+                build_custom_items(items, &inner, popover, filter);
+                if inner.first_child().is_none() { continue; }
                 let expander = gtk::Expander::new(Some(name));
+                expander.set_expanded(!filter.is_empty());
                 expander.set_child(Some(&inner));
                 into.append(&expander);
             }
@@ -135,12 +149,13 @@ fn load_items() -> Vec<MenuItem> {
     }
 }
 
-/// Replace the content of `custom` with the current menu tree.
-fn fill_custom(custom: &gtk::Box, popover: &gtk::Popover) {
+/// Replace the content of `custom` with the current menu tree, narrowed to
+/// the apps whose name matches `filter`.
+fn fill_custom(custom: &gtk::Box, popover: &gtk::Popover, filter: &str) {
     while let Some(child) = custom.first_child() {
         custom.remove(&child);
     }
-    build_custom_items(&load_items(), custom, popover);
+    build_custom_items(&load_items(), custom, popover, filter);
 }
 
 /// Build the menu button and its popover. The popover opens downwards from a
@@ -155,11 +170,19 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
 
+    // Search box on top: filters the apps by name as the user types.
+    let search = gtk::SearchEntry::new();
+    search.set_placeholder_text(Some("Filter applications"));
+    search.set_margin_top(6);
+    search.set_margin_bottom(2);
+    search.set_margin_start(6);
+    search.set_margin_end(6);
+
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_min_content_height(420);
     scroll.set_max_content_height(560);
-    scroll.set_min_content_width(260);
+    scroll.set_min_content_width(MENU_WIDTH);
 
     let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
     list.set_margin_top(4);
@@ -171,26 +194,42 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
     // time the menu opens, so the Apps editor's changes show up at once.
     let custom = gtk::Box::new(gtk::Orientation::Vertical, 2);
     list.append(&custom);
-    fill_custom(&custom, &popover);
+    fill_custom(&custom, &popover, "");
+    {
+        let (custom, menu, search) = (custom.clone(), popover.clone(), search.clone());
+        popover.connect_show(move |_| {
+            search.set_text("");
+            fill_custom(&custom, &menu, "");
+            search.grab_focus();
+        });
+    }
     {
         let (custom, menu) = (custom.clone(), popover.clone());
-        popover.connect_show(move |_| fill_custom(&custom, &menu));
+        search.connect_search_changed(move |entry| fill_custom(&custom, &menu, entry.text().as_str()));
     }
 
-    list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    // Footer, apart from the app list: About on the left, Logout and
+    // Shutdown on the right.
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    footer.set_margin_top(4);
+    footer.set_margin_bottom(4);
+    footer.set_margin_start(4);
+    footer.set_margin_end(4);
 
     // About.
     {
         let popover = popover.clone();
         let parent = parent.clone();
-        let row = menu_row(Some("help-about"), "About OpusDM");
+        let row = menu_row(Some("help-about"), "About");
         row.connect_clicked(move |_| {
             popover.popdown();
             show_about(&parent);
         });
-        list.append(&row);
+        footer.append(&row);
     }
-    list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    footer.append(&spacer);
     // Logout.
     {
         let popover = popover.clone();
@@ -200,7 +239,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
             popover.popdown();
             confirm(&parent, "Log out?", "This ends the OpusDM session.", logout);
         });
-        list.append(&row);
+        footer.append(&row);
     }
     // Shutdown.
     {
@@ -213,11 +252,17 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
                 run_detached("systemctl", &["poweroff"]);
             });
         });
-        list.append(&row);
+        footer.append(&row);
     }
 
     scroll.set_child(Some(&list));
-    popover.set_child(Some(&scroll));
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.set_size_request(MENU_WIDTH, -1);
+    content.append(&search);
+    content.append(&scroll);
+    content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    content.append(&footer);
+    popover.set_child(Some(&content));
     button.set_popover(Some(&popover));
     button
 }
@@ -270,4 +315,21 @@ fn confirm(
 
 fn show_about(parent: &gtk::ApplicationWindow) {
     opusdm_ui::show_about(parent);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_filter;
+
+    #[test]
+    fn empty_filter_matches_everything() {
+        assert!(matches_filter("Firefox", ""));
+    }
+
+    #[test]
+    fn filter_is_a_case_insensitive_substring() {
+        assert!(matches_filter("Firefox", "fire"));
+        assert!(matches_filter("Firefox", "FOX"));
+        assert!(!matches_filter("Firefox", "chrome"));
+    }
 }

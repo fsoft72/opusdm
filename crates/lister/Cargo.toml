@@ -5,9 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "opusdm_lister"
+path = "src/lib.rs"
+
 [[bin]]
 name = "opusdm-lister"
 path = "src/main.rs"
+
+[features]
+default = ["terminal"]
+# The VTE terminal drawer. Off for users of the editors only (opusdm-settings).
+terminal = ["dep:vte4"]
 
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
@@ -24,7 +33,7 @@ gtk4.workspace = true
 walkdir.workspace = true
 sha2.workspace = true
 md-5.workspace = true
-vte4 = "0.9"
+vte4 = { version = "0.9", optional = true }
 tempfile.workspace = true
 
 [dev-dependencies]

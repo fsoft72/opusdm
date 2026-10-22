@@ -8,6 +8,7 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_ipc::filetypes::{self, FileFacts, FileType, FileTypes};
 use opusdm_ipc::function::{Function, FunctionId};
+use opusdm_ui::EmbeddedTool;
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
@@ -92,6 +93,8 @@ struct State {
     save_btn: gtk::Button,
     /// Set while widgets are being filled, so their change signals are ignored.
     building: Cell<bool>,
+    /// Runs after every validation, so a host can follow the unsaved state.
+    on_change: Rc<dyn Fn()>,
 }
 
 /// Open the File Types editor. With `sample`, a new type derived from that
@@ -127,17 +130,60 @@ async fn hub_functions() -> Result<Vec<Function>, String> {
     crate::client::fetch_config(&client, &inbox).await.map(|(_, functions)| functions)
 }
 
-/// Fill `shell` with the File Types editor. `report` receives the outcome of
-/// each Save.
-fn build_editor(
-    shell: opusdm_ui::DialogShell,
+/// Why a save did not happen.
+enum SaveError {
+    /// The drafts have problems; the text lists them.
+    Invalid(String),
+    /// The file could not be written; the text says why.
+    Write(String),
+}
+
+/// The editor body (list, form and status line) and what tells whether it
+/// differs from the saved file types.
+struct Body {
+    state: Rc<State>,
+    root: gtk::Box,
+    /// The drafts as last saved (or loaded).
+    saved: RefCell<Vec<Draft>>,
+}
+
+impl Body {
+    /// Whether the drafts differ from the saved file types.
+    fn is_dirty(&self) -> bool {
+        *self.state.drafts.borrow() != *self.saved.borrow()
+    }
+
+    /// Save the drafts to disk.
+    fn save(&self) -> Result<(), SaveError> {
+        let types = build_types(&self.state).map_err(|messages| SaveError::Invalid(messages.join("; ")))?;
+        filetypes::save_filetypes(&types).map_err(|e| SaveError::Write(format!("could not save file types: {e}")))?;
+        crate::config_cache::invalidate_filetypes();
+        *self.saved.borrow_mut() = self.state.drafts.borrow().clone();
+        Ok(())
+    }
+
+    /// Put the saved file types back in the list and the form.
+    fn revert(&self) {
+        let state = &self.state;
+        *state.drafts.borrow_mut() = self.saved.borrow().clone();
+        let count = state.drafts.borrow().len();
+        state.current.set(state.current.get().filter(|i| *i < count).or(if count > 0 { Some(0) } else { None }));
+        refresh_list(state);
+        show_form(state);
+    }
+}
+
+/// Build the editor body. `window` owns the dialogs the form opens; `save_btn`
+/// is enabled only while nothing is wrong. With `sample`, a new type derived
+/// from that file (the Filetype Creator) is added and selected.
+fn build_body(
+    window: &gtk::Window,
     functions: Vec<opusdm_ipc::function::Function>,
     sample: Option<(String, std::path::PathBuf)>,
-    report: Rc<dyn Fn(&str)>,
-) {
-    let shell = shell.size(820, 520);
-    let root = shell.content();
-
+    save_btn: gtk::Button,
+    on_change: Rc<dyn Fn()>,
+) -> Body {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     body.set_vexpand(true);
     root.append(&body);
@@ -169,20 +215,19 @@ fn build_editor(
     status.add_css_class("error");
     root.append(&status);
 
-    let save_btn = shell.button("Save");
-    shell.button_spacer();
-    shell.close_button("Close");
-
+    let drafts: Vec<Draft> = filetypes::load_filetypes().types.iter().map(Draft::from_type).collect();
+    let saved = drafts.clone();
     let state = Rc::new(State {
-        drafts: RefCell::new(filetypes::load_filetypes().types.iter().map(Draft::from_type).collect()),
+        drafts: RefCell::new(drafts),
         current: Cell::new(None),
         functions,
-        window: shell.window().clone(),
+        window: window.clone(),
         list,
         form,
         status,
-        save_btn: save_btn.clone(),
+        save_btn,
         building: Cell::new(false),
+        on_change,
     });
 
     if let Some((name, path)) = sample {
@@ -251,25 +296,153 @@ fn build_editor(
             refresh_list(&state);
         });
     }
-    {
-        let report = report.clone();
-        let state = state.clone();
-        save_btn.connect_clicked(move |_| match build_types(&state) {
-            Ok(types) => match filetypes::save_filetypes(&types) {
-                Ok(()) => {
-                    crate::config_cache::invalidate_filetypes();
-                    report("file types saved");
-                }
-                Err(e) => report(&format!("could not save file types: {e}")),
-            },
-            Err(messages) => state.status.set_text(&messages.join("; ")),
-        });
-    }
-
     refresh_list(&state);
     show_form(&state);
     validate(&state);
+    Body { state, root, saved: RefCell::new(saved) }
+}
+
+/// Fill `shell` with the File Types editor. `report` receives the outcome of
+/// each Save.
+fn build_editor(
+    shell: opusdm_ui::DialogShell,
+    functions: Vec<opusdm_ipc::function::Function>,
+    sample: Option<(String, std::path::PathBuf)>,
+    report: Rc<dyn Fn(&str)>,
+) {
+    let shell = shell.size(820, 520);
+    let save_btn = shell.button("Save");
+    shell.button_spacer();
+    shell.close_button("Close");
+    let body = build_body(shell.window(), functions, sample, save_btn.clone(), Rc::new(|| {}));
+    shell.content().append(&body.root);
+    let status = body.state.status.clone();
+    save_btn.connect_clicked(move |_| match body.save() {
+        Ok(()) => report("file types saved"),
+        Err(SaveError::Write(message)) => report(&message),
+        Err(SaveError::Invalid(message)) => status.set_text(&message),
+    });
     shell.present();
+}
+
+/// The File Types editor inside another window (Advanced tab of Settings): the
+/// list and form, and its own Save and Revert buttons.
+pub struct FileTypesTool {
+    root: gtk::Box,
+    body: Rc<RefCell<Option<Body>>>,
+    save_btn: gtk::Button,
+    revert_btn: gtk::Button,
+}
+
+/// Open the File Types editor for the host `window`. The Functions come from
+/// the hub (from disk when no hub answers), so the editor appears a moment
+/// after the page.
+pub fn embedded(window: &gtk::Window) -> Rc<FileTypesTool> {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    root.set_margin_top(12);
+    root.set_margin_bottom(12);
+    root.set_margin_start(12);
+    root.set_margin_end(12);
+    let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    slot.set_vexpand(true);
+    slot.append(&gtk::Label::new(Some("Loading the file types...")));
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    let revert_btn = gtk::Button::with_label("Revert");
+    let save_btn = gtk::Button::with_label("Save");
+    revert_btn.set_sensitive(false);
+    save_btn.set_sensitive(false);
+    buttons.append(&revert_btn);
+    buttons.append(&save_btn);
+    root.append(&slot);
+    root.append(&buttons);
+
+    let tool = Rc::new(FileTypesTool { root, body: Rc::new(RefCell::new(None)), save_btn: save_btn.clone(), revert_btn: revert_btn.clone() });
+    let weak = Rc::downgrade(&tool);
+    save_btn.connect_clicked({
+        let weak = weak.clone();
+        move |_| match weak.upgrade() {
+            Some(tool) => tool.save(Box::new(|_| {})),
+            None => opusdm_ipc::err_log!("opusdm-lister", "File Types: the editor is gone, Save ignored"),
+        }
+    });
+    revert_btn.connect_clicked({
+        let weak = weak.clone();
+        move |_| match weak.upgrade() {
+            Some(tool) => tool.revert(Box::new(|| {})),
+            None => opusdm_ipc::err_log!("opusdm-lister", "File Types: the editor is gone, Revert ignored"),
+        }
+    });
+    let window = window.clone();
+    gtk::glib::spawn_future_local(async move {
+        let functions = match hub_functions().await {
+            Ok(functions) => functions,
+            Err(e) => {
+                opusdm_ipc::err_log!("opusdm-lister", "File Types: {e}; using the Functions on disk");
+                opusdm_ipc::function::load_functions()
+            }
+        };
+        let Some(tool) = weak.upgrade() else {
+            opusdm_ipc::err_log!("opusdm-lister", "File Types: the editor was closed before the Functions arrived");
+            return;
+        };
+        // Weak: the body owns the state that owns this closure.
+        let (body_slot, revert_btn) = (Rc::downgrade(&tool.body), tool.revert_btn.clone());
+        let on_change: Rc<dyn Fn()> = Rc::new(move || {
+            let dirty = body_slot.upgrade().is_some_and(|b| b.borrow().as_ref().is_some_and(Body::is_dirty));
+            revert_btn.set_sensitive(dirty);
+        });
+        let body = build_body(&window, functions, None, tool.save_btn.clone(), on_change);
+        while let Some(child) = slot.first_child() {
+            slot.remove(&child);
+        }
+        slot.append(&body.root);
+        *tool.body.borrow_mut() = Some(body);
+    });
+    tool
+}
+
+impl EmbeddedTool for FileTypesTool {
+    fn title(&self) -> &str {
+        "File Types"
+    }
+
+    fn widget(&self) -> gtk::Widget {
+        self.root.clone().upcast()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.body.borrow().as_ref().is_some_and(Body::is_dirty)
+    }
+
+    fn save(&self, done: Box<dyn FnOnce(bool)>) {
+        let body = self.body.borrow();
+        let Some(body) = body.as_ref() else {
+            opusdm_ipc::err_log!("opusdm-lister", "File Types: Save before the editor was loaded");
+            return done(false);
+        };
+        match body.save() {
+            Ok(()) => {
+                self.revert_btn.set_sensitive(false);
+                done(true);
+            }
+            Err(SaveError::Invalid(message)) => {
+                body.state.status.set_text(&message);
+                done(false);
+            }
+            Err(SaveError::Write(message)) => {
+                opusdm_ipc::err_log!("opusdm-lister", "File Types: {message}");
+                body.state.status.set_text(&message);
+                done(false);
+            }
+        }
+    }
+
+    fn revert(&self, done: Box<dyn FnOnce()>) {
+        if let Some(body) = self.body.borrow().as_ref() { body.revert(); }
+        self.revert_btn.set_sensitive(false);
+        done();
+    }
 }
 
 /// Convert every draft; the error lists each problem found.
@@ -310,6 +483,7 @@ fn validate(state: &State) {
             state.save_btn.set_sensitive(false);
         }
     }
+    (state.on_change)();
 }
 
 /// Repaint the list of names, keeping the selection on `current`.

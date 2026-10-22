@@ -91,6 +91,16 @@ pub fn wrapped_index(current: usize, count: usize, delta: i32) -> Option<usize> 
     usize::try_from(target).ok()
 }
 
+/// The index `delta` steps from `current` among `count`. With `wrap` it goes
+/// around at both ends (see [`wrapped_index`]); without it stops at the first
+/// and the last one. `None` when there is nothing to step through.
+pub fn stepped_index(current: usize, count: usize, delta: i32, wrap: bool) -> Option<usize> {
+    if wrap { return wrapped_index(current, count, delta); }
+    if count == 0 { return None; }
+    let target = (current as i64 + i64::from(delta)).clamp(0, count as i64 - 1);
+    usize::try_from(target).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +141,15 @@ mod tests {
         assert_eq!(snapshot.active(), Some(2));
         assert_eq!(snapshot.current_workspace(), Some(1));
         assert_eq!(Snapshot::default().active(), None);
+    }
+
+    #[test]
+    fn workspace_steps_stop_at_the_ends_without_wrap() {
+        assert_eq!(stepped_index(3, 4, 1, false), Some(3));
+        assert_eq!(stepped_index(0, 4, -1, false), Some(0));
+        assert_eq!(stepped_index(1, 4, 1, false), Some(2));
+        assert_eq!(stepped_index(3, 4, 1, true), Some(0));
+        assert_eq!(stepped_index(0, 0, 1, false), None);
     }
 
     #[test]

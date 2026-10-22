@@ -11,7 +11,7 @@ fn main() {
     session.subscribe(|snapshot| println!("{snapshot:#?}"));
     if std::env::args().any(|a| a == "switch") {
         std::thread::sleep(std::time::Duration::from_millis(300));
-        session.switch_workspace(1);
+        session.switch_workspace(1, true);
     }
     std::thread::sleep(std::time::Duration::from_secs(3));
 }

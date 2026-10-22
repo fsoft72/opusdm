@@ -25,6 +25,9 @@ const SERVICE: &str = "org.freedesktop.NetworkManager";
 pub const PANEL_IDENTIFIER: &str = "org.opusdm.network";
 /// The identifier of the network manager program's agent.
 pub const MANAGER_IDENTIFIER: &str = "org.opusdm.network.manager";
+/// The identifier of the agent of the Network tab in `opusdm-settings`, so it
+/// never clashes with the network manager program open at the same time.
+pub const SETTINGS_IDENTIFIER: &str = "org.opusdm.network.settings";
 /// `NM_SECRET_AGENT_GET_SECRETS_FLAG_REQUEST_NEW`: the key given before was refused.
 const REQUEST_NEW: u32 = 0x2;
 /// The settings group that names the profile.

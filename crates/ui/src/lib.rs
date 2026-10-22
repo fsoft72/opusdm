@@ -5,6 +5,7 @@
 mod about;
 mod app_icon;
 mod dirty_guard;
+mod embedded_tool;
 mod file_pick;
 mod fonts;
 mod form_widgets;
@@ -22,6 +23,7 @@ mod x11;
 pub use about::show_about;
 pub use app_icon::{set_app_icon, APP_ICON_NAME};
 pub use dirty_guard::{confirm_discard, DirtyGuard};
+pub use embedded_tool::{confirm_leave, EmbeddedTool};
 pub use file_pick::{pick_file, pick_file_or_error, FileFilterSpec, FilePick};
 pub use form_widgets::{clear_children, labeled_row, section_heading, LabelWidth, RemoveChildren};
 pub use fonts::{font_files, register_theme_fonts};
