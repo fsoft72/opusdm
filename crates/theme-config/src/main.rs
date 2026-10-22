@@ -96,6 +96,7 @@ impl Sections {
             dock_position: self.dock.position(),
             dock_icon_size: self.dock.icon_size(),
             virtual_screens: self.screens.count(),
+            wrap_desktops: self.screens.wrap(),
             transparency_enabled: self.windows.enabled(),
             inactive_opacity: self.windows.inactive_opacity(),
             active_opacity: self.windows.active_opacity(),
@@ -198,7 +199,7 @@ fn build_desktop_page(
     let grid = Rc::new(GridSection::new(desktop.icon_size, desktop.grid_spacing, desktop.grid_gap));
     let folder = Rc::new(FolderSection::new(desktop.desktop_dir.as_deref()));
     let panel = Rc::new(PanelSection::new(desktop.panel_position));
-    let screens = Rc::new(VirtualScreensSection::new(desktop.virtual_screens));
+    let screens = Rc::new(VirtualScreensSection::new(desktop.virtual_screens, desktop.wrap_desktops));
     for root in [&grid.root, &folder.root, &panel.root, &screens.root] {
         page.append(root);
         page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));

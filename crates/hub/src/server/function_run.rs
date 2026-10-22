@@ -8,17 +8,18 @@ use crate::functions::FnEvent;
 
 /// Switch the virtual desktop by `delta` (a `DesktopPrev` / `DesktopNext`
 /// step): on Wayland through the compositor session, on X11 through EWMH.
-fn switch_desktop(delta: i32) {
+/// `wrap` says whether stepping past the last (or first) desktop goes around.
+fn switch_desktop(delta: i32, wrap: bool) {
     if opusdm_ipc::session::is_wayland() {
         if let Some(session) = opusdm_wayland::shared() {
-            session.switch_workspace(delta);
+            session.switch_workspace(delta, wrap);
         }
         return;
     }
     if !opusdm_ipc::session::is_x11() {
         return;
     }
-    if let Err(e) = opusdm_ui::with_x11(|x11| x11.switch_desktop(delta)) {
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.switch_desktop(delta, wrap)) {
         opusdm_ipc::err_log!("hub", "cannot switch the virtual desktop: {e}");
     }
 }
@@ -232,7 +233,7 @@ impl Hub {
             FnEvent::Hide => self.set_hidden(true),
             FnEvent::Reveal => self.set_hidden(false),
             FnEvent::ToggleHide => self.set_hidden(!self.hidden),
-            FnEvent::Desktop { delta } => switch_desktop(delta),
+            FnEvent::Desktop { delta } => switch_desktop(delta, self.current_desktop.wrap_desktops),
             FnEvent::Bank { action, bank } => {
                 send_or_log(&self.evt_tx, HubEvent::Bank { action, bank }, "GTK event");
             }

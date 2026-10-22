@@ -353,6 +353,10 @@ pub struct DesktopSettings {
     pub dock_icon_size: i32,
     /// Number of virtual screens (desktops) the window manager offers.
     pub virtual_screens: u32,
+    /// Whether the next/previous desktop steps wrap around: from the last
+    /// desktop "next" goes to the first one, and "previous" from the first
+    /// goes to the last. Off means the steps stop at the first and last desktop.
+    pub wrap_desktops: bool,
     /// Master switch for window transparency. Off means every window is drawn
     /// fully opaque, whatever the two opacity values below say.
     pub transparency_enabled: bool,
@@ -380,6 +384,7 @@ impl Default for DesktopSettings {
             dock_position: DockPosition::Bottom,
             dock_icon_size: 48,
             virtual_screens: DEFAULT_VIRTUAL_SCREENS,
+            wrap_desktops: true,
             transparency_enabled: true,
             inactive_opacity: DEFAULT_INACTIVE_OPACITY,
             active_opacity: DEFAULT_ACTIVE_OPACITY,
@@ -645,6 +650,15 @@ mod tests {
         assert_eq!(d.virtual_screens, VIRTUAL_SCREENS_RANGE.1);
         let d = DesktopSettings { virtual_screens: 0, ..Default::default() }.sanitized();
         assert_eq!(d.virtual_screens, VIRTUAL_SCREENS_RANGE.0);
+    }
+
+    #[test]
+    fn wrap_desktops_defaults_to_on_also_for_an_old_file() {
+        assert!(DesktopSettings::default().wrap_desktops);
+        let d: DesktopSettings = serde_json::from_str(r#"{"icon_size":64}"#).unwrap();
+        assert!(d.wrap_desktops);
+        let d: DesktopSettings = serde_json::from_str(r#"{"wrap_desktops":false}"#).unwrap();
+        assert!(!d.wrap_desktops);
     }
 
     #[test]

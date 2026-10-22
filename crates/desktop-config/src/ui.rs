@@ -297,11 +297,13 @@ impl PanelSection {
 pub struct VirtualScreensSection {
     pub root: gtk::Box,
     spin: gtk::SpinButton,
+    wrap: gtk::CheckButton,
 }
 
 impl VirtualScreensSection {
-    /// Build the section seeded with the current number of virtual screens.
-    pub fn new(initial: u32) -> Self {
+    /// Build the section seeded with the current number of virtual screens
+    /// and whether the next/previous steps wrap around.
+    pub fn new(initial: u32, wrap_initial: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.append(&section_heading("VIRTUAL SCREENS"));
 
@@ -310,7 +312,16 @@ impl VirtualScreensSection {
         spin.set_value(initial as f64);
 
         root.append(&labeled_row("Number of screens", LabelWidth::Pixels(130), 8, &spin));
-        Self { root, spin }
+
+        let wrap = gtk::CheckButton::with_label("Loop from the last screen to the first (and back)");
+        wrap.set_active(wrap_initial);
+        root.append(&wrap);
+        Self { root, spin, wrap }
+    }
+
+    /// Whether going past the last (or first) screen wraps around.
+    pub fn wrap(&self) -> bool {
+        self.wrap.is_active()
     }
 
     /// The chosen number of virtual screens.

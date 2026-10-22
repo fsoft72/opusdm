@@ -16,4 +16,4 @@ pub mod wayfire;
 pub mod wayfire_ini;
 
 pub use client::{shared, Session};
-pub use model::{apply_states, pager_order, parse_coordinates, wrapped_index, Snapshot, Toplevel, ToplevelId, Workspace};
+pub use model::{apply_states, pager_order, parse_coordinates, stepped_index, wrapped_index, Snapshot, Toplevel, ToplevelId, Workspace};

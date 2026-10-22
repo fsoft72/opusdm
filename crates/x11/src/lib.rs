@@ -130,6 +130,20 @@ pub fn wrapped_desktop(current: u32, count: u32, delta: i32) -> Option<u32> {
     u32::try_from(target).ok()
 }
 
+/// The desktop `delta` steps from `current` among `count` desktops. With
+/// `wrap` it goes around at both ends (see [`wrapped_desktop`]); without it
+/// stops at the first and the last desktop. `None` when there are no desktops.
+pub fn stepped_desktop(current: u32, count: u32, delta: i32, wrap: bool) -> Option<u32> {
+    if wrap {
+        return wrapped_desktop(current, count, delta);
+    }
+    if count == 0 {
+        return None;
+    }
+    let target = (i64::from(current) + i64::from(delta)).clamp(0, i64::from(count) - 1);
+    u32::try_from(target).ok()
+}
+
 /// Flush `conn` and wait until the X server has processed everything sent on
 /// it. Needed before dropping a connection, and after sending requests the
 /// caller wants the window manager to have seen.
@@ -256,10 +270,10 @@ impl X11 {
     /// Switch the window manager to the virtual desktop `delta` steps away
     /// from the current one, wrapping at both ends (`-1` previous, `1`
     /// next). Does nothing when the window manager reports no desktops.
-    pub fn switch_desktop(&self, delta: i32) -> Result<(), X11Error> {
+    pub fn switch_desktop(&self, delta: i32, wrap: bool) -> Result<(), X11Error> {
         let current = self.root_cardinal("_NET_CURRENT_DESKTOP")?.unwrap_or(0);
         let count = self.root_cardinal("_NET_NUMBER_OF_DESKTOPS")?.unwrap_or(0);
-        let Some(target) = wrapped_desktop(current, count, delta) else { return Ok(()) };
+        let Some(target) = stepped_desktop(current, count, delta, wrap) else { return Ok(()) };
         // Data: the new desktop and the source indication; 0 = current time.
         self.send_to_root(self.root, "_NET_CURRENT_DESKTOP", [target, 0, 0, 0, 0])
     }
@@ -339,6 +353,16 @@ mod tests {
         assert_eq!(wrapped_desktop(0, 4, -1), Some(3));
         assert_eq!(wrapped_desktop(0, 1, 1), Some(0));
         assert_eq!(wrapped_desktop(0, 0, 1), None);
+    }
+
+    #[test]
+    fn stepped_desktop_stops_at_both_ends_without_wrap() {
+        assert_eq!(stepped_desktop(1, 4, 1, false), Some(2));
+        assert_eq!(stepped_desktop(3, 4, 1, false), Some(3));
+        assert_eq!(stepped_desktop(0, 4, -1, false), Some(0));
+        assert_eq!(stepped_desktop(0, 0, 1, false), None);
+        assert_eq!(stepped_desktop(3, 4, 1, true), Some(0));
+        assert_eq!(stepped_desktop(0, 4, -1, true), Some(3));
     }
 
     /// Needs a running X server (`DISPLAY`), e.g. `Xephyr :99`; run with
