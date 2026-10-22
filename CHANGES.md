@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-10-22
+- Feature (panel): OPUSDM-3, the application menu is wider (520 px, was 260), has a "Filter applications" search box on top that narrows the apps by name (case-insensitive substring, folders open while filtering), hides folders with no apps, and has a footer apart from the list: "About" on the left, Logout and Shutdown on the right. New `appmenu::matches_filter`, `MENU_WIDTH`. Tests: 2 unit tests on the name filter; clippy clean for the panel. Checked on screen (release build, Xephyr sandbox): the new layout and width, the footer, the empty filter box. NOT checked: **typing in the filter on X11 does not work**: the panel is a dock window that the window manager does not focus, so the keys go to the previously focused window (also after a click in the box); a fix would activate the panel window while the menu is open and restore the previous focus on close, not done. Not checked either: the filter on Wayland (layer-shell keyboard mode OnDemand), Enter in the filter, the installed session (`live-update.sh`), the CLAUDE.md rule 4 checklist (Lister, global hotkeys, hub).
 - Change (release): workspace version bumped from 0.11.0 to 0.12.0 (`Cargo.toml`, `Cargo.lock`); every crate inherits it. No code changed. Checked: `cargo update --workspace --offline` only touches the workspace crates. NOT checked: a full build and a release with the new number (no tag or package made).
 
 ## 2026-10-21
