@@ -6,6 +6,7 @@ use crate::comic;
 use crate::kind::{kind_of, MediaKind};
 use crate::loader::RawImage;
 use crate::pdf_links::{page_links, Link};
+use crate::pdf_text::{extract, PageText};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::{LoadPdfError, Pdf};
 use hayro::vello_cpu::color::palette::css::WHITE;
@@ -22,13 +23,15 @@ pub const PAGE_SCALE: f32 = 2.0;
 const MAX_EDGE: f32 = 8192.0;
 
 /// One rendered page, the number of pages of its document, the pixels per
-/// point it was rendered at and its links.
+/// point it was rendered at, its links and its text (only the page worker
+/// fills it; empty for a thumbnail or a comic).
 #[derive(Debug)]
 pub struct RenderedPage {
     pub raw: RawImage,
     pub count: usize,
     pub scale: f32,
     pub links: Vec<Link>,
+    pub text: PageText,
 }
 
 /// A page the window wants: tagged with the generation it was asked for.
@@ -69,7 +72,7 @@ pub fn render_page_cached<'a>(pdf: &'a Pdf, index: usize, scale: f32, cache: &Re
     let (w, h) = (pixmap.width() as u32, pixmap.height() as u32);
     if w == 0 || h == 0 { return Err(format!("page {} is empty", index + 1)); }
     let raw = RawImage { width: w, height: h, rowstride: (w * 4) as i32, has_alpha: true, bytes: pixmap.take_rgba8(ImageAlphaType::Alpha) };
-    Ok(RenderedPage { raw, count, scale, links: page_links(pdf, index) })
+    Ok(RenderedPage { raw, count, scale, links: page_links(pdf, index), text: PageText::default() })
 }
 
 /// The first page scaled to fit a `px` x `px` box, for the thumbnail strip.
@@ -123,7 +126,8 @@ fn _serve_document(request: PageRequest, rx: &mpsc::Receiver<PageRequest>, answe
     };
     let cache = RenderCache::new();
     loop {
-        let result = render_page_cached(&pdf, request.index, PAGE_SCALE, &cache);
+        let mut result = render_page_cached(&pdf, request.index, PAGE_SCALE, &cache);
+        if let Ok(page) = result.as_mut() { page.text = extract(&pdf, request.index); }
         answers.send_blocking((request.generation, result)).ok()?;
         let next = _newest(rx.recv().ok()?, rx);
         if next.path != request.path { return Some(next); }

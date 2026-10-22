@@ -8,7 +8,7 @@ use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_interpret::{interpret_page, BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps, InterpreterCache, InterpreterSettings, SoftMask};
 use hayro::hayro_syntax::Pdf;
-use hayro::kurbo::{Affine, BezPath, Rect};
+use hayro::kurbo::{Affine, BezPath, Point, Rect};
 
 /// Glyph box in glyph space (1000 units per em): from the descender to the ascender.
 const GLYPH_BOTTOM: f64 = -200.0;
@@ -29,6 +29,15 @@ pub struct TextChar {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageText {
     pub chars: Vec<TextChar>,
+}
+
+/// A run of characters picked with the pointer: their text and their boxes,
+/// one per line, and the first and last character index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    pub text: String,
+    pub rects: Vec<Rect>,
+    pub range: (usize, usize),
 }
 
 /// Device that collects the characters of the glyphs and ignores the rest.
@@ -95,9 +104,15 @@ impl PageText {
     /// new line where the next one starts a new line. Each char of the string
     /// carries the index of its character, or `None` for the added ones.
     fn _layout(&self) -> Vec<(char, Option<usize>)> {
-        let mut out: Vec<(char, Option<usize>)> = Vec::with_capacity(self.chars.len() * 2);
+        self._layout_range(0, self.chars.len())
+    }
+
+    /// [`Self::_layout`] of the characters `from..to` only; the indexes it
+    /// carries are those of the whole page.
+    fn _layout_range(&self, from: usize, to: usize) -> Vec<(char, Option<usize>)> {
+        let mut out: Vec<(char, Option<usize>)> = Vec::with_capacity((to - from) * 2);
         let mut prev: Option<&TextChar> = None;
-        for (i, c) in self.chars.iter().enumerate() {
+        for (i, c) in self.chars.iter().enumerate().take(to).skip(from) {
             if let Some(p) = prev {
                 let height = p.rect.height().max(c.rect.height()).max(0.1);
                 let same_line = (c.rect.center().y - p.rect.center().y).abs() < height / 2.0;
@@ -132,6 +147,28 @@ impl PageText {
             }
         }
         found
+    }
+
+    /// Index of the character nearest to `point` (the one under it when there
+    /// is one); `None` on a page without text.
+    pub fn nearest(&self, point: Point) -> Option<usize> {
+        let distance = |r: &Rect| {
+            let dx = (r.x0 - point.x).max(0.0).max(point.x - r.x1);
+            let dy = (r.y0 - point.y).max(0.0).max(point.y - r.y1);
+            dx * dx + dy * dy
+        };
+        self.chars.iter().enumerate().min_by(|a, b| distance(&a.1.rect).total_cmp(&distance(&b.1.rect))).map(|(i, _)| i)
+    }
+
+    /// The characters from `a` to `b` (either order, both included) as text
+    /// laid out like the search sees it, with their boxes; `None` when the
+    /// page has no such character.
+    pub fn select(&self, a: usize, b: usize) -> Option<Selection> {
+        let (lo, hi) = (a.min(b), a.max(b));
+        if hi >= self.chars.len() { return None; }
+        let text: String = self._layout_range(lo, hi + 1).into_iter().map(|(c, _)| c).collect();
+        let indexes: Vec<usize> = (lo..=hi).collect();
+        Some(Selection { text, rects: self._merge_boxes(&indexes), range: (lo, hi) })
     }
 
     /// Boxes of the characters `indexes`, one box per line.
@@ -198,6 +235,30 @@ mod tests {
         chars.extend(word("next", 0.0, 20.0));
         let text: String = PageText { chars }._layout().iter().map(|(c, _)| *c).collect();
         assert_eq!(text, "Hello world\nnext");
+    }
+
+    #[test]
+    fn nearest_picks_the_character_under_or_closest_to_the_point() {
+        let page = PageText { chars: word("abc", 0.0, 0.0) };
+        assert_eq!(page.nearest(Point::new(7.0, 5.0)), Some(1));
+        assert_eq!(page.nearest(Point::new(100.0, 5.0)), Some(2));
+        assert_eq!(page.nearest(Point::new(-50.0, -50.0)), Some(0));
+        assert_eq!(PageText::default().nearest(Point::new(0.0, 0.0)), None);
+    }
+
+    #[test]
+    fn select_gives_the_text_between_two_characters_in_either_order() {
+        let mut chars = word("Hello", 0.0, 0.0);
+        chars.extend(word("world", 40.0, 0.0));
+        chars.extend(word("next", 0.0, 20.0));
+        let page = PageText { chars };
+        let forward = page.select(3, 11).unwrap();
+        assert_eq!(forward.text, "lo world\nne");
+        assert_eq!(forward.range, (3, 11));
+        assert_eq!(forward.rects.len(), 2);
+        assert_eq!(page.select(11, 3), Some(forward));
+        assert_eq!(page.select(2, 2).unwrap().text, "l");
+        assert!(page.select(0, 99).is_none());
     }
 
     #[test]

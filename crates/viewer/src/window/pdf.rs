@@ -12,7 +12,9 @@ use crate::pdf_bar::PdfBar;
 use crate::pdf_links::{link_at, Link, LinkTarget};
 use crate::pdf_pages::PagePanel;
 use crate::pdf_search::{start_worker, Hits, SearchAnswer, SearchRequest};
+use crate::pdf_text::{PageText, Selection};
 use crate::text_doc::TextDoc;
+use hayro::kurbo::Point;
 use gtk4 as gtk;
 use gtk::{gdk, gio, glib};
 use gtk::prelude::*;
@@ -23,6 +25,8 @@ use std::sync::mpsc;
 /// Tint of the search matches, and of the current one.
 const MATCH_COLOR: [u8; 3] = [255, 235, 60];
 const CURRENT_MATCH_COLOR: [u8; 3] = [255, 140, 0];
+/// Tint of the text picked with the mouse.
+const SELECTION_COLOR: [u8; 3] = [140, 180, 255];
 /// Pixels added around a match box.
 const MATCH_PAD: f64 = 1.0;
 
@@ -43,6 +47,12 @@ pub(super) struct PdfUi {
     reveal_hit: Cell<bool>,
     /// Show the page being rendered from its bottom (the wheel went back past the top).
     land_bottom: Cell<bool>,
+    /// The text of the page on screen, for the selection.
+    text: RefCell<PageText>,
+    /// The text picked with the mouse on the page on screen.
+    selection: RefCell<Option<Selection>>,
+    /// The character the drag in progress started on; `None` when no selecting drag runs.
+    anchor: Cell<Option<usize>>,
 }
 
 /// Channels the window loops read for the PDF side.
@@ -57,7 +67,7 @@ pub(super) fn build() -> (PdfUi, PdfChannels) {
     let (search_answer_tx, search_rx) = async_channel::unbounded();
     let panel = PagePanel::new(page_pick_tx);
     panel.root.set_visible(false);
-    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false), land_bottom: Cell::new(false) };
+    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false), land_bottom: Cell::new(false), text: RefCell::new(PageText::default()), selection: RefCell::new(None), anchor: Cell::new(None) };
     (ui, PdfChannels { page_pick_rx, search_rx })
 }
 
@@ -117,6 +127,7 @@ impl State {
         });
         bar.entry.add_controller(key);
         self._wire_links();
+        self._wire_selection();
     }
 
     /// Click on a link follows it; over a link the pointer becomes a hand and
@@ -136,7 +147,8 @@ impl State {
         motion.connect_motion(move |_, x, y| {
             let target = s._link_target(x, y);
             let picture = s.image.picture();
-            picture.set_cursor_from_name(target.as_ref().map(|_| "pointer"));
+            let cursor = if target.is_some() { Some("pointer") } else if s._page_point(x, y).is_some() { Some("text") } else { None };
+            picture.set_cursor_from_name(cursor);
             let tip = target.map(|t| match t {
                 LinkTarget::Page(i) => format!("Go to page {}", i + 1),
                 LinkTarget::Uri(uri) => uri,
@@ -146,6 +158,46 @@ impl State {
         let s = self.clone();
         motion.connect_leave(move |_| s.image.picture().set_cursor_from_name(None));
         picture.add_controller(motion);
+    }
+
+    /// Drag on a PDF page picks the text between the character it started on
+    /// and the one under the pointer (Shift+drag pans instead); Ctrl+C copies it.
+    fn _wire_selection(self: &Rc<Self>) {
+        let drag = gtk::GestureDrag::new();
+        let s = self.clone();
+        drag.connect_drag_begin(move |gesture, x, y| {
+            let shift = gesture.current_event_state().contains(gdk::ModifierType::SHIFT_MASK);
+            let anchor = if shift { None } else { s._page_point(x, y).and_then(|p| s.pdf.text.borrow().nearest(p)) };
+            s.pdf.anchor.set(anchor);
+            if anchor.is_some() { s._set_selection(None); }
+        });
+        let s = self.clone();
+        drag.connect_drag_update(move |gesture, dx, dy| {
+            let Some(anchor) = s.pdf.anchor.get() else { return };
+            let Some((x, y)) = gesture.start_point() else { return };
+            let Some(point) = s._page_point(x + dx, y + dy) else { return };
+            let picked = s.pdf.text.borrow().nearest(point).and_then(|end| s.pdf.text.borrow().select(anchor, end));
+            if *s.pdf.selection.borrow() != picked { s._set_selection(picked); }
+        });
+        let s = self.clone();
+        drag.connect_drag_end(move |_, _, _| s.pdf.anchor.set(None));
+        self.image.picture().add_controller(drag);
+    }
+
+    /// Replace the picked text and draw the page again with it tinted.
+    fn _set_selection(&self, selection: Option<Selection>) {
+        let changed = self.pdf.selection.borrow().is_some() || selection.is_some();
+        *self.pdf.selection.borrow_mut() = selection;
+        if changed { self._refresh_marks(false); }
+    }
+
+    /// The point of the PDF page (points, y down) under `(x, y)` of the
+    /// picture widget; `None` when no PDF page is there.
+    fn _page_point(&self, x: f64, y: f64) -> Option<Point> {
+        if !self._is_pdf() || self.stack.visible_child_name().as_deref() != Some("image") { return None; }
+        let p = self.image.image_point(x, y)?;
+        let scale = self.pdf.scale.get() as f64;
+        Some(Point::new(p.0 / scale, p.1 / scale))
     }
 
     /// Keys of the PDF side, before the normal ones: Ctrl+F, F3, and every key
@@ -164,6 +216,11 @@ impl State {
             return Some(glib::Propagation::Stop);
         }
         if self.pdf.bar.entry_has_focus(&self.window) { return Some(glib::Propagation::Proceed); }
+        if ctrl && matches!(key, gdk::Key::c | gdk::Key::C) {
+            let picked = self.pdf.selection.borrow().as_ref().map(|s| s.text.clone()).filter(|t| !t.is_empty())?;
+            self.window.clipboard().set_text(&picked);
+            return Some(glib::Propagation::Stop);
+        }
         None
     }
 
@@ -197,6 +254,10 @@ impl State {
         self.pdf.links.borrow_mut().clear();
         self.pdf.reveal_hit.set(false);
         self.pdf.land_bottom.set(false);
+        *self.pdf.text.borrow_mut() = PageText::default();
+        *self.pdf.selection.borrow_mut() = None;
+        self.pdf.anchor.set(None);
+        self.image.set_select_drag(self._is_pdf());
         self.image.set_page_scroll(self._is_paged());
         self._sync_pdf_panels();
         self._sync_page_buttons();
@@ -250,6 +311,9 @@ impl State {
         self.pages.set(page.count);
         self.pdf.scale.set(page.scale);
         *self.pdf.links.borrow_mut() = page.links;
+        *self.pdf.text.borrow_mut() = page.text;
+        *self.pdf.selection.borrow_mut() = None;
+        self.pdf.anchor.set(None);
         *self.pdf.clean.borrow_mut() = Some(page.raw);
         if first {
             if let Some((path, _)) = self._current() { self.pdf.panel.load(&path, page.count); }
@@ -325,7 +389,15 @@ impl State {
             let rect = (r.x0 * scale - MATCH_PAD, r.y0 * scale - MATCH_PAD, r.x1 * scale + MATCH_PAD, r.y1 * scale + MATCH_PAD);
             (rect, if current { CURRENT_MATCH_COLOR } else { MATCH_COLOR })
         }).collect();
+        let marks = [marks, self._selection_marks(scale)].concat();
         Some(if marks.is_empty() { clean.clone() } else { clean.highlighted(&marks) })
+    }
+
+    /// The boxes of the picked text in page pixels, tinted.
+    fn _selection_marks(&self, scale: f64) -> Vec<crate::loader::Mark> {
+        let selection = self.pdf.selection.borrow();
+        let Some(selection) = selection.as_ref() else { return Vec::new() };
+        selection.rects.iter().map(|r| ((r.x0 * scale, r.y0 * scale, r.x1 * scale, r.y1 * scale), SELECTION_COLOR)).collect()
     }
 
     /// Draw the marks again on the page on screen; `reveal` scrolls to the current match.

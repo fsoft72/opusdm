@@ -42,6 +42,8 @@ pub struct ImageView {
     overscroll: Cell<f64>,
     /// Called when the wheel goes past the bottom (`true`) or top (`false`) edge.
     on_page_edge: RefCell<Option<Box<dyn Fn(bool)>>>,
+    /// A plain drag selects text (a PDF), so only Shift+drag pans.
+    select_drag: Rc<Cell<bool>>,
 }
 
 impl ImageView {
@@ -54,7 +56,7 @@ impl ImageView {
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.add_css_class("viewer-stage");
-        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None), on_wheel_zoom: RefCell::new(None), page_scroll: Cell::new(false), overscroll: Cell::new(0.0), on_page_edge: RefCell::new(None) });
+        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None), on_wheel_zoom: RefCell::new(None), page_scroll: Cell::new(false), overscroll: Cell::new(0.0), on_page_edge: RefCell::new(None), select_drag: Rc::new(Cell::new(false)) });
         this._wire_pointer();
         this._wire_wheel();
         this._wire_drag();
@@ -128,14 +130,24 @@ impl ImageView {
         self.overscroll.set(0.0);
     }
 
+    /// `true` while a plain drag selects text: the drag pans only with Shift.
+    pub fn set_select_drag(&self, on: bool) {
+        self.select_drag.set(on);
+    }
+
     /// Dragging moves the scroll bars the other way, like grabbing the picture.
     fn _wire_drag(self: &Rc<Self>) {
         let drag = gtk::GestureDrag::new();
         let start = Rc::new(Cell::new((0.0, 0.0)));
+        let panning = Rc::new(Cell::new(true));
         let (hadj, vadj) = (self.root.hadjustment(), self.root.vadjustment());
-        let (s, h, v) = (start.clone(), hadj.clone(), vadj.clone());
-        drag.connect_drag_begin(move |_, _, _| s.set((h.value(), v.value())));
+        let (s, h, v, p, select) = (start.clone(), hadj.clone(), vadj.clone(), panning.clone(), self.select_drag.clone());
+        drag.connect_drag_begin(move |gesture, _, _| {
+            s.set((h.value(), v.value()));
+            p.set(!select.get() || gesture.current_event_state().contains(gdk::ModifierType::SHIFT_MASK));
+        });
         drag.connect_drag_update(move |_, dx, dy| {
+            if !panning.get() { return; }
             let (x, y) = start.get();
             hadj.set_value(x - dx);
             vadj.set_value(y - dy);

@@ -48,7 +48,7 @@ pub fn render_page(comic: &Comic, index: usize) -> Result<RenderedPage, String> 
     let count = comic.count();
     let Some(data) = comic.pages.get(index) else { return Err(format!("page {} does not exist ({count} pages)", index + 1)) };
     let raw = decode(data, None)?;
-    Ok(RenderedPage { raw, count, scale: 1.0, links: Vec::new() })
+    Ok(RenderedPage { raw, count, scale: 1.0, links: Vec::new(), text: Default::default() })
 }
 
 /// Page `index` of `comic` scaled to `width` pixels wide, for the page panel.
