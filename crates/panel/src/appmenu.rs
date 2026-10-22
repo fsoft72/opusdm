@@ -14,7 +14,14 @@ use opusdm_ipc::{MenuItem, PanelPosition};
 use std::process::Command;
 
 /// Width of the menu popover, in pixels.
-const MENU_WIDTH: i32 = 520;
+const MENU_WIDTH: i32 = 560;
+
+/// Pixel size of the icon of a menu row.
+const MENU_ICON_SIZE: i32 = 24;
+
+/// CSS class of the application menu popover (bigger text and rows, see
+/// `install_css`).
+const START_MENU_CLASS: &str = "opusdm-start-menu";
 
 /// A flat, left-aligned menu row with an icon.
 fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
@@ -24,7 +31,7 @@ fn menu_row(icon: Option<&str>, label: &str) -> gtk::Button {
         Some(name) => gtk::Image::from_icon_name(name),
         None => gtk::Image::from_icon_name("application-x-executable"),
     };
-    image.set_pixel_size(18);
+    image.set_pixel_size(MENU_ICON_SIZE);
     inner.append(&image);
     let text = gtk::Label::new(Some(label));
     text.set_xalign(0.0);
@@ -54,7 +61,7 @@ fn custom_app_row(id: &str, popover: &gtk::Popover, filter: &str) -> Option<gtk:
         Some(icon) => gtk::Image::from_gicon(&icon),
         None => gtk::Image::from_icon_name("application-x-executable"),
     };
-    image.set_pixel_size(18);
+    image.set_pixel_size(MENU_ICON_SIZE);
     inner.append(&image);
     let text = gtk::Label::new(Some(entry.info.name().as_str()));
     text.set_xalign(0.0);
@@ -169,6 +176,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
 
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
+    popover.add_css_class(START_MENU_CLASS);
 
     // Search box on top: filters the apps by name as the user types.
     let search = gtk::SearchEntry::new();

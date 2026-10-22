@@ -473,6 +473,9 @@ fn install_css() {
         ".opusdm-panel button { padding: 2px 8px; min-height: 0; }\n\
          .opusdm-panel menubutton.opusdm-panel-menu > button, .opusdm-panel menubutton.opusdm-panel-menu > button:hover, .opusdm-panel menubutton.opusdm-panel-menu > button:active, .opusdm-panel menubutton.opusdm-panel-menu > button:checked { padding: 0; background: none; border: none; box-shadow: none; outline: none; }\n\
          .opusdm-panel-quickapps button { padding: 2px 3px; }\n\
+         .opusdm-start-menu label, .opusdm-start-menu text { font-size: 16px; }\n\
+         .opusdm-start-menu button { padding: 6px 10px; min-height: 0; }\n\
+         .opusdm-start-menu expander title { padding: 5px 4px; }\n\
          .opusdm-panel button.opusdm-panel-tray-item { padding: 2px 2px; }\n\
          .opusdm-panel-tasklist button.active { background-color: #3c4043; }\n\
          .opusdm-panel-clock-time { font-size: 15px; font-weight: bold; }\n\
