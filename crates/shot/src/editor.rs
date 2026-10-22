@@ -113,6 +113,16 @@ struct State {
     crop: Option<Area>,
 }
 
+/// The scale choices of the bottom bar, in percent.
+const SCALE_PERCENTS: [u32; 7] = [400, 200, 150, 100, 75, 50, 25];
+/// Index of 100% in [`SCALE_PERCENTS`], selected at start.
+const DEFAULT_SCALE_INDEX: u32 = 3;
+
+/// The percentage of the scale choice at `index`; 100 if the index is invalid.
+fn scale_percent(index: u32) -> u32 {
+    SCALE_PERCENTS.get(index as usize).copied().unwrap_or(100)
+}
+
 /// The widgets the callbacks use, with the state.
 struct Ui {
     window: gtk::ApplicationWindow,
@@ -123,7 +133,7 @@ struct Ui {
     quality: gtk::Scale,
     lossless: gtk::CheckButton,
     delay: gtk::SpinButton,
-    scale: gtk::SpinButton,
+    scale: gtk::DropDown,
     state: RefCell<State>,
 }
 
@@ -162,8 +172,9 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     delay.set_value(config::load().delay_secs as f64);
     delay.set_tooltip_text(Some("Seconds to wait before the screen is captured, from the next launch"));
 
-    let scale = gtk::SpinButton::with_range(export::MIN_SCALE_PERCENT as f64, export::MAX_SCALE_PERCENT as f64, 1.0);
-    scale.set_value(100.0);
+    let scale_labels = SCALE_PERCENTS.map(|p| format!("{p}%"));
+    let scale = gtk::DropDown::from_strings(&scale_labels.iter().map(String::as_str).collect::<Vec<_>>());
+    scale.set_selected(DEFAULT_SCALE_INDEX);
     scale.set_tooltip_text(Some("Size of the saved image as a percentage of the original, keeping the aspect ratio"));
 
     let ui = Rc::new(Ui {
@@ -315,7 +326,7 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar.append(&ui.format);
     bar.append(&ui.quality);
     bar.append(&ui.lossless);
-    bar.append(&gtk::Label::new(Some("Scale (%)")));
+    bar.append(&gtk::Label::new(Some("Scale")));
     bar.append(&ui.scale);
     bar.append(&gtk::Label::new(Some("Delay (s)")));
     bar.append(&ui.delay);
@@ -726,9 +737,7 @@ fn final_image(ui: &Ui) -> Option<RgbaImage> {
 /// the bottom bar.
 fn image_to_save(ui: &Ui) -> Option<RgbaImage> {
     let img = final_image(ui)?;
-    // Takes a number typed but not yet confirmed with Enter.
-    ui.scale.update();
-    Some(export::scale(img, ui.scale.value_as_int().max(0) as u32))
+    Some(export::scale(img, scale_percent(ui.scale.selected())))
 }
 
 /// Put the image on the clipboard. The window stays open: without a clipboard
@@ -856,6 +865,13 @@ fn needs_overwrite_confirm(chosen: &Path, target: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_scale_choice_is_100_and_all_choices_are_in_range() {
+        assert_eq!(scale_percent(DEFAULT_SCALE_INDEX), 100);
+        assert_eq!(scale_percent(999), 100);
+        assert!(SCALE_PERCENTS.iter().all(|p| (export::MIN_SCALE_PERCENT..=export::MAX_SCALE_PERCENT).contains(p)));
+    }
 
     #[test]
     fn the_extension_decides_the_format() {
