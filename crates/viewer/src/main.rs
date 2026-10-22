@@ -21,6 +21,7 @@ mod page_wheel;
 mod view_paintable;
 mod pdf;
 mod pdf_bar;
+mod pdf_detail;
 mod pdf_links;
 mod pdf_pages;
 mod pdf_search;

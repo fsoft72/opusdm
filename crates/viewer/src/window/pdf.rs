@@ -9,6 +9,7 @@ use crate::kind::MediaKind;
 use crate::loader::RawImage;
 use crate::pdf::RenderedPage;
 use crate::pdf_bar::PdfBar;
+use crate::pdf_detail::{start_worker as start_detail_worker, DetailAnswer, DetailRequest, DetailTile};
 use crate::pdf_links::{link_at, Link, LinkTarget};
 use crate::pdf_pages::PagePanel;
 use crate::pdf_search::{start_worker, Hits, SearchAnswer, SearchRequest};
@@ -41,7 +42,7 @@ pub(super) struct PdfUi {
     /// The page on screen without the match marks, the pixels per point it was
     /// rendered at and its links.
     clean: RefCell<Option<RawImage>>,
-    scale: Cell<f32>,
+    pub(super) scale: Cell<f32>,
     links: RefCell<Vec<Link>>,
     /// Scroll to the current match once the page being rendered arrives.
     reveal_hit: Cell<bool>,
@@ -53,22 +54,30 @@ pub(super) struct PdfUi {
     selection: RefCell<Option<Selection>>,
     /// The character the drag in progress started on; `None` when no selecting drag runs.
     anchor: Cell<Option<usize>>,
+    /// Asks the detail worker for a sharp window of the zoomed page.
+    pub(super) detail_tx: mpsc::Sender<DetailRequest>,
+    /// The sharp window now drawn over the page, without the marks.
+    pub(super) detail: RefCell<Option<DetailTile>>,
+    /// Waits for the zoom and the scroll to settle before asking for detail.
+    pub(super) detail_timer: RefCell<Option<glib::SourceId>>,
 }
 
 /// Channels the window loops read for the PDF side.
 pub(super) struct PdfChannels {
     page_pick_rx: async_channel::Receiver<usize>,
     search_rx: async_channel::Receiver<SearchAnswer>,
+    detail_rx: async_channel::Receiver<DetailAnswer>,
 }
 
 /// Build the PDF bar, the page panel and the search worker.
 pub(super) fn build() -> (PdfUi, PdfChannels) {
     let (page_pick_tx, page_pick_rx) = async_channel::unbounded();
     let (search_answer_tx, search_rx) = async_channel::unbounded();
+    let (detail_answer_tx, detail_rx) = async_channel::unbounded();
     let panel = PagePanel::new(page_pick_tx);
     panel.root.set_visible(false);
-    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false), land_bottom: Cell::new(false), text: RefCell::new(PageText::default()), selection: RefCell::new(None), anchor: Cell::new(None) };
-    (ui, PdfChannels { page_pick_rx, search_rx })
+    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false), land_bottom: Cell::new(false), text: RefCell::new(PageText::default()), selection: RefCell::new(None), anchor: Cell::new(None), detail_tx: start_detail_worker(detail_answer_tx), detail: RefCell::new(None), detail_timer: RefCell::new(None) };
+    (ui, PdfChannels { page_pick_rx, search_rx, detail_rx })
 }
 
 impl State {
@@ -78,6 +87,9 @@ impl State {
         super::_listen(self, channels.search_rx, |s, (generation, result)| {
             if generation == s.pdf.search_generation.get() { s._search_done(result); }
         });
+        super::_listen(self, channels.detail_rx, |s, answer| s._detail_done(answer));
+        let s = self.clone();
+        self.image.connect_view_changed(move || s._schedule_detail());
         let bar = &self.pdf.bar;
         let s = self.clone();
         bar.pages.connect_toggled(move |_| s._sync_pdf_panels());
@@ -225,7 +237,7 @@ impl State {
     }
 
     /// True while a PDF is on screen.
-    fn _is_pdf(&self) -> bool {
+    pub(super) fn _is_pdf(&self) -> bool {
         matches!(self._current(), Some((_, MediaKind::Pdf)))
     }
 
@@ -257,6 +269,7 @@ impl State {
         *self.pdf.text.borrow_mut() = PageText::default();
         *self.pdf.selection.borrow_mut() = None;
         self.pdf.anchor.set(None);
+        self.pdf.detail.borrow_mut().take();
         self.image.set_select_drag(self._is_pdf());
         self.image.set_page_scroll(self._is_paged());
         self._sync_pdf_panels();
@@ -311,6 +324,7 @@ impl State {
         self.pages.set(page.count);
         self.pdf.scale.set(page.scale);
         *self.pdf.links.borrow_mut() = page.links;
+        self.pdf.detail.borrow_mut().take();
         *self.pdf.text.borrow_mut() = page.text;
         *self.pdf.selection.borrow_mut() = None;
         self.pdf.anchor.set(None);
@@ -384,20 +398,22 @@ impl State {
     fn _marked_page(&self) -> Option<RawImage> {
         let clean = self.pdf.clean.borrow();
         let clean = clean.as_ref()?;
-        let scale = self.pdf.scale.get() as f64;
-        let marks: Vec<_> = self.pdf.hits.borrow().on_page(self.page.get()).into_iter().map(|(r, current)| {
-            let rect = (r.x0 * scale - MATCH_PAD, r.y0 * scale - MATCH_PAD, r.x1 * scale + MATCH_PAD, r.y1 * scale + MATCH_PAD);
-            (rect, if current { CURRENT_MATCH_COLOR } else { MATCH_COLOR })
-        }).collect();
-        let marks = [marks, self._selection_marks(scale)].concat();
+        let marks = self._marks(self.pdf.scale.get() as f64, (0.0, 0.0));
         Some(if marks.is_empty() { clean.clone() } else { clean.highlighted(&marks) })
     }
 
-    /// The boxes of the picked text in page pixels, tinted.
-    fn _selection_marks(&self, scale: f64) -> Vec<crate::loader::Mark> {
-        let selection = self.pdf.selection.borrow();
-        let Some(selection) = selection.as_ref() else { return Vec::new() };
-        selection.rects.iter().map(|r| ((r.x0 * scale, r.y0 * scale, r.x1 * scale, r.y1 * scale), SELECTION_COLOR)).collect()
+    /// The matches of the search on this page and the picked text as boxes of
+    /// a picture of the page at `scale` pixels per point whose top-left pixel
+    /// is `origin` (a window of the zoomed page), tinted.
+    pub(super) fn _marks(&self, scale: f64, origin: (f64, f64)) -> Vec<crate::loader::Mark> {
+        let boxed = |r: &hayro::kurbo::Rect, pad: f64| (r.x0 * scale - origin.0 - pad, r.y0 * scale - origin.1 - pad, r.x1 * scale - origin.0 + pad, r.y1 * scale - origin.1 + pad);
+        let mut marks: Vec<crate::loader::Mark> = self.pdf.hits.borrow().on_page(self.page.get()).into_iter().map(|(r, current)| {
+            (boxed(&r, MATCH_PAD), if current { CURRENT_MATCH_COLOR } else { MATCH_COLOR })
+        }).collect();
+        if let Some(selection) = self.pdf.selection.borrow().as_ref() {
+            marks.extend(selection.rects.iter().map(|r| (boxed(r, 0.0), SELECTION_COLOR)));
+        }
+        marks
     }
 
     /// Draw the marks again on the page on screen; `reveal` scrolls to the current match.
@@ -405,6 +421,7 @@ impl State {
         if self.stack.visible_child_name().as_deref() != Some("image") { return; }
         let Some(raw) = self._marked_page() else { return };
         self.image.replace_image(raw, Landing::Keep);
+        self._show_detail();
         if reveal { self._reveal_current_hit(); }
     }
 

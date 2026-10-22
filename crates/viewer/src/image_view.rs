@@ -20,6 +20,30 @@ pub enum Landing {
     Bottom,
 }
 
+/// A function the view calls when what is on screen may have changed.
+type Notify = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
+/// What part of the zoomed picture the view shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewState {
+    /// The fixed scale in use.
+    pub zoom: f64,
+    pub rotation: u16,
+    /// Size of the turned picture on screen, in pixels.
+    pub full: (f64, f64),
+    /// The part of it in the view, `(x0, y0, x1, y1)` in pixels of the turned picture on screen.
+    pub visible: (f64, f64, f64, f64),
+}
+
+/// A sharper picture of part of the page, for the zoom it was made for.
+struct Detail {
+    texture: gdk::Texture,
+    /// Where it goes on the turned picture on screen.
+    rect: (f64, f64, f64, f64),
+    zoom: f64,
+    rotation: u16,
+}
+
 /// Shows one picture at a time.
 pub struct ImageView {
     pub root: gtk::ScrolledWindow,
@@ -44,6 +68,10 @@ pub struct ImageView {
     on_page_edge: RefCell<Option<Box<dyn Fn(bool)>>>,
     /// A plain drag selects text (a PDF), so only Shift+drag pans.
     select_drag: Rc<Cell<bool>>,
+    /// Sharp detail drawn over the picture while the zoom and rotation are the ones it was made for.
+    detail: RefCell<Option<Detail>>,
+    /// Called after the picture, the zoom, the rotation, the scroll or the view size changed.
+    on_view_changed: Notify,
 }
 
 impl ImageView {
@@ -56,11 +84,57 @@ impl ImageView {
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.add_css_class("viewer-stage");
-        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None), on_wheel_zoom: RefCell::new(None), page_scroll: Cell::new(false), overscroll: Cell::new(0.0), on_page_edge: RefCell::new(None), select_drag: Rc::new(Cell::new(false)) });
+        let this = Rc::new(ImageView { root, picture, raw: RefCell::new(None), zoom: Cell::new(Zoom::default()), shown_rotation: Cell::new(None), texture: RefCell::new(None), smooth: Cell::new(true), pointer: Cell::new(None), on_wheel_zoom: RefCell::new(None), page_scroll: Cell::new(false), overscroll: Cell::new(0.0), on_page_edge: RefCell::new(None), select_drag: Rc::new(Cell::new(false)), detail: RefCell::new(None), on_view_changed: Rc::new(RefCell::new(None)) });
         this._wire_pointer();
         this._wire_wheel();
         this._wire_drag();
+        this._wire_view_changes();
         this
+    }
+
+    /// Tell `on_view_changed` when the scroll or the size of the view changes.
+    /// The closures hold the callback, not the view, so they keep nothing alive.
+    fn _wire_view_changes(&self) {
+        for adj in [self.root.hadjustment(), self.root.vadjustment()] {
+            let notify = self.on_view_changed.clone();
+            adj.connect_value_changed(move |_| _notify(&notify));
+            let notify = self.on_view_changed.clone();
+            adj.connect_changed(move |_| _notify(&notify));
+        }
+    }
+
+    /// Run `changed` after what is on screen may have changed (scroll, zoom,
+    /// rotation, size or picture). It must be cheap: it is called often.
+    pub fn connect_view_changed(&self, changed: impl Fn() + 'static) {
+        *self.on_view_changed.borrow_mut() = Some(Box::new(changed));
+    }
+
+    /// The zoom and the part of the picture in the view; `None` when fitting,
+    /// without a picture or before the view has a size.
+    pub fn view_state(&self) -> Option<ViewState> {
+        let Mode::Scale(zoom) = self.zoom.get().mode else { return None };
+        let full = self._full_size()?;
+        let span = |adj: gtk::Adjustment, full: f64| {
+            let page = adj.page_size();
+            let offset = ((page - full) / 2.0).max(0.0);
+            let from = (adj.value() - offset).max(0.0);
+            (page > 0.0).then_some((from, (from + page).min(full)))
+        };
+        let (x, y) = (span(self.root.hadjustment(), full.0)?, span(self.root.vadjustment(), full.1)?);
+        Some(ViewState { zoom, rotation: self.zoom.get().rotation, full, visible: (x.0, y.0, x.1, y.1) })
+    }
+
+    /// Draw `raw` over the picture: its top-left pixel is the pixel `origin`
+    /// of the unturned picture at `zoom`. It shows only while the zoom and the
+    /// rotation stay the same, and a new picture drops it.
+    pub fn set_detail(&self, raw: &RawImage, origin: (f64, f64), zoom: f64) {
+        let Some(size) = self.size() else { return };
+        let rotation = self.zoom.get().rotation;
+        let full = ((size.0 as f64 * zoom).round() as u32, (size.1 as f64 * zoom).round() as u32);
+        let (a, b) = (rotate_point(origin, full, rotation), rotate_point((origin.0 + raw.width as f64, origin.1 + raw.height as f64), full, rotation));
+        let rect = (a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1));
+        *self.detail.borrow_mut() = Some(Detail { texture: raw.texture(rotation), rect, zoom, rotation });
+        self._show_texture();
     }
 
     /// Remember where the pointer is over the view; zooming keeps that point in place.
@@ -157,6 +231,7 @@ impl ImageView {
 
     /// Show a new picture: fit mode, no rotation.
     pub fn set_image(&self, raw: RawImage) {
+        *self.detail.borrow_mut() = None;
         *self.raw.borrow_mut() = Some(raw);
         self.zoom.set(Zoom::default());
         self.shown_rotation.set(None);
@@ -166,6 +241,7 @@ impl ImageView {
     /// Show another page of the same document (or the same page with other
     /// marks): zoom and rotation stay; `landing` says where the scroll goes.
     pub fn replace_image(&self, raw: RawImage, landing: Landing) {
+        *self.detail.borrow_mut() = None;
         *self.raw.borrow_mut() = Some(raw);
         self.shown_rotation.set(None);
         self._apply();
@@ -334,7 +410,12 @@ impl ImageView {
         let Some(size) = self.size() else { return };
         let shown = screen_size(size, self.zoom.get());
         let checkered = self.raw.borrow().as_ref().is_some_and(|r| r.has_alpha);
-        self.picture.set_paintable(Some(&ViewPaintable::new(texture, shown, !self.smooth.get(), checkered)));
+        let paintable = ViewPaintable::new(texture, shown, !self.smooth.get(), checkered);
+        let zoom = self.zoom.get();
+        if let Some(d) = self.detail.borrow().as_ref().filter(|d| d.rotation == zoom.rotation && zoom.mode == Mode::Scale(d.zoom)) {
+            paintable.set_detail(&d.texture, d.rect);
+        }
+        self.picture.set_paintable(Some(&paintable));
     }
 
     /// Put texture, size and scroll policy in line with the zoom state.
@@ -364,7 +445,13 @@ impl ImageView {
                 self.root.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
             }
         }
+        _notify(&self.on_view_changed);
     }
+}
+
+/// Call the function in `notify`, if there is one.
+fn _notify(notify: &Notify) {
+    if let Some(changed) = notify.borrow().as_ref() { changed(); }
 }
 
 /// Scroll `adj` to `value` in a content now `upper` long.

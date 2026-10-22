@@ -3,6 +3,7 @@
 //! the Sidecar mode (files sent by a Lister) in `sidecar`.
 
 mod pdf;
+mod pdf_detail;
 mod sidecar;
 
 use crate::epub;

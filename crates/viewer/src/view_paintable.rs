@@ -18,6 +18,9 @@ mod imp {
     use gdk::subclass::prelude::PaintableImpl;
     use std::cell::{Cell, RefCell};
 
+    /// A texture and the box `(x0, y0, x1, y1)` it covers on screen.
+    pub type Detail = (gdk::Texture, (f64, f64, f64, f64));
+
     /// State of the paintable: the texture, its size on screen and the filter.
     pub struct ViewPaintable {
         pub texture: RefCell<Option<gdk::Texture>>,
@@ -25,11 +28,14 @@ mod imp {
         pub filter: Cell<gsk::ScalingFilter>,
         /// Draw a checkerboard behind the texture (pictures with transparency).
         pub checkered: Cell<bool>,
+        /// A sharper texture drawn over the part of the picture it covers,
+        /// with the box `(x0, y0, x1, y1)` it covers on screen.
+        pub detail: RefCell<Option<Detail>>,
     }
 
     impl Default for ViewPaintable {
         fn default() -> Self {
-            ViewPaintable { texture: RefCell::new(None), size: Cell::new((0, 0)), filter: Cell::new(gsk::ScalingFilter::Trilinear), checkered: Cell::new(false) }
+            ViewPaintable { texture: RefCell::new(None), size: Cell::new((0, 0)), filter: Cell::new(gsk::ScalingFilter::Trilinear), checkered: Cell::new(false), detail: RefCell::new(None) }
         }
     }
 
@@ -62,6 +68,10 @@ mod imp {
             let area = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
             if self.checkered.get() { super::snapshot_checkers(snapshot, &area); }
             snapshot.append_scaled_texture(&texture, self.filter.get(), &area);
+            if let Some((detail, (x0, y0, x1, y1))) = self.detail.borrow().as_ref() {
+                let rect = graphene::Rect::new(*x0 as f32, *y0 as f32, (x1 - x0) as f32, (y1 - y0) as f32);
+                snapshot.append_scaled_texture(detail, gsk::ScalingFilter::Trilinear, &rect);
+            }
         }
     }
 }
@@ -89,6 +99,12 @@ fn snapshot_checkers(snapshot: &gtk::Snapshot, area: &graphene::Rect) {
 }
 
 impl ViewPaintable {
+    /// Draw `texture` over the box `(x0, y0, x1, y1)` of the picture on screen,
+    /// sharper than the main texture there.
+    pub fn set_detail(&self, texture: &gdk::Texture, rect: (f64, f64, f64, f64)) {
+        *self.imp().detail.borrow_mut() = Some((texture.clone(), rect));
+    }
+
     /// Wrap `texture`, `size` pixels on screen; `sharp` draws with the nearest
     /// neighbour filter, otherwise the picture is smoothed (trilinear, which
     /// also keeps small text readable when zoomed out). `checkered` draws a
