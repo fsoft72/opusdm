@@ -177,6 +177,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
     popover.add_css_class(START_MENU_CLASS);
+    popover.add_css_class(crate::hub_look::MENU_CLASS);
 
     // Search box on top: filters the apps by name as the user types.
     let search = gtk::SearchEntry::new();
