@@ -53,6 +53,7 @@ pub fn new_terminal(shared: &Rc<Shared>, cwd: Option<&Path>, command: Option<&[S
     attach_actions(&term, &pane, shared, &hovered_link);
     attach_drop(&term);
     attach_focus(&term, &pane, shared);
+    attach_wheel_zoom(&term);
 
     {
         let shared = shared.clone();
@@ -309,6 +310,24 @@ fn attach_focus(term: &vte4::Terminal, pane: &gtk::Box, shared: &Rc<Shared>) {
         focus.connect_leave(move |_| pane.remove_css_class(FOCUSED_CLASS));
     }
     term.add_controller(focus);
+}
+
+/// Ctrl+wheel zooms the font: up zooms in, down zooms out. Without Ctrl the
+/// wheel scrolls the terminal as before.
+fn attach_wheel_zoom(term: &vte4::Terminal) {
+    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE);
+    scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let term_weak = term.downgrade();
+    scroll.connect_scroll(move |controller, _, dy| {
+        if !controller.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) { return glib::Propagation::Proceed; }
+        let Some(term) = term_weak.upgrade() else {
+            opusdm_ipc::err_log!("opusdm-terminal", "wheel zoom on a terminal that is gone");
+            return glib::Propagation::Proceed;
+        };
+        if dy != 0.0 { zoom(&term, Some(zoom_factor(dy < 0.0))); }
+        glib::Propagation::Stop
+    });
+    term.add_controller(scroll);
 }
 
 /// Multiply the font scale of `term` by `factor` (1.0 resets it).
