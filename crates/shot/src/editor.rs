@@ -14,7 +14,7 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use image::RgbaImage;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -43,6 +43,11 @@ const CROP_DIM_ALPHA: f64 = 0.5;
 
 /// How close (in pixels) the pointer must be to a side of the crop to grab it.
 const CROP_GRAB: f64 = 8.0;
+
+/// Zoom limits of the canvas and the factor of one wheel notch.
+const ZOOM_MIN: f64 = 0.1;
+const ZOOM_MAX: f64 = 8.0;
+const ZOOM_STEP: f64 = 1.1;
 
 /// Gap between an annotation and its selection box.
 const SELECTION_GAP: f64 = 3.0;
@@ -111,29 +116,40 @@ struct State {
     /// The part of the image to keep, in image pixels (any corner order);
     /// `None` keeps it all. The annotations stay editable outside of it.
     crop: Option<Area>,
+    /// Canvas magnification (1.0 shows one image pixel per screen pixel).
+    zoom: f64,
 }
 
-/// The scale choices of the bottom bar, in percent.
-const SCALE_PERCENTS: [u32; 7] = [400, 200, 150, 100, 75, 50, 25];
-/// Index of 100% in [`SCALE_PERCENTS`], selected at start.
-const DEFAULT_SCALE_INDEX: u32 = 3;
+/// The zoom after `notches` wheel notches from `zoom` (positive zooms in),
+/// kept inside the limits.
+fn zoom_after(zoom: f64, notches: f64) -> f64 {
+    (zoom * ZOOM_STEP.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX)
+}
 
-/// The percentage of the scale choice at `index`; 100 if the index is invalid.
-fn scale_percent(index: u32) -> u32 {
-    SCALE_PERCENTS.get(index as usize).copied().unwrap_or(100)
+/// The percentage text for the saved width: no decimals when it is whole.
+fn percent_text(percent: f64) -> String {
+    format!("{}%", (percent * 10.0).round() / 10.0)
 }
 
 /// The widgets the callbacks use, with the state.
 struct Ui {
     window: gtk::ApplicationWindow,
     canvas: gtk::DrawingArea,
+    scroll: gtk::ScrolledWindow,
+    /// Last pointer position on the canvas, in widget pixels (the zoom anchor).
+    pointer: Cell<(f64, f64)>,
     status: gtk::Label,
     im: gtk::IMMulticontext,
     format: gtk::DropDown,
     quality: gtk::Scale,
     lossless: gtk::CheckButton,
     delay: gtk::SpinButton,
-    scale: gtk::DropDown,
+    /// Width in pixels of the saved image.
+    scale: gtk::SpinButton,
+    /// The saved width as a percentage of the image, next to `scale`.
+    scale_percent: gtk::Label,
+    /// Set while the code moves `scale`, so its handler ignores it.
+    syncing: Cell<bool>,
     state: RefCell<State>,
 }
 
@@ -172,14 +188,18 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     delay.set_value(config::load().delay_secs as f64);
     delay.set_tooltip_text(Some("Seconds to wait before the screen is captured, from the next launch"));
 
-    let scale_labels = SCALE_PERCENTS.map(|p| format!("{p}%"));
-    let scale = gtk::DropDown::from_strings(&scale_labels.iter().map(String::as_str).collect::<Vec<_>>());
-    scale.set_selected(DEFAULT_SCALE_INDEX);
-    scale.set_tooltip_text(Some("Size of the saved image as a percentage of the original, keeping the aspect ratio"));
+    let scale = gtk::SpinButton::with_range(1.0, (iw as u32 * export::MAX_SCALE_PERCENT / 100) as f64, 1.0);
+    scale.set_value(iw as f64);
+    scale.set_tooltip_text(Some("Width in pixels of the saved image, keeping the aspect ratio"));
+    let scale_percent = gtk::Label::new(Some(&percent_text(100.0)));
+    scale_percent.set_tooltip_text(Some("Size of the saved image compared to the original"));
 
+    let scroll = gtk::ScrolledWindow::new();
     let ui = Rc::new(Ui {
         window: window.clone(),
         canvas: canvas.clone(),
+        scroll: scroll.clone(),
+        pointer: Cell::new((0.0, 0.0)),
         status: gtk::Label::new(None),
         im: gtk::IMMulticontext::new(),
         format,
@@ -187,6 +207,8 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
         lossless,
         delay,
         scale,
+        scale_percent,
+        syncing: Cell::new(false),
         state: RefCell::new(State {
             base,
             surface,
@@ -198,6 +220,7 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
             drag: Drag::None,
             edit: None,
             crop: None,
+            zoom: 1.0,
         }),
     });
     ui.status.set_halign(gtk::Align::Start);
@@ -209,7 +232,6 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, BAR_SPACING);
     root.append(&top_bar(&ui));
-    let scroll = gtk::ScrolledWindow::new();
     scroll.set_vexpand(true);
     scroll.set_child(Some(&canvas));
     root.append(&scroll);
@@ -326,8 +348,10 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar.append(&ui.format);
     bar.append(&ui.quality);
     bar.append(&ui.lossless);
-    bar.append(&gtk::Label::new(Some("Scale")));
+    bar.append(&gtk::Label::new(Some("Save size:")));
     bar.append(&ui.scale);
+    bar.append(&gtk::Label::new(Some("px")));
+    bar.append(&ui.scale_percent);
     bar.append(&gtk::Label::new(Some("Delay (s)")));
     bar.append(&ui.delay);
     save_delay_on_close(&ui.window, &ui.delay);
@@ -336,6 +360,8 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
         ui.format.connect_selected_notify(move |_| refresh_save_options(&ui2));
         let ui2 = ui.clone();
         ui.lossless.connect_toggled(move |_| refresh_save_options(&ui2));
+        let ui2 = ui.clone();
+        ui.scale.connect_value_changed(move |_| update_percent(&ui2));
     }
 
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -404,26 +430,34 @@ fn wire_canvas(ui: &Rc<Ui>) {
         });
     }
 
+    wire_zoom(ui);
+
     let drag = gtk::GestureDrag::new();
     drag.set_button(gdk::BUTTON_PRIMARY);
     let start = Rc::new(RefCell::new((0.0, 0.0)));
     {
         let (ui, start) = (ui.clone(), start.clone());
         drag.connect_drag_begin(move |_, x, y| {
-            *start.borrow_mut() = (x, y);
-            begin_drag(&ui, (x, y));
+            let z = ui.state.borrow().zoom;
+            let p = (x / z, y / z);
+            *start.borrow_mut() = p;
+            begin_drag(&ui, p);
         });
     }
     {
         let (ui, start) = (ui.clone(), start.clone());
         drag.connect_drag_update(move |g, dx, dy| {
             let shift = g.current_event_state().contains(gdk::ModifierType::SHIFT_MASK);
-            update_drag(&ui, *start.borrow(), (dx, dy), shift);
+            let z = ui.state.borrow().zoom;
+            update_drag(&ui, *start.borrow(), (dx / z, dy / z), shift);
         });
     }
     {
         let ui = ui.clone();
-        drag.connect_drag_end(move |_, dx, dy| end_drag(&ui, (dx, dy)));
+        drag.connect_drag_end(move |_, dx, dy| {
+            let z = ui.state.borrow().zoom;
+            end_drag(&ui, (dx / z, dy / z));
+        });
     }
     ui.canvas.add_controller(drag);
 }
@@ -431,6 +465,7 @@ fn wire_canvas(ui: &Rc<Ui>) {
 /// Draw the image, the annotations and the box of the selected one.
 fn paint(ui: &Ui, cr: &cairo::Context) -> Result<(), cairo::Error> {
     let st = ui.state.borrow();
+    cr.scale(st.zoom, st.zoom);
     cr.set_source_surface(&st.surface, 0.0, 0.0)?;
     cr.paint()?;
     render::draw(cr, st.doc.items())?;
@@ -444,7 +479,7 @@ fn paint(ui: &Ui, cr: &cairo::Context) -> Result<(), cairo::Error> {
         cr.rectangle(x, y, w, h);
         cr.fill()?;
         cr.set_source_rgb(0.25, 0.55, 1.0);
-        cr.set_line_width(1.0);
+        cr.set_line_width(1.0 / st.zoom);
         cr.rectangle(x, y, w, h);
         cr.stroke()?;
         cr.restore()?;
@@ -452,8 +487,8 @@ fn paint(ui: &Ui, cr: &cairo::Context) -> Result<(), cairo::Error> {
     let Some(item) = st.selected.and_then(|i| st.doc.items().get(i)) else { return Ok(()) };
     let (l, t, r, b) = item.bounds();
     cr.set_source_rgb(0.25, 0.55, 1.0);
-    cr.set_line_width(1.0);
-    cr.set_dash(&SELECTION_DASH, 0.0);
+    cr.set_line_width(1.0 / st.zoom);
+    cr.set_dash(&SELECTION_DASH.map(|d| d / st.zoom), 0.0);
     cr.rectangle(l - SELECTION_GAP, t - SELECTION_GAP, r - l + 2.0 * SELECTION_GAP, b - t + 2.0 * SELECTION_GAP);
     cr.stroke()
 }
@@ -480,7 +515,8 @@ fn begin_drag(ui: &Ui, p: Point) {
         }
         Tool::Crop => {
             st.selected = None;
-            let hit = st.crop.map(|c| (selection::hit_edges(c, p, CROP_GRAB), c));
+            let grab = CROP_GRAB / st.zoom;
+            let hit = st.crop.map(|c| (selection::hit_edges(c, p, grab), c));
             st.drag = match hit {
                 Some((edges, area)) if edges.any() => Drag::CropResize { edges, area },
                 _ => {
@@ -554,7 +590,7 @@ fn update_drag(ui: &Ui, start: Point, delta: Point, shift: bool) {
 fn end_drag(ui: &Ui, delta: Point) {
     let mut st = ui.state.borrow_mut();
     if let Drag::Draw { .. } = st.drag {
-        if delta.0.hypot(delta.1) < MIN_DRAG {
+        if delta.0.hypot(delta.1) * st.zoom < MIN_DRAG {
             st.doc.undo();
             st.selected = None;
         }
@@ -564,9 +600,91 @@ fn end_drag(ui: &Ui, delta: Point) {
         let bounds = (st.base.width() as i32, st.base.height() as i32);
         if selection::crop_rect(st.crop, bounds).is_none() { st.crop = None; }
     }
+    let crop_changed = matches!(st.drag, Drag::CropNew { .. } | Drag::CropResize { .. });
     st.drag = Drag::None;
     drop(st);
+    if crop_changed { refresh_save_size(ui); }
     ui.canvas.queue_draw();
+}
+
+// ----- zoom and save size ---------------------------------------------------
+
+/// Zoom the canvas with the mouse wheel, keeping the image point under the
+/// pointer where it is.
+fn wire_zoom(ui: &Rc<Ui>) {
+    let motion = gtk::EventControllerMotion::new();
+    {
+        let ui = ui.clone();
+        motion.connect_motion(move |_, x, y| ui.pointer.set((x, y)));
+    }
+    ui.canvas.add_controller(motion);
+
+    let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    {
+        let ui = ui.clone();
+        wheel.connect_scroll(move |_, _, dy| {
+            // The wheel up (negative dy) zooms in.
+            zoom_by(&ui, -dy);
+            glib::Propagation::Stop
+        });
+    }
+    ui.canvas.add_controller(wheel);
+}
+
+/// Change the zoom by `notches` wheel notches and resize the canvas.
+fn zoom_by(ui: &Rc<Ui>, notches: f64) {
+    let (old, new, iw, ih) = {
+        let mut st = ui.state.borrow_mut();
+        let old = st.zoom;
+        st.zoom = zoom_after(old, notches);
+        (old, st.zoom, st.base.width() as f64, st.base.height() as f64)
+    };
+    if new == old { return; }
+    ui.canvas.set_content_width((iw * new).round() as i32);
+    ui.canvas.set_content_height((ih * new).round() as i32);
+    ui.canvas.queue_draw();
+
+    // The canvas gets its new size at the next layout: move the scroll then, so
+    // the point under the pointer stays under it.
+    let (px, py) = ui.pointer.get();
+    let (hadj, vadj) = (ui.scroll.hadjustment(), ui.scroll.vadjustment());
+    let (vx, vy) = (px - hadj.value(), py - vadj.value());
+    let ratio = new / old;
+    glib::idle_add_local_once(move || {
+        hadj.set_value(px * ratio - vx);
+        vadj.set_value(py * ratio - vy);
+    });
+}
+
+/// The width in pixels of the image the actions produce: the crop, or all of it.
+fn output_width(st: &State) -> u32 {
+    let bounds = (st.base.width() as i32, st.base.height() as i32);
+    selection::crop_rect(st.crop, bounds).map_or(st.base.width(), |r| r.w as u32)
+}
+
+/// The saved width changed (typed or stepped): show its percentage.
+fn update_percent(ui: &Ui) {
+    if ui.syncing.get() { return; }
+    let width = output_width(&ui.state.borrow());
+    ui.scale_percent.set_text(&percent_text(export::width_percent(ui.scale.value_as_int().max(1) as u32, width)));
+}
+
+/// The crop changed: keep the percentage the user chose and move the width in
+/// pixels to the new image width.
+fn refresh_save_size(ui: &Ui) {
+    // Takes a number typed but not yet confirmed with Enter.
+    ui.scale.update();
+    let (old_width, new_width) = {
+        let st = ui.state.borrow();
+        let old = ui.scale.adjustment().upper() as u32 * 100 / export::MAX_SCALE_PERCENT;
+        (old.max(1), output_width(&st))
+    };
+    let percent = export::width_percent(ui.scale.value_as_int().max(1) as u32, old_width);
+    ui.syncing.set(true);
+    ui.scale.adjustment().set_upper((new_width * export::MAX_SCALE_PERCENT / 100) as f64);
+    ui.scale.set_value((new_width as f64 * percent / 100.0).round());
+    ui.syncing.set(false);
+    update_percent(ui);
 }
 
 /// Give the selected annotation the colour and size of the tool bar.
@@ -733,11 +851,13 @@ fn final_image(ui: &Ui) -> Option<RgbaImage> {
     }
 }
 
-/// The image to write to a file: [`final_image`] scaled by the percentage of
-/// the bottom bar.
+/// The image to write to a file: [`final_image`] resized to the width of the
+/// bottom bar.
 fn image_to_save(ui: &Ui) -> Option<RgbaImage> {
     let img = final_image(ui)?;
-    Some(export::scale(img, scale_percent(ui.scale.selected())))
+    // Takes a number typed but not yet confirmed with Enter.
+    ui.scale.update();
+    Some(export::scale_to_width(img, ui.scale.value_as_int().max(1) as u32))
 }
 
 /// Put the image on the clipboard. The window stays open: without a clipboard
@@ -867,10 +987,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_scale_choice_is_100_and_all_choices_are_in_range() {
-        assert_eq!(scale_percent(DEFAULT_SCALE_INDEX), 100);
-        assert_eq!(scale_percent(999), 100);
-        assert!(SCALE_PERCENTS.iter().all(|p| (export::MIN_SCALE_PERCENT..=export::MAX_SCALE_PERCENT).contains(p)));
+    fn the_zoom_stays_inside_its_limits() {
+        assert_eq!(zoom_after(1.0, 0.0), 1.0);
+        assert!(zoom_after(1.0, 1.0) > 1.0);
+        assert!(zoom_after(1.0, -1.0) < 1.0);
+        assert_eq!(zoom_after(ZOOM_MAX, 5.0), ZOOM_MAX);
+        assert_eq!(zoom_after(ZOOM_MIN, -5.0), ZOOM_MIN);
+    }
+
+    #[test]
+    fn the_percent_text_has_no_decimals_when_whole() {
+        assert_eq!(percent_text(100.0), "100%");
+        assert_eq!(percent_text(50.0), "50%");
+        assert_eq!(percent_text(33.333), "33.3%");
     }
 
     #[test]

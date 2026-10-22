@@ -13,8 +13,7 @@ pub const DEFAULT_QUALITY: u8 = 90;
 pub const MIN_QUALITY: u8 = 1;
 pub const MAX_QUALITY: u8 = 100;
 
-/// Smallest and largest scale of a saved image, in percent.
-pub const MIN_SCALE_PERCENT: u32 = 1;
+/// Largest scale of a saved image, in percent.
 pub const MAX_SCALE_PERCENT: u32 = 400;
 
 /// Folder of the quick save, under the home directory.
@@ -113,19 +112,25 @@ pub fn encode(image: &RgbaImage, options: &Options) -> Result<Vec<u8>, String> {
     }
 }
 
-/// The size of a `width` x `height` image scaled by `percent` (clamped to the
-/// allowed range): both sides use the same factor, so the aspect ratio is kept.
-/// A side never gets smaller than one pixel.
-pub fn scaled_size(width: u32, height: u32, percent: u32) -> (u32, u32) {
-    let p = percent.clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT) as u64;
-    let side = |v: u32| (((v as u64 * p) + 50) / 100).max(1) as u32;
-    (side(width), side(height))
+/// The size of a `width` x `height` image saved `target_width` pixels wide
+/// (clamped to the allowed scale range): the height keeps the aspect ratio and
+/// never gets smaller than one pixel.
+pub fn size_for_width(width: u32, height: u32, target_width: u32) -> (u32, u32) {
+    let width = width.max(1) as u64;
+    let target = (target_width as u64).clamp(1, width * MAX_SCALE_PERCENT as u64 / 100);
+    (target as u32, (((height as u64 * target) + width / 2) / width).max(1) as u32)
 }
 
-/// `image` scaled by `percent` keeping the aspect ratio. At 100% it is
-/// returned untouched.
-pub fn scale(image: RgbaImage, percent: u32) -> RgbaImage {
-    let (w, h) = scaled_size(image.width(), image.height(), percent);
+/// The scale of a `target_width` wide image compared to one `width` wide, in
+/// percent.
+pub fn width_percent(target_width: u32, width: u32) -> f64 {
+    target_width as f64 * 100.0 / width.max(1) as f64
+}
+
+/// `image` resized to `target_width` pixels keeping the aspect ratio. At its own
+/// width it is returned untouched.
+pub fn scale_to_width(image: RgbaImage, target_width: u32) -> RgbaImage {
+    let (w, h) = size_for_width(image.width(), image.height(), target_width);
     if (w, h) == image.dimensions() { return image; }
     image::imageops::resize(&image, w, h, image::imageops::FilterType::Lanczos3)
 }
@@ -237,19 +242,27 @@ mod tests {
     }
 
     #[test]
-    fn scaled_size_keeps_the_ratio_and_never_reaches_zero() {
-        assert_eq!(scaled_size(1920, 1080, 50), (960, 540));
-        assert_eq!(scaled_size(1920, 1080, 100), (1920, 1080));
-        assert_eq!(scaled_size(100, 50, 200), (200, 100));
-        assert_eq!(scaled_size(10, 3, 1), (1, 1));
-        assert_eq!(scaled_size(100, 100, 9999), (400, 400));
+    fn size_for_width_keeps_the_ratio_and_never_reaches_zero() {
+        assert_eq!(size_for_width(1920, 1080, 960), (960, 540));
+        assert_eq!(size_for_width(1920, 1080, 1920), (1920, 1080));
+        assert_eq!(size_for_width(100, 50, 200), (200, 100));
+        assert_eq!(size_for_width(1000, 3, 10), (10, 1));
+        assert_eq!(size_for_width(100, 100, 0), (1, 1));
+        assert_eq!(size_for_width(100, 100, 9999), (400, 400));
     }
 
     #[test]
-    fn scale_resizes_and_a_full_scale_is_the_same_image() {
+    fn width_percent_is_the_ratio_of_the_widths() {
+        assert_eq!(width_percent(720, 1440), 50.0);
+        assert_eq!(width_percent(1440, 1440), 100.0);
+    }
+
+    #[test]
+    fn scale_to_width_resizes_and_the_same_width_is_the_same_image() {
         let img = sample();
-        assert_eq!(scale(img.clone(), 100), img);
-        assert_eq!(scale(img, 50).dimensions(), (16, 12));
+        let w = img.width();
+        assert_eq!(scale_to_width(img.clone(), w), img);
+        assert_eq!(scale_to_width(img, w / 2).dimensions(), (16, 12));
     }
 
     #[test]
