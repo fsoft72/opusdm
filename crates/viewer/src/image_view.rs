@@ -209,24 +209,28 @@ impl ImageView {
         self.select_drag.set(on);
     }
 
-    /// Dragging moves the scroll bars the other way, like grabbing the picture.
+    /// Dragging moves the scroll bars the other way, like grabbing the picture:
+    /// with the left button (Shift only, while a drag selects text) and always
+    /// with the middle button.
     fn _wire_drag(self: &Rc<Self>) {
-        let drag = gtk::GestureDrag::new();
-        let start = Rc::new(Cell::new((0.0, 0.0)));
-        let panning = Rc::new(Cell::new(true));
-        let (hadj, vadj) = (self.root.hadjustment(), self.root.vadjustment());
-        let (s, h, v, p, select) = (start.clone(), hadj.clone(), vadj.clone(), panning.clone(), self.select_drag.clone());
-        drag.connect_drag_begin(move |gesture, _, _| {
-            s.set((h.value(), v.value()));
-            p.set(!select.get() || gesture.current_event_state().contains(gdk::ModifierType::SHIFT_MASK));
-        });
-        drag.connect_drag_update(move |_, dx, dy| {
-            if !panning.get() { return; }
-            let (x, y) = start.get();
-            hadj.set_value(x - dx);
-            vadj.set_value(y - dy);
-        });
-        self.root.add_controller(drag);
+        for (button, always) in [(gdk::BUTTON_PRIMARY, false), (gdk::BUTTON_MIDDLE, true)] {
+            let drag = gtk::GestureDrag::builder().button(button).build();
+            let start = Rc::new(Cell::new((0.0, 0.0)));
+            let panning = Rc::new(Cell::new(true));
+            let (hadj, vadj) = (self.root.hadjustment(), self.root.vadjustment());
+            let (s, h, v, p, select) = (start.clone(), hadj.clone(), vadj.clone(), panning.clone(), self.select_drag.clone());
+            drag.connect_drag_begin(move |gesture, _, _| {
+                s.set((h.value(), v.value()));
+                p.set(always || !select.get() || gesture.current_event_state().contains(gdk::ModifierType::SHIFT_MASK));
+            });
+            drag.connect_drag_update(move |_, dx, dy| {
+                if !panning.get() { return; }
+                let (x, y) = start.get();
+                hadj.set_value(x - dx);
+                vadj.set_value(y - dy);
+            });
+            self.root.add_controller(drag);
+        }
     }
 
     /// Show a new picture: fit mode, no rotation.
