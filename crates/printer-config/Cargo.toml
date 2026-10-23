@@ -1,0 +1,22 @@
+[package]
+name = "opusdm-printer-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_printer_config"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-printer-manager"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-printing = { path = "../printing" }
+opusdm-ui = { path = "../ui" }
+async-channel.workspace = true
+gtk4.workspace = true
+dirs.workspace = true
