@@ -1140,6 +1140,25 @@ opus.log(`copied ${src.selected.length} item(s) to ${target}`);
 
 The full reference is in the editor's panel and in `docs/superpowers/specs/2026-10-15-javascript-scripting-design.md`.
 
+### 3.40 Clipboard manager (panel)
+
+A clipboard icon in the tray group of the panel (primary bar, next to the device icon) remembers
+the texts you copied lately.
+
+- **History:** the last 20 texts copied with Ctrl+C (the system clipboard; the mouse selection is
+  not kept), newest first. Copying a text already in the list moves it to the top. Blank texts and
+  texts over 64 KB are not remembered. Images and file lists are not kept.
+- **Popover:** click the icon. Type in the search box to filter (case insensitive). Click an entry
+  to put it back on the clipboard, then paste it with Ctrl+V. The `x` button forgets one entry,
+  "Clear history" forgets all (the clipboard keeps its content).
+- **Passwords:** a copy marked by a password manager (`x-kde-passwordManagerHint`, as KeePassXC and
+  Bitwarden do) is never remembered. The history lives in memory only and is empty after a hub
+  restart.
+- **Wayland:** the panel can only see a copy while OpusDM has the focus there, so the history may miss
+  texts copied in other apps. X11 sees every copy.
+
+---
+
 ## 4. Keyboard Shortcuts Reference
 
 Every binding below works whenever the file list has the focus. While you are typing in the filter

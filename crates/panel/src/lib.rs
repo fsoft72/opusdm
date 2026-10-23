@@ -24,6 +24,8 @@ mod battery_center;
 mod battery_model;
 mod bluetooth_center;
 mod bluetooth_model;
+mod clipboard_center;
+mod clipboard_model;
 mod network_center;
 mod network_model;
 mod notify_center;
@@ -89,7 +91,7 @@ struct BarWindow {
     sni: Option<Rc<widgets::sni::SniStrip>>,
 }
 
-/// Pixels between the device, audio, battery, Bluetooth, printer and network tray buttons.
+/// Pixels between the device, clipboard, audio, battery, Bluetooth, printer and network tray buttons.
 const TRAY_SPACING: i32 = 2;
 
 /// The shared services one bar is wired to.
@@ -102,6 +104,7 @@ struct BarServices {
     network: Rc<network_center::NetworkCenter>,
     bluetooth: Rc<bluetooth_center::BluetoothCenter>,
     printer: Rc<printer_center::PrinterCenter>,
+    clipboard: Rc<clipboard_center::ClipboardCenter>,
     notify: Rc<notify_center::NotifyCenter>,
     agenda: Rc<agenda_center::AgendaCenter>,
 }
@@ -117,7 +120,7 @@ fn build_bar_window(
     is_primary: bool,
     services: BarServices,
 ) -> BarWindow {
-    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, bluetooth, printer, notify, agenda } = services;
+    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, bluetooth, printer, clipboard, notify, agenda } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -227,6 +230,7 @@ fn build_bar_window(
     if is_primary {
         let trays = gtk::Box::new(gtk::Orientation::Horizontal, TRAY_SPACING);
         trays.append(&devices.button());
+        trays.append(&clipboard.button());
         trays.append(&audio.button());
         trays.append(&battery.button());
         trays.append(&bluetooth.button());
@@ -294,6 +298,7 @@ pub fn attach(
     let network = network_center::NetworkCenter::new();
     let bluetooth = bluetooth_center::BluetoothCenter::new();
     let printer = printer_center::PrinterCenter::new();
+    let clipboard = clipboard_center::ClipboardCenter::new();
     let notify = notify_center::NotifyCenter::new();
     let agenda = agenda_center::AgendaCenter::new();
     let state = Rc::new(RefCell::new(PanelState::default()));
@@ -314,6 +319,7 @@ pub fn attach(
         let network = network.clone();
         let bluetooth = bluetooth.clone();
         let printer = printer.clone();
+        let clipboard = clipboard.clone();
         let notify = notify.clone();
         let agenda = agenda.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
@@ -337,6 +343,7 @@ pub fn attach(
                         network: network.clone(),
                         bluetooth: bluetooth.clone(),
                         printer: printer.clone(),
+                        clipboard: clipboard.clone(),
                         notify: notify.clone(),
                         agenda: agenda.clone(),
                     };
