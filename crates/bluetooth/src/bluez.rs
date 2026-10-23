@@ -15,6 +15,9 @@ const OBJECT_MANAGER_IFACE: &str = "org.freedesktop.DBus.ObjectManager";
 const PROPERTIES_IFACE: &str = "org.freedesktop.DBus.Properties";
 /// Seconds the adapter stays discoverable and pairable after "Discoverable".
 pub const VISIBLE_SECS: u32 = 180;
+/// Looks at the adapter after the rfkill unblock, and the wait between them.
+const UNBLOCK_TRIES: u32 = 10;
+const UNBLOCK_WAIT_MS: u64 = 300;
 
 /// BlueZ on the system bus. The agent of this process is served on the same
 /// connection, so BlueZ sends the requests of a `Pair` call made here to it.
@@ -64,11 +67,28 @@ impl BluezBackend {
         if on && rf.hard { return Err(BtError::other("Bluetooth is blocked by a hardware switch")); }
         if on && rf.soft {
             rfkill::unblock()?;
-            // The adapter comes back a moment after the block is cleared.
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            return self.power_on_after_unblock();
         }
         let path = self.adapter_path()?;
         self.set(&path, ADAPTER_IFACE, "Powered", on)
+    }
+
+    /// After the soft block is cleared BlueZ may power the adapter by itself
+    /// and answers `Busy` meanwhile: wait for it, then power it if it did not.
+    fn power_on_after_unblock(&self) -> Result<(), BtError> {
+        let mut last = BtError::other("The Bluetooth adapter did not come back after the unblock");
+        for _ in 0..UNBLOCK_TRIES {
+            std::thread::sleep(std::time::Duration::from_millis(UNBLOCK_WAIT_MS));
+            let Ok(state) = self.state() else { continue };
+            if state.is_on() { return Ok(()); }
+            let Some(adapter) = state.adapter else { continue };
+            match self.set(&adapter.path, ADAPTER_IFACE, "Powered", true) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.name.ends_with(".Busy") => last = e,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last)
     }
 
     /// Discoverable and pairable together for [`VISIBLE_SECS`], or neither.

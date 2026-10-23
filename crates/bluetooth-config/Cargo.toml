@@ -1,0 +1,21 @@
+[package]
+name = "opusdm-bluetooth-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_bluetooth_config"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-bluetooth-manager"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-bluetooth = { path = "../bluetooth" }
+opusdm-ui = { path = "../ui" }
+async-channel.workspace = true
+gtk4.workspace = true
