@@ -5,4 +5,5 @@
 //! `docs/superpowers/specs/2026-10-23-printer-manager-design.md`.
 
 pub mod session;
+pub mod wizard;
 pub mod worker;
