@@ -3101,6 +3101,7 @@ dependencies = [
  "dirs",
  "flate2",
  "gtk4",
+ "opusdm-bluetooth-config",
  "opusdm-desktop-config",
  "opusdm-iconview",
  "opusdm-input-config",

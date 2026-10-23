@@ -17,6 +17,7 @@ opusdm-iconview = { path = "../iconview" }
 opusdm-input-config = { path = "../input-config" }
 opusdm-network-config = { path = "../network-config" }
 opusdm-printer-config = { path = "../printer-config" }
+opusdm-bluetooth-config = { path = "../bluetooth-config" }
 # Only the editors are used, so the VTE terminal is left out.
 opusdm-lister = { path = "../lister", default-features = false }
 opusdm-ui = { path = "../ui" }
