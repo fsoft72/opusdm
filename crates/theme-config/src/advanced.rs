@@ -30,11 +30,12 @@ struct Entry {
 }
 
 /// The entries of the list, in order.
-const ENTRIES: [Entry; 4] = [
+const ENTRIES: [Entry; 5] = [
     Entry { label: "Hotkeys", build: build_hotkeys },
     Entry { label: "File Types", build: build_file_types },
     Entry { label: "Input", build: build_input },
     Entry { label: "Network", build: build_network },
+    Entry { label: "Printers", build: build_printers },
 ];
 
 /// The Hotkeys editor.
@@ -55,6 +56,11 @@ fn build_input(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
 /// The Network connections.
 fn build_network(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
     opusdm_network_config::window::embedded(window)
+}
+
+/// The CUPS printers and their queues.
+fn build_printers(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
+    opusdm_printer_config::window::embedded(window)
 }
 
 /// What the callbacks of the tab share.

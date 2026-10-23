@@ -3084,6 +3084,7 @@ dependencies = [
  "opusdm-ipc",
  "opusdm-lister",
  "opusdm-network-config",
+ "opusdm-printer-config",
  "opusdm-themepack",
  "opusdm-ui",
  "serde",

@@ -4,7 +4,7 @@
 # Layout of dist/:
 #   bin/      opusdm-hub, opusdm-lister, opusdm-settings, opusdm-dock, opusdm-run,
 #             opusdm-shot, opusdm-terminal, opusdm-player, opusdm-viewer, opusdm-input-config, opusdm-screen, opusdm-apps-editor,
-#             opusdm-network-manager, opusdm-polkit, opusdm-notify
+#             opusdm-network-manager, opusdm-printer-manager, opusdm-polkit, opusdm-notify
 #             (the hub finds opusdm-lister next to itself, keep them together)
 #   config/   openbox-rc.xml, picom.conf, labwc-rc.xml, wayfire.ini,
 #             opusdm-portals.conf
@@ -22,7 +22,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DIST="$REPO_ROOT/dist"
-BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-terminal opusdm-player opusdm-viewer opusdm-input-config opusdm-screen opusdm-apps-editor opusdm-network-manager opusdm-polkit opusdm-notify"
+BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-terminal opusdm-player opusdm-viewer opusdm-input-config opusdm-screen opusdm-apps-editor opusdm-network-manager opusdm-printer-manager opusdm-polkit opusdm-notify"
 
 cd "$REPO_ROOT"
 
@@ -53,7 +53,7 @@ cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.deskto
 # named after its application id: Wayland compositors find the icon through it
 mkdir -p "$DIST/share/icons/hicolor/512x512/apps" "$DIST/share/applications"
 cp "$REPO_ROOT/assets/ball.png" "$DIST/share/icons/hicolor/512x512/apps/opusdm.png"
-for pair in Hub:hub Lister:lister Settings:settings Dock:dock Run:run Shot:shot Terminal:terminal Player:player Viewer:viewer InputConfig:input-config Screen:screen AppsEditor:apps-editor NetworkManager:network-manager PolkitAgent:polkit; do
+for pair in Hub:hub Lister:lister Settings:settings Dock:dock Run:run Shot:shot Terminal:terminal Player:player Viewer:viewer InputConfig:input-config Screen:screen AppsEditor:apps-editor NetworkManager:network-manager PrinterManager:printer-manager PolkitAgent:polkit; do
     id="${pair%%:*}"
     bin="opusdm-${pair#*:}"
     printf '[Desktop Entry]\nType=Application\nName=OpusDM %s\nExec=%s\nIcon=opusdm\nTerminal=false\nNoDisplay=true\n' "$id" "$bin" > "$DIST/share/applications/org.opusdm.$id.desktop"
