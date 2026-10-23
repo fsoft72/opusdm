@@ -46,17 +46,17 @@ impl DeviceKind {
         }
     }
 
-    /// Icon of the theme for this kind.
+    /// Symbolic icon of the theme for this kind (in Adwaita and Breeze).
     pub fn icon_name(&self) -> &'static str {
         match self {
-            Self::Headset => "audio-headphones",
-            Self::Audio => "audio-speakers",
-            Self::Keyboard => "input-keyboard",
-            Self::Mouse => "input-mouse",
-            Self::Phone => "phone",
-            Self::Computer => "computer",
-            Self::Gamepad => "input-gaming",
-            Self::Other => "bluetooth",
+            Self::Headset => "audio-headphones-symbolic",
+            Self::Audio => "audio-speakers-symbolic",
+            Self::Keyboard => "input-keyboard-symbolic",
+            Self::Mouse => "input-mouse-symbolic",
+            Self::Phone => "phone-symbolic",
+            Self::Computer => "computer-symbolic",
+            Self::Gamepad => "input-gaming-symbolic",
+            Self::Other => "bluetooth-symbolic",
         }
     }
 

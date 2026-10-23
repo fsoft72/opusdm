@@ -26,6 +26,8 @@ opusdm-devices = { path = "../devices" }
 opusdm-audio = { path = "../audio" }
 opusdm-network = { path = "../network" }
 opusdm-printing = { path = "../printing" }
+opusdm-bluetooth = { path = "../bluetooth" }
+opusdm-bluetooth-config = { path = "../bluetooth-config" }
 opusdm-power = { path = "../power" }
 opusdm-brightness = { path = "../brightness" }
 

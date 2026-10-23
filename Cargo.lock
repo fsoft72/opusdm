@@ -2956,6 +2956,8 @@ dependencies = [
  "libc",
  "opusdm-apps",
  "opusdm-audio",
+ "opusdm-bluetooth",
+ "opusdm-bluetooth-config",
  "opusdm-brightness",
  "opusdm-devices",
  "opusdm-ipc",

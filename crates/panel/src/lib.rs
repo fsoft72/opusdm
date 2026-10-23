@@ -22,6 +22,8 @@ mod audio_center;
 mod audio_model;
 mod battery_center;
 mod battery_model;
+mod bluetooth_center;
+mod bluetooth_model;
 mod network_center;
 mod network_model;
 mod notify_center;
@@ -87,7 +89,7 @@ struct BarWindow {
     sni: Option<Rc<widgets::sni::SniStrip>>,
 }
 
-/// Pixels between the device, audio, battery, printer and network tray buttons.
+/// Pixels between the device, audio, battery, Bluetooth, printer and network tray buttons.
 const TRAY_SPACING: i32 = 2;
 
 /// The shared services one bar is wired to.
@@ -98,6 +100,7 @@ struct BarServices {
     audio: Rc<audio_center::AudioCenter>,
     battery: Rc<battery_center::BatteryCenter>,
     network: Rc<network_center::NetworkCenter>,
+    bluetooth: Rc<bluetooth_center::BluetoothCenter>,
     printer: Rc<printer_center::PrinterCenter>,
     notify: Rc<notify_center::NotifyCenter>,
     agenda: Rc<agenda_center::AgendaCenter>,
@@ -114,7 +117,7 @@ fn build_bar_window(
     is_primary: bool,
     services: BarServices,
 ) -> BarWindow {
-    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, printer, notify, agenda } = services;
+    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, bluetooth, printer, notify, agenda } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -226,6 +229,7 @@ fn build_bar_window(
         trays.append(&devices.button());
         trays.append(&audio.button());
         trays.append(&battery.button());
+        trays.append(&bluetooth.button());
         // Before the network tray: that one draws the separator closing the group.
         trays.append(&printer.button());
         trays.append(&network.button());
@@ -288,6 +292,7 @@ pub fn attach(
     let audio = audio_center::AudioCenter::new();
     let battery = battery_center::BatteryCenter::new();
     let network = network_center::NetworkCenter::new();
+    let bluetooth = bluetooth_center::BluetoothCenter::new();
     let printer = printer_center::PrinterCenter::new();
     let notify = notify_center::NotifyCenter::new();
     let agenda = agenda_center::AgendaCenter::new();
@@ -307,6 +312,7 @@ pub fn attach(
         let audio = audio.clone();
         let battery = battery.clone();
         let network = network.clone();
+        let bluetooth = bluetooth.clone();
         let printer = printer.clone();
         let notify = notify.clone();
         let agenda = agenda.clone();
@@ -329,6 +335,7 @@ pub fn attach(
                         audio: audio.clone(),
                         battery: battery.clone(),
                         network: network.clone(),
+                        bluetooth: bluetooth.clone(),
                         printer: printer.clone(),
                         notify: notify.clone(),
                         agenda: agenda.clone(),
