@@ -9,3 +9,5 @@ pub mod parse;
 pub mod transport;
 pub mod backend;
 pub mod cups;
+pub mod watch;
+pub mod tray;
