@@ -100,7 +100,7 @@ pub fn open(app: &gtk::Application) {
     let (state, layout) = build_with(window.upcast_ref(), Arc::new(CupsBackend::new()));
     window.set_child(Some(&layout));
     state.guard_close();
-    keep_until_closed(&window, state);
+    keep_until_closed(window.upcast_ref(), state);
     window.present();
 }
 
@@ -201,7 +201,7 @@ fn listen<T: 'static>(weak: &Weak<App>, rx: async_channel::Receiver<T>, name: &'
 
 /// Hold the only strong reference to `app` until `window` really closes
 /// (after the unsaved-changes question). Dropping it ends the worker.
-fn keep_until_closed(window: &gtk::ApplicationWindow, app: Rc<App>) {
+fn keep_until_closed(window: &gtk::Window, app: Rc<App>) {
     let slot = RefCell::new(Some(app));
     // Connected after `App::guard_close`: it runs only when that handler lets
     // the close go on.
@@ -381,7 +381,8 @@ impl App {
             Done::Options(printer, options) => self.on_options(printer, options),
             Done::Saved(printer) => {
                 self.show_info(&format!("{printer} saved"));
-                if let Some(s) = self.session.borrow_mut().as_mut() { s.mark_saved(); }
+                // The save may be of a printer left meanwhile (Save while switching).
+                if let Some(s) = self.session.borrow_mut().as_mut().filter(|s| s.printer == printer) { s.mark_saved(); }
                 if self.close_after_save.replace(false) {
                     self.closing.set(true);
                     self.window.close();
@@ -846,6 +847,56 @@ mod tests {
             assert!(iterate_until(|| wizard.step() == crate::wizard::Step::Done));
             assert!(iterate_until(|| app.row_names.borrow().iter().any(|n| n == "Brother_HL-L2350DW")));
             wizard.close();
+        });
+    }
+
+    #[test]
+    fn the_program_window_owns_the_app() {
+        gtk_test::run(|| {
+            let f = fake();
+            let window = gtk::Window::new();
+            // GTK ignores a close of a window that has no surface yet.
+            WidgetExt::realize(&window);
+            let (app, _root) = build_with(&window, f.clone());
+            app.guard_close();
+            keep_until_closed(&window, app.clone());
+            let weak = Rc::downgrade(&app);
+            drop(app);
+            // Only the window holds the app now, as in the program.
+            assert!(iterate_until(|| weak.upgrade().is_some_and(|a| a.row_names.borrow().len() == 2)));
+            for _ in 0..200 { glib::MainContext::default().iteration(false); }
+            f.printers.lock().unwrap().push(test_printer("p3"));
+            weak.upgrade().expect("the window keeps the app").send(crate::worker::Job::Refresh);
+            assert!(iterate_until(|| weak.upgrade().is_some_and(|a| a.row_names.borrow().len() == 3)), "the loops still follow the backend");
+            // A close with unsaved changes asks and keeps the app.
+            {
+                let a = weak.upgrade().unwrap();
+                a.select("p1".to_string());
+                a.general.info.set_text("Desk");
+                assert!(a.is_dirty());
+            }
+            window.close();
+            assert!(weak.upgrade().is_some(), "a close waiting for the answer keeps the app");
+            // Without changes the close drops it.
+            weak.upgrade().unwrap().revert();
+            window.close();
+            assert!(iterate_until(|| weak.upgrade().is_none()), "a real close drops the app");
+        });
+    }
+
+    #[test]
+    fn a_save_answer_for_another_printer_keeps_the_edit() {
+        gtk_test::run(|| {
+            let f = fake();
+            let window = gtk::Window::new();
+            let (app, _root) = build_with(&window, f.clone());
+            assert!(iterate_until(|| app.row_names.borrow().len() == 2));
+            app.select("p2".to_string());
+            app.general.info.set_text("Desk");
+            assert!(app.is_dirty());
+            // The answer of a save of p1, sent while leaving it, comes after p2 was opened.
+            app.on_done(Done::Saved("p1".to_string()));
+            assert!(app.is_dirty(), "the edit of p2 is not marked saved");
         });
     }
 
