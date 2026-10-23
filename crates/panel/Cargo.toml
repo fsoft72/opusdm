@@ -25,6 +25,7 @@ zbus = { version = "5.19.0", features = ["blocking"] }
 opusdm-devices = { path = "../devices" }
 opusdm-audio = { path = "../audio" }
 opusdm-network = { path = "../network" }
+opusdm-printing = { path = "../printing" }
 opusdm-power = { path = "../power" }
 opusdm-brightness = { path = "../brightness" }
 

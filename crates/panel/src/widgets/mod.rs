@@ -8,6 +8,7 @@ pub mod devices;
 pub mod network;
 pub mod notifications;
 pub mod pager;
+pub mod printer;
 pub mod quickapps;
 pub mod sni;
 pub mod sysmon;

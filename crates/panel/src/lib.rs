@@ -25,6 +25,7 @@ mod battery_model;
 mod network_center;
 mod network_model;
 mod notify_center;
+mod printer_center;
 mod notify_client;
 mod sysmon_model;
 mod devices_model;
@@ -86,7 +87,7 @@ struct BarWindow {
     sni: Option<Rc<widgets::sni::SniStrip>>,
 }
 
-/// Pixels between the device, audio, battery and network tray buttons.
+/// Pixels between the device, audio, battery, printer and network tray buttons.
 const TRAY_SPACING: i32 = 2;
 
 /// The shared services one bar is wired to.
@@ -97,11 +98,12 @@ struct BarServices {
     audio: Rc<audio_center::AudioCenter>,
     battery: Rc<battery_center::BatteryCenter>,
     network: Rc<network_center::NetworkCenter>,
+    printer: Rc<printer_center::PrinterCenter>,
     notify: Rc<notify_center::NotifyCenter>,
     agenda: Rc<agenda_center::AgendaCenter>,
 }
 
-/// Build one full bar (menu, pager, quick apps, tasklist, device, audio, battery and network trays, sysmon, clock) on the monitor
+/// Build one full bar (menu, pager, quick apps, tasklist, device, audio, battery, printer and network trays, sysmon, clock) on the monitor
 /// and edge `place` describes, and present it. `state` seeds the pager
 /// and tasklist immediately, so a bar created after startup (monitor plugged
 /// in later) doesn't show empty widgets until the next EWMH event.
@@ -112,7 +114,7 @@ fn build_bar_window(
     is_primary: bool,
     services: BarServices,
 ) -> BarWindow {
-    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, notify, agenda } = services;
+    let BarServices { tray_cmd_tx, sni_cmd_tx, devices, audio, battery, network, printer, notify, agenda } = services;
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title(WINDOW_TITLE)
@@ -216,7 +218,7 @@ fn build_bar_window(
     if tray.is_some() || sni.is_some() {
         right.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     }
-    // The device, audio, battery and network trays sit right before the CPU and network
+    // The device, audio, battery, printer and network trays sit right before the CPU and network
     // monitors, close together, on the primary bar only (a device must not be
     // listed twice). The network tray draws the separator that closes the group.
     if is_primary {
@@ -224,6 +226,8 @@ fn build_bar_window(
         trays.append(&devices.button());
         trays.append(&audio.button());
         trays.append(&battery.button());
+        // Before the network tray: that one draws the separator closing the group.
+        trays.append(&printer.button());
         trays.append(&network.button());
         right.append(&trays);
     }
@@ -284,6 +288,7 @@ pub fn attach(
     let audio = audio_center::AudioCenter::new();
     let battery = battery_center::BatteryCenter::new();
     let network = network_center::NetworkCenter::new();
+    let printer = printer_center::PrinterCenter::new();
     let notify = notify_center::NotifyCenter::new();
     let agenda = agenda_center::AgendaCenter::new();
     let state = Rc::new(RefCell::new(PanelState::default()));
@@ -302,6 +307,7 @@ pub fn attach(
         let audio = audio.clone();
         let battery = battery.clone();
         let network = network.clone();
+        let printer = printer.clone();
         let notify = notify.clone();
         let agenda = agenda.clone();
         Rc::new(move |mut rects: Vec<(i32, i32, i32, i32)>| {
@@ -323,6 +329,7 @@ pub fn attach(
                         audio: audio.clone(),
                         battery: battery.clone(),
                         network: network.clone(),
+                        printer: printer.clone(),
                         notify: notify.clone(),
                         agenda: agenda.clone(),
                     };

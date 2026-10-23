@@ -2939,6 +2939,7 @@ dependencies = [
  "opusdm-ipc",
  "opusdm-network",
  "opusdm-power",
+ "opusdm-printing",
  "opusdm-ui",
  "opusdm-wayland",
  "opusdm-x11",

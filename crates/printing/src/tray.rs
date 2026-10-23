@@ -92,6 +92,13 @@ pub fn view(s: &Snapshot) -> TrayView {
     TrayView { look, jobs, tooltip }
 }
 
+/// Whether the notes depend on time for `s`: a printer does not answer
+/// while jobs wait, so [`Notifier::update`] must run again later even if
+/// nothing changes.
+pub fn needs_timer(s: &Snapshot) -> bool {
+    s.printers.iter().any(|p| is_not_answering(p) && s.jobs_of(&p.name).next().is_some())
+}
+
 /// Remembers which errors were already notified, and since when each
 /// printer does not answer.
 #[derive(Default)]
@@ -229,6 +236,15 @@ mod tests {
         s.jobs[0].name = "fattura.pdf".into();
         let notes = Notifier::default().update(&s, 0);
         assert_eq!(notes, vec![Note { summary: "Printer C364Series".into(), body: "Job \"fattura.pdf\" stopped: Unable to locate printer.".into() }]);
+    }
+
+    #[test]
+    fn a_timer_is_needed_only_while_a_printer_does_not_answer() {
+        // The watcher sends a snapshot only when something changes: a steady
+        // "not answering" must be looked at again by a timer.
+        assert!(needs_timer(&snap(not_answering(), 1)));
+        assert!(!needs_timer(&snap(not_answering(), 0)));
+        assert!(!needs_timer(&snap(ready(), 3)));
     }
 
     #[test]
