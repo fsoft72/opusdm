@@ -1,0 +1,17 @@
+[package]
+name = "opusdm-printing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_printing"
+path = "src/lib.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+async-channel.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
