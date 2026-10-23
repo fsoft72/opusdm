@@ -10,4 +10,5 @@ mod pages;
 pub mod session;
 pub mod window;
 pub mod wizard;
+mod wizard_ui;
 pub mod worker;

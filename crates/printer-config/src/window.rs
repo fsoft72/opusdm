@@ -5,6 +5,7 @@
 
 use crate::pages::{job_row, GeneralPage, OptionsPage, QueuePage, MARGIN, SPACING};
 use crate::session::EditSession;
+use crate::wizard_ui::{self, WizardUi};
 use crate::worker::{self, Done, Job};
 use gtk4 as gtk;
 use gtk::glib;
@@ -89,6 +90,8 @@ pub struct App {
     /// The window may close without asking again.
     closing: Cell<bool>,
     save_done: RefCell<Option<SaveDone>>,
+    /// The add printer dialog, while it is open.
+    wizard: RefCell<Option<Weak<WizardUi>>>,
 }
 
 /// Open the window of `app`.
@@ -169,6 +172,7 @@ fn build_with(window: &gtk::Window, backend: Arc<dyn PrintBackend>) -> (Rc<App>,
         close_after_save: Cell::new(false),
         closing: Cell::new(false),
         save_done: RefCell::new(None),
+        wizard: RefCell::new(None),
     });
     let layout = app.layout();
     app.wire();
@@ -292,8 +296,7 @@ impl App {
                 a.update_buttons();
             });
         }
-        // The wizard comes with the next change; until then + is off.
-        self.add.set_sensitive(false);
+        connect_button(&self.add, &weak, |a| { a.open_wizard(); });
         connect_button(&self.remove, &weak, App::remove_selected);
         connect_button(&self.general.set_default, &weak, |a| a.printer_job(|p| Job::SetDefault(p.name.clone())));
         connect_button(&self.general.enable, &weak, |a| a.printer_job(|p| Job::SetEnabled(p.name.clone(), p.is_paused())));
@@ -389,9 +392,26 @@ impl App {
                 self.send(Job::LoadOptions(printer));
             }
             Done::Acted(text) => self.show_info(&text),
-            Done::Failed { what, error, .. } => self.show_error(&format!("{what}: {error}")),
-            Done::Devices(_) | Done::Drivers(_) | Done::Added(_) => {
-                opusdm_ipc::debug_log!(LOG_TAG, "a wizard report came with no wizard open");
+            Done::Failed { what, error, .. } => {
+                if what == worker::ADDING {
+                    if let Some(w) = self.wizard() { w.on_add_failed(&error.0); }
+                }
+                self.show_error(&format!("{what}: {error}"));
+            }
+            Done::Devices(devices) => match self.wizard() {
+                Some(w) => w.on_devices(devices),
+                None => opusdm_ipc::err_log!(LOG_TAG, "the printers found came after the add printer dialog closed"),
+            },
+            Done::Drivers(drivers) => match self.wizard() {
+                Some(w) => w.on_drivers(drivers),
+                None => opusdm_ipc::err_log!(LOG_TAG, "the drivers came after the add printer dialog closed"),
+            },
+            Done::Added(name) => {
+                self.show_info(&format!("{name} added"));
+                match self.wizard() {
+                    Some(w) => w.on_added(&name),
+                    None => opusdm_ipc::err_log!(LOG_TAG, "{name} was added after the add printer dialog closed"),
+                }
             }
         }
         // A change may have moved the queue: read it again soon.
@@ -630,6 +650,34 @@ impl App {
         }
     }
 
+    /// The open add printer dialog, if any.
+    fn wizard(&self) -> Option<Rc<WizardUi>> {
+        self.wizard.borrow().as_ref().and_then(Weak::upgrade)
+    }
+
+    /// Open the add printer dialog (or raise the open one).
+    pub(crate) fn open_wizard(self: &Rc<Self>) -> Rc<WizardUi> {
+        if let Some(w) = self.wizard() {
+            w.present();
+            return w;
+        }
+        let (taken, uris) = {
+            let s = self.snapshot.borrow();
+            (s.printers.iter().map(|p| p.name.clone()).collect(), s.printers.iter().map(|p| p.device_uri.clone()).collect())
+        };
+        let weak = Rc::downgrade(self);
+        let send = Box::new(move |job: Job| match weak.upgrade() {
+            Some(a) => a.send(job),
+            None => {
+                opusdm_ipc::err_log!(LOG_TAG, "the add printer dialog outlived the printer window");
+                false
+            }
+        });
+        let w = wizard_ui::open(&self.window, taken, uris, send);
+        *self.wizard.borrow_mut() = Some(Rc::downgrade(&w));
+        w
+    }
+
     /// Remove the selected printer, after asking.
     fn remove_selected(self: &Rc<Self>) {
         let Some(p) = self.selected_printer() else { return };
@@ -775,6 +823,29 @@ mod tests {
             f.printers.lock().unwrap().push(test_printer("p3"));
             app.send(crate::worker::Job::Refresh);
             assert!(iterate_until(|| app.row_names.borrow().len() == 3), "a new printer appears");
+        });
+    }
+
+    #[test]
+    fn wizard_adds_a_printer_through_the_backend() {
+        gtk_test::run(|| {
+            let f = fake();
+            f.devices.lock().unwrap().push(opusdm_printing::model::Device { uri: "ipp://10.0.20.7/ipp/print".into(), info: "Brother HL".into(), make_model: "Brother HL-L2350DW".into(), ..Default::default() });
+            let window = gtk::Window::new();
+            let (app, _root) = build_with(&window, f.clone());
+            assert!(iterate_until(|| app.row_names.borrow().len() == 2));
+            let wizard = app.open_wizard();
+            assert!(iterate_until(|| wizard.device_count() == 1), "the search lists the device");
+            wizard.pick_device(0);
+            wizard.press_next();
+            assert_eq!(wizard.step(), crate::wizard::Step::Driver);
+            wizard.press_next();
+            assert_eq!(wizard.step(), crate::wizard::Step::Name);
+            wizard.press_next();
+            assert!(iterate_until(|| f.calls().iter().any(|c| c == "add Brother_HL-L2350DW")), "{:?}", f.calls());
+            assert!(iterate_until(|| wizard.step() == crate::wizard::Step::Done));
+            assert!(iterate_until(|| app.row_names.borrow().iter().any(|n| n == "Brother_HL-L2350DW")));
+            wizard.close();
         });
     }
 
