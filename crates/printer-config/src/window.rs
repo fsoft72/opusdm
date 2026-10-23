@@ -211,6 +211,14 @@ fn keep_until_closed(window: &gtk::Window, app: Rc<App>) {
     });
 }
 
+/// The app behind `weak`, or `None` with a log line naming `what` could
+/// not be done because the window is gone.
+fn alive(weak: &Weak<App>, what: &str) -> Option<Rc<App>> {
+    let app = weak.upgrade();
+    if app.is_none() { opusdm_ipc::err_log!(LOG_TAG, "the printer window is gone: {what} ignored"); }
+    app
+}
+
 /// Run `action` on the app when `button` is clicked.
 fn connect_button(button: &gtk::Button, weak: &Weak<App>, action: impl Fn(&Rc<App>) + 'static) {
     let weak = weak.clone();
@@ -269,7 +277,8 @@ impl App {
         self.list_box.connect_row_selected({
             let weak = weak.clone();
             move |_, row| {
-                let (Some(a), Some(row)) = (weak.upgrade(), row) else { return };
+                let Some(a) = alive(&weak, "a printer selection") else { return };
+                let Some(row) = row else { return };
                 if a.quiet.get() { return; }
                 let name = a.row_names.borrow().get(row.index() as usize).cloned();
                 if let Some(name) = name { a.select(name); }
@@ -278,7 +287,7 @@ impl App {
         self.queue.list.connect_row_selected({
             let weak = weak.clone();
             move |_, row| {
-                let Some(a) = weak.upgrade() else { return };
+                let Some(a) = alive(&weak, "a job selection") else { return };
                 if a.quiet.get() { return; }
                 let id = row.and_then(|r| a.queue_ids.borrow().get(r.index() as usize).copied());
                 a.selected_job.set(id);
@@ -288,7 +297,7 @@ impl App {
         for (entry, is_info) in [(&self.general.info, true), (&self.general.location, false)] {
             let weak = weak.clone();
             entry.connect_changed(move |e| {
-                let Some(a) = weak.upgrade() else { return };
+                let Some(a) = alive(&weak, "an edit of the description or location") else { return };
                 if a.quiet.get() { return; }
                 if let Some(s) = a.session.borrow_mut().as_mut() {
                     if is_info { s.info = e.text().to_string() } else { s.location = e.text().to_string() }
@@ -316,7 +325,7 @@ impl App {
     fn guard_close(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
-            let Some(a) = weak.upgrade() else { return glib::Propagation::Proceed };
+            let Some(a) = alive(&weak, "the unsaved changes check of the close") else { return glib::Propagation::Proceed };
             if a.closing.get() || !a.is_dirty() { return glib::Propagation::Proceed; }
             if a.close_after_save.get() { return glib::Propagation::Stop; }
             a.ask_before_leaving(Box::new(|a: &Rc<App>, saved| {
@@ -394,6 +403,7 @@ impl App {
             }
             Done::Acted(text) => self.show_info(&text),
             Done::Failed { what, error, .. } => {
+                opusdm_ipc::err_log!(LOG_TAG, "{what}: {error}");
                 if what == worker::ADDING {
                     if let Some(w) = self.wizard() { w.on_add_failed(&error.0); }
                 }
@@ -644,7 +654,7 @@ impl App {
                 let weak = Rc::downgrade(self);
                 let name = p.name.clone();
                 opusdm_ui::requester(&self.window, "Cancel all jobs", &format!("Cancel every job of {name}?"), None, &[("Cancel all", true), ("Keep them", false)], move |yes| {
-                    let Some(a) = weak.upgrade() else { return };
+                    let Some(a) = alive(&weak, "the Cancel all answer") else { return };
                     if yes { a.send(Job::CancelAll(name.clone())); }
                 });
             }
@@ -685,7 +695,7 @@ impl App {
         let weak = Rc::downgrade(self);
         let name = p.name.clone();
         opusdm_ui::requester(&self.window, "Remove printer", &format!("Remove {name}?"), Some("Its waiting jobs are canceled."), &[("Remove", true), ("Cancel", false)], move |yes| {
-            let Some(a) = weak.upgrade() else { return };
+            let Some(a) = alive(&weak, "the Remove answer") else { return };
             if !yes { return; }
             // The changes of a removed printer have nothing to go to.
             if let Some(s) = a.session.borrow_mut().as_mut() { s.revert(); }
@@ -717,7 +727,7 @@ impl App {
         let name = self.session.borrow().as_ref().map(|s| s.printer.clone()).unwrap_or_default();
         let weak = Rc::downgrade(self);
         opusdm_ui::requester(&self.window, "Unsaved changes", &format!("{name} has changes that are not saved."), None, &[("Save", 0), ("Discard", 1), ("Cancel", 2)], move |choice| {
-            let Some(a) = weak.upgrade() else { return };
+            let Some(a) = alive(&weak, "the unsaved changes answer") else { return };
             match choice {
                 0 => {
                     if a.save() { then(&a, true); }

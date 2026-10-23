@@ -119,6 +119,14 @@ pub fn open(parent: &gtk::Window, taken: Vec<String>, configured: Vec<String>, s
     ui
 }
 
+/// The dialog behind `weak`, or `None` with a log line naming `what` could
+/// not be done because the dialog is gone.
+fn alive(weak: &std::rc::Weak<WizardUi>, what: &str) -> Option<Rc<WizardUi>> {
+    let ui = weak.upgrade();
+    if ui.is_none() { opusdm_ipc::err_log!(LOG_TAG, "the add printer dialog is gone: {what} ignored"); }
+    ui
+}
+
 /// A page with the usual margins.
 fn page() -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Vertical, SPACING);
@@ -247,7 +255,8 @@ impl WizardUi {
         self.device_list.connect_row_selected({
             let weak = weak.clone();
             move |_, row| {
-                let (Some(w), Some(row)) = (weak.upgrade(), row) else { return };
+                let Some(w) = alive(&weak, "a device selection") else { return };
+                let Some(row) = row else { return };
                 if w.quiet.get() { return; }
                 w.pick_device(row.index() as usize);
             }
@@ -255,8 +264,8 @@ impl WizardUi {
         self.manual.connect_changed({
             let weak = weak.clone();
             move |e| {
-                let Some(w) = weak.upgrade() else { return };
-                if w.quiet.get() || e.text().is_empty() { return; }
+                let Some(w) = alive(&weak, "an edit of the address") else { return };
+                if w.quiet.get() { return; }
                 w.quiet.set(true);
                 w.device_list.unselect_all();
                 w.quiet.set(false);
@@ -267,19 +276,20 @@ impl WizardUi {
         for check in [&self.driverless, &self.from_list, &self.from_file] {
             let weak = weak.clone();
             check.connect_toggled(move |c| {
-                let Some(w) = weak.upgrade() else { return };
+                let Some(w) = alive(&weak, "a driver choice") else { return };
                 if w.quiet.get() || !c.is_active() { return; }
                 w.driver_kind_changed();
             });
         }
         self.driver_search.connect_search_changed({
             let weak = weak.clone();
-            move |_| if let Some(w) = weak.upgrade() { w.fill_drivers() }
+            move |_| if let Some(w) = alive(&weak, "a driver search") { w.fill_drivers() }
         });
         self.driver_list.connect_row_selected({
             let weak = weak.clone();
             move |_, row| {
-                let (Some(w), Some(row)) = (weak.upgrade(), row) else { return };
+                let Some(w) = alive(&weak, "a driver selection") else { return };
+                let Some(row) = row else { return };
                 if w.quiet.get() { return; }
                 let name = w.driver_names.borrow().get(row.index() as usize).cloned();
                 if let Some(name) = name {
@@ -292,7 +302,7 @@ impl WizardUi {
         for (entry, field) in [(&self.name, 0), (&self.info, 1), (&self.location, 2)] {
             let weak = weak.clone();
             entry.connect_changed(move |e| {
-                let Some(w) = weak.upgrade() else { return };
+                let Some(w) = alive(&weak, "an edit of the name page") else { return };
                 if w.quiet.get() { return; }
                 let value = e.text().to_string();
                 {
@@ -308,7 +318,7 @@ impl WizardUi {
         }
         self.make_default.connect_toggled({
             let weak = weak.clone();
-            move |c| if let Some(w) = weak.upgrade() { w.state.borrow_mut().make_default = c.is_active() }
+            move |c| if let Some(w) = alive(&weak, "the default printer choice") { w.state.borrow_mut().make_default = c.is_active() }
         });
     }
 
