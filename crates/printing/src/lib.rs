@@ -4,3 +4,4 @@
 //! `docs/superpowers/specs/2026-10-23-printer-manager-design.md`.
 
 pub mod ipp;
+pub mod model;
