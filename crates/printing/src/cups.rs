@@ -133,6 +133,9 @@ impl PrintBackend for CupsBackend {
     }
 
     fn add(&self, new: &NewPrinter) -> Result<(), PrintError> {
+        // `lpadmin -p` on an existing queue changes it: never let an add do that.
+        let taken: Vec<String> = self.printers()?.into_iter().map(|p| p.name).collect();
+        if parse::name_clash(&taken, &new.name) { return Err(PrintError::new(format!("A printer named {} exists already", new.name))); }
         _run("lpadmin", &add_args(new))?;
         if new.make_default { self.set_default(&new.name)?; }
         Ok(())
@@ -232,6 +235,12 @@ mod tests {
             assert_eq!(p.location, "Nowhere");
             assert!(!p.is_default);
             assert!(!cups.options(name).unwrap().is_empty());
+            // The same queue in another case must be refused, not changed.
+            let mut clash = new.clone();
+            clash.name = name.to_uppercase();
+            clash.uri = "socket://127.0.0.1:10".into();
+            assert!(cups.add(&clash).is_err(), "a case-only clash is refused");
+            assert_eq!(cups.printers().unwrap().into_iter().find(|p| p.name == name).unwrap().device_uri, "socket://127.0.0.1:9");
             cups.modify(name, &PrinterEdit { info: "OpusDM probe 2".into(), location: "Here".into(), options: Vec::new() }).unwrap();
             assert_eq!(cups.printers().unwrap().into_iter().find(|p| p.name == name).unwrap().info, "OpusDM probe 2");
             cups.set_enabled(name, false).unwrap();

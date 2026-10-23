@@ -2,7 +2,7 @@
 //! so every rule of the Next button is tested without a display.
 
 use opusdm_printing::model::{Device, DriverChoice, NewPrinter};
-use opusdm_printing::parse::{is_driverless_uri, suggest_queue_name, validate_queue_name};
+use opusdm_printing::parse::{is_driverless_uri, name_clash, suggest_queue_name, validate_queue_name};
 
 /// The pages of the wizard, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +96,7 @@ impl Wizard {
             Step::Driver if self.driver.is_none() => Err("Choose a driver".to_string()),
             Step::Name => {
                 validate_queue_name(&self.name)?;
-                if self.taken.iter().any(|t| t == &self.name) { return Err("A printer with this name exists".to_string()); }
+                if name_clash(&self.taken, &self.name) { return Err("A printer with this name exists".to_string()); }
                 Ok(())
             }
             _ => Ok(()),
@@ -224,6 +224,9 @@ mod tests {
         w.driver = Some(DriverChoice::Driverless);
         w.step = Step::Name;
         w.name = "KONICA_MINOLTA_bizhub_C224e".into();
+        assert_eq!(w.can_next(), Err("A printer with this name exists".into()));
+        // Another case is the same CUPS queue: lpadmin would change it.
+        w.name = "konica_minolta_bizhub_c224e".into();
         assert_eq!(w.can_next(), Err("A printer with this name exists".into()));
     }
 

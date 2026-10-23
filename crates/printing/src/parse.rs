@@ -104,13 +104,20 @@ pub fn split_options(options: &[PrinterOption]) -> (Vec<&PrinterOption>, Vec<&Pr
 pub fn validate_queue_name(name: &str) -> Result<(), String> {
     if name.is_empty() { return Err("The name is empty".to_string()); }
     if name.len() > MAX_QUEUE_NAME { return Err(format!("The name is longer than {MAX_QUEUE_NAME} characters")); }
-    if !name.chars().all(_is_name_char) { return Err("The name cannot contain spaces, /, #, \\ or quotes".to_string()); }
+    if name.starts_with('-') { return Err("The name cannot start with -".to_string()); }
+    if !name.chars().all(_is_name_char) { return Err("The name cannot contain spaces, /, #, ?, @, \\ or quotes".to_string()); }
     Ok(())
 }
 
 /// Whether `c` may appear in a queue name.
 fn _is_name_char(c: char) -> bool {
-    c.is_ascii_graphic() && !matches!(c, '/' | '#' | '\\' | '\'' | '"')
+    c.is_ascii_graphic() && !matches!(c, '/' | '#' | '\\' | '\'' | '"' | '?' | '@')
+}
+
+/// Whether `name` is already used by one of `taken`; CUPS compares queue
+/// names without case, so `c364series` is `C364Series`.
+pub fn name_clash(taken: &[String], name: &str) -> bool {
+    taken.iter().any(|t| t.eq_ignore_ascii_case(name))
 }
 
 /// A valid queue name made from `make_model`, not in `taken`.
@@ -130,8 +137,8 @@ pub fn suggest_queue_name(make_model: &str, taken: &[String]) -> String {
     let mut base = base.trim_matches('_').to_string();
     if base.is_empty() { base = "Printer".to_string(); }
     base.truncate(MAX_QUEUE_NAME - 4);
-    if !taken.contains(&base) { return base; }
-    (2..).map(|n| format!("{base}_{n}")).find(|n| !taken.contains(n)).unwrap_or(base)
+    if !name_clash(taken, &base) { return base; }
+    (2..).map(|n| format!("{base}_{n}")).find(|n| !name_clash(taken, n)).unwrap_or(base)
 }
 
 /// Whether the device at `uri` can be used without a driver (IPP Everywhere).
@@ -227,8 +234,12 @@ Resolution/Resolution: *600dpi
         assert_eq!(validate_queue_name(""), Err("The name is empty".to_string()));
         assert_eq!(validate_queue_name(&"a".repeat(128)), Err("The name is longer than 127 characters".to_string()));
         assert!(validate_queue_name(&"a".repeat(127)).is_ok());
-        for bad in ["my printer", "a/b", "a#b", "a\\b", "a'b", "a\"b", "città"] {
-            assert_eq!(validate_queue_name(bad), Err("The name cannot contain spaces, /, #, \\ or quotes".to_string()), "{bad}");
+        // A leading - would be read as an option by cupsenable and cupsaccept.
+        assert_eq!(validate_queue_name("-x"), Err("The name cannot start with -".to_string()));
+        assert!(name_clash(&["C364Series".to_string()], "c364series"), "CUPS names are not case sensitive");
+        assert!(!name_clash(&["C364Series".to_string()], "C364Series_2"));
+        for bad in ["my printer", "a/b", "a#b", "a\\b", "a'b", "a\"b", "a?b", "a@b", "città"] {
+            assert_eq!(validate_queue_name(bad), Err("The name cannot contain spaces, /, #, ?, @, \\ or quotes".to_string()), "{bad}");
         }
     }
 
