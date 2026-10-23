@@ -4,6 +4,10 @@
 //! the Advanced tab of `opusdm-settings` share. See
 //! `docs/superpowers/specs/2026-10-23-printer-manager-design.md`.
 
+#[cfg(test)]
+mod gtk_test;
+mod pages;
 pub mod session;
+pub mod window;
 pub mod wizard;
 pub mod worker;

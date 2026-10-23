@@ -69,7 +69,7 @@ pub fn filter_drivers<'a>(drivers: &'a [Driver], query: &str, limit: usize) -> V
 }
 
 /// The options of `lpoptions -p NAME -l`: `Key/Label: c1 *c2 c3`, the starred
-/// choice is the default (the first one when none is starred).
+/// choice is the default (empty when none is starred: the driver sets none).
 pub fn parse_options(out: &str) -> Vec<PrinterOption> {
     out.lines()
         .filter_map(|line| {
@@ -86,7 +86,7 @@ pub fn parse_options(out: &str) -> Vec<PrinterOption> {
                     None => c.to_string(),
                 })
                 .collect();
-            let default = default.or_else(|| choices.first().cloned()).unwrap_or_default();
+            let default = default.unwrap_or_default();
             Some(PrinterOption { key: key.to_string(), label: label.to_string(), choices, default })
         })
         .collect()
@@ -206,8 +206,9 @@ Resolution/Resolution: *600dpi
         assert_eq!(o[0].choices, vec!["A3", "A4", "A5"]);
         assert_eq!(o[1].default, "False");
         assert_eq!(o[2].default, "600dpi");
+        // The Konica PPD has no default paper size: none is invented.
         let none_starred = parse_options("Fold/Fold: None Half\n");
-        assert_eq!(none_starred[0].default, "None");
+        assert_eq!(none_starred[0].default, "");
     }
 
     #[test]
