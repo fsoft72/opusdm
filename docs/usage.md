@@ -1149,7 +1149,9 @@ the texts you copied lately.
   not kept), newest first. Copying a text already in the list moves it to the top. Blank texts and
   texts over 64 KB are not remembered. Images and file lists are not kept.
 - **Popover:** click the icon. Type in the search box to filter (case insensitive). Click an entry
-  to put it back on the clipboard, then paste it with Ctrl+V. The `x` button forgets one entry,
+  to put it back on the clipboard, then paste it with Ctrl+V. Pointing at an entry (or moving the
+  keyboard focus onto it) shows its whole text, with line breaks, in the pane under the list (the
+  first 4000 characters of a very long text). The `x` button forgets one entry,
   "Clear history" forgets all (the clipboard keeps its content).
 - **Passwords:** a copy marked by a password manager (`x-kde-passwordManagerHint`, as KeePassXC and
   Bitwarden do) is never remembered. The history lives in memory only and is empty after a hub

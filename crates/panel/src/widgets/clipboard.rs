@@ -1,6 +1,7 @@
 //! The clipboard manager icon and its popover, in the right side of the
 //! panel: a search box, the texts copied lately (a click puts one back on the
-//! clipboard) and a button that forgets them all.
+//! clipboard), a pane that shows the whole text of the entry under the
+//! pointer or the keyboard focus, and a button that forgets them all.
 
 use crate::clipboard_center::ClipboardCenter;
 use crate::clipboard_model::preview;
@@ -13,7 +14,13 @@ const ICON_SIZE: i32 = 20;
 /// Width of the popover, in pixels.
 const POPOVER_WIDTH: i32 = 340;
 /// The list scrolls above this height, in pixels.
-const LIST_MAX_HEIGHT: i32 = 360;
+const LIST_MAX_HEIGHT: i32 = 300;
+/// The preview pane scrolls above this height, in pixels.
+const PREVIEW_MAX_HEIGHT: i32 = 180;
+/// Characters of an entry shown in the preview pane.
+const PREVIEW_PANE_CHARS: usize = 4000;
+/// What the preview pane says when no entry is under the pointer.
+const PREVIEW_HINT: &str = "Point at an entry to see all of it";
 
 /// The button and its popover.
 pub struct ClipboardButton {
@@ -22,6 +29,8 @@ pub struct ClipboardButton {
     popover: gtk::Popover,
     search: gtk::SearchEntry,
     list: gtk::Box,
+    /// The whole text of the entry under the pointer or the focus.
+    pane: gtk::Label,
     clear: gtk::Button,
 }
 
@@ -52,10 +61,28 @@ impl ClipboardButton {
         scroll.set_propagate_natural_height(true);
         scroll.set_max_content_height(LIST_MAX_HEIGHT);
         scroll.set_child(Some(&list));
+        let pane = gtk::Label::new(Some(PREVIEW_HINT));
+        pane.add_css_class("dim-label");
+        pane.add_css_class("monospace");
+        pane.set_xalign(0.0);
+        pane.set_yalign(0.0);
+        pane.set_wrap(true);
+        pane.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        pane.set_margin_top(4);
+        pane.set_margin_bottom(4);
+        pane.set_margin_start(4);
+        pane.set_margin_end(4);
+        let pane_scroll = gtk::ScrolledWindow::new();
+        pane_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        pane_scroll.set_propagate_natural_height(true);
+        pane_scroll.set_max_content_height(PREVIEW_MAX_HEIGHT);
+        pane_scroll.set_child(Some(&pane));
         let clear = gtk::Button::with_label("Clear history");
         clear.add_css_class("flat");
         content.append(&search);
         content.append(&scroll);
+        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        content.append(&pane_scroll);
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content.append(&clear);
         let popover = gtk::Popover::new();
@@ -63,7 +90,7 @@ impl ClipboardButton {
         button.set_popover(Some(&popover));
         root.append(&button);
 
-        let this = Rc::new(Self { root, button, popover, search, list, clear });
+        let this = Rc::new(Self { root, button, popover, search, list, pane, clear });
         {
             // The handlers live in widgets this button owns, so they hold the
             // button weakly (a strong one would be a cycle) and the center
@@ -82,8 +109,10 @@ impl ClipboardButton {
         }
         {
             let search = this.search.clone();
+            let pane = this.pane.clone();
             this.popover.connect_show(move |_| {
                 search.set_text("");
+                pane.set_text(PREVIEW_HINT);
                 search.grab_focus();
             });
         }
@@ -117,6 +146,8 @@ impl ClipboardButton {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
+        // The row under the pointer is gone with the old list.
+        self.pane.set_text(PREVIEW_HINT);
         let entries = center.entries(&self.search.text());
         if entries.is_empty() {
             let text = if center.len() == 0 { "Nothing copied yet" } else { "No match" };
@@ -142,7 +173,21 @@ impl ClipboardButton {
         pick.set_child(Some(&label));
         pick.set_hexpand(true);
         pick.add_css_class("flat");
-        pick.set_tooltip_text(Some(&tooltip_text(text)));
+        // Pointer and keyboard focus both show the whole text in the pane.
+        let shown = pane_text(text);
+        let motion = gtk::EventControllerMotion::new();
+        {
+            let pane = self.pane.clone();
+            let shown = shown.clone();
+            motion.connect_enter(move |_, _, _| pane.set_text(&shown));
+        }
+        pick.add_controller(motion);
+        let focus = gtk::EventControllerFocus::new();
+        {
+            let pane = self.pane.clone();
+            focus.connect_enter(move |_| pane.set_text(&shown));
+        }
+        pick.add_controller(focus);
         {
             let center = center.clone();
             let popover = self.popover.clone();
@@ -164,11 +209,11 @@ impl ClipboardButton {
     }
 }
 
-/// The start of the whole text, for the tooltip of a row.
-fn tooltip_text(text: &str) -> String {
-    const TOOLTIP_CHARS: usize = 400;
-    if text.chars().count() <= TOOLTIP_CHARS { return text.to_string(); }
-    let cut: String = text.chars().take(TOOLTIP_CHARS).collect();
+/// The text for the preview pane: the start of the entry, cut with `...`
+/// when it is very long.
+fn pane_text(text: &str) -> String {
+    if text.chars().count() <= PREVIEW_PANE_CHARS { return text.to_string(); }
+    let cut: String = text.chars().take(PREVIEW_PANE_CHARS).collect();
     format!("{cut}...")
 }
 
@@ -195,8 +240,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tooltip_cuts_a_long_text() {
-        assert_eq!(tooltip_text("short"), "short");
-        assert_eq!(tooltip_text(&"a".repeat(500)).chars().count(), 403);
+    fn the_pane_cuts_a_very_long_text() {
+        assert_eq!(pane_text("short\nmulti line"), "short\nmulti line");
+        assert_eq!(pane_text(&"a".repeat(PREVIEW_PANE_CHARS + 50)).chars().count(), PREVIEW_PANE_CHARS + 3);
     }
 }
