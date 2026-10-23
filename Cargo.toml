@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/ui", "crates/iconview", "crates/desktop-config", "crates/panel", "crates/dock", "crates/apps", "crates/runner", "crates/polkit", "crates/shot", "crates/terminal", "crates/media", "crates/player", "crates/viewer", "crates/media-ui", "crates/theme-config", "crates/buttonbank", "crates/ftp", "crates/themepack", "crates/input-config", "crates/apps-editor", "crates/devices", "crates/audio", "crates/archive", "crates/network", "crates/network-config", "crates/printing", "crates/printer-config", "crates/power", "crates/snap", "crates/brightness", "crates/watch", "crates/x11", "crates/screen", "crates/wayland", "crates/notify", "crates/highlight", "xtask"]
+members = ["crates/ipc", "crates/fsops", "crates/hub", "crates/lister", "crates/ui", "crates/iconview", "crates/desktop-config", "crates/panel", "crates/dock", "crates/apps", "crates/runner", "crates/polkit", "crates/shot", "crates/terminal", "crates/media", "crates/player", "crates/viewer", "crates/media-ui", "crates/theme-config", "crates/buttonbank", "crates/ftp", "crates/themepack", "crates/input-config", "crates/apps-editor", "crates/devices", "crates/audio", "crates/archive", "crates/network", "crates/network-config", "crates/printing", "crates/printer-config", "crates/power", "crates/snap", "crates/brightness", "crates/watch", "crates/bluetooth", "crates/x11", "crates/screen", "crates/wayland", "crates/notify", "crates/highlight", "xtask"]
 
 [workspace.package]
 version = "0.12.0"

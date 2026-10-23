@@ -1,0 +1,19 @@
+[package]
+name = "opusdm-bluetooth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_bluetooth"
+path = "src/lib.rs"
+
+[dependencies]
+zbus = { version = "5.19.0", features = ["blocking"] }
+async-channel.workspace = true
+opusdm-ipc = { path = "../ipc" }
+opusdm-watch = { path = "../watch" }
+
+[dev-dependencies]
+futures-lite = "2"
