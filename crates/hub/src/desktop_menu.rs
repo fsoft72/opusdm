@@ -1,5 +1,5 @@
-//! The desktop right-click menus (background and icon), the double click
-//! script events and the About dialog.
+//! The desktop right-click menus (background and icon) and the double click
+//! script events.
 
 use crate::server::HubCmd;
 use opusdm_ipc::bindings::ScriptEvent;
@@ -7,7 +7,7 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use std::path::PathBuf;
 use std::rc::Rc;
-use super::toolbar::{request_quit, Widgets};
+use super::toolbar::Widgets;
 use super::{desktop_windows::*, groups_ui::*};
 
 /// Approximate menu width/height, reserved when clamping the menu inside the
@@ -29,11 +29,6 @@ pub(crate) fn theme_config_bin() -> PathBuf {
         }
     }
     PathBuf::from("opusdm-settings")
-}
-
-/// Spawn the theme configuration app, detached.
-pub(crate) fn launch_theme_config() {
-    spawn_theme_config(&[]);
 }
 
 /// Spawn the theme configuration app with the Theme Editor open on top.
@@ -86,17 +81,6 @@ pub(crate) fn popup_at(menu: &gtk::Box, overlay: &gtk::Overlay, x: f64, y: f64, 
     let (left, top) = menu_origin((x, y), (mw.max(w), mh.max(h)), (overlay.width(), overlay.height()));
     menu.set_margin_start(left);
     menu.set_margin_top(top);
-}
-
-/// Re-clamp an already placed `menu` so it fits inside `overlay` using its
-/// current natural size. Called after the menu grows (e.g. the Desktop
-/// expander opens) so it never runs off the bottom/right edge of the screen.
-pub(crate) fn keep_menu_on_screen(menu: &gtk::Box, overlay: &gtk::Overlay) {
-    let (mw, mh) = content_size(menu);
-    let max_x = (overlay.width() - mw).max(0);
-    let max_y = (overlay.height() - mh).max(0);
-    menu.set_margin_start(menu.margin_start().clamp(0, max_x));
-    menu.set_margin_top(menu.margin_top().clamp(0, max_y));
 }
 
 /// Emit `DesktopMiddleDoubleClick` and `DesktopRightDoubleClick` for double
@@ -437,41 +421,9 @@ fn add_file_items(menu: &gtk::Box, widgets: &Rc<Widgets>) {
     }
 }
 
-/// The "Desktop" expander: an expander so the hand-rolled flyout can still
-/// nest without a real GtkPopoverMenu (the desktop window cannot grab focus).
-fn build_desktop_submenu(menu: &gtk::Box, widgets: &Rc<Widgets>) -> gtk::Expander {
-    let sub = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    sub.set_margin_start(12);
-
-    // Rearrange icons: re-read the desktop, sort dirs-first by name, and
-    // hand the sorted list back so the field auto-slots it into the grid
-    // (set_entries clears any manual positions).
-    {
-        let widgets = widgets.clone();
-        add_item(&sub, menu, "Rearrange icons", move || reload_desktop_field(&widgets));
-    }
-    add_item(&sub, menu, "Edit Theme", launch_theme_editor);
-    // Settings: the standalone opusdm-settings app. Icon grid metrics and the
-    // desktop folder override live there too.
-    add_item(&sub, menu, "Settings", launch_theme_config);
-
-    let expander = gtk::Expander::new(Some("Desktop"));
-    expander.set_child(Some(&sub));
-    // Opening the expander grows the menu: pull it back on screen.
-    let menu_ref = menu.clone();
-    expander.connect_expanded_notify(move |_| {
-        let menu = menu_ref.clone();
-        gtk::glib::idle_add_local_once(move || {
-            let Some(overlay) = menu.parent().and_then(|p| p.downcast::<gtk::Overlay>().ok()) else { return };
-            keep_menu_on_screen(&menu, &overlay);
-        });
-    });
-    expander
-}
-
 /// The desktop context menu box: New Lister / --- / Paste, New Folder, New
-/// File, Open Terminal Here / --- / About / --- / Desktop submenu / --- /
-/// Quit. Every item hides the menu before running its action.
+/// File, Open Terminal Here / --- / Rearrange Icons, Edit Theme. Every item
+/// hides the menu before running its action.
 pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
     let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
     menu.add_css_class("opusdm-desktop-menu");
@@ -479,26 +431,16 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
     add_file_items(&menu, widgets);
     menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
+    // Rearrange icons: re-read the desktop, sort dirs-first by name, and
+    // hand the sorted list back so the field auto-slots it into the grid
+    // (set_entries clears any manual positions).
     {
         let widgets = widgets.clone();
-        add_item(&menu, &menu, "About", move || show_about_dialog(&widgets.primary_window()));
+        add_item(&menu, &menu, "Rearrange Icons", move || reload_desktop_field(&widgets));
     }
-    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    menu.append(&build_desktop_submenu(&menu, widgets));
-    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    // Quit always asks for confirmation before closing everything.
-    {
-        let widgets = widgets.clone();
-        add_item(&menu, &menu, "Quit", move || request_quit(&widgets));
-    }
+    add_item(&menu, &menu, "Edit Theme", launch_theme_editor);
 
     menu
-}
-
-pub(crate) fn show_about_dialog(parent: &gtk::ApplicationWindow) {
-    opusdm_ui::show_about(parent);
 }
 
 #[cfg(test)]
