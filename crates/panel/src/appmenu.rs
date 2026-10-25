@@ -16,6 +16,9 @@ use std::process::Command;
 /// Width of the menu popover, in pixels.
 const MENU_WIDTH: i32 = 560;
 
+/// The settings application.
+const SETTINGS_BIN: &str = "opusdm-settings";
+
 /// Pixel size of the icon of a menu row.
 const MENU_ICON_SIZE: i32 = 24;
 
@@ -217,8 +220,8 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
         search.connect_search_changed(move |entry| fill_custom(&custom, &menu, entry.text().as_str()));
     }
 
-    // Footer, apart from the app list: About on the left, Logout and
-    // Shutdown on the right.
+    // Footer, apart from the app list: About and Settings on the left, Logout
+    // and Shutdown on the right.
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     footer.set_margin_top(4);
     footer.set_margin_bottom(4);
@@ -233,6 +236,16 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
         row.connect_clicked(move |_| {
             popover.popdown();
             show_about(&parent);
+        });
+        footer.append(&row);
+    }
+    // Settings, next to About.
+    {
+        let popover = popover.clone();
+        let row = menu_row(Some("preferences-system"), "Settings");
+        row.connect_clicked(move |_| {
+            popover.popdown();
+            open_settings();
         });
         footer.append(&row);
     }
@@ -290,6 +303,15 @@ pub fn set_direction(button: &gtk::MenuButton, position: PanelPosition) {
 fn run_detached(bin: &str, args: &[&str]) {
     if let Err(e) = Command::new(bin).args(args).spawn() {
         opusdm_ipc::err_log!("opusdm-panel", "cannot run {bin}: {e}");
+    }
+}
+
+/// Start `opusdm-settings`, from the folder of the panel first.
+fn open_settings() {
+    let sibling = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(SETTINGS_BIN)));
+    let path = sibling.filter(|p| p.exists()).unwrap_or_else(|| std::path::PathBuf::from(SETTINGS_BIN));
+    if let Err(e) = Command::new(&path).spawn() {
+        opusdm_ipc::err_log!("opusdm-panel", "cannot start {}: {e}", path.display());
     }
 }
 
