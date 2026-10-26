@@ -335,7 +335,10 @@ fn save_delay_on_close(window: &gtk::ApplicationWindow, delay: &gtk::SpinButton)
         // Takes a number typed but not yet confirmed with Enter.
         delay.update();
         let current = delay.value_as_int();
-        if current != initial { config::save(&config::ShotConfig { delay_secs: current.max(0) as u32 }); }
+        if current != initial {
+            // Reload so the remembered folder is kept.
+            config::save(&config::ShotConfig { delay_secs: current.max(0) as u32, ..config::load() });
+        }
         glib::Propagation::Proceed
     });
 }
@@ -908,7 +911,8 @@ fn save_as(ui: &Rc<Ui>) {
     dialog.set_filters(Some(&filters));
     dialog.set_default_filter(default_filter.as_ref());
     dialog.set_initial_name(Some(&format!("screenshot.{}", format.extension())));
-    if let Some(dir) = dirs::picture_dir().filter(|d| d.is_dir()) {
+    let remembered = config::load().last_dir.filter(|d| d.is_dir());
+    if let Some(dir) = remembered.or_else(|| dirs::picture_dir().filter(|d| d.is_dir())) {
         dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
     }
     let ui2 = ui.clone();
@@ -924,7 +928,7 @@ fn save_as(ui: &Rc<Ui>) {
         let (target, chosen) = resolve_target(path.clone(), format);
         let options = options_for(&ui2, chosen);
         if !needs_overwrite_confirm(&path, &target) {
-            return save_in_background(&ui2, move || export::save(&img, &target, &options).map(|()| target));
+            return save_in_background(&ui2, move || save_and_remember(&img, target, &options));
         }
         // The dialog asked about `path`, not about the name with the
         // extension added, so ask before replacing that one.
@@ -933,9 +937,16 @@ fn save_as(ui: &Rc<Ui>) {
         opusdm_ui::requester(&ui2.window, "Replace file?", &message, None, &[("Replace", true), ("Cancel", false)], move |replace| {
             if !replace { return; }
             let (img, target) = (img.clone(), target.clone());
-            save_in_background(&ui3, move || export::save(&img, &target, &options).map(|()| target));
+            save_in_background(&ui3, move || save_and_remember(&img, target, &options));
         });
     });
+}
+
+/// Write `img` to `target` and remember its folder for the next save dialog.
+fn save_and_remember(img: &RgbaImage, target: PathBuf, options: &export::Options) -> Result<PathBuf, String> {
+    export::save(img, &target, options)?;
+    config::remember_dir(&target);
+    Ok(target)
 }
 
 /// Run `work` (encode and write, giving the path written) off the GTK thread,

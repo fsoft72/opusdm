@@ -1,6 +1,8 @@
 # Changes
 
 ## 2026-10-26
+- Feature (shot): "Save as" now opens in the folder of the last image saved with it (`last_dir` in `~/.config/opusdm/shot.json`), falling back to the Pictures folder when none is stored or it no longer exists. The folder is stored only after a successful write (`config::remember_dir`, via `save_and_remember`). Quick save is unchanged (fixed folder, not remembered). The delay saved on close now reloads the config first so it does not erase `last_dir`. `ShotConfig` lost `Copy`. No ownership or lifetime change. Tests: new config round trip and old-file tests; `cargo test -p opusdm-shot` ok, build ok. NOT checked: the Save as dialog in a running session or the X11 sandbox, the installed `/opt/opusdm` binary (`live-update.sh`), the CLAUDE.md rule 4 checklist (Lister, global hotkeys, hub).
+
 - Change (lister): the New File button is gone from the button row; right click on the Make Directory button runs New File (Ctrl+Shift+N and the empty area menu still work). New `actions::wire_secondary_command`; tooltip "Make Directory. Right click: New File". The command runs on release; a dead Lister is logged with `err_log!`. The handler holds a `Weak<Ui>` like the other row buttons (no ownership change). Build ok. Tests: no unit test (a GTK gesture). Checked in the X11 sandbox (Xephyr, release build, xdotool): right click on Make Directory opens "New file name", left click opens "New directory name". NOT checked: the CLAUDE.md rule 4 checklist (Lister, global hotkeys, hub), the installed `/opt/opusdm` binary (`live-update.sh`).
 
 ## 2026-10-25

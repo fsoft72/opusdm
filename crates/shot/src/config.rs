@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 pub const MAX_DELAY_SECS: u32 = 60;
 
 /// Persistent options of the screenshot tool.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShotConfig {
     /// Seconds to wait before the screen is captured (0 = at once).
     pub delay_secs: u32,
+    /// Folder of the last image saved with "Save as", offered next time.
+    pub last_dir: Option<PathBuf>,
 }
 
 impl ShotConfig {
@@ -41,6 +43,15 @@ pub fn save(config: &ShotConfig) {
     }
 }
 
+/// Remember the folder of `saved` as the one to offer in the next save dialog.
+pub fn remember_dir(saved: &Path) {
+    let Some(dir) = saved.parent() else { return };
+    let mut config = load();
+    if config.last_dir.as_deref() == Some(dir) { return; }
+    config.last_dir = Some(dir.to_path_buf());
+    save(&config);
+}
+
 /// Load the config from `path`.
 fn load_from(path: &Path) -> ShotConfig {
     load_json::<ShotConfig>(path, "opusdm-shot", "shot options").sanitized()
@@ -48,7 +59,7 @@ fn load_from(path: &Path) -> ShotConfig {
 
 /// Save the config to `path`.
 fn save_to(path: &Path, config: &ShotConfig) -> std::io::Result<()> {
-    save_json(path, &config.sanitized())
+    save_json(path, &config.clone().sanitized())
 }
 
 #[cfg(test)]
@@ -65,8 +76,26 @@ mod tests {
     fn the_delay_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.json");
-        save_to(&path, &ShotConfig { delay_secs: 5 }).unwrap();
+        save_to(&path, &ShotConfig { delay_secs: 5, ..Default::default() }).unwrap();
         assert_eq!(load_from(&path).delay_secs, 5);
+    }
+
+    #[test]
+    fn the_last_dir_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.json");
+        let config = ShotConfig { last_dir: Some(PathBuf::from("/tmp/x")), ..Default::default() };
+        save_to(&path, &config).unwrap();
+        assert_eq!(load_from(&path).last_dir, Some(PathBuf::from("/tmp/x")));
+    }
+
+    #[test]
+    fn an_old_file_without_last_dir_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.json");
+        std::fs::write(&path, r#"{"delay_secs": 3}"#).unwrap();
+        let config = load_from(&path);
+        assert_eq!((config.delay_secs, config.last_dir), (3, None));
     }
 
     #[test]
