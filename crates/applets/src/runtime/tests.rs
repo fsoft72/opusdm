@@ -180,6 +180,89 @@ fn set_interval_repeats_until_cleared() {
     });
 }
 
+/// How many `Log(line)` events were collected.
+fn count_logs(events: &Events, line: &str) -> usize {
+    logs(events).iter().filter(|l| l.as_str() == line).count()
+}
+
+#[test]
+fn set_timeout_waits_for_its_delay() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let (_dir, rt) = start_code(r#"setTimeout(() => opus.log("t"), 300)"#, Map::new(), &events);
+        let _rt = rt.unwrap();
+        pump(Duration::from_millis(100));
+        assert_eq!(count_logs(&events, "t"), 0, "fired too early: {:?}", events.borrow());
+        pump(Duration::from_millis(900));
+        assert_eq!(count_logs(&events, "t"), 1, "{:?}", events.borrow());
+    });
+}
+
+#[test]
+fn set_interval_keeps_its_period() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let (_dir, rt) = start_code(r#"setInterval(() => opus.log("i"), 200)"#, Map::new(), &events);
+        let _rt = rt.unwrap();
+        pump(Duration::from_millis(1000));
+        let n = count_logs(&events, "i");
+        assert!((3..=6).contains(&n), "expected 3 to 6 ticks in 1 s, got {n}");
+    });
+}
+
+#[test]
+fn timer_delay_accepts_floats_and_strings() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"
+            setTimeout(() => opus.log("float"), 250.7);
+            setTimeout(() => opus.log("string"), "250");
+            setTimeout(() => opus.log("nan"), NaN);
+            setTimeout(() => opus.log("negative"), -500);
+            setTimeout(() => opus.log("text"), "abc");
+        "#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let _rt = rt.unwrap();
+        pump(Duration::from_millis(100));
+        assert_eq!(count_logs(&events, "float") + count_logs(&events, "string"), 0, "fired too early: {:?}", events.borrow());
+        for zero in ["nan", "negative", "text"] {
+            assert_eq!(count_logs(&events, zero), 1, "{zero} must mean 0: {:?}", events.borrow());
+        }
+        pump(Duration::from_millis(500));
+        assert_eq!(count_logs(&events, "float"), 1, "{:?}", events.borrow());
+        assert_eq!(count_logs(&events, "string"), 1, "{:?}", events.borrow());
+    });
+}
+
+#[test]
+fn timer_delay_reads_json_numbers() {
+    assert_eq!(delay_ms(&json!({ "ms": 1000 })), 1000);
+    assert_eq!(delay_ms(&json!({ "ms": 1000.0 })), 1000);
+    assert_eq!(delay_ms(&json!({ "ms": 50.7 })), 50);
+    assert_eq!(delay_ms(&json!({ "ms": -5.0 })), 0);
+    assert_eq!(delay_ms(&json!({ "ms": -5 })), 0);
+    assert_eq!(delay_ms(&json!({ "ms": null })), 0);
+    assert_eq!(delay_ms(&json!({ "ms": "100" })), 0);
+    assert_eq!(delay_ms(&json!({})), 0);
+    assert_eq!(delay_ms(&json!({ "ms": 1e300 })), MAX_DELAY_MS);
+    assert_eq!(delay_ms(&json!({ "ms": u64::MAX })), MAX_DELAY_MS);
+}
+
+#[test]
+fn notify_timeout_reads_js_floats() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (dir, manifest) = applet(r#"opus.notify("T", { timeout: Math.floor(5000.9) }); opus.notify("T", { timeout: 0 }); opus.notify("T")"#);
+        let rt = Runtime::start_with_notifier("test", dir.path(), &manifest, Map::new(), collect(&events), fake_notifier(&seen));
+        let _rt = rt.unwrap();
+        assert!(pump_until(|| seen.lock().unwrap().len() == 3), "{:?}", events.borrow());
+        let seen = seen.lock().unwrap();
+        let got: Vec<i32> = seen.iter().map(notify_timeout).collect();
+        assert_eq!(got, vec![5000, 0, -1]);
+    });
+}
+
 #[test]
 fn http_get_resolves_a_promise_from_a_local_server() {
     on_main_loop(|| {

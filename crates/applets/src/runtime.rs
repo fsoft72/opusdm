@@ -537,7 +537,7 @@ fn op_error(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
 /// `setTimeout` / `setInterval`: start the task of timer `id`.
 fn op_timer_set(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
     let id = u32_field(payload, "id")?;
-    let ms = payload.get("ms").and_then(Value::as_u64).unwrap_or(0);
+    let ms = delay_ms(payload);
     let repeat = payload.get("repeat").and_then(Value::as_bool).unwrap_or(false);
     if inner.stopped.get() {
         debug_log!(APP_TAG, "applet {}: timer {id} set after stop, ignored", inner.id);
@@ -549,6 +549,35 @@ fn op_timer_set(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
         old.abort();
     }
     Ok(Value::Null)
+}
+
+/// Longest timer delay: 24 days in milliseconds, so a huge number from a
+/// script cannot overflow a duration.
+const MAX_DELAY_MS: u64 = 24 * 24 * 60 * 60 * 1000;
+
+/// The timer delay of `payload["ms"]` in whole milliseconds. A JS number may
+/// arrive as an integer or as a float (`Math.floor(1000)` is `1000.0`); a
+/// non-negative finite number is floored and capped at [`MAX_DELAY_MS`],
+/// anything else is 0.
+fn delay_ms(payload: &Value) -> u64 {
+    let Some(ms) = payload.get("ms") else { return 0 };
+    if let Some(n) = ms.as_u64() { return n.min(MAX_DELAY_MS) }
+    match ms.as_f64() {
+        Some(f) if f.is_finite() && f > 0.0 => f.min(MAX_DELAY_MS as f64) as u64,
+        _ => 0,
+    }
+}
+
+/// The notification timeout of `payload["timeout"]` in milliseconds: -1 (the
+/// server default) when missing or bad, otherwise the number, which may be a
+/// JS float, floored and clamped to `-1..=i32::MAX`.
+fn notify_timeout(payload: &Value) -> i32 {
+    let Some(value) = payload.get("timeout") else { return -1 };
+    if let Some(n) = value.as_i64() { return n.clamp(-1, i32::MAX as i64) as i32 }
+    match value.as_f64() {
+        Some(f) if f.is_finite() => f.floor().clamp(-1.0, i32::MAX as f64) as i32,
+        _ => -1,
+    }
 }
 
 /// `clearTimeout` / `clearInterval`: abort the task of timer `id`. Aborting
@@ -817,7 +846,7 @@ fn dbus_notify(payload: &Value) -> Result<Value, String> {
         "critical" => 2,
         other => return Err(format!("notify: urgency must be low, normal or critical, not \"{other}\"")),
     };
-    let timeout = payload.get("timeout").and_then(Value::as_i64).unwrap_or(-1).clamp(-1, i32::MAX as i64) as i32;
+    let timeout = notify_timeout(payload);
     let mut hints: HashMap<&str, Variant> = HashMap::new();
     hints.insert("urgency", Variant::U8(urgency));
     let app = str_field(payload, "appName").unwrap_or("OpusDM Applet");
