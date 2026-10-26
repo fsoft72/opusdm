@@ -20,6 +20,7 @@
 //! job queue runs, then unhandled rejections are reported.
 
 use crate::manifest::Manifest;
+use crate::widgets::Dispatch;
 use boa_engine::builtins::promise::{OperationType, Promise, PromiseState};
 use boa_engine::context::HostHooks;
 use boa_engine::object::builtins::JsPromise;
@@ -71,7 +72,9 @@ pub enum Event {
     Log(String),
     /// An error: an exception, a cut runaway script, `console.error`.
     Error(String),
-    /// A widget tree change (produced from Task 6).
+    /// A widget tree change from `opus.ui`: `{ "op": "show", "tree" }` or
+    /// `{ "op": "update", "id", "props" }`, function props replaced by
+    /// `{ "handler": <id> }` (see `ui_tree` and `widgets`).
     Ui(Value),
     /// The drawing commands of canvas `id` (produced from Task 7).
     Redraw { id: String, commands: Value },
@@ -231,6 +234,14 @@ impl Runtime {
         run_call(&self.inner.clone(), Call::Dispatch { handler, arg });
     }
 
+    /// The [`Dispatch`] the widgets call: it holds only a `Weak` of this
+    /// runtime, so widgets never keep a dropped applet alive. A call after
+    /// the runtime is gone is logged with `err_log!` and dropped; one while
+    /// a script runs is queued, as [`Runtime::dispatch`].
+    pub fn dispatcher(&self) -> Rc<dyn Dispatch> {
+        Rc::new(WeakDispatcher { inner: Rc::downgrade(&self.inner), applet: self.inner.id.clone() })
+    }
+
     /// Ask the JavaScript side to paint canvas `canvas_id`.
     pub fn redraw(&self, canvas_id: &str) {
         run_call(&self.inner.clone(), Call::Redraw(canvas_id.to_string()));
@@ -253,6 +264,24 @@ impl Drop for Runtime {
     /// A dropped runtime stops first, so no timer outlives it.
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// The dispatcher of [`Runtime::dispatcher`].
+struct WeakDispatcher {
+    inner: Weak<Inner>,
+    applet: String,
+}
+
+impl Dispatch for WeakDispatcher {
+    /// Call handler `handler`, as [`Runtime::dispatch`]; log when the
+    /// runtime is gone.
+    fn dispatch(&self, handler: u32, arg: Value) {
+        let Some(inner) = self.inner.upgrade() else {
+            err_log!(APP_TAG, "applet {}: handler {handler} called by a widget after the runtime was dropped, ignored", self.applet);
+            return;
+        };
+        run_call(&inner, Call::Dispatch { handler, arg });
     }
 }
 
@@ -477,6 +506,8 @@ const OPS: &[(&str, OpFn)] = &[
     ("applet.open", op_applet_open),
     ("applet.assetPath", op_applet_asset_path),
     ("applet.readAsset", op_applet_read_asset),
+    ("ui.show", op_ui_show),
+    ("ui.update", op_ui_update),
 ];
 
 /// `opus.log`, `console.log`, `console.warn`: an [`Event::Log`].
@@ -642,6 +673,22 @@ fn op_applet_read_asset(inner: &Rc<Inner>, payload: &Value) -> Result<Value, Str
         return Err(format!("readAsset {rel}: the path leaves the applet folder"));
     }
     read_text(&real)
+}
+
+/// `opus.ui.show`: an [`Event::Ui`] `{ "op": "show", "tree" }`; the host
+/// parses and builds the tree (errors are shown in the applet window).
+fn op_ui_show(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
+    let tree = payload.get("tree").cloned().unwrap_or(Value::Null);
+    (inner.sink)(Event::Ui(json!({ "op": "show", "tree": tree })));
+    Ok(Value::Null)
+}
+
+/// `opus.ui.update`: an [`Event::Ui`] `{ "op": "update", "id", "props" }`.
+fn op_ui_update(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
+    let Some(id) = str_field(payload, "id").filter(|id| !id.is_empty()) else { return Err("opus.ui.update: the id must be a non-empty string".to_string()) };
+    let Some(props) = payload.get("props").filter(|p| p.is_object()) else { return Err("opus.ui.update: the props must be an object".to_string()) };
+    (inner.sink)(Event::Ui(json!({ "op": "update", "id": id, "props": props })));
+    Ok(Value::Null)
 }
 
 /// The text of the file `path`, at most [`MAX_READ_BYTES`]; invalid UTF-8

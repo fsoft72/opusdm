@@ -6,3 +6,5 @@ pub mod discovery;
 pub mod manifest;
 pub mod runtime;
 pub mod state;
+pub mod ui_tree;
+pub mod widgets;

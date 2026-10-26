@@ -148,6 +148,144 @@
         redraw(id) {},
     };
 
+    // ---- widgets -----------------------------------------------------------
+    // `opus.ui.show` sends the tree to Rust with every function replaced by
+    // `{ handler: <id> }`. The handlers of the shown tree are all in `shown`;
+    // those of a node with an id are also kept by "id\u0000prop", so an
+    // update of that prop can unregister the ones it replaces.
+    const MAX_TREE_DEPTH = 64;
+    let shown = new Set();
+    let propHandlers = new Map();
+
+    /**
+     * Copy `value` with every function registered and replaced by
+     * `{ handler: id }`; the new ids are pushed to `added`.
+     * @param {*} value
+     * @param {Array<number>} added
+     * @param {number} depth
+     * @returns {*} the JSON-able copy
+     */
+    const encode = (value, added, depth) => {
+        if (depth > MAX_TREE_DEPTH) throw new RangeError("opus.ui: the tree is nested deeper than " + MAX_TREE_DEPTH + " levels (is there a cycle?)");
+        if (typeof value === "function") {
+            const id = internal.registerHandler(value);
+            added.push(id);
+            return { handler: id };
+        }
+        if (Array.isArray(value)) return value.map((v) => encode(v, added, depth + 1));
+        if (value === null || typeof value !== "object") return value;
+        const copy = {};
+        for (const key of Object.keys(value)) copy[key] = encode(value[key], added, depth + 1);
+        return copy;
+    };
+
+    /**
+     * Encode the node `node` and its `children`; the handlers of a node
+     * with an id are recorded in `keyed` by "id\u0000prop".
+     * @param {*} node
+     * @param {Array<number>} added
+     * @param {Map<string, Array<number>>} keyed
+     * @param {number} depth
+     * @returns {*} the JSON-able node
+     */
+    const encodeNode = (node, added, keyed, depth) => {
+        if (depth > MAX_TREE_DEPTH) throw new RangeError("opus.ui: the tree is nested deeper than " + MAX_TREE_DEPTH + " levels (is there a cycle?)");
+        if (node === null || typeof node !== "object" || Array.isArray(node)) return encode(node, added, depth);
+        const copy = {};
+        for (const key of Object.keys(node)) {
+            const value = node[key];
+            if (key === "children" && Array.isArray(value)) {
+                copy[key] = value.map((child) => encodeNode(child, added, keyed, depth + 1));
+                continue;
+            }
+            const ids = [];
+            copy[key] = encode(value, ids, depth + 1);
+            added.push(...ids);
+            if (typeof node.id === "string" && ids.length > 0) keyed.set(node.id + "\u0000" + key, ids);
+        }
+        return copy;
+    };
+
+    /**
+     * Forget the handlers `ids`.
+     * @param {Array<number>|Set<number>} ids
+     */
+    const forget = (ids) => { for (const id of ids) internal.unregisterHandler(id); };
+
+    /**
+     * Throw a TypeError unless `value` is a plain object.
+     * @param {*} value
+     * @param {string} message
+     */
+    const needObject = (value, message) => {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(message);
+    };
+
+    const ui = Object.freeze({
+        /**
+         * Show `tree` in the applet window, replacing the tree shown before
+         * (its handlers are forgotten). A node is `{ type, id?, class?,
+         * visible?, ...props }`; see the applet docs for the types.
+         * @param {Object} tree
+         */
+        show(tree) {
+            needObject(tree, "opus.ui.show: the tree must be a node object");
+            const added = [];
+            const keyed = new Map();
+            let encoded;
+            try {
+                encoded = encodeNode(tree, added, keyed, 1);
+            } catch (e) {
+                forget(added);
+                throw e;
+            }
+            forget(shown);
+            shown = new Set(added);
+            propHandlers = keyed;
+            call("ui.show", { tree: encoded });
+        },
+        /**
+         * Change props of the node `id`. A function prop replaces the
+         * handlers that prop had (they are forgotten).
+         * @param {string} id
+         * @param {Object} props
+         */
+        update(id, props) {
+            if (typeof id !== "string" || id === "") throw new TypeError("opus.ui.update: the id must be a non-empty string");
+            needObject(props, "opus.ui.update: the props must be an object");
+            const encoded = {};
+            const replaced = [];
+            try {
+                for (const key of Object.keys(props)) {
+                    const ids = [];
+                    replaced.push([key, ids]);
+                    encoded[key] = encode(props[key], ids, 1);
+                }
+            } catch (e) {
+                for (const [, ids] of replaced) forget(ids);
+                throw e;
+            }
+            for (const [key, ids] of replaced) {
+                const slot = id + "\u0000" + key;
+                const old = propHandlers.get(slot);
+                if (old) {
+                    forget(old);
+                    for (const h of old) shown.delete(h);
+                    propHandlers.delete(slot);
+                }
+                if (ids.length === 0) continue;
+                propHandlers.set(slot, ids);
+                for (const h of ids) shown.add(h);
+            }
+            call("ui.update", { id, props: encoded });
+        },
+        /**
+         * Paint canvas `canvasId` again.
+         * @param {string} canvasId
+         */
+        redraw(canvasId) { internal.redraw(String(canvasId)); },
+    });
+
     // ---- settings ----------------------------------------------------------
     let settings = Object.freeze(init.settings || {});
     let onSettings = null;
@@ -221,6 +359,7 @@
         fs,
         http,
         applet,
+        ui,
     });
 
     const hidden = (name, value) => Object.defineProperty(globalThis, name, { value, writable: false, enumerable: false, configurable: false });

@@ -523,3 +523,135 @@ fn every_prelude_call_is_a_known_op() {
     }
     assert!(found >= OPS.len(), "only {found} calls found");
 }
+
+/// Every `Event::Ui` value sent so far.
+fn ui_events(events: &Events) -> Vec<Value> {
+    events.borrow().iter().filter_map(|e| if let Event::Ui(v) = e { Some(v.clone()) } else { None }).collect()
+}
+
+/// The handler id at `pointer` (a JSON pointer) of `value`.
+fn handler_at(value: &Value, pointer: &str) -> u32 {
+    let id = value.pointer(pointer).and_then(|h| h.get("handler")).and_then(Value::as_u64);
+    u32::try_from(id.unwrap_or_else(|| panic!("no handler at {pointer} in {value}"))).unwrap()
+}
+
+#[test]
+fn ui_show_sends_the_tree_with_handler_ids() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"opus.ui.show({ type: "box", id: "root", children: [
+            { type: "button", id: "b", label: "Go", onClick: () => opus.log("go") },
+            { type: "list", items: [{ text: "a", onClick: () => opus.log("a") }] }
+        ] })"#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let rt = rt.unwrap();
+        let ui = ui_events(&events);
+        assert_eq!(ui.len(), 1, "{:?}", events.borrow());
+        assert_eq!(ui[0]["op"], "show");
+        assert_eq!(ui[0]["tree"]["children"][0]["label"], "Go");
+        crate::ui_tree::parse(&ui[0]["tree"]).unwrap();
+        rt.dispatch(handler_at(&ui[0], "/tree/children/0/onClick"), Value::Null);
+        rt.dispatch(handler_at(&ui[0], "/tree/children/1/items/0/onClick"), Value::Null);
+        assert_eq!(logs(&events), ["go", "a"]);
+    });
+}
+
+#[test]
+fn ui_show_unregisters_the_handlers_of_the_previous_tree() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"opus.ui.show({ type: "button", label: "1", onClick: () => opus.log("first") });
+            const again = __opusInternal.registerHandler(() => opus.ui.show({ type: "button", label: "2", onClick: () => opus.log("second") }));
+            opus.log("again " + again)"#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let rt = rt.unwrap();
+        let again: u32 = logs(&events)[0].strip_prefix("again ").unwrap().parse().unwrap();
+        rt.dispatch(again, Value::Null);
+        let ui = ui_events(&events);
+        assert_eq!(ui.len(), 2, "{:?}", events.borrow());
+        let (first, second) = (handler_at(&ui[0], "/tree/onClick"), handler_at(&ui[1], "/tree/onClick"));
+        assert_ne!(first, second);
+        rt.dispatch(second, Value::Null);
+        assert!(has_log(&events, "second"));
+        rt.dispatch(first, Value::Null);
+        assert!(has_error(&events, &format!("no handler {first}")), "{:?}", events.borrow());
+        assert!(!has_log(&events, "first"));
+    });
+}
+
+#[test]
+fn ui_update_sends_props_and_replaces_the_handlers_of_that_prop() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"opus.ui.show({ type: "box", children: [
+                { type: "button", id: "b", label: "B", onClick: () => opus.log("old") },
+                { type: "list", id: "l", items: [{ text: "a", onClick: () => opus.log("a") }] }
+            ] });
+            opus.ui.update("b", { label: "N", onClick: () => opus.log("new") });
+            opus.ui.update("b", { label: "M" });
+            opus.ui.update("l", { items: [{ text: "z", onClick: () => opus.log("z") }] })"#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let rt = rt.unwrap();
+        let ui = ui_events(&events);
+        assert_eq!(ui.len(), 4, "{:?}", events.borrow());
+        assert_eq!(ui[1]["op"], "update");
+        assert_eq!(ui[1]["id"], "b");
+        assert_eq!(ui[1]["props"]["label"], "N");
+        assert_eq!(ui[2]["props"], json!({ "label": "M" }));
+        let old = handler_at(&ui[0], "/tree/children/0/onClick");
+        let new = handler_at(&ui[1], "/props/onClick");
+        let old_item = handler_at(&ui[0], "/tree/children/1/items/0/onClick");
+        let new_item = handler_at(&ui[3], "/props/items/0/onClick");
+        rt.dispatch(new, Value::Null);
+        rt.dispatch(new_item, Value::Null);
+        assert_eq!(logs(&events), ["new", "z"], "a label-only update must keep onClick");
+        rt.dispatch(old, Value::Null);
+        rt.dispatch(old_item, Value::Null);
+        assert!(has_error(&events, &format!("no handler {old}")) && has_error(&events, &format!("no handler {old_item}")), "{:?}", events.borrow());
+    });
+}
+
+#[test]
+fn ui_calls_check_their_arguments() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"for (const f of [() => opus.ui.show(5), () => opus.ui.show(null), () => opus.ui.update(5, {}), () => opus.ui.update("x", null)]) {
+                try { f(); } catch (e) { opus.log(e.name); }
+            }
+            const cyclic = { type: "box", children: [] }; cyclic.children.push(cyclic);
+            try { opus.ui.show(cyclic); } catch (e) { opus.log(e.name); }"#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        rt.unwrap();
+        assert_eq!(logs(&events), ["TypeError", "TypeError", "TypeError", "TypeError", "RangeError"]);
+        assert!(ui_events(&events).is_empty());
+    });
+}
+
+#[test]
+fn ui_redraw_calls_the_internal_hook() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let (_dir, rt) = start_code(r#"__opusInternal.redraw = (id) => opus.log("redraw " + id); opus.ui.redraw("c1")"#, Map::new(), &events);
+        rt.unwrap();
+        assert!(has_log(&events, "redraw c1"), "{:?}", events.borrow());
+    });
+}
+
+#[test]
+fn the_dispatcher_calls_a_handler_and_does_nothing_once_the_runtime_is_gone() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"const id = __opusInternal.registerHandler((a) => opus.log("got " + a)); opus.log("id " + id)"#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let rt = rt.unwrap();
+        let id: u32 = logs(&events)[0].strip_prefix("id ").unwrap().parse().unwrap();
+        let dispatcher = rt.dispatcher();
+        dispatcher.dispatch(id, json!(5));
+        assert!(has_log(&events, "got 5"), "{:?}", events.borrow());
+        drop(rt);
+        let count = events.borrow().len();
+        dispatcher.dispatch(id, json!(6));
+        pump(Duration::from_millis(20));
+        assert_eq!(events.borrow().len(), count, "{:?}", events.borrow());
+    });
+}
