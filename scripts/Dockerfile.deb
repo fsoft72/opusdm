@@ -1,0 +1,34 @@
+# Build image for the opusdm .deb (scripts/build-deb-docker.sh).
+# One image per Ubuntu release: the binaries are linked against the glibc and
+# the GTK4 of that release, and dpkg-shlibdeps writes the Depends from it.
+ARG RELEASE=26.04
+FROM ubuntu:${RELEASE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+RUN apt-get update && apt-get install --no-install-recommends -y \
+        build-essential \
+        pkg-config \
+        libgtk-4-dev \
+        libgtk4-layer-shell-dev \
+        libarchive-dev \
+        libvte-2.91-gtk4-dev \
+        libgstreamer1.0-dev \
+        libgstreamer-plugins-base1.0-dev \
+        libpulse-dev \
+        libssl-dev \
+        curl \
+        ca-certificates \
+        dpkg-dev \
+        file \
+    && rm -rf /var/lib/apt/lists/*
+
+# The workspace sets a rust-version newer than the packaged rustc: use rustup.
+ENV RUSTUP_HOME=/opt/rustup \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain stable
+
+WORKDIR /work

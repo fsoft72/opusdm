@@ -14,6 +14,9 @@
 #   /usr/bin/opusdm-* link for every command.
 # Shared library dependencies are computed with dpkg-shlibdeps, so they match
 # the Ubuntu release the package is built on.
+#
+# Environment: DEB_VERSION_SUFFIX is appended to the package version (for
+# example "~ubuntu26.04", see build-deb-docker.sh).
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -42,6 +45,7 @@ cd "$REPO_ROOT"
 # Workspace version: the first `version = "x.y.z"` of Cargo.toml
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 [ -n "$VERSION" ] || { echo "build-deb: cannot read the version from Cargo.toml" >&2; exit 1; }
+VERSION="$VERSION${DEB_VERSION_SUFFIX:-}"
 ARCH=$(dpkg --print-architecture)
 NAME="opusdm_${VERSION}_${ARCH}"
 OUT_DIR="$REPO_ROOT/target/deb"
