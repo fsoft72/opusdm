@@ -17,7 +17,7 @@ use crate::manifest::{SettingDef, SettingKind};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
-use opusdm_ipc::err_log;
+use opusdm_ipc::{debug_log, err_log};
 use serde_json::{Map, Number, Value};
 use std::rc::Rc;
 
@@ -170,6 +170,7 @@ fn field_for(def: &SettingDef, value: &Value) -> gtk::Widget {
             // Letters cannot be typed: the click on Apply makes the spin
             // button parse its text first, and it would turn "abc" into 0.
             spin.set_numeric(true);
+            spin.connect_input(_keep_value_when_blank);
             spin.set_value(current);
             spin.set_hexpand(true);
             spin.upcast()
@@ -193,6 +194,17 @@ fn field_for(def: &SettingDef, value: &Value) -> gtk::Widget {
     };
     widget.set_widget_name(&field_name(&def.key));
     widget
+}
+
+/// The `input` handler of a number field: GTK's own parser reads an empty
+/// text as 0, so an empty or blank text gives the current value instead
+/// (GTK then shows it again); any other text goes to GTK's parser (`None`).
+/// The current value is returned, not an input error: with the default
+/// update policy (`Always`) GTK would use an unset value on an error.
+fn _keep_value_when_blank(spin: &gtk::SpinButton) -> Option<Result<f64, ()>> {
+    if !spin.text().trim().is_empty() { return None; }
+    debug_log!(APP_TAG, "number field '{}' left blank: its value {} is kept", spin.widget_name(), spin.value());
+    Some(Ok(spin.value()))
 }
 
 /// The text of the control `widget` of setting `def`, for [`collect`].

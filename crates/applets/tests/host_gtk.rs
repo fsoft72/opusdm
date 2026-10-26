@@ -149,6 +149,7 @@ fn host_gtk_checks() {
     the_form_shows_the_current_values(&app);
     apply_saves_the_state_and_calls_on_settings(&app);
     an_invalid_value_is_shown_in_the_window_and_not_saved(&app);
+    an_emptied_number_field_keeps_its_value(&app);
     apply_with_an_unreadable_state_file_writes_nothing(&app);
     an_applet_with_no_settings_says_so_in_the_window(&app);
     the_gear_twice_opens_one_window(&app);
@@ -966,6 +967,35 @@ fn an_invalid_value_is_shown_in_the_window_and_not_saved(app: &gtk::Application)
     assert_eq!(label_text(&host, "invalid").as_deref(), Some("Rome"), "onSettings not called");
     assert!(host.settings_window("invalid").is_some(), "the window stays open");
     eprintln!("section an_invalid_value_is_shown_in_the_window_and_not_saved: ok");
+}
+
+/// Final review (3): a number field emptied by the user (or left blank)
+/// is not read as 0 when it loses the focus (GTK parses its text then, the
+/// click on Apply does it): the previous value is kept and shown again.
+fn an_emptied_number_field_keeps_its_value(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let mut saved = AppletState { enabled: true, ..Default::default() };
+    saved.settings.insert("refreshMinutes".into(), 45.into());
+    let (_host, window) = settings_host(app, &dirs, "blank", saved);
+    let spin = field::<gtk::SpinButton>(&window, "refreshMinutes");
+    assert_eq!(spin.value(), 45.0);
+    for blank in ["", "   "] {
+        spin.set_text(blank);
+        spin.update();
+        assert_eq!(spin.value(), 45.0, "{blank:?} must not become 0");
+        assert_eq!(spin.text(), "45", "the old value is shown again after {blank:?}");
+    }
+    // A real number still goes through.
+    spin.set_text("12");
+    spin.update();
+    assert_eq!(spin.value(), 12.0);
+    spin.set_text("");
+    spin.update();
+    assert_eq!(spin.value(), 12.0, "the last value is kept");
+    button(&window, settings_form::APPLY_NAME).emit_clicked();
+    pump();
+    assert_eq!(state::load_in(dirs.states.path(), "blank").settings["refreshMinutes"], 12, "Apply saves the kept value");
+    eprintln!("section an_emptied_number_field_keeps_its_value: ok");
 }
 
 /// Task 13: when the state file exists but cannot be read, Apply writes
