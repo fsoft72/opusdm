@@ -90,6 +90,39 @@ fn _apply(xid: u32, x: i32, y: i32, w: u32, h: u32) -> Result<(), opusdm_ui::X11
     })
 }
 
+/// Move the realized `window` to the geometry `x`, `y`, `w` x `h` (sizes
+/// below 1 become 1) with the same `pin_geometry` as [`prepare`], without
+/// sending the type and states again (the edit handle drag calls it on every
+/// pointer motion). Logs and returns like [`prepare`]; it never panics.
+pub fn move_to(window: &gtk::ApplicationWindow, x: i32, y: i32, w: i32, h: i32) {
+    let title = window.title().map(|t| t.to_string()).unwrap_or_default();
+    if window.surface().is_none() { opusdm_ipc::err_log!(APP_TAG, "applet window '{title}': not realized, not moved to ({x}, {y})"); return; }
+    let Some(xid) = opusdm_ui::x11_window_id(window) else {
+        if !NOT_X11_LOGGED.swap(true, Ordering::Relaxed) { opusdm_ipc::err_log!(APP_TAG, "applet windows are not X11 windows (Wayland?): no stacking, desktop or position hints are applied, the edit handle cannot move them"); }
+        return;
+    };
+    if let Err(e) = opusdm_ui::with_x11(|x11| x11.pin_geometry(xid, x, y, w.max(1) as u32, h.max(1) as u32)) {
+        opusdm_ipc::err_log!(APP_TAG, "applet window '{title}' (0x{xid:x}): cannot move it to ({x}, {y}): {e}");
+    }
+}
+
+/// The pointer position on the root window (`QueryPointer`), so a drag can
+/// follow it while the window moves under it. `None` when the X11 call fails
+/// (logged).
+pub fn pointer_position() -> Option<(i32, i32)> {
+    let queried = opusdm_ui::with_x11(|x11| {
+        let reply = x11.conn().query_pointer(x11.root())?.reply()?;
+        Ok((i32::from(reply.root_x), i32::from(reply.root_y)))
+    });
+    match queried {
+        Ok(pointer) => Some(pointer),
+        Err(e) => {
+            opusdm_ipc::err_log!(APP_TAG, "cannot read the pointer position on the root window: {e}");
+            None
+        }
+    }
+}
+
 /// Default position of an applet of `size` (width, height) that has no
 /// saved position, on the monitor `(mx, my, mw, mh)`: the top right area,
 /// moved down and left by `index` steps so successive applets do not overlap

@@ -5,6 +5,7 @@
 pub mod applet_window;
 pub mod canvas;
 pub mod discovery;
+pub mod edit_mode;
 pub mod host;
 pub mod instance;
 pub mod manifest;

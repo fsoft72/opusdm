@@ -6,11 +6,15 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{gio, glib};
+use opusdm_applets::applet_window::{self, AppletWindow, WindowHooks};
+use opusdm_applets::edit_mode::EditMode;
 use opusdm_applets::host::{self, Host, HostConfig};
+use opusdm_applets::placement::Rect;
 use opusdm_applets::protocol::{request_at, AppletStatus, Reply, Request};
 use opusdm_applets::server::{self, Shared};
 use opusdm_applets::state::{self, AppletState};
 use std::path::Path;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -135,6 +139,11 @@ fn host_gtk_checks() {
     prepare_on_a_window_without_an_x11_surface_does_not_panic(&app);
     the_host_saves_a_changed_geometry_once(&app);
     a_monitor_change_clamps_the_open_windows(&app);
+    the_icons_are_hidden_outside_edit_mode(&app);
+    edit_mode_shows_the_border_and_the_icons(&app);
+    setting_edit_off_hides_them_again(&app);
+    the_handle_drag_moves_the_window_like_alt_drag(&app);
+    a_window_opened_while_edit_mode_is_on_starts_in_edit_mode(&app);
     eprintln!("host_gtk_checks: all sections ran");
 }
 
@@ -528,4 +537,175 @@ fn a_monitor_change_clamps_the_open_windows(app: &gtk::Application) {
     assert_eq!(host.target_of("near"), Some((430, 360, 210, 120)));
     assert!(host.is_running("near") && host.is_running("far"));
     eprintln!("section a_monitor_change_clamps_the_open_windows: ok");
+}
+
+/// What the edit widgets of `window` show now: (icons visible, frame
+/// visible, edit CSS class on the outer widget). `get_visible` is the
+/// widget's own flag: `is_visible` would also need the window, never shown
+/// in tests, to be visible.
+fn edit_look(window: &AppletWindow) -> (bool, bool, bool) {
+    (window.edit_icons().get_visible(), window.edit_frame().get_visible(), window.edit_outer().has_css_class(applet_window::EDIT_CLASS))
+}
+
+/// The edit look of the window of applet `id` opened by `host`.
+fn host_edit_look(host: &Host, id: &str) -> (bool, bool, bool) {
+    host.with_window(id, edit_look).unwrap_or_else(|| panic!("{id} has no window"))
+}
+
+/// A bare window, its settings request count and the geometries it saved.
+type BareWindow = (AppletWindow, Rc<Cell<usize>>, Rc<RefCell<Vec<Rect>>>);
+
+/// An applet window built directly (no host, never presented) at `(40,
+/// 50)`, 210 x 120, over `edit`; it counts the settings requests and
+/// records the geometries handed to `on_moved`.
+fn bare_window(app: &gtk::Application, edit: &EditMode) -> BareWindow {
+    let manifest = opusdm_applets::manifest::parse(&manifest("Bare")).unwrap();
+    let st = AppletState { enabled: true, x: Some(40), y: Some(50), ..Default::default() };
+    let settings = Rc::new(Cell::new(0));
+    let moved = Rc::new(RefCell::new(Vec::new()));
+    let (s, m) = (settings.clone(), moved.clone());
+    let hooks = WindowHooks {
+        on_close: Box::new(|| {}),
+        on_moved: Rc::new(move |rect| m.borrow_mut().push(rect)),
+        on_settings: Rc::new(move || s.set(s.get() + 1)),
+    };
+    (applet_window::open(app, "bare", &manifest, &st, false, edit, hooks), settings, moved)
+}
+
+/// Task 12: outside edit mode the handle and the gear are hidden (not just
+/// transparent) and the border is not drawn; activating the hidden gear
+/// does not ask for the settings.
+fn the_icons_are_hidden_outside_edit_mode(app: &gtk::Application) {
+    let edit = EditMode::new();
+    let (window, settings, _) = bare_window(app, &edit);
+    assert_eq!(edit_look(&window), (false, false, false));
+    assert!(!window.edit_icons().get_visible(), "the box holding the handle and the gear is not drawn");
+    assert!(!window.edit_frame().can_target(), "the border never takes clicks");
+    window.gear().emit_clicked();
+    assert_eq!(settings.get(), 0, "a hidden gear does nothing");
+    let dirs = Dirs::new();
+    dirs.applet("calm", &manifest("Calm"), &label_script("calm"));
+    dirs.enable("calm");
+    let host = dirs.host(app);
+    host.load_enabled();
+    assert!(!host.edit());
+    assert_eq!(host_edit_look(&host, "calm"), (false, false, false));
+    eprintln!("section the_icons_are_hidden_outside_edit_mode: ok");
+}
+
+/// Task 12: turning edit mode on shows the dashed border and the two icons
+/// on every open window; the gear then asks for the settings once per
+/// click; `SetEdit` from the socket side reaches the windows through the
+/// request loop.
+fn edit_mode_shows_the_border_and_the_icons(app: &gtk::Application) {
+    let edit = EditMode::new();
+    let (window, settings, _) = bare_window(app, &edit);
+    assert!(edit.set(true));
+    assert_eq!(edit_look(&window), (true, true, true));
+    assert!(window.handle().get_visible() && window.gear().get_visible());
+    assert!(window.handle().tooltip_text().is_some_and(|t| t == "Move"), "{:?}", window.handle().tooltip_text());
+    assert!(window.gear().tooltip_text().is_some_and(|t| t == "Settings"), "{:?}", window.gear().tooltip_text());
+    window.gear().emit_clicked();
+    assert_eq!(settings.get(), 1, "the gear asks for the settings");
+
+    let dirs = Dirs::new();
+    dirs.applet("one", &manifest("One"), &label_script("1"));
+    dirs.applet("two", &manifest("Two"), &label_script("2"));
+    dirs.enable("one");
+    dirs.enable("two");
+    let host = dirs.host(app);
+    let (tx, rx) = async_channel::unbounded();
+    host::spawn_request_loop(&host, rx);
+    host.load_enabled();
+    assert_eq!(host.edit_mode().listener_count(), 2, "one listener per open window");
+    tx.send_blocking(server::HostMessage::Edit(true)).unwrap();
+    assert!(pump_until(Duration::from_secs(3), || host.edit()), "the socket's SetEdit reaches the host");
+    assert_eq!(host_edit_look(&host, "one"), (true, true, true));
+    assert_eq!(host_edit_look(&host, "two"), (true, true, true));
+    // The gear of a host window goes to `Host::open_settings` (a stub until
+    // Task 13): it must not panic or close anything.
+    host.with_window("one", |w| w.gear().emit_clicked()).unwrap();
+    assert!(host.is_running("one"));
+    eprintln!("section edit_mode_shows_the_border_and_the_icons: ok");
+}
+
+/// Task 12: turning edit mode off hides the icons and the border again; a
+/// closed window no longer listens.
+fn setting_edit_off_hides_them_again(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    dirs.applet("flip", &manifest("Flip"), &label_script("f"));
+    dirs.enable("flip");
+    let host = dirs.host(app);
+    host.load_enabled();
+    host.set_edit(true);
+    assert_eq!(host_edit_look(&host, "flip"), (true, true, true));
+    host.set_edit(false);
+    assert!(!host.edit());
+    assert_eq!(host_edit_look(&host, "flip"), (false, false, false));
+    host.set_edit(true);
+    assert_eq!(host_edit_look(&host, "flip"), (true, true, true), "on again after off");
+    assert_eq!(host.handle(&Request::SetEnabled { id: "flip".into(), enabled: false }), Reply::Ok);
+    assert_eq!(host.edit_mode().listener_count(), 0, "a closed window unsubscribed its listener");
+    host.set_edit(false);
+    eprintln!("section setting_edit_off_hides_them_again: ok");
+}
+
+/// Task 12: the handle drag moves the window by the pointer delta (root
+/// coordinates), clamped to the monitors, updates the target on each step
+/// and saves once, at the end. A real `GestureDrag` needs a real pointer, so
+/// the steps the gesture calls are driven here with pointer values.
+fn the_handle_drag_moves_the_window_like_alt_drag(app: &gtk::Application) {
+    let edit = EditMode::new();
+    edit.set(true);
+    let (window, _, moved) = bare_window(app, &edit);
+    let screen = [(0, 0, 640, 480)];
+    assert_eq!(window.target(), (40, 50, 210, 120));
+    window.begin_drag((100, 100), &screen);
+    assert_eq!(window.drag_to((150, 130)), Some((90, 80, 210, 120)));
+    assert_eq!(window.target(), (90, 80, 210, 120), "each step updates the target");
+    assert_eq!(window.drag_to((2000, 2000)), Some((430, 360, 210, 120)), "clamped to the monitors");
+    assert_eq!(window.drag_to((160, 140)), Some((100, 90, 210, 120)));
+    assert!(moved.borrow().is_empty(), "nothing is saved during the drag");
+    assert_eq!(window.end_drag(), Some((100, 90, 210, 120)));
+    assert_eq!(*moved.borrow(), [(100, 90, 210, 120)], "saved once, at the end");
+    assert_eq!(window.end_drag(), None, "a second end does nothing");
+    assert_eq!(window.drag_to((300, 300)), None, "no step without a begin");
+    assert_eq!(moved.borrow().len(), 1);
+    // A press without a move saves nothing.
+    window.begin_drag((10, 10), &screen);
+    assert_eq!(window.end_drag(), None);
+    assert_eq!(moved.borrow().len(), 1);
+
+    // Through the host: the end of the drag writes the state file.
+    let dirs = Dirs::new();
+    dirs.applet("drag", &manifest("Drag"), &label_script("d"));
+    state::save_in(dirs.states.path(), "drag", &AppletState { enabled: true, x: Some(40), y: Some(50), ..Default::default() }).unwrap();
+    let host = dirs.host(app);
+    host.load_enabled();
+    host.set_edit(true);
+    host.with_window("drag", |w| {
+        w.begin_drag((100, 100), &screen);
+        w.drag_to((130, 160));
+        w.end_drag();
+    }).unwrap();
+    let st = state::load_in(dirs.states.path(), "drag");
+    assert_eq!((st.x, st.y, st.width, st.height), (Some(70), Some(110), Some(210), Some(120)));
+    assert_eq!(host.target_of("drag"), Some((70, 110, 210, 120)));
+    eprintln!("section the_handle_drag_moves_the_window_like_alt_drag: ok");
+}
+
+/// Task 12: a window opened (or reloaded) while edit mode is on starts in
+/// edit mode.
+fn a_window_opened_while_edit_mode_is_on_starts_in_edit_mode(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    dirs.applet("late", &manifest("Late"), &label_script("l"));
+    let host = dirs.host(app);
+    host.load_enabled();
+    host.set_edit(true);
+    assert_eq!(host.handle(&Request::SetEnabled { id: "late".into(), enabled: true }), Reply::Ok);
+    assert_eq!(host_edit_look(&host, "late"), (true, true, true));
+    assert_eq!(host.handle(&Request::Reload { id: "late".into() }), Reply::Ok);
+    assert_eq!(host_edit_look(&host, "late"), (true, true, true), "a reload keeps edit mode");
+    assert_eq!(host.edit_mode().listener_count(), 1, "the reloaded window replaced the old listener");
+    eprintln!("section a_window_opened_while_edit_mode_is_on_starts_in_edit_mode: ok");
 }

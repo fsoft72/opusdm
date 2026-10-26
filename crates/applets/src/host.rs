@@ -11,9 +11,16 @@
 //! `Weak<Host>`. A failed upgrade is logged with `err_log!` naming the
 //! applet. So there is no `Rc` cycle: removing an applet from `applets`
 //! drops it, which stops its runtime and destroys its window.
+//!
+//! Edit mode (Task 12): the host owns the [`EditMode`] for the whole run;
+//! every window gets a clone and subscribes one listener (weak references to
+//! its widgets only), removed when the window is dropped. The socket's
+//! `SetEdit` reaches [`Host::set_edit`] through the request loop. The
+//! window's gear calls [`Host::open_settings`] through a `Weak<Host>`.
 
-use crate::applet_window::{self, AppletWindow};
+use crate::applet_window::{self, AppletWindow, WindowHooks};
 use crate::discovery::{self, Discovered};
+use crate::edit_mode::EditMode;
 use crate::placement::Rect;
 use crate::protocol::{AppletStatus, Reply, Request};
 use crate::runtime::{Event, Runtime, Sink};
@@ -24,7 +31,7 @@ use gtk4 as gtk;
 use gtk::glib;
 use opusdm_ipc::{debug_log, err_log};
 use serde_json::Value;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
@@ -60,8 +67,8 @@ pub struct Host {
     applets: RefCell<BTreeMap<String, Rc<Applet>>>,
     /// The last runtime start error of each applet, for `List`.
     start_errors: RefCell<HashMap<String, String>>,
-    /// The edit mode, as last told by the socket (Task 12 uses it).
-    edit: Cell<bool>,
+    /// The edit mode, as last told by the socket, shared with every window.
+    edit: EditMode,
     /// This host, for the window close handlers (never upgraded to own it).
     me: Weak<Host>,
 }
@@ -94,7 +101,7 @@ impl Host {
     /// A host over the folders of `config`. Builds no widget: call
     /// [`Host::load_enabled`] once GTK is up (application `startup`).
     pub fn with_config(app: &gtk::Application, config: HostConfig) -> Rc<Host> {
-        Rc::new_cyclic(|me| Host { app: app.clone(), config, applets: RefCell::default(), start_errors: RefCell::default(), edit: Cell::new(false), me: me.clone() })
+        Rc::new_cyclic(|me| Host { app: app.clone(), config, applets: RefCell::default(), start_errors: RefCell::default(), edit: EditMode::new(), me: me.clone() })
     }
 
     /// Open every enabled applet. A broken one is logged (and listed with
@@ -129,15 +136,33 @@ impl Host {
         }
     }
 
-    /// Record the edit mode (nothing uses it yet).
+    /// Turn the edit mode on or off: every open window shows or hides its
+    /// border, handle and gear. Not saved (off after a restart).
     pub fn set_edit(&self, on: bool) {
-        debug_log!(APP_TAG, "edit mode {on}");
-        self.edit.set(on);
+        let changed = self.edit.set(on);
+        debug_log!(APP_TAG, "edit mode {on}{}", if changed { "" } else { " (unchanged)" });
     }
 
     /// The edit mode last recorded.
     pub fn edit(&self) -> bool {
         self.edit.get()
+    }
+
+    /// The shared edit mode (one listener per open window).
+    pub fn edit_mode(&self) -> &EditMode {
+        &self.edit
+    }
+
+    /// Open the settings of applet `id` (the edit gear). KNOWN STUB until
+    /// Task 13 adds the settings window: it only logs at debug level.
+    pub fn open_settings(&self, id: &str) {
+        debug_log!(APP_TAG, "applet {id}: settings requested; the settings window comes with Task 13");
+    }
+
+    /// Run `f` on the window of applet `id`, while it is open.
+    pub fn with_window<R>(&self, id: &str, f: impl FnOnce(&AppletWindow) -> R) -> Option<R> {
+        let applet = self.applets.borrow().get(id).cloned()?;
+        Some(f(&applet.window))
     }
 
     /// True when applet `id` is open and its runtime started.
@@ -223,8 +248,22 @@ impl Host {
         }
     }
 
+    /// What a click on the gear of applet `id`'s window does: open its
+    /// settings. Holds only a `Weak<Host>`; a failed upgrade is logged.
+    fn settings_handler(&self, id: &str) -> impl Fn() + 'static {
+        let host = self.me.clone();
+        let id = id.to_string();
+        move || {
+            let Some(host) = host.upgrade() else {
+                err_log!(APP_TAG, "applet {id}: settings requested after the host was dropped, ignored");
+                return;
+            };
+            host.open_settings(&id);
+        }
+    }
+
     /// What a move or resize of applet `id`'s window by the window manager
-    /// does: save the new geometry. Holds only a `Weak<Host>`; a failed
+    /// (or a drag of its edit handle) does: save the new geometry. Holds only a `Weak<Host>`; a failed
     /// upgrade and a failed save are logged.
     fn geometry_handler(&self, id: &str) -> impl Fn(Rect) + 'static {
         let host = self.me.clone();
@@ -318,7 +357,8 @@ impl Host {
             Err(e) => return Err(e.clone()),
         };
         let st = state::load_in(&self.config.state_dir, id);
-        let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows, self.close_handler(id), self.geometry_handler(id));
+        let hooks = WindowHooks { on_close: Box::new(self.close_handler(id)), on_moved: Rc::new(self.geometry_handler(id)), on_settings: Rc::new(self.settings_handler(id)) };
+        let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows, &self.edit, hooks);
         let applet = Rc::new_cyclic(|me| Applet {
             id: id.clone(),
             runtime: RefCell::new(None),

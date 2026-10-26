@@ -40,6 +40,13 @@ pub fn dragged(start_rect: Rect, start_pointer: (i32, i32), pointer: (i32, i32))
     (x + pointer.0 - start_pointer.0, y + pointer.1 - start_pointer.1, w, h)
 }
 
+/// Where a drag of the edit handle puts a window: `start_rect` moved by
+/// the pointer delta (see [`dragged`]), kept on `monitors` (see
+/// [`clamp_to_monitors`]).
+pub fn drag_on_monitors(start_rect: Rect, start_pointer: (i32, i32), pointer: (i32, i32), monitors: &[Rect]) -> Rect {
+    clamp_to_monitors(dragged(start_rect, start_pointer, pointer), monitors)
+}
+
 /// `rect` with its width and height raised to at least `min` (min width,
 /// min height); the position is kept.
 pub fn at_least(rect: Rect, min: (i32, i32)) -> Rect {
@@ -96,6 +103,13 @@ mod tests {
         assert_eq!(dragged((100, 200, 300, 250), (150, 210), (400, 160)), (350, 150, 300, 250));
         assert_eq!(dragged((100, 200, 300, 250), (150, 210), (150, 210)), (100, 200, 300, 250), "no move, no change");
         assert_eq!(dragged((10, 10, 30, 20), (0, 0), (-50, -60)), (-40, -50, 30, 20), "not clamped here");
+    }
+
+    #[test]
+    fn a_handle_drag_moves_by_the_delta_and_stays_on_the_monitors() {
+        assert_eq!(drag_on_monitors((100, 200, 300, 250), (150, 210), (400, 160), &[FULL_HD]), (350, 150, 300, 250));
+        assert_eq!(drag_on_monitors((100, 200, 300, 250), (150, 210), (-900, 2000), &[FULL_HD]), (0, 830, 300, 250), "dragged off the screen: clamped");
+        assert_eq!(drag_on_monitors((100, 200, 300, 250), (150, 210), (-900, 2000), &[]), (-950, 1990, 300, 250), "no monitor: not clamped");
     }
 
     #[test]

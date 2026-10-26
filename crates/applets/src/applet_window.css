@@ -1,0 +1,34 @@
+/* Applet windows in edit mode (Task 12, variant A of the design): a dashed
+   border around the applet and two small icons (drag handle, settings
+   gear) in its top right corner. Loaded once per display at APPLICATION
+   priority; every rule is scoped to the applet edit classes, so the global
+   theme is not touched. */
+
+/* The border: a frame drawn over the content that takes no input. White
+   dashes with a thin dark line just inside them, so it shows on light and
+   dark wallpapers and contents. */
+.opusdm-applet-edit > .opusdm-applet-edit-frame {
+  border: 2px dashed rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+/* The icon box: a small dark pill so the symbolic icons stay readable. */
+.opusdm-applet-edit > .opusdm-applet-edit-icons {
+  background-color: rgba(0, 0, 0, 0.6);
+  border-radius: 4px;
+  margin: 4px;
+  padding: 1px;
+}
+
+.opusdm-applet-edit > .opusdm-applet-edit-icons button {
+  color: #ffffff;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 2px;
+  margin: 0;
+  border-radius: 3px;
+}
+
+.opusdm-applet-edit > .opusdm-applet-edit-icons button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
