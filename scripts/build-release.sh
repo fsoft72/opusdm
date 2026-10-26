@@ -22,7 +22,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DIST="$REPO_ROOT/dist"
-BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-terminal opusdm-player opusdm-viewer opusdm-input-config opusdm-screen opusdm-apps-editor opusdm-network-manager opusdm-printer-manager opusdm-bluetooth-manager opusdm-polkit opusdm-notify"
+BINARIES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-terminal opusdm-player opusdm-viewer opusdm-input-config opusdm-screen opusdm-apps-editor opusdm-network-manager opusdm-printer-manager opusdm-bluetooth-manager opusdm-polkit opusdm-notify opusdm-applets"
 
 cd "$REPO_ROOT"
 
