@@ -2,8 +2,10 @@
 //! `~/.config/opusdm/applets/<id>/` with an `applet.json` manifest and a
 //! `main.js` entry script.
 
+pub mod applet_window;
 pub mod canvas;
 pub mod discovery;
+pub mod host;
 pub mod instance;
 pub mod manifest;
 pub mod protocol;

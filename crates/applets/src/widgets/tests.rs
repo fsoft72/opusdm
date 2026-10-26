@@ -75,6 +75,7 @@ fn gtk_widget_checks() {
     a_click_reaches_the_applet_script_and_is_logged_after_the_runtime_is_gone();
     set_canvas_commands_stores_them_and_refuses_unknown_ids();
     a_script_canvas_reaches_its_drawing_area();
+    the_error_listener_reaches_every_canvas_of_the_tree();
 }
 
 /// a_label_shows_its_text
@@ -365,4 +366,44 @@ fn a_replay_error_is_logged_once_until_it_changes() {
     assert_eq!(p.last_error(), None, "a good frame clears the last error");
     *p.commands.borrow_mut() = bad("other");
     assert!(paint_once(&p).is_some(), "after a good frame the error is logged again");
+}
+
+/// Task 8c decision 6: a NEW replay error (after the dedupe) is passed to
+/// the listener; the same error again is not. No GTK needed.
+#[test]
+fn a_new_replay_error_reaches_the_listener_once() {
+    let bad = |colour: &str| vec![Command::FillStyle { style: Style::Color(colour.to_string()) }];
+    let p = painter(bad("nonsense"));
+    let got: Rc<RefCell<Vec<String>>> = Rc::default();
+    let sink = got.clone();
+    p.set_listener(Rc::new(move |e: String| sink.borrow_mut().push(e)));
+    paint_once(&p);
+    paint_once(&p);
+    assert_eq!(got.borrow().len(), 1, "{:?}", got.borrow());
+    assert!(got.borrow()[0].contains("nonsense"));
+    *p.commands.borrow_mut() = bad("other");
+    paint_once(&p);
+    assert_eq!(got.borrow().len(), 2);
+    *p.commands.borrow_mut() = vec![];
+    paint_once(&p);
+    assert_eq!(got.borrow().len(), 2, "a good frame is not an error");
+}
+
+/// `set_error_listener` reaches every canvas of the tree, with or without an id.
+fn the_error_listener_reaches_every_canvas_of_the_tree() {
+    let recorder = Rc::new(Recorder::default());
+    let tree = json!({ "type": "box", "children": [
+        { "type": "canvas", "id": "c", "width": 20, "height": 20 },
+        { "type": "canvas", "width": 20, "height": 20 }
+    ] });
+    let tree = build_json(tree, &recorder).unwrap();
+    let got: Rc<RefCell<Vec<String>>> = Rc::default();
+    let sink = got.clone();
+    set_error_listener(&tree, Rc::new(move |e: String| sink.borrow_mut().push(e)));
+    assert_eq!(tree.painters.len(), 2);
+    for p in &tree.painters {
+        *p.commands.borrow_mut() = vec![Command::FillStyle { style: Style::Color("zzz".to_string()) }];
+        paint_once(p);
+    }
+    assert_eq!(got.borrow().len(), 2, "{:?}", got.borrow());
 }

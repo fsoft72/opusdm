@@ -26,17 +26,17 @@ fn state_path_in(base: &Path, id: &str) -> PathBuf {
 }
 
 /// Load the state of `id` from `base`; a missing or corrupt file gives the default.
-fn load_in(base: &Path, id: &str) -> AppletState {
+pub fn load_in(base: &Path, id: &str) -> AppletState {
     opusdm_ipc::settings::load_json(&state_path_in(base, id), APP_TAG, "applet state")
 }
 
-/// Save the state of `id` under `base`.
-fn save_in(base: &Path, id: &str, state: &AppletState) -> std::io::Result<()> {
+/// Save the state of `id` under `base` (atomic, creates the directory).
+pub fn save_in(base: &Path, id: &str, state: &AppletState) -> std::io::Result<()> {
     opusdm_ipc::settings::save_json(&state_path_in(base, id), state)
 }
 
 /// Directory holding all the applet state files.
-fn states_dir() -> PathBuf {
+pub fn states_dir() -> PathBuf {
     opusdm_ipc::settings::state_dir().join("applets")
 }
 

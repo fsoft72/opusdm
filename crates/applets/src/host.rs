@@ -1,0 +1,412 @@
+//! The host of `opusdm-applets`: owns, for every enabled applet, its window
+//! and its runtime, and answers the socket requests on the GTK main loop.
+//!
+//! Ownership for the whole run: `main` keeps the only strong `Rc<Host>` in a
+//! local until `app.run()` returns. The host owns one `Rc<Applet>` per open
+//! applet (in `applets`); the applet owns its [`Runtime`], its
+//! [`AppletWindow`], its built widget tree and the runtime's dispatcher.
+//! Everything that calls back holds only a `Weak`: the runtime's sink and the
+//! canvas error listener hold a `Weak<Applet>`, the widgets hold the
+//! runtime's dispatcher (a `Weak` of the runtime), the request loop holds a
+//! `Weak<Host>`. A failed upgrade is logged with `err_log!` naming the
+//! applet. So there is no `Rc` cycle: removing an applet from `applets`
+//! drops it, which stops its runtime and destroys its window.
+
+use crate::applet_window::{self, AppletWindow};
+use crate::discovery::{self, Discovered};
+use crate::protocol::{AppletStatus, Reply, Request};
+use crate::runtime::{Event, Runtime, Sink};
+use crate::server::HostMessage;
+use crate::widgets::{self, BuiltTree, Dispatch, ErrorListener};
+use crate::{canvas, state, ui_tree};
+use gtk4 as gtk;
+use gtk::glib;
+use opusdm_ipc::{debug_log, err_log};
+use serde_json::Value;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::rc::{Rc, Weak};
+
+/// Tag used in log lines.
+const APP_TAG: &str = "applets";
+
+/// Where the host finds the applets and their state, and whether it shows
+/// the windows it builds.
+#[derive(Debug, Clone)]
+pub struct HostConfig {
+    /// The folder with one subfolder per applet.
+    pub applets_dir: PathBuf,
+    /// The folder with the `<id>.json` state files.
+    pub state_dir: PathBuf,
+    /// Present the applet windows; tests build them without showing them.
+    pub present_windows: bool,
+}
+
+impl HostConfig {
+    /// The real folders of the session, windows presented.
+    pub fn real() -> HostConfig {
+        HostConfig { applets_dir: discovery::applets_dir(), state_dir: state::states_dir(), present_windows: true }
+    }
+}
+
+/// Owns the open applets (see the module doc).
+pub struct Host {
+    app: gtk::Application,
+    config: HostConfig,
+    /// The open applets by id: enabled and with a valid manifest. The entry
+    /// stays (window showing the error) when the runtime failed to start.
+    applets: RefCell<BTreeMap<String, Rc<Applet>>>,
+    /// The last runtime start error of each applet, for `List`.
+    start_errors: RefCell<HashMap<String, String>>,
+    /// The edit mode, as last told by the socket (Task 12 uses it).
+    edit: Cell<bool>,
+}
+
+/// One open applet. Field order is drop order: the runtime stops before
+/// the widgets and the window go.
+struct Applet {
+    id: String,
+    /// `None` when the entry script failed.
+    runtime: RefCell<Option<Runtime>>,
+    /// The runtime's dispatcher for the widgets (holds a `Weak` of it).
+    dispatcher: RefCell<Option<Rc<dyn Dispatch>>>,
+    /// The tree shown in the window, if any.
+    tree: RefCell<Option<BuiltTree>>,
+    /// `Some` while the runtime starts: the `Ui` and `Redraw` events sent
+    /// before the dispatcher exists, applied once it does.
+    pending: RefCell<Option<Vec<Event>>>,
+    window: AppletWindow,
+    /// This applet, for the canvas error listeners.
+    me: Weak<Applet>,
+}
+
+impl Host {
+    /// A host over the session's applets folder and state folder.
+    pub fn new(app: &gtk::Application) -> Host {
+        Host::with_config(app, HostConfig::real())
+    }
+
+    /// A host over the folders of `config`. Builds no widget: call
+    /// [`Host::load_enabled`] once GTK is up (application `startup`).
+    pub fn with_config(app: &gtk::Application, config: HostConfig) -> Host {
+        Host { app: app.clone(), config, applets: RefCell::default(), start_errors: RefCell::default(), edit: Cell::new(false) }
+    }
+
+    /// Open every enabled applet. A broken one is logged (and listed with
+    /// its error) and does not stop the others.
+    pub fn load_enabled(&self) {
+        for found in discovery::discover(&self.config.applets_dir) {
+            if !state::load_in(&self.config.state_dir, &found.id).enabled { continue; }
+            if let Err(e) = self.open_applet(&found) {
+                err_log!(APP_TAG, "applet {}: not started: {e}", found.id);
+            }
+        }
+    }
+
+    /// Answer one socket request; every error is logged too.
+    pub fn handle(&self, req: &Request) -> Reply {
+        let result = match req {
+            Request::List => return Reply::Applets(self.list()),
+            Request::GetEdit => return Reply::Edit(self.edit()),
+            Request::SetEdit(on) => {
+                self.set_edit(*on);
+                return Reply::Edit(*on);
+            }
+            Request::SetEnabled { id, enabled } => self.set_enabled(id, *enabled),
+            Request::Reload { id } => self.reload(id),
+        };
+        match result {
+            Ok(()) => Reply::Ok,
+            Err(e) => {
+                err_log!(APP_TAG, "request {req:?} failed: {e}");
+                Reply::Error(e)
+            }
+        }
+    }
+
+    /// Record the edit mode (nothing uses it yet).
+    pub fn set_edit(&self, on: bool) {
+        debug_log!(APP_TAG, "edit mode {on}");
+        self.edit.set(on);
+    }
+
+    /// The edit mode last recorded.
+    pub fn edit(&self) -> bool {
+        self.edit.get()
+    }
+
+    /// True when applet `id` is open and its runtime started.
+    pub fn is_running(&self, id: &str) -> bool {
+        self.applets.borrow().get(id).is_some_and(|a| a.runtime.borrow().is_some())
+    }
+
+    /// The window of applet `id`, while it is open.
+    pub fn window_of(&self, id: &str) -> Option<gtk::ApplicationWindow> {
+        self.applets.borrow().get(id).map(|a| a.window.window().clone())
+    }
+
+    /// The error shown in the window of applet `id`, if any.
+    pub fn error_text(&self, id: &str) -> Option<String> {
+        self.applets.borrow().get(id).and_then(|a| a.window.error_text())
+    }
+
+    /// The root widget shown in the window of applet `id`, if any.
+    pub fn content_root(&self, id: &str) -> Option<gtk::Widget> {
+        self.applets.borrow().get(id).and_then(|a| a.window.content())
+    }
+
+    /// One status per applet folder.
+    fn list(&self) -> Vec<AppletStatus> {
+        let applets = discovery::discover(&self.config.applets_dir);
+        let mut out = Vec::with_capacity(applets.len());
+        for found in applets {
+            let enabled = state::load_in(&self.config.state_dir, &found.id).enabled;
+            let running = self.is_running(&found.id);
+            let (name, description, version, error) = match &found.manifest {
+                Ok(m) => (Some(m.name.clone()), m.description.clone(), m.version.clone(), self.start_errors.borrow().get(&found.id).cloned()),
+                Err(e) => (None, String::new(), String::new(), Some(e.clone())),
+            };
+            out.push(AppletStatus { id: found.id, name, description, version, enabled, running, error });
+        }
+        out
+    }
+
+    /// The applet folder `id`, re-read from disk.
+    fn find(&self, id: &str) -> Result<Discovered, String> {
+        let dir = &self.config.applets_dir;
+        let found = discovery::discover(dir).into_iter().find(|d| d.id == id);
+        found.ok_or_else(|| format!("no applet \"{id}\" in {}", dir.display()))
+    }
+
+    /// Save `enabled` for applet `id`, then open or close it. Enabling an
+    /// open applet does nothing (`Reload` restarts it).
+    fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let found = self.find(id)?;
+        let mut st = state::load_in(&self.config.state_dir, id);
+        if st.enabled != enabled {
+            st.enabled = enabled;
+            state::save_in(&self.config.state_dir, id, &st).map_err(|e| format!("applet {id}: cannot save its state: {e}"))?;
+        }
+        if !enabled {
+            self.close_applet(id);
+            return Ok(());
+        }
+        if self.applets.borrow().contains_key(id) { return Ok(()); }
+        self.open_applet(&found)
+    }
+
+    /// Close applet `id`, re-read its manifest and script, and open it
+    /// again if it is enabled.
+    fn reload(&self, id: &str) -> Result<(), String> {
+        let found = self.find(id)?;
+        self.close_applet(id);
+        if !state::load_in(&self.config.state_dir, id).enabled { return Ok(()); }
+        self.open_applet(&found)
+    }
+
+    /// Drop applet `id`: its runtime stops and its window is destroyed.
+    fn close_applet(&self, id: &str) {
+        let removed = self.applets.borrow_mut().remove(id);
+        if removed.is_some() { debug_log!(APP_TAG, "applet {id}: closed"); }
+        drop(removed);
+    }
+
+    /// Open the window of `found` and start its runtime. A start error
+    /// leaves the window open showing it; it is the `Err` too.
+    fn open_applet(&self, found: &Discovered) -> Result<(), String> {
+        let id = &found.id;
+        let manifest = match &found.manifest {
+            Ok(m) => m,
+            Err(e) => return Err(e.clone()),
+        };
+        let st = state::load_in(&self.config.state_dir, id);
+        let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows);
+        let applet = Rc::new_cyclic(|me| Applet {
+            id: id.clone(),
+            runtime: RefCell::new(None),
+            dispatcher: RefCell::new(None),
+            tree: RefCell::new(None),
+            pending: RefCell::new(Some(Vec::new())),
+            window,
+            me: me.clone(),
+        });
+        // The local `applet` keeps it alive while the script runs; the map
+        // owns it from here on, whatever the outcome.
+        self.applets.borrow_mut().insert(id.clone(), applet.clone());
+        let settings = state::effective_settings(&manifest.settings, &st);
+        let started = Runtime::start(id, &found.dir, manifest, settings, sink_for(&applet));
+        let pending = applet.pending.take().unwrap_or_default();
+        match started {
+            Ok(runtime) => {
+                *applet.dispatcher.borrow_mut() = Some(runtime.dispatcher());
+                *applet.runtime.borrow_mut() = Some(runtime);
+                self.start_errors.borrow_mut().remove(id);
+                for event in pending {
+                    applet.on_event(event);
+                }
+                debug_log!(APP_TAG, "applet {id}: started");
+                Ok(())
+            }
+            Err(e) => {
+                if !pending.is_empty() { debug_log!(APP_TAG, "applet {id}: {} ui events of the failed start dropped", pending.len()); }
+                self.start_errors.borrow_mut().insert(id.clone(), e.clone());
+                Err(e)
+            }
+        }
+    }
+}
+
+/// The sink of applet `applet`'s runtime: it holds only a `Weak`.
+fn sink_for(applet: &Rc<Applet>) -> Sink {
+    let weak = Rc::downgrade(applet);
+    let id = applet.id.clone();
+    Rc::new(move |event| {
+        let Some(applet) = weak.upgrade() else {
+            err_log!(APP_TAG, "applet {id}: {} after its window was closed, dropped", describe(&event));
+            return;
+        };
+        applet.on_event(event);
+    })
+}
+
+/// A short name of `event` for log lines (never the whole payload).
+fn describe(event: &Event) -> String {
+    match event {
+        Event::Log(_) => "a log line".to_string(),
+        Event::Error(m) => format!("the error \"{m}\""),
+        Event::Ui(v) => format!("ui {}", v.get("op").and_then(Value::as_str).unwrap_or("?")),
+        Event::Redraw { id, .. } => format!("a redraw of canvas \"{id}\""),
+    }
+}
+
+impl Applet {
+    /// Handle one event of the runtime.
+    fn on_event(&self, event: Event) {
+        let event = match event {
+            Event::Log(line) => return debug_log!(APP_TAG, "applet {}: {line}", self.id),
+            Event::Error(message) => return self.report(&message),
+            other => other,
+        };
+        if let Some(pending) = self.pending.borrow_mut().as_mut() {
+            pending.push(event);
+            return;
+        }
+        match event {
+            Event::Ui(value) => self.on_ui(&value),
+            Event::Redraw { id, commands } => self.on_redraw(&id, &commands),
+            Event::Log(_) | Event::Error(_) => {}
+        }
+    }
+
+    /// Log `message` and show it in the window.
+    fn report(&self, message: &str) {
+        err_log!(APP_TAG, "applet {}: {message}", self.id);
+        self.window.show_error(message);
+    }
+
+    /// `{ "op": "show", "tree" }` or `{ "op": "update", "id", "props" }`.
+    fn on_ui(&self, value: &Value) {
+        match value.get("op").and_then(Value::as_str) {
+            Some("show") => self.show(value.get("tree").unwrap_or(&Value::Null)),
+            Some("update") => {
+                let Some(id) = value.get("id").and_then(Value::as_str) else { return self.report(&format!("ui update without an id: {value}")) };
+                let result = self.with_tree(|tree| widgets::apply_update(tree, id, value.get("props").unwrap_or(&Value::Null)));
+                if let Err(e) = result { self.report(&e); }
+            }
+            _ => self.report(&format!("internal: unknown ui event {value}")),
+        }
+    }
+
+    /// Build and show a new tree. On failure the old widgets go too (the
+    /// script has already forgotten their handlers) and the error is shown.
+    fn show(&self, tree: &Value) {
+        let Some(dispatcher) = self.dispatcher.borrow().clone() else { return self.report("internal: ui show without a runtime") };
+        let built = ui_tree::parse(tree).and_then(|node| widgets::build(&node, dispatcher));
+        let tree = match built {
+            Ok(tree) => tree,
+            Err(e) => {
+                self.window.set_content(None);
+                self.set_tree(None);
+                return self.report(&format!("opus.ui.show: {e}"));
+            }
+        };
+        widgets::set_error_listener(&tree, self.canvas_listener());
+        self.window.set_content(Some(&tree.root));
+        self.set_tree(Some(tree));
+    }
+
+    /// Store `tree` as the shown tree.
+    fn set_tree(&self, tree: Option<BuiltTree>) {
+        match self.tree.try_borrow_mut() {
+            Ok(mut slot) => *slot = tree,
+            Err(_) => err_log!(APP_TAG, "applet {}: internal: the widget tree is in use, the new tree is not stored", self.id),
+        }
+    }
+
+    /// Run `f` on the shown tree; no tree is an error.
+    fn with_tree(&self, f: impl FnOnce(&BuiltTree) -> Result<(), String>) -> Result<(), String> {
+        let Ok(slot) = self.tree.try_borrow() else { return Err("internal: the widget tree is in use".to_string()) };
+        match slot.as_ref() {
+            Some(tree) => f(tree),
+            None => Err("no widget tree is shown (opus.ui.show failed or was not called)".to_string()),
+        }
+    }
+
+    /// Give canvas `id` the commands of its latest draw.
+    fn on_redraw(&self, id: &str, commands: &Value) {
+        let result = canvas::parse(commands).and_then(|commands| self.with_tree(|tree| widgets::set_canvas_commands(tree, id, commands)));
+        if let Err(e) = result { self.report(&format!("redraw of canvas \"{id}\": {e}")); }
+    }
+
+    /// The listener of the canvas replay errors: shows them in the window
+    /// from the main loop (not inside the draw function). Holds a `Weak`.
+    fn canvas_listener(&self) -> ErrorListener {
+        let weak = self.me.clone();
+        let id = self.id.clone();
+        Rc::new(move |message: String| {
+            let (weak, id) = (weak.clone(), id.clone());
+            glib::idle_add_local_once(move || {
+                let Some(applet) = weak.upgrade() else {
+                    err_log!(APP_TAG, "applet {id}: canvas error after its window was closed: {message}");
+                    return;
+                };
+                applet.window.show_error(&message);
+            });
+        })
+    }
+}
+
+/// Answer the requests of the connection threads on this thread's main
+/// loop. The task holds only a `Weak<Host>`: a request that arrives after
+/// the host is gone is answered with an `Error` and logged. When every
+/// sender is gone the loop ends, and that is logged too.
+pub fn spawn_request_loop(host: &Rc<Host>, rx: async_channel::Receiver<HostMessage>) {
+    let weak = Rc::downgrade(host);
+    glib::spawn_future_local(async move {
+        while let Ok(message) = rx.recv().await {
+            serve(&weak, message);
+        }
+        err_log!(APP_TAG, "the request channel is closed: the host answers no more requests");
+    });
+}
+
+/// Answer one message of the request loop.
+fn serve(host: &Weak<Host>, message: HostMessage) {
+    let Some(host) = host.upgrade() else {
+        err_log!(APP_TAG, "{message:?} arrived after the host was dropped");
+        if let HostMessage::Request(_, reply) = message {
+            let _ = reply.try_send(Reply::Error(crate::server::HOST_GONE_MESSAGE.into()));
+        }
+        return;
+    };
+    match message {
+        HostMessage::Edit(on) => host.set_edit(on),
+        HostMessage::Request(req, reply) => {
+            let answer = host.handle(&req);
+            if let Err(e) = reply.try_send(answer) {
+                err_log!(APP_TAG, "request {req:?}: the client stopped waiting before the reply: {e}");
+            }
+        }
+    }
+}

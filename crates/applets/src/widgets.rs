@@ -39,6 +39,8 @@ pub struct BuiltTree {
     /// The widget to put in the applet window.
     pub root: gtk::Widget,
     ids: HashMap<String, Item>,
+    /// The painter of every canvas of the tree, with or without an id.
+    painters: Vec<Rc<Painter>>,
 }
 
 /// One widget with an id: what `apply_update` needs to change it.
@@ -123,12 +125,14 @@ impl BuiltTree {
 /// cannot be loaded or a duplicate id fails the whole tree.
 pub fn build(node: &Node, dispatch: Rc<dyn Dispatch>) -> Result<BuiltTree, String> {
     let mut ids = HashMap::new();
-    let root = build_node(node, &dispatch, &mut ids)?;
-    Ok(BuiltTree { root, ids })
+    let mut painters = Vec::new();
+    let root = build_node(node, &dispatch, &mut ids, &mut painters)?;
+    Ok(BuiltTree { root, ids, painters })
 }
 
-/// Build `node` and its children; widgets with an id go into `ids`.
-fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String, Item>) -> Result<gtk::Widget, String> {
+/// Build `node` and its children; widgets with an id go into `ids`, the
+/// painter of every canvas into `painters`.
+fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String, Item>, painters: &mut Vec<Rc<Painter>>) -> Result<gtk::Widget, String> {
     let what = ui_tree::describe(node.kind.type_name(), node.id.as_deref());
     if let Some(id) = &node.id {
         if ids.contains_key(id) { return Err(format!("{what}: duplicate id \"{id}\" in the tree")) }
@@ -142,7 +146,7 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
             };
             let container = gtk::Box::new(orientation, *spacing);
             for child in children {
-                container.append(&build_node(child, dispatch, ids)?);
+                container.append(&build_node(child, dispatch, ids, painters)?);
             }
             (container.upcast(), View::Box)
         }
@@ -194,6 +198,7 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
             area.set_content_height(*height);
             handler.set(*draw);
             let painter = Rc::new(Painter::new(node.id.as_deref().unwrap_or("(no id)"), Rc::default()));
+            painters.push(painter.clone());
             let (clip_width, clip_height) = (f64::from(*width), f64::from(*height));
             let draw_painter = painter.clone();
             area.set_draw_func(move |_, cr, _, _| {
@@ -338,12 +343,18 @@ struct Painter {
     /// The last replay error logged, so a redraw every second with the same
     /// fault logs it once; a good frame clears it.
     last_error: RefCell<Option<String>>,
+    /// Told every new replay error (see [`set_error_listener`]).
+    listener: RefCell<Option<ErrorListener>>,
 }
+
+/// Receives the new replay errors of a canvas. It must hold only weak
+/// references: the drawing area owns it through its painter.
+pub type ErrorListener = Rc<dyn Fn(String)>;
 
 impl Painter {
     /// A painter of canvas `id` replaying `commands`.
     fn new(id: &str, commands: Rc<RefCell<Vec<Command>>>) -> Painter {
-        Painter { id: id.to_string(), commands, images: RefCell::default(), last_error: RefCell::new(None) }
+        Painter { id: id.to_string(), commands, images: RefCell::default(), last_error: RefCell::new(None), listener: RefCell::new(None) }
     }
 
     /// Replay the commands on `cr`. A failure is logged with `err_log!`
@@ -357,13 +368,33 @@ impl Painter {
         if self.last_error.borrow().as_deref() == Some(error.as_str()) { return None; }
         err_log!(APP_TAG, "canvas \"{}\": {error}", self.id);
         *self.last_error.borrow_mut() = Some(error.clone());
+        // Cloned out first: the listener may set another listener.
+        let listener = self.listener.borrow().clone();
+        if let Some(listener) = listener {
+            listener(format!("canvas \"{}\": {error}", self.id));
+        }
         Some(error)
+    }
+
+    /// Tell `listener` every new replay error from now on.
+    fn set_listener(&self, listener: ErrorListener) {
+        *self.listener.borrow_mut() = Some(listener);
     }
 
     /// The last replay error logged, if the last frame failed.
     #[cfg(test)]
     fn last_error(&self) -> Option<String> {
         self.last_error.borrow().clone()
+    }
+}
+
+/// Tell `listener` every new replay error of every canvas of `tree` (an
+/// error is new when it differs from the last one of that canvas, as for
+/// the log). The listener runs inside the draw function: it should defer
+/// any widget change to the main loop.
+pub fn set_error_listener(tree: &BuiltTree, listener: ErrorListener) {
+    for painter in &tree.painters {
+        painter.set_listener(listener.clone());
     }
 }
 
