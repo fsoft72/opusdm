@@ -14,6 +14,7 @@
 
 use crate::applet_window::{self, AppletWindow};
 use crate::discovery::{self, Discovered};
+use crate::placement::Rect;
 use crate::protocol::{AppletStatus, Reply, Request};
 use crate::runtime::{Event, Runtime, Sink};
 use crate::server::HostMessage;
@@ -222,6 +223,70 @@ impl Host {
         }
     }
 
+    /// What a move or resize of applet `id`'s window by the window manager
+    /// does: save the new geometry. Holds only a `Weak<Host>`; a failed
+    /// upgrade and a failed save are logged.
+    fn geometry_handler(&self, id: &str) -> impl Fn(Rect) + 'static {
+        let host = self.me.clone();
+        let id = id.to_string();
+        move |rect| {
+            let Some(host) = host.upgrade() else {
+                err_log!(APP_TAG, "applet {id}: window moved to {rect:?} after the host was dropped, not saved");
+                return;
+            };
+            if let Err(e) = host.save_geometry(&id, rect) { err_log!(APP_TAG, "{e}"); }
+        }
+    }
+
+    /// Save `rect` (x, y, width, height) as the geometry of the open applet
+    /// `id`, keeping the rest of its state. `Ok(true)` when the state file
+    /// was written, `Ok(false)` when it already had that geometry.
+    pub fn save_geometry(&self, id: &str, rect: Rect) -> Result<bool, String> {
+        if !self.applets.borrow().contains_key(id) { return Err(format!("applet {id}: geometry {rect:?} not saved, the applet is not open")); }
+        let mut st = state::load_in(&self.config.state_dir, id);
+        let (x, y, width, height) = rect;
+        if (st.x, st.y, st.width, st.height) == (Some(x), Some(y), Some(width), Some(height)) { return Ok(false); }
+        (st.x, st.y, st.width, st.height) = (Some(x), Some(y), Some(width), Some(height));
+        state::save_in(&self.config.state_dir, id, &st).map_err(|e| format!("applet {id}: cannot save its geometry {rect:?}: {e}"))?;
+        debug_log!(APP_TAG, "applet {id}: geometry {rect:?} saved");
+        Ok(true)
+    }
+
+    /// The target geometry of the window of applet `id`, while it is open.
+    pub fn target_of(&self, id: &str) -> Option<Rect> {
+        self.applets.borrow().get(id).map(|a| a.window.target())
+    }
+
+    /// Clamp the windows of every open applet to `monitors` (see
+    /// [`AppletWindow::reclamp`]; the saved geometry is not rewritten).
+    pub fn reclamp_windows(&self, monitors: &[Rect]) {
+        let applets: Vec<Rc<Applet>> = self.applets.borrow().values().cloned().collect();
+        for applet in applets {
+            applet.window.reclamp(monitors);
+        }
+    }
+
+    /// Clamp the applet windows again whenever the monitors of the default
+    /// display change (hotplug, resolution). Call once, at startup. The
+    /// handlers are owned by GDK's monitor list (it lives as long as the
+    /// display, the whole run) and hold only a `Weak<Host>`; a change after
+    /// the host is gone is logged.
+    pub fn watch_monitors(&self) {
+        let Some(display) = gtk::gdk::Display::default() else {
+            err_log!(APP_TAG, "no default display: applet windows are not clamped again when the monitors change");
+            return;
+        };
+        let host = self.me.clone();
+        opusdm_ui::watch_monitors(&display, move |monitors| {
+            let Some(host) = host.upgrade() else {
+                err_log!(APP_TAG, "the monitors changed after the host was dropped; applet windows not clamped");
+                return;
+            };
+            debug_log!(APP_TAG, "monitors changed: {monitors:?}");
+            host.reclamp_windows(&monitors);
+        });
+    }
+
     /// The user closed the window of applet `id`: save `enabled = false`
     /// and close it, as `SetEnabled { enabled: false }`. A save failure is
     /// logged and the applet still closes.
@@ -253,7 +318,7 @@ impl Host {
             Err(e) => return Err(e.clone()),
         };
         let st = state::load_in(&self.config.state_dir, id);
-        let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows, self.close_handler(id));
+        let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows, self.close_handler(id), self.geometry_handler(id));
         let applet = Rc::new_cyclic(|me| Applet {
             id: id.clone(),
             runtime: RefCell::new(None),

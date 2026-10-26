@@ -72,6 +72,7 @@ fn main() -> gtk::glib::ExitCode {
             None => err_log!(APP_TAG, "startup ran twice; the request loop is already running"),
         }
         host.load_enabled();
+        host.watch_monitors();
     });
     // Nothing to do on activation: the applets open at startup.
     app.connect_activate(|_| {});

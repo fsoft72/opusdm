@@ -37,6 +37,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
+use x11rb::protocol::xproto::{self, ConnectionExt};
 
 /// Tag used in log lines.
 const APP_TAG: &str = "applets";
@@ -89,16 +90,57 @@ fn _apply(xid: u32, x: i32, y: i32, w: u32, h: u32) -> Result<(), opusdm_ui::X11
     })
 }
 
-/// Default position of an applet `width` pixels wide that has no saved
-/// position, on the monitor `(mx, my, mw, mh)`: the top right area, moved
-/// down and left by `index` steps so successive applets do not overlap
-/// exactly, and never left of or above the monitor origin.
-pub fn default_position(monitor: (i32, i32, i32, i32), width: i32, index: usize) -> (i32, i32) {
-    let (mx, my, mw, _mh) = monitor;
+/// Default position of an applet of `size` (width, height) that has no
+/// saved position, on the monitor `(mx, my, mw, mh)`: the top right area,
+/// moved down and left by `index` steps so successive applets do not overlap
+/// exactly, never below the bottom of the monitor and never left of or above
+/// the monitor origin.
+pub fn default_position(monitor: (i32, i32, i32, i32), size: (i32, i32), index: usize) -> (i32, i32) {
+    let (mx, my, mw, mh) = monitor;
+    let (width, height) = size;
     let step = DEFAULT_CASCADE.saturating_mul(i32::try_from(index).unwrap_or(i32::MAX));
     let x = (mx + mw - width - DEFAULT_RIGHT_MARGIN).saturating_sub(step).max(mx);
-    let y = (my + DEFAULT_TOP_MARGIN).saturating_add(step);
+    let y = (my + DEFAULT_TOP_MARGIN).saturating_add(step).min(my + mh - height).max(my);
     (x, y)
+}
+
+/// The geometry of the realized `window` as the window manager has it now:
+/// `(x, y, width, height)`, where `x`, `y` is the top-left corner of its
+/// frame on the root window (the point [`prepare`] moves, the client origin
+/// minus the left and top `_NET_FRAME_EXTENTS`) and the size is the client
+/// size. `None` when the window is not realized, not an X11 window (logged
+/// once per process, as [`prepare`]) or an X11 call fails (logged).
+pub fn current_geometry(window: &gtk::ApplicationWindow) -> Option<(i32, i32, i32, i32)> {
+    let title = window.title().map(|t| t.to_string()).unwrap_or_default();
+    if window.surface().is_none() { opusdm_ipc::err_log!(APP_TAG, "applet window '{title}': not realized, its geometry cannot be read"); return None; }
+    let Some(xid) = opusdm_ui::x11_window_id(window) else {
+        if !NOT_X11_LOGGED.swap(true, Ordering::Relaxed) { opusdm_ipc::err_log!(APP_TAG, "applet windows are not X11 windows (Wayland?): no stacking, desktop or position hints are applied, the geometry is not read back"); }
+        return None;
+    };
+    match _read_geometry(xid) {
+        Ok(geometry) => Some(geometry),
+        Err(e) => {
+            opusdm_ipc::err_log!(APP_TAG, "applet window '{title}' (0x{xid:x}): cannot read its geometry: {e}");
+            None
+        }
+    }
+}
+
+/// Frame origin on the root window and client size of `xid` (see
+/// [`current_geometry`]). Missing frame extents count as 0.
+fn _read_geometry(xid: u32) -> Result<(i32, i32, i32, i32), opusdm_ui::X11Error> {
+    opusdm_ui::with_x11(|x11| {
+        let conn = x11.conn();
+        let size = conn.get_geometry(xid)?.reply()?;
+        let origin = conn.translate_coordinates(xid, x11.root(), 0, 0)?.reply()?;
+        let extents = conn.get_property(false, xid, x11.atom("_NET_FRAME_EXTENTS")?, xproto::AtomEnum::CARDINAL, 0, 4)?.reply()?;
+        let values: Vec<u32> = extents.value32().map(|v| v.collect()).unwrap_or_default();
+        let (left, top) = match values[..] {
+            [l, _, t, _] => (i32::try_from(l)?, i32::try_from(t)?),
+            _ => (0, 0),
+        };
+        Ok((i32::from(origin.dst_x) - left, i32::from(origin.dst_y) - top, i32::from(size.width), i32::from(size.height)))
+    })
 }
 
 #[cfg(test)]
@@ -107,18 +149,25 @@ mod tests {
 
     #[test]
     fn the_first_applet_goes_to_the_top_right_area() {
-        assert_eq!(default_position((0, 0, 1280, 800), 260, 0), (1280 - 260 - DEFAULT_RIGHT_MARGIN, DEFAULT_TOP_MARGIN));
+        assert_eq!(default_position((0, 0, 1280, 800), (260, 300), 0), (1280 - 260 - DEFAULT_RIGHT_MARGIN, DEFAULT_TOP_MARGIN));
     }
 
     #[test]
     fn later_applets_cascade_and_stay_on_their_monitor() {
-        let first = default_position((1920, 0, 1280, 800), 300, 0);
-        let second = default_position((1920, 0, 1280, 800), 300, 1);
+        let first = default_position((1920, 0, 1280, 800), (300, 200), 0);
+        let second = default_position((1920, 0, 1280, 800), (300, 200), 1);
         assert_eq!(first.0 - second.0, DEFAULT_CASCADE);
         assert_eq!(second.1 - first.1, DEFAULT_CASCADE);
         assert!(first.0 >= 1920);
-        assert_eq!(default_position((100, 0, 400, 300), 600, 3).0, 100, "a wide applet is not put left of the monitor");
-        let far = default_position((0, 0, 1280, 800), 260, usize::MAX);
+        assert_eq!(default_position((100, 0, 400, 300), (600, 100), 3).0, 100, "a wide applet is not put left of the monitor");
+        let far = default_position((0, 0, 1280, 800), (260, 300), usize::MAX);
         assert_eq!(far.0, 0);
+    }
+
+    #[test]
+    fn a_default_placed_applet_stays_above_the_bottom_of_its_monitor() {
+        assert_eq!(default_position((0, 0, 1280, 800), (260, 300), 20).1, 800 - 300, "a long cascade stops at the bottom");
+        assert_eq!(default_position((0, 100, 1280, 800), (260, 300), usize::MAX).1, 900 - 300);
+        assert_eq!(default_position((0, 100, 1280, 300), (260, 500), 0).1, 100, "a tall applet is not put above the monitor");
     }
 }

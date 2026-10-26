@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod host;
 pub mod instance;
 pub mod manifest;
+pub mod placement;
 pub mod protocol;
 pub mod runtime;
 pub mod server;

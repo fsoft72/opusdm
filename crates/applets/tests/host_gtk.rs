@@ -133,6 +133,8 @@ fn host_gtk_checks() {
     a_click_that_shows_a_new_tree_replaces_it(&app);
     a_window_close_disables_the_applet(&app);
     prepare_on_a_window_without_an_x11_surface_does_not_panic(&app);
+    the_host_saves_a_changed_geometry_once(&app);
+    a_monitor_change_clamps_the_open_windows(&app);
     eprintln!("host_gtk_checks: all sections ran");
 }
 
@@ -472,4 +474,58 @@ fn prepare_on_a_window_without_an_x11_surface_does_not_panic(app: &gtk::Applicat
     assert!(!window.is_visible(), "prepare must not show the window");
     window.destroy();
     eprintln!("section prepare_on_a_window_without_an_x11_surface_does_not_panic: ok");
+}
+
+/// Task 11: the entry point the window calls after a move or resize by the
+/// window manager writes `x, y, width, height` into the state file (keeping
+/// `enabled` and the settings), and an unchanged geometry writes nothing.
+fn the_host_saves_a_changed_geometry_once(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    dirs.applet("pos", &manifest("Pos"), &label_script("here"));
+    let mut saved = AppletState { enabled: true, x: Some(40), y: Some(50), ..Default::default() };
+    saved.settings.insert("kept".into(), serde_json::json!("yes"));
+    state::save_in(dirs.states.path(), "pos", &saved).unwrap();
+    let host = dirs.host(app);
+    host.load_enabled();
+    assert_eq!(host.save_geometry("pos", (300, 200, 250, 150)), Ok(true), "a changed geometry is written");
+    let st = state::load_in(dirs.states.path(), "pos");
+    assert_eq!((st.x, st.y, st.width, st.height), (Some(300), Some(200), Some(250), Some(150)));
+    assert!(st.enabled, "enabled is kept");
+    assert_eq!(st.settings.get("kept"), Some(&serde_json::json!("yes")), "the settings are kept");
+    assert_eq!(host.save_geometry("pos", (300, 200, 250, 150)), Ok(false), "the same geometry is not written again");
+    assert!(host.save_geometry("nothere", (1, 2, 3, 4)).is_err(), "an applet that is not open is an error");
+    assert!(!dirs.states.path().join("nothere.json").exists(), "no state file for an applet that is not open");
+    assert!(host.is_running("pos"), "saving the geometry does not touch the runtime");
+    eprintln!("section the_host_saves_a_changed_geometry_once: ok");
+}
+
+/// Task 11: a saved position off every monitor opens inside the first
+/// monitor, and a monitor change clamps the target of every open window
+/// without rewriting the saved position.
+fn a_monitor_change_clamps_the_open_windows(app: &gtk::Application) {
+    let monitors = opusdm_ui::list_monitors(&gtk::gdk::Display::default().expect("a display"));
+    assert!(!monitors.is_empty(), "the test display lists a monitor");
+    let dirs = Dirs::new();
+    dirs.applet("far", &manifest("Far"), &label_script("far"));
+    dirs.applet("near", &manifest("Near"), &label_script("near"));
+    state::save_in(dirs.states.path(), "far", &AppletState { enabled: true, x: Some(5000), y: Some(40), ..Default::default() }).unwrap();
+    state::save_in(dirs.states.path(), "near", &AppletState { enabled: true, x: Some(500), y: Some(400), width: Some(210), height: Some(120), ..Default::default() }).unwrap();
+    let host = dirs.host(app);
+    host.load_enabled();
+    let (x, y, w, h) = host.target_of("far").expect("far is open");
+    assert!(monitors.iter().any(|&(mx, my, mw, mh)| x >= mx && y >= my && x + w <= mx + mw && y + h <= my + mh), "x 5000 opens inside a monitor: {:?} on {monitors:?}", (x, y, w, h));
+    assert_eq!((w, h), (210, 120), "the manifest size");
+    assert_eq!(host.target_of("near"), Some((500, 400, 210, 120)), "a position inside the screen is kept at open");
+
+    // The monitors change to one 640x480 screen.
+    host.reclamp_windows(&[(0, 0, 640, 480)]);
+    assert_eq!(host.target_of("near"), Some((430, 360, 210, 120)), "clamped into the new monitor");
+    let (x, y, _, _) = host.target_of("far").unwrap();
+    assert!(x + 210 <= 640 && y + 120 <= 480, "far clamped too: {x},{y}");
+    assert_eq!(state::load_in(dirs.states.path(), "near").x, Some(500), "the saved position is not rewritten by a clamp");
+    // No monitor listed (a hotplug in progress): the targets stay.
+    host.reclamp_windows(&[]);
+    assert_eq!(host.target_of("near"), Some((430, 360, 210, 120)));
+    assert!(host.is_running("near") && host.is_running("far"));
+    eprintln!("section a_monitor_change_clamps_the_open_windows: ok");
 }
