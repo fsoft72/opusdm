@@ -1,0 +1,24 @@
+[package]
+name = "opusdm-applet-browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_applet_browser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-applet-browser"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-applets = { path = "../applets" }
+opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
+async-channel.workspace = true
+gtk4.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
