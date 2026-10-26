@@ -5,7 +5,8 @@
 //! `opusdm-applets-supervisor`, which owns the `Child` of `opusdm-applets`.
 //! The hub never joins or waits for that thread and no hub object holds a
 //! handle to it or to the child. When the child exits, the supervisor logs
-//! the status and starts it again, up to [`MAX_RESTARTS`] times in
+//! the status and starts it again after a growing delay (1 s, 2 s, 4 s),
+//! up to [`MAX_RESTARTS`] times in
 //! [`RESTART_WINDOW`]; past that it logs once that it gives up and the thread
 //! ends. An exit with [`EXIT_ALREADY_RUNNING`] (another `opusdm-applets` owns
 //! the socket, the hub was restarted while the old one lived) is not a
@@ -37,6 +38,18 @@ const TAKEOVER_GRACE: Duration = Duration::from_secs(2);
 
 /// How often the take-over check polls the child.
 const TAKEOVER_POLL: Duration = Duration::from_millis(10);
+
+/// How often the real supervisor checks whether the child exited (slow on
+/// purpose: it runs for the whole session).
+const SUPERVISOR_POLL: Duration = Duration::from_millis(500);
+
+/// The delay before the first restart in the window; it doubles for each
+/// further one (1 s, 2 s, 4 s).
+const RESTART_BACKOFF_BASE: Duration = Duration::from_secs(1);
+
+/// The highest doubling of [`RESTART_BACKOFF_BASE`], so the shift never
+/// overflows.
+const RESTART_BACKOFF_MAX_SHIFT: usize = 6;
 
 /// The binary started next to the hub.
 const TOOL: &str = "opusdm-applets";
@@ -120,11 +133,19 @@ fn next_action_with(status: Option<i32>, history: &mut VecDeque<Instant>, now: I
     if may_restart_within(history, now, timing.window) { Action::Restart } else { Action::GiveUp }
 }
 
-/// Start the supervisor thread of `opusdm-applets` (X11 only: on Wayland it
-/// only logs at debug level). Returns at once; the hub never waits for it.
+/// The delay before the `n`-th restart in the window (1-based): 1 s, 2 s,
+/// 4 s... `0` is treated as the first.
+fn restart_delay(n: usize) -> Duration {
+    let shift = n.saturating_sub(1).min(RESTART_BACKOFF_MAX_SHIFT) as u32;
+    RESTART_BACKOFF_BASE * (1u32 << shift)
+}
+
+/// Start the supervisor thread of `opusdm-applets`. X11 only: on Wayland,
+/// or in a hub without a display (TTY, ssh), it only logs at debug level.
+/// Returns at once; the hub never waits for it.
 pub fn start() {
-    if opusdm_ipc::session::is_wayland() {
-        opusdm_ipc::debug_log!(TAG, "{TOOL} not started: the applets are X11 only");
+    if !opusdm_ipc::session::is_x11() {
+        opusdm_ipc::debug_log!(TAG, "{TOOL} not started: the applets are X11 only (session: {:?})", opusdm_ipc::session::current());
         return;
     }
     let dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
@@ -132,7 +153,7 @@ pub fn start() {
     // The thread owns the child; when the hub exits the thread dies with it
     // and the child keeps running (a restarted hub then waits for it).
     let spawned = std::thread::Builder::new().name(THREAD_NAME.into()).spawn(move || {
-        let report = supervise(|| spawn_from(dir.as_deref()), opusdm_ipc::reaped::wait, std::thread::sleep, PRODUCTION);
+        let report = supervise(|| spawn_from(dir.as_deref()), |child| _wait_polling(child, SUPERVISOR_POLL), std::thread::sleep, PRODUCTION);
         opusdm_ipc::debug_log!(TAG, "{THREAD_NAME} ended: {report:?}");
     });
     if let Err(e) = spawned {
@@ -189,7 +210,9 @@ fn supervise(
         match next_action_with(status, &mut history, Instant::now(), timing) {
             Action::Restart => {
                 waiting = false;
-                opusdm_ipc::err_log!(TAG, "restarting {TOOL}");
+                let delay = restart_delay(history.len());
+                opusdm_ipc::err_log!(TAG, "restarting {TOOL} in {}s", delay.as_secs());
+                sleep(delay);
             }
             Action::WaitAndRetry(delay) => {
                 if !waiting {
@@ -223,6 +246,19 @@ fn _log_exit(pid: u32, result: io::Result<ExitStatus>) -> Option<i32> {
         opusdm_ipc::err_log!(TAG, "{TOOL} (pid {pid}) exited: {status}");
     }
     status.code()
+}
+
+/// Block until `child` exits, checking every `interval`, like
+/// `reaped::wait` but with a slow poll (safe against the SIGCHLD reaper
+/// taking the child first).
+fn _wait_polling(child: &mut Child, interval: Duration) -> io::Result<ExitStatus> {
+    let mut lost_since = None;
+    loop {
+        if let Some(status) = opusdm_ipc::reaped::poll_exit(child, &mut lost_since)? {
+            return Ok(status);
+        }
+        std::thread::sleep(interval);
+    }
 }
 
 /// The exit of `child` if it ends within `grace`, `None` while it is still
@@ -319,7 +355,8 @@ mod tests {
         );
         assert_eq!(report, Report { ended: Ended::GaveUp, takeovers: 0 });
         assert_eq!(spawns.get(), MAX_RESTARTS + 1, "the first start plus the restarts");
-        assert!(sleeps.borrow().is_empty(), "a crash is restarted at once");
+        let backoff = [Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
+        assert_eq!(*sleeps.borrow(), backoff, "a growing delay before each restart");
     }
 
     #[test]
@@ -341,24 +378,50 @@ mod tests {
         );
         assert_eq!(report, Report { ended: Ended::MissingBinary, takeovers: 1 }, "no give-up");
         assert_eq!(spawns.get(), 7);
-        assert_eq!(*sleeps.borrow(), vec![FAST.retry; 5]);
+        let mut expected = vec![FAST.retry; 5];
+        expected.push(restart_delay(1));
+        assert_eq!(*sleeps.borrow(), expected, "the retries, then the backoff of the first counted restart");
     }
 
     #[test]
     fn a_spawn_error_counts_like_a_crash() {
         let spawns = Cell::new(0);
+        let sleeps = RefCell::new(Vec::new());
         let report = supervise(
             || {
                 spawns.set(spawns.get() + 1);
                 Err(io::Error::from(io::ErrorKind::PermissionDenied))
             },
             opusdm_ipc::reaped::wait,
-            |_| {},
+            |d| sleeps.borrow_mut().push(d),
             FAST,
         );
         assert_eq!(report.ended, Ended::GaveUp);
         assert_eq!(spawns.get(), MAX_RESTARTS + 1);
+        assert_eq!(sleeps.borrow().len(), MAX_RESTARTS, "each restart waits its backoff");
     }
+
+    #[test]
+    fn restart_delay_doubles_from_one_second() {
+        assert_eq!(restart_delay(1), Duration::from_secs(1));
+        assert_eq!(restart_delay(2), Duration::from_secs(2));
+        assert_eq!(restart_delay(3), Duration::from_secs(4));
+    }
+
+    #[test]
+    fn the_supervisor_polls_slowly() {
+        assert_eq!(SUPERVISOR_POLL, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn wait_polling_returns_the_exit_code() {
+        let mut child = sh_exit(EXIT_ALREADY_RUNNING).unwrap();
+        let status = _wait_polling(&mut child, Duration::from_millis(5)).unwrap();
+        assert_eq!(status.code(), Some(EXIT_ALREADY_RUNNING));
+        let mut child = Command::new("sleep").arg("0.05").spawn().unwrap();
+        assert!(_wait_polling(&mut child, Duration::from_millis(5)).unwrap().success());
+    }
+
 
     #[test]
     fn a_missing_binary_is_logged_and_does_not_panic() {
