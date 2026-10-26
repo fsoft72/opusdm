@@ -4,8 +4,11 @@
 
 pub mod canvas;
 pub mod discovery;
+pub mod instance;
 pub mod manifest;
+pub mod protocol;
 pub mod runtime;
+pub mod server;
 pub mod state;
 pub mod ui_tree;
 pub mod widgets;
