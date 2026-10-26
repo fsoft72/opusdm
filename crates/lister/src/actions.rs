@@ -26,20 +26,19 @@ const ROW_ICON_SIZE: i32 = 18;
 
 /// Build the button row and wire every control. Call once during window build.
 pub fn attach(ui: &Rc<Ui>) {
-    use crate::icons::{icon_button, SVG_COPY, SVG_DELETE, SVG_MKDIR, SVG_MOVE, SVG_NEWFILE, SVG_PARENT, SVG_RENAME};
+    use crate::icons::{icon_button, SVG_COPY, SVG_DELETE, SVG_MKDIR, SVG_MOVE, SVG_PARENT, SVG_RENAME};
     let row = &ui.button_row;
 
     let parent_btn = icon_button(SVG_PARENT, "Parent Directory", ROW_ICON_SIZE);
     let copy_btn = icon_button(SVG_COPY, "Copy (Source -> Dest). Right click: Copy As...", ROW_ICON_SIZE);
     let move_btn = icon_button(SVG_MOVE, "Move (Source -> Dest). Right click: Move As...", ROW_ICON_SIZE);
     let delete_btn = icon_button(SVG_DELETE, "Move to Trash. Right click: Delete permanently", ROW_ICON_SIZE);
-    let mkdir_btn = icon_button(SVG_MKDIR, "Make Directory", ROW_ICON_SIZE);
-    let newfile_btn = icon_button(SVG_NEWFILE, "New File. Right click: Make Directory", ROW_ICON_SIZE);
+    let mkdir_btn = icon_button(SVG_MKDIR, "Make Directory. Right click: New File", ROW_ICON_SIZE);
     let rename_btn = icon_button(SVG_RENAME, "Rename", ROW_ICON_SIZE);
     let hidden_btn = hidden_toggle(ui);
     let term_btn = text_button(">_", "Terminal Drawer (F4 / `)");
 
-    for btn in [&parent_btn, &copy_btn, &move_btn, &delete_btn, &mkdir_btn, &newfile_btn, &rename_btn] {
+    for btn in [&parent_btn, &copy_btn, &move_btn, &delete_btn, &mkdir_btn, &rename_btn] {
         row.append(btn);
     }
     row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -53,8 +52,7 @@ pub fn attach(ui: &Rc<Ui>) {
     on_click(ui, &term_btn, |ui| ui.toggle_terminal());
     wire_delete(ui, &delete_btn);
     on_click(ui, &mkdir_btn, |ui| make_in_cwd(ui, "New directory name", |name| Op::MakeDir { name }));
-    on_click(ui, &newfile_btn, |ui| make_in_cwd(ui, "New file name", |name| Op::NewFile { name }));
-    wire_secondary_command(ui, &newfile_btn, crate::keys::CommandId::Mkdir);
+    wire_secondary_command(ui, &mkdir_btn, crate::keys::CommandId::NewFile);
     on_click(ui, &rename_btn, rename_selected);
     wire_role_lock(ui);
 
