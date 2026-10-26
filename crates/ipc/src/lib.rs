@@ -39,6 +39,7 @@ pub mod funcref;
 pub mod glob;
 pub mod groups;
 pub mod inotify;
+pub mod instance;
 pub mod leftout;
 pub mod look;
 pub mod menu;

@@ -1,5 +1,5 @@
 //! The buttons that open the other OpusDM configuration tools (Functions,
-//! Scripts, Apps, Screens), each as its own process, and the Button Banks
+//! Scripts, Apps, Screens, Applets), each as its own process, and the Button Banks
 //! manager, which lives in the hub. They sit under the list of the Advanced tab.
 
 use gtk4 as gtk;
@@ -15,12 +15,13 @@ pub enum Action {
 }
 
 /// The buttons under the list of the Advanced tab: label and action.
-const TOOL_BUTTONS: [(&str, Action); 5] = [
+const TOOL_BUTTONS: [(&str, Action); 6] = [
     ("Manage Functions", Action::Spawn("opusdm-lister", &["--manage-functions"])),
     ("Scripts (JavaScript)", Action::Spawn("opusdm-lister", &["--scripts"])),
     ("Button Banks", Action::OpenBankManager),
     ("Apps", Action::Spawn("opusdm-apps-editor", &[])),
     ("Screens", Action::Spawn("opusdm-screen", &[])),
+    ("Edit Applets", Action::Spawn("opusdm-applet-browser", &[])),
 ];
 
 /// Build the box with one button per tool that has its own window.
@@ -67,4 +68,16 @@ fn sibling_bin(name: &str) -> PathBuf {
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
         .unwrap_or_else(|| PathBuf::from(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_applets_is_the_last_button_and_starts_the_applet_browser() {
+        let (label, action) = TOOL_BUTTONS.last().unwrap();
+        assert_eq!(*label, "Edit Applets");
+        assert!(matches!(action, Action::Spawn("opusdm-applet-browser", [])));
+    }
 }

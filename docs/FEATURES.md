@@ -276,6 +276,19 @@ Turn it off with one switch and your values are kept for later.
 
 A simple list of programs to start with your session, each with an optional delay.
 
+### 6.8 Applets
+
+Small **desktop widgets you write yourself**: a folder with an `applet.json` and a `main.js`, no
+compiling. The two samples are an analog **weather clock** and a **news feed** reader.
+
+- **JavaScript** with timers, HTTPS requests, a widget tree (labels, buttons, lists, entries,
+  switches, images) and a Canvas 2D style drawing surface.
+- A **settings window** generated from the manifest; changes reach the running applet at once.
+- **Alt + drag** to move, or **Edit Applets** from the desktop menu: dashed borders, a drag handle
+  and a gear on every applet.
+- Applets run in **their own process**: a broken one never takes the desktop or the Listers down.
+- X11 sessions only, for now.
+
 ---
 
 ## 7. Panel, dock and system tray
@@ -455,6 +468,7 @@ One click and the whole desktop changes.
 - **Audio and network tray**: Volume, Wi-Fi and VPN in the panel.
 - **Device notifier**: USB sticks, mounted in one click.
 - **Notifications**: Popups, history and Do not disturb.
+- **Applets**: Desktop widgets in a few lines of JavaScript.
 - **Screenshot tool**: Capture, annotate, share.
 - **Viewer and player**: Pictures, video and music built in.
 

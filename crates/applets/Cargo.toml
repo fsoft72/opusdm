@@ -1,0 +1,29 @@
+[package]
+name = "opusdm-applets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_applets"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-applets"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-jscore = { path = "../jscore" }
+opusdm-ui = { path = "../ui" }
+async-channel.workspace = true
+boa_engine = { version = "0.22", default-features = false }
+gtk4.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+x11rb.workspace = true
+zbus = { version = "5.19.0", features = ["blocking"] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -2,6 +2,7 @@
 //! layer without the GTK toolbar.
 
 pub mod activation_follow;
+pub mod applet_host;
 pub mod bg_sequence;
 pub mod channels;
 pub mod children;

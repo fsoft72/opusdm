@@ -71,6 +71,18 @@
         mkdir: (p) => { call("fs.mkdir", { path: p }); },
     });
 
+    // ---- http ----------------------------------------------------------
+    const http = Object.freeze({
+        /**
+         * Synchronous HTTP GET. `options`: `{ headers, timeoutMs }`.
+         * Returns `{ status, ok, headers, body }`; throws an `Error` on failure.
+         */
+        get: (url, options) => {
+            const o = options || {};
+            return call("http.get", { url: String(url), headers: o.headers || null, timeoutMs: o.timeoutMs === undefined ? null : o.timeoutMs });
+        },
+    });
+
     // ---- listers -------------------------------------------------------
     // A snapshot of one Lister. `selected` is known for SOURCE and DEST only
     // (the hub collected it when the function started); for the others it is
@@ -217,6 +229,7 @@
         /** Read `dir` again in every Lister showing it. */
         refresh: (dir) => { call("refresh", { path: dir }); },
         fs,
+        http,
         path,
         Lister,
     };

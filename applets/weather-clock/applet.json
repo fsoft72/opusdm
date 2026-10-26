@@ -1,0 +1,13 @@
+{
+    "name": "Weather Clock",
+    "version": "1.0",
+    "description": "An analog clock with the weather of a city (Open-Meteo).",
+    "entry": "main.js",
+    "window": { "width": 260, "height": 320, "resizable": false, "transparent": true },
+    "settings": [
+        { "key": "city", "type": "string", "label": "City", "default": "Rome" },
+        { "key": "units", "type": "choice", "label": "Units", "default": "C", "choices": ["C", "F"] },
+        { "key": "refreshMinutes", "type": "number", "label": "Refresh every (minutes)", "default": 30 }
+    ],
+    "permissions": ["net"]
+}

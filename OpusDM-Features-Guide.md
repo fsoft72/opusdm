@@ -1028,6 +1028,30 @@ OpusDM parte sempre in stato "visibile".
    `{f}` come **Image file** e, facoltativo, `fill`, `fit`, `center` o `tile`
    come **Fit**.
 
+### Step 17.5 - Applet sul desktop
+
+Gli applet sono piccoli strumenti in JavaScript che stanno sul desktop
+(solo sessione X11). Ognuno è una cartella in `~/.config/opusdm/applets/<id>/`
+con `applet.json` (nome, finestra, impostazioni) e `main.js`.
+
+1. Copia un applet di esempio dal repository:
+   `cp -r applets/weather-clock ~/.config/opusdm/applets/`.
+2. **Click destro** sul desktop > **Edit Applets** (l'ultima voce del menu):
+   si apre l'**Applet Browser** (se era già aperto premi **Refresh**). Accendi
+   l'interruttore di
+   **Weather Clock**: l'orologio appare sul desktop. Lo stesso browser si apre
+   da **Settings > Advanced > Edit Applets**.
+3. **Alt + trascinamento** con il tasto sinistro sposta l'applet; la posizione
+   viene ricordata.
+4. Nel browser accendi **Edit mode**: ogni applet mostra un bordo tratteggiato,
+   una maniglia per spostarlo e un ingranaggio che apre le sue impostazioni
+   (cambia **City** e premi **Apply**). Spegni **Edit mode** per nasconderli.
+5. Chiudere la finestra di un applet (Alt+F4) lo disattiva; riaccendilo dal
+   browser. Dopo aver modificato `main.js` premi **Reload**.
+
+La guida completa (manifest, API `opus`, widget e canvas) è in
+`docs/usage.md`, sezione 3.41.
+
 ---
 
 ## 18. Button Banks

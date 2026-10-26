@@ -39,7 +39,7 @@ NO_RESTART=0
 # Every OpusDM binary that can be running. opusdm-terminal is left out on
 # purpose: killing it would end the user's shells, possibly the one running
 # this script. Open terminals pick up the new binary when opened again.
-PROCESSES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-player opusdm-viewer opusdm-apps-editor opusdm-input-config opusdm-screen opusdm-network-manager opusdm-printer-manager opusdm-bluetooth-manager opusdm-polkit opusdm-notify"
+PROCESSES="opusdm-hub opusdm-lister opusdm-settings opusdm-dock opusdm-run opusdm-shot opusdm-player opusdm-viewer opusdm-apps-editor opusdm-input-config opusdm-screen opusdm-network-manager opusdm-printer-manager opusdm-bluetooth-manager opusdm-polkit opusdm-notify opusdm-applets opusdm-applet-browser"
 # The kernel keeps only the first 15 characters of a process name, and pgrep -x
 # compares against that: a longer name would never match.
 PROC_NAME_MAX=15
@@ -144,8 +144,11 @@ else
     echo "Session: X11 ($DISPLAY)"
 fi
 
-# Stop the hub, or every OpusDM process with --all
-if [ "$RESTART_ALL" -eq 1 ]; then STOP="$PROCESSES"; else STOP="opusdm-hub"; fi
+# Stop the hub, or every OpusDM process with --all. Without --all the applets
+# process goes too: the new hub's supervisor starts it again with the new
+# code (left running, it would keep the old applets and the new hub would
+# only probe it).
+if [ "$RESTART_ALL" -eq 1 ]; then STOP="$PROCESSES"; else STOP="opusdm-hub opusdm-applets"; fi
 echo "Stopping: $STOP"
 for p in $STOP; do
     pkill -u "$(id -u)" -x "$(printf '%.*s' "$PROC_NAME_MAX" "$p")" || true

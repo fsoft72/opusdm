@@ -1,7 +1,6 @@
 # Applets design
 
-Date: 2026-10-26. Status: draft, waiting for the owner's approval of the whole
-document.
+Date: 2026-10-26. Status: approved by the owner.
 
 ## Intent
 

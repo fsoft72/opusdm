@@ -270,6 +270,7 @@ const OPS: &[(&str, OpFn)] = &[
     ("fs.write", op_fs_write),
     ("fs.list", op_fs_list),
     ("fs.mkdir", op_fs_mkdir),
+    ("http.get", op_http_get),
 ];
 
 /// Run one `opus` call: look `op` up in [`OPS`] and run it for the running
@@ -463,6 +464,13 @@ fn op_fs_list(host: &Snapshot, payload: &Value) -> Result<Value, String> {
         .collect();
     list.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(Value::Array(list.into_iter().map(|(_, v)| v).collect()))
+}
+
+/// `opus.http.get`: a bounded, synchronous HTTP GET (see `opusdm_jscore::http`).
+fn op_http_get(_host: &Snapshot, payload: &Value) -> Result<Value, String> {
+    let request = opusdm_jscore::http::request_from_json(payload)?;
+    let response = opusdm_jscore::http::get(&request)?;
+    Ok(opusdm_jscore::http::response_to_json(&response))
 }
 
 /// `opus.fs.mkdir`: create `path` and its missing parents.

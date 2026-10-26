@@ -92,6 +92,11 @@ fn main() {
         opusdm_ipc::err_log!("opusdm-hub", "cannot start opusdm-notify: {e}");
     }
 
+    // The desktop applets (X11 only): a supervisor thread starts
+    // opusdm-applets and restarts it when it exits. A second one (restarted
+    // hub) exits and the supervisor waits for the old one.
+    opusdm_hub::applet_host::start();
+
     // Launch the Startup Apps of Settings, each after its own wait time,
     // unless the hub was restarted with --no-startup-apps.
     let desktop_settings = &config.desktop;
