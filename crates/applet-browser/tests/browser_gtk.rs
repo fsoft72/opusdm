@@ -34,7 +34,20 @@ impl FakeServer {
     /// gives `applets`, `GetEdit` false, `SetEdit(b)` `Edit(b)`, the rest `Ok`;
     /// with `refuse`, `SetEnabled`, `SetEdit` and `Reload` get `Error(refuse)`.
     fn start_with(applets: Vec<AppletStatus>, refuse: Option<&str>) -> FakeServer {
+        FakeServer::spawn(applets, refuse, false)
+    }
+
+    /// Like a refusing [`FakeServer::start_with`], but a refused `SetEnabled`
+    /// is applied anyway (a busy process that did the change after the
+    /// client gave up): the next `List` shows the new `enabled`.
+    fn start_applying_refused(applets: Vec<AppletStatus>, refuse: &str) -> FakeServer {
+        FakeServer::spawn(applets, Some(refuse), true)
+    }
+
+    /// The server thread of the constructors above.
+    fn spawn(applets: Vec<AppletStatus>, refuse: Option<&str>, apply_refused: bool) -> FakeServer {
         let refuse = refuse.map(str::to_string);
+        let mut applets = applets;
         let dir = tempfile::Builder::new().prefix("oab15").tempdir_in("/tmp").unwrap();
         let path = dir.path().join("a.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -45,6 +58,11 @@ impl FakeServer {
             for stream in listener.incoming() {
                 let Ok(mut s) = stream else { continue };
                 let Ok(Some(req)) = recv::<_, Request>(&mut s) else { continue };
+                if let (true, Request::SetEnabled { id, enabled }) = (apply_refused, &req) {
+                    for a in applets.iter_mut().filter(|a| &a.id == id) {
+                        (a.enabled, a.running) = (*enabled, *enabled);
+                    }
+                }
                 let reply = match (&req, &refuse) {
                     (Request::SetEnabled { .. } | Request::SetEdit(_) | Request::Reload { .. }, Some(msg)) => Reply::Error(msg.clone()),
                     _ => match &req {
@@ -245,6 +263,29 @@ fn a_refused_change_flips_the_switch_back_and_shows_the_error(app: &gtk::Applica
     close_all(app);
 }
 
+/// Final review (4): a `SetEnabled` answered with an error (the client
+/// timed out) that the busy process applied anyway: the switch flips back
+/// and the error is shown at once, then the list is asked again and the
+/// switch shows the real state (on).
+fn a_failed_set_enabled_lists_again_and_shows_the_real_state(app: &gtk::Application) {
+    let server = FakeServer::start_applying_refused(vec![applet("clock", Some("Clock"), false, None)], "the applets process is busy");
+    let window = window::open_with(app, server.path.clone(), false);
+    let sw: gtk::Switch = wait_named(&window, "enabled:clock");
+    let lists = || server.requests().iter().filter(|r| **r == Request::List).count();
+    let before = lists();
+    sw.set_active(true);
+    assert!(wait_request(&server, &Request::SetEnabled { id: "clock".into(), enabled: true }));
+    assert!(pump_until(WAIT, || lists() > before), "no List after a failed SetEnabled: {:?}", server.requests());
+    let root = window.clone().upcast::<gtk::Widget>();
+    let on = || named(&root, "enabled:clock").and_then(|w| w.downcast::<gtk::Switch>().ok()).is_some_and(|s| s.is_active() && s.is_sensitive());
+    assert!(pump_until(WAIT, on), "the switch does not show the real state (on)");
+    let status: gtk::Label = wait_named(&window, "status");
+    assert!(status.get_visible() && status.text().contains("busy"), "the error stays after the refresh: {:?}", status.text());
+    let sets = server.requests().iter().filter(|r| matches!(r, Request::SetEnabled { .. })).count();
+    assert_eq!(sets, 1, "the refresh sent no SetEnabled: {:?}", server.requests());
+    close_all(app);
+}
+
 /// Activating twice keeps one window.
 fn a_second_launch_raises_the_window_and_does_not_open_another(app: &gtk::Application) {
     let server = FakeServer::start(vec![]);
@@ -286,5 +327,6 @@ fn browser_gtk_checks() {
     the_edit_switch_sends_set_edit(&app);
     with_no_server_the_window_says_the_process_is_not_running(&app);
     a_refused_change_flips_the_switch_back_and_shows_the_error(&app);
+    a_failed_set_enabled_lists_again_and_shows_the_real_state(&app);
     closing_the_window_with_requests_in_flight_is_safe(&app);
 }

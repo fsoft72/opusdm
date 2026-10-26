@@ -287,8 +287,10 @@ fn connect_enabled(browser: &Rc<Browser>, sw: &gtk::Switch, status: &AppletStatu
     });
 }
 
-/// Send `SetEnabled` with the state of `sw`; refresh on success, flip the
-/// switch back on failure.
+/// Send `SetEnabled` with the state of `sw`; refresh on success. On a
+/// failure flip the switch back and show the error at once, then refresh
+/// too: a busy process may have done the change after the client gave up,
+/// and the list then shows its real state.
 fn set_enabled(browser: &Rc<Browser>, sw: &gtk::Switch, id: String, name: String) {
     let enabled = sw.is_active();
     sw.set_sensitive(false);
@@ -309,6 +311,7 @@ fn set_enabled(browser: &Rc<Browser>, sw: &gtk::Switch, id: String, name: String
         err_log!(LOG_TAG, "cannot {verb} the applet {id}: {msg}");
         browser.show_error(&format!("Cannot {verb} {name}: {msg}"));
         if let Some(sw) = &sw { browser.set_quietly(sw, !enabled); }
+        refresh_list(&browser);
     });
 }
 
