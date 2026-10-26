@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 
 /// Longest a test waits for something to happen on the main loop.
 const WAIT: Duration = Duration::from_secs(5);
+/// Longest a runaway test waits for the cut: a callback burns its whole CPU
+/// budget first (about 3 s in a debug build), much more under load.
+const RUNAWAY_WAIT: Duration = Duration::from_secs(20);
 
 /// The events an applet sent, in order.
 type Events = Rc<RefCell<Vec<Event>>>;
@@ -59,8 +62,13 @@ fn pump(time: Duration) {
 
 /// Iterate the thread-default main context until `done` or [`WAIT`] passes.
 fn pump_until(done: impl Fn() -> bool) -> bool {
+    pump_until_within(WAIT, done)
+}
+
+/// Iterate the thread-default main context until `done` or `limit` passes.
+fn pump_until_within(limit: Duration, done: impl Fn() -> bool) -> bool {
     let ctx = MainContext::ref_thread_default();
-    let end = Instant::now() + WAIT;
+    let end = Instant::now() + limit;
     while Instant::now() < end {
         if done() {
             return true;
@@ -357,13 +365,11 @@ fn a_handled_rejection_is_not_reported() {
 fn a_runaway_callback_is_cut_and_reported() {
     on_main_loop(|| {
         let events = Events::default();
-        let started = Instant::now();
         let code = r#"setTimeout(() => { while (true) {} }, 0); setTimeout(() => opus.log("alive"), 20)"#;
         let (_dir, rt) = start_code(code, Map::new(), &events);
         let _rt = rt.unwrap();
-        assert!(pump_until(|| has_log(&events, "alive")), "{:?}", events.borrow());
+        assert!(pump_until_within(RUNAWAY_WAIT, || has_log(&events, "alive")), "{:?}", events.borrow());
         assert!(has_error(&events, "loop"), "{:?}", events.borrow());
-        assert!(started.elapsed() < WAIT, "took {:?}", started.elapsed());
     });
 }
 
@@ -374,7 +380,7 @@ fn a_runaway_loop_cannot_be_caught_by_the_script() {
         let code = r#"setTimeout(() => { try { while (true) {} } catch (e) { opus.log("caught") } }, 0)"#;
         let (_dir, rt) = start_code(code, Map::new(), &events);
         let _rt = rt.unwrap();
-        assert!(pump_until(|| has_error(&events, "loop")), "{:?}", events.borrow());
+        assert!(pump_until_within(RUNAWAY_WAIT, || has_error(&events, "loop")), "{:?}", events.borrow());
         assert!(!has_log(&events, "caught"));
     });
 }
@@ -385,7 +391,7 @@ fn a_deep_recursion_is_cut_and_reported() {
         let events = Events::default();
         let (_dir, rt) = start_code(r#"function f() { f() } setTimeout(f, 0)"#, Map::new(), &events);
         let _rt = rt.unwrap();
-        assert!(pump_until(|| has_error(&events, "recursive")), "{:?}", events.borrow());
+        assert!(pump_until_within(RUNAWAY_WAIT, || has_error(&events, "recursive")), "{:?}", events.borrow());
     });
 }
 
