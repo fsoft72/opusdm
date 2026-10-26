@@ -760,7 +760,7 @@ The **Advanced** tab of OpusDM Settings has a list on the left and the picked to
 buttons. When you pick another entry, or close Settings, while the tool on screen has changes that are
 not saved, a question asks **Save** (save and apply), **Discard** (put the previous values back) or
 **Cancel** (stay). Under the list, **Manage Functions**, **Scripts (JavaScript)**, **Button Banks**,
-**Apps** and **Screens** open their own windows. The tools also run on their own as before
+**Apps**, **Screens** and **Edit Applets** (the Applet Browser, see 3.41) open their own windows. The tools also run on their own as before
 (`opusdm-lister --edit-hotkeys`, `--edit-filetypes`, `opusdm-input-config`, `opusdm-network-manager`).
 
 ### 3.29 Input Settings (`opusdm-input-config`)
@@ -1136,6 +1136,7 @@ opus.log(`copied ${src.selected.length} item(s) to ${target}`);
 | `opus.alert(msg)` | A modal dialog with one OK button; the script waits until it is closed |
 | `opus.notify(title, {body, icon, timeout, urgency})` | A desktop notification (`timeout` in ms, 0 stays; `urgency`: `low`, `normal`, `critical`); returns its id |
 | `opus.fs.*`, `opus.path.*` | Files (`read`, `write`, `append`, `list`, `stat`, `exists`, `isDir`, `mkdir`) and path helpers |
+| `opus.http.get(url, {headers, timeoutMs})` | An HTTP or HTTPS GET; returns `{status, ok, headers, body}` (synchronous here, a Promise in applets). A failed request throws |
 | `opus.newLister`, `setBackground`, `leaveOut`, `hide`, `reveal`, `desktop.next()`, `bank.toggle(name)` | Desktop shortcuts |
 
 The full reference is in the editor's panel and in `docs/superpowers/specs/2026-10-15-javascript-scripting-design.md`.
@@ -1158,6 +1159,124 @@ the texts you copied lately.
   restart.
 - **Wayland:** the panel can only see a copy while OpusDM has the focus there, so the history may miss
   texts copied in other apps. X11 sees every copy.
+
+### 3.41 Applets (`opusdm-applets` and `opusdm-applet-browser`)
+
+Applets are small JavaScript tools that sit on the desktop: a clock, a news feed, anything you write.
+They run in their own process, `opusdm-applets`, which the hub starts at login and restarts if it
+crashes (a few times, then it stays down and the log says so). A broken or looping applet can stop
+the other applets, never the hub, the Listers or the global hotkeys. **X11 only**: on Wayland the
+process does not run, and the Applet Browser says "The applets process is not running".
+
+- **Where they live:** one folder per applet, `~/.config/opusdm/applets/<id>/`. The folder name is the
+  id. It holds `applet.json` (the manifest), `main.js` (the script) and any file the applet uses
+  (images, in `assets/` or wherever it likes). OpusDM never writes into this folder.
+- **What OpusDM remembers:** `~/.local/state/opusdm/applets/<id>.json`, with `enabled`, the position
+  (`x`, `y`), the size (`width`, `height`) and the `settings` values. A new folder has no state file,
+  so the applet is **disabled** until you switch it on in the Applet Browser.
+- **Sample applets:** the repository has two in `applets/`: `weather-clock` (an analog clock with the
+  weather of a city, from Open-Meteo) and `site-news` (the latest titles of an RSS or Atom feed;
+  click a title to open it). Install one by copying its folder:
+  `cp -r applets/weather-clock ~/.config/opusdm/applets/`, then enable it in the Applet Browser.
+  `site-news` starts with an empty feed URL: set it with the gear (see edit mode).
+
+**The Applet Browser** opens from the **last** entry of the desktop right-click menu, **Edit Applets**,
+or from **Settings > Advanced > Edit Applets**. Opening it again raises the window already open. One
+row per applet: name, version, description, an **enabled** switch, a **Reload** button (reads
+`main.js` again after you edited it; there is no file watch) and the applet's last error in red. At
+the top, the **Edit mode** switch and **Refresh** (looks for new folders).
+
+**Moving and resizing:**
+
+- **Alt + left drag** moves an applet (done by Openbox, as for any window). **Alt + right drag** resizes
+  an applet whose manifest says `"resizable": true`. The new place and size are saved.
+- **Edit mode** (the switch in the Applet Browser): every applet gets a dashed border and, top right,
+  a **drag handle** (drag it to move the applet, no Alt needed) and a **gear** that opens the applet's
+  settings window (generated from the manifest; **Apply** saves the values and the running applet
+  gets them at once). Outside edit mode the handle and the gear are not drawn and not clickable. Edit
+  mode is not saved: after a restart it is off.
+- **Closing** an applet window (Alt+F4) **disables** the applet; switch it on again in the browser.
+
+**The manifest, `applet.json`:**
+
+```json
+{
+    "name": "Weather Clock",
+    "version": "1.0",
+    "description": "An analog clock with the weather of a city (Open-Meteo).",
+    "entry": "main.js",
+    "window": { "width": 260, "height": 320, "minWidth": 200, "minHeight": 160, "resizable": false, "transparent": true },
+    "settings": [
+        { "key": "city", "type": "string", "label": "City", "default": "Rome" },
+        { "key": "units", "type": "choice", "label": "Units", "default": "C", "choices": ["C", "F"] }
+    ],
+    "permissions": ["net"]
+}
+```
+
+- `name` is required; `version` and `description` are shown in the browser; `entry` is the script,
+  `main.js` by default (a relative path inside the folder).
+- `window`: `width` and `height` (default 300 x 200), `minWidth` / `minHeight` (default 50, never more
+  than the size), `resizable` and `transparent` (default `false`).
+- `settings`: one row each in the settings window. `type` is `string`, `number`, `bool` or `choice`
+  (with `choices`); `key`, `label` and `default` (the value before the user changes it, of the same
+  type) are required.
+- `permissions`: `net`, `fs`, `exec`. They are declared only, not enforced (yet).
+- A manifest that does not parse, or a script that throws, is shown inside the applet window and in
+  the log.
+
+**The `opus` object of an applet.** The script runs once at start; after that it lives through timers,
+promises and widget handlers. It is the same Boa engine as the Lister scripts (3.39), with this
+surface:
+
+| API | What it does |
+|---|---|
+| `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` | Timers, as in a browser |
+| `console.log/info/debug/warn/error`, `opus.log(...)` | Lines in the log (`error` also shows in the applet window) |
+| `opus.http.get(url, {headers, timeoutMs})` | A **Promise** of `{status, ok, headers, body}`. `http` and `https` only, 15 s default timeout, at most 8 MB. Rejects on a network error. (In Lister scripts the same call is synchronous.) |
+| `opus.notify(title, {body, icon, timeout, urgency})` | A desktop notification; a **Promise** of its id |
+| `opus.fs.exists(path)`, `opus.fs.readText(path)`, `opus.fs.list(path)` | Read-only files; `list` gives `{name, path, isFile, isDir, size}` sorted by name |
+| `opus.applet.id`, `.dir`, `.name`, `.settings` | Who the applet is, its folder, its current settings (frozen) |
+| `opus.applet.onSettings(fn)` | `fn(settings)` runs when the user applies new settings (`null` removes it) |
+| `opus.applet.open(url)` | Opens an `http`, `https` or `file` URL with the default program |
+| `opus.applet.assetPath(rel)`, `opus.applet.readAsset(rel)` | The absolute path or the text of a file in the applet folder |
+| `opus.ui.show(tree)`, `opus.ui.update(id, props)`, `opus.ui.redraw(canvasId)` | Show a widget tree, change props of the node `id`, paint a canvas again |
+
+**Widgets.** A tree is plain objects: `{ type, id?, class?, visible?, ...props }`, functions as handlers.
+
+| `type` | Props |
+|---|---|
+| `box` | `orientation` (`"vertical"`, default, or `"horizontal"`), `spacing`, `children` |
+| `label` | `text` |
+| `button` | `label`, `onClick()` |
+| `entry` | `text`, `onChange(text)` |
+| `switch` | `active`, `onToggle(active)` |
+| `list` | `items`: `[{ text, onClick() }]`, a row runs its `onClick` when activated |
+| `image` | `path` (from `opus.applet.assetPath`), `width`, `height` |
+| `canvas` | `width`, `height`, `draw(ctx)` |
+
+An `entry`'s `onChange` runs on every change of the text, and may see an intermediate empty string:
+GTK replaces a whole text with a delete and then an insert (for example a paste over the selected
+text). A text set by `opus.ui.update` does not call `onChange`, nor does a state set on a `switch`.
+
+**Canvas.** `draw(ctx)` gets a Canvas 2D style `ctx` and must draw synchronously (what is drawn after
+an `await` is lost). Call `opus.ui.redraw(id)` to paint again, for example from a `setInterval`.
+Supported: `save`, `restore`, `translate`, `rotate`, `scale`, `beginPath`, `closePath`, `moveTo`,
+`lineTo`, `arc`, `rect`, `fill`, `stroke`, `fillRect`, `strokeRect`, `clearRect`, `fillText`,
+`strokeText`, `drawImage(path, x, y, w?, h?)`, `createLinearGradient`, `createRadialGradient` (with
+`addColorStop`), and the properties `fillStyle`, `strokeStyle`, `lineWidth`, `lineCap`, `globalAlpha`,
+`font`, `textAlign`, `textBaseline`, `width`, `height`. **Not supported:** `measureText`, `lineJoin`,
+clipping (`clip`), and anything not in this list.
+
+```js
+// A digital clock: one label, updated every second.
+const now = () => new Date().toLocaleTimeString();
+opus.ui.show({ type: "box", spacing: 4, children: [
+    { type: "label", id: "time", text: now() },
+    { type: "button", label: "Hello", onClick: () => opus.log("hello from", opus.applet.name) },
+] });
+setInterval(() => opus.ui.update("time", { text: now() }), 1000);
+```
 
 ---
 
