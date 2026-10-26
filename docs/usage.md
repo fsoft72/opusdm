@@ -1136,7 +1136,7 @@ opus.log(`copied ${src.selected.length} item(s) to ${target}`);
 | `opus.alert(msg)` | A modal dialog with one OK button; the script waits until it is closed |
 | `opus.notify(title, {body, icon, timeout, urgency})` | A desktop notification (`timeout` in ms, 0 stays; `urgency`: `low`, `normal`, `critical`); returns its id |
 | `opus.fs.*`, `opus.path.*` | Files (`read`, `write`, `append`, `list`, `stat`, `exists`, `isDir`, `mkdir`) and path helpers |
-| `opus.http.get(url, {headers, timeoutMs})` | An HTTP or HTTPS GET; returns `{status, ok, headers, body}` (synchronous here, a Promise in applets). A failed request throws |
+| `opus.http.get(url, {headers, timeoutMs})` | An HTTP or HTTPS GET; returns `{status, ok, headers, body}` (synchronous here, a Promise in applets). `timeoutMs` above 120000 (2 minutes) is clamped to it. A failed request throws |
 | `opus.newLister`, `setBackground`, `leaveOut`, `hide`, `reveal`, `desktop.next()`, `bank.toggle(name)` | Desktop shortcuts |
 
 The full reference is in the editor's panel and in `docs/superpowers/specs/2026-10-15-javascript-scripting-design.md`.
@@ -1233,7 +1233,7 @@ surface:
 |---|---|
 | `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` | Timers, as in a browser |
 | `console.log/info/debug/warn/error`, `opus.log(...)` | Lines in the log (`error` also shows in the applet window) |
-| `opus.http.get(url, {headers, timeoutMs})` | A **Promise** of `{status, ok, headers, body}`. `http` and `https` only, 15 s default timeout, at most 8 MB. Rejects on a network error. (In Lister scripts the same call is synchronous.) |
+| `opus.http.get(url, {headers, timeoutMs})` | A **Promise** of `{status, ok, headers, body}`. `http` and `https` only, 15 s default timeout (a `timeoutMs` above 120000, 2 minutes, is clamped to it), at most 8 MB. Rejects on a network error. (In Lister scripts the same call is synchronous.) |
 | `opus.notify(title, {body, icon, timeout, urgency})` | A desktop notification; a **Promise** of its id |
 | `opus.fs.exists(path)`, `opus.fs.readText(path)`, `opus.fs.list(path)` | Read-only files; `list` gives `{name, path, isFile, isDir, size}` sorted by name |
 | `opus.applet.id`, `.dir`, `.name`, `.settings` | Who the applet is, its folder, its current settings (frozen) |

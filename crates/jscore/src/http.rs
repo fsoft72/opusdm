@@ -17,6 +17,10 @@ pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_REDIRECTS: u32 = 5;
 /// Timeout used when the request does not give one, in milliseconds.
 pub const DEFAULT_TIMEOUT_MS: u64 = 15_000;
+/// Longest timeout a request may ask, in milliseconds: a larger `timeoutMs`
+/// is clamped to it (not refused), so a script cannot keep a worker thread
+/// busy for hours.
+pub const MAX_TIMEOUT_MS: u64 = 120_000;
 
 /// A GET request.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +45,8 @@ pub struct HttpResponse {
 }
 
 /// Builds a request from the JSON given by a script: `url` (required),
-/// `headers` (object of strings) and `timeoutMs` (positive number).
+/// `headers` (object of strings) and `timeoutMs` (positive number, clamped
+/// to [`MAX_TIMEOUT_MS`]).
 pub fn request_from_json(payload: &Value) -> Result<HttpRequest, String> {
     let Some(url) = payload.get("url").and_then(Value::as_str) else {
         return Err("http request: missing string field `url`".to_string());
@@ -62,7 +67,7 @@ pub fn request_from_json(payload: &Value) -> Result<HttpRequest, String> {
     let timeout_ms = match payload.get("timeoutMs") {
         None | Some(Value::Null) => DEFAULT_TIMEOUT_MS,
         Some(v) => match _timeout_ms(v) {
-            Some(ms) if ms > 0 => ms,
+            Some(ms) if ms > 0 => ms.min(MAX_TIMEOUT_MS),
             _ => return Err("http request: `timeoutMs` must be a positive integer".to_string()),
         },
     };
@@ -279,6 +284,16 @@ mod tests {
         assert_eq!(req.timeout_ms, 1500);
         for bad in [json!(-5.0), json!(0.0), json!(1.5), json!("9"), json!(1e30)] {
             assert!(request_from_json(&json!({ "url": "http://x/", "timeoutMs": bad })).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn request_from_json_clamps_a_huge_timeout() {
+        let req = request_from_json(&json!({ "url": "http://x/", "timeoutMs": MAX_TIMEOUT_MS })).unwrap();
+        assert_eq!(req.timeout_ms, MAX_TIMEOUT_MS, "the cap itself is kept");
+        for huge in [json!(MAX_TIMEOUT_MS + 1), json!(86_400_000), json!(u64::MAX), json!(9_007_199_254_740_992.0)] {
+            let req = request_from_json(&json!({ "url": "http://x/", "timeoutMs": huge })).unwrap();
+            assert_eq!(req.timeout_ms, MAX_TIMEOUT_MS, "{huge} is clamped");
         }
     }
 }
