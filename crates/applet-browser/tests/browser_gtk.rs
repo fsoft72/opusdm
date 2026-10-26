@@ -10,6 +10,7 @@ use opusdm_applet_browser::{model, window};
 use opusdm_applets::protocol::{AppletStatus, Reply, Request};
 use opusdm_ipc::frame::{recv, send};
 use std::os::unix::net::UnixListener;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -312,13 +313,15 @@ fn closing_the_window_with_requests_in_flight_is_safe(app: &gtk::Application) {
 
 #[test]
 fn browser_gtk_checks() {
-    if let Err(e) = gtk::init() {
-        let display = std::env::var_os("DISPLAY").filter(|d| !d.is_empty());
-        let wayland = std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty());
-        if display.is_some() || wayland.is_some() { panic!("gtk::init() failed although a display is set (DISPLAY={display:?}, WAYLAND_DISPLAY={wayland:?}): {e}"); }
-        eprintln!("browser_gtk_checks: SKIPPED, no display (DISPLAY and WAYLAND_DISPLAY unset)");
+    let display = std::env::var_os("DISPLAY").filter(|d| !d.is_empty());
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty());
+    if display.is_none() && wayland.is_none() {
+        // Straight to stderr: libtest captures `eprintln!` of a passing
+        // test, and a skip must be seen in a plain `cargo test` run.
+        let _ = writeln!(std::io::stderr(), "SKIPPED: no display (DISPLAY and WAYLAND_DISPLAY unset), browser_gtk_checks did not run");
         return;
     }
+    if let Err(e) = gtk::init() { panic!("gtk::init() failed although a display is set (DISPLAY={display:?}, WAYLAND_DISPLAY={wayland:?}): {e}"); }
     let app = gtk::Application::builder().application_id("org.opusdm.AppletBrowserTest").flags(gio::ApplicationFlags::NON_UNIQUE).build();
     app.register(None::<&gio::Cancellable>).expect("register the test application");
     a_second_launch_raises_the_window_and_does_not_open_another(&app);

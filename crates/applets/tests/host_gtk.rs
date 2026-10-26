@@ -14,6 +14,7 @@ use opusdm_applets::protocol::{request_at, AppletStatus, Reply, Request};
 use opusdm_applets::server::{self, Shared};
 use opusdm_applets::settings_form;
 use opusdm_applets::state::{self, AppletState};
+use std::io::Write as _;
 use std::path::Path;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -119,13 +120,15 @@ fn assert_hidden_window(host: &Host, id: &str) {
 
 #[test]
 fn host_gtk_checks() {
-    if let Err(e) = gtk::init() {
-        let display = std::env::var_os("DISPLAY").filter(|d| !d.is_empty());
-        let wayland = std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty());
-        if display.is_some() || wayland.is_some() { panic!("gtk::init() failed although a display is set (DISPLAY={display:?}, WAYLAND_DISPLAY={wayland:?}): {e}"); }
-        eprintln!("host_gtk_checks: SKIPPED, no display (DISPLAY and WAYLAND_DISPLAY unset)");
+    let display = std::env::var_os("DISPLAY").filter(|d| !d.is_empty());
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty());
+    if display.is_none() && wayland.is_none() {
+        // Straight to stderr: libtest captures `eprintln!` of a passing
+        // test, and a skip must be seen in a plain `cargo test` run.
+        let _ = writeln!(std::io::stderr(), "SKIPPED: no display (DISPLAY and WAYLAND_DISPLAY unset), host_gtk_checks did not run");
         return;
     }
+    if let Err(e) = gtk::init() { panic!("gtk::init() failed although a display is set (DISPLAY={display:?}, WAYLAND_DISPLAY={wayland:?}): {e}"); }
     let app = gtk::Application::builder().application_id("org.opusdm.AppletsTest").flags(gio::ApplicationFlags::NON_UNIQUE).build();
     app.register(None::<&gio::Cancellable>).expect("register the test application");
     set_enabled_starts_and_stops_the_runtime(&app);
