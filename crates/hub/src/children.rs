@@ -3,11 +3,13 @@
 
 use crate::server::HubCmd;
 use opusdm_ipc::frame::send;
-use opusdm_ipc::sockpath::{ensure_sock_dir, probe_live_hub};
+use opusdm_ipc::instance::{self, Acquired};
+pub use opusdm_ipc::instance::sibling_bin_in;
+use opusdm_ipc::sockpath::probe_live_hub;
 use opusdm_ipc::ToHub;
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc::Sender;
 
@@ -22,25 +24,19 @@ pub enum AcquireOutcome {
     Failed(String),
 }
 
-/// Ensure the socket dir, hand off to a live hub, or bind the socket.
+/// Ensure the socket dir, hand off to a live hub, or bind the socket. The
+/// steps live in [`opusdm_ipc::instance::acquire_socket`]; the `RaiseToolbar`
+/// hand-off stays here.
 pub fn acquire_socket(path: &Path) -> AcquireOutcome {
-    if let Err(e) = ensure_sock_dir(path) {
-        return AcquireOutcome::Failed(format!("cannot create socket dir: {e}"));
-    }
-    if probe_live_hub(path) {
-        if let Ok(mut s) = UnixStream::connect(path) {
-            let _ = send(&mut s, &ToHub::RaiseToolbar);
+    match instance::acquire_socket(path, probe_live_hub) {
+        Acquired::Bound(l) => AcquireOutcome::Bound(l),
+        Acquired::Live => {
+            if let Ok(mut s) = UnixStream::connect(path) {
+                let _ = send(&mut s, &ToHub::RaiseToolbar);
+            }
+            AcquireOutcome::HandedOff
         }
-        return AcquireOutcome::HandedOff;
-    }
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return AcquireOutcome::Failed(format!("cannot remove stale socket: {e}")),
-    }
-    match UnixListener::bind(path) {
-        Ok(l) => AcquireOutcome::Bound(l),
-        Err(e) => AcquireOutcome::Failed(format!("cannot bind {}: {e}", path.display())),
+        Acquired::Failed(e) => AcquireOutcome::Failed(e),
     }
 }
 
@@ -125,15 +121,6 @@ pub fn add_own_dir_to_path() {
     std::env::set_var("PATH", path_with_dir(std::env::var_os("PATH"), &dir));
 }
 
-/// Path of the tool `name`: next to `dir` (the hub's own folder) when known,
-/// otherwise the bare name for a `PATH` lookup.
-pub fn sibling_bin_in(dir: Option<&Path>, name: &str) -> PathBuf {
-    match dir {
-        Some(dir) => dir.join(name),
-        None => PathBuf::from(name),
-    }
-}
-
 /// Start the OpusDM tool `name` (a sibling of the running hub), detached.
 pub fn spawn_tool(name: &str) -> io::Result<()> {
     let exe = std::env::current_exe().ok();
@@ -144,13 +131,6 @@ pub fn spawn_tool(name: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn a_tool_is_looked_up_next_to_the_hub_then_on_path() {
-        let dir = Path::new("/opt/opusdm/bin");
-        assert_eq!(sibling_bin_in(Some(dir), "opusdm-input-config"), dir.join("opusdm-input-config"));
-        assert_eq!(sibling_bin_in(None, "opusdm-input-config"), std::path::PathBuf::from("opusdm-input-config"));
-    }
-
     #[test]
     fn path_with_dir_puts_the_directory_first_once() {
         let dir = Path::new("/opt/opusdm/bin");
