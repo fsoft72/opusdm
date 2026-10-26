@@ -397,4 +397,37 @@ fn async_code_settles_before_the_step_ends() {
     assert_eq!(r.log, ["first", "later"]);
 }
 
+/// Serve one canned HTTP response on a free local port; returns the port.
+fn serve_http_once(body: &'static str) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let _ = stream.write_all(head.as_bytes());
+    });
+    port
+}
 
+#[test]
+fn http_get_returns_the_body_of_a_local_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = serve_http_once("hello applets");
+    let code = format!(
+        "const r = opus.http.get('http://127.0.0.1:{port}/', {{ timeoutMs: 2000.0 }}); opus.log(r.body); opus.log(r.status, r.ok);"
+    );
+    let r = run(&code, ctx(&[], dir.path()));
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(r.log, ["hello applets", "200 true"]);
+}
+
+#[test]
+fn http_get_failure_is_a_catchable_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = run("opus.log(typeof opus.http.get); try { opus.http.get('ftp://x') } catch (e) { opus.log(e instanceof Error ? 'caught' : 'odd') }", ctx(&[], dir.path()));
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(r.log, ["function", "caught"]);
+}

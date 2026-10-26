@@ -61,12 +61,21 @@ pub fn request_from_json(payload: &Value) -> Result<HttpRequest, String> {
     }
     let timeout_ms = match payload.get("timeoutMs") {
         None | Some(Value::Null) => DEFAULT_TIMEOUT_MS,
-        Some(v) => match v.as_u64() {
+        Some(v) => match _timeout_ms(v) {
             Some(ms) if ms > 0 => ms,
             _ => return Err("http request: `timeoutMs` must be a positive integer".to_string()),
         },
     };
     Ok(HttpRequest { url: url.to_string(), headers, timeout_ms })
+}
+
+/// Reads a timeout as whole milliseconds: an unsigned integer, or an integral
+/// finite non-negative float (a JS number may reach serde_json as `1500.0`).
+fn _timeout_ms(value: &Value) -> Option<u64> {
+    if let Some(ms) = value.as_u64() { return Some(ms) }
+    let f = value.as_f64()?;
+    // 2^53 keeps the float to integer conversion exact.
+    (f.is_finite() && f >= 0.0 && f.fract() == 0.0 && f <= 9_007_199_254_740_992.0).then_some(f as u64)
 }
 
 /// Converts a response to the JSON seen by scripts:
@@ -262,5 +271,14 @@ mod tests {
         let req = request_from_json(&json!({ "url": "http://x/", "headers": { "A": "b" }, "timeoutMs": 50 })).unwrap();
         assert_eq!(req.headers, vec![("A".to_string(), "b".to_string())]);
         assert_eq!(req.timeout_ms, 50);
+    }
+
+    #[test]
+    fn request_from_json_accepts_an_integral_float_timeout() {
+        let req = request_from_json(&json!({ "url": "http://x/", "timeoutMs": 1500.0 })).unwrap();
+        assert_eq!(req.timeout_ms, 1500);
+        for bad in [json!(-5.0), json!(0.0), json!(1.5), json!("9"), json!(1e30)] {
+            assert!(request_from_json(&json!({ "url": "http://x/", "timeoutMs": bad })).is_err(), "{bad}");
+        }
     }
 }

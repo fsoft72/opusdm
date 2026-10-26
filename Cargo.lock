@@ -2841,6 +2841,7 @@ dependencies = [
  "opusdm-iconview",
  "opusdm-input-config",
  "opusdm-ipc",
+ "opusdm-jscore",
  "opusdm-media",
  "opusdm-panel",
  "opusdm-screen",

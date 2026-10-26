@@ -25,6 +25,7 @@ opusdm-buttonbank = { path = "../buttonbank" }
 opusdm-input-config = { path = "../input-config" }
 opusdm-screen = { path = "../screen" }
 opusdm-snap = { path = "../snap" }
+opusdm-jscore = { path = "../jscore" }
 async-channel.workspace = true
 signal-hook.workspace = true
 libc.workspace = true
