@@ -44,6 +44,25 @@ fn spawn_theme_config(args: &[&str]) {
     }
 }
 
+/// The Applet Browser binary, started by the "Edit Applets" menu item.
+const APPLET_BROWSER_BIN: &str = "opusdm-applet-browser";
+
+/// Path of the Applet Browser: next to `dir` (the hub's own folder) when
+/// known, otherwise the bare name for a `PATH` lookup.
+fn applet_browser_bin_in(dir: Option<&std::path::Path>) -> PathBuf {
+    opusdm_ipc::instance::sibling_bin_in(dir, APPLET_BROWSER_BIN)
+}
+
+/// Spawn the Applet Browser, detached. A second launch raises the window
+/// that is already open (it is a single-instance GTK application).
+pub(crate) fn launch_applet_browser() {
+    let exe = std::env::current_exe().ok();
+    let bin = applet_browser_bin_in(exe.as_deref().and_then(std::path::Path::parent));
+    if let Err(e) = std::process::Command::new(&bin).spawn() {
+        opusdm_ipc::err_log!("hub", "cannot launch {}: {e}", bin.display());
+    }
+}
+
 /// Approximate icon menu width/height, reserved when clamping it inside the
 /// desktop the same way as [`DESKTOP_MENU_W`]/[`DESKTOP_MENU_H`].
 pub(crate) const ICON_MENU_W: i32 = 160;
@@ -422,7 +441,8 @@ fn add_file_items(menu: &gtk::Box, widgets: &Rc<Widgets>) {
 }
 
 /// The desktop context menu box: New Lister / --- / Paste, New Folder, New
-/// File, Open Terminal Here / --- / Rearrange Icons, Edit Theme. Every item
+/// File, Open Terminal Here / --- / Rearrange Icons, Edit Theme, Edit
+/// Applets. Every item
 /// hides the menu before running its action.
 pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
     let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -439,6 +459,7 @@ pub(crate) fn build_desktop_menu(widgets: &Rc<Widgets>) -> gtk::Box {
         add_item(&menu, &menu, "Rearrange Icons", move || reload_desktop_field(&widgets));
     }
     add_item(&menu, &menu, "Edit Theme", launch_theme_editor);
+    add_item(&menu, &menu, "Edit Applets", launch_applet_browser);
 
     menu
 }
@@ -462,5 +483,12 @@ mod tests {
     #[test]
     fn a_menu_taller_than_the_desktop_starts_at_the_top() {
         assert_eq!(menu_origin((10.0, 300.0), (163, 900), (1278, 798)), (10, 0));
+    }
+
+    #[test]
+    fn the_applet_browser_binary_is_looked_up_next_to_the_hub_then_on_path() {
+        let dir = std::path::Path::new("/opt/opusdm/bin");
+        assert_eq!(applet_browser_bin_in(Some(dir)), dir.join("opusdm-applet-browser"));
+        assert_eq!(applet_browser_bin_in(None), PathBuf::from("opusdm-applet-browser"));
     }
 }
