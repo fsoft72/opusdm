@@ -243,7 +243,13 @@ impl Popups {
         buttons.set_homogeneous(true);
         buttons.set_margin_top(4);
         for action in n.button_actions().take(MAX_BUTTONS) {
-            let button = gtk::Button::with_label(&action.label);
+            // A label that can shrink: three long actions must not push the
+            // last button out of the fixed-width window.
+            let text = gtk::Label::new(Some(&action.label));
+            text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            narrow(&text);
+            let button = gtk::Button::new();
+            button.set_child(Some(&text));
             let (on_event, key) = (self.on_event.clone(), action.key.clone());
             button.connect_clicked(move |_| on_event(PopupEvent::Action { id, key: key.clone() }));
             buttons.append(&button);
