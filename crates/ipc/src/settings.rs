@@ -27,6 +27,21 @@ pub fn config_dir() -> PathBuf {
     path
 }
 
+/// Base directory for OpusDM state files that are not configuration, such as
+/// the last folder used by a tool (`~/.local/state/opusdm`).
+///
+/// Falls back to `$HOME/.local/state/opusdm` then `<temp_dir>/opusdm` if
+/// neither `XDG_STATE_HOME` nor `HOME` is set.
+pub fn state_dir() -> PathBuf {
+    let mut path = dirs::state_dir().unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".local/state"))
+            .unwrap_or_else(std::env::temp_dir)
+    });
+    path.push("opusdm");
+    path
+}
+
 /// Path to `settings.json` under [`config_dir`].
 pub fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
