@@ -144,8 +144,11 @@ else
     echo "Session: X11 ($DISPLAY)"
 fi
 
-# Stop the hub, or every OpusDM process with --all
-if [ "$RESTART_ALL" -eq 1 ]; then STOP="$PROCESSES"; else STOP="opusdm-hub"; fi
+# Stop the hub, or every OpusDM process with --all. Without --all the applets
+# process goes too: the new hub's supervisor starts it again with the new
+# code (left running, it would keep the old applets and the new hub would
+# only probe it).
+if [ "$RESTART_ALL" -eq 1 ]; then STOP="$PROCESSES"; else STOP="opusdm-hub opusdm-applets"; fi
 echo "Stopping: $STOP"
 for p in $STOP; do
     pkill -u "$(id -u)" -x "$(printf '%.*s' "$PROC_NAME_MAX" "$p")" || true
