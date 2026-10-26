@@ -25,6 +25,15 @@ const FEED: &str = r#"<?xml version="1.0"?>
 <item><title>No link here</title></item>
 </channel></rss>"#;
 
+/// A feed whose second item has numeric references out of the Unicode
+/// range (decimal and hex): only those stay as raw text.
+const BAD_ENTITY_FEED: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel>
+<item><title>First &#65;</title><link>http://127.0.0.1/a</link></item>
+<item><title>Broken &#99999999; and &#x110000; here</title><link>http://127.0.0.1/b</link></item>
+<item><title>Third</title><link>http://127.0.0.1/c</link></item>
+</channel></rss>"#;
+
 /// The repository folder `applets/`.
 fn applets_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../applets")
@@ -32,12 +41,18 @@ fn applets_root() -> PathBuf {
 
 /// Serve one HTTP answer (`status` line text and `body`) on a local port; returns the port.
 fn serve_once(status: &'static str, body: &'static str) -> u16 {
+    serve_once_after(Duration::ZERO, status, body)
+}
+
+/// Like [`serve_once`], but the answer is sent `delay` after the request.
+fn serve_once_after(delay: Duration, status: &'static str, body: &'static str) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         let Ok((mut stream, _)) = listener.accept() else { return };
         let mut buf = [0u8; 1024];
         let _ = stream.read(&mut buf);
+        std::thread::sleep(delay);
         let reply = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         let _ = stream.write_all(reply.as_bytes());
     });
@@ -141,6 +156,46 @@ fn site_news_shows_a_message_on_http_error() {
             let got = pump_until(|| trees.borrow().iter().any(|t| label_texts(t).iter().any(|l| l.contains("500"))));
             assert!(got, "no error label: {:?}", trees.borrow());
             assert!(trees.borrow().iter().all(|t| list_texts(t).is_none_or(|l| l.is_empty())));
+        })
+        .unwrap();
+}
+
+#[test]
+fn site_news_keeps_an_out_of_range_numeric_entity_as_text() {
+    MainContext::new()
+        .with_thread_default(|| {
+            let port = serve_once("200 OK", BAD_ENTITY_FEED);
+            let trees = Trees::default();
+            let _rt = start_site_news(&format!("http://127.0.0.1:{port}/feed"), &trees);
+            let got = pump_until(|| trees.borrow().iter().any(|t| list_texts(t).is_some() || label_texts(t).iter().any(|l| l.contains("Cannot read"))));
+            assert!(got, "nothing was shown: {:?}", trees.borrow());
+            let tree = trees.borrow().iter().find(|t| list_texts(t).is_some()).cloned();
+            let tree = tree.unwrap_or_else(|| panic!("a bad entity failed the whole feed: {:?}", trees.borrow()));
+            assert_eq!(list_texts(&tree).unwrap(), ["First A", "Broken &#99999999; and &#x110000; here", "Third"]);
+        })
+        .unwrap();
+}
+
+#[test]
+fn site_news_an_emptied_feed_url_wins_over_an_answer_in_flight() {
+    MainContext::new()
+        .with_thread_default(|| {
+            let port = serve_once_after(Duration::from_millis(500), "200 OK", FEED);
+            let trees = Trees::default();
+            let rt = start_site_news(&format!("http://127.0.0.1:{port}/feed"), &trees);
+            let mut settings = Map::new();
+            settings.insert("feedUrl".into(), json!(""));
+            rt.deliver_settings(settings);
+            let asks = |t: &Value| label_texts(t).iter().any(|l| l.starts_with("Set the feed URL"));
+            assert!(pump_until(|| trees.borrow().iter().any(asks)), "no message: {:?}", trees.borrow());
+            // Let the old answer arrive: it must not replace the message.
+            let ctx = MainContext::ref_thread_default();
+            let until = Instant::now() + Duration::from_millis(1500);
+            while Instant::now() < until {
+                if !ctx.iteration(false) { std::thread::sleep(Duration::from_millis(1)); }
+            }
+            let last = trees.borrow().last().cloned().unwrap();
+            assert!(asks(&last), "the old answer replaced the message: {last}");
         })
         .unwrap();
 }

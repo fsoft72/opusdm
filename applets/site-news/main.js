@@ -8,10 +8,29 @@ const DEFAULT_REFRESH_MINUTES = 15;
 /** The timeout of one feed request. */
 const FETCH_TIMEOUT_MS = 15000;
 
+/** The largest Unicode code point: a numeric reference above it is invalid. */
+const MAX_CODE_POINT = 0x10FFFF;
+
 /** The interval timer of the periodic refresh. */
 let refreshTimer = null;
 /** Counts fetches: an answer of an older fetch is ignored. */
 let fetchSerial = 0;
+
+/**
+ * The character of the numeric reference `raw` with code point `code`, or
+ * `raw` itself when `code` is outside the Unicode range (fromCodePoint would
+ * throw and fail the whole feed).
+ * @param {string} raw the reference as written, e.g. "&#65;"
+ * @param {number} code
+ * @returns {string}
+ */
+function codePointText(raw, code) {
+    if (!Number.isInteger(code) || code < 0 || code > MAX_CODE_POINT) {
+        console.log("site-news: invalid numeric reference " + raw + " kept as text");
+        return raw;
+    }
+    return String.fromCodePoint(code);
+}
 
 /**
  * Replace the XML entities and numeric references of `text`.
@@ -20,8 +39,8 @@ let fetchSerial = 0;
  */
 function decodeEntities(text) {
     return text
-        .replace(/&#x([0-9a-fA-F]+);/g, (m, hex) => String.fromCodePoint(parseInt(hex, 16)))
-        .replace(/&#([0-9]+);/g, (m, dec) => String.fromCodePoint(parseInt(dec, 10)))
+        .replace(/&#x([0-9a-fA-F]+);/g, (m, hex) => codePointText(m, parseInt(hex, 16)))
+        .replace(/&#([0-9]+);/g, (m, dec) => codePointText(m, parseInt(dec, 10)))
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
         .replace(/&quot;/g, "\"")
@@ -138,11 +157,12 @@ function fail(message) {
 function refresh() {
     const settings = opus.applet.settings;
     const url = String(settings.feedUrl || "").trim();
+    // Bumped first: an answer still in flight must not replace the message.
+    const serial = ++fetchSerial;
     if (!url) {
         showMessage("Set the feed URL in the settings of this applet.");
         return;
     }
-    const serial = ++fetchSerial;
     opus.http.get(url, { timeoutMs: FETCH_TIMEOUT_MS }).then((reply) => {
         if (serial !== fetchSerial) return;
         if (!reply.ok) return fail("The feed answered HTTP " + reply.status + ".");
