@@ -317,10 +317,12 @@ impl Host {
     }
 
     /// Save `enabled` for applet `id`, then open or close it. Enabling an
-    /// open applet does nothing (`Reload` restarts it).
+    /// open applet does nothing (`Reload` restarts it). A state file that
+    /// exists but cannot be read is an error: nothing is written over it and
+    /// the applet is neither opened nor closed.
     fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
         let found = self.find(id)?;
-        let mut st = state::load_in(&self.config.state_dir, id);
+        let mut st = state::read_in(&self.config.state_dir, id).map_err(|e| format!("{e}; enabled = {enabled} was not saved"))?;
         if st.enabled != enabled {
             st.enabled = enabled;
             state::save_in(&self.config.state_dir, id, &st).map_err(|e| format!("applet {id}: cannot save its state: {e}"))?;
@@ -387,12 +389,16 @@ impl Host {
 
     /// Save `rect` (x, y, width, height) as the geometry of the open applet
     /// `id`, keeping the rest of its state. `Ok(true)` when the state file
-    /// was written, `Ok(false)` when it already had that geometry.
+    /// was written, `Ok(false)` when it already had that geometry. The
+    /// applet is open, so `enabled = true` is written with it. A state file
+    /// that exists but cannot be read is an error and nothing is written
+    /// over it.
     pub fn save_geometry(&self, id: &str, rect: Rect) -> Result<bool, String> {
         if !self.applets.borrow().contains_key(id) { return Err(format!("applet {id}: geometry {rect:?} not saved, the applet is not open")); }
-        let mut st = state::load_in(&self.config.state_dir, id);
+        let mut st = state::read_in(&self.config.state_dir, id).map_err(|e| format!("{e}; the geometry {rect:?} was not saved"))?;
         let (x, y, width, height) = rect;
-        if (st.x, st.y, st.width, st.height) == (Some(x), Some(y), Some(width), Some(height)) { return Ok(false); }
+        if st.enabled && (st.x, st.y, st.width, st.height) == (Some(x), Some(y), Some(width), Some(height)) { return Ok(false); }
+        st.enabled = true;
         (st.x, st.y, st.width, st.height) = (Some(x), Some(y), Some(width), Some(height));
         state::save_in(&self.config.state_dir, id, &st).map_err(|e| format!("applet {id}: cannot save its geometry {rect:?}: {e}"))?;
         debug_log!(APP_TAG, "applet {id}: geometry {rect:?} saved");
@@ -435,16 +441,20 @@ impl Host {
     }
 
     /// The user closed the window of applet `id`: save `enabled = false`
-    /// and close it, as `SetEnabled { enabled: false }`. A save failure is
-    /// logged and the applet still closes.
+    /// and close it, as `SetEnabled { enabled: false }`. A state file that
+    /// exists but cannot be read is not written over, and a save failure is
+    /// logged; in both cases the applet still closes.
     fn disable_from_window(&self, id: &str) {
         debug_log!(APP_TAG, "applet {id}: window closed by the user, disabling the applet");
-        let mut st = state::load_in(&self.config.state_dir, id);
-        if st.enabled {
-            st.enabled = false;
-            if let Err(e) = state::save_in(&self.config.state_dir, id, &st) {
-                err_log!(APP_TAG, "applet {id}: window closed, but enabled = false could not be saved (it opens again next run): {e}");
+        match state::read_in(&self.config.state_dir, id) {
+            Ok(mut st) if st.enabled => {
+                st.enabled = false;
+                if let Err(e) = state::save_in(&self.config.state_dir, id, &st) {
+                    err_log!(APP_TAG, "applet {id}: window closed, but enabled = false could not be saved (it opens again next run): {e}");
+                }
             }
+            Ok(_) => {}
+            Err(e) => err_log!(APP_TAG, "{e}; window closed, enabled = false was not saved (it opens again next run)"),
         }
         self.close_applet(id);
     }

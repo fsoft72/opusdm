@@ -139,6 +139,7 @@ fn host_gtk_checks() {
     a_window_close_disables_the_applet(&app);
     prepare_on_a_window_without_an_x11_surface_does_not_panic(&app);
     the_host_saves_a_changed_geometry_once(&app);
+    an_unreadable_state_file_is_never_overwritten(&app);
     a_monitor_change_clamps_the_open_windows(&app);
     the_icons_are_hidden_outside_edit_mode(&app);
     edit_mode_shows_the_border_and_the_icons(&app);
@@ -514,6 +515,97 @@ fn the_host_saves_a_changed_geometry_once(app: &gtk::Application) {
     assert!(!dirs.states.path().join("nothere.json").exists(), "no state file for an applet that is not open");
     assert!(host.is_running("pos"), "saving the geometry does not touch the runtime");
     eprintln!("section the_host_saves_a_changed_geometry_once: ok");
+}
+
+/// Make the state file of applet `id` exist but not readable: a saved
+/// state (enabled, with a position and a setting) with mode 000. Running as
+/// root reads it anyway, so then a folder takes its place. Gives the path.
+fn make_state_unreadable(dirs: &Dirs, id: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dirs.states.path().join(format!("{id}.json"));
+    if path.is_dir() { std::fs::remove_dir(&path).unwrap(); }
+    let mut saved = AppletState { enabled: true, x: Some(77), y: Some(88), ..Default::default() };
+    saved.settings.insert("kept".into(), serde_json::json!("yes"));
+    state::save_in(dirs.states.path(), id, &saved).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&path).is_ok() {
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+    }
+    path
+}
+
+/// True when the state file `path` made by [`make_state_unreadable`] was not
+/// replaced (still the folder, or still the saved state once readable again).
+fn still_unreadable_original(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if path.is_dir() { return true; }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let text = std::fs::read_to_string(path).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    text.contains("\"kept\"") && text.contains("77")
+}
+
+/// Remove the state file `path` made by [`make_state_unreadable`].
+fn remove_state(path: &Path) {
+    if path.is_dir() { std::fs::remove_dir(path).unwrap() } else { std::fs::remove_file(path).unwrap() }
+}
+
+/// Final review (1): a state file that exists but cannot be read is never
+/// replaced by a default state (which would drop the settings and the
+/// position) by a geometry save, a `SetEnabled` or a window close; a missing
+/// state file is still created, and a geometry save of an open applet writes
+/// `enabled = true`.
+fn an_unreadable_state_file_is_never_overwritten(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    dirs.applet("geo", &manifest("Geo"), &label_script("g"));
+    dirs.applet("sw", &manifest("Sw"), &label_script("s"));
+    dirs.applet("win", &manifest("Win"), &label_script("w"));
+    dirs.enable("geo");
+    dirs.enable("win");
+    let host = dirs.host(app);
+    host.load_enabled();
+
+    // save_geometry: an unreadable file is an error naming the applet.
+    let path = make_state_unreadable(&dirs, "geo");
+    let err = host.save_geometry("geo", (1, 2, 210, 120)).expect_err("an unreadable state is not overwritten");
+    assert!(err.contains("geo"), "{err}");
+    assert!(still_unreadable_original(&path), "the unreadable state was not replaced");
+    // A missing file is created, with enabled = true (the applet is open).
+    remove_state(&path);
+    assert_eq!(host.save_geometry("geo", (1, 2, 210, 120)), Ok(true));
+    let st = state::load_in(dirs.states.path(), "geo");
+    assert_eq!((st.enabled, st.x, st.y), (true, Some(1), Some(2)), "{st:?}");
+    // A malformed file (backed up, default state) still keeps enabled.
+    std::fs::write(&path, "{ nope").unwrap();
+    assert_eq!(host.save_geometry("geo", (3, 4, 210, 120)), Ok(true));
+    let st = state::load_in(dirs.states.path(), "geo");
+    assert_eq!((st.enabled, st.x, st.y), (true, Some(3), Some(4)), "{st:?}");
+
+    // SetEnabled: an unreadable file is an error, nothing written or opened.
+    let path = make_state_unreadable(&dirs, "sw");
+    match host.handle(&Request::SetEnabled { id: "sw".into(), enabled: true }) {
+        Reply::Error(e) => assert!(e.contains("sw"), "{e}"),
+        other => panic!("SetEnabled over an unreadable state answered {other:?}"),
+    }
+    assert!(still_unreadable_original(&path), "the unreadable state was not replaced");
+    assert!(!host.is_running("sw") && host.window_of("sw").is_none(), "not opened");
+    // A missing file is created.
+    remove_state(&path);
+    assert_eq!(host.handle(&Request::SetEnabled { id: "sw".into(), enabled: true }), Reply::Ok);
+    assert!(state::load_in(dirs.states.path(), "sw").enabled, "a missing state file is created");
+    assert!(host.is_running("sw"));
+
+    // Window close: an unreadable file is not replaced, the applet still closes.
+    let path = make_state_unreadable(&dirs, "win");
+    let window = host.window_of("win").expect("win is open");
+    WidgetExt::realize(&window);
+    assert!(!window.is_mapped(), "a test window must never be shown");
+    window.close();
+    pump();
+    assert!(still_unreadable_original(&path), "the unreadable state was not replaced");
+    assert!(!host.is_running("win") && host.window_of("win").is_none(), "the window close still closes the applet");
+    eprintln!("section an_unreadable_state_file_is_never_overwritten: ok");
 }
 
 /// Task 11: a saved position off every monitor opens inside the first
