@@ -34,7 +34,7 @@ pub fn attach(ui: &Rc<Ui>) {
     let move_btn = icon_button(SVG_MOVE, "Move (Source -> Dest). Right click: Move As...", ROW_ICON_SIZE);
     let delete_btn = icon_button(SVG_DELETE, "Move to Trash. Right click: Delete permanently", ROW_ICON_SIZE);
     let mkdir_btn = icon_button(SVG_MKDIR, "Make Directory", ROW_ICON_SIZE);
-    let newfile_btn = icon_button(SVG_NEWFILE, "New File", ROW_ICON_SIZE);
+    let newfile_btn = icon_button(SVG_NEWFILE, "New File. Right click: Make Directory", ROW_ICON_SIZE);
     let rename_btn = icon_button(SVG_RENAME, "Rename", ROW_ICON_SIZE);
     let hidden_btn = hidden_toggle(ui);
     let term_btn = text_button(">_", "Terminal Drawer (F4 / `)");
@@ -54,6 +54,7 @@ pub fn attach(ui: &Rc<Ui>) {
     wire_delete(ui, &delete_btn);
     on_click(ui, &mkdir_btn, |ui| make_in_cwd(ui, "New directory name", |name| Op::MakeDir { name }));
     on_click(ui, &newfile_btn, |ui| make_in_cwd(ui, "New file name", |name| Op::NewFile { name }));
+    wire_secondary_command(ui, &newfile_btn, crate::keys::CommandId::Mkdir);
     on_click(ui, &rename_btn, rename_selected);
     wire_role_lock(ui);
 
@@ -95,6 +96,26 @@ fn hidden_toggle(ui: &Rc<Ui>) -> gtk::ToggleButton {
         ui.reload();
     });
     btn
+}
+
+/// Right click on `btn` runs `cmd`. The command runs on release, not on
+/// press: a dialog opened mid-press swallows the release and leaves the
+/// button stuck down.
+fn wire_secondary_command(ui: &Rc<Ui>, btn: &gtk::Button, cmd: crate::keys::CommandId) {
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gtk::gdk::BUTTON_SECONDARY);
+    gesture.connect_pressed(|g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+    });
+    let weak = Rc::downgrade(ui);
+    gesture.connect_released(move |_, _, _, _| {
+        let Some(ui) = weak.upgrade() else {
+            opusdm_ipc::err_log!("opusdm-lister", "button right-clicked but the Lister window is gone");
+            return;
+        };
+        crate::palette::execute_command(&ui, cmd.clone());
+    });
+    btn.add_controller(gesture);
 }
 
 /// The Delete button: a left click moves the selection to the trash, a
