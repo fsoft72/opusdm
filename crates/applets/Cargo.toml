@@ -1,0 +1,19 @@
+[package]
+name = "opusdm-applets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_applets"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-applets"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+serde.workspace = true
+serde_json.workspace = true
