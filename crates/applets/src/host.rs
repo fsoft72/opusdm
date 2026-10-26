@@ -61,6 +61,8 @@ pub struct Host {
     start_errors: RefCell<HashMap<String, String>>,
     /// The edit mode, as last told by the socket (Task 12 uses it).
     edit: Cell<bool>,
+    /// This host, for the window close handlers (never upgraded to own it).
+    me: Weak<Host>,
 }
 
 /// One open applet. Field order is drop order: the runtime stops before
@@ -82,15 +84,16 @@ struct Applet {
 }
 
 impl Host {
-    /// A host over the session's applets folder and state folder.
-    pub fn new(app: &gtk::Application) -> Host {
+    /// A host over the session's applets folder and state folder. The
+    /// caller keeps the returned `Rc` for the whole run (see the module doc).
+    pub fn new(app: &gtk::Application) -> Rc<Host> {
         Host::with_config(app, HostConfig::real())
     }
 
     /// A host over the folders of `config`. Builds no widget: call
     /// [`Host::load_enabled`] once GTK is up (application `startup`).
-    pub fn with_config(app: &gtk::Application, config: HostConfig) -> Host {
-        Host { app: app.clone(), config, applets: RefCell::default(), start_errors: RefCell::default(), edit: Cell::new(false) }
+    pub fn with_config(app: &gtk::Application, config: HostConfig) -> Rc<Host> {
+        Rc::new_cyclic(|me| Host { app: app.clone(), config, applets: RefCell::default(), start_errors: RefCell::default(), edit: Cell::new(false), me: me.clone() })
     }
 
     /// Open every enabled applet. A broken one is logged (and listed with
@@ -205,6 +208,35 @@ impl Host {
         self.open_applet(&found)
     }
 
+    /// What a window-manager close of applet `id`'s window does: disable the
+    /// applet. Holds only a `Weak<Host>`; a failed upgrade is logged.
+    fn close_handler(&self, id: &str) -> impl Fn() + 'static {
+        let host = self.me.clone();
+        let id = id.to_string();
+        move || {
+            let Some(host) = host.upgrade() else {
+                err_log!(APP_TAG, "applet {id}: window close requested after the host was dropped, ignored");
+                return;
+            };
+            host.disable_from_window(&id);
+        }
+    }
+
+    /// The user closed the window of applet `id`: save `enabled = false`
+    /// and close it, as `SetEnabled { enabled: false }`. A save failure is
+    /// logged and the applet still closes.
+    fn disable_from_window(&self, id: &str) {
+        debug_log!(APP_TAG, "applet {id}: window closed by the user, disabling the applet");
+        let mut st = state::load_in(&self.config.state_dir, id);
+        if st.enabled {
+            st.enabled = false;
+            if let Err(e) = state::save_in(&self.config.state_dir, id, &st) {
+                err_log!(APP_TAG, "applet {id}: window closed, but enabled = false could not be saved (it opens again next run): {e}");
+            }
+        }
+        self.close_applet(id);
+    }
+
     /// Drop applet `id`: its runtime stops and its window is destroyed.
     fn close_applet(&self, id: &str) {
         let removed = self.applets.borrow_mut().remove(id);
@@ -221,7 +253,7 @@ impl Host {
             Err(e) => return Err(e.clone()),
         };
         let st = state::load_in(&self.config.state_dir, id);
-        let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows);
+        let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows, self.close_handler(id));
         let applet = Rc::new_cyclic(|me| Applet {
             id: id.clone(),
             runtime: RefCell::new(None),
@@ -395,18 +427,20 @@ pub fn spawn_request_loop(host: &Rc<Host>, rx: async_channel::Receiver<HostMessa
 fn serve(host: &Weak<Host>, message: HostMessage) {
     let Some(host) = host.upgrade() else {
         err_log!(APP_TAG, "{message:?} arrived after the host was dropped");
-        if let HostMessage::Request(_, reply) = message {
-            let _ = reply.try_send(Reply::Error(crate::server::HOST_GONE_MESSAGE.into()));
+        if let HostMessage::Request(pending) = message {
+            pending.reply(Reply::Error(crate::server::HOST_GONE_MESSAGE.into()));
         }
         return;
     };
     match message {
         HostMessage::Edit(on) => host.set_edit(on),
-        HostMessage::Request(req, reply) => {
-            let answer = host.handle(&req);
-            if let Err(e) = reply.try_send(answer) {
-                err_log!(APP_TAG, "request {req:?}: the client stopped waiting before the reply: {e}");
+        HostMessage::Request(pending) => {
+            if pending.is_abandoned() {
+                debug_log!(APP_TAG, "request {:?} skipped: its client was already answered busy", pending.request());
+                return;
             }
+            let answer = host.handle(pending.request());
+            pending.reply(answer);
         }
     }
 }

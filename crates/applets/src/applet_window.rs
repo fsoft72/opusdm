@@ -5,6 +5,9 @@
 //!
 //! Ownership: the host's applet entry owns the [`AppletWindow`]; dropping it
 //! destroys the GTK window, so the application no longer keeps it either.
+//! A window-manager close is refused here and handed to `on_close` (the
+//! host disables the applet and drops the window itself), so the host stays
+//! the only owner.
 
 use crate::manifest::Manifest;
 use crate::state::AppletState;
@@ -12,7 +15,6 @@ use gtk4 as gtk;
 use gtk::glib;
 use gtk::pango;
 use gtk::prelude::*;
-use opusdm_ipc::err_log;
 
 /// Tag used in log lines.
 const APP_TAG: &str = "applets";
@@ -36,8 +38,10 @@ pub struct AppletWindow {
 /// Build the window of applet `id` for `app`: title = manifest name, default
 /// size = the saved `width` / `height`, else the manifest window size,
 /// resizable as the manifest says. It is presented only when `present` is
-/// true (tests build windows without ever showing them).
-pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &AppletState, present: bool) -> AppletWindow {
+/// true (tests build windows without ever showing them). A close request
+/// (Alt+F4, the window manager) calls `on_close` and is otherwise refused:
+/// `on_close` must hold only weak references.
+pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &AppletState, present: bool, on_close: impl Fn() + 'static) -> AppletWindow {
     let width = state.width.unwrap_or(manifest.window.width);
     let height = state.height.unwrap_or(manifest.window.height);
     let window = gtk::ApplicationWindow::builder()
@@ -56,11 +60,10 @@ pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &Apple
     column.append(&content);
     column.append(&error);
     window.set_child(Some(&column));
-    // A window manager close must not leave a running applet without its
-    // window: the applet is disabled from the Applet Browser instead.
-    let applet = id.to_string();
+    // Stop: GTK must not destroy the window itself; `on_close` lets the
+    // host disable the applet and drop (destroy) the window.
     window.connect_close_request(move |_| {
-        err_log!(APP_TAG, "applet {applet}: close request refused, disable the applet to close its window");
+        on_close();
         glib::Propagation::Stop
     });
     if present { window.present(); }

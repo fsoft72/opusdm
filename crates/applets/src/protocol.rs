@@ -11,8 +11,12 @@ use std::path::{Path, PathBuf};
 pub const ENV_SOCK: &str = "OPUSDM_APPLETS_SOCK";
 /// File name of the applets socket, next to the hub socket.
 pub const SOCK_FILE_NAME: &str = "applets.sock";
-/// Connect-side read and write timeout of the client helper.
+/// Connect-side read and write timeout of the liveness probe (`GetEdit`).
 pub const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Connect-side read and write timeout of every other request: longer than
+/// the server's reply timeout, so the client sees its busy answer.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(crate::server::REPLY_TIMEOUT.as_secs() + 2);
 
 /// A request sent to the applets process.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -70,13 +74,23 @@ pub fn socket_path() -> PathBuf {
 pub fn request_at(path: &Path, req: &Request) -> io::Result<Reply> {
     let mut s = UnixStream::connect(path)
         .map_err(|e| io::Error::new(e.kind(), format!("cannot connect to {}: {e}", path.display())))?;
-    s.set_read_timeout(Some(CLIENT_TIMEOUT))?;
-    s.set_write_timeout(Some(CLIENT_TIMEOUT))?;
+    let timeout = client_timeout(req);
+    s.set_read_timeout(Some(timeout))?;
+    s.set_write_timeout(Some(timeout))?;
     send(&mut s, req)?;
     match recv::<_, Reply>(&mut s) {
         Ok(Some(reply)) => Ok(reply),
         Ok(None) => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "applets socket closed before a reply")),
         Err(e) => Err(io::Error::new(e.kind(), format!("no reply from the applets socket: {e}"))),
+    }
+}
+
+/// The client timeout of `req`: short for the probe, longer than the
+/// server's reply timeout for the rest.
+pub fn client_timeout(req: &Request) -> std::time::Duration {
+    match req {
+        Request::GetEdit => CLIENT_TIMEOUT,
+        _ => REQUEST_TIMEOUT,
     }
 }
 
@@ -149,13 +163,22 @@ mod tests {
     }
 
     #[test]
-    fn request_to_a_silent_listener_times_out() {
+    fn the_probe_to_a_silent_listener_times_out_fast() {
         let td = short_dir();
         let path = td.path().join("s.sock");
         let _l = UnixListener::bind(&path).unwrap();
         let start = std::time::Instant::now();
-        assert!(request_at(&path, &Request::List).is_err());
-        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert!(request_at(&path, &Request::GetEdit).is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn only_the_probe_has_the_short_client_timeout() {
+        assert_eq!(client_timeout(&Request::GetEdit), CLIENT_TIMEOUT);
+        assert_eq!(client_timeout(&Request::List), REQUEST_TIMEOUT);
+        assert_eq!(client_timeout(&Request::SetEdit(true)), REQUEST_TIMEOUT);
+        assert_eq!(client_timeout(&Request::Reload { id: "a".into() }), REQUEST_TIMEOUT);
+        assert_eq!(REQUEST_TIMEOUT, crate::server::REPLY_TIMEOUT + std::time::Duration::from_secs(2));
     }
 
     #[test]

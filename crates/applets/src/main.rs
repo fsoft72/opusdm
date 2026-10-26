@@ -56,7 +56,7 @@ fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::NON_UNIQUE).build();
     // OWNER: this local is the only strong reference to the host for the
     // whole run; it is dropped only after `app.run()` returns.
-    let host: Rc<Host> = Rc::new(Host::new(&app));
+    let host: Rc<Host> = Host::new(&app);
     // With every applet disabled there is no window: the hold keeps the
     // application running anyway. Kept in a local until `app.run()` returns.
     let hold = app.hold();
@@ -75,7 +75,8 @@ fn main() -> gtk::glib::ExitCode {
     });
     // Nothing to do on activation: the applets open at startup.
     app.connect_activate(|_| {});
-    let code = app.run();
+    // No argv: GApplication must never parse or refuse the process arguments.
+    let code = app.run_with_args::<&str>(&[]);
     drop(hold);
     drop(host);
     code

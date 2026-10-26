@@ -44,7 +44,7 @@ impl Dirs {
     /// A host over these folders that never presents a window.
     fn host(&self, app: &gtk::Application) -> Rc<Host> {
         let config = HostConfig { applets_dir: self.applets.path().to_path_buf(), state_dir: self.states.path().to_path_buf(), present_windows: false };
-        Rc::new(Host::with_config(app, config))
+        Host::with_config(app, config)
     }
 }
 
@@ -129,6 +129,9 @@ fn host_gtk_checks() {
     a_bad_show_clears_the_old_widgets_and_shows_the_error(&app);
     reload_restarts_a_changed_script(&app);
     the_host_still_answers_after_many_main_loop_iterations(&app);
+    a_disabled_applet_stops_its_timers(&app);
+    a_click_that_shows_a_new_tree_replaces_it(&app);
+    a_window_close_disables_the_applet(&app);
     eprintln!("host_gtk_checks: all sections ran");
 }
 
@@ -366,4 +369,91 @@ fn socket_request(sock: &Path, req: Request) -> Reply {
         got.is_some()
     }), "no reply over the socket");
     got.unwrap().expect("the request over the socket")
+}
+
+/// Fix round 1: a window-manager close of an applet window means "disable
+/// this applet", as `SetEnabled { enabled: false }`.
+fn a_window_close_disables_the_applet(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    dirs.applet("shut", &manifest("Shut"), &label_script("bye"));
+    dirs.enable("shut");
+    let host = dirs.host(app);
+    host.load_enabled();
+    let window = host.window_of("shut").expect("the enabled applet has a window");
+    // `close()` does nothing on an unrealized window; realize creates the
+    // surface without mapping it, so nothing appears on the screen.
+    WidgetExt::realize(&window);
+    assert!(!window.is_visible() && !window.is_mapped(), "a test window must never be shown");
+    window.close();
+    pump();
+    assert!(!state::load_in(dirs.states.path(), "shut").enabled, "the close saved enabled = false");
+    assert!(!host.is_running("shut"), "the runtime is gone");
+    assert!(host.window_of("shut").is_none(), "the host no longer has the window");
+    assert!(!app.windows().contains(&window.upcast()), "the window is destroyed");
+    let st = status(&host, "shut");
+    assert!(!st.enabled && !st.running, "{st:?}");
+    eprintln!("section a_window_close_disables_the_applet: ok");
+}
+
+/// Fix round 1 (3a): after `SetEnabled false` the applet's `setInterval`
+/// no longer fires. Each tick makes an HTTP request to a local server, a
+/// side effect outside the applet that a dropped sink cannot hide.
+fn a_disabled_applet_stops_its_timers(app: &gtk::Application) {
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = hits.clone();
+    std::thread::spawn(move || {
+        for conn in server.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut conn, &mut buf);
+            let _ = std::io::Write::write_all(&mut conn, b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    let dirs = Dirs::new();
+    let code = format!(r#"setInterval(() => {{ opus.http.get("http://127.0.0.1:{port}/").catch(() => {{}}); }}, 20);"#);
+    dirs.applet("tick", &manifest("Tick"), &code);
+    dirs.enable("tick");
+    let host = dirs.host(app);
+    host.load_enabled();
+    let count = || hits.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(pump_until(Duration::from_secs(5), || count() >= 5), "the interval runs while enabled ({} hits)", count());
+    assert_eq!(host.handle(&Request::SetEnabled { id: "tick".into(), enabled: false }), Reply::Ok);
+    // Let the requests already in flight land, then nothing may follow.
+    let _ = pump_until(Duration::from_millis(300), || false);
+    let after_disable = count();
+    let _ = pump_until(Duration::from_millis(500), || false);
+    assert_eq!(count(), after_disable, "the interval still fires after the applet was disabled");
+    eprintln!("section a_disabled_applet_stops_its_timers: ok ({after_disable} hits, none after the disable)");
+}
+
+/// Fix round 1 (3b): a button whose `onClick` shows a new tree replaces the
+/// tree from inside its own signal emission: no panic, the new tree is
+/// shown, and the new button works.
+fn a_click_that_shows_a_new_tree_replaces_it(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let code = r#"let n = 0;
+function render() {
+  opus.ui.show({ type: "box", children: [
+    { type: "label", id: "l", text: "gen " + n },
+    { type: "button", id: "b", label: "next", onClick: () => { n++; render(); } },
+  ] });
+}
+render();"#;
+    dirs.applet("swapper", &manifest("Swapper"), code);
+    dirs.enable("swapper");
+    let host = dirs.host(app);
+    host.load_enabled();
+    assert_eq!(label_text(&host, "swapper").as_deref(), Some("gen 0"));
+    let first = find::<gtk::Button>(&host.content_root("swapper").unwrap()).unwrap();
+    first.emit_clicked();
+    assert!(pump_until(Duration::from_secs(3), || label_text(&host, "swapper").as_deref() == Some("gen 1")), "the new tree is shown");
+    let second = find::<gtk::Button>(&host.content_root("swapper").unwrap()).unwrap();
+    assert_ne!(first, second, "the button was replaced");
+    second.emit_clicked();
+    assert!(pump_until(Duration::from_secs(3), || label_text(&host, "swapper").as_deref() == Some("gen 2")), "the new button works");
+    assert!(host.error_text("swapper").is_none(), "no error: {:?}", host.error_text("swapper"));
+    eprintln!("section a_click_that_shows_a_new_tree_replaces_it: ok");
 }

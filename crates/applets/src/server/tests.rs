@@ -22,7 +22,7 @@ fn fake_host(rx: async_channel::Receiver<HostMessage>, reply: Reply) -> std::syn
     std::thread::spawn(move || {
         while let Ok(msg) = rx.recv_blocking() {
             match msg {
-                HostMessage::Request(_, back) => back.send(reply.clone()).unwrap(),
+                HostMessage::Request(pending) => pending.reply(reply.clone()),
                 HostMessage::Edit(on) => edits_tx.send(on).unwrap(),
             }
         }
@@ -148,4 +148,40 @@ fn a_request_waiting_for_the_host_does_not_block_a_probe() {
     let start = Instant::now();
     assert_eq!(request_at(&path, &Request::GetEdit).unwrap(), Reply::Edit(false));
     assert!(start.elapsed() < Duration::from_secs(1), "probe took {:?}", start.elapsed());
+}
+
+/// Fix round 1: the client timeout of `request_at` is longer than the reply
+/// timeout, so a real client sees the busy answer of a stalled host.
+#[test]
+fn a_stalled_host_gives_busy_through_request_at() {
+    let (shared, _edit, _rx) = shared();
+    let td = short_dir();
+    let path = td.path().join("s.sock");
+    let l = UnixListener::bind(&path).unwrap();
+    let _h = spawn_accept(l, shared).unwrap();
+    let start = Instant::now();
+    assert_eq!(request_at(&path, &Request::List).unwrap(), Reply::Error(BUSY_MESSAGE.into()));
+    assert!(start.elapsed() >= REPLY_TIMEOUT, "busy came after {:?}", start.elapsed());
+}
+
+/// Fix round 1: a request the client gave up on is marked, so the host can
+/// skip it; one still waited for is not.
+#[test]
+fn a_request_the_client_gave_up_on_is_marked_abandoned() {
+    let (shared, _edit, rx) = shared();
+    let shared = shared.with_reply_timeout(Duration::from_millis(100));
+    assert_eq!(answer(&Request::Reload { id: "a".into() }, &shared), Reply::Error(BUSY_MESSAGE.into()));
+    let Ok(HostMessage::Request(late)) = rx.try_recv() else { panic!("the request reached the host channel") };
+    assert_eq!(late.request(), &Request::Reload { id: "a".into() });
+    assert!(late.is_abandoned());
+    late.reply(Reply::Ok);
+    let waiting = std::thread::spawn(move || {
+        let Ok(HostMessage::Request(pending)) = rx.recv_blocking() else { panic!("no request") };
+        let abandoned = pending.is_abandoned();
+        pending.reply(Reply::Ok);
+        abandoned
+    });
+    let shared = shared.with_reply_timeout(Duration::from_secs(5));
+    assert_eq!(answer(&Request::List, &shared), Reply::Ok);
+    assert!(!waiting.join().unwrap(), "a request still waited for is not abandoned");
 }

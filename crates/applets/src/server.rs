@@ -42,10 +42,40 @@ const CONN_THREAD: &str = "opusdm-applets-conn";
 /// What a connection thread sends to the host on the GTK main loop.
 #[derive(Debug)]
 pub enum HostMessage {
-    /// A request to answer; the reply goes into the one-shot sender.
-    Request(Request, SyncSender<Reply>),
+    /// A request to answer.
+    Request(PendingRequest),
     /// The edit mode was turned on or off (already stored in the flag).
     Edit(bool),
+}
+
+/// A request waiting for the host, with the way back to its connection.
+#[derive(Debug)]
+pub struct PendingRequest {
+    request: Request,
+    reply: SyncSender<Reply>,
+    /// Set by the connection thread when it stopped waiting (busy answer).
+    abandoned: Arc<AtomicBool>,
+}
+
+impl PendingRequest {
+    /// The request.
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
+
+    /// True when the client was already answered "busy" and nobody waits
+    /// for this reply any more.
+    pub fn is_abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::SeqCst)
+    }
+
+    /// Send the reply to the waiting connection; a connection that stopped
+    /// waiting is logged.
+    pub fn reply(self, reply: Reply) {
+        if let Err(e) = self.reply.try_send(reply) {
+            err_log!(APP_TAG, "request {:?}: the client stopped waiting before the reply: {e}", self.request);
+        }
+    }
 }
 
 /// What every connection thread shares: the edit flag and the way to the host.
@@ -89,13 +119,16 @@ pub fn answer(req: &Request, shared: &Shared) -> Reply {
 /// the reply timeout. Every failure is logged and answered with an `Error`.
 fn ask_host(req: &Request, shared: &Shared) -> Reply {
     let (reply_tx, reply_rx) = sync_channel(1);
-    if let Err(e) = shared.to_host.try_send(HostMessage::Request(req.clone(), reply_tx)) {
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let pending = PendingRequest { request: req.clone(), reply: reply_tx, abandoned: abandoned.clone() };
+    if let Err(e) = shared.to_host.try_send(HostMessage::Request(pending)) {
         err_log!(APP_TAG, "request {req:?} not delivered to the host: {e}");
         return Reply::Error(HOST_GONE_MESSAGE.into());
     }
     match reply_rx.recv_timeout(shared.reply_timeout) {
         Ok(reply) => reply,
         Err(RecvTimeoutError::Timeout) => {
+            abandoned.store(true, Ordering::SeqCst);
             err_log!(APP_TAG, "request {req:?}: no reply from the main loop within {:?}, answered busy", shared.reply_timeout);
             Reply::Error(BUSY_MESSAGE.into())
         }
