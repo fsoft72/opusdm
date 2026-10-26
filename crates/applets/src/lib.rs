@@ -13,6 +13,7 @@ pub mod placement;
 pub mod protocol;
 pub mod runtime;
 pub mod server;
+pub mod settings_form;
 pub mod state;
 pub mod ui_tree;
 pub mod widgets;

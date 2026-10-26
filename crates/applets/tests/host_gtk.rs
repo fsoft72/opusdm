@@ -12,6 +12,7 @@ use opusdm_applets::host::{self, Host, HostConfig};
 use opusdm_applets::placement::Rect;
 use opusdm_applets::protocol::{request_at, AppletStatus, Reply, Request};
 use opusdm_applets::server::{self, Shared};
+use opusdm_applets::settings_form;
 use opusdm_applets::state::{self, AppletState};
 use std::path::Path;
 use std::cell::{Cell, RefCell};
@@ -144,6 +145,13 @@ fn host_gtk_checks() {
     setting_edit_off_hides_them_again(&app);
     the_handle_drag_moves_the_window_like_alt_drag(&app);
     a_window_opened_while_edit_mode_is_on_starts_in_edit_mode(&app);
+    the_form_shows_the_current_values(&app);
+    apply_saves_the_state_and_calls_on_settings(&app);
+    an_invalid_value_is_shown_in_the_window_and_not_saved(&app);
+    apply_with_an_unreadable_state_file_writes_nothing(&app);
+    an_applet_with_no_settings_says_so_in_the_window(&app);
+    the_gear_twice_opens_one_window(&app);
+    disabling_the_applet_closes_its_settings_window(&app);
     eprintln!("host_gtk_checks: all sections ran");
 }
 
@@ -622,10 +630,11 @@ fn edit_mode_shows_the_border_and_the_icons(app: &gtk::Application) {
     assert!(pump_until(Duration::from_secs(3), || host.edit()), "the socket's SetEdit reaches the host");
     assert_eq!(host_edit_look(&host, "one"), (true, true, true));
     assert_eq!(host_edit_look(&host, "two"), (true, true, true));
-    // The gear of a host window goes to `Host::open_settings` (a stub until
-    // Task 13): it must not panic or close anything.
+    // The gear of a host window goes to `Host::open_settings`: it opens the
+    // settings window and does not close anything.
     host.with_window("one", |w| w.gear().emit_clicked()).unwrap();
     assert!(host.is_running("one"));
+    assert!(host.settings_window("one").is_some(), "the gear opened the settings window");
     eprintln!("section edit_mode_shows_the_border_and_the_icons: ok");
 }
 
@@ -708,4 +717,258 @@ fn a_window_opened_while_edit_mode_is_on_starts_in_edit_mode(app: &gtk::Applicat
     assert_eq!(host_edit_look(&host, "late"), (true, true, true), "a reload keeps edit mode");
     assert_eq!(host.edit_mode().listener_count(), 1, "the reloaded window replaced the old listener");
     eprintln!("section a_window_opened_while_edit_mode_is_on_starts_in_edit_mode: ok");
+}
+
+/// The manifest of a weather-like applet with one setting of each kind.
+fn settings_manifest(name: &str) -> String {
+    format!(r#"{{ "name": "{name}", "window": {{ "width": 210, "height": 120 }}, "settings": [
+        {{ "key": "city", "type": "string", "label": "City", "default": "Rome" }},
+        {{ "key": "units", "type": "choice", "label": "Units", "default": "C", "choices": ["C", "F"] }},
+        {{ "key": "refreshMinutes", "type": "number", "label": "Refresh every (minutes)", "default": 30 }},
+        {{ "key": "seconds", "type": "bool", "label": "Show seconds", "default": true }}
+    ] }}"#)
+}
+
+/// A script that shows the city in label `l` and, on new settings, shows
+/// `city/units/refreshMinutes/seconds` there and logs it.
+const SETTINGS_SCRIPT: &str = r#"
+opus.ui.show({ type: "label", id: "l", text: String(opus.applet.settings.city) });
+opus.applet.onSettings((s) => {
+    const text = s.city + "/" + s.units + "/" + s.refreshMinutes + "/" + s.seconds;
+    console.log("new settings " + text);
+    opus.ui.update("l", { text });
+});
+"#;
+
+/// The first widget under `root` named `name`, depth first.
+fn find_named(root: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+    if root.widget_name() == name { return Some(root.clone()); }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = find_named(&c, name) { return Some(found); }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// The field of setting `key` in settings window `window`, as a `T`.
+fn field<T: IsA<gtk::Widget>>(window: &gtk::Window, key: &str) -> T {
+    let root = window.child().expect("the settings window has a child");
+    let widget = find_named(&root, &settings_form::field_name(key)).unwrap_or_else(|| panic!("no field for {key}"));
+    widget.downcast::<T>().unwrap_or_else(|w| panic!("{key}: unexpected widget {}", w.type_()))
+}
+
+/// The button named `name` in `window`.
+fn button(window: &gtk::Window, name: &str) -> gtk::Button {
+    let root = window.child().expect("the settings window has a child");
+    find_named(&root, name).and_then(|w| w.downcast::<gtk::Button>().ok()).unwrap_or_else(|| panic!("no button {name}"))
+}
+
+/// True when `window` was destroyed: GTK dropped it from its toplevels
+/// (it is disposed when the last reference, this one, goes).
+fn destroyed(window: &gtk::Window) -> bool {
+    !gtk::Window::list_toplevels().contains(window.upcast_ref::<gtk::Widget>())
+}
+
+/// Every label text of `window`.
+fn window_labels(window: &gtk::Window) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_labels(&window.child().expect("the settings window has a child"), &mut out);
+    out
+}
+
+/// A host with applet `id` (the settings manifest and script) enabled and
+/// its settings window open; the state file has `saved`.
+fn settings_host(app: &gtk::Application, dirs: &Dirs, id: &str, saved: AppletState) -> (Rc<Host>, gtk::Window) {
+    dirs.applet(id, &settings_manifest("Weather"), SETTINGS_SCRIPT);
+    state::save_in(dirs.states.path(), id, &saved).unwrap();
+    let host = dirs.host(app);
+    host.load_enabled();
+    assert!(host.is_running(id));
+    host.set_edit(true);
+    host.with_window(id, |w| w.gear().emit_clicked()).unwrap();
+    let window = host.settings_window(id).expect("the gear opens the settings window");
+    (host, window)
+}
+
+/// Task 13: the settings window is a normal decorated window titled
+/// "<name> settings", never presented in tests, and its fields show the
+/// saved values (the defaults where nothing valid is saved).
+fn the_form_shows_the_current_values(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let mut saved = AppletState { enabled: true, ..Default::default() };
+    saved.settings.insert("city".into(), "Paris".into());
+    saved.settings.insert("units".into(), "F".into());
+    saved.settings.insert("refreshMinutes".into(), "bad".into());
+    let (_host, window) = settings_host(app, &dirs, "show", saved);
+    assert_eq!(window.title().as_deref(), Some("Weather settings"));
+    assert!(window.is_decorated(), "the settings window is a normal decorated window");
+    assert!(!window.is_visible(), "a test window must never be presented");
+    assert!(window.transient_for().is_none());
+    assert_eq!(field::<gtk::Entry>(&window, "city").text(), "Paris");
+    let units = field::<gtk::DropDown>(&window, "units");
+    assert_eq!(units.selected(), 1, "F is the second choice");
+    let spin = field::<gtk::SpinButton>(&window, "refreshMinutes");
+    assert_eq!(spin.value(), 30.0, "a saved value of the wrong type shows the default");
+    assert_eq!(spin.digits(), 0);
+    assert!(spin.is_numeric(), "letters cannot be typed in a number field");
+    assert!(field::<gtk::Switch>(&window, "seconds").is_active());
+    let labels = window_labels(&window);
+    for label in ["City", "Units", "Refresh every (minutes)", "Show seconds"] {
+        assert!(labels.iter().any(|l| l == label), "{label} in {labels:?}");
+    }
+    assert!(button(&window, settings_form::APPLY_NAME).get_visible());
+    assert!(button(&window, settings_form::CLOSE_NAME).get_visible());
+    eprintln!("section the_form_shows_the_current_values: ok");
+}
+
+/// Task 13: Apply writes the new settings to the state file keeping
+/// `enabled` and the geometry, and the running applet's `onSettings` sees
+/// them; the window stays open. Close then closes it and the host forgets it.
+fn apply_saves_the_state_and_calls_on_settings(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let mut saved = AppletState { enabled: true, x: Some(11), y: Some(22), width: Some(210), height: Some(120), ..Default::default() };
+    saved.settings.insert("stale".into(), 7.into());
+    let (host, window) = settings_host(app, &dirs, "apply", saved);
+    assert_eq!(label_text(&host, "apply").as_deref(), Some("Rome"));
+    field::<gtk::Entry>(&window, "city").set_text("Milan");
+    field::<gtk::DropDown>(&window, "units").set_selected(1);
+    field::<gtk::SpinButton>(&window, "refreshMinutes").set_value(15.0);
+    field::<gtk::Switch>(&window, "seconds").set_active(false);
+    button(&window, settings_form::APPLY_NAME).emit_clicked();
+    assert!(pump_until(Duration::from_secs(3), || label_text(&host, "apply").as_deref() == Some("Milan/F/15/false")), "onSettings saw the new values: {:?}", label_text(&host, "apply"));
+    let st = state::load_in(dirs.states.path(), "apply");
+    assert!(st.enabled, "Apply keeps enabled");
+    assert_eq!((st.x, st.y, st.width, st.height), (Some(11), Some(22), Some(210), Some(120)), "Apply keeps the geometry");
+    assert_eq!(st.settings["city"], "Milan");
+    assert_eq!(st.settings["units"], "F");
+    assert_eq!(st.settings["refreshMinutes"], 15);
+    assert_eq!(st.settings["seconds"], false);
+    assert_eq!(st.settings["stale"], 7, "a saved key that is not declared stays in the file");
+    assert_eq!(settings_form::status_text(&window), None, "no error after a good Apply");
+    assert_eq!(host.settings_window("apply").as_ref(), Some(&window), "Apply keeps the window open");
+    button(&window, settings_form::CLOSE_NAME).emit_clicked();
+    assert!(host.settings_window("apply").is_none(), "Close closes it and the host forgets it");
+    assert!(destroyed(&window), "the closed window was destroyed");
+    // The gear opens a new one with the saved values.
+    host.with_window("apply", |w| w.gear().emit_clicked()).unwrap();
+    let again = host.settings_window("apply").expect("a new settings window");
+    assert_ne!(again, window);
+    assert_eq!(field::<gtk::Entry>(&again, "city").text(), "Milan");
+    eprintln!("section apply_saves_the_state_and_calls_on_settings: ok");
+}
+
+/// Task 13: a number that does not parse is shown in the settings window,
+/// nothing is saved and `onSettings` is not called.
+fn an_invalid_value_is_shown_in_the_window_and_not_saved(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let (host, window) = settings_host(app, &dirs, "invalid", AppletState { enabled: true, ..Default::default() });
+    let before = std::fs::read_to_string(dirs.states.path().join("invalid.json")).unwrap();
+    let spin = field::<gtk::SpinButton>(&window, "refreshMinutes");
+    spin.set_text("soon");
+    button(&window, settings_form::APPLY_NAME).emit_clicked();
+    pump();
+    let status = settings_form::status_text(&window).expect("the error is shown in the window");
+    assert!(status.contains("refreshMinutes"), "{status}");
+    assert_eq!(std::fs::read_to_string(dirs.states.path().join("invalid.json")).unwrap(), before, "nothing saved");
+    assert_eq!(label_text(&host, "invalid").as_deref(), Some("Rome"), "onSettings not called");
+    assert!(host.settings_window("invalid").is_some(), "the window stays open");
+    eprintln!("section an_invalid_value_is_shown_in_the_window_and_not_saved: ok");
+}
+
+/// Task 13: when the state file exists but cannot be read, Apply writes
+/// nothing over it (no defaults), shows the error in the window and keeps
+/// it open; the applet is not told.
+fn apply_with_an_unreadable_state_file_writes_nothing(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let (host, window) = settings_host(app, &dirs, "unread", AppletState { enabled: true, ..Default::default() });
+    let path = dirs.states.path().join("unread.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    field::<gtk::Entry>(&window, "city").set_text("Milan");
+    button(&window, settings_form::APPLY_NAME).emit_clicked();
+    pump();
+    let status = settings_form::status_text(&window).expect("the read error is shown in the window");
+    assert!(status.contains("unread"), "{status}");
+    assert!(path.is_dir(), "the unreadable state was not replaced");
+    assert_eq!(label_text(&host, "unread").as_deref(), Some("Rome"), "onSettings not called");
+    assert!(host.settings_window("unread").is_some(), "the window stays open");
+    eprintln!("section apply_with_an_unreadable_state_file_writes_nothing: ok");
+}
+
+/// Task 13: an applet without settings gets a window saying so, with only
+/// a Close button.
+fn an_applet_with_no_settings_says_so_in_the_window(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    dirs.applet("plain", &manifest("Plain"), &label_script("p"));
+    dirs.enable("plain");
+    let host = dirs.host(app);
+    host.load_enabled();
+    host.open_settings("plain");
+    let window = host.settings_window("plain").expect("a settings window");
+    assert_eq!(window.title().as_deref(), Some("Plain settings"));
+    let labels = window_labels(&window);
+    assert!(labels.iter().any(|l| l == "This applet has no settings"), "{labels:?}");
+    let root = window.child().unwrap();
+    assert!(find_named(&root, settings_form::APPLY_NAME).is_none(), "no Apply button");
+    assert!(find::<gtk::Entry>(&root).is_none());
+    button(&window, settings_form::CLOSE_NAME).emit_clicked();
+    assert!(host.settings_window("plain").is_none());
+    assert!(destroyed(&window));
+    eprintln!("section an_applet_with_no_settings_says_so_in_the_window: ok");
+}
+
+/// Task 13: the gear of an applet whose settings window is open gives
+/// that window again, never a second one; a closed or unknown applet gets
+/// none.
+fn the_gear_twice_opens_one_window(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let (host, window) = settings_host(app, &dirs, "twice", AppletState { enabled: true, ..Default::default() });
+    let toplevels = gtk::Window::list_toplevels().len();
+    host.with_window("twice", |w| w.gear().emit_clicked()).unwrap();
+    host.open_settings("twice");
+    assert_eq!(host.settings_window("twice").as_ref(), Some(&window), "the same window");
+    assert_eq!(gtk::Window::list_toplevels().len(), toplevels, "no second window was built");
+    host.open_settings("nobody");
+    assert!(host.settings_window("nobody").is_none(), "no window for an applet that is not open");
+    // A window-manager close (title bar) of the settings window: the host
+    // forgets it, the applet keeps running and the gear opens a new one.
+    WidgetExt::realize(&window);
+    assert!(!window.is_mapped(), "a test window must never be shown");
+    window.close();
+    pump();
+    assert!(host.settings_window("twice").is_none(), "the host forgot the closed window");
+    assert!(destroyed(&window), "the title bar close destroyed it");
+    assert!(host.is_running("twice"), "closing the settings does not touch the applet");
+    host.open_settings("twice");
+    assert!(host.settings_window("twice").is_some_and(|w| w != window), "a new window after the close");
+    eprintln!("section the_gear_twice_opens_one_window: ok");
+}
+
+/// Task 13: disabling, reloading or closing the window of an applet closes
+/// its settings window too, and the host forgets it.
+fn disabling_the_applet_closes_its_settings_window(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let (host, window) = settings_host(app, &dirs, "gone", AppletState { enabled: true, ..Default::default() });
+    assert_eq!(host.handle(&Request::SetEnabled { id: "gone".into(), enabled: false }), Reply::Ok);
+    assert!(host.settings_window("gone").is_none(), "disable closes the settings window");
+    assert!(destroyed(&window), "the settings window was destroyed");
+
+    assert_eq!(host.handle(&Request::SetEnabled { id: "gone".into(), enabled: true }), Reply::Ok);
+    host.open_settings("gone");
+    let window = host.settings_window("gone").expect("open again");
+    assert_eq!(host.handle(&Request::Reload { id: "gone".into() }), Reply::Ok);
+    assert!(host.settings_window("gone").is_none(), "reload closes the settings window");
+    assert!(destroyed(&window));
+
+    host.open_settings("gone");
+    let window = host.settings_window("gone").expect("open after the reload");
+    let applet_window = host.window_of("gone").unwrap();
+    WidgetExt::realize(&applet_window);
+    applet_window.close();
+    pump();
+    assert!(!host.is_running("gone"), "the window close disabled the applet");
+    assert!(host.settings_window("gone").is_none(), "the window close closes the settings window");
+    assert!(destroyed(&window));
+    eprintln!("section disabling_the_applet_closes_its_settings_window: ok");
 }

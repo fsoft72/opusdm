@@ -30,6 +30,22 @@ pub fn load_in(base: &Path, id: &str) -> AppletState {
     opusdm_ipc::settings::load_json(&state_path_in(base, id), APP_TAG, "applet state")
 }
 
+/// Load the state of `id` from `base` before changing and saving it: a
+/// missing file is the default state and a malformed one is backed up and
+/// gives the default (as [`load_in`]), but a file that exists and cannot
+/// be read is an `Err`, so the caller does not write defaults over it.
+pub fn read_in(base: &Path, id: &str) -> Result<AppletState, String> {
+    let path = state_path_in(base, id);
+    match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AppletState::default()),
+        Err(e) => Err(format!("applet {id}: cannot read its state file {}: {e}", path.display())),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(state) => Ok(state),
+            Err(_) => Ok(load_in(base, id)),
+        },
+    }
+}
+
 /// Save the state of `id` under `base` (atomic, creates the directory).
 pub fn save_in(base: &Path, id: &str, state: &AppletState) -> std::io::Result<()> {
     opusdm_ipc::settings::save_json(&state_path_in(base, id), state)
@@ -128,6 +144,21 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(load_in(dir.path(), "clock"), AppletState::default());
         assert!(path.with_file_name("clock.json.bak").exists());
+    }
+
+    #[test]
+    fn read_in_refuses_an_unreadable_file_but_not_a_missing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_in(dir.path(), "clock"), Ok(AppletState::default()));
+        let st = AppletState { enabled: true, x: Some(3), ..Default::default() };
+        save_in(dir.path(), "clock", &st).unwrap();
+        assert_eq!(read_in(dir.path(), "clock"), Ok(st));
+        std::fs::create_dir(state_path_in(dir.path(), "busy")).unwrap();
+        let err = read_in(dir.path(), "busy").unwrap_err();
+        assert!(err.contains("busy"), "{err}");
+        std::fs::write(state_path_in(dir.path(), "bad"), "{ nope").unwrap();
+        assert_eq!(read_in(dir.path(), "bad"), Ok(AppletState::default()), "malformed: backed up, default");
+        assert!(dir.path().join("bad.json.bak").exists());
     }
 
     #[test]

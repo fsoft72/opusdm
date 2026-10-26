@@ -17,6 +17,16 @@
 //! its widgets only), removed when the window is dropped. The socket's
 //! `SetEdit` reaches [`Host::set_edit`] through the request loop. The
 //! window's gear calls [`Host::open_settings`] through a `Weak<Host>`.
+//!
+//! Settings windows (Task 13): the host owns at most one settings window
+//! per open applet, in `settings_windows`, with the id of its
+//! `close-request` handler. The window's Apply and that handler hold only a
+//! `Weak<Host>` (a failed upgrade is logged). The host destroys the
+//! settings window of an applet it closes (disable, reload, window close)
+//! and all of them when it is dropped. A window closed by the user (Close
+//! or the title bar, both emit `close-request`) is forgotten by its
+//! handler. Not the `destroy` signal: GTK emits it only when the last
+//! reference goes, and the map holds one.
 
 use crate::applet_window::{self, AppletWindow, WindowHooks};
 use crate::discovery::{self, Discovered};
@@ -26,9 +36,11 @@ use crate::protocol::{AppletStatus, Reply, Request};
 use crate::runtime::{Event, Runtime, Sink};
 use crate::server::HostMessage;
 use crate::widgets::{self, BuiltTree, Dispatch, ErrorListener};
-use crate::{canvas, state, ui_tree};
+use crate::manifest::Manifest;
+use crate::{canvas, settings_form, state, ui_tree};
 use gtk4 as gtk;
 use gtk::glib;
+use gtk::prelude::*;
 use opusdm_ipc::{debug_log, err_log};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -69,6 +81,9 @@ pub struct Host {
     start_errors: RefCell<HashMap<String, String>>,
     /// The edit mode, as last told by the socket, shared with every window.
     edit: EditMode,
+    /// The open settings window of each applet, with its `close-request`
+    /// handler.
+    settings_windows: RefCell<HashMap<String, (gtk::Window, glib::SignalHandlerId)>>,
     /// This host, for the window close handlers (never upgraded to own it).
     me: Weak<Host>,
 }
@@ -77,6 +92,8 @@ pub struct Host {
 /// the widgets and the window go.
 struct Applet {
     id: String,
+    /// The manifest the applet was opened with (its settings and name).
+    manifest: Manifest,
     /// `None` when the entry script failed.
     runtime: RefCell<Option<Runtime>>,
     /// The runtime's dispatcher for the widgets (holds a `Weak` of it).
@@ -101,7 +118,7 @@ impl Host {
     /// A host over the folders of `config`. Builds no widget: call
     /// [`Host::load_enabled`] once GTK is up (application `startup`).
     pub fn with_config(app: &gtk::Application, config: HostConfig) -> Rc<Host> {
-        Rc::new_cyclic(|me| Host { app: app.clone(), config, applets: RefCell::default(), start_errors: RefCell::default(), edit: EditMode::new(), me: me.clone() })
+        Rc::new_cyclic(|me| Host { app: app.clone(), config, applets: RefCell::default(), start_errors: RefCell::default(), edit: EditMode::new(), settings_windows: RefCell::default(), me: me.clone() })
     }
 
     /// Open every enabled applet. A broken one is logged (and listed with
@@ -153,10 +170,101 @@ impl Host {
         &self.edit
     }
 
-    /// Open the settings of applet `id` (the edit gear). KNOWN STUB until
-    /// Task 13 adds the settings window: it only logs at debug level.
+    /// Open the settings window of the open applet `id` (the edit gear),
+    /// generated from its manifest and showing its saved values; when it
+    /// is already open, present that one instead. An applet that is not
+    /// open is logged.
     pub fn open_settings(&self, id: &str) {
-        debug_log!(APP_TAG, "applet {id}: settings requested; the settings window comes with Task 13");
+        if let Some(window) = self.settings_window(id) {
+            debug_log!(APP_TAG, "applet {id}: settings window already open, presented again");
+            if self.config.present_windows { window.present(); }
+            return;
+        }
+        let Some(applet) = self.applets.borrow().get(id).cloned() else { return err_log!(APP_TAG, "applet {id}: settings requested, but the applet is not open") };
+        let st = state::load_in(&self.config.state_dir, id);
+        let values = state::effective_settings(&applet.manifest.settings, &st);
+        let window = settings_form::build(&applet.manifest.settings, &values, Box::new(self.apply_handler(id)));
+        window.set_title(Some(&format!("{} settings", applet.manifest.name)));
+        let handler = window.connect_close_request(self.settings_closed_handler(id));
+        self.settings_windows.borrow_mut().insert(id.to_string(), (window.clone(), handler));
+        debug_log!(APP_TAG, "applet {id}: settings window opened");
+        if self.config.present_windows { window.present(); }
+    }
+
+    /// The open settings window of applet `id`, if any.
+    pub fn settings_window(&self, id: &str) -> Option<gtk::Window> {
+        self.settings_windows.borrow().get(id).map(|(w, _)| w.clone())
+    }
+
+    /// Save `values` as the settings of the open applet `id`, keeping the
+    /// rest of its state, then hand the effective settings to its running
+    /// runtime (`onSettings`). A state file that exists but cannot be read
+    /// is an error and nothing is written over it.
+    pub fn apply_settings(&self, id: &str, values: serde_json::Map<String, Value>) -> Result<(), String> {
+        let Some(applet) = self.applets.borrow().get(id).cloned() else { return Err(format!("applet {id}: settings not saved, the applet is not open")) };
+        let mut st = state::read_in(&self.config.state_dir, id).map_err(|e| format!("{e}; the settings were not saved"))?;
+        st.settings.extend(values);
+        state::save_in(&self.config.state_dir, id, &st).map_err(|e| format!("applet {id}: cannot save its settings: {e}"))?;
+        let settings = state::effective_settings(&applet.manifest.settings, &st);
+        match applet.runtime.borrow().as_ref() {
+            Some(runtime) => runtime.deliver_settings(settings),
+            None => debug_log!(APP_TAG, "applet {id}: settings saved; the applet is not running, onSettings not called"),
+        }
+        debug_log!(APP_TAG, "applet {id}: settings applied");
+        Ok(())
+    }
+
+    /// What Apply in the settings window of applet `id` does: save and
+    /// deliver the values; an error is logged and shown in the window.
+    /// Holds only a `Weak<Host>`; a failed upgrade is logged.
+    fn apply_handler(&self, id: &str) -> impl Fn(serde_json::Map<String, Value>) + 'static {
+        let host = self.me.clone();
+        let id = id.to_string();
+        move |values| {
+            let Some(host) = host.upgrade() else {
+                err_log!(APP_TAG, "applet {id}: settings applied after the host was dropped, not saved");
+                return;
+            };
+            let Err(e) = host.apply_settings(&id, values) else { return };
+            err_log!(APP_TAG, "{e}");
+            match host.settings_window(&id) {
+                Some(window) => settings_form::show_status(&window, &e),
+                None => err_log!(APP_TAG, "applet {id}: no settings window to show the error in"),
+            }
+        }
+    }
+
+    /// What a close of applet `id`'s settings window by the user (Close,
+    /// title bar) does: the host forgets it and GTK destroys it. Holds only
+    /// a `Weak<Host>`; a failed upgrade is logged.
+    fn settings_closed_handler(&self, id: &str) -> impl Fn(&gtk::Window) -> glib::Propagation + 'static {
+        let host = self.me.clone();
+        let id = id.to_string();
+        move |window| {
+            match host.upgrade() {
+                Some(host) => host.forget_settings(&id, window),
+                None => err_log!(APP_TAG, "applet {id}: settings window closed after the host was dropped"),
+            }
+            glib::Propagation::Proceed
+        }
+    }
+
+    /// Forget `window` as the settings window of applet `id` (only if it
+    /// is the one stored).
+    fn forget_settings(&self, id: &str, window: &gtk::Window) {
+        let Ok(mut windows) = self.settings_windows.try_borrow_mut() else { return err_log!(APP_TAG, "applet {id}: internal: the settings windows are in use, the closed one is not forgotten") };
+        if !windows.get(id).is_some_and(|(w, _)| w == window) { return; }
+        windows.remove(id);
+        debug_log!(APP_TAG, "applet {id}: settings window closed");
+    }
+
+    /// Destroy the settings window of applet `id`, if open; the host
+    /// forgets it here (its `close-request` handler is disconnected).
+    fn close_settings(&self, id: &str) {
+        let Some((window, handler)) = self.settings_windows.borrow_mut().remove(id) else { return };
+        window.disconnect(handler);
+        window.destroy();
+        debug_log!(APP_TAG, "applet {id}: settings window closed with the applet");
     }
 
     /// Run `f` on the window of applet `id`, while it is open.
@@ -343,6 +451,7 @@ impl Host {
 
     /// Drop applet `id`: its runtime stops and its window is destroyed.
     fn close_applet(&self, id: &str) {
+        self.close_settings(id);
         let removed = self.applets.borrow_mut().remove(id);
         if removed.is_some() { debug_log!(APP_TAG, "applet {id}: closed"); }
         drop(removed);
@@ -361,6 +470,7 @@ impl Host {
         let window = applet_window::open(&self.app, id, manifest, &st, self.config.present_windows, &self.edit, hooks);
         let applet = Rc::new_cyclic(|me| Applet {
             id: id.clone(),
+            manifest: manifest.clone(),
             runtime: RefCell::new(None),
             dispatcher: RefCell::new(None),
             tree: RefCell::new(None),
@@ -390,6 +500,18 @@ impl Host {
                 self.start_errors.borrow_mut().insert(id.clone(), e.clone());
                 Err(e)
             }
+        }
+    }
+}
+
+impl Drop for Host {
+    /// Destroy every open settings window (their handlers disconnected
+    /// first: the host is gone). The applets go with the `applets` map.
+    fn drop(&mut self) {
+        for (id, (window, handler)) in self.settings_windows.get_mut().drain() {
+            window.disconnect(handler);
+            window.destroy();
+            debug_log!(APP_TAG, "applet {id}: settings window closed with the host");
         }
     }
 }
