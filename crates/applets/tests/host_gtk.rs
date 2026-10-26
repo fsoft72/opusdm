@@ -132,6 +132,7 @@ fn host_gtk_checks() {
     a_disabled_applet_stops_its_timers(&app);
     a_click_that_shows_a_new_tree_replaces_it(&app);
     a_window_close_disables_the_applet(&app);
+    prepare_on_a_window_without_an_x11_surface_does_not_panic(&app);
     eprintln!("host_gtk_checks: all sections ran");
 }
 
@@ -456,4 +457,19 @@ render();"#;
     assert!(pump_until(Duration::from_secs(3), || label_text(&host, "swapper").as_deref() == Some("gen 2")), "the new button works");
     assert!(host.error_text("swapper").is_none(), "no error: {:?}", host.error_text("swapper"));
     eprintln!("section a_click_that_shows_a_new_tree_replaces_it: ok");
+}
+
+/// Task 10: `x11_window::prepare` on a window that has no X11 surface (not
+/// realized here; Wayland behaves the same) logs and returns without a panic
+/// and without realizing or showing the window. A realized window is never
+/// prepared here: that would send hints to the window manager of the test
+/// display (the spike checks it in a private Xephyr instead).
+fn prepare_on_a_window_without_an_x11_surface_does_not_panic(app: &gtk::Application) {
+    let window = gtk::ApplicationWindow::builder().application(app).decorated(false).build();
+    opusdm_applets::x11_window::prepare(&window, 10, 20, 200, 100);
+    opusdm_applets::x11_window::prepare(&window, -5, -5, 0, 0);
+    assert!(!window.is_realized(), "prepare must not realize the window");
+    assert!(!window.is_visible(), "prepare must not show the window");
+    window.destroy();
+    eprintln!("section prepare_on_a_window_without_an_x11_surface_does_not_panic: ok");
 }

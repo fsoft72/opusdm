@@ -2677,6 +2677,7 @@ dependencies = [
  "gtk4",
  "opusdm-ipc",
  "opusdm-jscore",
+ "opusdm-ui",
  "serde",
  "serde_json",
  "tempfile",

@@ -1,7 +1,8 @@
 //! The plain window of one applet: undecorated, at the saved or the manifest
 //! size, holding a content slot for the built widget tree and an error label
-//! that shows the latest error. No X11 hints or positioning yet (Tasks 10-11)
-//! and the geometry is not saved yet.
+//! that shows the latest error. On X11 it gets the applet window hints and
+//! its position when realized and mapped (see [`crate::x11_window`]); the
+//! geometry is not saved yet (Task 11).
 //!
 //! Ownership: the host's applet entry owns the [`AppletWindow`]; dropping it
 //! destroys the GTK window, so the application no longer keeps it either.
@@ -11,6 +12,7 @@
 
 use crate::manifest::Manifest;
 use crate::state::AppletState;
+use crate::x11_window;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::pango;
@@ -24,6 +26,9 @@ const ERROR_RGB: (u16, u16, u16) = (0xd0d0, 0x1010, 0x1010);
 
 /// Margin around the error label, in pixels.
 const ERROR_MARGIN: i32 = 4;
+
+/// Monitor rect used when GDK lists no monitor.
+const FALLBACK_MONITOR: (i32, i32, i32, i32) = (0, 0, 1280, 800);
 
 /// The window of one applet and the two places the host fills.
 pub struct AppletWindow {
@@ -40,10 +45,16 @@ pub struct AppletWindow {
 /// resizable as the manifest says. It is presented only when `present` is
 /// true (tests build windows without ever showing them). A close request
 /// (Alt+F4, the window manager) calls `on_close` and is otherwise refused:
-/// `on_close` must hold only weak references.
+/// `on_close` must hold only weak references. On X11 the window is placed at
+/// the saved `x` / `y`, else at a default spot in the top right area of the
+/// first monitor, cascaded by the number of windows `app` already has.
 pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &AppletState, present: bool, on_close: impl Fn() + 'static) -> AppletWindow {
     let width = state.width.unwrap_or(manifest.window.width);
     let height = state.height.unwrap_or(manifest.window.height);
+    let (x, y) = match (state.x, state.y) {
+        (Some(x), Some(y)) => (x, y),
+        _ => x11_window::default_position(first_monitor(), width, app.windows().len()),
+    };
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title(&manifest.name)
@@ -66,8 +77,40 @@ pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &Apple
         on_close();
         glib::Propagation::Stop
     });
+    connect_x11_placement(&window, (x, y, width, height));
     if present { window.present(); }
     AppletWindow { id: id.to_string(), window, content, error }
+}
+
+/// Apply the X11 applet hints and the geometry `(x, y, w, h)` when `window`
+/// is realized, again on map, and on the retries after map (the window
+/// manager adopts the window shortly after map and drops state messages sent
+/// before that). A window never presented (tests) is never realized, so
+/// nothing is sent. The handlers hold only the geometry; the retries hold a
+/// weak reference to the window and log if it is gone.
+fn connect_x11_placement(window: &gtk::ApplicationWindow, geometry: (i32, i32, i32, i32)) {
+    let (x, y, w, h) = geometry;
+    window.connect_realize(move |win| x11_window::prepare(win, x, y, w, h));
+    window.connect_map(move |win| {
+        x11_window::prepare(win, x, y, w, h);
+        let weak = win.downgrade();
+        opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {
+            let Some(win) = weak.upgrade() else {
+                opusdm_ipc::err_log!(APP_TAG, "applet window gone before an X11 placement retry (closed right after it opened?)");
+                return;
+            };
+            x11_window::prepare(&win, x, y, w, h);
+        });
+    });
+}
+
+/// Rect `(x, y, w, h)` of the first monitor, or a 1280x800 fallback.
+fn first_monitor() -> (i32, i32, i32, i32) {
+    gtk::gdk::Display::default()
+        .as_ref()
+        .map(opusdm_ui::list_monitors)
+        .and_then(|rects| rects.first().copied())
+        .unwrap_or(FALLBACK_MONITOR)
 }
 
 /// The hidden, red, wrapping label that shows the latest error.
