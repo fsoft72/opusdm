@@ -1,13 +1,14 @@
 // The `opus` object every applet sees. This file is one function
 // expression: `runtime.rs` calls it with `host(op, payload)`, the native
 // function that runs the Rust side of every call (payload and answer travel
-// as JSON, a failure is thrown as an Error), and `init`, the applet's
-// identity and settings. It returns the hooks Rust uses to call back into
+// as JSON, a failure is thrown as an Error), `init`, the applet's identity
+// and settings, and `canvas`, what `canvas.js` returned (the `ctx` recorder).
+// It returns the hooks Rust uses to call back into
 // the applet (timers, async answers, settings, handlers, redraw).
 //
 // Timers, async calls and handlers live here, in JavaScript: Rust only keeps
 // their numeric ids, so no JavaScript function is ever held by a glib source.
-(function (host, init) {
+(function (host, init, canvas) {
     "use strict";
 
     /**
@@ -142,10 +143,11 @@
          */
         unregisterHandler(id) { handlers.delete(id); },
         /**
-         * Paint canvas `id`; replaced by the canvas code.
+         * Paint canvas `id` of the shown tree: run its `draw` now and send
+         * the commands it recorded. Throws for an unknown canvas.
          * @param {string} id
          */
-        redraw(id) {},
+        redraw(id) { paint(String(id)); },
     };
 
     // ---- widgets -----------------------------------------------------------
@@ -156,6 +158,39 @@
     const MAX_TREE_DEPTH = 64;
     let shown = new Set();
     let propHandlers = new Map();
+
+    // ---- canvases ------------------------------------------------------------
+    // The canvases of the shown tree, by id: `{ handler, width, height }`
+    // (`handler` is the id of the `draw` function, or null). A canvas with no
+    // id gets one, `__opusCanvas<n>`, so `show` can still paint it.
+    const MAX_CANVAS_COMMANDS = 100000;
+    let canvases = new Map();
+    let nextCanvas = 1;
+
+    /**
+     * Run the `draw` of canvas `id` with a fresh recorder and send what it
+     * recorded (`Event::Redraw`). A draw that throws sends nothing, so the
+     * previous picture stays; the error goes to the caller.
+     * @param {string} id
+     */
+    const paint = (id) => {
+        const c = canvases.get(id);
+        if (!c) throw new Error("opus.ui.redraw: no canvas \"" + id + "\" in the shown tree");
+        const rec = canvas.recorder(c.width, c.height, MAX_CANVAS_COMMANDS);
+        try {
+            if (c.handler !== null) {
+                const draw = handlers.get(c.handler);
+                if (!draw) throw new Error("canvas \"" + id + "\": its draw handler " + c.handler + " is not registered");
+                const result = draw(rec.ctx);
+                if (result !== null && typeof result === "object" && typeof result.then === "function") {
+                    warn("canvas \"" + id + "\": draw returned a promise; it must draw synchronously, what it draws after an await is lost");
+                }
+            }
+        } finally {
+            rec.close();
+        }
+        call("canvas.redraw", { id, commands: rec.commands });
+    };
 
     /**
      * Copy `value` with every function registered and replaced by
@@ -181,27 +216,35 @@
 
     /**
      * Encode the node `node` and its `children`; the handlers of a node
-     * with an id are recorded in `keyed` by "id\u0000prop".
+     * with an id are recorded in `keyed` by "id\u0000prop", the canvases in
+     * `found` (a canvas with no id gets a generated one).
      * @param {*} node
      * @param {Array<number>} added
      * @param {Map<string, Array<number>>} keyed
+     * @param {Map<string, Object>} found
      * @param {number} depth
      * @returns {*} the JSON-able node
      */
-    const encodeNode = (node, added, keyed, depth) => {
+    const encodeNode = (node, added, keyed, found, depth) => {
         if (depth > MAX_TREE_DEPTH) throw new RangeError("opus.ui: the tree is nested deeper than " + MAX_TREE_DEPTH + " levels (is there a cycle?)");
         if (node === null || typeof node !== "object" || Array.isArray(node)) return encode(node, added, depth);
         const copy = {};
         for (const key of Object.keys(node)) {
             const value = node[key];
             if (key === "children" && Array.isArray(value)) {
-                copy[key] = value.map((child) => encodeNode(child, added, keyed, depth + 1));
+                copy[key] = value.map((child) => encodeNode(child, added, keyed, found, depth + 1));
                 continue;
             }
             const ids = [];
             copy[key] = encode(value, ids, depth + 1);
             added.push(...ids);
             if (typeof node.id === "string" && ids.length > 0) keyed.set(node.id + "\u0000" + key, ids);
+        }
+        if (node.type === "canvas") {
+            if (copy.id === undefined || copy.id === null) copy.id = "__opusCanvas" + nextCanvas++;
+            const draw = copy.draw;
+            const handler = draw !== null && typeof draw === "object" && typeof draw.handler === "number" ? draw.handler : null;
+            if (typeof copy.id === "string") found.set(copy.id, { handler, width: Number(node.width), height: Number(node.height) });
         }
         return copy;
     };
@@ -224,17 +267,20 @@
     const ui = Object.freeze({
         /**
          * Show `tree` in the applet window, replacing the tree shown before
-         * (its handlers are forgotten). A node is `{ type, id?, class?,
-         * visible?, ...props }`; see the applet docs for the types.
+         * (its handlers are forgotten), then paint every canvas of it. A node
+         * is `{ type, id?, class?, visible?, ...props }`; see the applet docs
+         * for the types. A canvas whose draw throws is reported and the
+         * others still paint.
          * @param {Object} tree
          */
         show(tree) {
             needObject(tree, "opus.ui.show: the tree must be a node object");
             const added = [];
             const keyed = new Map();
+            const found = new Map();
             let encoded;
             try {
-                encoded = encodeNode(tree, added, keyed, 1);
+                encoded = encodeNode(tree, added, keyed, found, 1);
             } catch (e) {
                 forget(added);
                 throw e;
@@ -242,7 +288,15 @@
             forget(shown);
             shown = new Set(added);
             propHandlers = keyed;
+            canvases = found;
             call("ui.show", { tree: encoded });
+            for (const id of found.keys()) {
+                try {
+                    paint(id);
+                } catch (e) {
+                    error("canvas \"" + id + "\": " + text(e));
+                }
+            }
         },
         /**
          * Change props of the node `id`. A function prop replaces the
@@ -273,6 +327,7 @@
                     for (const h of old) shown.delete(h);
                     propHandlers.delete(slot);
                 }
+                if (key === "draw" && canvases.has(id)) canvases.get(id).handler = ids.length > 0 ? ids[0] : null;
                 if (ids.length === 0) continue;
                 propHandlers.set(slot, ids);
                 for (const h of ids) shown.add(h);
@@ -280,7 +335,8 @@
             call("ui.update", { id, props: encoded });
         },
         /**
-         * Paint canvas `canvasId` again.
+         * Paint canvas `canvasId` again: its `draw(ctx)` runs now. Throws
+         * when the shown tree has no such canvas.
          * @param {string} canvasId
          */
         redraw(canvasId) { internal.redraw(String(canvasId)); },
@@ -416,7 +472,7 @@
             return h(arg);
         },
         /**
-         * Ask the canvas code to paint canvas `id`.
+         * Paint canvas `id` (`Runtime::redraw`).
          * @param {string} id
          */
         redraw(id) { return internal.redraw(id); },

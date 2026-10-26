@@ -3,7 +3,12 @@
 //! [`Dispatch`]: button click -> `null`, entry change -> the text, switch
 //! toggle -> the state, list row -> `null` (each row has its own handler).
 //! No window here: the host puts [`BuiltTree::root`] in one.
+//!
+//! A canvas is a `gtk::DrawingArea` whose draw function replays the last
+//! command list given to [`set_canvas_commands`] (see `canvas`); it never
+//! calls JavaScript.
 
+use crate::canvas::{self, Command};
 use crate::ui_tree::{self, Kind, ListItem, Node, Orientation};
 use gtk4 as gtk;
 use gtk::prelude::*;
@@ -59,8 +64,8 @@ enum View {
     /// The list and the handler of each row, by row index.
     List(gtk::ListBox, Rc<RefCell<Vec<Option<u32>>>>),
     Image(gtk::Picture),
-    /// A canvas (Task 7 finds its `gtk::DrawingArea` through the widget).
-    Canvas,
+    /// A canvas: its drawing area and the painter its draw function uses.
+    Canvas(gtk::DrawingArea, Rc<Painter>),
 }
 
 /// One validated prop of an update, ready to apply.
@@ -85,7 +90,7 @@ impl View {
             View::Switch(..) => "switch",
             View::List(..) => "list",
             View::Image(_) => "image",
-            View::Canvas => "canvas",
+            View::Canvas(..) => "canvas",
         }
     }
 
@@ -95,7 +100,7 @@ impl View {
             View::Button(_) => Some("onClick"),
             View::Entry(..) => Some("onChange"),
             View::Switch(..) => Some("onToggle"),
-            View::Canvas => Some("draw"),
+            View::Canvas(..) => Some("draw"),
             _ => None,
         }
     }
@@ -182,12 +187,22 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
             (picture.clone().upcast(), View::Image(picture))
         }
         Kind::Canvas { width, height, draw } => {
-            // Task 7 connects the draw function; the handler is kept for it.
-            let canvas = gtk::DrawingArea::new();
-            canvas.set_content_width(*width);
-            canvas.set_content_height(*height);
+            // `draw` runs in JavaScript (opus.ui.redraw); the handler is kept
+            // for `handler_of`, the draw function only replays commands.
+            let area = gtk::DrawingArea::new();
+            area.set_content_width(*width);
+            area.set_content_height(*height);
             handler.set(*draw);
-            (canvas.upcast(), View::Canvas)
+            let painter = Rc::new(Painter::new(node.id.as_deref().unwrap_or("(no id)"), Rc::default()));
+            let (clip_width, clip_height) = (f64::from(*width), f64::from(*height));
+            let draw_painter = painter.clone();
+            area.set_draw_func(move |_, cr, _, _| {
+                // Clip to the canvas size, as a browser canvas does.
+                cr.rectangle(0.0, 0.0, clip_width, clip_height);
+                cr.clip();
+                draw_painter.paint(cr);
+            });
+            (area.clone().upcast(), View::Canvas(area, painter))
         }
     };
     for class in &node.classes {
@@ -308,6 +323,71 @@ fn apply_change(item: &Item, change: Change) {
         (View::Image(picture), Change::Texture(texture)) => picture.set_paintable(Some(&texture)),
         (View::List(list, handlers), Change::Items(items)) => fill_list(list, handlers, &items),
         (view, _) => err_log!(APP_TAG, "internal: an update change does not fit a {}, ignored", view.type_name()),
+    }
+}
+
+/// What the draw function of one canvas keeps between frames: the commands
+/// to replay, the images they load, and the last replay error it logged.
+/// It holds no widget, so the drawing area that owns it has no cycle.
+struct Painter {
+    /// The canvas id, for log lines.
+    id: String,
+    /// The last command list given to [`set_canvas_commands`].
+    commands: Rc<RefCell<Vec<Command>>>,
+    images: RefCell<canvas::Images>,
+    /// The last replay error logged, so a redraw every second with the same
+    /// fault logs it once; a good frame clears it.
+    last_error: RefCell<Option<String>>,
+}
+
+impl Painter {
+    /// A painter of canvas `id` replaying `commands`.
+    fn new(id: &str, commands: Rc<RefCell<Vec<Command>>>) -> Painter {
+        Painter { id: id.to_string(), commands, images: RefCell::default(), last_error: RefCell::new(None) }
+    }
+
+    /// Replay the commands on `cr`. A failure is logged with `err_log!`
+    /// unless it is the same as the last one logged; returns what was logged.
+    fn paint(&self, cr: &gtk::cairo::Context) -> Option<String> {
+        let result = canvas::replay_with(cr, &self.commands.borrow(), &mut self.images.borrow_mut());
+        let Err(error) = result else {
+            *self.last_error.borrow_mut() = None;
+            return None;
+        };
+        if self.last_error.borrow().as_deref() == Some(error.as_str()) { return None; }
+        err_log!(APP_TAG, "canvas \"{}\": {error}", self.id);
+        *self.last_error.borrow_mut() = Some(error.clone());
+        Some(error)
+    }
+
+    /// The last replay error logged, if the last frame failed.
+    #[cfg(test)]
+    fn last_error(&self) -> Option<String> {
+        self.last_error.borrow().clone()
+    }
+}
+
+/// Give canvas `id` the commands of its latest `draw` (from
+/// `canvas::parse` of an `Event::Redraw`) and queue a repaint. An unknown
+/// id, a widget that is not a canvas, or more than [`canvas::MAX_COMMANDS`]
+/// commands is an error, and then the previous picture stays.
+pub fn set_canvas_commands(tree: &BuiltTree, id: &str, commands: Vec<Command>) -> Result<(), String> {
+    let Some(item) = tree.ids.get(id) else { return Err(format!("redraw: no widget with id \"{id}\"")) };
+    let View::Canvas(area, painter) = &item.view else { return Err(format!("redraw: {} is not a canvas", ui_tree::describe(item.view.type_name(), Some(id)))) };
+    if commands.len() > canvas::MAX_COMMANDS {
+        return Err(format!("redraw of canvas \"{id}\": {} commands, at most {} are allowed", commands.len(), canvas::MAX_COMMANDS));
+    }
+    *painter.commands.borrow_mut() = commands;
+    area.queue_draw();
+    Ok(())
+}
+
+/// The commands canvas `id` replays now (`None` when it is not a canvas).
+#[cfg(test)]
+fn canvas_commands(tree: &BuiltTree, id: &str) -> Option<Vec<Command>> {
+    match &tree.ids.get(id)?.view {
+        View::Canvas(_, painter) => Some(painter.commands.borrow().clone()),
+        _ => None,
     }
 }
 

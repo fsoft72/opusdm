@@ -1,6 +1,7 @@
 use super::*;
 use crate::manifest;
 use crate::runtime::{Event, Notifier, Runtime, Sink};
+use crate::canvas::{Command, Style};
 use crate::ui_tree::{self, Kind, Orientation};
 use gtk::{gdk, glib};
 use serde_json::{json, Map};
@@ -72,6 +73,8 @@ fn gtk_widget_checks() {
     image_and_canvas();
     duplicate_ids_are_refused_at_build();
     a_click_reaches_the_applet_script_and_is_logged_after_the_runtime_is_gone();
+    set_canvas_commands_stores_them_and_refuses_unknown_ids();
+    a_script_canvas_reaches_its_drawing_area();
 }
 
 /// a_label_shows_its_text
@@ -286,4 +289,80 @@ fn a_click_reaches_the_applet_script_and_is_logged_after_the_runtime_is_gone() {
     let count = events.borrow().len();
     button.emit_clicked();
     assert_eq!(events.borrow().len(), count, "a click after the runtime is gone did something: {:?}", events.borrow());
+}
+
+/// `set_canvas_commands` stores the commands the draw function replays; an
+/// unknown id, a widget that is not a canvas and too many commands are
+/// errors that keep the previous picture.
+fn set_canvas_commands_stores_them_and_refuses_unknown_ids() {
+    let recorder = Rc::new(Recorder::default());
+    let tree = json!({ "type": "box", "children": [
+        { "type": "canvas", "id": "c", "width": 20, "height": 20, "draw": { "handler": 1 } },
+        { "type": "label", "id": "t", "text": "x" }
+    ] });
+    let tree = build_json(tree, &recorder).unwrap();
+    assert_eq!(canvas_commands(&tree, "c"), Some(vec![]), "a new canvas has no picture yet");
+    let commands = vec![Command::FillStyle { style: Style::Color("#f00".to_string()) }, Command::FillRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }];
+    set_canvas_commands(&tree, "c", commands.clone()).unwrap();
+    assert_eq!(canvas_commands(&tree, "c"), Some(commands.clone()));
+    let e = set_canvas_commands(&tree, "nope", vec![]).unwrap_err();
+    assert!(e.contains("\"nope\""), "{e}");
+    let e = set_canvas_commands(&tree, "t", vec![]).unwrap_err();
+    assert!(e.contains("\"t\"") && e.contains("label"), "{e}");
+    let e = set_canvas_commands(&tree, "c", vec![Command::BeginPath; crate::canvas::MAX_COMMANDS + 1]).unwrap_err();
+    assert!(e.contains("100000"), "{e}");
+    assert_eq!(canvas_commands(&tree, "c"), Some(commands), "a refused picture keeps the previous one");
+    assert!(recorder.calls().is_empty(), "the canvas never calls the applet: {:?}", recorder.calls());
+}
+
+/// End to end: the script shows a canvas, its `Event::Redraw` is parsed
+/// and stored in the built tree's drawing area.
+fn a_script_canvas_reaches_its_drawing_area() {
+    let dir = tempfile::tempdir().unwrap();
+    let code = r##"opus.ui.show({ type: "canvas", id: "c", width: 20, height: 20, draw: (ctx) => { ctx.fillStyle = "#f00"; ctx.fillRect(0, 0, 10, 10); } })"##;
+    std::fs::write(dir.path().join("main.js"), code).unwrap();
+    let manifest = manifest::parse(r#"{ "name": "Canvas Test" }"#).unwrap();
+    let events: Rc<RefCell<Vec<Event>>> = Rc::default();
+    let sink: Sink = {
+        let events = events.clone();
+        Rc::new(move |e| events.borrow_mut().push(e))
+    };
+    let notifier: Notifier = Arc::new(|_: &Value| Err("no notifications in tests".to_string()));
+    let rt = Runtime::start_with_notifier("canvas-test", dir.path(), &manifest, Map::new(), sink, notifier).unwrap();
+    let shown = events.borrow().iter().find_map(|e| if let Event::Ui(v) = e { Some(v.clone()) } else { None }).expect("show sent an Event::Ui");
+    let tree = build(&ui_tree::parse(&shown["tree"]).unwrap(), rt.dispatcher()).unwrap();
+    let (id, commands) = events.borrow().iter().find_map(|e| if let Event::Redraw { id, commands } = e { Some((id.clone(), commands.clone())) } else { None }).expect("show sent an Event::Redraw");
+    set_canvas_commands(&tree, &id, crate::canvas::parse(&commands).unwrap()).unwrap();
+    assert_eq!(canvas_commands(&tree, "c").map(|c| c.len()), Some(2));
+}
+
+/// A painter of canvas `id` holding `commands`.
+fn painter(commands: Vec<Command>) -> Painter {
+    Painter::new("c", Rc::new(RefCell::new(commands)))
+}
+
+/// Paint with `painter` on a fresh 20x20 surface; the error it logged.
+fn paint_once(painter: &Painter) -> Option<String> {
+    let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 20, 20).unwrap();
+    let cr = gtk::cairo::Context::new(&surface).unwrap();
+    painter.paint(&cr)
+}
+
+/// Decision 3: a replay error is logged once, again only when it changes,
+/// and the last one stays visible in the painter. No GTK needed.
+#[test]
+fn a_replay_error_is_logged_once_until_it_changes() {
+    let bad = |colour: &str| vec![Command::FillStyle { style: Style::Color(colour.to_string()) }];
+    let p = painter(bad("nonsense"));
+    let first = paint_once(&p).expect("the first failure is logged");
+    assert!(first.contains("nonsense"), "{first}");
+    assert_eq!(paint_once(&p), None, "the same error again is not logged again");
+    assert_eq!(p.last_error().as_deref(), Some(first.as_str()));
+    *p.commands.borrow_mut() = bad("other");
+    assert!(paint_once(&p).expect("a different error is logged").contains("other"));
+    *p.commands.borrow_mut() = vec![];
+    assert_eq!(paint_once(&p), None);
+    assert_eq!(p.last_error(), None, "a good frame clears the last error");
+    *p.commands.borrow_mut() = bad("other");
+    assert!(paint_once(&p).is_some(), "after a good frame the error is logged again");
 }

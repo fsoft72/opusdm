@@ -345,7 +345,7 @@ fn redraw_calls_the_js_hook() {
         let (_dir, rt) = start_code("", Map::new(), &events);
         let rt = rt.unwrap();
         rt.redraw("c1");
-        assert!(events.borrow().is_empty(), "the default hook does nothing: {:?}", events.borrow());
+        assert!(has_error(&events, "no canvas \"c1\""), "the default hook paints the shown tree's canvas, an unknown one is an error: {:?}", events.borrow());
     });
     on_main_loop(|| {
         let events = Events::default();
@@ -653,5 +653,199 @@ fn the_dispatcher_calls_a_handler_and_does_nothing_once_the_runtime_is_gone() {
         dispatcher.dispatch(id, json!(6));
         pump(Duration::from_millis(20));
         assert_eq!(events.borrow().len(), count, "{:?}", events.borrow());
+    });
+}
+
+/// Every `Event::Redraw` sent so far, as (canvas id, commands).
+fn redraws(events: &Events) -> Vec<(String, Value)> {
+    events.borrow().iter().filter_map(|e| if let Event::Redraw { id, commands } = e { Some((id.clone(), commands.clone())) } else { None }).collect()
+}
+
+/// A tree with the canvas `clock` (40x30) that paints a red square.
+const CANVAS_TREE: &str = r##"
+    opus.ui.show({ type: "box", children: [
+        { type: "canvas", id: "clock", width: 40, height: 30, draw: (ctx) => { ctx.fillStyle = "#f00"; ctx.fillRect(0, 0, 10, 10); } }
+    ] });
+"##;
+
+#[test]
+fn a_canvas_paints_on_show_and_on_redraw() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let (_dir, rt) = start_code(CANVAS_TREE, Map::new(), &events);
+        let rt = rt.unwrap();
+        assert!(errors(&events).is_empty(), "{:?}", errors(&events));
+        let sent = redraws(&events);
+        assert_eq!(sent.len(), 1, "show paints the canvas once: {sent:?}");
+        assert_eq!(sent[0].0, "clock");
+        let commands = crate::canvas::parse(&sent[0].1).unwrap();
+        assert_eq!(commands, [
+            crate::canvas::Command::FillStyle { style: crate::canvas::Style::Color("#f00".to_string()) },
+            crate::canvas::Command::FillRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
+        ]);
+        rt.redraw("clock");
+        let sent = redraws(&events);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent[1], sent[0]);
+        assert!(errors(&events).is_empty(), "{:?}", errors(&events));
+    });
+}
+
+#[test]
+fn opus_ui_redraw_from_the_script_paints_the_canvas() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = format!("{CANVAS_TREE}\nsetTimeout(() => opus.ui.redraw(\"clock\"), 1);");
+        let (_dir, rt) = start_code(&code, Map::new(), &events);
+        let _rt = rt.unwrap();
+        assert!(pump_until(|| redraws(&events).len() == 2), "{:?}", events.borrow());
+        let sent = redraws(&events);
+        assert!(crate::canvas::parse(&sent[1].1).is_ok());
+        assert!(errors(&events).is_empty(), "{:?}", errors(&events));
+    });
+}
+
+#[test]
+fn the_draw_function_sees_the_canvas_size_and_the_style_getters() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r##"
+            opus.ui.show({ type: "canvas", id: "c", width: 40, height: 30, draw: (ctx) => {
+                opus.log([ctx.width, ctx.height, ctx.canvas.width, ctx.canvas.height].join(" "));
+                opus.log(ctx.fillStyle + " " + ctx.lineWidth + " " + ctx.globalAlpha + " " + ctx.font + " " + ctx.textAlign + " " + ctx.textBaseline);
+                ctx.save(); ctx.fillStyle = "red"; ctx.lineWidth = 3; ctx.restore();
+                opus.log(ctx.fillStyle + " " + ctx.lineWidth);
+            } });
+        "##;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        rt.unwrap();
+        assert_eq!(logs(&events), ["40 30 40 30", "#000000 1 1 10px sans-serif start alphabetic", "#000000 1"], "{:?}", events.borrow());
+    });
+}
+
+#[test]
+fn every_ctx_method_records_a_command_that_parses() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r##"
+            const img = opus.applet.assetPath("pic.png");
+            opus.ui.show({ type: "canvas", id: "c", width: 20, height: 20, draw: (ctx) => {
+                ctx.save(); ctx.translate(1, 2); ctx.rotate(0.1); ctx.scale(2, 2); ctx.restore();
+                ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(5, 5); ctx.arc(5, 5, 3, 0, Math.PI, true); ctx.rect(0, 0, 4, 4); ctx.closePath();
+                ctx.fill(); ctx.stroke(); ctx.fillRect(0, 0, 1, 1); ctx.strokeRect(0, 0, 1, 1); ctx.clearRect(0, 0, 1, 1);
+                ctx.font = "bold 12px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                ctx.fillText("a", 1, 2); ctx.strokeText("b", 1, 2, 30); ctx.drawImage(img, 0, 0); ctx.drawImage(img, 0, 0, 5, 6);
+                const g = ctx.createLinearGradient(0, 0, 10, 0); g.addColorStop(0, "red"); g.addColorStop(1, "blue");
+                ctx.fillStyle = g;
+                const r = ctx.createRadialGradient(5, 5, 0, 5, 5, 5); r.addColorStop(0, "#fff");
+                ctx.strokeStyle = r; ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.globalAlpha = 0.5;
+                ctx.fillRect(NaN, 0, 1, 1);
+            } });
+        "##;
+        let (dir, rt) = start_code(code, Map::new(), &events);
+        rt.unwrap();
+        assert!(errors(&events).is_empty(), "{:?}", errors(&events));
+        let sent = redraws(&events);
+        assert_eq!(sent.len(), 1, "{:?}", events.borrow());
+        let commands = crate::canvas::parse(&sent[0].1).unwrap_or_else(|e| panic!("{e}: {}", sent[0].1));
+        assert_eq!(commands.len(), 29, "{}", sent[0].1);
+        let img = dir.path().canonicalize().unwrap().join("pic.png").display().to_string();
+        assert!(commands.contains(&crate::canvas::Command::DrawImage { path: img.clone(), x: 0.0, y: 0.0, w: Some(5.0), h: Some(6.0) }), "{}", sent[0].1);
+        assert!(commands.contains(&crate::canvas::Command::DrawImage { path: img, x: 0.0, y: 0.0, w: None, h: None }), "{}", sent[0].1);
+        let Some(crate::canvas::Command::FillRect { x, .. }) = commands.last() else { panic!("{commands:?}") };
+        assert!(x.is_nan(), "NaN travels as null and parses as NaN");
+    });
+}
+
+#[test]
+fn a_canvas_without_an_id_is_still_painted_on_show() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r##"opus.ui.show({ type: "box", children: [{ type: "canvas", width: 10, height: 10, draw: (ctx) => ctx.fillRect(0, 0, 1, 1) }] });"##;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        rt.unwrap();
+        let sent = redraws(&events);
+        assert_eq!(sent.len(), 1, "{:?}", events.borrow());
+        let tree = &ui_events(&events)[0]["tree"];
+        let id = tree.pointer("/children/0/id").and_then(Value::as_str).expect("the canvas got a generated id");
+        assert_eq!(sent[0].0, id);
+        crate::ui_tree::parse(tree).unwrap();
+    });
+}
+
+#[test]
+fn redraw_of_an_unknown_canvas_is_a_reported_error() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let (_dir, rt) = start_code(CANVAS_TREE, Map::new(), &events);
+        let rt = rt.unwrap();
+        rt.redraw("nope");
+        assert!(has_error(&events, "nope"), "{:?}", events.borrow());
+        assert_eq!(redraws(&events).len(), 1);
+        let events = Events::default();
+        let (_dir, rt) = start_code(r##"try { opus.ui.redraw("x") } catch (e) { opus.log(e.name + ": " + e.message) }"##, Map::new(), &events);
+        rt.unwrap();
+        assert!(logs(&events).iter().any(|l| l.starts_with("Error:") && l.contains("\"x\"")), "{:?}", events.borrow());
+    });
+}
+
+#[test]
+fn a_throwing_draw_is_reported_and_sends_no_picture() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r##"
+            let fail = false;
+            opus.ui.show({ type: "box", children: [
+                { type: "canvas", id: "a", width: 5, height: 5, draw: (ctx) => { if (fail) throw new Error("boom"); ctx.fill(); } },
+                { type: "canvas", id: "b", width: 5, height: 5, draw: (ctx) => { throw new Error("always"); } }
+            ] });
+            setTimeout(() => { fail = true; }, 1);
+        "##;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let rt = rt.unwrap();
+        assert!(has_error(&events, "always"), "a draw failing on show is reported: {:?}", events.borrow());
+        assert_eq!(redraws(&events).iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["a"], "the other canvas still painted");
+        pump(Duration::from_millis(20));
+        rt.redraw("a");
+        assert!(has_error(&events, "boom"), "{:?}", events.borrow());
+        assert_eq!(redraws(&events).len(), 1, "a failed draw sends no picture: the previous one stays");
+    });
+}
+
+#[test]
+fn a_draw_recording_too_many_commands_is_refused() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r##"opus.ui.show({ type: "canvas", id: "c", width: 5, height: 5, draw: (ctx) => { for (let i = 0; i < 100001; i++) ctx.beginPath(); } });"##;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        rt.unwrap();
+        assert!(has_error(&events, "100000"), "{:?}", errors(&events));
+        assert!(redraws(&events).is_empty());
+    });
+}
+
+#[test]
+fn an_update_of_draw_is_used_by_the_next_redraw() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = format!("{CANVAS_TREE}\nopus.ui.update(\"clock\", {{ draw: (ctx) => ctx.clearRect(0, 0, ctx.width, ctx.height) }});");
+        let (_dir, rt) = start_code(&code, Map::new(), &events);
+        let rt = rt.unwrap();
+        rt.redraw("clock");
+        let sent = redraws(&events);
+        assert_eq!(sent.len(), 2, "{:?}", events.borrow());
+        assert_eq!(crate::canvas::parse(&sent[1].1).unwrap(), [crate::canvas::Command::ClearRect { x: 0.0, y: 0.0, w: 40.0, h: 30.0 }]);
+    });
+}
+
+#[test]
+fn a_new_tree_forgets_the_canvases_of_the_old_one() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = format!("{CANVAS_TREE}\nopus.ui.show({{ type: \"label\", text: \"x\" }});");
+        let (_dir, rt) = start_code(&code, Map::new(), &events);
+        let rt = rt.unwrap();
+        rt.redraw("clock");
+        assert!(has_error(&events, "clock"), "{:?}", events.borrow());
     });
 }

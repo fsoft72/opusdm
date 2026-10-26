@@ -39,6 +39,9 @@ use std::time::Duration;
 /// The JavaScript that defines `opus`, the timers and `console`.
 const PRELUDE: &str = include_str!("prelude.js");
 
+/// The canvas `ctx` recorder, handed to the prelude.
+const CANVAS: &str = include_str!("canvas.js");
+
 /// Tag used in log lines.
 const APP_TAG: &str = "applets";
 
@@ -76,7 +79,10 @@ pub enum Event {
     /// `{ "op": "update", "id", "props" }`, function props replaced by
     /// `{ "handler": <id> }` (see `ui_tree` and `widgets`).
     Ui(Value),
-    /// The drawing commands of canvas `id` (produced from Task 7).
+    /// The drawing commands canvas `id` recorded in its `draw(ctx)`: a JSON
+    /// array for `canvas::parse`, then `widgets::set_canvas_commands`. Sent
+    /// for every canvas after `opus.ui.show`, and by `opus.ui.redraw` /
+    /// [`Runtime::redraw`].
     Redraw { id: String, commands: Value },
 }
 
@@ -242,7 +248,9 @@ impl Runtime {
         Rc::new(WeakDispatcher { inner: Rc::downgrade(&self.inner), applet: self.inner.id.clone() })
     }
 
-    /// Ask the JavaScript side to paint canvas `canvas_id`.
+    /// Run the `draw` of canvas `canvas_id` of the shown tree; it sends an
+    /// [`Event::Redraw`]. An unknown canvas, or a draw that throws, is a
+    /// reported error and sends nothing.
     pub fn redraw(&self, canvas_id: &str) {
         run_call(&self.inner.clone(), Call::Redraw(canvas_id.to_string()));
     }
@@ -312,10 +320,13 @@ impl Engine {
             "settings": Value::Object(settings),
         });
         let setup = |context: &mut Context| -> JsResult<JsObject> {
+            let canvas = context.eval(Source::from_bytes(CANVAS))?;
+            let canvas = canvas.as_callable().ok_or_else(|| JsNativeError::typ().with_message("canvas.js is not a function"))?;
+            let canvas = canvas.call(&JsValue::undefined(), &[], context)?;
             let prelude = context.eval(Source::from_bytes(PRELUDE))?;
             let prelude = prelude.as_callable().ok_or_else(|| JsNativeError::typ().with_message("the prelude is not a function"))?;
             let init = JsValue::from_json(&init, context)?;
-            let hooks = prelude.call(&JsValue::undefined(), &[host.into(), init], context)?;
+            let hooks = prelude.call(&JsValue::undefined(), &[host.into(), init, canvas], context)?;
             Ok(hooks.as_object().ok_or_else(|| JsNativeError::typ().with_message("the prelude returned no hooks"))?)
         };
         match setup(&mut context) {
@@ -508,6 +519,7 @@ const OPS: &[(&str, OpFn)] = &[
     ("applet.readAsset", op_applet_read_asset),
     ("ui.show", op_ui_show),
     ("ui.update", op_ui_update),
+    ("canvas.redraw", op_canvas_redraw),
 ];
 
 /// `opus.log`, `console.log`, `console.warn`: an [`Event::Log`].
@@ -688,6 +700,15 @@ fn op_ui_update(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
     let Some(id) = str_field(payload, "id").filter(|id| !id.is_empty()) else { return Err("opus.ui.update: the id must be a non-empty string".to_string()) };
     let Some(props) = payload.get("props").filter(|p| p.is_object()) else { return Err("opus.ui.update: the props must be an object".to_string()) };
     (inner.sink)(Event::Ui(json!({ "op": "update", "id": id, "props": props })));
+    Ok(Value::Null)
+}
+
+/// A canvas `draw` finished: an [`Event::Redraw`] with the commands it
+/// recorded (the host parses them with `canvas::parse`).
+fn op_canvas_redraw(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
+    let Some(id) = str_field(payload, "id").filter(|id| !id.is_empty()) else { return Err("canvas redraw: the canvas id must be a non-empty string".to_string()) };
+    let Some(commands) = payload.get("commands").filter(|c| c.is_array()) else { return Err(format!("canvas redraw of \"{id}\": the commands must be an array")) };
+    (inner.sink)(Event::Redraw { id: id.to_string(), commands: commands.clone() });
     Ok(Value::Null)
 }
 
