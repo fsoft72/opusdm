@@ -1,0 +1,13 @@
+{
+    "name": "Site News",
+    "version": "1.0",
+    "description": "The latest items of an RSS or Atom feed. Click a title to open it.",
+    "entry": "main.js",
+    "window": { "width": 340, "height": 360, "minWidth": 200, "minHeight": 160, "resizable": true },
+    "settings": [
+        { "key": "feedUrl", "type": "string", "label": "Feed URL", "default": "" },
+        { "key": "maxItems", "type": "number", "label": "Items to show", "default": 8 },
+        { "key": "refreshMinutes", "type": "number", "label": "Refresh every (minutes)", "default": 15 }
+    ],
+    "permissions": ["net"]
+}
