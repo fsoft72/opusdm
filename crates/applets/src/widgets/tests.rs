@@ -76,6 +76,39 @@ fn gtk_widget_checks() {
     set_canvas_commands_stores_them_and_refuses_unknown_ids();
     a_script_canvas_reaches_its_drawing_area();
     the_error_listener_reaches_every_canvas_of_the_tree();
+    long_text_does_not_widen_the_window();
+}
+
+/// Long text never forces the applet window wider than the applet asked: a
+/// list row label ellipsizes at the end (left-aligned, hexpand, the full
+/// text as its tooltip, also after an update) and a label node wraps on
+/// word / char boundaries, so their minimum width stays small.
+fn long_text_does_not_widen_the_window() {
+    let recorder = Rc::new(Recorder::default());
+    let long = "x".repeat(500);
+    let tree = build_json(json!({ "type": "box", "children": [
+        { "type": "list", "id": "l", "items": [{ "text": long }] },
+        { "type": "label", "id": "t", "text": long }
+    ] }), &recorder).unwrap();
+    let list = get::<gtk::ListBox>(&tree, "l");
+    let row_label = |list: &gtk::ListBox| list.row_at_index(0).and_then(|r| r.child()).and_downcast::<gtk::Label>().expect("a row holds a label");
+    let label = row_label(&list);
+    assert_eq!(label.ellipsize(), gtk::pango::EllipsizeMode::End, "a list row label ellipsizes at the end");
+    assert_eq!(label.xalign(), 0.0, "a list row label is left-aligned");
+    assert!(label.hexpands(), "a list row label expands horizontally");
+    assert_eq!(label.tooltip_text().as_deref(), Some(long.as_str()), "the full text is the tooltip");
+    let (min, _, _, _) = list.measure(gtk::Orientation::Horizontal, -1);
+    assert!(min < 200, "a list with a 500 character item must have a small minimum width, not {min}");
+    apply_update(&tree, "l", &json!({ "items": [{ "text": "short" }] })).unwrap();
+    let label = row_label(&list);
+    assert_eq!(label.ellipsize(), gtk::pango::EllipsizeMode::End, "an updated row ellipsizes too");
+    assert_eq!(label.tooltip_text().as_deref(), Some("short"));
+    let text = get::<gtk::Label>(&tree, "t");
+    assert!(text.wraps(), "a label node wraps");
+    assert_eq!(text.wrap_mode(), gtk::pango::WrapMode::WordChar, "on word or char boundaries");
+    assert_eq!(text.xalign(), 0.5, "the label alignment is unchanged (centered)");
+    let (min, _, _, _) = text.measure(gtk::Orientation::Horizontal, -1);
+    assert!(min < 200, "a label with 500 characters must have a small minimum width, not {min}");
 }
 
 /// a_label_shows_its_text

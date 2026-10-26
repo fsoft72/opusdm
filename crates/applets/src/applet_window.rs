@@ -11,7 +11,10 @@
 //! window should have (the "target") is shared by the realize and map
 //! handlers, the placement retries and the read-back, so a re-map puts the
 //! window where the user left it, not where it opened. The target is
-//! clamped to the monitors at open and by [`AppletWindow::reclamp`].
+//! clamped to the monitors at open, by [`AppletWindow::reclamp`], at the
+//! placement retries after map when GTK allocated the window larger than
+//! the open size, and when a read-back finds the window partly outside the
+//! monitors (then the clamped geometry is moved to and saved).
 //!
 //! Ownership: the host's applet entry owns the [`AppletWindow`]; dropping it
 //! destroys the GTK window, so the application no longer keeps it either.
@@ -223,7 +226,7 @@ pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &Apple
     // that time would see the window before the window manager placed it.
     let settled = Rc::new(Cell::new(false));
     let dragging = Rc::new(Cell::new(false));
-    connect_x11_placement(&window, target.clone(), settled.clone());
+    connect_x11_placement(&window, id, target.clone(), settled.clone());
     connect_readback(&window, id, target.clone(), settled, dragging.clone(), on_moved.clone());
     let drag = Rc::new(Drag { id: id.to_string(), window: window.clone(), target: target.clone(), dragging, start: RefCell::new(None), on_moved });
     connect_handle_drag(&handle, &drag);
@@ -433,23 +436,28 @@ impl Drag {
 /// window manager adopts the window shortly after map and drops state
 /// messages sent before that). `settled` goes false at each map and true
 /// after its last retry. A window never presented (tests) is never realized,
-/// so nothing is sent. The handlers hold the shared target; the retries hold
-/// a weak reference to the window and log if it is gone.
-fn connect_x11_placement(window: &gtk::ApplicationWindow, target: Rc<Cell<Rect>>, settled: Rc<Cell<bool>>) {
+/// so nothing is sent. Before each retry, a window that GTK allocated larger
+/// than the target (its first content is wider) gets the real size as the
+/// target, clamped to the monitors (see [`_fit_allocation`]). The handlers
+/// hold the shared target; the retries hold a weak reference to the window
+/// and log if it is gone.
+fn connect_x11_placement(window: &gtk::ApplicationWindow, id: &str, target: Rc<Cell<Rect>>, settled: Rc<Cell<bool>>) {
+    let id = id.to_string();
     let realize_target = target.clone();
     window.connect_realize(move |win| _prepare_at(win, realize_target.get()));
     window.connect_map(move |win| {
         settled.set(false);
         _prepare_at(win, target.get());
         let weak = win.downgrade();
-        let (target, settled) = (target.clone(), settled.clone());
+        let (target, settled, id) = (target.clone(), settled.clone(), id.clone());
         let calls = Cell::new(0usize);
         opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {
             calls.set(calls.get() + 1);
             let Some(win) = weak.upgrade() else {
-                opusdm_ipc::err_log!(APP_TAG, "applet window gone before an X11 placement retry (closed right after it opened?)");
+                opusdm_ipc::err_log!(APP_TAG, "applet {id}: window gone before an X11 placement retry (closed right after it opened?)");
                 return;
             };
+            _fit_allocation(&win, &id, &target);
             _prepare_at(&win, target.get());
             if calls.get() == opusdm_ui::PLACEMENT_RETRY_MS.len() { settled.set(true); }
         });
@@ -518,11 +526,59 @@ fn _read_back(window: &gtk::ApplicationWindow, id: &str, target: &Cell<Rect>, se
     if !settled.get() { opusdm_ipc::debug_log!(APP_TAG, "applet {id}: placement not settled after map yet, geometry not read back"); return; }
     // `None` is logged by `current_geometry`.
     let Some(now) = x11_window::current_geometry(window) else { return };
+    _accept_geometry(window, id, target, now, &current_monitors(), on_moved);
+}
+
+/// Take the read-back geometry `now` of `window` (applet `id`). Inside
+/// `monitors` (or with no monitor listed): when it differs from `target` it
+/// becomes the target and goes to `on_moved`, as before. Partly outside
+/// (the content made the window grow past a screen edge): it is clamped
+/// with [`placement::clamp_to_monitors`], made the target, moved there like
+/// [`AppletWindow::reclamp`] does when realized, and handed to `on_moved`
+/// (saved), logged at debug level. When the clamped rect is already the
+/// target (the window manager did not follow the last correction) nothing
+/// is moved or saved again, so a stuck window does not save every tick.
+/// Returns the rect handed to `on_moved`, if any.
+fn _accept_geometry(window: &gtk::ApplicationWindow, id: &str, target: &Cell<Rect>, now: Rect, monitors: &[Rect], on_moved: &OnMoved) -> Option<Rect> {
     let before = target.get();
-    if now == before { return; }
-    opusdm_ipc::debug_log!(APP_TAG, "applet {id}: moved or resized by the window manager from {before:?} to {now:?}");
-    target.set(now);
-    on_moved(now);
+    let clamped = placement::clamp_to_monitors(now, monitors);
+    if clamped == now {
+        if now == before { return None; }
+        opusdm_ipc::debug_log!(APP_TAG, "applet {id}: moved or resized by the window manager from {before:?} to {now:?}");
+        target.set(now);
+        on_moved(now);
+        return Some(now);
+    }
+    if clamped == before { opusdm_ipc::debug_log!(APP_TAG, "applet {id}: read back at {now:?}, still not inside the monitors after the clamp to {clamped:?}; not moved again"); return None; }
+    opusdm_ipc::debug_log!(APP_TAG, "applet {id}: read back at {now:?}, not inside the monitors {monitors:?}: clamped to {clamped:?}");
+    target.set(clamped);
+    if window.is_realized() { _prepare_at(window, clamped); }
+    on_moved(clamped);
+    Some(clamped)
+}
+
+/// The target `rect` grown to the size `allocated` that GTK gave the window
+/// (its content needs more than the open size) and clamped to `monitors`;
+/// `None` when the allocation is not larger in either direction (or not
+/// made yet) or the result is `rect` itself.
+fn _fitted(rect: Rect, allocated: (i32, i32), monitors: &[Rect]) -> Option<Rect> {
+    let (_, _, w, h) = rect;
+    if allocated.0 <= w && allocated.1 <= h { return None; }
+    let fitted = placement::clamp_to_monitors(placement::at_least(rect, allocated), monitors);
+    if fitted == rect { return None; }
+    Some(fitted)
+}
+
+/// Before a placement retry of `window` (applet `id`): when GTK allocated it
+/// larger than the target (the first content is wider than the open size),
+/// make the target the real size clamped to the current monitors (see
+/// [`_fitted`]), so the retry pins it inside the screen. Not saved here:
+/// the read-back saves a geometry once the window manager has it.
+fn _fit_allocation(window: &gtk::ApplicationWindow, id: &str, target: &Cell<Rect>) {
+    let before = target.get();
+    let Some(after) = _fitted(before, (window.width(), window.height()), &current_monitors()) else { return };
+    opusdm_ipc::debug_log!(APP_TAG, "applet {id}: allocated {}x{} after map, larger than {before:?}: target clamped to {after:?}", window.width(), window.height());
+    target.set(after);
 }
 
 /// The current monitor rects of the default display (none without one).
@@ -619,6 +675,15 @@ impl AppletWindow {
         Some(after)
     }
 
+    /// Take the geometry `now` read back from X11 as the read-back timer
+    /// does, on `monitors` (see [`_accept_geometry`]): a rect inside the
+    /// monitors becomes the target, one partly outside is clamped inside,
+    /// moved there when realized and saved. Returns what was saved, `None`
+    /// when nothing changed.
+    pub fn accept_read_back(&self, now: Rect, monitors: &[Rect]) -> Option<Rect> {
+        _accept_geometry(&self.window, &self.id, &self.target, now, monitors, &self.drag.on_moved)
+    }
+
     /// Put `root` in the content slot in place of what was there; `None`
     /// empties it.
     pub fn set_content(&self, root: Option<&gtk::Widget>) {
@@ -654,5 +719,26 @@ impl Drop for AppletWindow {
         if !self.edit.unsubscribe(self.edit_listener) { opusdm_ipc::err_log!(APP_TAG, "applet {}: its edit mode listener was already gone", self.id); }
         opusdm_ipc::debug_log!(APP_TAG, "applet {}: window destroyed", self.id);
         self.window.destroy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCREEN: Rect = (0, 0, 1600, 1000);
+
+    #[test]
+    fn a_window_allocated_wider_than_opened_is_clamped_after_map() {
+        // The bug: opened 340 wide at x 1236, the content made it 519 wide.
+        assert_eq!(_fitted((1236, 32, 340, 360), (519, 360), &[SCREEN]), Some((1081, 32, 519, 360)));
+        assert_eq!(_fitted((100, 32, 340, 360), (519, 360), &[SCREEN]), Some((100, 32, 519, 360)), "the size follows even when it still fits");
+    }
+
+    #[test]
+    fn a_window_allocated_at_or_below_the_open_size_is_left_alone() {
+        assert_eq!(_fitted((1236, 32, 340, 360), (340, 360), &[SCREEN]), None);
+        assert_eq!(_fitted((1236, 32, 340, 360), (0, 0), &[SCREEN]), None, "not allocated yet");
+        assert_eq!(_fitted((1236, 32, 340, 360), (300, 200), &[SCREEN]), None, "a smaller allocation keeps the target");
     }
 }

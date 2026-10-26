@@ -152,6 +152,10 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
         }
         Kind::Label { text } => {
             let label = gtk::Label::new(Some(text));
+            // Wrapping keeps the minimum width small: a long text must not
+            // make the window wider than the applet asked (alignment kept).
+            label.set_wrap(true);
+            label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
             (label.clone().upcast(), View::Label(label))
         }
         Kind::Button { label, on_click } => {
@@ -247,7 +251,9 @@ fn activate_row(dispatch: &dyn Dispatch, rows: &RefCell<Vec<Option<u32>>>, row: 
 }
 
 /// Replace the rows of `list` by one activatable label per item, and the
-/// handlers in `handlers` by theirs.
+/// handlers in `handlers` by theirs. Each label is left-aligned, expands,
+/// ellipsizes at the end (so a long title does not make the window wider
+/// than the applet asked) and has the full text as its tooltip.
 fn fill_list(list: &gtk::ListBox, handlers: &RefCell<Vec<Option<u32>>>, items: &[ListItem]) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
@@ -255,6 +261,9 @@ fn fill_list(list: &gtk::ListBox, handlers: &RefCell<Vec<Option<u32>>>, items: &
     for item in items {
         let label = gtk::Label::new(Some(&item.text));
         label.set_xalign(0.0);
+        label.set_hexpand(true);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_tooltip_text(Some(&item.text));
         list.append(&label);
     }
     *handlers.borrow_mut() = items.iter().map(|item| item.on_click).collect();

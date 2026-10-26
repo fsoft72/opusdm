@@ -144,6 +144,7 @@ fn host_gtk_checks() {
     the_host_saves_a_changed_geometry_once(&app);
     an_unreadable_state_file_is_never_overwritten(&app);
     a_monitor_change_clamps_the_open_windows(&app);
+    a_read_back_outside_the_monitors_is_clamped_and_saved_once(&app);
     the_icons_are_hidden_outside_edit_mode(&app);
     edit_mode_shows_the_border_and_the_icons(&app);
     setting_edit_off_hides_them_again(&app);
@@ -641,6 +642,38 @@ fn a_monitor_change_clamps_the_open_windows(app: &gtk::Application) {
     assert_eq!(host.target_of("near"), Some((430, 360, 210, 120)));
     assert!(host.is_running("near") && host.is_running("far"));
     eprintln!("section a_monitor_change_clamps_the_open_windows: ok");
+}
+
+/// A geometry read back partly outside the monitors (the window grew past
+/// the screen edge) is clamped: the target is the clamped rect, it is saved
+/// once, and the same read-back again neither saves nor moves again. A
+/// read-back inside the monitors is taken as it is (a window-manager move).
+fn a_read_back_outside_the_monitors_is_clamped_and_saved_once(app: &gtk::Application) {
+    let screen = [(0, 0, 640, 480)];
+    let (window, _, moved) = bare_window(app, &EditMode::new());
+    assert_eq!(window.target(), (40, 50, 210, 120));
+    assert_eq!(window.accept_read_back((500, 400, 210, 120), &screen), Some((430, 360, 210, 120)), "clamped inside the screen");
+    assert_eq!(window.target(), (430, 360, 210, 120), "the target is the clamped rect");
+    assert_eq!(*moved.borrow(), [(430, 360, 210, 120)], "the clamped geometry is saved once");
+    assert_eq!(window.accept_read_back((500, 400, 210, 120), &screen), None, "the same read-back again does nothing");
+    assert_eq!(moved.borrow().len(), 1, "no second save");
+    assert_eq!(window.accept_read_back((430, 360, 210, 120), &screen), None, "the clamped rect itself is no change");
+    assert_eq!(window.accept_read_back((100, 90, 210, 120), &screen), Some((100, 90, 210, 120)), "a move inside is kept");
+    assert_eq!(moved.borrow().len(), 2);
+    assert_eq!(window.accept_read_back((5000, 90, 210, 120), &[]), Some((5000, 90, 210, 120)), "no monitor listed: not clamped");
+
+    // Through the host: the state file gets the clamped geometry.
+    let dirs = Dirs::new();
+    dirs.applet("wide", &manifest("Wide"), &label_script("w"));
+    state::save_in(dirs.states.path(), "wide", &AppletState { enabled: true, x: Some(300), y: Some(40), ..Default::default() }).unwrap();
+    let host = dirs.host(app);
+    host.load_enabled();
+    let clamped = host.with_window("wide", |w| w.accept_read_back((300, 40, 519, 120), &screen)).unwrap();
+    assert_eq!(clamped, Some((121, 40, 519, 120)));
+    let st = state::load_in(dirs.states.path(), "wide");
+    assert_eq!((st.x, st.y, st.width, st.height), (Some(121), Some(40), Some(519), Some(120)), "the clamped geometry is saved");
+    assert_eq!(host.target_of("wide"), Some((121, 40, 519, 120)));
+    eprintln!("section a_read_back_outside_the_monitors_is_clamped_and_saved_once: ok");
 }
 
 /// What the edit widgets of `window` show now: (icons visible, frame
