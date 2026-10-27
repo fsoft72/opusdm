@@ -365,6 +365,20 @@
             const o = options || {};
             return later("http.get", { url: String(url), headers: o.headers || null, timeoutMs: o.timeoutMs === undefined ? null : o.timeoutMs });
         },
+        /**
+         * HTTP POST on a worker thread. `options`: `{ headers, body, timeoutMs }`;
+         * `body` is a string sent as is, the script sets `Content-Type`.
+         * @returns {Promise<{status: number, ok: boolean, headers: Object, body: string}>}
+         */
+        post: (url, options) => {
+            const o = options || {};
+            return later("http.post", {
+                url: String(url),
+                headers: o.headers || null,
+                body: o.body === undefined || o.body === null ? null : String(o.body),
+                timeoutMs: o.timeoutMs === undefined ? null : o.timeoutMs,
+            });
+        },
     });
 
     const applet = Object.freeze({

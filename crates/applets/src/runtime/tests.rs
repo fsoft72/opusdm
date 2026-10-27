@@ -287,6 +287,32 @@ fn http_get_resolves_a_promise_from_a_local_server() {
 }
 
 #[test]
+fn http_post_resolves_a_promise_from_a_local_server() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let port = serve_once("hello");
+        let code = format!(
+            r#"opus.http.post("http://127.0.0.1:{port}/", {{ headers: {{ "Content-Type": "application/json" }}, body: "{{}}", timeoutMs: 2000 }}).then((r) => opus.log(r.status + " " + r.ok + " " + r.body)); opus.log("sent")"#
+        );
+        let (_dir, rt) = start_code(&code, Map::new(), &events);
+        let _rt = rt.unwrap();
+        assert_eq!(logs(&events), vec!["sent".to_string()]);
+        assert!(pump_until(|| has_log(&events, "200 true hello")), "{:?}", events.borrow());
+    });
+}
+
+#[test]
+fn http_post_rejects_on_a_bad_scheme() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"opus.http.post("ftp://example.com/", { body: "x" }).catch((e) => opus.log("rejected " + (e instanceof Error) + " " + e.message))"#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let _rt = rt.unwrap();
+        assert!(pump_until(|| logs(&events).iter().any(|l| l.starts_with("rejected true") && l.contains("scheme"))), "{:?}", events.borrow());
+    });
+}
+
+#[test]
 fn http_get_rejects_on_a_bad_scheme() {
     on_main_loop(|| {
         let events = Events::default();

@@ -1,4 +1,4 @@
-//! Blocking HTTP GET shared by the Lister scripts and the applets.
+//! Blocking HTTP GET and POST shared by the Lister scripts and the applets.
 //!
 //! `http://` and `https://` are accepted, every other scheme is refused.
 //! TLS goes through the system `native-tls` (OpenSSL), already linked by the
@@ -22,7 +22,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 /// busy for hours.
 pub const MAX_TIMEOUT_MS: u64 = 120_000;
 
-/// A GET request.
+/// A GET or POST request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpRequest {
     /// Absolute `http://` or `https://` URL.
@@ -31,6 +31,8 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     /// Timeout for the whole request, in milliseconds.
     pub timeout_ms: u64,
+    /// Request body, sent only by `post` (`get` ignores it).
+    pub body: Option<String>,
 }
 
 /// The answer to a GET request; an HTTP error status is still a response.
@@ -45,8 +47,8 @@ pub struct HttpResponse {
 }
 
 /// Builds a request from the JSON given by a script: `url` (required),
-/// `headers` (object of strings) and `timeoutMs` (positive number, clamped
-/// to [`MAX_TIMEOUT_MS`]).
+/// `headers` (object of strings), `body` (string, used by `post`) and
+/// `timeoutMs` (positive number, clamped to [`MAX_TIMEOUT_MS`]).
 pub fn request_from_json(payload: &Value) -> Result<HttpRequest, String> {
     let Some(url) = payload.get("url").and_then(Value::as_str) else {
         return Err("http request: missing string field `url`".to_string());
@@ -71,7 +73,12 @@ pub fn request_from_json(payload: &Value) -> Result<HttpRequest, String> {
             _ => return Err("http request: `timeoutMs` must be a positive integer".to_string()),
         },
     };
-    Ok(HttpRequest { url: url.to_string(), headers, timeout_ms })
+    let body = match payload.get("body") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(_) => return Err("http request: `body` must be a string".to_string()),
+    };
+    Ok(HttpRequest { url: url.to_string(), headers, timeout_ms, body })
 }
 
 /// Reads a timeout as whole milliseconds: an unsigned integer, or an integral
@@ -101,7 +108,30 @@ pub fn response_to_json(resp: &HttpResponse) -> Value {
 /// Performs the GET, following up to `MAX_REDIRECTS` redirects and reading at
 /// most `MAX_BODY_BYTES` of body.
 pub fn get(req: &HttpRequest) -> Result<HttpResponse, String> {
-    get_with_limit(req, MAX_BODY_BYTES)
+    send_with_limit(Method::Get, req, MAX_BODY_BYTES)
+}
+
+/// Performs the POST of `req.body` (empty when none), with the same limits as
+/// `get`. The caller sets the `Content-Type` header.
+pub fn post(req: &HttpRequest) -> Result<HttpResponse, String> {
+    send_with_limit(Method::Post, req, MAX_BODY_BYTES)
+}
+
+/// The HTTP methods this module sends.
+#[derive(Clone, Copy)]
+enum Method {
+    Get,
+    Post,
+}
+
+impl Method {
+    /// Lowercase name used in error messages.
+    fn name(self) -> &'static str {
+        match self {
+            Method::Get => "get",
+            Method::Post => "post",
+        }
+    }
 }
 
 /// Tells whether the URL starts with `http://` or `https://` (case-insensitive).
@@ -110,10 +140,12 @@ fn _has_allowed_scheme(url: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
-/// Same as `get` with a caller-chosen body cap, so tests need not send 8 MiB.
-fn get_with_limit(req: &HttpRequest, max_body: usize) -> Result<HttpResponse, String> {
+/// Sends `req` with `method` and reads at most `max_body` bytes of answer
+/// (a parameter so tests need not send 8 MiB).
+fn send_with_limit(method: Method, req: &HttpRequest, max_body: usize) -> Result<HttpResponse, String> {
+    let what = method.name();
     if !_has_allowed_scheme(&req.url) {
-        return Err(format!("http get {}: unsupported scheme, only http and https are allowed", req.url));
+        return Err(format!("http {what} {}: unsupported scheme, only http and https are allowed", req.url));
     }
     let tls = TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build();
     let config = Config::builder()
@@ -124,11 +156,23 @@ fn get_with_limit(req: &HttpRequest, max_body: usize) -> Result<HttpResponse, St
         .tls_config(tls)
         .build();
     let agent = ureq::Agent::new_with_config(config);
-    let mut builder = agent.get(&req.url);
-    for (name, value) in &req.headers {
-        builder = builder.header(name, value);
-    }
-    let mut response = builder.call().map_err(|e| format!("http get {}: {e}", req.url))?;
+    let call_error = |e: ureq::Error| format!("http {what} {}: {e}", req.url);
+    let mut response = match method {
+        Method::Get => {
+            let mut builder = agent.get(&req.url);
+            for (name, value) in &req.headers {
+                builder = builder.header(name, value);
+            }
+            builder.call().map_err(call_error)?
+        }
+        Method::Post => {
+            let mut builder = agent.post(&req.url);
+            for (name, value) in &req.headers {
+                builder = builder.header(name, value);
+            }
+            builder.send(req.body.as_deref().unwrap_or("")).map_err(call_error)?
+        }
+    };
     let status = response.status().as_u16();
     let headers = response
         .headers()
@@ -141,9 +185,9 @@ fn get_with_limit(req: &HttpRequest, max_body: usize) -> Result<HttpResponse, St
         .by_ref()
         .take(max_body as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("http get {}: reading the body: {e}", req.url))?;
+        .map_err(|e| format!("http {what} {}: reading the body: {e}", req.url))?;
     if bytes.len() > max_body {
-        return Err(format!("http get {}: body larger than {max_body} bytes", req.url));
+        return Err(format!("http {what} {}: body larger than {max_body} bytes", req.url));
     }
     Ok(HttpResponse { status, headers, body: String::from_utf8_lossy(&bytes).into_owned() })
 }
@@ -191,7 +235,7 @@ mod tests {
 
     /// A request for the local server with a short timeout.
     fn _req(port: u16) -> HttpRequest {
-        HttpRequest { url: format!("http://127.0.0.1:{port}/"), headers: vec![], timeout_ms: 2000 }
+        HttpRequest { url: format!("http://127.0.0.1:{port}/"), headers: vec![], timeout_ms: 2000, body: None }
     }
 
     #[test]
@@ -217,7 +261,7 @@ mod tests {
     #[test]
     fn refuses_schemes_other_than_http_and_https() {
         for url in ["file:///etc/passwd", "ftp://x/"] {
-            let req = HttpRequest { url: url.to_string(), headers: vec![], timeout_ms: 1000 };
+            let req = HttpRequest { url: url.to_string(), headers: vec![], timeout_ms: 1000, body: None };
             let err = get(&req).unwrap_err();
             assert!(err.contains("scheme"), "{err}");
         }
@@ -238,7 +282,7 @@ mod tests {
     #[test]
     fn a_body_over_the_cap_is_an_error() {
         let port = serve_once(_reply("200 OK", "", &vec![b'a'; 4096]));
-        let err = get_with_limit(&_req(port), 1024).unwrap_err();
+        let err = send_with_limit(Method::Get, &_req(port), 1024).unwrap_err();
         assert!(err.contains("1024"), "{err}");
     }
 
@@ -295,5 +339,97 @@ mod tests {
             let req = request_from_json(&json!({ "url": "http://x/", "timeoutMs": huge })).unwrap();
             assert_eq!(req.timeout_ms, MAX_TIMEOUT_MS, "{huge} is clamped");
         }
+    }
+
+    /// Serves one connection: replies 200 with the received request (head and
+    /// body) echoed back as the body. Returns the port.
+    fn serve_echo() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let Ok(n) = stream.read(&mut buf) else { return };
+                if n == 0 { return }
+                seen.extend_from_slice(&buf[..n]);
+                let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                let head = String::from_utf8_lossy(&seen[..end]).to_lowercase();
+                let want = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                    .unwrap_or(0);
+                if seen.len() >= end + 4 + want { break }
+            }
+            let _ = stream.write_all(&_reply("200 OK", "", &seen));
+        });
+        port
+    }
+
+    #[test]
+    fn post_sends_method_headers_and_body() {
+        let port = serve_echo();
+        let mut req = _req(port);
+        req.headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+        req.body = Some("{\"a\":1}".to_string());
+        let resp = post(&req).unwrap();
+        assert_eq!(resp.status, 200);
+        assert!(resp.body.starts_with("POST / HTTP/1.1"), "{}", resp.body);
+        assert!(resp.body.to_lowercase().contains("content-type: application/json"), "{}", resp.body);
+        assert!(resp.body.ends_with("{\"a\":1}"), "{}", resp.body);
+    }
+
+    #[test]
+    fn post_without_a_body_sends_an_empty_one() {
+        let port = serve_echo();
+        let resp = post(&_req(port)).unwrap();
+        assert!(resp.body.starts_with("POST / HTTP/1.1"), "{}", resp.body);
+    }
+
+    #[test]
+    fn get_does_not_send_the_body() {
+        let port = serve_echo();
+        let mut req = _req(port);
+        req.body = Some("secret".to_string());
+        let resp = get(&req).unwrap();
+        assert!(resp.body.starts_with("GET / HTTP/1.1"), "{}", resp.body);
+        assert!(!resp.body.contains("secret"), "{}", resp.body);
+    }
+
+    #[test]
+    fn post_401_is_a_response_not_an_error() {
+        let port = serve_once(_reply("401 Unauthorized", "", b"{}"));
+        let resp = post(&_req(port)).unwrap();
+        assert_eq!(resp.status, 401);
+        assert_eq!(response_to_json(&resp)["ok"], false);
+    }
+
+    #[test]
+    fn post_refuses_schemes_other_than_http_and_https() {
+        let req = HttpRequest { url: "ftp://x/".to_string(), headers: vec![], timeout_ms: 1000, body: None };
+        let err = post(&req).unwrap_err();
+        assert!(err.contains("scheme") && err.contains("post"), "{err}");
+    }
+
+    #[test]
+    fn post_error_does_not_leak_the_authorization_header() {
+        let req = HttpRequest {
+            url: "http://127.0.0.1:1/".to_string(),
+            headers: vec![("Authorization".to_string(), "Bearer fatto_SECRET".to_string())],
+            timeout_ms: 500,
+            body: None,
+        };
+        let err = post(&req).unwrap_err();
+        assert!(!err.contains("fatto_SECRET"), "{err}");
+    }
+
+    #[test]
+    fn request_from_json_reads_the_body() {
+        let req = request_from_json(&json!({ "url": "http://x/", "body": "hi" })).unwrap();
+        assert_eq!(req.body.as_deref(), Some("hi"));
+        let none = request_from_json(&json!({ "url": "http://x/" })).unwrap();
+        assert_eq!(none.body, None);
+        assert!(request_from_json(&json!({ "url": "http://x/", "body": 5 })).is_err());
     }
 }

@@ -510,6 +510,7 @@ const OPS: &[(&str, OpFn)] = &[
     ("timer.set", op_timer_set),
     ("timer.clear", op_timer_clear),
     ("http.get", op_http_get),
+    ("http.post", op_http_post),
     ("notify", op_notify),
     ("fs.exists", op_fs_exists),
     ("fs.readText", op_fs_read_text),
@@ -599,6 +600,16 @@ fn op_http_get(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
     let http = opusdm_jscore::http::request_from_json(payload.get("payload").unwrap_or(&Value::Null))?;
     start_async(inner, request, HTTP_THREAD, move || {
         opusdm_jscore::http::get(&http).map(|response| opusdm_jscore::http::response_to_json(&response))
+    })?;
+    Ok(Value::Null)
+}
+
+/// `opus.http.post`: like `op_http_get`, with a body.
+fn op_http_post(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
+    let request = u32_field(payload, "request")?;
+    let http = opusdm_jscore::http::request_from_json(payload.get("payload").unwrap_or(&Value::Null))?;
+    start_async(inner, request, HTTP_THREAD, move || {
+        opusdm_jscore::http::post(&http).map(|response| opusdm_jscore::http::response_to_json(&response))
     })?;
     Ok(Value::Null)
 }
