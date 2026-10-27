@@ -1,8 +1,19 @@
 /* Applet windows in edit mode (Task 12, variant A of the design): a dashed
    border around the applet and two small icons (drag handle, settings
    gear) in its top right corner. Loaded once per display at APPLICATION
-   priority; every rule is scoped to the applet edit classes, so the global
+   priority; every rule is scoped to the applet classes, so the global
    theme is not touched. */
+
+/* An applet whose manifest says "transparent": true paints no window
+   background, so what the applet does not draw shows the desktop (the
+   window already has an ARGB visual; the desktop shows through only under
+   a compositor). The second selector wins over the theme's own
+   `window.background` rule. */
+window.opusdm-applet-transparent,
+window.opusdm-applet-transparent.background {
+  background: transparent;
+  background-color: transparent;
+}
 
 /* The border: a frame drawn over the content that takes no input. White
    dashes with a thin dark line just inside them, so it shows on light and

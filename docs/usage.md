@@ -1231,7 +1231,9 @@ the same applet again finds them.
 - `name` is required; `version` and `description` are shown in the browser; `entry` is the script,
   `main.js` by default (a relative path inside the folder).
 - `window`: `width` and `height` (default 300 x 200), `minWidth` / `minHeight` (default 50, never more
-  than the size), `resizable` and `transparent` (default `false`).
+  than the size), `resizable` and `transparent` (default `false`). With `"transparent": true` the window
+  paints no background of its own, so what the applet does not draw shows the desktop; this needs a
+  compositor (for example picom), without one the window background is black or grey.
 - `settings`: one row each in the settings window. `type` is `string`, `number`, `bool` or `choice`
   (with `choices`); `key`, `label` and `default` (the value before the user changes it, of the same
   type) are required.

@@ -71,13 +71,17 @@ pub const READBACK_INTERVAL_MS: u64 = 500;
 /// CSS class of the outer widget (the overlay) while edit mode is on.
 pub const EDIT_CLASS: &str = "opusdm-applet-edit";
 
+/// CSS class of the window of an applet whose manifest says `"transparent":
+/// true`: its background is not painted (see `applet_window.css`).
+pub const TRANSPARENT_CLASS: &str = "opusdm-applet-transparent";
+
 /// CSS class of the dashed frame drawn over the content in edit mode.
 const FRAME_CLASS: &str = "opusdm-applet-edit-frame";
 
 /// CSS class of the box with the handle and the gear.
 const ICONS_CLASS: &str = "opusdm-applet-edit-icons";
 
-/// The stylesheet of the edit widgets (see [`install_css`]).
+/// The stylesheet of the edit widgets and of transparent windows (see [`install_css`]).
 const EDIT_CSS: &str = include_str!("applet_window.css");
 
 /// Size of the handle and gear icons, in pixels.
@@ -204,6 +208,7 @@ pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &Apple
         .decorated(false)
         .build();
     window.set_size_request(min.0, min.1);
+    if manifest.window.transparent { window.add_css_class(TRANSPARENT_CLASS); }
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.set_vexpand(true);
     content.set_hexpand(true);

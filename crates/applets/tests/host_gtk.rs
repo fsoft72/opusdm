@@ -134,6 +134,7 @@ fn host_gtk_checks() {
     set_enabled_starts_and_stops_the_runtime(&app);
     a_broken_applet_shows_up_in_list_with_its_error_and_others_run(&app);
     the_applet_window_shows_the_script_error(&app);
+    only_a_transparent_manifest_gets_the_transparent_class(&app);
     a_bad_show_clears_the_old_widgets_and_shows_the_error(&app);
     reload_restarts_a_changed_script(&app);
     the_host_still_answers_after_many_main_loop_iterations(&app);
@@ -266,6 +267,25 @@ fn the_applet_window_shows_the_script_error(app: &gtk::Application) {
         other => panic!("enabling an already open applet answered {other:?}"),
     }
     eprintln!("section the_applet_window_shows_the_script_error: ok");
+}
+
+/// `"transparent": true` in the manifest puts the transparent class on the
+/// window (the CSS rule of that class paints no background); without it, or
+/// with `false`, the window keeps the theme background.
+fn only_a_transparent_manifest_gets_the_transparent_class(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let with = |extra: &str| format!(r#"{{ "name": "T", "window": {{ "width": 210, "height": 120{extra} }} }}"#);
+    dirs.applet("clear", &with(r#", "transparent": true"#), &label_script("a"));
+    dirs.applet("solid", &with(r#", "transparent": false"#), &label_script("b"));
+    dirs.applet("plain", &with(""), &label_script("c"));
+    for id in ["clear", "solid", "plain"] { dirs.enable(id); }
+    let host = dirs.host(app);
+    host.load_enabled();
+    let class = |id: &str| host.window_of(id).unwrap_or_else(|| panic!("no window for {id}")).has_css_class(opusdm_applets::applet_window::TRANSPARENT_CLASS);
+    assert!(class("clear"), "transparent: true gets the class");
+    assert!(!class("solid"), "transparent: false does not");
+    assert!(!class("plain"), "the default is not transparent");
+    eprintln!("section only_a_transparent_manifest_gets_the_transparent_class: ok");
 }
 
 /// Task 6 review: a show that fails must not leave the old (forgotten)
