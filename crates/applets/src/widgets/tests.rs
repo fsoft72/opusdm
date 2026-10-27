@@ -66,6 +66,7 @@ fn gtk_widget_checks() {
     a_button_click_dispatches_its_handler_id();
     update_of_an_unknown_id_is_an_error();
     entry_switch_and_list_dispatch_their_args();
+    dropdown_dispatches_the_index_and_updates_do_not_echo();
     programmatic_updates_do_not_echo();
     bad_updates_are_errors_naming_the_id_and_the_prop();
     common_props_and_handler_updates();
@@ -177,6 +178,33 @@ fn entry_switch_and_list_dispatch_their_args() {
     activate_row_at(&list, 0);
     activate_row_at(&list, 2);
     assert_eq!(recorder.calls()[before..], [(4, Value::Null), (3, Value::Null)]);
+}
+
+/// A dropdown dispatches the index the user picks; `apply_update` of its
+/// items or selection does not echo, and a bad selection changes nothing.
+fn dropdown_dispatches_the_index_and_updates_do_not_echo() {
+    let recorder = Rc::new(Recorder::default());
+    let tree = json!({ "type": "dropdown", "id": "d", "items": ["a", "b", "c"], "selected": 1, "onChange": { "handler": 9 } });
+    let tree = build_json(tree, &recorder).unwrap();
+    let dropdown = get::<gtk::DropDown>(&tree, "d");
+    assert_eq!(dropdown.selected(), 1);
+    assert!(recorder.calls().is_empty(), "building dispatched: {:?}", recorder.calls());
+    dropdown.set_selected(2);
+    assert_eq!(recorder.calls(), [(9, json!(2))]);
+    apply_update(&tree, "d", &json!({ "items": ["x", "y"], "selected": 0 })).unwrap();
+    assert_eq!(dropdown.selected(), 0);
+    assert_eq!(dropdown.model().unwrap().n_items(), 2);
+    apply_update(&tree, "d", &json!({ "selected": 1 })).unwrap();
+    assert_eq!(dropdown.selected(), 1);
+    apply_update(&tree, "d", &json!({ "items": [] })).unwrap();
+    assert_eq!(dropdown.model().unwrap().n_items(), 0);
+    assert_eq!(dropdown.selected(), gtk::INVALID_LIST_POSITION);
+    assert_eq!(recorder.calls().len(), 1, "an update echoed: {:?}", recorder.calls());
+    apply_update(&tree, "d", &json!({ "items": ["p", "q"] })).unwrap();
+    let e = apply_update(&tree, "d", &json!({ "selected": 5 })).unwrap_err();
+    assert!(e.contains("\"d\"") && e.contains("selected"), "{e}");
+    dropdown.set_selected(1);
+    assert_eq!(recorder.calls().last(), Some(&(9, json!(1))), "the handler was left blocked");
 }
 
 /// Decision 6: `apply_update` of an entry's text or a switch's state does

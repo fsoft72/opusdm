@@ -46,6 +46,8 @@ pub enum Kind {
     Entry { text: String, on_change: Option<u32> },
     Switch { active: bool, on_toggle: Option<u32> },
     List { items: Vec<ListItem> },
+    /// A drop-down of strings; `selected` is an index into `items` (`None`: nothing selected).
+    Dropdown { items: Vec<String>, selected: Option<usize>, on_change: Option<u32> },
     Image { path: String, width: Option<i32>, height: Option<i32> },
     Canvas { width: i32, height: i32, draw: Option<u32> },
 }
@@ -67,6 +69,7 @@ impl Kind {
             Kind::Entry { .. } => "entry",
             Kind::Switch { .. } => "switch",
             Kind::List { .. } => "list",
+            Kind::Dropdown { .. } => "dropdown",
             Kind::Image { .. } => "image",
             Kind::Canvas { .. } => "canvas",
         }
@@ -137,6 +140,12 @@ fn parse_node(value: &Value, depth: usize, ids: &mut HashSet<String>) -> Result<
             props.allow(&["items"])?;
             let items = props.get("items").map(|v| items_value(&what, v)).transpose()?.unwrap_or_default();
             Kind::List { items }
+        }
+        "dropdown" => {
+            props.allow(&["items", "selected", "onChange"])?;
+            let items = strings_value(&what, props.required("items")?)?;
+            let selected = props.get("selected").map(|v| selected_value(&what, v, items.len())).transpose()?;
+            Kind::Dropdown { items, selected, on_change: props.handler("onChange")? }
         }
         "image" => {
             props.allow(&["path", "width", "height"])?;
@@ -273,6 +282,29 @@ pub(crate) fn items_value(what: &str, value: &Value) -> Result<Vec<ListItem>, St
         list.push(ListItem { text, on_click });
     }
     Ok(list)
+}
+
+/// The `items` of a dropdown: an array of strings.
+pub(crate) fn strings_value(what: &str, value: &Value) -> Result<Vec<String>, String> {
+    let Some(items) = value.as_array() else { return Err(format!("{what}: \"items\" must be an array, not {}", json_kind(value))) };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| match item {
+            Value::String(text) => Ok(text.clone()),
+            other => Err(format!("{what} items[{index}]: an item must be a string, not {}", json_kind(other))),
+        })
+        .collect()
+}
+
+/// The `selected` index of a dropdown with `len` items: a whole number from
+/// 0 to `len - 1` (a JS number may arrive as an integral float).
+pub(crate) fn selected_value(what: &str, value: &Value, len: usize) -> Result<usize, String> {
+    let number = value.as_u64().or_else(|| value.as_f64().filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f <= MAX_SIZE as f64).map(|f| f as u64));
+    match number {
+        Some(n) if (n as usize) < len => Ok(n as usize),
+        _ => Err(format!("{what}: \"selected\" must be a whole number from 0 to {} (the last item), not {value}", len.saturating_sub(1))),
+    }
 }
 
 /// An image path: absolute (applets build it with `opus.applet.assetPath`).

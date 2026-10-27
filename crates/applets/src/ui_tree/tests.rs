@@ -107,3 +107,27 @@ fn duplicate_ids_are_an_error() {
     let e = error_of(json!({ "type": "box", "children": [{ "type": "label", "id": "x", "text": "1" }, { "type": "label", "id": "x", "text": "2" }] }));
     assert!(e.contains("\"x\"") && e.contains("duplicate"), "{e}");
 }
+
+#[test]
+fn a_dropdown_keeps_items_selected_and_handler() {
+    let node = parse(&json!({ "type": "dropdown", "id": "d", "items": ["a", "b"], "selected": 1.0, "onChange": { "handler": 8 } })).unwrap();
+    assert_eq!(node.kind, Kind::Dropdown { items: vec!["a".into(), "b".into()], selected: Some(1), on_change: Some(8) });
+    let node = parse(&json!({ "type": "dropdown", "items": [] })).unwrap();
+    assert_eq!(node.kind, Kind::Dropdown { items: vec![], selected: None, on_change: None });
+}
+
+#[test]
+fn a_bad_dropdown_is_an_error_naming_the_prop() {
+    let e = error_of(json!({ "type": "dropdown", "id": "d" }));
+    assert!(e.contains("dropdown") && e.contains("d") && e.contains("items"), "{e}");
+    let e = error_of(json!({ "type": "dropdown", "id": "d", "items": ["a", 3] }));
+    assert!(e.contains("items[1]") && e.contains("string"), "{e}");
+    for selected in [json!(2), json!(-1), json!(0.5), json!("0")] {
+        let e = error_of(json!({ "type": "dropdown", "id": "d", "items": ["a", "b"], "selected": selected }));
+        assert!(e.contains("selected"), "{e}");
+    }
+    let e = error_of(json!({ "type": "dropdown", "items": [], "selected": 0 }));
+    assert!(e.contains("selected"), "{e}");
+    let e = error_of(json!({ "type": "dropdown", "items": [], "onClick": null, "foo": 1 }));
+    assert!(e.contains("foo"), "{e}");
+}

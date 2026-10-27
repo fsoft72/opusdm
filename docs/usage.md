@@ -1250,6 +1250,7 @@ surface:
 | `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` | Timers, as in a browser |
 | `console.log/info/debug/warn/error`, `opus.log(...)` | Lines in the log (`error` also shows in the applet window) |
 | `opus.http.get(url, {headers, timeoutMs})` | A **Promise** of `{status, ok, headers, body}`. `http` and `https` only, 15 s default timeout (a `timeoutMs` above 120000, 2 minutes, is clamped to it), at most 8 MB. Rejects on a network error. (In Lister scripts the same call is synchronous.) |
+| `opus.http.post(url, {headers, body, timeoutMs})` | Like `get`, sending `body` (a string, sent as is: set `Content-Type` in `headers` yourself). Applets only, not Lister scripts |
 | `opus.notify(title, {body, icon, timeout, urgency})` | A desktop notification; a **Promise** of its id |
 | `opus.fs.exists(path)`, `opus.fs.readText(path)`, `opus.fs.list(path)` | Read-only files; `list` gives `{name, path, isFile, isDir, size}` sorted by name |
 | `opus.applet.id`, `.dir`, `.name`, `.settings` | Who the applet is, its folder, its current settings (frozen) |
@@ -1268,8 +1269,11 @@ surface:
 | `entry` | `text`, `onChange(text)` |
 | `switch` | `active`, `onToggle(active)` |
 | `list` | `items`: `[{ text, onClick() }]`, a row runs its `onClick` when activated |
+| `dropdown` | `items` (array of strings), `selected` (index into `items`, nothing selected when missing), `onChange(index)` |
 | `image` | `path` (from `opus.applet.assetPath`), `width`, `height` |
 | `canvas` | `width`, `height`, `draw(ctx)` |
+
+`opus.ui.update(id, { items, selected })` changes a `dropdown`: setting `items` clears the selection unless `selected` is given in the same update, and, as for `entry` and `switch`, an update never calls `onChange`; only the user's choice does.
 
 An `entry`'s `onChange` runs on every change of the text, and may see an intermediate empty string:
 GTK replaces a whole text with a delete and then an insert (for example a paste over the selected

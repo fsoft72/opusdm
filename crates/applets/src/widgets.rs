@@ -1,7 +1,8 @@
 //! GTK widgets for a parsed [`Node`] tree, and the changes of
 //! `opus.ui.update`. Signals call the applet's handlers through a
 //! [`Dispatch`]: button click -> `null`, entry change -> the text, switch
-//! toggle -> the state, list row -> `null` (each row has its own handler).
+//! toggle -> the state, list row -> `null` (each row has its own handler),
+//! dropdown selection -> the index.
 //! No window here: the host puts [`BuiltTree::root`] in one.
 //!
 //! A canvas is a `gtk::DrawingArea` whose draw function replays the last
@@ -65,6 +66,9 @@ enum View {
     Switch(gtk::Switch, glib::SignalHandlerId),
     /// The list and the handler of each row, by row index.
     List(gtk::ListBox, Rc<RefCell<Vec<Option<u32>>>>),
+    /// The dropdown, its string model and its `notify::selected` handler,
+    /// blocked while an update changes the items or the selection.
+    Dropdown(gtk::DropDown, gtk::StringList, glib::SignalHandlerId),
     Image(gtk::Picture),
     /// A canvas: its drawing area and the painter its draw function uses.
     Canvas(gtk::DrawingArea, Rc<Painter>),
@@ -77,6 +81,8 @@ enum Change {
     Handler(Option<u32>),
     Texture(gdk::Texture),
     Items(Vec<ListItem>),
+    DropItems(Vec<String>),
+    Selected(Option<usize>),
     Visible(bool),
     Classes(Vec<String>),
 }
@@ -91,6 +97,7 @@ impl View {
             View::Entry(..) => "entry",
             View::Switch(..) => "switch",
             View::List(..) => "list",
+            View::Dropdown(..) => "dropdown",
             View::Image(_) => "image",
             View::Canvas(..) => "canvas",
         }
@@ -102,6 +109,7 @@ impl View {
             View::Button(_) => Some("onClick"),
             View::Entry(..) => Some("onChange"),
             View::Switch(..) => Some("onToggle"),
+            View::Dropdown(..) => Some("onChange"),
             View::Canvas(..) => Some("draw"),
             _ => None,
         }
@@ -189,6 +197,15 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
             list.connect_row_activated(move |_, row| activate_row(dispatch.as_ref(), &rows, row));
             (list.clone().upcast(), View::List(list, handlers))
         }
+        Kind::Dropdown { items, selected, on_change } => {
+            let model = gtk::StringList::new(&items.iter().map(String::as_str).collect::<Vec<_>>());
+            let dropdown = gtk::DropDown::new(Some(model.clone()), gtk::Expression::NONE);
+            dropdown.set_selected(selected.map_or(gtk::INVALID_LIST_POSITION, |index| index as u32));
+            handler.set(*on_change);
+            let (cell, dispatch) = (handler.clone(), dispatch.clone());
+            let signal = dropdown.connect_selected_notify(move |dropdown| fire_selected(dispatch.as_ref(), &cell, dropdown.selected()));
+            (dropdown.clone().upcast(), View::Dropdown(dropdown, model, signal))
+        }
         Kind::Image { path, width, height } => {
             let picture = gtk::Picture::for_paintable(&load_texture(&what, path)?);
             picture.set_size_request(width.unwrap_or(-1), height.unwrap_or(-1));
@@ -232,6 +249,13 @@ fn fire(dispatch: &dyn Dispatch, cell: &Cell<Option<u32>>, what: &str, arg: Valu
         return;
     };
     dispatch.dispatch(handler, arg);
+}
+
+/// Dispatch the handler in `cell` with the selected `position` of a
+/// dropdown. Clearing the selection (no valid position) calls nothing.
+fn fire_selected(dispatch: &dyn Dispatch, cell: &Cell<Option<u32>>, position: u32) {
+    if position == gtk::INVALID_LIST_POSITION { return }
+    fire(dispatch, cell, "select", Value::from(position));
 }
 
 /// Dispatch the handler of the activated `row`. The handler list is
@@ -283,7 +307,9 @@ pub fn apply_update(tree: &BuiltTree, id: &str, props: &Value) -> Result<(), Str
     let what = format!("update of {}", ui_tree::describe(item.view.type_name(), Some(id)));
     let Some(props) = props.as_object() else { return Err(format!("{what}: the props must be an object, not {props}")) };
     let changes = parse_changes(&item.view, &what, props)?;
-    for change in changes {
+    // The items first: a selection is an index into them.
+    let (items, rest): (Vec<_>, Vec<_>) = changes.into_iter().partition(|change| matches!(change, Change::DropItems(_)));
+    for change in items.into_iter().chain(rest) {
         apply_change(item, change);
     }
     Ok(())
@@ -300,6 +326,15 @@ fn parse_changes(view: &View, what: &str, props: &Map<String, Value>) -> Result<
             (View::Switch(..), "active") => Change::Active(ui_tree::bool_value(what, key, value)?),
             (View::Image(_), "path") => Change::Texture(load_texture(what, &ui_tree::path_value(what, value)?)?),
             (View::List(..), "items") => Change::Items(ui_tree::items_value(what, value)?),
+            (View::Dropdown(..), "items") => Change::DropItems(ui_tree::strings_value(what, value)?),
+            (View::Dropdown(_, model, _), "selected") => {
+                // Checked against the items of the same update, else the current ones.
+                let len = match props.get("items") {
+                    Some(items) => ui_tree::strings_value(what, items)?.len(),
+                    None => model.n_items() as usize,
+                };
+                Change::Selected(if value.is_null() { None } else { Some(ui_tree::selected_value(what, value, len)?) })
+            }
             (view, key) if view.handler_prop() == Some(key) => Change::Handler(ui_tree::handler_value(what, key, value)?),
             (_, key) => return Err(format!("{what}: unknown prop \"{key}\"")),
         };
@@ -336,6 +371,17 @@ fn apply_change(item: &Item, change: Change) {
         }
         (View::Image(picture), Change::Texture(texture)) => picture.set_paintable(Some(&texture)),
         (View::List(list, handlers), Change::Items(items)) => fill_list(list, handlers, &items),
+        (View::Dropdown(dropdown, model, signal), Change::DropItems(items)) => {
+            dropdown.block_signal(signal);
+            model.splice(0, model.n_items(), &items.iter().map(String::as_str).collect::<Vec<_>>());
+            dropdown.set_selected(gtk::INVALID_LIST_POSITION);
+            dropdown.unblock_signal(signal);
+        }
+        (View::Dropdown(dropdown, _, signal), Change::Selected(selected)) => {
+            dropdown.block_signal(signal);
+            dropdown.set_selected(selected.map_or(gtk::INVALID_LIST_POSITION, |index| index as u32));
+            dropdown.unblock_signal(signal);
+        }
         (view, _) => err_log!(APP_TAG, "internal: an update change does not fit a {}, ignored", view.type_name()),
     }
 }
