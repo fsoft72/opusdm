@@ -91,6 +91,21 @@ pub fn import_detail(permissions: &[String], replaces: bool) -> String {
     out
 }
 
+/// The question of the delete confirmation.
+pub fn delete_question(name: &str) -> String {
+    format!("Delete {name}?")
+}
+
+/// The detail of the delete confirmation: what goes away and that it cannot
+/// be undone. `folder` is the applet folder, `~`-shortened under `home`.
+pub fn delete_detail(folder: &Path, home: Option<&Path>) -> String {
+    let short = home
+        .and_then(|h| folder.strip_prefix(h).ok())
+        .map(|rest| format!("~/{}", rest.display()))
+        .unwrap_or_else(|| folder.display().to_string());
+    format!("The folder {short} and everything in it will be removed.\nThis cannot be undone.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +182,14 @@ mod tests {
         assert!(exec.contains("can run commands on this computer"));
         assert!(exec.contains("will be replaced"));
         assert!(!import_detail(&["net".into()], false).contains("replaced"));
+    }
+
+    #[test]
+    fn the_delete_confirmation_names_the_folder() {
+        assert_eq!(delete_question("Clock"), "Delete Clock?");
+        let home = Path::new("/home/u");
+        let detail = delete_detail(Path::new("/home/u/.config/opusdm/applets/clock"), Some(home));
+        assert_eq!(detail, "The folder ~/.config/opusdm/applets/clock and everything in it will be removed.\nThis cannot be undone.");
+        assert!(delete_detail(Path::new("/x/clock"), Some(home)).contains("/x/clock"));
     }
 }

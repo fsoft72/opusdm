@@ -182,6 +182,23 @@ fn _check_id(top: &str) -> Result<String, String> {
     Ok(top.to_string())
 }
 
+/// Remove the applet folder `id` from `applets_dir`.
+///
+/// `id` must be one plain folder name, not hidden: nothing outside the
+/// applets folder can be reached. A symlink to a folder (the applets folder
+/// follows them) is removed itself, never what it points to. Settings and
+/// position are in the state folder and are not touched.
+pub fn delete_applet(applets_dir: &Path, id: &str) -> Result<(), String> {
+    let single = _parts(Path::new(id)).filter(|p| p.len() == 1 && p[0] == id);
+    if single.is_none() || id.starts_with('.') { return Err(format!("'{id}' is not an applet folder name")); }
+    let path = applets_dir.join(id);
+    let meta = path.symlink_metadata().map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let removed = if meta.is_dir() { fs::remove_dir_all(&path) } else if meta.file_type().is_symlink() { fs::remove_file(&path) } else {
+        return Err(format!("{} is not a folder", path.display()));
+    };
+    removed.map_err(|e| format!("cannot remove {}: {e}", path.display()))
+}
+
 impl Staged {
     /// True if an applet with this id is installed and would be replaced.
     pub fn replaces(&self) -> bool {
@@ -395,5 +412,42 @@ mod tests {
         let a = archive_of(d.path(), &[("clock/applet.json", FILE, MANIFEST), ("clock/main.js", FILE, "x")]);
         drop(stage_archive(&a, &apps).unwrap());
         assert_eq!(fs::read_dir(&apps).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn delete_removes_the_applet_folder_only() {
+        let d = tempfile::tempdir().unwrap();
+        let apps = d.path().join("apps");
+        make_applet(&apps, "clock");
+        make_applet(&apps, "other");
+        delete_applet(&apps, "clock").unwrap();
+        assert!(!apps.join("clock").exists());
+        assert!(apps.join("other/main.js").exists());
+    }
+
+    #[test]
+    fn delete_of_a_symlink_keeps_what_it_points_to() {
+        let d = tempfile::tempdir().unwrap();
+        let apps = d.path().join("apps");
+        fs::create_dir_all(&apps).unwrap();
+        let real = make_applet(d.path(), "real");
+        std::os::unix::fs::symlink(&real, apps.join("clock")).unwrap();
+        delete_applet(&apps, "clock").unwrap();
+        assert!(apps.join("clock").symlink_metadata().is_err());
+        assert!(real.join("main.js").exists(), "the target is untouched");
+    }
+
+    #[test]
+    fn delete_refuses_names_that_leave_the_applets_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let apps = d.path().join("apps");
+        make_applet(&apps, "clock");
+        let outside = make_applet(d.path(), "outside");
+        for id in ["", ".", "..", "../outside", "clock/img", "/abs", ".hidden", "clock/"] {
+            assert!(delete_applet(&apps, id).is_err(), "{id:?} must be refused");
+        }
+        assert!(outside.join("main.js").exists());
+        assert!(apps.join("clock/main.js").exists());
+        assert!(delete_applet(&apps, "missing").unwrap_err().contains("cannot read"));
     }
 }

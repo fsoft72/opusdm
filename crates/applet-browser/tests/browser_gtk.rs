@@ -489,6 +489,53 @@ fn closing_the_window_during_export_and_import_is_safe(app: &gtk::Application) {
     close_all(app);
 }
 
+/// Delete asks, closes the applet through the process, then removes the
+/// folder; a refusal or a cancel keeps it.
+fn delete_removes_the_folder_after_the_confirmation(app: &gtk::Application) {
+    let server = FakeServer::start(vec![applet("clock", Some("Clock"), true, None), applet("other", Some("Other"), true, None)]);
+    let apps = tempfile::tempdir().unwrap();
+    make_applet(apps.path(), "clock", "", "x");
+    make_applet(apps.path(), "other", "", "x");
+
+    let no = Answers { confirm: false, ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(no));
+    let delete: gtk::Button = wait_named(&window, "delete:clock");
+    delete.emit_clicked();
+    assert!(pump_until(WAIT, || delete.is_sensitive()), "enabled again");
+    settle(100);
+    assert!(apps.path().join("clock/main.js").exists(), "a cancel keeps the applet");
+    assert!(!server.requests().iter().any(|r| matches!(r, Request::SetEnabled { .. })), "{:?}", server.requests());
+    assert_eq!((shown(&window, "notice"), shown(&window, "status")), (None, None));
+    close_all(app);
+
+    let yes = Answers { confirm: true, ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(yes));
+    let delete: gtk::Button = wait_named(&window, "delete:clock");
+    let lists_before = server.requests().iter().filter(|r| **r == Request::List).count();
+    delete.emit_clicked();
+    assert!(pump_until(WAIT, || !apps.path().join("clock").exists() && shown(&window, "notice").is_some()), "not deleted");
+    assert_eq!(shown(&window, "notice").as_deref(), Some("Deleted Clock"));
+    assert!(server.requests().contains(&Request::SetEnabled { id: "clock".into(), enabled: false }), "the applet is closed first: {:?}", server.requests());
+    assert!(apps.path().join("other/main.js").exists(), "the other applet stays");
+    assert!(pump_until(WAIT, || server.requests().iter().filter(|r| **r == Request::List).count() > lists_before), "no new listing");
+    close_all(app);
+}
+
+/// When the applets process refuses to close the applet, nothing is removed.
+fn delete_keeps_the_folder_when_the_applet_cannot_be_closed(app: &gtk::Application) {
+    let server = FakeServer::start_with(vec![applet("clock", Some("Clock"), true, None)], Some("no way"));
+    let apps = tempfile::tempdir().unwrap();
+    make_applet(apps.path(), "clock", "", "x");
+    let yes = Answers { confirm: true, ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(yes));
+    let delete: gtk::Button = wait_named(&window, "delete:clock");
+    delete.emit_clicked();
+    assert!(pump_until(WAIT, || shown(&window, "status").is_some()), "no error shown");
+    assert!(shown(&window, "status").unwrap().starts_with("Cannot delete Clock: cannot close it first"), "{:?}", shown(&window, "status"));
+    assert!(apps.path().join("clock/main.js").exists());
+    close_all(app);
+}
+
 #[test]
 fn browser_gtk_checks() {
     let display = std::env::var_os("DISPLAY").filter(|d| !d.is_empty());
@@ -517,4 +564,6 @@ fn browser_gtk_checks() {
     a_bad_archive_shows_the_error(&app);
     importing_over_an_installed_applet_replaces_and_reloads_it(&app);
     closing_the_window_during_export_and_import_is_safe(&app);
+    delete_removes_the_folder_after_the_confirmation(&app);
+    delete_keeps_the_folder_when_the_applet_cannot_be_closed(&app);
 }

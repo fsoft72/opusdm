@@ -1,6 +1,7 @@
 //! The Applet Browser window: one row per applet (name, version,
-//! description, an enabled switch, Reload and Export buttons and the error in
-//! red), an "Edit mode" switch, an Import button and a Refresh button.
+//! description, an enabled switch, Reload, Export and Delete buttons and the
+//! error in red), an "Edit mode" switch, an Import button and a Refresh
+//! button.
 //!
 //! Every socket request runs on its own thread (`request_at` blocks for up
 //! to 7 s when the applets process is busy) and its reply comes back to the
@@ -13,7 +14,8 @@
 //! and do the file work (`package`) on a thread. Import unpacks and checks the
 //! archive first, then asks for confirmation with the permissions the archive
 //! requests; only a yes installs it (disabled). A cancel is not an error and
-//! shows nothing.
+//! shows nothing. Delete asks first too; it closes the applet through the
+//! applets process (`SetEnabled` false), then removes the folder.
 //!
 //! Ownership for the whole run: the destroy handler of the window holds the
 //! only strong `Rc<Browser>` and releases it when the window is destroyed.
@@ -51,7 +53,7 @@ pub struct Answers {
     pub save_to: Option<PathBuf>,
     /// The archive Import opens (`None` = the user cancelled).
     pub open_from: Option<PathBuf>,
-    /// The answer to the import confirmation.
+    /// The answer to the confirmations (import and delete).
     pub confirm: bool,
 }
 
@@ -322,10 +324,13 @@ fn applet_row(browser: &Rc<Browser>, status: &AppletStatus) -> gtk::Box {
     row.append(&texts);
     row.append(&enabled);
     row.append(&reload);
+    let delete = gtk::Button::builder().name(format!("delete:{id}")).label("Delete").tooltip_text("Remove this applet from the applets folder").valign(gtk::Align::Center).build();
     row.append(&export);
+    row.append(&delete);
     connect_enabled(browser, &enabled, status);
     connect_reload(browser, &reload, status);
     connect_export(browser, &export, status);
+    connect_delete(browser, &delete, status);
     row
 }
 
@@ -501,24 +506,24 @@ async fn ask_open_path(window: &glib::WeakRef<gtk::ApplicationWindow>, answers: 
     }
 }
 
-/// Ask whether to install the unpacked `staged` applet, showing the
-/// permissions its own manifest requests. Cancel is the default button.
-async fn ask_confirm(window: &glib::WeakRef<gtk::ApplicationWindow>, answers: &Option<Answers>, staged: &package::Staged) -> Result<bool, String> {
+/// Ask a yes / no question in an alert; Cancel is the default button.
+/// `Ok(false)` = cancelled or closed.
+async fn ask_alert(window: &glib::WeakRef<gtk::ApplicationWindow>, answers: &Option<Answers>, message: String, detail: String, yes: &str) -> Result<bool, String> {
     if let Some(a) = answers { return Ok(a.confirm); }
     let parent = dialog_parent(window)?;
-    let dialog = gtk::AlertDialog::builder()
-        .message(model::import_question(&staged.id, &staged.manifest.name, &staged.manifest.version))
-        .detail(model::import_detail(&staged.manifest.permissions, staged.replaces()))
-        .buttons(["Cancel", "Import"])
-        .cancel_button(0)
-        .default_button(0)
-        .modal(true)
-        .build();
+    let dialog = gtk::AlertDialog::builder().message(message).detail(detail).buttons(["Cancel", yes]).cancel_button(0).default_button(0).modal(true).build();
     match dialog.choose_future(Some(&parent)).await {
         Ok(choice) => Ok(choice == 1),
         Err(e) if cancelled(&e) => Ok(false),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Ask whether to install the unpacked `staged` applet, showing the
+/// permissions its own manifest requests.
+async fn ask_confirm(window: &glib::WeakRef<gtk::ApplicationWindow>, answers: &Option<Answers>, staged: &package::Staged) -> Result<bool, String> {
+    let question = model::import_question(&staged.id, &staged.manifest.name, &staged.manifest.version);
+    ask_alert(window, answers, question, model::import_detail(&staged.manifest.permissions, staged.replaces()), "Import").await
 }
 
 /// Everything Export does after the click: ask where, write the archive on a
@@ -635,6 +640,62 @@ fn import(browser: &Rc<Browser>) {
             Err(msg) => {
                 err_log!(LOG_TAG, "cannot import an applet: {msg}");
                 browser.show_error(&format!("Cannot import: {msg}"));
+            }
+        }
+    });
+}
+
+/// Everything Delete does after the click: ask, close the applet through the
+/// applets process, remove the folder on a thread. `Ok(false)` is a cancel.
+/// When the applet cannot be closed nothing is removed.
+async fn delete_flow(window: &glib::WeakRef<gtk::ApplicationWindow>, answers: &Option<Answers>, socket: PathBuf, applets_dir: PathBuf, id: &str, name: &str) -> Result<bool, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let detail = model::delete_detail(&applets_dir.join(id), home.as_deref());
+    if !ask_alert(window, answers, model::delete_question(name), detail, "Delete").await? { return Ok(false) }
+    let closed = call(socket, Request::SetEnabled { id: id.to_string(), enabled: false }).await;
+    if let Some(msg) = failure(&closed) { return Err(format!("cannot close it first: {msg}")); }
+    let id = id.to_string();
+    blocking("delete", move || package::delete_applet(&applets_dir, &id)).await??;
+    Ok(true)
+}
+
+/// A click on `button` deletes applet `status`.
+fn connect_delete(browser: &Rc<Browser>, button: &gtk::Button, status: &AppletStatus) {
+    let weak = Rc::downgrade(browser);
+    let id = status.id.clone();
+    let name = model::display_name(status).to_string();
+    button.connect_clicked(move |button| {
+        let Some(browser) = upgrade(&weak, "delete button") else { return };
+        browser.clear_error();
+        delete(&browser, button, id.clone(), name.clone());
+    });
+}
+
+/// Delete applet `id` after the confirmation and list again. A cancel shows
+/// nothing; a failure shows the error and lists again (the applet may have
+/// been closed already).
+fn delete(browser: &Rc<Browser>, button: &gtk::Button, id: String, name: String) {
+    button.set_sensitive(false);
+    let weak = Rc::downgrade(browser);
+    let button_ref = button.downgrade();
+    let (window, answers, dir, socket) = (browser.window.clone(), browser.answers.clone(), browser.applets_dir.clone(), browser.socket.clone());
+    glib::spawn_future_local(async move {
+        let result = delete_flow(&window, &answers, socket, dir, &id, &name).await;
+        let Some(browser) = upgrade(&weak, "Delete") else { return };
+        match button_ref.upgrade() {
+            Some(button) => button.set_sensitive(true),
+            None => err_log!(LOG_TAG, "Delete {id}: its button is gone (the list was rebuilt)"),
+        }
+        match result {
+            Ok(true) => {
+                browser.show_notice(&format!("Deleted {name}"));
+                refresh_list(&browser);
+            }
+            Ok(false) => {}
+            Err(msg) => {
+                err_log!(LOG_TAG, "cannot delete the applet {id}: {msg}");
+                browser.show_error(&format!("Cannot delete {name}: {msg}"));
+                refresh_list(&browser);
             }
         }
     });
