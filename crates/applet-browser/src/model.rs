@@ -52,6 +52,45 @@ pub fn empty_text(dir: &Path, home: Option<&Path>) -> String {
     format!("No applets in {}", short.unwrap_or_else(|| dir.display().to_string()))
 }
 
+/// What a manifest permission lets the applet do, in words for a person; an
+/// unknown name is shown as is.
+pub fn permission_label(name: &str) -> &str {
+    match name {
+        "net" => "Network access",
+        "fs" => "Read and write files",
+        "exec" => "Run commands",
+        other => other,
+    }
+}
+
+/// The permissions an applet asks for, comma separated, or "none".
+pub fn permissions_text(permissions: &[String]) -> String {
+    if permissions.is_empty() { return "none".to_string(); }
+    permissions.iter().map(|p| permission_label(p)).collect::<Vec<_>>().join(", ")
+}
+
+/// The question of the import confirmation: the applet, by its manifest name
+/// and version (the folder id when the name is blank).
+pub fn import_question(id: &str, name: &str, version: &str) -> String {
+    let name = if name.trim().is_empty() { id } else { name.trim() };
+    match version.trim() {
+        "" => format!("Import {name}?"),
+        v => format!("Import {name} {v}?"),
+    }
+}
+
+/// The detail of the import confirmation: the permissions asked and, when an
+/// installed applet with the same id would be replaced, a warning.
+pub fn import_detail(permissions: &[String], replaces: bool) -> String {
+    let mut out = format!("Permissions requested: {}.", permissions_text(permissions));
+    if permissions.iter().any(|p| p == "exec") {
+        out.push_str("\nThe applet can run commands on this computer.");
+    }
+    if replaces { out.push_str("\nAn installed applet with the same folder name will be replaced."); }
+    out.push_str("\nThe applet is added disabled.");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +142,30 @@ mod tests {
         assert_eq!(empty_text(dir, Some(Path::new("/home/u"))), "No applets in ~/.config/opusdm/applets");
         assert_eq!(empty_text(dir, None), "No applets in /home/u/.config/opusdm/applets");
         assert_eq!(empty_text(dir, Some(Path::new("/other"))), "No applets in /home/u/.config/opusdm/applets");
+    }
+
+    #[test]
+    fn permissions_are_written_in_words() {
+        assert_eq!(permissions_text(&[]), "none");
+        assert_eq!(permissions_text(&["net".into(), "fs".into(), "exec".into()]), "Network access, Read and write files, Run commands");
+        assert_eq!(permission_label("other"), "other");
+    }
+
+    #[test]
+    fn the_import_question_names_the_applet() {
+        assert_eq!(import_question("clock", "Clock", "1.2"), "Import Clock 1.2?");
+        assert_eq!(import_question("clock", "Clock", " "), "Import Clock?");
+        assert_eq!(import_question("clock", "  ", ""), "Import clock?");
+    }
+
+    #[test]
+    fn the_import_detail_lists_permissions_and_warnings() {
+        let none = import_detail(&[], false);
+        assert_eq!(none, "Permissions requested: none.\nThe applet is added disabled.");
+        let exec = import_detail(&["net".into(), "exec".into()], true);
+        assert!(exec.starts_with("Permissions requested: Network access, Run commands."), "{exec}");
+        assert!(exec.contains("can run commands on this computer"));
+        assert!(exec.contains("will be replaced"));
+        assert!(!import_detail(&["net".into()], false).contains("replaced"));
     }
 }

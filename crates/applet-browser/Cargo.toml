@@ -18,7 +18,7 @@ opusdm-applets = { path = "../applets" }
 opusdm-ipc = { path = "../ipc" }
 opusdm-ui = { path = "../ui" }
 async-channel.workspace = true
+flate2.workspace = true
 gtk4.workspace = true
-
-[dev-dependencies]
+tar.workspace = true
 tempfile.workspace = true

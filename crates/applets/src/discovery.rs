@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 const APP_TAG: &str = "applets";
 
 /// Name of the manifest file inside an applet folder.
-const MANIFEST_FILE: &str = "applet.json";
+pub const MANIFEST_FILE: &str = "applet.json";
 
 /// One applet folder found on disk.
 #[derive(Debug, Clone, PartialEq)]
