@@ -6,7 +6,8 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use opusdm_applet_browser::{model, window};
+use opusdm_applet_browser::window::Answers;
+use opusdm_applet_browser::{model, package, window};
 use opusdm_applets::protocol::{AppletStatus, Reply, Request};
 use opusdm_ipc::frame::{recv, send};
 use std::os::unix::net::UnixListener;
@@ -311,6 +312,183 @@ fn closing_the_window_with_requests_in_flight_is_safe(app: &gtk::Application) {
     close_all(app);
 }
 
+/// An applet folder `id` under `root` with a manifest asking `perms` and a
+/// `main.js` holding `code`.
+fn make_applet(root: &std::path::Path, id: &str, perms: &str, code: &str) -> PathBuf {
+    let dir = root.join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("applet.json"), format!(r#"{{"name":"Clock","version":"1.0","permissions":[{perms}]}}"#)).unwrap();
+    std::fs::write(dir.join("main.js"), code).unwrap();
+    dir
+}
+
+/// A `.tar.gz` of a new applet `id` (with `code`) in a fresh temp folder.
+fn make_archive(id: &str, code: &str) -> (tempfile::TempDir, PathBuf) {
+    let src = tempfile::tempdir().unwrap();
+    let dir = make_applet(src.path(), id, r#""net","exec""#, code);
+    let archive = src.path().join(package::archive_name(id));
+    package::export_applet(&dir, id, &archive).unwrap();
+    (src, archive)
+}
+
+/// The text of the label `name` when its own `visible` flag is set, else
+/// `None` (`is_visible()` would also need the never presented window).
+fn shown(window: &gtk::ApplicationWindow, name: &str) -> Option<String> {
+    let label: gtk::Label = wait_named(window, name);
+    label.property::<bool>("visible").then(|| label.text().to_string())
+}
+
+/// Let the main loop run for `ms` (nothing to wait for: a cancel does nothing).
+fn settle(ms: u64) {
+    let ctx = glib::MainContext::default();
+    let until = Instant::now() + Duration::from_millis(ms);
+    while Instant::now() < until { if !ctx.iteration(false) { std::thread::sleep(Duration::from_millis(1)); } }
+}
+
+/// Export writes the applet folder to the chosen `.tar.gz` and says where;
+/// a cancel writes nothing and shows nothing.
+fn export_writes_an_archive_and_a_cancel_does_nothing(app: &gtk::Application) {
+    let server = FakeServer::start(vec![applet("clock", Some("Clock"), true, None)]);
+    let apps = tempfile::tempdir().unwrap();
+    make_applet(apps.path(), "clock", r#""net""#, "// code");
+    let out = tempfile::tempdir().unwrap();
+    let target = out.path().join("mine");
+    let answers = Answers { save_to: Some(target.clone()), ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(answers));
+    let export: gtk::Button = wait_named(&window, "export:clock");
+    export.emit_clicked();
+    let archive = out.path().join("mine.tar.gz");
+    assert!(pump_until(WAIT, || archive.exists() && shown(&window, "notice").is_some()), "no archive or notice");
+    assert!(!target.exists(), "the .tar.gz extension is added");
+    assert!(shown(&window, "notice").unwrap().contains("Exported Clock"), "{:?}", shown(&window, "notice"));
+    assert!(export.is_sensitive(), "the button is enabled again");
+    let staged = package::stage_archive(&archive, &tempfile::tempdir().unwrap().path().join("x")).unwrap();
+    assert_eq!(staged.id, "clock");
+    close_all(app);
+
+    let none = Answers::default();
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(none));
+    let export: gtk::Button = wait_named(&window, "export:clock");
+    export.emit_clicked();
+    settle(200);
+    assert!(export.is_sensitive());
+    assert_eq!(shown(&window, "notice"), None);
+    assert_eq!(shown(&window, "status"), None);
+    close_all(app);
+}
+
+/// A failed export shows the error and enables the button again.
+fn a_failed_export_shows_the_error(app: &gtk::Application) {
+    let server = FakeServer::start(vec![applet("clock", Some("Clock"), true, None)]);
+    let apps = tempfile::tempdir().unwrap();
+    make_applet(apps.path(), "clock", "", "x");
+    let answers = Answers { save_to: Some(PathBuf::from("/nonexistent-dir-for-test/clock.tar.gz")), ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(answers));
+    let export: gtk::Button = wait_named(&window, "export:clock");
+    export.emit_clicked();
+    assert!(pump_until(WAIT, || shown(&window, "status").is_some()), "no error shown");
+    assert!(shown(&window, "status").unwrap().starts_with("Cannot export Clock:"));
+    assert!(export.is_sensitive());
+    close_all(app);
+}
+
+/// Import installs the archive after the confirmation, disabled, and lists again.
+fn import_installs_after_the_confirmation(app: &gtk::Application) {
+    let (_src, archive) = make_archive("clock", "// code");
+    let server = FakeServer::start(vec![]);
+    let apps = tempfile::tempdir().unwrap();
+    let answers = Answers { open_from: Some(archive), confirm: true, ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().join("applets"), false, Some(answers));
+    let import: gtk::Button = wait_named(&window, "import-button");
+    assert!(pump_until(WAIT, || import.is_sensitive()));
+    let lists_before = server.requests().iter().filter(|r| **r == Request::List).count();
+    import.emit_clicked();
+    let main = apps.path().join("applets/clock/main.js");
+    assert!(pump_until(WAIT, || main.exists() && shown(&window, "notice").is_some()), "not installed");
+    assert_eq!(shown(&window, "notice").as_deref(), Some("Imported Clock (disabled)"));
+    assert!(pump_until(WAIT, || server.requests().iter().filter(|r| **r == Request::List).count() > lists_before), "no new listing");
+    assert!(!server.requests().iter().any(|r| matches!(r, Request::Reload { .. } | Request::SetEnabled { .. })), "{:?}", server.requests());
+    assert!(import.is_sensitive());
+    let names: Vec<_> = std::fs::read_dir(apps.path().join("applets")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("clock")], "no staging folder left");
+    close_all(app);
+}
+
+/// A declined confirmation installs nothing and leaves nothing behind.
+fn a_declined_import_installs_nothing(app: &gtk::Application) {
+    let (_src, archive) = make_archive("clock", "// code");
+    let server = FakeServer::start(vec![]);
+    let apps = tempfile::tempdir().unwrap();
+    let answers = Answers { open_from: Some(archive), confirm: false, ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(answers));
+    let import: gtk::Button = wait_named(&window, "import-button");
+    assert!(pump_until(WAIT, || import.is_sensitive()));
+    import.emit_clicked();
+    assert!(!import.is_sensitive(), "insensitive while the import runs");
+    assert!(pump_until(WAIT, || import.is_sensitive()), "enabled again");
+    settle(100);
+    assert_eq!(std::fs::read_dir(apps.path()).unwrap().count(), 0);
+    assert_eq!((shown(&window, "notice"), shown(&window, "status")), (None, None));
+    close_all(app);
+}
+
+/// A file that is not an applet archive shows an error and installs nothing.
+fn a_bad_archive_shows_the_error(app: &gtk::Application) {
+    let server = FakeServer::start(vec![]);
+    let apps = tempfile::tempdir().unwrap();
+    let bad = apps.path().join("bad.tar.gz");
+    std::fs::write(&bad, "not an archive").unwrap();
+    let answers = Answers { open_from: Some(bad), confirm: true, ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().join("applets"), false, Some(answers));
+    let import: gtk::Button = wait_named(&window, "import-button");
+    import.emit_clicked();
+    assert!(pump_until(WAIT, || shown(&window, "status").is_some()), "no error shown");
+    assert!(shown(&window, "status").unwrap().starts_with("Cannot import:"));
+    assert!(import.is_sensitive());
+    close_all(app);
+}
+
+/// Replacing an installed applet writes the new files and reloads it.
+fn importing_over_an_installed_applet_replaces_and_reloads_it(app: &gtk::Application) {
+    let (_src, archive) = make_archive("clock", "// new");
+    let server = FakeServer::start(vec![applet("clock", Some("Clock"), true, None)]);
+    let apps = tempfile::tempdir().unwrap();
+    make_applet(apps.path(), "clock", "", "// old");
+    let answers = Answers { open_from: Some(archive), confirm: true, ..Answers::default() };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(answers));
+    let import: gtk::Button = wait_named(&window, "import-button");
+    import.emit_clicked();
+    assert!(wait_request(&server, &Request::Reload { id: "clock".into() }), "got {:?}", server.requests());
+    assert!(pump_until(WAIT, || shown(&window, "notice").is_some()));
+    assert_eq!(shown(&window, "notice").as_deref(), Some("Imported Clock (replaced)"));
+    assert_eq!(std::fs::read_to_string(apps.path().join("clock/main.js")).unwrap(), "// new");
+    close_all(app);
+}
+
+/// A window closed while an export and an import run drops the results
+/// without a panic, and a new window still works.
+fn closing_the_window_during_export_and_import_is_safe(app: &gtk::Application) {
+    let (_src, archive) = make_archive("clock", "// code");
+    let server = FakeServer::start(vec![applet("clock", Some("Clock"), true, None)]);
+    let apps = tempfile::tempdir().unwrap();
+    make_applet(apps.path(), "other", "", "x");
+    let out = tempfile::tempdir().unwrap();
+    let answers = Answers { save_to: Some(out.path().join("o.tar.gz")), open_from: Some(archive), confirm: true };
+    let window = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(answers.clone()));
+    let import: gtk::Button = wait_named(&window, "import-button");
+    import.emit_clicked();
+    window.destroy();
+    settle(300);
+    let again = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, Some(answers));
+    let export: gtk::Button = wait_named(&again, "export:clock");
+    export.emit_clicked();
+    again.destroy();
+    settle(300);
+    let last = window::open_in(app, server.path.clone(), apps.path().to_path_buf(), false, None);
+    let _sw: gtk::Switch = wait_named(&last, "enabled:clock");
+    close_all(app);
+}
+
 #[test]
 fn browser_gtk_checks() {
     let display = std::env::var_os("DISPLAY").filter(|d| !d.is_empty());
@@ -332,4 +510,11 @@ fn browser_gtk_checks() {
     a_refused_change_flips_the_switch_back_and_shows_the_error(&app);
     a_failed_set_enabled_lists_again_and_shows_the_real_state(&app);
     closing_the_window_with_requests_in_flight_is_safe(&app);
+    export_writes_an_archive_and_a_cancel_does_nothing(&app);
+    a_failed_export_shows_the_error(&app);
+    import_installs_after_the_confirmation(&app);
+    a_declined_import_installs_nothing(&app);
+    a_bad_archive_shows_the_error(&app);
+    importing_over_an_installed_applet_replaces_and_reloads_it(&app);
+    closing_the_window_during_export_and_import_is_safe(&app);
 }
