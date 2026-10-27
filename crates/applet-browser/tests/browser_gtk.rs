@@ -170,7 +170,14 @@ fn the_list_shows_each_applet(app: &gtk::Application) {
     assert!(on.is_active());
     let off: gtk::Switch = wait_named(&window, "enabled:no-name");
     assert!(!off.is_active());
-    let _reload: gtk::Button = wait_named(&window, "reload:clock");
+    let reload: gtk::Button = wait_named(&window, "reload:clock");
+    let export: gtk::Button = wait_named(&window, "export:clock");
+    let delete: gtk::Button = wait_named(&window, "delete:clock");
+    for (button, icon, tip) in [(&reload, "view-refresh-symbolic", "Reload"), (&export, "document-save-symbolic", "Export"), (&delete, "user-trash-symbolic", "Delete")] {
+        assert_eq!(button.icon_name().as_deref(), Some(icon), "icon of {}", button.widget_name());
+        assert_eq!(button.label(), None, "{} has no text", button.widget_name());
+        assert!(button.tooltip_text().is_some_and(|t| t.starts_with(tip)), "tooltip of {}: {:?}", button.widget_name(), button.tooltip_text());
+    }
     let err: gtk::Label = wait_named(&window, "error:broken");
     assert!(err.text().contains("main.js: boom"));
     assert!(err.has_css_class("error"), "the error is red");

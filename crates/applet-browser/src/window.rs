@@ -1,6 +1,6 @@
 //! The Applet Browser window: one row per applet (name, version,
-//! description, an enabled switch, Reload, Export and Delete buttons and the
-//! error in red), an "Edit mode" switch, an Import button and a Refresh
+//! description, an enabled switch, Reload, Export and Delete icon buttons and
+//! the error in red), an "Edit mode" switch, an Import button and a Refresh
 //! button.
 //!
 //! Every socket request runs on its own thread (`request_at` blocks for up
@@ -55,6 +55,19 @@ pub struct Answers {
     pub open_from: Option<PathBuf>,
     /// The answer to the confirmations (import and delete).
     pub confirm: bool,
+}
+
+/// Icons of the row buttons (symbolic, so they follow the theme colors).
+const RELOAD_ICON: &str = "view-refresh-symbolic";
+const EXPORT_ICON: &str = "document-save-symbolic";
+const DELETE_ICON: &str = "user-trash-symbolic";
+
+/// An icon-only button named `name`: `tooltip` is shown on hover and is also
+/// its accessible name, so a screen reader does not read an unnamed button.
+fn icon_button(name: &str, icon: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::builder().name(name).icon_name(icon).tooltip_text(tooltip).valign(gtk::Align::Center).build();
+    button.update_property(&[gtk::accessible::Property::Label(tooltip)]);
+    button
 }
 
 /// The widgets the requests update, shared by the handlers of one window.
@@ -319,12 +332,12 @@ fn applet_row(browser: &Rc<Browser>, status: &AppletStatus) -> gtk::Box {
         texts.append(&label);
     }
     let enabled = gtk::Switch::builder().name(format!("enabled:{id}")).valign(gtk::Align::Center).active(status.enabled).build();
-    let reload = gtk::Button::builder().name(format!("reload:{id}")).label("Reload").valign(gtk::Align::Center).build();
-    let export = gtk::Button::builder().name(format!("export:{id}")).label("Export").tooltip_text("Save this applet as a .tar.gz").valign(gtk::Align::Center).build();
+    let reload = icon_button(&format!("reload:{id}"), RELOAD_ICON, "Reload this applet");
+    let export = icon_button(&format!("export:{id}"), EXPORT_ICON, "Export this applet as a .tar.gz");
     row.append(&texts);
     row.append(&enabled);
     row.append(&reload);
-    let delete = gtk::Button::builder().name(format!("delete:{id}")).label("Delete").tooltip_text("Remove this applet from the applets folder").valign(gtk::Align::Center).build();
+    let delete = icon_button(&format!("delete:{id}"), DELETE_ICON, "Delete this applet");
     row.append(&export);
     row.append(&delete);
     connect_enabled(browser, &enabled, status);
