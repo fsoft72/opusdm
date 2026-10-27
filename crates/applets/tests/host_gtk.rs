@@ -159,6 +159,7 @@ fn host_gtk_checks() {
     an_applet_with_no_settings_says_so_in_the_window(&app);
     the_gear_twice_opens_one_window(&app);
     disabling_the_applet_closes_its_settings_window(&app);
+    secondary_windows_live_with_their_applet(&app);
     eprintln!("host_gtk_checks: all sections ran");
 }
 
@@ -1149,4 +1150,114 @@ fn disabling_the_applet_closes_its_settings_window(app: &gtk::Application) {
     assert!(host.settings_window("gone").is_none(), "the window close closes the settings window");
     assert!(destroyed(&window));
     eprintln!("section disabling_the_applet_closes_its_settings_window: ok");
+}
+
+/// The button labelled `label` under `root`.
+fn button_labeled(root: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    if let Ok(button) = root.clone().downcast::<gtk::Button>() {
+        if button.label().as_deref() == Some(label) { return Some(button); }
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = button_labeled(&c, label) { return Some(found); }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Click the main-window button `label` of applet `id` and run the loop.
+fn click(host: &Host, id: &str, label: &str) {
+    let root = host.content_root(id).unwrap_or_else(|| panic!("{id} shows nothing"));
+    button_labeled(&root, label).unwrap_or_else(|| panic!("no button {label}")).emit_clicked();
+    pump();
+}
+
+/// Rule 5 for `opus.ui.openWindow`: a secondary window is alive after many
+/// main-loop iterations and after the main tree is shown again, its handlers
+/// fire after N events, `close()` and the user's close each call `onClose`
+/// once, an update of a closed window changes nothing, the ninth window is an
+/// error, and a reload destroys the windows.
+fn secondary_windows_live_with_their_applet(app: &gtk::Application) {
+    let dirs = Dirs::new();
+    let code = r##"let status = "idle", closed = 0;
+const handles = [];
+const render = () => opus.ui.show({ type: "box", children: [
+  { type: "label", id: "status", text: status },
+  { type: "button", label: "open", onClick: openOne },
+  { type: "button", label: "refresh", onClick: render },
+  { type: "button", label: "closesecond", onClick: () => handles[1].close() },
+  { type: "button", label: "updateclosed", onClick: () => { handles[0].update("l", { text: "ghost" }); status = "updated-closed"; render(); } },
+] });
+const openOne = () => {
+  let n = 0;
+  try {
+    const w = opus.ui.openWindow({ title: "Detail", width: 200, height: 100,
+      tree: { type: "box", children: [
+        { type: "label", id: "l", text: "n=0" },
+        { type: "button", label: "inc", onClick: () => { n++; w.update("l", { text: "n=" + n }); } },
+      ] },
+      onClose: () => { closed++; status = "closed=" + closed; render(); } });
+    handles.push(w);
+  } catch (e) { status = "err:" + e.message; render(); }
+};
+render();"##;
+    dirs.applet("sec", &manifest("Sec"), code);
+    dirs.enable("sec");
+    let host = dirs.host(app);
+    host.load_enabled();
+    assert!(host.secondary_ids("sec").is_empty());
+
+    click(&host, "sec", "open");
+    assert_eq!(host.secondary_ids("sec"), ["w1"], "error: {:?}, status: {:?}", host.error_text("sec"), label_text(&host, "sec"));
+    let first = host.secondary_window("sec", "w1").unwrap();
+    assert_eq!(first.title().as_deref(), Some("Detail"));
+    assert!(!first.is_visible(), "a test window must never be presented");
+    for _ in 0..50 { pump(); }
+    click(&host, "sec", "refresh");
+    click(&host, "sec", "refresh");
+    assert_eq!(host.secondary_ids("sec"), ["w1"], "the window survives the main tree being shown again");
+    let inc = button_labeled(&first.child().unwrap(), "inc").unwrap();
+    for n in 1..=3 {
+        inc.emit_clicked();
+        pump();
+        let label = find::<gtk::Label>(&first.child().unwrap()).unwrap();
+        assert_eq!(label.text(), format!("n={n}"), "the handler of the secondary window fires after the refreshes");
+    }
+    assert_eq!(label_text(&host, "sec").as_deref(), Some("idle"), "the main tree was not touched by the window's updates");
+
+    // The user closes it: onClose runs once.
+    // `Window::close` does nothing on a window that was never realized.
+    first.emit_by_name::<bool>("close-request", &[]);
+    pump();
+    assert!(host.secondary_ids("sec").is_empty());
+    assert_eq!(label_text(&host, "sec").as_deref(), Some("closed=1"));
+
+    // The script closes the second window (the first was closed by the user): onClose runs once for it.
+    click(&host, "sec", "open");
+    click(&host, "sec", "open");
+    assert_eq!(host.secondary_ids("sec"), ["w2", "w3"]);
+    click(&host, "sec", "closesecond");
+    assert_eq!(label_text(&host, "sec").as_deref(), Some("closed=2"));
+    assert_eq!(host.secondary_ids("sec"), ["w3"]);
+    // Closing again and updating a closed handle do nothing and do not throw.
+    click(&host, "sec", "updateclosed");
+    assert_eq!(label_text(&host, "sec").as_deref(), Some("updated-closed"));
+    assert_eq!(host.secondary_ids("sec"), ["w3"]);
+    assert!(host.error_text("sec").is_none(), "{:?}", host.error_text("sec"));
+
+    // At most eight at once.
+    for _ in 0..7 { click(&host, "sec", "open"); }
+    assert_eq!(host.secondary_ids("sec").len(), 8);
+    click(&host, "sec", "open");
+    assert!(label_text(&host, "sec").unwrap().starts_with("err:"), "{:?}", label_text(&host, "sec"));
+    assert_eq!(host.secondary_ids("sec").len(), 8);
+
+    // A reload destroys every secondary window.
+    let windows: Vec<gtk::Window> = host.secondary_ids("sec").iter().map(|id| host.secondary_window("sec", id).unwrap()).collect();
+    assert_eq!(host.handle(&Request::Reload { id: "sec".into() }), Reply::Ok);
+    pump();
+    assert!(host.secondary_ids("sec").is_empty());
+    let open_now = app.windows();
+    assert!(windows.iter().all(|w| !open_now.contains(w)), "a secondary window outlived its applet");
+    eprintln!("section secondary_windows_live_with_their_applet: ok");
 }

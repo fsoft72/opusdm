@@ -520,6 +520,9 @@ const OPS: &[(&str, OpFn)] = &[
     ("applet.readAsset", op_applet_read_asset),
     ("ui.show", op_ui_show),
     ("ui.update", op_ui_update),
+    ("ui.window.open", op_ui_window_open),
+    ("ui.window.update", op_ui_window_update),
+    ("ui.window.close", op_ui_window_close),
     ("canvas.redraw", op_canvas_redraw),
 ];
 
@@ -740,6 +743,35 @@ fn op_ui_update(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
     let Some(id) = str_field(payload, "id").filter(|id| !id.is_empty()) else { return Err("opus.ui.update: the id must be a non-empty string".to_string()) };
     let Some(props) = payload.get("props").filter(|p| p.is_object()) else { return Err("opus.ui.update: the props must be an object".to_string()) };
     (inner.sink)(Event::Ui(json!({ "op": "update", "id": id, "props": props })));
+    Ok(Value::Null)
+}
+
+/// `opus.ui.openWindow`: the request is validated here (so a bad tree throws
+/// in the script), then an [`Event::Ui`] `{ "op": "openWindow", ... }` with
+/// the payload as is; the host builds and shows the window.
+fn op_ui_window_open(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
+    crate::secondary::OpenSpec::from_json(payload, &inner.name)?;
+    let mut event = payload.clone();
+    event["op"] = json!("openWindow");
+    (inner.sink)(Event::Ui(event));
+    Ok(Value::Null)
+}
+
+/// Update of a widget of a secondary window: an [`Event::Ui`]
+/// `{ "op": "updateWindow", "window", "id", "props" }`.
+fn op_ui_window_update(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
+    let Some(window) = str_field(payload, "window").filter(|w| !w.is_empty()) else { return Err("window update: internal: missing window id".to_string()) };
+    let Some(id) = str_field(payload, "id").filter(|id| !id.is_empty()) else { return Err("window update: the id must be a non-empty string".to_string()) };
+    let Some(props) = payload.get("props").filter(|p| p.is_object()) else { return Err("window update: the props must be an object".to_string()) };
+    (inner.sink)(Event::Ui(json!({ "op": "updateWindow", "window": window, "id": id, "props": props })));
+    Ok(Value::Null)
+}
+
+/// Close of a secondary window by the script: an [`Event::Ui`]
+/// `{ "op": "closeWindow", "window" }`.
+fn op_ui_window_close(inner: &Rc<Inner>, payload: &Value) -> Result<Value, String> {
+    let Some(window) = str_field(payload, "window").filter(|w| !w.is_empty()) else { return Err("window close: internal: missing window id".to_string()) };
+    (inner.sink)(Event::Ui(json!({ "op": "closeWindow", "window": window })));
     Ok(Value::Null)
 }
 

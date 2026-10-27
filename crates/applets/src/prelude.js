@@ -264,6 +264,34 @@
         if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(message);
     };
 
+    // ---- secondary windows -----------------------------------------------------
+    // `opus.ui.openWindow`: one entry per open window, with the handlers of its
+    // tree (forgotten when the window is gone) and the handlers by "id\u0000prop"
+    // so an update of a prop can forget the ones it replaces. A window is gone
+    // when the script closes it or when Rust calls the internal close handler
+    // (the user closed it).
+    const MAX_SECONDARY_WINDOWS = 8;
+    const secondaryWindows = new Map();
+    let nextWindow = 1;
+
+    /**
+     * Forget window `wid`: its handlers go, then the script's `onClose` runs
+     * (an error in it is reported, it does not stop the cleanup).
+     * @param {string} wid
+     */
+    const finishWindow = (wid) => {
+        const w = secondaryWindows.get(wid);
+        if (!w) return;
+        secondaryWindows.delete(wid);
+        forget(w.handlers);
+        if (w.onClose === null) return;
+        try {
+            w.onClose();
+        } catch (e) {
+            error("window \"" + wid + "\": onClose threw: " + text(e));
+        }
+    };
+
     const ui = Object.freeze({
         /**
          * Show `tree` in the applet window, replacing the tree shown before
@@ -340,6 +368,97 @@
          * @param {string} canvasId
          */
         redraw(canvasId) { internal.redraw(String(canvasId)); },
+        /**
+         * Open a secondary window with its own widget tree. `spec`:
+         * `{ title, width, height, tree, onClose }`; `onClose()` runs when the
+         * user closes the window (also when `close()` is called). At most
+         * 8 windows are open at once. A canvas is not supported in them.
+         * @param {Object} spec
+         * @returns {{id: string, update: function(string, Object): void, close: function(): void}}
+         */
+        openWindow(spec) {
+            needObject(spec, "opus.ui.openWindow: the spec must be an object");
+            needObject(spec.tree, "opus.ui.openWindow: the tree must be a node object");
+            if (spec.onClose !== undefined && spec.onClose !== null && typeof spec.onClose !== "function") throw new TypeError("opus.ui.openWindow: onClose must be a function");
+            if (secondaryWindows.size >= MAX_SECONDARY_WINDOWS) throw new RangeError("opus.ui.openWindow: at most " + MAX_SECONDARY_WINDOWS + " windows can be open");
+            const wid = "w" + nextWindow++;
+            const added = [];
+            const keyed = new Map();
+            const found = new Map();
+            let encoded;
+            try {
+                encoded = encodeNode(spec.tree, added, keyed, found, 1);
+                if (found.size > 0) throw new TypeError("opus.ui.openWindow: a canvas is not supported in a secondary window");
+            } catch (e) {
+                forget(added);
+                throw e;
+            }
+            const closeHandler = internal.registerHandler(() => finishWindow(wid));
+            added.push(closeHandler);
+            secondaryWindows.set(wid, { handlers: new Set(added), propHandlers: keyed, onClose: typeof spec.onClose === "function" ? spec.onClose : null });
+            try {
+                call("ui.window.open", {
+                    window: wid,
+                    title: spec.title === undefined ? null : spec.title,
+                    width: spec.width === undefined ? null : spec.width,
+                    height: spec.height === undefined ? null : spec.height,
+                    tree: encoded,
+                    onClose: { handler: closeHandler },
+                });
+            } catch (e) {
+                secondaryWindows.delete(wid);
+                forget(added);
+                throw e;
+            }
+            return Object.freeze({
+                id: wid,
+                /**
+                 * Change props of the node `nodeId` of this window (see `opus.ui.update`).
+                 * @param {string} nodeId
+                 * @param {Object} props
+                 */
+                update(nodeId, props) {
+                    const w = secondaryWindows.get(wid);
+                    if (!w) return warn("window \"" + wid + "\": update of a closed window ignored");
+                    if (typeof nodeId !== "string" || nodeId === "") throw new TypeError("window.update: the id must be a non-empty string");
+                    needObject(props, "window.update: the props must be an object");
+                    const enc = {};
+                    const replaced = [];
+                    try {
+                        for (const key of Object.keys(props)) {
+                            const ids = [];
+                            replaced.push([key, ids]);
+                            enc[key] = encode(props[key], ids, 1);
+                        }
+                    } catch (e) {
+                        for (const [, ids] of replaced) forget(ids);
+                        throw e;
+                    }
+                    for (const [key, ids] of replaced) {
+                        const slot = nodeId + "\u0000" + key;
+                        const old = w.propHandlers.get(slot);
+                        if (old) {
+                            forget(old);
+                            for (const h of old) w.handlers.delete(h);
+                            w.propHandlers.delete(slot);
+                        }
+                        if (ids.length === 0) continue;
+                        w.propHandlers.set(slot, ids);
+                        for (const h of ids) w.handlers.add(h);
+                    }
+                    call("ui.window.update", { window: wid, id: nodeId, props: enc });
+                },
+                /** Close this window; `onClose` runs. Closing a closed window does nothing. */
+                close() {
+                    if (!secondaryWindows.has(wid)) return;
+                    try {
+                        call("ui.window.close", { window: wid });
+                    } finally {
+                        finishWindow(wid);
+                    }
+                },
+            });
+        },
     });
 
     // ---- settings ----------------------------------------------------------

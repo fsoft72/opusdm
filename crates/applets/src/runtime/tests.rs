@@ -964,3 +964,40 @@ fn a_new_tree_forgets_the_canvases_of_the_old_one() {
         assert!(has_error(&events, "clock"), "{:?}", events.borrow());
     });
 }
+
+#[test]
+fn open_window_validates_in_the_script_and_limits_the_count() {
+    on_main_loop(|| {
+        let events = Events::default();
+        let code = r#"
+const attempt = (name, f) => { try { f(); opus.log(name + " ok"); } catch (e) { opus.log(name + " threw " + e.message); } };
+const tree = { type: "label", text: "x" };
+attempt("bad-type", () => opus.ui.openWindow({ tree: { type: "gauge" } }));
+attempt("canvas", () => opus.ui.openWindow({ tree: { type: "canvas", width: 5, height: 5 } }));
+attempt("no-tree", () => opus.ui.openWindow({ title: "t" }));
+attempt("bad-onclose", () => opus.ui.openWindow({ tree, onClose: 5 }));
+const handles = [];
+for (let i = 0; i < 8; i++) handles.push(opus.ui.openWindow({ tree }));
+attempt("ninth", () => opus.ui.openWindow({ tree }));
+handles[0].close();
+attempt("after-close", () => opus.ui.openWindow({ tree }));
+handles[1].close();
+handles[1].close();
+opus.log("ids " + handles[0].id + " " + handles[1].id);
+"#;
+        let (_dir, rt) = start_code(code, Map::new(), &events);
+        let _rt = rt.unwrap();
+        let lines = logs(&events);
+        let has = |needle: &str| lines.iter().any(|l| l.contains(needle));
+        assert!(has("bad-type threw") && has("gauge"), "{lines:?}");
+        assert!(has("canvas threw") && has("canvas is not supported"), "{lines:?}");
+        assert!(has("no-tree threw"), "{lines:?}");
+        assert!(has("bad-onclose threw"), "{lines:?}");
+        assert!(has("ninth threw") && has("at most 8"), "{lines:?}");
+        assert!(has("after-close ok"), "{lines:?}");
+        assert!(has("ids w"), "ids are never reused: {lines:?}");
+        let ui: Vec<String> = events.borrow().iter().filter_map(|e| match e { Event::Ui(v) => v["op"].as_str().map(str::to_string), _ => None }).collect();
+        assert_eq!(ui.iter().filter(|op| *op == "openWindow").count(), 9, "{ui:?}");
+        assert_eq!(ui.iter().filter(|op| *op == "closeWindow").count(), 2, "closing twice sends one close: {ui:?}");
+    });
+}

@@ -1258,6 +1258,7 @@ surface:
 | `opus.applet.open(url)` | Opens an `http`, `https` or `file` URL with the default program |
 | `opus.applet.assetPath(rel)`, `opus.applet.readAsset(rel)` | The absolute path or the text of a file in the applet folder |
 | `opus.ui.show(tree)`, `opus.ui.update(id, props)`, `opus.ui.redraw(canvasId)` | Show a widget tree, change props of the node `id`, paint a canvas again |
+| `opus.ui.openWindow({title, width, height, tree, onClose})` | Opens a secondary window (default 400 x 300, the applet name as title) with its own widget tree and returns `{ id, update(nodeId, props), close() }`. Ids are scoped to the window, so `opus.ui.update` of the main window is not affected. `onClose()` runs when the user closes the window and when `close()` is called, once. At most 8 windows are open at once (a ninth throws), a `canvas` is not supported in them, and `update` of a closed window is ignored with a warning. Disabling or reloading the applet closes them all |
 
 **Widgets.** A tree is plain objects: `{ type, id?, class?, visible?, ...props }`, functions as handlers.
 

@@ -34,6 +34,7 @@ use crate::edit_mode::EditMode;
 use crate::placement::Rect;
 use crate::protocol::{AppletStatus, Reply, Request};
 use crate::runtime::{Event, Runtime, Sink};
+use crate::secondary::{OpenSpec, SecondaryWindows};
 use crate::server::HostMessage;
 use crate::widgets::{self, BuiltTree, Dispatch, ErrorListener};
 use crate::manifest::Manifest;
@@ -103,6 +104,9 @@ struct Applet {
     /// `Some` while the runtime starts: the `Ui` and `Redraw` events sent
     /// before the dispatcher exists, applied once it does.
     pending: RefCell<Option<Vec<Event>>>,
+    /// The secondary windows of `opus.ui.openWindow`; dropped (windows
+    /// destroyed) before the main window.
+    secondary: SecondaryWindows,
     window: AppletWindow,
     /// This applet, for the canvas error listeners.
     me: Weak<Applet>,
@@ -291,6 +295,16 @@ impl Host {
     /// The root widget shown in the window of applet `id`, if any.
     pub fn content_root(&self, id: &str) -> Option<gtk::Widget> {
         self.applets.borrow().get(id).and_then(|a| a.window.content())
+    }
+
+    /// The ids of the secondary windows open in applet `id`, sorted.
+    pub fn secondary_ids(&self, id: &str) -> Vec<String> {
+        self.applets.borrow().get(id).map(|a| a.secondary.ids()).unwrap_or_default()
+    }
+
+    /// The secondary window `window` of applet `id`, if open.
+    pub fn secondary_window(&self, id: &str, window: &str) -> Option<gtk::Window> {
+        self.applets.borrow().get(id).and_then(|a| a.secondary.window(window))
     }
 
     /// One status per applet folder.
@@ -485,6 +499,7 @@ impl Host {
             dispatcher: RefCell::new(None),
             tree: RefCell::new(None),
             pending: RefCell::new(Some(Vec::new())),
+            secondary: SecondaryWindows::new(id, &self.app, self.config.present_windows),
             window,
             me: me.clone(),
         });
@@ -583,8 +598,60 @@ impl Applet {
                 let result = self.with_tree(|tree| widgets::apply_update(tree, id, value.get("props").unwrap_or(&Value::Null)));
                 if let Err(e) = result { self.report(&e); }
             }
+            Some("openWindow") => self.open_secondary(value),
+            Some("updateWindow") => {
+                let field = |key: &str| value.get(key).and_then(Value::as_str);
+                let (Some(window), Some(id)) = (field("window"), field("id")) else { return self.report(&format!("ui window update without a window or an id: {value}")) };
+                if let Err(e) = self.secondary.update(window, id, value.get("props").unwrap_or(&Value::Null)) { self.report(&e); }
+            }
+            Some("closeWindow") => {
+                let Some(window) = value.get("window").and_then(Value::as_str) else { return self.report(&format!("ui window close without a window: {value}")) };
+                self.secondary.close(window);
+            }
             _ => self.report(&format!("internal: unknown ui event {value}")),
         }
+    }
+
+    /// Build and show a secondary window. A failure is shown in the main
+    /// window and the script's `onClose` is called, so it forgets the window.
+    fn open_secondary(&self, value: &Value) {
+        let spec = match OpenSpec::from_json(value, &self.manifest.name) {
+            Ok(spec) => spec,
+            Err(e) => return self.report(&e),
+        };
+        let on_close = spec.on_close;
+        let Some(dispatcher) = self.dispatcher.borrow().clone() else { return self.report("internal: ui openWindow without a runtime") };
+        let weak = self.me.clone();
+        let id = self.id.clone();
+        let result = self.secondary.open(spec, dispatcher, move |window| {
+            let Some(applet) = weak.upgrade() else {
+                err_log!(APP_TAG, "applet {id}: secondary window {window} closed after the applet was dropped, the script was not told");
+                return glib::Propagation::Proceed;
+            };
+            applet.secondary_closed_by_user(window);
+            glib::Propagation::Proceed
+        });
+        if let Err(e) = result {
+            self.report(&e);
+            self.call_handler(on_close);
+        }
+    }
+
+    /// The user closed secondary window `window`: forget it and call the
+    /// script's `onClose` handler.
+    fn secondary_closed_by_user(&self, window: &str) {
+        let Some(on_close) = self.secondary.take_closed_by_user(window) else { return };
+        self.call_handler(on_close);
+    }
+
+    /// Call `handler` (if any) with `null`; no runtime is logged.
+    fn call_handler(&self, handler: Option<u32>) {
+        let Some(handler) = handler else { return };
+        let Some(dispatcher) = self.dispatcher.borrow().clone() else {
+            err_log!(APP_TAG, "applet {}: handler {handler} not called, the applet has no runtime", self.id);
+            return;
+        };
+        dispatcher.dispatch(handler, Value::Null);
     }
 
     /// Build and show a new tree. On failure the old widgets go too (the
