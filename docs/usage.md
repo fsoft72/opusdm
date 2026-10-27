@@ -1182,9 +1182,23 @@ process does not run, and the Applet Browser says "The applets process is not ru
 
 **The Applet Browser** opens from the **last** entry of the desktop right-click menu, **Edit Applets**,
 or from **Settings > Advanced > Edit Applets**. Opening it again raises the window already open. One
-row per applet: name, version, description, an **enabled** switch, a **Reload** button (reads
-`main.js` again after you edited it; there is no file watch) and the applet's last error in red. At
-the top, the **Edit mode** switch and **Refresh** (looks for new folders).
+row per applet: name, version, description, an **enabled** switch, three icon buttons (hover for the
+name) and the applet's last error in red. The buttons are **Reload** (the circular arrow: reads
+`main.js` again after you edited it; there is no file watch), **Export** (the arrow into a tray) and
+**Delete** (the bin). At the top, the **Edit mode** switch, **Import** and **Refresh** (looks for new
+folders).
+
+**Sharing an applet.** **Export** asks where to save and writes `<id>.tar.gz` with the applet folder
+only (manifest, scripts, assets): its settings and position stay on your machine. **Import** asks for
+a `.tar.gz`, checks it (one applet folder, a valid `applet.json`, the entry script, safe paths, at most
+64 MB unpacked), then asks you to confirm and lists the **permissions the archive requests**: Network
+access (`net`), Read and write files (`fs`), Run commands (`exec`). An applet can do all of that with
+your rights, so import only applets you trust. Nothing is copied before you confirm. The applet is
+added **disabled**; switch it on when you want it. Importing an applet with the same folder name asks
+first, then replaces it (and reloads it if it was running; its settings and position are kept).
+**Delete** asks first, closes the applet if it is running and removes its folder from
+`~/.config/opusdm/applets`; this cannot be undone. Its settings and position are kept, so importing
+the same applet again finds them.
 
 **Moving and resizing:**
 
