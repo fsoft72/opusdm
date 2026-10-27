@@ -1174,11 +1174,18 @@ process does not run, and the Applet Browser says "The applets process is not ru
 - **What OpusDM remembers:** `~/.local/state/opusdm/applets/<id>.json`, with `enabled`, the position
   (`x`, `y`), the size (`width`, `height`) and the `settings` values. A new folder has no state file,
   so the applet is **disabled** until you switch it on in the Applet Browser.
-- **Sample applets:** the repository has two in `applets/`: `weather-clock` (an analog clock with the
+- **Sample applets:** the repository has three in `applets/`: `weather-clock` (an analog clock with the
   weather of a city, from Open-Meteo) and `site-news` (the latest titles of an RSS or Atom feed;
   click a title to open it). Install one by copying its folder:
   `cp -r applets/weather-clock ~/.config/opusdm/applets/`, then enable it in the Applet Browser.
   `site-news` starts with an empty feed URL: set it with the gear (see edit mode).
+  The third, `fatto-tasks`, shows the open tasks of a board of a Fatto instance, read only: two
+  dropdowns (workspace, board), a Refresh button and the list of the cards that are not in DONE;
+  a click on a task opens a detail window (code, title, column, assignees, due date, tags,
+  description, checklists, and **Open in Fatto**). Set **Fatto URL** (default
+  `https://fatto.os3.services`) and **API key** (`fatto_...`, created in Fatto at `/apikeys`) with
+  the gear. The key is saved in clear in `~/.local/state/opusdm/applets/fatto-tasks.json`. It talks
+  to the `POST /api/mcp-kanban` endpoint of Fatto, the only route an API key opens.
 
 **The Applet Browser** opens from the **last** entry of the desktop right-click menu, **Edit Applets**,
 or from **Settings > Advanced > Edit Applets**. Opening it again raises the window already open. One

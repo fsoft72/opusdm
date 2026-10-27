@@ -1,0 +1,12 @@
+{
+    "name": "Fatto Tasks",
+    "version": "1.0",
+    "description": "The open tasks of a Fatto board (everything but DONE). Click a task to read its detail.",
+    "entry": "main.js",
+    "window": { "width": 400, "height": 460, "minWidth": 260, "minHeight": 200, "resizable": true },
+    "settings": [
+        { "key": "baseUrl", "type": "string", "label": "Fatto URL", "default": "https://fatto.os3.services" },
+        { "key": "apiKey", "type": "string", "label": "API key (fatto_...)", "default": "" }
+    ],
+    "permissions": ["net"]
+}
