@@ -96,6 +96,10 @@ impl Controls {
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
         let dragging = this.dragging.clone();
         click.connect_pressed(move |_, _, _, _| dragging.set(true));
+        // When the slider claims the press, `released` never comes and only
+        // `stopped` does: without this the flag stays set and the slider freezes.
+        let dragging = this.dragging.clone();
+        click.connect_stopped(move |_| dragging.set(false));
         let (hh, dragging, scale) = (h.clone(), this.dragging.clone(), this.scale.clone());
         click.connect_released(move |_, _, _, _| {
             dragging.set(false);
