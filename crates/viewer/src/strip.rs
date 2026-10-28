@@ -2,11 +2,13 @@
 
 use crate::comic;
 use crate::kind::{kind_or_image, MediaKind};
-use crate::loader::{load_thumb, RawImage};
+use crate::loader::{decode_within, load_thumb, RawImage};
 use crate::pdf::render_thumb;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
+use opusdm_iconview::thumbs::{cache, generate::generate, ThumbKind, ThumbPool};
+use opusdm_iconview::ThumbSize;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -120,12 +122,12 @@ impl Strip {
 
     /// Ask the worker for a thumbnail, once per picture.
     fn _request(&self, path: &Path) {
-        if matches!(kind_or_image(path), MediaKind::Video | MediaKind::Markdown | MediaKind::Source | MediaKind::Ebook) { return; }
+        if matches!(kind_or_image(path), MediaKind::Markdown | MediaKind::Source | MediaKind::Ebook) { return; }
         if !self.requested.borrow_mut().insert(path.to_path_buf()) { return; }
         if self.requests.send(path.to_path_buf()).is_err() { opusdm_ipc::err_log!("viewer", "the thumbnail worker stopped"); }
     }
 
-    /// Show a finished thumbnail; a failure leaves a `?`.
+    /// Show a finished thumbnail; a failure leaves a `?` (a video keeps its `VIDEO` label).
     fn _set_thumb(&self, path: &Path, result: Result<RawImage, String>) {
         let buttons = self.buttons.borrow();
         let Some((_, button)) = buttons.iter().find(|(p, _)| p == path) else { return };
@@ -137,6 +139,7 @@ impl Strip {
             }
             Err(e) => {
                 opusdm_ipc::err_log!("viewer", "thumbnail of {}: {e}", path.display());
+                if kind_or_image(path) == MediaKind::Video { return; }
                 button.set_child(Some(&gtk::Label::new(Some("?"))));
             }
         }
@@ -159,12 +162,32 @@ fn _start_worker() -> (mpsc::Sender<PathBuf>, async_channel::Receiver<ThumbResul
             let result = match kind_or_image(&path) {
                 MediaKind::Pdf => render_thumb(&path, THUMB_PX),
                 MediaKind::Comic => comic::render_thumb(&path, THUMB_PX),
+                MediaKind::Video => _video_thumb(&path),
                 _ => load_thumb(&path, THUMB_PX),
             };
             if res_tx.send_blocking((path, result)).is_err() { break; }
         }
     });
     (req_tx, res_rx)
+}
+
+/// The thumbnail of a video: the freedesktop cache the Listers share, else a
+/// frame made by `ffmpegthumbnailer` or `ffmpeg` and stored there. Safe to call
+/// from any thread.
+fn _video_thumb(path: &Path) -> Result<RawImage, String> {
+    if ThumbPool::disabled() { return Err("thumbnails are switched off by OPUSDM_NO_THUMBS".to_string()); }
+    let png = match cache::load_valid(path, ThumbSize::Normal) {
+        Some(png) => png,
+        None => {
+            let png = generate(path, ThumbKind::Video, ThumbSize::Normal.px()).map_err(|e| e.to_string())?;
+            // The thumbnail is still shown; only the disk cache misses out.
+            if let Err(e) = cache::store(path, ThumbSize::Normal, &png) {
+                opusdm_ipc::err_log!("viewer", "cannot cache the thumbnail of {}: {e}", path.display());
+            }
+            png
+        }
+    };
+    decode_within(&glib::Bytes::from_owned(png), THUMB_PX)
 }
 
 /// Scroll so that `button` is in the middle of the strip.
@@ -183,5 +206,24 @@ mod tests {
         assert_eq!(_source_label(Path::new("a/main.rs")), "RS");
         assert_eq!(_source_label(Path::new("Makefile")), "TEXT");
         assert_eq!(_source_label(Path::new("x.properties")), "TEXT");
+    }
+
+    #[test]
+    fn a_video_gets_a_thumbnail_and_a_cache_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("clip.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-y", "-f", "lavfi", "-i", "color=c=red:s=64x32:d=1", "-pix_fmt", "yuv420p"])
+            .arg(&video)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        // Without ffmpeg there is nothing to make the clip with.
+        if !made.map(|s| s.success()).unwrap_or(false) { return; }
+        std::env::set_var("XDG_CACHE_HOME", dir.path().join("cache"));
+        let raw = _video_thumb(&video).unwrap();
+        assert_eq!((raw.width, raw.height), (THUMB_PX as u32, THUMB_PX as u32 / 2));
+        assert!(cache::load_valid(&video, ThumbSize::Normal).is_some(), "the thumbnail is cached for the Listers");
+        assert!(_video_thumb(&video).is_ok(), "the second call reads the cache");
     }
 }

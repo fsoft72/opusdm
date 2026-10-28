@@ -3230,6 +3230,7 @@ dependencies = [
  "hayro",
  "opusdm-archive",
  "opusdm-highlight",
+ "opusdm-iconview",
  "opusdm-ipc",
  "opusdm-media",
  "opusdm-media-ui",

@@ -15,6 +15,7 @@ opusdm-media-ui = { path = "../media-ui" }
 opusdm-ui = { path = "../ui" }
 opusdm-ipc = { path = "../ipc" }
 opusdm-archive = { path = "../archive" }
+opusdm-iconview = { path = "../iconview" }
 gtk4.workspace = true
 async-channel.workspace = true
 hayro = "0.8"
