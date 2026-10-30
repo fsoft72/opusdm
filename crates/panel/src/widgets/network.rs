@@ -53,6 +53,17 @@ impl SwitchRow {
         let address = gtk::Label::new(None);
         address.add_css_class("dim-label");
         address.set_visible(false);
+        address.set_tooltip_text(Some("Double click to copy"));
+        {
+            // A double click copies the address to the clipboard.
+            let click = gtk::GestureClick::new();
+            click.connect_pressed(|gesture, presses, _, _| {
+                if presses != 2 { return; }
+                let Some(label) = gesture.widget().and_then(|w| w.downcast::<gtk::Label>().ok()) else { return };
+                label.clipboard().set_text(&label.text());
+            });
+            address.add_controller(click);
+        }
         let spinner = gtk::Spinner::new();
         spinner.set_visible(false);
         let switch = gtk::Switch::new();
