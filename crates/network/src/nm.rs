@@ -25,6 +25,7 @@ const AP_IFACE: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 const SETTINGS_IFACE: &str = "org.freedesktop.NetworkManager.Settings";
 const CONNECTION_IFACE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
+const IP4_CONFIG_IFACE: &str = "org.freedesktop.NetworkManager.IP4Config";
 const ACTIVE_IFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const PROPERTIES_IFACE: &str = "org.freedesktop.DBus.Properties";
 const NO_OBJECT: &str = "/";
@@ -110,6 +111,21 @@ impl NmBackend {
     fn get_all(&self, path: &str, iface: &str) -> Result<Props, NetError> {
         let props = self.proxy(path, PROPERTIES_IFACE)?;
         props.call("GetAll", &(iface,)).map_err(NetError::from)
+    }
+
+    /// The first IPv4 address of a device, `None` while it has no address.
+    /// A read error is logged and reads as no address, so the tray still works.
+    fn ip4_of(&self, device: &Device) -> Option<String> {
+        if device.ip4_config == NO_OBJECT { return None; }
+        let props = match self.get_all(&device.ip4_config, IP4_CONFIG_IFACE) {
+            Ok(props) => props,
+            Err(e) => {
+                eprintln!("[opusdm-network:{}] IPv4 address: {}", std::process::id(), e.text());
+                return None;
+            }
+        };
+        let list = Vec::<HashMap<String, OwnedValue>>::try_from(props.get("AddressData")?.try_clone().ok()?).ok()?;
+        String::try_from(list.first()?.get("address")?.try_clone().ok()?).ok()
     }
 
     /// Every access point the Wi-Fi device sees.
@@ -267,6 +283,8 @@ struct Device {
     path: OwnedObjectPath,
     kind: u32,
     state: u32,
+    /// The `Ip4Config` object of the device; `/` while it has none.
+    ip4_config: String,
 }
 
 /// The device at `path` from its `GetAll` properties; `None` without a
@@ -274,7 +292,8 @@ struct Device {
 fn device_from_props(path: OwnedObjectPath, props: &Props) -> Option<Device> {
     let kind = u32::try_from(props.get("DeviceType")?).ok()?;
     let state = u32::try_from(props.get("State")?).ok()?;
-    Some(Device { path, kind, state })
+    let ip4_config = props.get("Ip4Config").and_then(|v| OwnedObjectPath::try_from(v.try_clone().ok()?).ok()).map(|p| p.to_string()).unwrap_or_else(|| NO_OBJECT.to_string());
+    Some(Device { path, kind, state, ip4_config })
 }
 
 /// The profile UUID and state of an active connection from its `GetAll`
@@ -331,10 +350,14 @@ impl Backend for NmBackend {
             state.eth_available = available;
             state.eth_on = on;
             state.eth_connected = connected;
+            state.eth_busy = parse::is_busy(eth.state);
+            state.eth_ip4 = if connected { self.ip4_of(eth) } else { None };
         }
         let Some(wifi) = devices.iter().find(|d| d.kind == DEVICE_WIFI) else { return Ok(state) };
         state.wifi_present = true;
         if !wifi_enabled { return Ok(state); }
+        state.wifi_busy = parse::is_busy(wifi.state);
+        state.wifi_ip4 = if wifi.state == parse::STATE_ACTIVATED { self.ip4_of(wifi) } else { None };
         let raws = self.read_aps(wifi)?;
         let active: OwnedObjectPath = self
             .proxy(wifi.path.as_str(), WIRELESS_IFACE)?

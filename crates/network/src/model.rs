@@ -63,6 +63,14 @@ pub struct NetState {
     /// Ethernet is connected or connecting.
     pub eth_on: bool,
     pub eth_connected: bool,
+    /// Ethernet is on but still negotiating (link, authentication, address).
+    pub eth_busy: bool,
+    /// The IPv4 address of the Ethernet device, once it has one.
+    pub eth_ip4: Option<String>,
+    /// The Wi-Fi device is joining a network and is not connected yet.
+    pub wifi_busy: bool,
+    /// The IPv4 address of the Wi-Fi device, once it has one.
+    pub wifi_ip4: Option<String>,
     /// Networks in range: the active one first, then by signal.
     pub aps: Vec<AccessPoint>,
     /// The VPN profiles, by name.

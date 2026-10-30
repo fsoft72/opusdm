@@ -173,7 +173,7 @@ mod tests {
     }
 
     fn state(eth_connected: bool, aps: Vec<AccessPoint>) -> NetState {
-        NetState { wifi_present: true, wifi_enabled: true, eth_present: true, eth_available: true, eth_on: eth_connected, eth_connected, aps, vpns: Vec::new() }
+        NetState { wifi_present: true, wifi_enabled: true, eth_present: true, eth_available: true, eth_on: eth_connected, eth_connected, aps, vpns: Vec::new(), ..NetState::default() }
     }
 
     #[test]

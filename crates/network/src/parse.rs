@@ -18,7 +18,7 @@ const STATE_UNAVAILABLE: u32 = 20;
 /// First state of a device that is being connected.
 const STATE_PREPARE: u32 = 40;
 /// `NM_DEVICE_STATE_ACTIVATED`.
-const STATE_ACTIVATED: u32 = 100;
+pub const STATE_ACTIVATED: u32 = 100;
 
 /// `NM_DEVICE_TYPE_ETHERNET`.
 pub const DEVICE_ETHERNET: u32 = 1;
@@ -101,6 +101,12 @@ pub fn eth_flags(state: u32) -> (bool, bool, bool) {
     (available, on, state == STATE_ACTIVATED)
 }
 
+/// Whether a device in `state` is on but still negotiating: after the
+/// prepare step and before it is activated.
+pub fn is_busy(state: u32) -> bool {
+    (STATE_PREPARE..STATE_ACTIVATED).contains(&state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +171,16 @@ mod tests {
         let aps = build_aps(&[raw("/1", "home", 50, 0), raw("/2", "cafe", 50, 0)], None, &saved);
         assert!(aps.iter().find(|a| a.ssid == "home").unwrap().saved);
         assert!(!aps.iter().find(|a| a.ssid == "cafe").unwrap().saved);
+    }
+
+    #[test]
+    fn busy_only_while_the_device_negotiates() {
+        assert!(!is_busy(30));
+        assert!(is_busy(40));
+        assert!(is_busy(70));
+        assert!(is_busy(90));
+        assert!(!is_busy(100));
+        assert!(!is_busy(110));
     }
 
     #[test]

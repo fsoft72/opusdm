@@ -34,6 +34,10 @@ const DIM_ALPHA: f64 = 0.3;
 struct SwitchRow {
     root: gtk::Box,
     switch: gtk::Switch,
+    /// The IPv4 address, before the switch; empty while there is none.
+    address: gtk::Label,
+    /// Spins while the device is still negotiating the network.
+    spinner: gtk::Spinner,
     /// Set while `refresh` changes the switch, so it does not send a request.
     updating: Rc<Cell<bool>>,
 }
@@ -46,6 +50,12 @@ impl SwitchRow {
         label.set_xalign(0.0);
         label.set_hexpand(true);
         label.add_css_class("heading");
+        let address = gtk::Label::new(None);
+        address.add_css_class("dim-label");
+        address.set_visible(false);
+        address.set_selectable(true);
+        let spinner = gtk::Spinner::new();
+        spinner.set_visible(false);
         let switch = gtk::Switch::new();
         switch.set_valign(gtk::Align::Center);
         let updating = Rc::new(Cell::new(false));
@@ -58,8 +68,18 @@ impl SwitchRow {
             });
         }
         root.append(&label);
+        root.append(&address);
+        root.append(&spinner);
         root.append(&switch);
-        Self { root, switch, updating }
+        Self { root, switch, address, spinner, updating }
+    }
+
+    /// Show the IPv4 address (only while the device is on) and the spinner.
+    fn show_link(&self, ip4: Option<&str>, busy: bool) {
+        self.address.set_visible(ip4.is_some());
+        self.address.set_text(ip4.unwrap_or(""));
+        self.spinner.set_visible(busy);
+        self.spinner.set_spinning(busy);
     }
 
     /// Show `active` without sending a request.
@@ -239,8 +259,10 @@ impl NetworkButton {
     fn show_switches(&self, state: &NetState) {
         self.eth.root.set_visible(state.eth_present);
         self.eth.show(state.eth_on, state.eth_available);
+        self.eth.show_link(state.eth_ip4.as_deref().filter(|_| state.eth_on), state.eth_busy);
         self.wifi.root.set_visible(state.wifi_present);
         self.wifi.show(state.wifi_enabled, true);
+        self.wifi.show_link(state.wifi_ip4.as_deref().filter(|_| state.wifi_enabled), state.wifi_busy);
     }
 
     /// Rebuild the list of networks.
