@@ -2819,6 +2819,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-firewall-config"
+version = "0.15.0"
+dependencies = [
+ "async-channel",
+ "gtk4",
+ "opusdm-ipc",
+ "opusdm-ui",
+ "tempfile",
+]
+
+[[package]]
 name = "opusdm-fsops"
 version = "0.15.0"
 dependencies = [
@@ -3183,6 +3194,7 @@ dependencies = [
  "gtk4",
  "opusdm-bluetooth-config",
  "opusdm-desktop-config",
+ "opusdm-firewall-config",
  "opusdm-iconview",
  "opusdm-input-config",
  "opusdm-ipc",
