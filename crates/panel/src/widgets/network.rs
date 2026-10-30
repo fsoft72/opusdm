@@ -53,7 +53,6 @@ impl SwitchRow {
         let address = gtk::Label::new(None);
         address.add_css_class("dim-label");
         address.set_visible(false);
-        address.set_selectable(true);
         let spinner = gtk::Spinner::new();
         spinner.set_visible(false);
         let switch = gtk::Switch::new();
