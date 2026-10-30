@@ -177,8 +177,14 @@ fn unparent_when_closed(popover: &impl IsA<gtk::Popover>) {
     });
 }
 
-/// Render one item's icon: its pixmap when present, else an icon-theme
-/// lookup by name, else a generic placeholder glyph.
+/// True when an `IconName` is an absolute file path instead of a theme name.
+fn is_icon_path(name: &str) -> bool {
+    name.starts_with('/')
+}
+
+/// Render one item's icon: its pixmap when present, else the picture at an
+/// absolute `IconName` path or an icon-theme lookup by name, else a generic
+/// placeholder glyph.
 fn icon_widget(item: &SniItem) -> gtk::Widget {
     if let Some(icon) = &item.icon {
         let bytes = glib::Bytes::from(&icon.rgba);
@@ -194,11 +200,33 @@ fn icon_widget(item: &SniItem) -> gtk::Widget {
         return gtk::Image::from_pixbuf(Some(&pixbuf)).upcast();
     }
     if let Some(name) = &item.icon_name {
-        let image = gtk::Image::from_icon_name(name);
-        image.set_pixel_size(18);
-        return image.upcast();
+        if is_icon_path(name) {
+            match opusdm_apps::app_image(name) {
+                Some(image) => {
+                    image.set_pixel_size(18);
+                    return image.upcast();
+                }
+                None => opusdm_ipc::err_log!("opusdm-panel", "tray icon: cannot load picture {name}"),
+            }
+        } else {
+            let image = gtk::Image::from_icon_name(name);
+            image.set_pixel_size(18);
+            return image.upcast();
+        }
     }
     let image = gtk::Image::from_icon_name("image-missing");
     image.set_pixel_size(18);
     image.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_absolute_path_is_a_picture_and_a_plain_name_is_a_theme_icon() {
+        assert!(is_icon_path("/usr/share/icons/app.png"));
+        assert!(!is_icon_path("network-wired"));
+        assert!(!is_icon_path(""));
+    }
 }
