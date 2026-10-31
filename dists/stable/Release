@@ -1,0 +1,23 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sat, 31 Oct 2026 16:06:23 +0000
+Label: OpusDM
+Origin: OpusDM
+Suite: stable
+MD5Sum:
+ c7b435bb6740389f42adb08e53dca372              136 Release
+ 5bf5787ef4992665c5aff0748ea8475c             3258 main/binary-amd64/Packages
+ 73a549fbaa15123aaf6cfc95f2c302c1             1168 main/binary-amd64/Packages.gz
+SHA1:
+ faf402bd142bcb7d4198d010c1ab13c851572f92              136 Release
+ 20a77cde8d3ff7c928dace6d0dcec45dc2b451eb             3258 main/binary-amd64/Packages
+ dcc2b068e4ed2556211417d0e1cbb15ff0bc99f4             1168 main/binary-amd64/Packages.gz
+SHA256:
+ 019f4c9ce411adf29d4ddccb0e47a3ada249bd10a8c10d6432c8c7bd7c1a2a2c              136 Release
+ 909a2898cc87b88741fef09fe74206f3214ffce0294d3e2b107030fe671c9fd0             3258 main/binary-amd64/Packages
+ 9dcd6fd9ec9854d84bd1fc82c485265b8476526215341c22c37da13068d4bdc9             1168 main/binary-amd64/Packages.gz
+SHA512:
+ 2473924a585f164671d4b4efb6455d364049bac0b0a556afa5fd7c7085fe71d13f0584881ac1a64f8d6d53475f5d3269de29de7b3fbf80d60df80d7aae4694b6              136 Release
+ eacc21596a3bd4ac5fc8571a9185975b23db5c8fa10a108558f79c2b9bc06c409fa32775ad902e5cb130d3891525eda78dcab426d50d38aa82367d84d3714be6             3258 main/binary-amd64/Packages
+ 8e4543d7ab64561d11bb8fb46de35e85e0d8b1820633bf2b3f93d2f7d52db6cd08e8efc55c4151f741c70f10ff8e8aad8e2049ddd38109c10b157d5eb9304bbd             1168 main/binary-amd64/Packages.gz
