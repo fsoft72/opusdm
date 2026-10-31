@@ -405,7 +405,8 @@ pub fn build() -> gtk::Widget {
     inner.append(&mem_bar);
     inner.append(&cpu_spark);
     cpu_box.set_child(Some(&inner));
-    cpu_box.set_tooltip_text(Some("CPU graph, memory level on the left - click for details"));
+    mem_bar.set_tooltip_text(Some("Mem: --"));
+    cpu_box.set_tooltip_text(Some("CPU - click for details"));
 
     // Network: two traces (green download, blue upload); the rates sit inside
     // the graph, download top-left, upload top-right.
@@ -490,9 +491,14 @@ pub fn build() -> gtk::Widget {
             s.cores_prev = cores;
         }
 
-        match model::parse_mem_percent(&read("/proc/meminfo")) {
-            Some(pct) => {
-                mem_level.set(pct);
+        match model::parse_mem_usage(&read("/proc/meminfo")) {
+            Some((used_kb, total_kb)) => {
+                mem_level.set(used_kb as f64 / total_kb as f64 * 100.0);
+                mem_bar.set_tooltip_text(Some(&format!(
+                    "Mem: {} / {}",
+                    opusdm_ipc::size::binary_size(used_kb * 1024),
+                    opusdm_ipc::size::binary_size(total_kb * 1024),
+                )));
                 mem_bar.queue_draw();
             }
             None => opusdm_ipc::err_log!("opusdm-panel", "sysmon: /proc/meminfo has no usable MemTotal/MemAvailable"),
