@@ -19,6 +19,7 @@ opusdm-iconview = { path = "../iconview" }
 gtk4.workspace = true
 async-channel.workspace = true
 hayro = "0.8"
+resvg = "0.49"
 pulldown-cmark = { version = "0.13", default-features = false }
 quick-xml = { version = "0.41", features = ["escape-html"] }
 unicode-width = "0.2"

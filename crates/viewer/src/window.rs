@@ -159,7 +159,9 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
 /// Handle what the worker threads and the other widgets send, on the main thread.
 fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, answer_rx: async_channel::Receiver<PageAnswer>, video_rx: async_channel::Receiver<VideoNotice>, pick_rx: async_channel::Receiver<PathBuf>) {
     _listen(state, load_rx, |s, (generation, result)| {
-        if generation == s.generation.get() { s._picture_loaded(result); }
+        if generation != s.generation.get() { return; }
+        s.pdf.picture_ready.set(result.is_ok());
+        s._picture_loaded(result);
     });
     _listen(state, answer_rx, |s, (generation, result)| {
         if generation == s.generation.get() { s._pdf_page_loaded(result); }

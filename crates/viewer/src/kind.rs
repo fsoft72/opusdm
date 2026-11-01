@@ -53,6 +53,11 @@ impl MediaKind {
     }
 }
 
+/// True for an SVG drawing, by extension (case-insensitive): it can be rendered again at any zoom.
+pub fn is_svg(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+}
+
 /// Picture, video, PDF, comic, EPUB, Markdown or source by extension (case-insensitive), or
 /// source by a known file name (`Makefile`); `None` for anything else.
 pub fn kind_of(path: &Path) -> Option<MediaKind> {
