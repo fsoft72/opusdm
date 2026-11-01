@@ -5,6 +5,7 @@
 mod pdf;
 mod pdf_detail;
 mod sidecar;
+mod thumb_menu;
 
 use crate::epub;
 use crate::delete::{remove_permanently, try_trash, SystemRemover, TrashStep};
@@ -19,7 +20,7 @@ use crate::source_view::SourceView;
 use crate::pdf::{start_worker, PageAnswer, PageRequest};
 use pdf::PdfUi;
 use crate::slideshow::{Slideshow, SLIDESHOW_SECS};
-use crate::strip::Strip;
+use crate::strip::{Strip, ThumbMenuAt};
 use crate::video_view::{VideoNotice, VideoView};
 use gtk4 as gtk;
 use gtk::gdk;
@@ -79,6 +80,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
     let (load_tx, load_rx) = async_channel::unbounded();
     let (video_tx, video_rx) = async_channel::unbounded();
     let (pick_tx, pick_rx) = async_channel::unbounded();
+    let (menu_tx, menu_rx) = async_channel::unbounded();
     let (answer_tx, answer_rx) = async_channel::unbounded();
     let page_tx = start_worker(answer_tx);
     let (pdf_ui, pdf_channels) = pdf::build();
@@ -102,7 +104,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
     stack.add_named(&markdown.root, Some("markdown"));
     stack.add_named(&source.root, Some("source"));
     stack.add_named(&error, Some("error"));
-    let strip = Strip::new(gallery.items(), pick_tx);
+    let strip = Strip::new(gallery.items(), pick_tx, menu_tx);
     let info = gtk::Label::new(None);
     info.set_xalign(0.0);
     info.add_css_class("viewer-info");
@@ -149,7 +151,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
     state._sync_strip();
     state._wire_fullscreen();
     state._wire_close();
-    _spawn_loops(&state, load_rx, answer_rx, video_rx, pick_rx);
+    _spawn_loops(&state, load_rx, answer_rx, video_rx, pick_rx, menu_rx);
     if sidecar { sidecar::follow_stdin(&state); }
     window.present();
     let empty = state.gallery.borrow().is_empty();
@@ -157,7 +159,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
 }
 
 /// Handle what the worker threads and the other widgets send, on the main thread.
-fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, answer_rx: async_channel::Receiver<PageAnswer>, video_rx: async_channel::Receiver<VideoNotice>, pick_rx: async_channel::Receiver<PathBuf>) {
+fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, answer_rx: async_channel::Receiver<PageAnswer>, video_rx: async_channel::Receiver<VideoNotice>, pick_rx: async_channel::Receiver<PathBuf>, menu_rx: async_channel::Receiver<ThumbMenuAt>) {
     _listen(state, load_rx, |s, (generation, result)| {
         if generation != s.generation.get() { return; }
         s.pdf.picture_ready.set(result.is_ok());
@@ -174,6 +176,7 @@ fn _spawn_loops(state: &Rc<State>, load_rx: async_channel::Receiver<Loaded>, ans
         };
         if jumped { s.show_current(); }
     });
+    _listen(state, menu_rx, |s, at| s._show_thumb_menu(at));
 }
 
 /// Hand every message of `rx` to `handle` on the main thread. The loop holds
@@ -490,47 +493,76 @@ impl State {
     /// Ask before moving the file on screen to the trash.
     fn _ask_delete(self: &Rc<Self>) {
         let Some((path, _)) = self._current() else { return };
-        let this = self.clone();
-        opusdm_ui::requester(&self.window, "Delete", &format!("Move \"{}\" to the trash?", _name(&path)), None, &[("Trash", true), ("Cancel", false)], move |yes| {
-            if yes { this._trash(&path); }
+        self._ask_trash(&path);
+    }
+
+    /// Ask before moving `path` to the trash.
+    fn _ask_trash(self: &Rc<Self>, path: &Path) {
+        let (this, target) = (self.clone(), path.to_path_buf());
+        opusdm_ui::requester(&self.window, "Delete", &format!("Move \"{}\" to the trash?", _name(path)), None, &[("Trash", true), ("Cancel", false)], move |yes| {
+            if yes { this._trash(&target); }
         });
+    }
+
+    /// True when `path` is the file on screen.
+    fn _is_shown(&self, path: &Path) -> bool {
+        self.gallery.borrow().current() == Some(path)
+    }
+
+    /// Stop the video when `path` is the file on screen: it is about to go.
+    fn _stop_if_shown(&self, path: &Path) {
+        if self._is_shown(path) { self.video.stop(); }
+    }
+
+    /// `path` stays after all: start it again when it is the file on screen.
+    /// Another file was never touched, so what is on screen keeps its state.
+    fn _reshow_if_shown(self: &Rc<Self>, path: &Path) {
+        if self._is_shown(path) { self.show_current(); }
+    }
+
+    /// Delete `path` for good, after the user agreed.
+    fn _remove_for_good(self: &Rc<Self>, path: &Path) {
+        self._stop_if_shown(path);
+        match remove_permanently(&SystemRemover, path) {
+            Ok(()) => self._removed(path),
+            Err(e) => self._delete_failed(path, &e),
+        }
     }
 
     /// Trash the file; when there is no trash ask for a permanent delete.
     fn _trash(self: &Rc<Self>, path: &Path) {
-        self.video.stop();
+        self._stop_if_shown(path);
         let reason = match try_trash(&SystemRemover, path) {
             TrashStep::Trashed => return self._removed(path),
             TrashStep::AskPermanent(reason) => reason,
         };
         let (this, target) = (self.clone(), path.to_path_buf());
         opusdm_ui::requester(&self.window, "Delete", "The file cannot be moved to the trash. Delete it permanently?", Some(&reason), &[("Delete", true), ("Cancel", false)], move |yes| {
-            if !yes { return this.show_current(); }
-            match remove_permanently(&SystemRemover, &target) {
-                Ok(()) => this._removed(&target),
-                Err(e) => this._delete_failed(&target, &e),
-            }
+            if !yes { return this._reshow_if_shown(&target); }
+            this._remove_for_good(&target);
         });
     }
 
     /// Tell the user the file is still there.
     fn _delete_failed(self: &Rc<Self>, path: &Path, reason: &str) {
         opusdm_ipc::err_log!("viewer", "cannot delete {}: {reason}", path.display());
-        let this = self.clone();
-        opusdm_ui::requester(&self.window, "Delete", &format!("Cannot delete {}", _name(path)), Some(reason), &[("Close", ())], move |_| this.show_current());
+        let (this, target) = (self.clone(), path.to_path_buf());
+        opusdm_ui::requester(&self.window, "Delete", &format!("Cannot delete {}", _name(path)), Some(reason), &[("Close", ())], move |_| this._reshow_if_shown(&target));
     }
 
-    /// The file is gone: leave the gallery and show the next one.
+    /// The file is gone: leave the gallery. When it was on screen show the next
+    /// one, else what is on screen stays as it is.
     fn _removed(self: &Rc<Self>, path: &Path) {
+        let was_shown = self._is_shown(path);
         self.strip.remove(path);
         let empty = {
             let mut g = self.gallery.borrow_mut();
-            if g.current() == Some(path) { g.remove_current(); }
+            g.remove(path);
             g.is_empty()
         };
         if empty && self.sidecar { return self._show_nothing("Nothing left to show"); }
         if empty { return self.window.close(); }
         self._sync_strip();
-        self.show_current();
+        if was_shown { self.show_current(); } else { self._update_info(); }
     }
 }

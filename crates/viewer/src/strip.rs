@@ -24,6 +24,14 @@ const SOURCE_LABEL_CHARS: usize = 5;
 
 type ThumbResult = (PathBuf, Result<RawImage, String>);
 
+/// A right click on a thumbnail: its file and the point, in the coordinates of
+/// the strip's `root`.
+pub struct ThumbMenuAt {
+    pub path: PathBuf,
+    pub x: f64,
+    pub y: f64,
+}
+
 /// The strip widget and its thumbnail bookkeeping.
 pub struct Strip {
     pub root: gtk::ScrolledWindow,
@@ -34,11 +42,14 @@ pub struct Strip {
     requests: mpsc::Sender<PathBuf>,
     /// Where a click on a thumbnail sends its path.
     picked: async_channel::Sender<PathBuf>,
+    /// Where a right click on a thumbnail goes.
+    menu: async_channel::Sender<ThumbMenuAt>,
 }
 
 impl Strip {
-    /// Build the strip for `items`; a click sends the path through `picked`.
-    pub fn new(items: &[PathBuf], picked: async_channel::Sender<PathBuf>) -> Rc<Self> {
+    /// Build the strip for `items`; a click sends the path through `picked`, a
+    /// right click asks for the menu of the thumbnail through `menu`.
+    pub fn new(items: &[PathBuf], picked: async_channel::Sender<PathBuf>, menu: async_channel::Sender<ThumbMenuAt>) -> Rc<Self> {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         row.set_margin_start(4);
         row.set_margin_end(4);
@@ -48,7 +59,7 @@ impl Strip {
         root.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
         root.set_child(Some(&row));
         let (requests, results) = _start_worker();
-        let this = Rc::new(Strip { root, row, buttons: RefCell::new(Vec::new()), requested: RefCell::new(HashSet::new()), current: RefCell::new(None), requests, picked });
+        let this = Rc::new(Strip { root, row, buttons: RefCell::new(Vec::new()), requested: RefCell::new(HashSet::new()), current: RefCell::new(None), requests, picked, menu });
         this.set_items(items);
         let weak = Rc::downgrade(&this);
         glib::spawn_future_local(async move {
@@ -116,8 +127,29 @@ impl Strip {
         button.set_tooltip_text(path.file_name().map(|n| n.to_string_lossy()).as_deref());
         let target = path.to_path_buf();
         button.connect_clicked(move |_| { let _ = picked.try_send(target.clone()); });
+        self._wire_menu(&button, path);
         self.row.append(&button);
         self.buttons.borrow_mut().push((path.to_path_buf(), button));
+    }
+
+    /// A right click on `button` asks for the menu of `path`.
+    fn _wire_menu(&self, button: &gtk::Button, path: &Path) {
+        let click = gtk::GestureClick::new();
+        click.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let (root, menu, target) = (self.root.clone(), self.menu.clone(), path.to_path_buf());
+        click.connect_pressed(move |gesture, n_press, x, y| {
+            if n_press != 1 { return; }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(widget) = gesture.widget() else {
+                return opusdm_ipc::err_log!("viewer", "right click on {}: the thumbnail is gone", target.display());
+            };
+            let Some(point) = widget.compute_point(&root, &gtk::graphene::Point::new(x as f32, y as f32)) else {
+                return opusdm_ipc::err_log!("viewer", "right click on {}: the thumbnail is not in the strip", target.display());
+            };
+            let at = ThumbMenuAt { path: target.clone(), x: point.x() as f64, y: point.y() as f64 };
+            if let Err(e) = menu.try_send(at) { opusdm_ipc::err_log!("viewer", "right click on {}: {e}", target.display()); }
+        });
+        button.add_controller(click);
     }
 
     /// Ask the worker for a thumbnail, once per picture.
