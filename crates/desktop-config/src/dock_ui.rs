@@ -5,10 +5,10 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
 use opusdm_dock::{apps, list};
-use opusdm_ipc::{DockPosition, PanelPosition};
+use opusdm_ipc::{DockImageMode, DockPosition, DockStyle, PanelPosition};
 use std::cell::RefCell;
 use opusdm_ui::{clear_children, labeled_row, pick_file, section_heading, FileFilterSpec, FilePick, LabelWidth};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// An edit of the dock id list for one entry (move up, move down, remove).
@@ -220,6 +220,149 @@ impl AppsInner {
     }
 }
 
+/// Image fill modes the drop-down offers, in drop-down order.
+const IMAGE_MODES: [(DockImageMode, &str); 2] = [(DockImageMode::Fill, "Fill"), (DockImageMode::Tile, "Tile")];
+
+/// Width of the labels of the look rows, in pixels (as the DOCK section).
+const LOOK_LABEL_WIDTH: i32 = 90;
+
+/// The dock look sections: shown or hidden, background opacity and image,
+/// and the icon zoom on mouse over.
+pub struct DockLookSection {
+    pub root: gtk::Box,
+    visible: gtk::CheckButton,
+    opacity: gtk::Scale,
+    image: Rc<RefCell<Option<PathBuf>>>,
+    image_mode: gtk::DropDown,
+    zoom: gtk::CheckButton,
+    zoom_percent: gtk::Scale,
+}
+
+impl DockLookSection {
+    /// Build the sections seeded with `visible` and `style`; `window` parents
+    /// the image file dialog.
+    pub fn new(window: &impl IsA<gtk::Window>, visible: bool, style: &DockStyle) -> Rc<Self> {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let visible_check = gtk::CheckButton::with_label("Show the dock");
+        visible_check.set_active(visible);
+        root.append(&visible_check);
+
+        root.append(&section_heading("DOCK BACKGROUND"));
+        let (lo, hi) = opusdm_ipc::DOCK_OPACITY_RANGE;
+        let opacity = percent_scale(lo, hi, style.opacity);
+        root.append(&labeled_row("Opacity", LabelWidth::Pixels(LOOK_LABEL_WIDTH), 8, &opacity));
+
+        let image = Rc::new(RefCell::new(style.image.clone()));
+        let image_label = gtk::Label::new(None);
+        image_label.set_xalign(0.0);
+        image_label.set_hexpand(true);
+        image_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        let choose = gtk::Button::with_label("Choose...");
+        let clear = gtk::Button::with_label("Clear");
+        let image_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        image_box.set_hexpand(true);
+        image_box.append(&image_label);
+        image_box.append(&choose);
+        image_box.append(&clear);
+        root.append(&labeled_row("Image", LabelWidth::Pixels(LOOK_LABEL_WIDTH), 8, &image_box));
+
+        let mode_labels: Vec<&str> = IMAGE_MODES.iter().map(|(_, label)| *label).collect();
+        let image_mode = gtk::DropDown::from_strings(&mode_labels);
+        image_mode.set_selected(IMAGE_MODES.iter().position(|(m, _)| *m == style.image_mode).unwrap_or(0) as u32);
+        root.append(&labeled_row("Image fit", LabelWidth::Pixels(LOOK_LABEL_WIDTH), 8, &image_mode));
+
+        root.append(&section_heading("DOCK ZOOM"));
+        let zoom = gtk::CheckButton::with_label("Magnify the icons under the pointer");
+        zoom.set_active(style.zoom_enabled);
+        root.append(&zoom);
+        let (lo, hi) = opusdm_ipc::DOCK_ZOOM_RANGE;
+        let zoom_percent = percent_scale(lo, hi, style.zoom_percent);
+        root.append(&labeled_row("Zoom size", LabelWidth::Pixels(LOOK_LABEL_WIDTH), 8, &zoom_percent));
+
+        let note = gtk::Label::new(Some("Opacity below 100% and the zoom need a compositor (picom); without one the dock stays opaque and still."));
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        note.add_css_class("dim-label");
+        root.append(&note);
+
+        // The image row shows the chosen file; the fit only matters with one.
+        let show_image = {
+            let (image, image_label, clear, image_mode) = (image.clone(), image_label.clone(), clear.clone(), image_mode.clone());
+            move || {
+                let chosen = image.borrow().clone();
+                let text = chosen.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
+                image_label.set_text(text.as_deref().unwrap_or("(none)"));
+                image_label.set_tooltip_text(chosen.as_deref().map(|p| p.to_string_lossy().into_owned()).as_deref());
+                clear.set_sensitive(chosen.is_some());
+                image_mode.set_sensitive(chosen.is_some());
+            }
+        };
+        let show_image: Rc<dyn Fn()> = Rc::new(show_image);
+        show_image();
+        {
+            let (image, show_image) = (image.clone(), show_image.clone());
+            clear.connect_clicked(move |_| {
+                *image.borrow_mut() = None;
+                show_image();
+            });
+        }
+        {
+            let window = window.clone().upcast::<gtk::Window>();
+            let (image, show_image) = (image.clone(), show_image.clone());
+            choose.connect_clicked(move |_| {
+                let current = image.borrow().clone();
+                let pick = FilePick {
+                    title: "Dock Background Image",
+                    filter: Some(FileFilterSpec { name: "Images", patterns: &[], suffixes: &[], mime_types: &["image/*"] }),
+                    initial_file: current.as_deref(),
+                    initial_folder: None,
+                };
+                let (image, show_image) = (image.clone(), show_image.clone());
+                pick_file(Some(&window), &pick, move |path| {
+                    *image.borrow_mut() = Some(path);
+                    show_image();
+                });
+            });
+        }
+        // The zoom size only matters while the zoom is on.
+        zoom_percent.set_sensitive(style.zoom_enabled);
+        {
+            let zoom_percent = zoom_percent.clone();
+            zoom.connect_toggled(move |c| zoom_percent.set_sensitive(c.is_active()));
+        }
+
+        Rc::new(Self { root, visible: visible_check, opacity, image, image_mode, zoom, zoom_percent })
+    }
+
+    /// Whether the dock is to be shown.
+    pub fn visible(&self) -> bool {
+        self.visible.is_active()
+    }
+
+    /// The chosen look.
+    pub fn style(&self) -> DockStyle {
+        DockStyle {
+            opacity: self.opacity.value().round() as u32,
+            image: self.image.borrow().clone(),
+            image_mode: IMAGE_MODES.get(self.image_mode.selected() as usize).map(|(m, _)| *m).unwrap_or_default(),
+            zoom_enabled: self.zoom.is_active(),
+            zoom_percent: self.zoom_percent.value().round() as u32,
+        }
+        .sanitized()
+    }
+}
+
+/// A horizontal percent slider from `lo` to `hi` seeded with `value`.
+fn percent_scale(lo: u32, hi: u32, value: u32) -> gtk::Scale {
+    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, lo as f64, hi as f64, 1.0);
+    scale.set_value(value.clamp(lo, hi) as f64);
+    scale.set_digits(0);
+    scale.set_draw_value(true);
+    scale.set_value_pos(gtk::PositionType::Right);
+    scale.set_hexpand(true);
+    scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +394,20 @@ mod tests {
             let s = DockSection::new(DockPosition::Top, 48, PanelPosition::Bottom);
             s.set_panel(PanelPosition::Top);
             assert_eq!(s.position(), DockPosition::Bottom);
+        });
+    }
+
+    #[test]
+    fn look_section_reads_back_seeded_values() {
+        crate::gtk_test::run(|| {
+            let window = gtk::Window::new();
+            let style = DockStyle { opacity: 35, image: Some("/tmp/wood.png".into()), image_mode: DockImageMode::Tile, zoom_enabled: true, zoom_percent: 180 };
+            let s = DockLookSection::new(&window, false, &style);
+            assert!(!s.visible());
+            assert_eq!(s.style(), style);
+            let s = DockLookSection::new(&window, true, &DockStyle::default());
+            assert!(s.visible());
+            assert_eq!(s.style(), DockStyle::default());
         });
     }
 }

@@ -12,6 +12,13 @@ use std::path::{Path, PathBuf};
 pub const ICON_SIZE_RANGE: (i32, i32) = (24, 256);
 /// Accepted range for [`DesktopSettings::dock_icon_size`], in pixels.
 pub const DOCK_ICON_SIZE_RANGE: (i32, i32) = (16, 128);
+/// Accepted range, in percent, for [`DockStyle::opacity`]: 0 hides the dock
+/// background completely (the icons float), 100 is fully opaque.
+pub const DOCK_OPACITY_RANGE: (u32, u32) = (0, 100);
+/// Accepted range, in percent of the icon size, for [`DockStyle::zoom_percent`].
+pub const DOCK_ZOOM_RANGE: (u32, u32) = (110, 250);
+/// Default for [`DockStyle::zoom_percent`].
+pub const DEFAULT_DOCK_ZOOM: u32 = 160;
 /// Accepted range for [`DesktopSettings::virtual_screens`].
 pub const VIRTUAL_SCREENS_RANGE: (u32, u32) = (1, 16);
 /// Default for [`DesktopSettings::virtual_screens`].
@@ -86,6 +93,57 @@ impl DockPosition {
             (DockPosition::Bottom, PanelPosition::Bottom) => DockPosition::Top,
             (other, _) => other,
         }
+    }
+}
+
+/// How [`DockStyle::image`] fills the dock background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockImageMode {
+    /// Scaled to cover the whole dock, cropped where it overflows.
+    #[default]
+    Fill,
+    /// Repeated at its own size, like a texture.
+    Tile,
+}
+
+/// The look of the dock: its background and the icon zoom on mouse over.
+/// The defaults are the classic look (opaque panel colour, no zoom).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DockStyle {
+    /// Opacity of the background (colour, image and border) in percent; the
+    /// icons always stay opaque. Below 100 needs a compositor.
+    pub opacity: u32,
+    /// Image drawn over the background colour, if any.
+    pub image: Option<PathBuf>,
+    /// How `image` fills the dock.
+    pub image_mode: DockImageMode,
+    /// Whether the icons near the pointer grow (macOS style magnification).
+    /// Needs a compositor, since the icons grow out of the dock strip.
+    pub zoom_enabled: bool,
+    /// Size of the icon under the pointer, in percent of the icon size.
+    pub zoom_percent: u32,
+}
+
+impl Default for DockStyle {
+    fn default() -> Self {
+        Self { opacity: 100, image: None, image_mode: DockImageMode::Fill, zoom_enabled: false, zoom_percent: DEFAULT_DOCK_ZOOM }
+    }
+}
+
+impl DockStyle {
+    /// Clamp the numeric fields into their accepted ranges and drop an empty
+    /// image path.
+    pub fn sanitized(mut self) -> DockStyle {
+        let (lo, hi) = DOCK_OPACITY_RANGE;
+        self.opacity = self.opacity.clamp(lo, hi);
+        let (lo, hi) = DOCK_ZOOM_RANGE;
+        self.zoom_percent = self.zoom_percent.clamp(lo, hi);
+        if self.image.as_deref().is_some_and(|p| p.as_os_str().is_empty()) {
+            self.image = None;
+        }
+        self
     }
 }
 
@@ -351,6 +409,10 @@ pub struct DesktopSettings {
     pub dock_position: DockPosition,
     /// Dock launcher icon size in pixels.
     pub dock_icon_size: i32,
+    /// Whether the dock is shown at all.
+    pub dock_visible: bool,
+    /// Background and zoom of the dock.
+    pub dock_style: DockStyle,
     /// Number of virtual screens (desktops) the window manager offers.
     pub virtual_screens: u32,
     /// Whether the next/previous desktop steps wrap around: from the last
@@ -383,6 +445,8 @@ impl Default for DesktopSettings {
             panel_position: PanelPosition::Top,
             dock_position: DockPosition::Bottom,
             dock_icon_size: 48,
+            dock_visible: true,
+            dock_style: DockStyle::default(),
             virtual_screens: DEFAULT_VIRTUAL_SCREENS,
             wrap_desktops: true,
             transparency_enabled: true,
@@ -407,6 +471,7 @@ impl DesktopSettings {
         self.grid_gap = self.grid_gap.clamp(lo, hi);
         let (lo, hi) = DOCK_ICON_SIZE_RANGE;
         self.dock_icon_size = self.dock_icon_size.clamp(lo, hi);
+        self.dock_style = self.dock_style.sanitized();
         let (lo, hi) = VIRTUAL_SCREENS_RANGE;
         self.virtual_screens = self.virtual_screens.clamp(lo, hi);
         let (lo, hi) = WINDOW_OPACITY_RANGE;
@@ -641,6 +706,29 @@ mod tests {
         // An older desktop.json without the fields keeps the defaults.
         let old: DesktopSettings = serde_json::from_str("{\"icon_size\":64}").unwrap();
         assert_eq!(old.dock_position, DockPosition::Bottom);
+    }
+
+    #[test]
+    fn dock_style_defaults_to_the_classic_look_and_old_files_keep_it() {
+        let d = DesktopSettings::default();
+        assert!(d.dock_visible);
+        assert_eq!(d.dock_style, DockStyle { opacity: 100, image: None, image_mode: DockImageMode::Fill, zoom_enabled: false, zoom_percent: DEFAULT_DOCK_ZOOM });
+        let old: DesktopSettings = serde_json::from_str("{\"dock_icon_size\":32}").unwrap();
+        assert!(old.dock_visible);
+        assert_eq!(old.dock_style, DockStyle::default());
+    }
+
+    #[test]
+    fn dock_style_roundtrips_and_is_clamped() {
+        let style = DockStyle { opacity: 40, image: Some("/tmp/wood.png".into()), image_mode: DockImageMode::Tile, zoom_enabled: true, zoom_percent: 200 };
+        let d = DesktopSettings { dock_visible: false, dock_style: style, ..Default::default() };
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("\"tile\""), "{json}");
+        assert_eq!(serde_json::from_str::<DesktopSettings>(&json).unwrap(), d);
+        let wild = DockStyle { opacity: 500, zoom_percent: 9, image: Some(PathBuf::new()), ..Default::default() }.sanitized();
+        assert_eq!((wild.opacity, wild.zoom_percent, wild.image), (DOCK_OPACITY_RANGE.1, DOCK_ZOOM_RANGE.0, None));
+        let d = DesktopSettings { dock_style: DockStyle { zoom_percent: 999, ..Default::default() }, ..Default::default() }.sanitized();
+        assert_eq!(d.dock_style.zoom_percent, DOCK_ZOOM_RANGE.1);
     }
 
     #[test]

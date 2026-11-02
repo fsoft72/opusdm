@@ -6,7 +6,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
-use opusdm_desktop_config::dock_ui::{DockAppsSection, DockSection};
+use opusdm_desktop_config::dock_ui::{DockAppsSection, DockLookSection, DockSection};
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
 use opusdm_desktop_config::ui::{BrightnessSection, FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
@@ -73,6 +73,7 @@ struct Sections {
     windows: Rc<WindowsSection>,
     bg: Rc<BackgroundSection>,
     dock: Rc<DockSection>,
+    dock_look: Rc<DockLookSection>,
     dock_apps: Rc<DockAppsSection>,
     behavior: Rc<ui::BehaviorSection>,
 }
@@ -95,6 +96,8 @@ impl Sections {
             panel_position: self.panel.position(),
             dock_position: self.dock.position(),
             dock_icon_size: self.dock.icon_size(),
+            dock_visible: self.dock_look.visible(),
+            dock_style: self.dock_look.style(),
             virtual_screens: self.screens.count(),
             wrap_desktops: self.screens.wrap(),
             transparency_enabled: self.windows.enabled(),
@@ -227,16 +230,19 @@ fn build_background_page(window: &gtk::ApplicationWindow, theme: &opusdm_ipc::Th
     (page, bg)
 }
 
-/// Dock tab: edge, icon size and pinned apps.
-fn build_dock_page(window: &gtk::ApplicationWindow, desktop: &opusdm_ipc::DesktopSettings) -> (gtk::ScrolledWindow, Rc<DockSection>, Rc<DockAppsSection>) {
+/// Dock tab: shown or hidden, edge, icon size, look and pinned apps.
+fn build_dock_page(window: &gtk::ApplicationWindow, desktop: &opusdm_ipc::DesktopSettings) -> (gtk::ScrolledWindow, Rc<DockSection>, Rc<DockLookSection>, Rc<DockAppsSection>) {
     let page = page_box();
     let dock = DockSection::new(desktop.dock_position, desktop.dock_icon_size, desktop.panel_position);
     page.append(&dock.root);
     page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     let apps = opusdm_ipc::dock::load_dock_config().map(|c| c.apps).unwrap_or_default();
+    let dock_look = DockLookSection::new(window, desktop.dock_visible, &desktop.dock_style);
+    page.append(&dock_look.root);
+    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     let dock_apps = Rc::new(DockAppsSection::new(window, apps));
     page.append(&dock_apps.root);
-    (scrolled(&page), dock, dock_apps)
+    (scrolled(&page), dock, dock_look, dock_apps)
 }
 
 /// The note line under the tabs, showing `text` when there is one.
@@ -300,7 +306,7 @@ fn build_window(app: &gtk::Application) {
     let (background_page, bg) = build_background_page(&window, &settings_data.theme, &icon_set);
     tab(background_page.upcast_ref(), "Desktop Background");
 
-    let (dock_page, dock, dock_apps) = build_dock_page(&window, &desktop_data);
+    let (dock_page, dock, dock_look, dock_apps) = build_dock_page(&window, &desktop_data);
     tab(dock_page.upcast_ref(), "Dock");
     // The panel edge and dock edge stay mutually exclusive live.
     {
@@ -346,7 +352,7 @@ fn build_window(app: &gtk::Application) {
     });
     window.set_child(Some(&outer));
 
-    let sections = Rc::new(Sections { theme_mode, icon_set, grid, folder, panel, screens, startup_apps, windows, bg, dock, dock_apps, behavior });
+    let sections = Rc::new(Sections { theme_mode, icon_set, grid, folder, panel, screens, startup_apps, windows, bg, dock, dock_look, dock_apps, behavior });
     let select_theme = theme_selector(&sections.icon_set, &desktop_page);
     {
         let window = window.clone();
