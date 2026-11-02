@@ -51,6 +51,20 @@ pub fn cores_percent(prev: &[CpuTimes], now: &[CpuTimes]) -> Vec<f64> {
     now.iter().enumerate().map(|(i, n)| prev.get(i).map_or(0.0, |p| cpu_percent(*p, *n))).collect()
 }
 
+/// Memory in kB from `/proc/meminfo`: `(used, total)` where used is
+/// `MemTotal - MemAvailable`. `None` when `MemTotal` or `MemAvailable` is
+/// missing or `MemTotal` is zero.
+pub fn parse_mem_usage(text: &str) -> Option<(u64, u64)> {
+    let field = |name: &str| -> Option<u64> {
+        let line = text.lines().find(|l| l.starts_with(name))?;
+        line.split_whitespace().nth(1)?.parse().ok()
+    };
+    let total = field("MemTotal:")?;
+    let available = field("MemAvailable:")?;
+    if total == 0 { return None; }
+    Some((total.saturating_sub(available), total))
+}
+
 /// The `/proc/loadavg` values.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct LoadAvg {
@@ -217,6 +231,20 @@ mod tests {
         let t = parse_proc_stat(STAT).unwrap();
         assert_eq!(t.idle, 850); // idle 800 + iowait 50
         assert_eq!(t.total, 1000); // 100 + 50 + 800 + 50
+    }
+
+    #[test]
+    fn mem_usage_is_used_and_total_in_kb() {
+        let text = "MemTotal:       1000 kB\nMemAvailable:    250 kB\n";
+        assert_eq!(parse_mem_usage(text), Some((750, 1000)));
+    }
+
+    #[test]
+    fn mem_usage_rejects_missing_fields_and_zero_total() {
+        assert!(parse_mem_usage("MemTotal: 1000 kB\n").is_none());
+        assert!(parse_mem_usage("MemAvailable: 10 kB\n").is_none());
+        assert!(parse_mem_usage("MemTotal: 0 kB\nMemAvailable: 0 kB\n").is_none());
+        assert!(parse_mem_usage("").is_none());
     }
 
     #[test]

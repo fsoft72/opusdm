@@ -10,6 +10,7 @@ use crate::loader::RawImage;
 use crate::pdf::RenderedPage;
 use crate::pdf_bar::PdfBar;
 use crate::pdf_detail::{start_worker as start_detail_worker, DetailAnswer, DetailRequest, DetailTile};
+use crate::svg_detail::{start_worker as start_svg_worker, SvgRequest};
 use crate::pdf_links::{link_at, Link, LinkTarget};
 use crate::pdf_pages::PagePanel;
 use crate::pdf_search::{start_worker, Hits, SearchAnswer, SearchRequest};
@@ -60,6 +61,10 @@ pub(super) struct PdfUi {
     pub(super) detail: RefCell<Option<DetailTile>>,
     /// Waits for the zoom and the scroll to settle before asking for detail.
     pub(super) detail_timer: RefCell<Option<glib::SourceId>>,
+    /// Asks the detail worker of the SVG files for a sharp window.
+    pub(super) svg_tx: mpsc::Sender<SvgRequest>,
+    /// The picture of the file on screen was decoded, so the view shows that file.
+    pub(super) picture_ready: Cell<bool>,
 }
 
 /// Channels the window loops read for the PDF side.
@@ -76,7 +81,7 @@ pub(super) fn build() -> (PdfUi, PdfChannels) {
     let (detail_answer_tx, detail_rx) = async_channel::unbounded();
     let panel = PagePanel::new(page_pick_tx);
     panel.root.set_visible(false);
-    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false), land_bottom: Cell::new(false), text: RefCell::new(PageText::default()), selection: RefCell::new(None), anchor: Cell::new(None), detail_tx: start_detail_worker(detail_answer_tx), detail: RefCell::new(None), detail_timer: RefCell::new(None) };
+    let ui = PdfUi { bar: PdfBar::new(), panel, search_tx: start_worker(search_answer_tx), search_generation: Cell::new(0), hits: RefCell::new(Hits::default()), clean: RefCell::new(None), scale: Cell::new(1.0), links: RefCell::new(Vec::new()), reveal_hit: Cell::new(false), land_bottom: Cell::new(false), text: RefCell::new(PageText::default()), selection: RefCell::new(None), anchor: Cell::new(None), svg_tx: start_svg_worker(detail_answer_tx.clone()), detail_tx: start_detail_worker(detail_answer_tx), detail: RefCell::new(None), detail_timer: RefCell::new(None), picture_ready: Cell::new(false) };
     (ui, PdfChannels { page_pick_rx, search_rx, detail_rx })
 }
 
@@ -270,6 +275,7 @@ impl State {
         *self.pdf.selection.borrow_mut() = None;
         self.pdf.anchor.set(None);
         self.pdf.detail.borrow_mut().take();
+        self.pdf.picture_ready.set(false);
         self.image.set_select_drag(self._is_pdf());
         self.image.set_page_scroll(self._is_paged());
         self._sync_pdf_panels();

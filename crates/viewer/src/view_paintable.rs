@@ -70,6 +70,8 @@ mod imp {
             snapshot.append_scaled_texture(&texture, self.filter.get(), &area);
             if let Some((detail, (x0, y0, x1, y1))) = self.detail.borrow().as_ref() {
                 let rect = graphene::Rect::new(*x0 as f32, *y0 as f32, (x1 - x0) as f32, (y1 - y0) as f32);
+                // A detail with transparent parts (an SVG) must not show the stretched picture through.
+                if self.checkered.get() { super::snapshot_checkers(snapshot, &rect); }
                 snapshot.append_scaled_texture(detail, gsk::ScalingFilter::Trilinear, &rect);
             }
         }
@@ -87,11 +89,12 @@ const CHECK_SIZE: f32 = 8.0;
 const CHECK_LIGHT: gdk::RGBA = gdk::RGBA::new(0.80, 0.80, 0.80, 1.0);
 const CHECK_DARK: gdk::RGBA = gdk::RGBA::new(0.55, 0.55, 0.55, 1.0);
 
-/// Fill `area` with a checkerboard: one tile of 2x2 squares, repeated.
+/// Fill `area` with a checkerboard: one tile of 2x2 squares, repeated from the
+/// corner of the picture, so that two areas line up.
 fn snapshot_checkers(snapshot: &gtk::Snapshot, area: &graphene::Rect) {
     let tile = CHECK_SIZE * 2.0;
-    snapshot.push_repeat(area, Some(&graphene::Rect::new(area.x(), area.y(), tile, tile)));
-    let (x, y) = (area.x(), area.y());
+    snapshot.push_repeat(area, Some(&graphene::Rect::new(0.0, 0.0, tile, tile)));
+    let (x, y) = (0.0, 0.0);
     snapshot.append_color(&CHECK_LIGHT, &graphene::Rect::new(x, y, tile, tile));
     snapshot.append_color(&CHECK_DARK, &graphene::Rect::new(x, y, CHECK_SIZE, CHECK_SIZE));
     snapshot.append_color(&CHECK_DARK, &graphene::Rect::new(x + CHECK_SIZE, y + CHECK_SIZE, CHECK_SIZE, CHECK_SIZE));

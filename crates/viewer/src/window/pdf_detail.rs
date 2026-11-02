@@ -1,11 +1,14 @@
-//! Sharp letters when a PDF page is zoomed in: after the zoom or the scroll
-//! settles, the part of the page on screen (and a margin) is rendered again at
-//! the pixels of the zoom by the detail worker and drawn over the stretched
-//! page. Search marks and the picked text are drawn on it too.
+//! Sharp letters when a PDF page is zoomed in, and sharp curves when an SVG is:
+//! after the zoom or the scroll settles, the part of the page on screen (and a
+//! margin) is rendered again at the pixels of the zoom by the detail worker and
+//! drawn over the stretched page. Search marks and the picked text are drawn on
+//! it too.
 
 use super::State;
+use crate::kind::is_svg;
 use crate::loader::Mark;
 use crate::pdf_detail::{DetailAnswer, DetailRequest, DetailTile, MAX_TILE_SIDE};
+use crate::svg_detail::SvgRequest;
 use crate::zoom::unrotate_point;
 use gtk4 as gtk;
 use gtk::glib;
@@ -49,10 +52,16 @@ fn _unturn(rect: (f64, f64, f64, f64), full: (u32, u32), rotation: u16) -> (f64,
 }
 
 impl State {
+    /// True while the file on screen can be rendered again when zoomed: a PDF,
+    /// or an SVG whose picture has arrived.
+    fn _has_detail(&self) -> bool {
+        self._is_pdf() || (self.pdf.picture_ready.get() && self._current().is_some_and(|(path, _)| is_svg(&path)))
+    }
+
     /// Ask for the detail once the zoom and the scroll have been still for a
     /// moment; a newer call restarts the wait.
     pub(super) fn _schedule_detail(self: &Rc<Self>) {
-        if !self._is_pdf() { return; }
+        if !self._has_detail() { return; }
         if let Some(id) = self.pdf.detail_timer.borrow_mut().take() { id.remove(); }
         let s = self.clone();
         let id = glib::timeout_add_local_once(DETAIL_DELAY, move || {
@@ -66,7 +75,7 @@ impl State {
     /// unless the one already drawn holds it. Dropped (with its memory) when
     /// the page is not zoomed in.
     fn _request_detail(self: &Rc<Self>) {
-        if !self._is_pdf() || self.stack.visible_child_name().as_deref() != Some("image") { return; }
+        if !self._has_detail() || self.stack.visible_child_name().as_deref() != Some("image") { return; }
         let view = self.image.view_state().filter(|v| v.zoom > DETAIL_MIN_ZOOM);
         let (Some(view), Some((path, _)), Some(picture)) = (view, self._current(), self.image.size()) else {
             self.pdf.detail.borrow_mut().take();
@@ -83,6 +92,19 @@ impl State {
             t.page == page && t.zoom == view.zoom && t.rotation == view.rotation && _covers(tile, seen)
         });
         if have { return; }
+        if !self._is_pdf() {
+            let request = SvgRequest {
+                generation: self.generation.get(),
+                path,
+                picture,
+                zoom: view.zoom,
+                rotation: view.rotation,
+                origin: (x0 as i32, y0 as i32),
+                size: ((x1 - x0) as u32, (y1 - y0) as u32),
+            };
+            if self.pdf.svg_tx.send(request).is_err() { opusdm_ipc::err_log!("viewer", "the SVG detail renderer stopped"); }
+            return;
+        }
         let request = DetailRequest {
             generation: self.generation.get(),
             path,
@@ -106,7 +128,7 @@ impl State {
                 *self.pdf.detail.borrow_mut() = Some(tile);
                 self._show_detail();
             }
-            Err(e) => opusdm_ipc::err_log!("viewer", "PDF detail: {e}"),
+            Err(e) => opusdm_ipc::err_log!("viewer", "zoom detail: {e}"),
         }
     }
 

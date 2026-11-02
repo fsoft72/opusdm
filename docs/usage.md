@@ -747,6 +747,11 @@ Lister preview, the Icon View thumbnails and the background picker.
   hidden; **Esc** leaves it. **Esc** or **q** otherwise close the window.
 - **Delete:** **Del** asks and moves the file to the trash. When there is no trash for that
   file system a second question offers to delete it permanently.
+- **Thumbnail menu:** a right click on a thumbnail of the strip opens a menu for that file, which
+  does not have to be the one on screen: **Copy path** (the full path, on the clipboard), **Open
+  folder in Lister** (a new Lister on its folder; needs a running hub, otherwise a message says so),
+  **Trash** (asks first, as **Del**) and **Delete permanently** (asks first). When the file on screen
+  is not the one removed, it stays as it is, with its zoom.
 - **Info bar:** file name, position in the gallery (when there is more than one file), page
   (PDF), size and zoom.
 - **Errors:** a picture, PDF or video that cannot be loaded shows the reason in the window and the

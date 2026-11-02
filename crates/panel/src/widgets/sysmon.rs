@@ -6,7 +6,7 @@ use crate::sysmon_model::{self as model, CpuTimes, IfaceBytes, IfaceRate, LoadAv
 use gtk4 as gtk;
 use gtk::{gio, glib};
 use gtk::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -86,6 +86,26 @@ fn install_sparkline(
             }
             let _ = cr.stroke();
         }
+    });
+}
+
+/// Width of the memory level bar left of the CPU graph, in pixels.
+const MEM_BAR_W: i32 = 6;
+/// Colour of the memory level.
+const MEM_RGB: (f64, f64, f64) = (0.36, 0.60, 0.90);
+
+/// Install the draw function of the memory level bar: a track filled from the
+/// bottom as high as the percentage held in `level`.
+fn install_mem_level(area: &gtk::DrawingArea, level: Rc<Cell<f64>>) {
+    area.set_draw_func(move |_, cr, width, height| {
+        let (w, h) = (width as f64, height as f64);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.10);
+        cr.rectangle(0.0, 0.0, w, h);
+        let _ = cr.fill();
+        let fill = (level.get() / 100.0).clamp(0.0, 1.0) * h;
+        cr.set_source_rgb(MEM_RGB.0, MEM_RGB.1, MEM_RGB.2);
+        cr.rectangle(0.0, h - fill, w, fill);
+        let _ = cr.fill();
     });
 }
 
@@ -372,6 +392,20 @@ pub fn build() -> gtk::Widget {
     let cpu_label = meter_label(gtk::Align::End, None);
     cpu_label.set_text("--%");
     cpu_box.add_overlay(&cpu_label);
+    // Memory: one vertical level bar to the left of the CPU graph. The graph
+    // moves into a box next to it, so the bar never covers the graph.
+    let mem_bar = gtk::DrawingArea::new();
+    mem_bar.set_content_width(MEM_BAR_W);
+    mem_bar.set_margin_start(3);
+    mem_bar.set_margin_end(3);
+    mem_bar.set_margin_top(3);
+    mem_bar.set_margin_bottom(3);
+    cpu_box.set_child(None::<&gtk::Widget>);
+    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    inner.append(&mem_bar);
+    inner.append(&cpu_spark);
+    cpu_box.set_child(Some(&inner));
+    mem_bar.set_tooltip_text(Some("Mem: --"));
     cpu_box.set_tooltip_text(Some("CPU - click for details"));
 
     // Network: two traces (green download, blue upload); the rates sit inside
@@ -391,6 +425,8 @@ pub fn build() -> gtk::Widget {
     let cpu_trace = Rc::new(RefCell::new(Trace::new()));
     let rx_trace = Rc::new(RefCell::new(Trace::new()));
     let tx_trace = Rc::new(RefCell::new(Trace::new()));
+    let mem_level = Rc::new(Cell::new(0.0_f64));
+    install_mem_level(&mem_bar, mem_level.clone());
 
     // One draw function per meter, reading the shared traces; a tick only
     // queues a redraw.
@@ -453,6 +489,19 @@ pub fn build() -> gtk::Widget {
                 cpu_details.update(pct, &per_core, load, procs.borrow().top.as_deref());
             }
             s.cores_prev = cores;
+        }
+
+        match model::parse_mem_usage(&read("/proc/meminfo")) {
+            Some((used_kb, total_kb)) => {
+                mem_level.set(used_kb as f64 / total_kb as f64 * 100.0);
+                mem_bar.set_tooltip_text(Some(&format!(
+                    "Mem: {} / {}",
+                    opusdm_ipc::size::binary_size(used_kb * 1024),
+                    opusdm_ipc::size::binary_size(total_kb * 1024),
+                )));
+                mem_bar.queue_draw();
+            }
+            None => opusdm_ipc::err_log!("opusdm-panel", "sysmon: /proc/meminfo has no usable MemTotal/MemAvailable"),
         }
 
         let net = read("/proc/net/dev");

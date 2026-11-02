@@ -145,6 +145,19 @@ impl Gallery {
         if self.index >= self.items.len() { self.index = self.items.len().saturating_sub(1); }
         Some(removed)
     }
+
+    /// Drop `path`. The file on screen stays on screen, unless it is `path`:
+    /// then it goes as in [`Gallery::remove_current`]. False when it is not here.
+    pub fn remove(&mut self, path: &Path) -> bool {
+        let Some(position) = self.position(path) else { return false };
+        if position == self.index {
+            self.remove_current();
+            return true;
+        }
+        self.items.remove(position);
+        if position < self.index { self.index -= 1; }
+        true
+    }
 }
 
 /// The pictures, PDF files, Markdown texts, source texts and videos of `dir`, in natural order.
@@ -250,6 +263,36 @@ mod tests {
         assert_eq!(g.remove_current(), None);
         g.next();
         g.prev();
+    }
+
+    #[test]
+    fn removing_another_file_keeps_the_one_on_screen() {
+        let mut g = Gallery::from_paths(paths(&["a.png", "b.png", "c.png", "d.png"]), Path::new("/d/c.png"));
+        assert!(g.remove(Path::new("/d/a.png")), "before the one on screen");
+        assert_eq!(g.current(), Some(Path::new("/d/c.png")));
+        assert_eq!(g.index(), 1);
+        assert!(g.remove(Path::new("/d/d.png")), "after the one on screen");
+        assert_eq!(g.current(), Some(Path::new("/d/c.png")));
+        assert_eq!(names(&g), ["b.png", "c.png"]);
+    }
+
+    #[test]
+    fn removing_the_file_on_screen_shows_the_next_one() {
+        let mut g = Gallery::from_paths(paths(&["a.png", "b.png", "c.png"]), Path::new("/d/b.png"));
+        assert!(g.remove(Path::new("/d/b.png")));
+        assert_eq!(g.current(), Some(Path::new("/d/c.png")));
+        assert!(g.remove(Path::new("/d/c.png")));
+        assert_eq!(g.current(), Some(Path::new("/d/a.png")));
+        assert!(g.remove(Path::new("/d/a.png")));
+        assert!(g.is_empty());
+    }
+
+    #[test]
+    fn removing_a_file_not_in_the_gallery_changes_nothing() {
+        let mut g = Gallery::from_paths(paths(&["a.png", "b.png"]), Path::new("/d/b.png"));
+        assert!(!g.remove(Path::new("/d/zzz.png")));
+        assert_eq!(g.index(), 1);
+        assert_eq!(g.len(), 2);
     }
 
     #[test]
