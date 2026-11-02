@@ -30,13 +30,14 @@ struct Entry {
 }
 
 /// The entries of the list, in order.
-const ENTRIES: [Entry; 6] = [
+const ENTRIES: [Entry; 7] = [
     Entry { label: "Hotkeys", build: build_hotkeys },
     Entry { label: "File Types", build: build_file_types },
     Entry { label: "Input", build: build_input },
     Entry { label: "Network", build: build_network },
     Entry { label: "Printers", build: build_printers },
     Entry { label: "Bluetooth", build: build_bluetooth },
+    Entry { label: "Firewall", build: build_firewall },
 ];
 
 /// The Hotkeys editor.
@@ -67,6 +68,11 @@ fn build_printers(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
 /// The Bluetooth adapter and devices.
 fn build_bluetooth(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
     opusdm_bluetooth_config::window::embedded(window)
+}
+
+/// The ufw firewall rules. Building it reads them, which asks the password.
+fn build_firewall(window: &gtk::Window) -> Rc<dyn EmbeddedTool> {
+    opusdm_firewall_config::window::embedded(window)
 }
 
 /// What the callbacks of the tab share.
