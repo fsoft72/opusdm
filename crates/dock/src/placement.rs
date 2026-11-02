@@ -1,6 +1,7 @@
 //! Pure geometry of the dock: which edge it sits on and the rectangle it
 //! occupies inside a monitor. No X11 or GTK here, so it is unit-testable.
 
+use crate::zoom::Extent;
 use opusdm_ipc::{DockPosition, PanelPosition};
 
 /// Empty space around each icon, in pixels.
@@ -25,6 +26,8 @@ pub struct Placement {
     pub mon_y: i32,
     pub mon_w: i32,
     pub mon_h: i32,
+    /// Room around the strip for the icon zoom; zero without zoom.
+    pub extent: Extent,
 }
 
 /// Whether icons run left to right (top and bottom edges) rather than top to
@@ -57,12 +60,14 @@ impl Placement {
         self.position.avoiding(self.panel)
     }
 
-    /// Root-relative rectangle `(x, y, w, h)` of the dock for `count` icons:
-    /// centered along its edge, `EDGE_MARGIN` away from it. A left or right
-    /// dock is centered in the strip the panel leaves free.
+    /// Root-relative rectangle `(x, y, w, h)` of the dock window for `count`
+    /// icons: its strip centered along its edge, `EDGE_MARGIN` away from it,
+    /// with the zoom room (`extent`) past the strip's inner side and at both
+    /// ends. A left or right dock is centered in the strip the panel leaves
+    /// free.
     pub fn rect(&self, count: usize) -> (i32, i32, i32, i32) {
         let position = self.position();
-        let (w, h) = dock_size(position, count, self.icon_size);
+        let (w, h) = self.window_size(count);
         let center_x = self.mon_x + (self.mon_w - w) / 2;
         let top_band = if self.panel == PanelPosition::Top { self.panel_height } else { 0 };
         let bottom_band = if self.panel == PanelPosition::Bottom { self.panel_height } else { 0 };
@@ -77,12 +82,21 @@ impl Placement {
         }
     }
 
+    /// Size `(w, h)` of the dock window: the strip for `count` icons plus
+    /// the zoom room.
+    pub fn window_size(&self, count: usize) -> (i32, i32) {
+        let (w, h) = dock_size(self.position(), count, self.icon_size);
+        let (length, thickness) = (2 * self.extent.side, self.extent.headroom);
+        if is_horizontal(self.position()) { (w + length, h + thickness) } else { (w + thickness, h + length) }
+    }
+
     /// Index at which a drop at window coordinates `(x, y)` inserts, for a
-    /// dock holding `count` icons: the slot boundary nearest the pointer.
+    /// dock holding `count` icons: the slot boundary nearest the pointer in
+    /// the row at rest.
     pub fn insert_index(&self, count: usize, x: f64, y: f64) -> usize {
         let pos = if is_horizontal(self.position()) { x } else { y };
         let slot = slot_size(self.icon_size) as f64;
-        let idx = ((pos - (DOCK_PAD + BORDER) as f64) / slot + 0.5).floor();
+        let idx = ((pos - (self.extent.side + DOCK_PAD + BORDER) as f64) / slot + 0.5).floor();
         idx.clamp(0.0, count as f64) as usize
     }
 }
@@ -101,6 +115,7 @@ mod tests {
             mon_y: 50,
             mon_w: 1920,
             mon_h: 1080,
+            extent: Extent::default(),
         }
     }
 
@@ -155,5 +170,30 @@ mod tests {
         assert_eq!(p.insert_index(3, 5000.0, 0.0), 3);
         let v = place(DockPosition::Left, PanelPosition::Top);
         assert_eq!(v.insert_index(3, 5000.0, (DOCK_PAD + BORDER + 70) as f64), 1);
+    }
+
+    #[test]
+    fn the_zoom_room_grows_the_window_away_from_the_edge_keeping_the_strip_put() {
+        let classic = place(DockPosition::Bottom, PanelPosition::Top);
+        let zoomed = Placement { extent: Extent { headroom: 30, side: 50 }, ..classic };
+        let (x0, y0, w0, h0) = classic.rect(3);
+        let (x1, y1, w1, h1) = zoomed.rect(3);
+        assert_eq!((w1, h1), (w0 + 100, h0 + 30));
+        assert_eq!((x1, y1 + h1), (x0 - 50, y0 + h0), "same strip center, same bottom");
+        let top = Placement { position: DockPosition::Top, panel: PanelPosition::Bottom, ..zoomed };
+        assert_eq!(top.rect(3).1, 50 + EDGE_MARGIN);
+        let left = Placement { position: DockPosition::Left, ..zoomed };
+        let (lx, _, lw, lh) = left.rect(3);
+        assert_eq!((lx, lw, lh), (100 + EDGE_MARGIN, h0 + 30, w0 + 100));
+        let right = Placement { position: DockPosition::Right, ..zoomed };
+        let (rx, _, rw, _) = right.rect(3);
+        assert_eq!(rx + rw, 100 + 1920 - EDGE_MARGIN);
+    }
+
+    #[test]
+    fn insert_index_skips_the_zoom_room() {
+        let p = Placement { extent: Extent { headroom: 30, side: 50 }, ..place(DockPosition::Bottom, PanelPosition::Top) };
+        assert_eq!(p.insert_index(3, (50 + DOCK_PAD + BORDER + 40) as f64, 0.0), 1);
+        assert_eq!(p.insert_index(3, 10.0, 0.0), 0);
     }
 }

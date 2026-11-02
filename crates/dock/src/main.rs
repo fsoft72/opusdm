@@ -14,6 +14,8 @@ fn main() -> gtk::glib::ExitCode {
             icon_size: desktop.dock_icon_size,
             panel: desktop.panel_position,
             panel_height: opusdm_ipc::PANEL_HEIGHT,
+            visible: desktop.dock_visible,
+            style: desktop.dock_style.clone(),
         };
         // The setter is dropped: the standalone dock never re-lays out live.
         let _ = opusdm_dock::attach(app, layout);

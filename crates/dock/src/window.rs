@@ -84,7 +84,33 @@ pub fn set_below(window: &gtk::ApplicationWindow) {
     }
 }
 
+/// `_NET_WM_WINDOW_OPACITY` of a fully opaque window.
+const OPAQUE: u32 = 0xffff_ffff;
 
+/// Tell the compositor how to draw the dock: always fully opaque as a window
+/// (the dock fades its own background, the icons stay solid, whatever the
+/// opacity of inactive windows is), and without a drop shadow when
+/// `see_through` (a shadow would ring the see-through room).
+///
+/// picom reads `_COMPTON_SHADOW` from the window manager's frame, not from
+/// the client, so the hints go on both. The frame only exists once the
+/// window manager has adopted the window: call this again after map.
+pub fn set_compositor_hints(window: &gtk::ApplicationWindow, see_through: bool) {
+    let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
+    let result = opusdm_ui::with_x11(|x11| {
+        let frame = x11.frame_of(xid)?;
+        for target in std::iter::once(xid).chain(frame) {
+            x11.set_cardinal(target, "_NET_WM_WINDOW_OPACITY", Some(OPAQUE))?;
+            x11.set_cardinal(target, "_COMPTON_SHADOW", see_through.then_some(0))?;
+        }
+        Ok(())
+    });
+    if let Err(e) = result {
+        opusdm_ipc::err_log!("opusdm-dock", "cannot set the compositor hints of the dock: {e}");
+    }
+}
+
+/// Apply the window type, the states and the fixed geometry for `place`.
 fn apply(xid: u32, place: Placement, count: usize) -> Result<(), opusdm_ui::X11Error> {
     let (x, y, w, h) = place.rect(count);
     opusdm_ui::with_x11(|x11| {

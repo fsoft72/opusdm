@@ -467,15 +467,14 @@ pub(crate) fn hide_label(hidden: bool) -> &'static str {
 pub(crate) fn apply_hidden(widgets: &Rc<Widgets>, hidden: bool) {
     widgets.desktop.hidden.set(hidden);
     opusdm_panel::set_hidden(hidden);
+    opusdm_dock::set_hidden(hidden);
     if let Some(app) = widgets.primary_window().application() {
         for window in app.windows() {
-            let title = window.title();
-            let is_chrome = matches!(
-                title.as_deref(),
-                Some(t) if t == opusdm_panel::WINDOW_TITLE || t == opusdm_dock::WINDOW_TITLE
-            );
-            if is_chrome {
-                window.set_visible(!hidden);
+            match window.title().as_deref() {
+                Some(t) if t == opusdm_panel::WINDOW_TITLE => window.set_visible(!hidden),
+                // "Show All" must not bring back a dock the settings turned off.
+                Some(t) if t == opusdm_dock::WINDOW_TITLE => window.set_visible(opusdm_dock::is_shown()),
+                _ => {}
             }
         }
     }
@@ -660,6 +659,8 @@ pub(crate) fn dock_layout(ds: &opusdm_ipc::DesktopSettings) -> opusdm_dock::Dock
         icon_size: ds.dock_icon_size,
         panel: ds.panel_position,
         panel_height: opusdm_panel::PANEL_HEIGHT,
+        visible: ds.dock_visible,
+        style: ds.dock_style.clone(),
     }
 }
 

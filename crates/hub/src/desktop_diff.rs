@@ -46,6 +46,8 @@ pub fn diff(old: &DesktopSettings, new: &DesktopSettings) -> DesktopChanges {
         panel_position: old.panel_position != new.panel_position,
         dock_layout: old.dock_position != new.dock_position
             || old.dock_icon_size != new.dock_icon_size
+            || old.dock_visible != new.dock_visible
+            || old.dock_style != new.dock_style
             || old.panel_position != new.panel_position,
         desktop_dir: old.desktop_dir != new.desktop_dir,
     }
@@ -69,6 +71,15 @@ mod tests {
         let new = DesktopSettings { active_opacity: old.active_opacity - 5, ..old.clone() };
         let c = diff(&old, &new);
         assert_eq!(c, DesktopChanges { transparency: true, ..DesktopChanges::default() });
+    }
+
+    #[test]
+    fn the_dock_look_and_visibility_reach_the_dock_only() {
+        let old = DesktopSettings::default();
+        let style = opusdm_ipc::DockStyle { zoom_enabled: true, ..Default::default() };
+        for new in [DesktopSettings { dock_visible: false, ..old.clone() }, DesktopSettings { dock_style: style, ..old.clone() }] {
+            assert_eq!(diff(&old, &new), DesktopChanges { dock_layout: true, ..DesktopChanges::default() });
+        }
     }
 
     #[test]

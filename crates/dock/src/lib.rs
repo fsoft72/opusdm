@@ -1,20 +1,24 @@
 //! opusdm-dock: a launcher-only dock for the OpusDM desktop.
 //!
-//! A single opaque window with a row of application icons, docked to a screen
-//! edge. It reserves no screen space: maximised windows cover it. See
-//! `docs/dock.md`.
+//! A single window with a row of application icons on a strip, docked to a
+//! screen edge. It reserves no screen space: maximised windows cover it. The
+//! strip can be see-through or show an image, and the icons near the pointer
+//! can grow (with a compositor). See `docs/dock.md`.
 
 use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_ipc::{DockConfig, DockPosition, PanelPosition};
-use std::cell::RefCell;
+use opusdm_ipc::{DockConfig, DockImageMode, DockPosition, DockStyle, PanelPosition};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
+mod icon;
 pub mod list;
 mod placement;
+mod zoom;
 
 /// The pinned apps and the default menu live in `opusdm-apps`; re-exported
 /// so `opusdm_dock::apps` and `opusdm_dock::menu_defaults` keep working.
@@ -22,13 +26,34 @@ pub use opusdm_apps::{apps, menu_defaults};
 mod window;
 
 use apps::AppEntry;
+use icon::DockIcon;
 pub use placement::Placement;
+use zoom::{Extent, Zoom};
 
 /// How long the busy cursor stays after a launch, in milliseconds.
 const BUSY_CURSOR_MS: u64 = 2000;
 
-/// Everything that decides where the dock sits and how big its icons are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Time constant of the zoom animation, in milliseconds: each frame every
+/// icon covers `1 - e^(-dt/TAU)` of the way to its target size.
+const ZOOM_TAU_MS: f64 = 70.0;
+
+/// How often the dock checks whether a compositor runs, in milliseconds.
+/// GTK does not report a compositor that stops or starts later on X11.
+const COMPOSITOR_CHECK_MS: u64 = 2000;
+
+/// An icon this close to its target scale snaps to it and stops animating.
+const ZOOM_SETTLE: f64 = 0.002;
+
+/// Whether the hub has hidden the desktop chrome ("Hide All"); see
+/// [`set_hidden`].
+static HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the settings ask for the dock ([`DockLayout::visible`]).
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Everything that decides where the dock sits, how big its icons are and
+/// how it looks.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DockLayout {
     /// Requested edge; the dock keeps clear of `panel` on its own.
     pub position: DockPosition,
@@ -38,6 +63,31 @@ pub struct DockLayout {
     pub panel: PanelPosition,
     /// Height of the panel strip in pixels.
     pub panel_height: i32,
+    /// Whether the dock is shown at all.
+    pub visible: bool,
+    /// Background and zoom.
+    pub style: DockStyle,
+}
+
+impl DockLayout {
+    /// The layout with `visible` left out, to tell a show or hide apart
+    /// from a change that needs the icons rebuilt.
+    fn shape(&self) -> DockLayout {
+        DockLayout { visible: true, ..self.clone() }
+    }
+}
+
+/// Tell the dock whether the hub has hidden the desktop chrome. The hub
+/// calls this before showing or hiding the dock window with
+/// `set_visible(is_shown())`.
+pub fn set_hidden(hidden: bool) {
+    HIDDEN.store(hidden, Ordering::Relaxed);
+}
+
+/// Whether the dock window should be visible now: enabled in the settings
+/// and not hidden by the hub.
+pub fn is_shown() -> bool {
+    ENABLED.load(Ordering::Relaxed) && !HIDDEN.load(Ordering::Relaxed)
 }
 
 /// Mutable dock state, changed by settings updates, monitor changes and
@@ -49,11 +99,45 @@ struct State {
     entries: Vec<AppEntry>,
 }
 
+/// Where the zoom animation is.
+#[derive(Default)]
+struct ZoomState {
+    /// The pointer is over the dock: the icons aim at the zoom.
+    active: bool,
+    /// Last pointer position along the axis, in rest row coordinates.
+    pointer: Option<f64>,
+    /// Current scale of every icon.
+    scales: Vec<f64>,
+    /// A tick callback is running.
+    ticking: bool,
+    /// Frame time of the previous tick, in microseconds.
+    last_frame_us: Option<i64>,
+    /// Frames of the running animation, the slowest layout step and the
+    /// longest gap between frames, in milliseconds (logged at its end).
+    frames: u32,
+    worst_layout_ms: f64,
+    worst_gap_ms: f64,
+}
+
 /// The dock window and the state it renders from.
 struct Dock {
     window: gtk::ApplicationWindow,
-    row: gtk::Box,
+    /// Holds the strip (first, so it is drawn under the icons) and the icons
+    /// at positions set by [`Dock::layout_frame`].
+    canvas: gtk::Fixed,
+    /// The strip the icons sit on; its CSS is the dock background.
+    shelf: gtk::Box,
+    /// The icons, in dock order.
+    icons: RefCell<Vec<DockIcon>>,
     state: RefCell<State>,
+    zoom: RefCell<ZoomState>,
+    /// The stylesheet of the background, rebuilt by [`Dock::apply_style`].
+    style_provider: gtk::CssProvider,
+    /// Whether an input region was set on the surface (zoom room present).
+    input_shaped: Cell<bool>,
+    /// Whether see-through pixels show what is below (a compositor runs);
+    /// kept up to date by [`Dock::watch_compositor`].
+    see_through: Cell<bool>,
     /// Keeps the `dock.json` watch alive.
     config_monitor: RefCell<Option<gio::FileMonitor>>,
 }
@@ -67,6 +151,7 @@ pub const WINDOW_TITLE: &str = "OpusDM Dock";
 /// change.
 pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayout)> {
     install_css();
+    ENABLED.store(layout.visible, Ordering::Relaxed);
 
     let entries = apps::resolve(&initial_app_ids());
     let monitor = primary_monitor();
@@ -78,15 +163,32 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
         // pin; the WM is kept from resizing it by the min = max size hints.
         .resizable(true)
         .build();
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    row.add_css_class("opusdm-dock");
-    set_margins(&row, placement::DOCK_PAD);
-    win.set_child(Some(&row));
+    win.add_css_class(WINDOW_CLASS);
+    let canvas = gtk::Fixed::new();
+    let shelf = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    shelf.add_css_class(SHELF_CLASS);
+    // Clicks and drops on the strip belong to the window's controllers.
+    shelf.set_can_target(false);
+    win.set_child(Some(&canvas));
+
+    let style_provider = gtk::CssProvider::new();
+    style_provider.connect_parsing_error(|_, section, error| {
+        opusdm_ipc::err_log!("opusdm-dock", "dock stylesheet error at {}: {error}", section.to_str());
+    });
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(&display, &style_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
 
     let dock = Rc::new(Dock {
         window: win.clone(),
-        row,
+        canvas,
+        shelf,
+        icons: RefCell::new(Vec::new()),
         state: RefCell::new(State { layout, monitor, entries }),
+        zoom: RefCell::new(ZoomState::default()),
+        style_provider,
+        input_shaped: Cell::new(false),
+        see_through: Cell::new(compositor_running()),
         config_monitor: RefCell::new(None),
     });
 
@@ -100,6 +202,7 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
         let dock = dock.clone();
         win.connect_map(move |w| {
             dock.apply_geometry();
+            dock.apply_surface_hints();
             window::set_below(w);
             // The window manager adopts the window and runs its placement
             // policy shortly after map, and drops state messages sent before
@@ -109,15 +212,23 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
             opusdm_ui::retry_after_map(&opusdm_ui::PLACEMENT_RETRY_MS, move || {
                 dock.pin();
                 window::set_below(&dock.window);
+                // The frame the compositor hints go on comes with adoption.
+                dock.apply_compositor_hints();
             });
         });
     }
 
     dock.install_window_controllers();
+    dock.install_zoom_tracking();
     dock.rebuild_items();
     dock.watch_config();
     dock.watch_monitors();
-    win.present();
+    dock.watch_compositor();
+    if is_shown() {
+        win.present();
+    } else {
+        opusdm_ipc::debug_log!("opusdm-dock", "dock disabled in the settings: not shown");
+    }
 
     Rc::new(move |new_layout| dock.set_layout(new_layout))
 }
@@ -157,7 +268,27 @@ impl Dock {
             mon_y: s.monitor.1,
             mon_w: s.monitor.2,
             mon_h: s.monitor.3,
+            extent: self.zoom_model_of(&s).extent(),
         }
+    }
+
+    /// Whether the display can show see-through windows (last check of
+    /// [`compositor_running`]).
+    fn can_see_through(&self) -> bool {
+        self.see_through.get()
+    }
+
+    /// The zoom of the current icons, at rest scale 1.0 when the zoom is off
+    /// or the display cannot show the room it grows into.
+    fn zoom_model_of(&self, s: &State) -> Zoom {
+        let style = &s.layout.style;
+        let max_scale = if style.zoom_enabled && self.can_see_through() { style.zoom_percent as f64 / 100.0 } else { 1.0 };
+        Zoom { count: s.entries.len(), icon_size: s.layout.icon_size, max_scale }
+    }
+
+    /// [`Dock::zoom_model_of`] the current state.
+    fn zoom_model(&self) -> Zoom {
+        self.zoom_model_of(&self.state.borrow())
     }
 
     /// Apply the DOCK hints and geometry to the window, if it is realized.
@@ -178,36 +309,43 @@ impl Dock {
         window::pin_geometry(&self.window, self.placement(), count);
     }
 
-    /// Rebuild the icon row from the current entries and resize the window.
+    /// Rebuild the icons from the current entries, restyle the strip and
+    /// resize the window.
     fn rebuild_items(self: &Rc<Self>) {
-        while let Some(child) = self.row.first_child() {
-            self.row.remove(&child);
+        while let Some(child) = self.canvas.first_child() {
+            self.canvas.remove(&child);
         }
         let place = self.placement();
-        self.row.set_orientation(if placement::is_horizontal(place.position()) {
-            gtk::Orientation::Horizontal
-        } else {
-            gtk::Orientation::Vertical
-        });
+        let model = self.zoom_model();
+        let max_size = (place.icon_size as f64 * model.max_scale).ceil() as i32;
+        let scale = self.window.scale_factor();
         let entries = self.state.borrow().entries.clone();
-        for entry in &entries {
-            self.row.append(&self.build_item(entry, place.icon_size));
+        self.canvas.put(&self.shelf, 0.0, 0.0);
+        let icons: Vec<DockIcon> = entries.iter().map(|entry| self.build_item(entry, place.icon_size, max_size, scale)).collect();
+        for icon in &icons {
+            self.canvas.put(icon, 0.0, 0.0);
         }
-        let (_, _, w, h) = place.rect(entries.len());
+        *self.icons.borrow_mut() = icons;
+        {
+            let mut zoom = self.zoom.borrow_mut();
+            zoom.active = false;
+            zoom.pointer = None;
+            zoom.scales = vec![1.0; entries.len()];
+        }
+        self.apply_style();
+        let (w, h) = place.window_size(entries.len());
+        self.canvas.set_size_request(w, h);
+        self.layout_frame();
         self.window.set_default_size(w, h);
         self.apply_geometry();
         self.pin();
+        self.apply_surface_hints();
     }
 
     /// One launcher slot: the app icon, its name as tooltip, click to launch.
-    fn build_item(self: &Rc<Self>, entry: &AppEntry, icon_size: i32) -> gtk::Image {
-        let image = match entry.info.icon() {
-            Some(icon) => gtk::Image::from_gicon(&icon),
-            None => gtk::Image::from_icon_name("application-x-executable"),
-        };
+    fn build_item(self: &Rc<Self>, entry: &AppEntry, icon_size: i32, max_size: i32, scale: i32) -> DockIcon {
+        let image = DockIcon::new(entry.info.icon().as_ref(), icon_size, max_size, scale);
         image.add_css_class("opusdm-dock-item");
-        image.set_pixel_size(icon_size);
-        set_margins(&image, placement::ITEM_PAD);
         image.set_tooltip_text(Some(entry.info.name().as_str()));
 
         let click = gtk::GestureClick::new();
@@ -235,7 +373,7 @@ impl Dock {
 
     /// Make `image` draggable: within the dock it reorders, and dropping it
     /// on nothing removes the app.
-    fn install_drag_source(self: &Rc<Self>, image: &gtk::Image, id: &str) {
+    fn install_drag_source(self: &Rc<Self>, image: &DockIcon, id: &str) {
         let source = gtk::DragSource::new();
         source.set_actions(gdk::DragAction::MOVE);
         let payload = id.to_string();
@@ -243,9 +381,12 @@ impl Dock {
             Some(gdk::ContentProvider::for_value(&payload.to_value()))
         });
         let dragged = image.clone();
+        let dock = self.clone();
         source.connect_drag_begin(move |src, _| {
             let paintable = gtk::WidgetPaintable::new(Some(&dragged));
             src.set_icon(Some(&paintable), 0, 0);
+            // Drops land on the row at rest (see `Placement::insert_index`).
+            dock.end_zoom();
         });
         let dock = self.clone();
         let removed = id.to_string();
@@ -379,7 +520,7 @@ impl Dock {
     }
 
     /// Context menu of one icon: its desktop actions, then "Remove from Dock".
-    fn show_item_menu(self: &Rc<Self>, image: &gtk::Image, entry: &AppEntry) {
+    fn show_item_menu(self: &Rc<Self>, image: &DockIcon, entry: &AppEntry) {
         let mut items: Vec<(String, Box<dyn Fn()>)> = Vec::new();
         for action in entry.info.list_actions() {
             let info = entry.info.clone();
@@ -433,13 +574,23 @@ impl Dock {
         });
     }
 
-    /// Apply a new layout live. No-op when nothing changed.
+    /// Apply a new layout live: show or hide the dock, and rebuild it when
+    /// anything else changed. No-op when nothing changed.
     fn set_layout(self: &Rc<Self>, layout: DockLayout) {
-        if self.state.borrow().layout == layout {
+        let old = self.state.borrow().layout.clone();
+        if old == layout {
             return;
         }
+        let rebuild = old.shape() != layout.shape();
+        ENABLED.store(layout.visible, Ordering::Relaxed);
         self.state.borrow_mut().layout = layout;
-        self.rebuild_items();
+        if rebuild {
+            self.rebuild_items();
+        }
+        if self.window.is_visible() != is_shown() {
+            opusdm_ipc::debug_log!("opusdm-dock", "dock {}", if is_shown() { "shown" } else { "hidden" });
+            self.window.set_visible(is_shown());
+        }
     }
 
     /// Replace the pinned apps with `ids`. No-op when the resolved list is
@@ -499,14 +650,276 @@ impl Dock {
         self.state.borrow_mut().monitor = rect;
         self.rebuild_items();
     }
+
+    /// Load the background stylesheet for the current style.
+    fn apply_style(&self) {
+        let style = self.state.borrow().layout.style.clone();
+        let see_through = self.can_see_through();
+        let image_uri = style.image.as_deref().and_then(|path| {
+            if path.is_file() { return Some(gio::File::for_path(path).uri().to_string()); }
+            opusdm_ipc::err_log!("opusdm-dock", "dock background image {} is not a file: drawn without it", path.display());
+            None
+        });
+        if style.opacity < 100 && !see_through {
+            opusdm_ipc::err_log!("opusdm-dock", "no compositor: the dock background stays opaque (opacity {}%)", style.opacity);
+        }
+        if style.zoom_enabled && !see_through {
+            opusdm_ipc::err_log!("opusdm-dock", "no compositor: the dock icon zoom is off");
+        }
+        self.style_provider.load_from_data(&style_css(&style, image_uri.as_deref(), see_through));
+    }
+
+    /// The input region and the compositor hints of the realized window.
+    /// With zoom room, only the strip takes the pointer at rest, so the
+    /// see-through room above it never steals clicks from the desktop.
+    fn apply_surface_hints(&self) {
+        let Some(surface) = self.window.surface() else { return };
+        self.apply_compositor_hints();
+        let place = self.placement();
+        if place.extent == Extent::default() && !self.input_shaped.get() {
+            return;
+        }
+        let count = self.state.borrow().entries.len();
+        let (w, h) = place.window_size(count);
+        let rect = if self.zoom.borrow().active || place.extent == Extent::default() {
+            (0, 0, w, h)
+        } else {
+            self.rest_strip_rect()
+        };
+        let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(rect.0, rect.1, rect.2, rect.3));
+        surface.set_input_region(&region);
+        self.input_shaped.set(place.extent != Extent::default());
+    }
+
+    /// [`window::set_compositor_hints`] for the current look: no shadow
+    /// when part of the window is see-through.
+    fn apply_compositor_hints(&self) {
+        let see_through = self.placement().extent != Extent::default()
+            || (self.state.borrow().layout.style.opacity < 100 && self.can_see_through());
+        window::set_compositor_hints(&self.window, see_through);
+    }
+
+    /// Window rect `(x, y, w, h)` of the strip at rest.
+    fn rest_strip_rect(&self) -> (i32, i32, i32, i32) {
+        let place = self.placement();
+        let model = self.zoom_model();
+        let (length, thickness) = (model.rest_length(), model.strip_thickness());
+        let (w, h) = place.window_size(model.count);
+        let side = place.extent.side;
+        match place.position() {
+            DockPosition::Bottom => (side, h - thickness, length, thickness),
+            DockPosition::Top => (side, 0, length, thickness),
+            DockPosition::Left => (0, side, thickness, length),
+            DockPosition::Right => (w - thickness, side, thickness, length),
+        }
+    }
+
+    /// Put the strip and every icon where the current zoom puts them.
+    fn layout_frame(&self) {
+        let place = self.placement();
+        let model = self.zoom_model();
+        let (frame, (w, h)) = {
+            let zoom = self.zoom.borrow();
+            (model.frame(&zoom.scales, zoom.pointer, place.extent), place.window_size(model.count))
+        };
+        let position = place.position();
+        let thickness = model.strip_thickness() as f64;
+        // From (along the axis, across from the screen edge, size along,
+        // size across) to window (x, y, w, h).
+        let to_window = |axis: f64, cross: f64, along: f64, across: f64| -> (f64, f64, f64, f64) {
+            match position {
+                DockPosition::Bottom => (axis, h as f64 - cross - across, along, across),
+                DockPosition::Top => (axis, cross, along, across),
+                DockPosition::Left => (cross, axis, across, along),
+                DockPosition::Right => (w as f64 - cross - across, axis, across, along),
+            }
+        };
+        let (x, y, sw, sh) = to_window(frame.strip_axis, 0.0, frame.strip_length, thickness);
+        self.shelf.set_size_request(sw.round() as i32, sh.round() as i32);
+        self.canvas.move_(&self.shelf, x, y);
+        for (icon, b) in self.icons.borrow().iter().zip(&frame.icons) {
+            let size = b.size.round();
+            let (x, y, _, _) = to_window(b.axis, b.cross, size, size);
+            icon.set_size(size as i32);
+            self.canvas.move_(icon, x, y);
+        }
+    }
+
+    /// Follow the pointer over the dock: entering the strip starts the zoom,
+    /// leaving the strip and the grown icons ends it.
+    fn install_zoom_tracking(self: &Rc<Self>) {
+        let motion = gtk::EventControllerMotion::new();
+        let dock = self.clone();
+        motion.connect_enter(move |_, x, y| dock.pointer_at(x, y));
+        let dock = self.clone();
+        motion.connect_motion(move |_, x, y| dock.pointer_at(x, y));
+        let dock = self.clone();
+        motion.connect_leave(move |_| dock.end_zoom());
+        self.window.add_controller(motion);
+    }
+
+    /// The pointer is at window `(x, y)`.
+    fn pointer_at(self: &Rc<Self>, x: f64, y: f64) {
+        let place = self.placement();
+        if place.extent == Extent::default() {
+            return;
+        }
+        let horizontal = placement::is_horizontal(place.position());
+        let (axis, _) = if horizontal { (x, y) } else { (y, x) };
+        let active = self.zoom.borrow().active;
+        let over = if active { self.over_grown_dock(x, y) } else { contains(self.rest_strip_rect(), x, y) };
+        if !over {
+            if active { self.end_zoom(); }
+            return;
+        }
+        let rest_start = (place.extent.side + placement::DOCK_PAD + placement::BORDER) as f64;
+        {
+            let mut zoom = self.zoom.borrow_mut();
+            zoom.pointer = Some(axis - rest_start);
+            zoom.active = true;
+        }
+        if !active {
+            opusdm_ipc::debug_log!("opusdm-dock", "zoom starts at {axis:.0}");
+            self.apply_surface_hints();
+        }
+        self.start_ticking();
+    }
+
+    /// Whether window `(x, y)` is on the strip or on one of the icon slots
+    /// as they are drawn now.
+    fn over_grown_dock(&self, x: f64, y: f64) -> bool {
+        let pad = placement::ITEM_PAD as f64;
+        let shelf = self.shelf.allocation();
+        if contains((shelf.x(), shelf.y(), shelf.width(), shelf.height()), x, y) {
+            return true;
+        }
+        self.icons.borrow().iter().any(|icon| {
+            let a = icon.allocation();
+            let (ax, ay, aw, ah) = (a.x() as f64 - pad, a.y() as f64 - pad, a.width() as f64 + 2.0 * pad, a.height() as f64 + 2.0 * pad);
+            x >= ax && x < ax + aw && y >= ay && y < ay + ah
+        })
+    }
+
+    /// Let the icons shrink back to rest, and give the room above the strip
+    /// back to the windows below.
+    fn end_zoom(self: &Rc<Self>) {
+        if !self.zoom.borrow().active {
+            return;
+        }
+        self.zoom.borrow_mut().active = false;
+        opusdm_ipc::debug_log!("opusdm-dock", "zoom ends");
+        self.apply_surface_hints();
+        self.start_ticking();
+    }
+
+    /// Run [`Dock::tick`] on every frame until the icons settle.
+    fn start_ticking(self: &Rc<Self>) {
+        {
+            let mut zoom = self.zoom.borrow_mut();
+            if zoom.ticking {
+                return;
+            }
+            zoom.ticking = true;
+            zoom.last_frame_us = None;
+            zoom.frames = 0;
+            zoom.worst_layout_ms = 0.0;
+            zoom.worst_gap_ms = 0.0;
+        }
+        let dock = self.clone();
+        self.canvas.add_tick_callback(move |_, clock| {
+            if dock.tick(clock.frame_time()) {
+                gtk::glib::ControlFlow::Continue
+            } else {
+                gtk::glib::ControlFlow::Break
+            }
+        });
+    }
+
+    /// One animation frame at frame time `now_us`: move every icon scale
+    /// toward its target and lay the dock out. `false` once all settled.
+    fn tick(&self, now_us: i64) -> bool {
+        let started = Instant::now();
+        let model = self.zoom_model();
+        let settled = {
+            let mut zoom = self.zoom.borrow_mut();
+            let dt_ms = zoom.last_frame_us.map(|last| (now_us - last) as f64 / 1000.0).unwrap_or(16.0);
+            zoom.last_frame_us = Some(now_us);
+            zoom.worst_gap_ms = zoom.worst_gap_ms.max(if zoom.frames == 0 { 0.0 } else { dt_ms });
+            zoom.frames += 1;
+            let targets = model.target_scales(if zoom.active { zoom.pointer } else { None });
+            if zoom.scales.len() != targets.len() {
+                zoom.scales = vec![1.0; targets.len()];
+            }
+            let step = 1.0 - (-dt_ms.max(0.0) / ZOOM_TAU_MS).exp();
+            let mut settled = true;
+            for (scale, target) in zoom.scales.iter_mut().zip(&targets) {
+                *scale += (target - *scale) * step;
+                if (target - *scale).abs() < ZOOM_SETTLE {
+                    *scale = *target;
+                } else {
+                    settled = false;
+                }
+            }
+            settled
+        };
+        self.layout_frame();
+        let mut zoom = self.zoom.borrow_mut();
+        zoom.worst_layout_ms = zoom.worst_layout_ms.max(started.elapsed().as_secs_f64() * 1000.0);
+        if !settled {
+            return true;
+        }
+        zoom.ticking = false;
+        opusdm_ipc::debug_log!(
+            "opusdm-dock",
+            "zoom settled after {} frames: slowest layout step {:.2} ms, longest frame gap {:.1} ms",
+            zoom.frames,
+            zoom.worst_layout_ms,
+            zoom.worst_gap_ms
+        );
+        false
+    }
+
+    /// Restyle and rebuild when a compositor starts or stops: transparency
+    /// and the zoom depend on it. Checked every [`COMPOSITOR_CHECK_MS`].
+    fn watch_compositor(self: &Rc<Self>) {
+        let dock = self.clone();
+        gtk::glib::timeout_add_local(Duration::from_millis(COMPOSITOR_CHECK_MS), move || {
+            let running = compositor_running();
+            if running != dock.see_through.get() {
+                opusdm_ipc::debug_log!("opusdm-dock", "compositor {}: restyling the dock", if running { "started" } else { "stopped" });
+                dock.see_through.set(running);
+                dock.rebuild_items();
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+    }
 }
 
-/// Give `widget` the same `margin` on all four sides.
-fn set_margins(widget: &impl IsA<gtk::Widget>, margin: i32) {
-    widget.set_margin_start(margin);
-    widget.set_margin_end(margin);
-    widget.set_margin_top(margin);
-    widget.set_margin_bottom(margin);
+/// Whether see-through windows work on this display: a compositing manager
+/// owns the screen (X11), or the display says it composites (Wayland), and
+/// windows get an alpha channel. A failed X11 check is logged and counts as
+/// no compositor, so the dock stays opaque rather than black.
+fn compositor_running() -> bool {
+    let Some(display) = gdk::Display::default() else { return false };
+    if !display.is_rgba() {
+        return false;
+    }
+    if opusdm_ipc::session::is_wayland() {
+        return display.is_composited();
+    }
+    match opusdm_ui::with_x11(|x11| x11.compositor_running()) {
+        Ok(running) => running,
+        Err(e) => {
+            opusdm_ipc::err_log!("opusdm-dock", "cannot tell whether a compositor runs: {e}");
+            false
+        }
+    }
+}
+
+/// Whether window `(x, y)` is inside `rect` `(x, y, w, h)`.
+fn contains(rect: (i32, i32, i32, i32), x: f64, y: f64) -> bool {
+    let (rx, ry, rw, rh) = rect;
+    x >= rx as f64 && x < (rx + rw) as f64 && y >= ry as f64 && y < (ry + rh) as f64
 }
 
 /// Background of the dock window, `0xRRGGBB` (the panel's colour).
@@ -521,11 +934,48 @@ const DOCK_HOVER: u32 = 0x3c4043;
 /// Corner radius of the hover highlight, in pixels.
 const DOCK_HOVER_RADIUS: i32 = 6;
 
+/// CSS class of the dock window.
+const WINDOW_CLASS: &str = "opusdm-dock-window";
+
+/// CSS class of the strip the icons sit on.
+const SHELF_CLASS: &str = "opusdm-dock";
+
 /// The dock stylesheet: opaque background, thin border, hover highlight.
 fn dock_css() -> String {
     format!(
         "window {{ background-color: #{DOCK_BACKGROUND:06x}; border: {border}px solid #{DOCK_BORDER_COLOR:06x}; }}\n\
          .opusdm-dock-item:hover {{ background-color: #{DOCK_HOVER:06x}; border-radius: {DOCK_HOVER_RADIUS}px; }}",
+        border = placement::BORDER,
+    )
+}
+
+/// The stylesheet of the dock window and its strip for `style`: the strip
+/// carries the colour, the border and `image_uri` (a `file://` URI), faded
+/// as a whole to the style opacity. Without `see_through` the window keeps
+/// the opaque panel colour and the strip stays opaque.
+fn style_css(style: &DockStyle, image_uri: Option<&str>, see_through: bool) -> String {
+    let window_background = if see_through { "transparent".to_string() } else { format!("#{DOCK_BACKGROUND:06x}") };
+    let opacity = if see_through { style.opacity as f64 / 100.0 } else { 1.0 };
+    let image = match image_uri {
+        Some(uri) => {
+            let (size, repeat) = match style.image_mode {
+                DockImageMode::Fill => ("cover", "no-repeat"),
+                DockImageMode::Tile => ("auto", "repeat"),
+            };
+            format!(" background-image: url(\"{uri}\"); background-size: {size}; background-repeat: {repeat}; background-position: center;")
+        }
+        None => String::new(),
+    };
+    // With the zoom the size is the hover feedback; the highlight would also
+    // stay on an icon that slid away from under a still pointer.
+    let hover = if style.zoom_enabled && see_through {
+        format!("\nwindow.{WINDOW_CLASS} .opusdm-dock-item:hover {{ background-color: transparent; }}")
+    } else {
+        String::new()
+    };
+    format!(
+        "window.{WINDOW_CLASS} {{ background-color: {window_background}; border-width: 0; }}\n\
+         .{SHELF_CLASS} {{ background-color: #{DOCK_BACKGROUND:06x}; border: {border}px solid #{DOCK_BORDER_COLOR:06x}; opacity: {opacity:.2};{image} }}{hover}",
         border = placement::BORDER,
     )
 }
@@ -552,5 +1002,53 @@ mod tests {
         assert!(css.contains("window { background-color: #2e3436; "), "{css}");
         assert!(css.contains(&format!("border: {}px solid #555753;", placement::BORDER)), "{css}");
         assert!(css.contains(".opusdm-dock-item:hover { background-color: #3c4043; border-radius: 6px; }"), "{css}");
+    }
+
+    #[test]
+    fn the_classic_style_is_the_old_opaque_look() {
+        let css = style_css(&DockStyle::default(), None, true);
+        assert!(css.contains("window.opusdm-dock-window { background-color: transparent; border-width: 0; }"), "{css}");
+        assert!(css.contains(".opusdm-dock { background-color: #2e3436; border: 1px solid #555753; opacity: 1.00; }"), "{css}");
+    }
+
+    #[test]
+    fn opacity_and_image_go_on_the_strip() {
+        let style = DockStyle { opacity: 40, image_mode: DockImageMode::Tile, ..Default::default() };
+        let css = style_css(&style, Some("file:///tmp/wood%20grain.png"), true);
+        assert!(css.contains("opacity: 0.40;"), "{css}");
+        assert!(css.contains("background-image: url(\"file:///tmp/wood%20grain.png\"); background-size: auto; background-repeat: repeat;"), "{css}");
+        let css = style_css(&DockStyle { image_mode: DockImageMode::Fill, ..style }, Some("file:///a.png"), true);
+        assert!(css.contains("background-size: cover; background-repeat: no-repeat;"), "{css}");
+    }
+
+    #[test]
+    fn the_zoom_drops_the_hover_highlight() {
+        let zoomed = DockStyle { zoom_enabled: true, ..Default::default() };
+        assert!(style_css(&zoomed, None, true).contains(".opusdm-dock-item:hover { background-color: transparent; }"));
+        assert!(!style_css(&DockStyle::default(), None, true).contains(":hover"));
+        assert!(!style_css(&zoomed, None, false).contains(":hover"), "no compositor, no zoom: the highlight stays");
+    }
+
+    #[test]
+    fn without_a_compositor_everything_stays_opaque() {
+        let css = style_css(&DockStyle { opacity: 10, ..Default::default() }, None, false);
+        assert!(css.contains("window.opusdm-dock-window { background-color: #2e3436;"), "{css}");
+        assert!(css.contains("opacity: 1.00;"), "{css}");
+    }
+
+    #[test]
+    fn a_show_or_hide_alone_needs_no_rebuild() {
+        let layout = DockLayout {
+            position: DockPosition::Bottom,
+            icon_size: 48,
+            panel: PanelPosition::Top,
+            panel_height: 40,
+            visible: true,
+            style: DockStyle::default(),
+        };
+        let hidden = DockLayout { visible: false, ..layout.clone() };
+        assert_eq!(layout.shape(), hidden.shape());
+        let zoomed = DockLayout { style: DockStyle { zoom_enabled: true, ..Default::default() }, ..layout.clone() };
+        assert_ne!(layout.shape(), zoomed.shape());
     }
 }
