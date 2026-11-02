@@ -156,6 +156,7 @@ pub fn x11_sync(conn: &impl Connection) -> Result<(), ReplyError> {
 pub struct X11 {
     conn: RustConnection,
     root: u32,
+    screen_num: usize,
     atoms: Mutex<HashMap<&'static str, u32>>,
 }
 
@@ -185,8 +186,8 @@ fn shared() -> Result<Arc<X11>, X11Error> {
     if let Some(x11) = slot.as_ref() {
         return Ok(x11.clone());
     }
-    let Session { conn, root, .. } = connect()?;
-    let x11 = Arc::new(X11 { conn, root, atoms: Mutex::new(HashMap::new()) });
+    let Session { conn, root, screen_num } = connect()?;
+    let x11 = Arc::new(X11 { conn, root, screen_num, atoms: Mutex::new(HashMap::new()) });
     *slot = Some(x11.clone());
     Ok(x11)
 }
@@ -208,6 +209,15 @@ impl X11 {
     pub fn screen_height(&self) -> Result<i32, X11Error> {
         let geometry = self.conn.get_geometry(self.root)?.reply()?;
         Ok(i32::from(geometry.height))
+    }
+
+    /// Whether a compositing manager owns the default screen (someone holds
+    /// the `_NET_WM_CM_S<n>` selection). Without one, see-through pixels of
+    /// a window show up black.
+    pub fn compositor_running(&self) -> Result<bool, X11Error> {
+        let name = format!("_NET_WM_CM_S{}", self.screen_num);
+        let atom = self.conn.intern_atom(false, name.as_bytes())?.reply()?.atom;
+        Ok(self.conn.get_selection_owner(atom)?.reply()?.owner != x11rb::NONE)
     }
 
     /// The atom called `name`, interned on first use.
@@ -310,6 +320,31 @@ impl X11 {
         hints.max_size = Some((width, height));
         hints.set_normal_hints(&self.conn, window)?.check()?;
         self.configure(window, x, y, w, h)
+    }
+
+    /// Set the 32 bit `CARDINAL` property `name` of `window` to `value`, or
+    /// delete it when `value` is `None`.
+    pub fn set_cardinal(&self, window: u32, name: &'static str, value: Option<u32>) -> Result<(), X11Error> {
+        let atom = self.atom(name)?;
+        match value {
+            Some(v) => self.conn.change_property32(PropMode::REPLACE, window, atom, AtomEnum::CARDINAL, &[v])?,
+            None => self.conn.delete_property(window, atom)?,
+        };
+        Ok(())
+    }
+
+    /// The window manager frame `window` is reparented into: its direct
+    /// child of the root window. `None` when it is a child of the root
+    /// itself (not managed, or a non reparenting window manager).
+    pub fn frame_of(&self, window: u32) -> Result<Option<u32>, X11Error> {
+        let mut current = window;
+        loop {
+            let tree = self.conn.query_tree(current)?.reply()?;
+            if tree.parent == tree.root || tree.parent == x11rb::NONE {
+                return Ok((current != window).then_some(current));
+            }
+            current = tree.parent;
+        }
     }
 
     /// A plain `ConfigureWindow` of `window` to the given geometry.
