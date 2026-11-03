@@ -40,12 +40,13 @@ pub enum Orientation {
 /// registered (`None` when the applet gave no function).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
-    Box { orientation: Orientation, spacing: i32, children: Vec<Node> },
+    Box { orientation: Orientation, spacing: i32, padding: i32, children: Vec<Node> },
     Label { text: String },
     Button { label: String, on_click: Option<u32> },
     Entry { text: String, on_change: Option<u32> },
     Switch { active: bool, on_toggle: Option<u32> },
-    List { items: Vec<ListItem> },
+    /// `scroll`: the list sits in a vertical scrolled window that fills the room it gets and never makes its parent grow.
+    List { items: Vec<ListItem>, scroll: bool },
     /// A drop-down of strings; `selected` is an index into `items` (`None`: nothing selected).
     Dropdown { items: Vec<String>, selected: Option<usize>, on_change: Option<u32> },
     Image { path: String, width: Option<i32>, height: Option<i32> },
@@ -105,18 +106,19 @@ fn parse_node(value: &Value, depth: usize, ids: &mut HashSet<String>) -> Result<
     let props = Props { object, what: &what };
     let kind = match ty {
         "box" => {
-            props.allow(&["orientation", "spacing", "children"])?;
+            props.allow(&["orientation", "spacing", "padding", "children"])?;
             let orientation = match props.get("orientation") {
                 None => Orientation::Vertical,
                 Some(value) => orientation_value(&what, value)?,
             };
             let spacing = props.get("spacing").map(|v| size_value(&what, "spacing", v, 0)).transpose()?.unwrap_or(0);
+            let padding = props.get("padding").map(|v| size_value(&what, "padding", v, 0)).transpose()?.unwrap_or(0);
             let children = match props.get("children") {
                 None => Vec::new(),
                 Some(Value::Array(children)) => children.iter().map(|child| parse_node(child, depth + 1, ids)).collect::<Result<Vec<_>, _>>()?,
                 Some(other) => return Err(format!("{what}: \"children\" must be an array, not {}", json_kind(other))),
             };
-            Kind::Box { orientation, spacing, children }
+            Kind::Box { orientation, spacing, padding, children }
         }
         "label" => {
             props.allow(&["text"])?;
@@ -137,9 +139,10 @@ fn parse_node(value: &Value, depth: usize, ids: &mut HashSet<String>) -> Result<
             Kind::Switch { active, on_toggle: props.handler("onToggle")? }
         }
         "list" => {
-            props.allow(&["items"])?;
+            props.allow(&["items", "scroll"])?;
             let items = props.get("items").map(|v| items_value(&what, v)).transpose()?.unwrap_or_default();
-            Kind::List { items }
+            let scroll = props.get("scroll").map(|v| bool_value(&what, "scroll", v)).transpose()?.unwrap_or(false);
+            Kind::List { items, scroll }
         }
         "dropdown" => {
             props.allow(&["items", "selected", "onChange"])?;

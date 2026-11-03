@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-11-03
+
+- Fatto Tasks applet: the window no longer grows with many tasks. New opt-in props of the applet widget tree (`crates/applets`): `box.padding` (margin, default 0) and `list.scroll` (default false; the list goes in a `gtk::ScrolledWindow`, vertical only, `vexpand`, so rows scroll instead of growing the window). Other applets are unchanged (defaults keep the old look). `fatto-tasks/main.js` uses `padding: 10` on the root box and `scroll: true` on the list; the toolbar and the status line stay outside the scrolled part, so they are fixed. Documented in `docs/usage.md`. Tests: `box_padding_and_list_scroll_are_opt_in`; `cargo test -p opusdm-applets` and clippy pass (`runtime::tests::notify_timeout_reads_js_floats` failed once, passed 3 of 3 re-runs and on the unchanged tree: timing flake). NOT verified: the applet on screen (not run in the sandbox or the live session), the `opus.ui.update("list", ...)` path with a scrolled list by eye (the `View::List` still holds the `ListBox`), the Lister, hub and hotkey checks of rule 4 (those crates are not touched).
+
 ## 2026-11-02
 
 - Dock look: background opacity, background image, icon zoom, "Show the dock". See `docs/dock.md` (sections Window behaviour, Zoom, Configuration).

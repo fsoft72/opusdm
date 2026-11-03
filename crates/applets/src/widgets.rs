@@ -147,12 +147,16 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
     }
     let handler: Rc<Cell<Option<u32>>> = Rc::new(Cell::new(None));
     let (widget, view): (gtk::Widget, View) = match &node.kind {
-        Kind::Box { orientation, spacing, children } => {
+        Kind::Box { orientation, spacing, padding, children } => {
             let orientation = match orientation {
                 Orientation::Vertical => gtk::Orientation::Vertical,
                 Orientation::Horizontal => gtk::Orientation::Horizontal,
             };
             let container = gtk::Box::new(orientation, *spacing);
+            container.set_margin_top(*padding);
+            container.set_margin_bottom(*padding);
+            container.set_margin_start(*padding);
+            container.set_margin_end(*padding);
             for child in children {
                 container.append(&build_node(child, dispatch, ids, painters)?);
             }
@@ -189,13 +193,23 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
             let signal = switch.connect_active_notify(move |switch| fire(dispatch.as_ref(), &cell, "toggle", Value::Bool(switch.is_active())));
             (switch.clone().upcast(), View::Switch(switch, signal))
         }
-        Kind::List { items } => {
+        Kind::List { items, scroll } => {
             let list = gtk::ListBox::new();
             let handlers: Rc<RefCell<Vec<Option<u32>>>> = Rc::default();
             fill_list(&list, &handlers, items);
             let (rows, dispatch) = (handlers.clone(), dispatch.clone());
             list.connect_row_activated(move |_, row| activate_row(dispatch.as_ref(), &rows, row));
-            (list.clone().upcast(), View::List(list, handlers))
+            if *scroll {
+                // The scrolled window does not propagate the natural height of the rows,
+                // so many rows scroll instead of growing the window.
+                let scrolled = gtk::ScrolledWindow::new();
+                scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+                scrolled.set_vexpand(true);
+                scrolled.set_child(Some(&list));
+                (scrolled.upcast(), View::List(list, handlers))
+            } else {
+                (list.clone().upcast(), View::List(list, handlers))
+            }
         }
         Kind::Dropdown { items, selected, on_change } => {
             let model = gtk::StringList::new(&items.iter().map(String::as_str).collect::<Vec<_>>());

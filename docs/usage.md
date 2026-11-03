@@ -1276,12 +1276,12 @@ surface:
 
 | `type` | Props |
 |---|---|
-| `box` | `orientation` (`"vertical"`, default, or `"horizontal"`), `spacing`, `children` |
+| `box` | `orientation` (`"vertical"`, default, or `"horizontal"`), `spacing`, `padding` (margin around the box, pixels, default 0), `children` |
 | `label` | `text` |
 | `button` | `label`, `onClick()` |
 | `entry` | `text`, `onChange(text)` |
 | `switch` | `active`, `onToggle(active)` |
-| `list` | `items`: `[{ text, onClick() }]`, a row runs its `onClick` when activated |
+| `list` | `items`: `[{ text, onClick() }]`, a row runs its `onClick` when activated; `scroll` (default `false`): the list sits in a vertical scrolled window that fills the room it gets, so many rows scroll instead of growing the window |
 | `dropdown` | `items` (array of strings), `selected` (index into `items`, nothing selected when missing), `onChange(index)` |
 | `image` | `path` (from `opus.applet.assetPath`), `width`, `height` |
 | `canvas` | `width`, `height`, `draw(ctx)` |

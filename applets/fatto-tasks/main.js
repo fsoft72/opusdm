@@ -360,14 +360,14 @@ function onBoard(index) {
     loadTasks();
 }
 
-opus.ui.show({ type: "box", orientation: "vertical", spacing: 6, children: [
+opus.ui.show({ type: "box", orientation: "vertical", spacing: 6, padding: 10, children: [
     { type: "box", orientation: "horizontal", spacing: 6, children: [
         { type: "dropdown", id: "workspaces", items: [], onChange: onWorkspace },
         { type: "dropdown", id: "boards", items: [], onChange: onBoard },
         { type: "button", id: "refresh", label: "Refresh", onClick: loadWorkspaces },
     ] },
     { type: "label", id: "status", text: "", visible: false },
-    { type: "list", id: "list", items: [] },
+    { type: "list", id: "list", items: [], scroll: true },
 ] });
 
 opus.applet.onSettings(() => loadWorkspaces());

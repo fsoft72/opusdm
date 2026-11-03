@@ -46,7 +46,7 @@ fn handler_ids_are_kept() {
     assert_eq!(children[2].kind, Kind::Switch { active: true, on_toggle: Some(5) });
     assert_eq!(
         children[3].kind,
-        Kind::List { items: vec![ListItem { text: "one".into(), on_click: Some(6) }, ListItem { text: "two".into(), on_click: None }] }
+        Kind::List { items: vec![ListItem { text: "one".into(), on_click: Some(6) }, ListItem { text: "two".into(), on_click: None }], scroll: false }
     );
     assert_eq!(children[4].kind, Kind::Canvas { width: 10, height: 20, draw: Some(7) });
     assert_eq!(children[5].kind, Kind::Button { label: "None".into(), on_click: None });
@@ -60,16 +60,28 @@ fn nesting_deeper_than_32_levels_is_rejected() {
 }
 
 #[test]
+fn box_padding_and_list_scroll_are_opt_in() {
+    let node = parse(&json!({ "type": "box", "padding": 10 })).unwrap();
+    assert_eq!(node.kind, Kind::Box { orientation: Orientation::Vertical, spacing: 0, padding: 10, children: vec![] });
+    assert!(parse(&json!({ "type": "box", "padding": -1 })).is_err());
+    let node = parse(&json!({ "type": "list" })).unwrap();
+    assert_eq!(node.kind, Kind::List { items: vec![], scroll: false });
+    let node = parse(&json!({ "type": "list", "scroll": true })).unwrap();
+    assert_eq!(node.kind, Kind::List { items: vec![], scroll: true });
+    assert!(parse(&json!({ "type": "list", "scroll": "yes" })).is_err());
+}
+
+#[test]
 fn defaults_and_common_props() {
     let node = parse(&json!({ "type": "box", "id": "root", "class": "a  b", "visible": false })).unwrap();
     assert_eq!(node.id.as_deref(), Some("root"));
     assert_eq!(node.classes, ["a", "b"]);
     assert!(!node.visible);
-    assert_eq!(node.kind, Kind::Box { orientation: Orientation::Vertical, spacing: 0, children: vec![] });
+    assert_eq!(node.kind, Kind::Box { orientation: Orientation::Vertical, spacing: 0, padding: 0, children: vec![] });
     let node = parse(&json!({ "type": "box", "orientation": "horizontal", "spacing": 6, "class": ["x"] })).unwrap();
     assert!(node.visible);
     assert_eq!(node.classes, ["x"]);
-    assert_eq!(node.kind, Kind::Box { orientation: Orientation::Horizontal, spacing: 6, children: vec![] });
+    assert_eq!(node.kind, Kind::Box { orientation: Orientation::Horizontal, spacing: 6, padding: 0, children: vec![] });
     let node = parse(&json!({ "type": "entry" })).unwrap();
     assert_eq!(node.kind, Kind::Entry { text: String::new(), on_change: None });
     let node = parse(&json!({ "type": "image", "path": "/a/b.png", "width": 16 })).unwrap();

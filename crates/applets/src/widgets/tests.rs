@@ -319,7 +319,7 @@ fn image_and_canvas() {
 /// hand, not by `parse`).
 fn duplicate_ids_are_refused_at_build() {
     let label = |id: &str| Node { id: Some(id.to_string()), classes: vec![], visible: true, kind: Kind::Label { text: id.to_string() } };
-    let node = Node { id: None, classes: vec![], visible: true, kind: Kind::Box { orientation: Orientation::Vertical, spacing: 0, children: vec![label("x"), label("x")] } };
+    let node = Node { id: None, classes: vec![], visible: true, kind: Kind::Box { orientation: Orientation::Vertical, spacing: 0, padding: 0, children: vec![label("x"), label("x")] } };
     let recorder = Rc::new(Recorder::default());
     let e = build(&node, recorder).err().expect("duplicate ids must fail the build");
     assert!(e.contains("\"x\"") && e.contains("duplicate"), "{e}");
