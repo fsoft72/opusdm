@@ -99,6 +99,15 @@ const HANDLE_FALLBACK: &str = "Move";
 /// Label of the gear when the icon theme has none of its icons.
 const GEAR_FALLBACK: &str = "Set";
 
+/// CSS class of the resize grip.
+const GRIP_CLASS: &str = "opusdm-applet-edit-grip";
+
+/// Label of the resize grip (the icon theme has no standard resize icon).
+const GRIP_FALLBACK: &str = "\u{25e2}";
+
+/// Tooltip of the resize grip.
+const GRIP_TOOLTIP: &str = "Resize";
+
 /// Tooltip of the drag handle.
 const HANDLE_TOOLTIP: &str = "Move";
 
@@ -136,11 +145,15 @@ pub struct AppletWindow {
     /// The handle and the gear (inside `edit_widgets.icons`).
     handle: gtk::Button,
     gear: gtk::Button,
+    /// The resize grip, bottom right (inside `edit_widgets.grip`).
+    grip: gtk::Button,
     /// The shared edit mode and this window's listener on it.
     edit: EditMode,
     edit_listener: ListenerId,
     /// The handle drag; the gesture holds only a `Weak` of it.
     drag: Rc<Drag>,
+    /// The grip drag (a resize); the gesture holds only a `Weak` of it.
+    resize_drag: Rc<Drag>,
 }
 
 /// The widgets edit mode shows and hides.
@@ -151,6 +164,10 @@ struct EditWidgets {
     frame: gtk::Box,
     /// The handle and the gear, top right.
     icons: gtk::Box,
+    /// The resize grip, bottom right; shown in edit mode only when the
+    /// manifest says the window is resizable.
+    grip: gtk::Button,
+    resizable: bool,
 }
 
 /// Where a handle drag started.
@@ -169,6 +186,9 @@ struct Drag {
     dragging: Rc<Cell<bool>>,
     start: RefCell<Option<DragStart>>,
     on_moved: OnMoved,
+    /// `None`: the drag moves the window. `Some(min)`: it resizes it, never
+    /// below `min` (min width, min height).
+    resize_min: Option<(i32, i32)>,
 }
 
 /// Build the window of applet `id` for `app`: title = manifest name, default
@@ -218,7 +238,11 @@ pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &Apple
     column.append(&error);
     install_css(&WidgetExt::display(&window));
     let (handle, gear) = (edit_button(&HANDLE_ICONS, HANDLE_FALLBACK, HANDLE_TOOLTIP), edit_button(&GEAR_ICONS, GEAR_FALLBACK, GEAR_TOOLTIP));
-    let edit_widgets = edit_overlay(&column, &handle, &gear);
+    let grip = edit_button(&[], GRIP_FALLBACK, GRIP_TOOLTIP);
+    grip.add_css_class(GRIP_CLASS);
+    grip.set_halign(gtk::Align::End);
+    grip.set_valign(gtk::Align::End);
+    let edit_widgets = edit_overlay(&column, &handle, &gear, &grip, manifest.window.resizable);
     window.set_child(Some(&edit_widgets.outer));
     // Stop: GTK must not destroy the window itself; `on_close` lets the
     // host disable the applet and drop (destroy) the window.
@@ -233,13 +257,15 @@ pub fn open(app: &gtk::Application, id: &str, manifest: &Manifest, state: &Apple
     let dragging = Rc::new(Cell::new(false));
     connect_x11_placement(&window, id, target.clone(), settled.clone());
     connect_readback(&window, id, target.clone(), settled, dragging.clone(), on_moved.clone());
-    let drag = Rc::new(Drag { id: id.to_string(), window: window.clone(), target: target.clone(), dragging, start: RefCell::new(None), on_moved });
+    let drag = Rc::new(Drag { id: id.to_string(), window: window.clone(), target: target.clone(), dragging: dragging.clone(), start: RefCell::new(None), on_moved: on_moved.clone(), resize_min: None });
     connect_handle_drag(&handle, &drag);
+    let resize_drag = Rc::new(Drag { id: id.to_string(), window: window.clone(), target: target.clone(), dragging, start: RefCell::new(None), on_moved, resize_min: Some(min) });
+    connect_handle_drag(&grip, &resize_drag);
     connect_gear(&gear, id, edit.clone(), on_settings);
     edit_widgets.apply(edit.get());
     let edit_listener = subscribe_edit(edit, id, &edit_widgets);
     if present { window.present(); }
-    AppletWindow { id: id.to_string(), window, content, error, target, edit_widgets, handle, gear, edit: edit.clone(), edit_listener, drag }
+    AppletWindow { id: id.to_string(), window, content, error, target, edit_widgets, handle, gear, grip, edit: edit.clone(), edit_listener, drag, resize_drag }
 }
 
 /// Load [`EDIT_CSS`] for `display`, once per display, at APPLICATION
@@ -290,7 +316,7 @@ fn _first_icon(candidates: &[&'static str]) -> Option<&'static str> {
 
 /// The overlay around `content` with the dashed frame and, top right, the
 /// box holding `handle` and `gear` (both hidden until edit mode is applied).
-fn edit_overlay(content: &gtk::Box, handle: &gtk::Button, gear: &gtk::Button) -> EditWidgets {
+fn edit_overlay(content: &gtk::Box, handle: &gtk::Button, gear: &gtk::Button, grip: &gtk::Button, resizable: bool) -> EditWidgets {
     let outer = gtk::Overlay::new();
     outer.set_child(Some(content));
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -308,21 +334,24 @@ fn edit_overlay(content: &gtk::Box, handle: &gtk::Button, gear: &gtk::Button) ->
     icons.append(gear);
     icons.set_visible(false);
     outer.add_overlay(&icons);
-    EditWidgets { outer, frame, icons }
+    grip.set_visible(false);
+    outer.add_overlay(grip);
+    EditWidgets { outer, frame, icons, grip: grip.clone(), resizable }
 }
 
 impl EditWidgets {
     /// Show (`on`) or hide the frame and the icons, and set or remove
     /// [`EDIT_CLASS`] on the outer widget.
     fn apply(&self, on: bool) {
-        _apply_edit(&self.outer, &self.frame, &self.icons, on);
+        _apply_edit(&self.outer, &self.frame, &self.icons, &self.grip, self.resizable, on);
     }
 }
 
 /// See [`EditWidgets::apply`].
-fn _apply_edit(outer: &gtk::Overlay, frame: &gtk::Box, icons: &gtk::Box, on: bool) {
+fn _apply_edit(outer: &gtk::Overlay, frame: &gtk::Box, icons: &gtk::Box, grip: &gtk::Button, resizable: bool, on: bool) {
     frame.set_visible(on);
     icons.set_visible(on);
+    grip.set_visible(on && resizable);
     if on { outer.add_css_class(EDIT_CLASS); } else { outer.remove_css_class(EDIT_CLASS); }
 }
 
@@ -330,14 +359,15 @@ fn _apply_edit(outer: &gtk::Overlay, frame: &gtk::Box, icons: &gtk::Box, on: boo
 /// only weak references to the widgets; when they are gone it logs (the
 /// window should have unsubscribed when it was dropped).
 fn subscribe_edit(edit: &EditMode, id: &str, widgets: &EditWidgets) -> ListenerId {
-    let (outer, frame, icons) = (widgets.outer.downgrade(), widgets.frame.downgrade(), widgets.icons.downgrade());
+    let (outer, frame, icons, grip) = (widgets.outer.downgrade(), widgets.frame.downgrade(), widgets.icons.downgrade(), widgets.grip.downgrade());
+    let resizable = widgets.resizable;
     let id = id.to_string();
     edit.subscribe(move |on| {
-        let (Some(outer), Some(frame), Some(icons)) = (outer.upgrade(), frame.upgrade(), icons.upgrade()) else {
+        let (Some(outer), Some(frame), Some(icons), Some(grip)) = (outer.upgrade(), frame.upgrade(), icons.upgrade(), grip.upgrade()) else {
             opusdm_ipc::err_log!(APP_TAG, "applet {id}: edit mode {on}, but the window widgets are gone (listener not unsubscribed?)");
             return;
         };
-        _apply_edit(&outer, &frame, &icons, on);
+        _apply_edit(&outer, &frame, &icons, &grip, resizable, on);
     })
 }
 
@@ -411,7 +441,10 @@ impl Drag {
         let rect = {
             let start = self.start.borrow();
             let Some(start) = start.as_ref() else { opusdm_ipc::debug_log!(APP_TAG, "applet {}: handle drag step without a begin, ignored", self.id); return None };
-            placement::drag_on_monitors(start.rect, start.pointer, pointer, &start.monitors)
+            match self.resize_min {
+                None => placement::drag_on_monitors(start.rect, start.pointer, pointer, &start.monitors),
+                Some(min) => placement::resized(start.rect, start.pointer, pointer, min, &start.monitors),
+            }
         };
         if rect == self.target.get() { return Some(rect); }
         self.target.set(rect);
@@ -645,6 +678,28 @@ impl AppletWindow {
     /// The settings gear.
     pub fn gear(&self) -> &gtk::Button {
         &self.gear
+    }
+
+    /// The resize grip, bottom right.
+    pub fn grip(&self) -> &gtk::Button {
+        &self.grip
+    }
+
+    /// Start a grip drag (a resize) at the root `pointer`, kept on `monitors`.
+    pub fn begin_resize(&self, pointer: (i32, i32), monitors: &[Rect]) {
+        self.resize_drag.begin(pointer, monitors);
+    }
+
+    /// One step of a grip drag to the root `pointer`: the new target, or
+    /// `None` without a drag in progress.
+    pub fn resize_to(&self, pointer: (i32, i32)) -> Option<Rect> {
+        self.resize_drag.step(pointer)
+    }
+
+    /// End a grip drag: the geometry handed to `on_moved` (once), or `None`
+    /// when there was no drag or no size change.
+    pub fn end_resize(&self) -> Option<Rect> {
+        self.resize_drag.end()
     }
 
     /// Start a handle drag at the root `pointer`, kept on `monitors` (what

@@ -150,6 +150,7 @@ fn host_gtk_checks() {
     edit_mode_shows_the_border_and_the_icons(&app);
     setting_edit_off_hides_them_again(&app);
     the_handle_drag_moves_the_window_like_alt_drag(&app);
+    the_resize_grip_follows_edit_mode_and_resizes(&app);
     a_window_opened_while_edit_mode_is_on_starts_in_edit_mode(&app);
     the_form_shows_the_current_values(&app);
     apply_saves_the_state_and_calls_on_settings(&app);
@@ -851,6 +852,39 @@ fn the_handle_drag_moves_the_window_like_alt_drag(app: &gtk::Application) {
     assert_eq!((st.x, st.y, st.width, st.height), (Some(70), Some(110), Some(210), Some(120)));
     assert_eq!(host.target_of("drag"), Some((70, 110, 210, 120)));
     eprintln!("section the_handle_drag_moves_the_window_like_alt_drag: ok");
+}
+
+/// The resize grip shows in edit mode only for a resizable applet, and its
+/// drag grows or shrinks the window (position kept, never below the minimum
+/// size, never past the monitor) and saves once, at the end.
+fn the_resize_grip_follows_edit_mode_and_resizes(app: &gtk::Application) {
+    let edit = EditMode::new();
+    let resizable = r#"{ "name": "Grow", "window": { "width": 210, "height": 120, "minWidth": 100, "minHeight": 80, "resizable": true } }"#;
+    let manifest = opusdm_applets::manifest::parse(resizable).unwrap();
+    let st = AppletState { enabled: true, x: Some(40), y: Some(50), ..Default::default() };
+    let moved = Rc::new(RefCell::new(Vec::new()));
+    let m = moved.clone();
+    let hooks = WindowHooks { on_close: Box::new(|| {}), on_moved: Rc::new(move |rect| m.borrow_mut().push(rect)), on_settings: Rc::new(|| {}) };
+    let window = applet_window::open(app, "grow", &manifest, &st, false, &edit, hooks);
+    assert!(!window.grip().get_visible(), "hidden outside edit mode");
+    edit.set(true);
+    assert!(window.grip().get_visible(), "shown in edit mode");
+    edit.set(false);
+    assert!(!window.grip().get_visible(), "hidden again");
+    edit.set(true);
+    let screen = [(0, 0, 640, 480)];
+    window.begin_resize((100, 100), &screen);
+    assert_eq!(window.resize_to((150, 130)), Some((40, 50, 260, 150)), "grows, same position");
+    assert_eq!(window.resize_to((0, 0)), Some((40, 50, 110, 80)), "never below the minimum");
+    assert_eq!(window.resize_to((5000, 5000)), Some((40, 50, 600, 430)), "never past the monitor");
+    assert_eq!(window.resize_to((120, 110)), Some((40, 50, 230, 130)));
+    assert!(moved.borrow().is_empty(), "nothing is saved during the drag");
+    assert_eq!(window.end_resize(), Some((40, 50, 230, 130)));
+    assert_eq!(*moved.borrow(), [(40, 50, 230, 130)], "saved once, at the end");
+    // A manifest that is not resizable never shows the grip.
+    let (fixed, _, _) = bare_window(app, &edit);
+    assert!(!fixed.grip().get_visible(), "not resizable: no grip, even in edit mode");
+    eprintln!("section the_resize_grip_follows_edit_mode_and_resizes: ok");
 }
 
 /// Task 12: a window opened (or reloaded) while edit mode is on starts in

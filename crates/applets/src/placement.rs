@@ -47,6 +47,29 @@ pub fn drag_on_monitors(start_rect: Rect, start_pointer: (i32, i32), pointer: (i
     clamp_to_monitors(dragged(start_rect, start_pointer, pointer), monitors)
 }
 
+/// Where a drag of the edit resize grip puts a window: the position is kept,
+/// the size grows by how far the pointer went from `start_pointer` to
+/// `pointer`, never below `min` (min width, min height) and never past the
+/// right and bottom edge of the monitor that holds most of `start_rect`
+/// (the first one when it overlaps none; no monitor, no limit). The minimum
+/// wins over the monitor edge.
+pub fn resized(start_rect: Rect, start_pointer: (i32, i32), pointer: (i32, i32), min: (i32, i32), monitors: &[Rect]) -> Rect {
+    let (x, y, w, h) = start_rect;
+    let mut width = w.saturating_add(pointer.0 - start_pointer.0);
+    let mut height = h.saturating_add(pointer.1 - start_pointer.1);
+    if let Some(&first) = monitors.first() {
+        let (mut best, mut best_area) = (first, 0);
+        for &monitor in monitors {
+            let area = _overlap(start_rect, monitor);
+            if area > best_area { (best, best_area) = (monitor, area); }
+        }
+        let (mx, my, mw, mh) = best;
+        width = width.min(mx + mw - x);
+        height = height.min(my + mh - y);
+    }
+    (x, y, width.max(min.0), height.max(min.1))
+}
+
 /// `rect` with its width and height raised to at least `min` (min width,
 /// min height); the position is kept.
 pub fn at_least(rect: Rect, min: (i32, i32)) -> Rect {
@@ -57,6 +80,21 @@ pub fn at_least(rect: Rect, min: (i32, i32)) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resized_grows_and_shrinks_with_the_pointer_and_keeps_the_position() {
+        let (start, pointer) = ((100, 100, 400, 300), (500, 400));
+        assert_eq!(resized(start, pointer, (550, 450), (200, 150), &[(0, 0, 1920, 1080)]), (100, 100, 450, 350));
+        assert_eq!(resized(start, pointer, (400, 300), (200, 150), &[(0, 0, 1920, 1080)]), (100, 100, 300, 200));
+    }
+
+    #[test]
+    fn resized_never_goes_below_the_minimum_nor_past_the_monitor() {
+        let (start, pointer) = ((100, 100, 400, 300), (500, 400));
+        assert_eq!(resized(start, pointer, (0, 0), (260, 200), &[(0, 0, 1920, 1080)]), (100, 100, 260, 200));
+        assert_eq!(resized(start, pointer, (5000, 5000), (260, 200), &[(0, 0, 1920, 1080)]), (100, 100, 1820, 980));
+        assert_eq!(resized(start, pointer, (5000, 5000), (260, 200), &[]), (100, 100, 4900, 4900), "no monitor, no limit");
+    }
 
     const FULL_HD: Rect = (0, 0, 1920, 1080);
 
