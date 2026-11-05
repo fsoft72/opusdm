@@ -1,9 +1,10 @@
 //! The editor window: the cropped screenshot on a canvas, a tool bar for lines,
-//! arrows and text, and the Save, Copy and Quick save actions.
+//! arrows and text, and the Copy and Save actions.
 
 use crate::annotations::{self, Annotation, Color, Document, Point, Shape, Size, DEFAULT_COLOR, DEFAULT_SIZE, PALETTE};
 use crate::config;
 use crate::export::{self, Format, Options};
+use crate::save_dialog::{self, SaveChoice};
 use crate::icons::{self, Icon};
 use crate::render;
 use crate::selection::{self, Area, Edges};
@@ -28,9 +29,6 @@ const MAX_WINDOW_HEIGHT: i32 = 900;
 /// Space around the canvas that the window needs besides the image.
 const CHROME_WIDTH: i32 = 24;
 const CHROME_HEIGHT: i32 = 150;
-
-/// Width of the quality slider.
-const QUALITY_WIDTH: i32 = 160;
 
 /// Padding and spacing of the bars.
 const BAR_SPACING: i32 = 6;
@@ -126,11 +124,6 @@ fn zoom_after(zoom: f64, notches: f64) -> f64 {
     (zoom * ZOOM_STEP.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX)
 }
 
-/// The percentage text for the saved width: no decimals when it is whole.
-fn percent_text(percent: f64) -> String {
-    format!("{}%", (percent * 10.0).round() / 10.0)
-}
-
 /// The widgets the callbacks use, with the state.
 struct Ui {
     window: gtk::ApplicationWindow,
@@ -140,16 +133,10 @@ struct Ui {
     pointer: Cell<(f64, f64)>,
     status: gtk::Label,
     im: gtk::IMMulticontext,
-    format: gtk::DropDown,
-    quality: gtk::Scale,
-    lossless: gtk::CheckButton,
     delay: gtk::SpinButton,
-    /// Width in pixels of the saved image.
-    scale: gtk::SpinButton,
-    /// The saved width as a percentage of the image, next to `scale`.
-    scale_percent: gtk::Label,
-    /// Set while the code moves `scale`, so its handler ignores it.
-    syncing: Cell<bool>,
+    /// Format, quality and lossless switch of the last Save requester, offered
+    /// again the next time it opens.
+    save_options: Cell<Options>,
     state: RefCell<State>,
 }
 
@@ -178,21 +165,10 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     canvas.set_halign(gtk::Align::Start);
     canvas.set_valign(gtk::Align::Start);
 
-    let format = gtk::DropDown::from_strings(&Format::ALL.map(Format::label));
-    let quality = gtk::Scale::with_range(gtk::Orientation::Horizontal, export::MIN_QUALITY as f64, export::MAX_QUALITY as f64, 1.0);
-    quality.set_value(export::DEFAULT_QUALITY as f64);
-    quality.set_draw_value(true);
-    quality.set_width_request(QUALITY_WIDTH);
-    let lossless = gtk::CheckButton::with_label("Lossless");
     let delay = gtk::SpinButton::with_range(0.0, config::MAX_DELAY_SECS as f64, 1.0);
     delay.set_value(config::load().delay_secs as f64);
     delay.set_tooltip_text(Some("Seconds to wait before the screen is captured, from the next launch"));
 
-    let scale = gtk::SpinButton::with_range(1.0, (iw as u32 * export::MAX_SCALE_PERCENT / 100) as f64, 1.0);
-    scale.set_value(iw as f64);
-    scale.set_tooltip_text(Some("Width in pixels of the saved image, keeping the aspect ratio"));
-    let scale_percent = gtk::Label::new(Some(&percent_text(100.0)));
-    scale_percent.set_tooltip_text(Some("Size of the saved image compared to the original"));
 
     let scroll = gtk::ScrolledWindow::new();
     let ui = Rc::new(Ui {
@@ -202,13 +178,8 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
         pointer: Cell::new((0.0, 0.0)),
         status: gtk::Label::new(None),
         im: gtk::IMMulticontext::new(),
-        format,
-        quality,
-        lossless,
         delay,
-        scale,
-        scale_percent,
-        syncing: Cell::new(false),
+        save_options: Cell::new(Options::new(Format::Png)),
         state: RefCell::new(State {
             base,
             surface,
@@ -238,7 +209,6 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     root.append(&ui.status);
     root.append(&bottom_bar(&ui));
     window.set_child(Some(&root));
-    refresh_save_options(&ui);
     window.present();
 }
 
@@ -340,29 +310,12 @@ fn save_delay_on_close(window: &gtk::ApplicationWindow, delay: &gtk::SpinButton)
     });
 }
 
-/// The bottom bar: format options on the left, the three save actions on the
-/// right.
+/// The bottom bar: the capture delay on the left, Copy and Save on the right.
 fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     let bar = bar();
-    bar.append(&gtk::Label::new(Some("Format")));
-    bar.append(&ui.format);
-    bar.append(&ui.quality);
-    bar.append(&ui.lossless);
-    bar.append(&gtk::Label::new(Some("Save size:")));
-    bar.append(&ui.scale);
-    bar.append(&gtk::Label::new(Some("px")));
-    bar.append(&ui.scale_percent);
     bar.append(&gtk::Label::new(Some("Delay (s)")));
     bar.append(&ui.delay);
     save_delay_on_close(&ui.window, &ui.delay);
-    {
-        let ui2 = ui.clone();
-        ui.format.connect_selected_notify(move |_| refresh_save_options(&ui2));
-        let ui2 = ui.clone();
-        ui.lossless.connect_toggled(move |_| refresh_save_options(&ui2));
-        let ui2 = ui.clone();
-        ui.scale.connect_value_changed(move |_| update_percent(&ui2));
-    }
 
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -370,17 +323,15 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
 
     let copy = gtk::Button::with_label("Copy");
     copy.set_tooltip_text(Some("Copy the image to the clipboard"));
-    let quick = gtk::Button::with_label("Quick save");
-    quick.set_tooltip_text(Some("Save a PNG in ~/Pictures/Screenshots"));
-    let save = gtk::Button::with_label("Save as...");
+    let save = gtk::Button::with_label("Save");
+    save.set_tooltip_text(Some("Choose the name, format and size, then where to save"));
     save.add_css_class("suggested-action");
-    for b in [&copy, &quick, &save] {
+    for b in [&copy, &save] {
         b.set_focus_on_click(false);
         bar.append(b);
     }
     { let ui = ui.clone(); copy.connect_clicked(move |_| copy_to_clipboard(&ui)); }
-    { let ui = ui.clone(); quick.connect_clicked(move |_| quick_save(&ui)); }
-    { let ui = ui.clone(); save.connect_clicked(move |_| save_as(&ui)); }
+    { let ui = ui.clone(); save.connect_clicked(move |_| ask_save(&ui)); }
     bar
 }
 
@@ -402,22 +353,7 @@ fn toggle(group: Option<&gtk::ToggleButton>) -> gtk::ToggleButton {
     button
 }
 
-/// Show the quality slider for JPG and lossy WebP, the lossless switch for WebP.
-fn refresh_save_options(ui: &Ui) {
-    let format = selected_format(ui);
-    ui.quality.set_visible(format.has_quality() && !(format == Format::WebP && ui.lossless.is_active()));
-    ui.lossless.set_visible(format == Format::WebP);
-}
 
-/// The format picked in the bottom bar.
-fn selected_format(ui: &Ui) -> Format {
-    Format::ALL.get(ui.format.selected() as usize).copied().unwrap_or(Format::Png)
-}
-
-/// The encoding options as set in the bottom bar, for `format`.
-fn options_for(ui: &Ui, format: Format) -> Options {
-    Options { format, quality: ui.quality.value().round() as u8, lossless: ui.lossless.is_active() }
-}
 
 // ----- canvas ---------------------------------------------------------------
 
@@ -600,14 +536,12 @@ fn end_drag(ui: &Ui, delta: Point) {
         let bounds = (st.base.width() as i32, st.base.height() as i32);
         if selection::crop_rect(st.crop, bounds).is_none() { st.crop = None; }
     }
-    let crop_changed = matches!(st.drag, Drag::CropNew { .. } | Drag::CropResize { .. });
     st.drag = Drag::None;
     drop(st);
-    if crop_changed { refresh_save_size(ui); }
     ui.canvas.queue_draw();
 }
 
-// ----- zoom and save size ---------------------------------------------------
+// ----- zoom and output size -------------------------------------------------
 
 /// Zoom the canvas with the mouse wheel, keeping the image point under the
 /// pointer where it is.
@@ -656,35 +590,10 @@ fn zoom_by(ui: &Rc<Ui>, notches: f64) {
     });
 }
 
-/// The width in pixels of the image the actions produce: the crop, or all of it.
-fn output_width(st: &State) -> u32 {
+/// The size in pixels of the image the actions produce: the crop, or all of it.
+fn output_size(st: &State) -> (u32, u32) {
     let bounds = (st.base.width() as i32, st.base.height() as i32);
-    selection::crop_rect(st.crop, bounds).map_or(st.base.width(), |r| r.w as u32)
-}
-
-/// The saved width changed (typed or stepped): show its percentage.
-fn update_percent(ui: &Ui) {
-    if ui.syncing.get() { return; }
-    let width = output_width(&ui.state.borrow());
-    ui.scale_percent.set_text(&percent_text(export::width_percent(ui.scale.value_as_int().max(1) as u32, width)));
-}
-
-/// The crop changed: keep the percentage the user chose and move the width in
-/// pixels to the new image width.
-fn refresh_save_size(ui: &Ui) {
-    // Takes a number typed but not yet confirmed with Enter.
-    ui.scale.update();
-    let (old_width, new_width) = {
-        let st = ui.state.borrow();
-        let old = ui.scale.adjustment().upper() as u32 * 100 / export::MAX_SCALE_PERCENT;
-        (old.max(1), output_width(&st))
-    };
-    let percent = export::width_percent(ui.scale.value_as_int().max(1) as u32, old_width);
-    ui.syncing.set(true);
-    ui.scale.adjustment().set_upper((new_width * export::MAX_SCALE_PERCENT / 100) as f64);
-    ui.scale.set_value((new_width as f64 * percent / 100.0).round());
-    ui.syncing.set(false);
-    update_percent(ui);
+    selection::crop_rect(st.crop, bounds).map_or(st.base.dimensions(), |r| (r.w as u32, r.h as u32))
 }
 
 /// Give the selected annotation the colour and size of the tool bar.
@@ -851,15 +760,6 @@ fn final_image(ui: &Ui) -> Option<RgbaImage> {
     }
 }
 
-/// The image to write to a file: [`final_image`] resized to the width of the
-/// bottom bar.
-fn image_to_save(ui: &Ui) -> Option<RgbaImage> {
-    let img = final_image(ui)?;
-    // Takes a number typed but not yet confirmed with Enter.
-    ui.scale.update();
-    Some(export::scale_to_width(img, ui.scale.value_as_int().max(1) as u32))
-}
-
 /// Put the image on the clipboard. The window stays open: without a clipboard
 /// manager the content would vanish with the process.
 fn copy_to_clipboard(ui: &Ui) {
@@ -871,29 +771,37 @@ fn copy_to_clipboard(ui: &Ui) {
     show_info(ui, "Copied to the clipboard (it stays available while this window is open)");
 }
 
-/// Save a PNG in `~/Pictures/Screenshots` and close.
-fn quick_save(ui: &Rc<Ui>) {
-    let Some(img) = image_to_save(ui) else { return };
-    let Some(home) = dirs::home_dir() else {
-        show_error(ui, "cannot find the home directory for the quick save");
-        return;
-    };
-    let now = match glib::DateTime::now_local() {
-        Ok(n) => n,
+/// The file name proposed by the Save requester: the local time, or
+/// `screenshot` when the clock cannot be read.
+fn proposed_stem() -> String {
+    match glib::DateTime::now_local() {
+        Ok(n) => export::timestamp_stem(n.year(), n.month() as u32, n.day_of_month() as u32, n.hour() as u32, n.minute() as u32, n.second() as u32),
         Err(e) => {
-            show_error(ui, &format!("cannot read the clock: {e}"));
-            return;
+            opusdm_ipc::err_log!("opusdm-shot", "cannot read the clock for the file name: {e}");
+            "screenshot".to_string()
         }
-    };
-    let stem = export::quick_stem(now.year(), now.month() as u32, now.day_of_month() as u32, now.hour() as u32, now.minute() as u32, now.second() as u32);
-    let dir = home.join(export::QUICK_SAVE_DIR);
-    save_in_background(ui, move || export::quick_save(&img, &dir, &stem));
+    }
 }
 
-/// Ask for a file name and save in the chosen format, then close.
-fn save_as(ui: &Rc<Ui>) {
-    let Some(img) = image_to_save(ui) else { return };
-    let format = selected_format(ui);
+/// Open the Save requester (name, format, size); its Save goes on to
+/// [`save_as`].
+fn ask_save(ui: &Rc<Ui>) {
+    // A text being typed is finished first, as for every other action.
+    commit_text(ui);
+    let size = output_size(&ui.state.borrow());
+    let ui2 = ui.clone();
+    save_dialog::show(&ui.window, &proposed_stem(), ui.save_options.get(), size, move |choice| {
+        ui2.save_options.set(choice.options);
+        save_as(&ui2, choice);
+    });
+}
+
+/// Ask the file dialog of the system where to save `choice`, then save the
+/// image at the chosen size and close.
+fn save_as(ui: &Rc<Ui>, choice: SaveChoice) {
+    let Some(img) = final_image(ui) else { return };
+    let img = export::scale_to_size(img, choice.size.0, choice.size.1);
+    let format = choice.options.format;
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     let mut default_filter = None;
     for f in Format::ALL {
@@ -907,7 +815,7 @@ fn save_as(ui: &Rc<Ui>) {
     let dialog = gtk::FileDialog::builder().title("Save screenshot").modal(true).build();
     dialog.set_filters(Some(&filters));
     dialog.set_default_filter(default_filter.as_ref());
-    dialog.set_initial_name(Some(&format!("screenshot.{}", format.extension())));
+    dialog.set_initial_name(Some(&export::file_name(&choice.stem, format)));
     let remembered = config::last_dir().filter(|d| d.is_dir());
     if let Some(dir) = remembered.or_else(|| dirs::picture_dir().filter(|d| d.is_dir())) {
         dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
@@ -923,7 +831,7 @@ fn save_as(ui: &Rc<Ui>) {
             return show_error(&ui2, "the chosen location is not a local file");
         };
         let (target, chosen) = resolve_target(path.clone(), format);
-        let options = options_for(&ui2, chosen);
+        let options = Options { format: chosen, ..choice.options };
         if !needs_overwrite_confirm(&path, &target) {
             return save_in_background(&ui2, move || save_and_remember(&img, target, &options));
         }
@@ -1001,13 +909,6 @@ mod tests {
         assert!(zoom_after(1.0, -1.0) < 1.0);
         assert_eq!(zoom_after(ZOOM_MAX, 5.0), ZOOM_MAX);
         assert_eq!(zoom_after(ZOOM_MIN, -5.0), ZOOM_MIN);
-    }
-
-    #[test]
-    fn the_percent_text_has_no_decimals_when_whole() {
-        assert_eq!(percent_text(100.0), "100%");
-        assert_eq!(percent_text(50.0), "50%");
-        assert_eq!(percent_text(33.333), "33.3%");
     }
 
     #[test]

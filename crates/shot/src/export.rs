@@ -4,7 +4,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Quality offered for JPG and WebP until the user changes it.
 pub const DEFAULT_QUALITY: u8 = 90;
@@ -15,9 +15,6 @@ pub const MAX_QUALITY: u8 = 100;
 
 /// Largest scale of a saved image, in percent.
 pub const MAX_SCALE_PERCENT: u32 = 400;
-
-/// Folder of the quick save, under the home directory.
-pub const QUICK_SAVE_DIR: &str = "Pictures/Screenshots";
 
 /// File formats the tool can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,16 +118,18 @@ pub fn size_for_width(width: u32, height: u32, target_width: u32) -> (u32, u32) 
     (target as u32, (((height as u64 * target) + width / 2) / width).max(1) as u32)
 }
 
-/// The scale of a `target_width` wide image compared to one `width` wide, in
-/// percent.
-pub fn width_percent(target_width: u32, width: u32) -> f64 {
-    target_width as f64 * 100.0 / width.max(1) as f64
+/// The size of a `width` x `height` image saved `target_height` pixels high
+/// (clamped to the allowed scale range): the width keeps the aspect ratio and
+/// never gets smaller than one pixel.
+pub fn size_for_height(width: u32, height: u32, target_height: u32) -> (u32, u32) {
+    let (h, w) = size_for_width(height, width, target_height);
+    (w, h)
 }
 
-/// `image` resized to `target_width` pixels keeping the aspect ratio. At its own
-/// width it is returned untouched.
-pub fn scale_to_width(image: RgbaImage, target_width: u32) -> RgbaImage {
-    let (w, h) = size_for_width(image.width(), image.height(), target_width);
+/// `image` resized to `width` x `height` (each at least one pixel). At its own
+/// size it is returned untouched.
+pub fn scale_to_size(image: RgbaImage, width: u32, height: u32) -> RgbaImage {
+    let (w, h) = (width.max(1), height.max(1));
     if (w, h) == image.dimensions() { return image; }
     image::imageops::resize(&image, w, h, image::imageops::FilterType::Lanczos3)
 }
@@ -153,26 +152,16 @@ pub fn save(image: &RgbaImage, path: &Path, options: &Options) -> Result<(), Str
     fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-/// `dir/stem.ext`, or `dir/stem-2.ext`, `dir/stem-3.ext`... the first that does
-/// not exist yet.
-pub fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
-    let first = dir.join(format!("{stem}.{ext}"));
-    if !first.exists() { return first; }
-    (2..).map(|n| dir.join(format!("{stem}-{n}.{ext}"))).find(|p| !p.exists()).expect("an unused name exists")
+/// File name stem proposed for a local time (`20261005-143015`).
+pub fn timestamp_stem(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> String {
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
 }
 
-/// File name stem of a quick save for a local time (`shot-20261005-143015`).
-pub fn quick_stem(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> String {
-    format!("shot-{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
-}
-
-/// Create `dir` if needed and save `image` as a PNG in it under a unique name
-/// made from `stem`. Returns the path written.
-pub fn quick_save(image: &RgbaImage, dir: &Path, stem: &str) -> Result<PathBuf, String> {
-    fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let path = unique_path(dir, stem, Format::Png.extension());
-    save(image, &path, &Options::new(Format::Png))?;
-    Ok(path)
+/// The file name for `stem` saved as `format`: the extension of the format is
+/// appended, unless `stem` already ends with an extension of that format.
+pub fn file_name(stem: &str, format: Format) -> String {
+    if Format::from_path(Path::new(stem)) == Some(format) { return stem.to_string(); }
+    format!("{stem}.{}", format.extension())
 }
 
 #[cfg(test)]
@@ -252,17 +241,20 @@ mod tests {
     }
 
     #[test]
-    fn width_percent_is_the_ratio_of_the_widths() {
-        assert_eq!(width_percent(720, 1440), 50.0);
-        assert_eq!(width_percent(1440, 1440), 100.0);
+    fn size_for_height_keeps_the_ratio_and_never_reaches_zero() {
+        assert_eq!(size_for_height(1920, 1080, 540), (960, 540));
+        assert_eq!(size_for_height(1920, 1080, 1080), (1920, 1080));
+        assert_eq!(size_for_height(3, 1000, 10), (1, 10));
+        assert_eq!(size_for_height(100, 100, 0), (1, 1));
+        assert_eq!(size_for_height(100, 100, 9999), (400, 400));
     }
 
     #[test]
-    fn scale_to_width_resizes_and_the_same_width_is_the_same_image() {
+    fn scale_to_size_resizes_and_the_same_size_is_the_same_image() {
         let img = sample();
-        let w = img.width();
-        assert_eq!(scale_to_width(img.clone(), w), img);
-        assert_eq!(scale_to_width(img, w / 2).dimensions(), (16, 12));
+        let (w, h) = img.dimensions();
+        assert_eq!(scale_to_size(img.clone(), w, h), img);
+        assert_eq!(scale_to_size(img, w / 2, h / 2).dimensions(), (16, 12));
     }
 
     #[test]
@@ -272,30 +264,16 @@ mod tests {
     }
 
     #[test]
-    fn unique_path_never_reuses_a_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = unique_path(dir.path(), "shot", "png");
-        assert_eq!(first, dir.path().join("shot.png"));
-        fs::write(&first, b"x").unwrap();
-        let second = unique_path(dir.path(), "shot", "png");
-        assert_eq!(second, dir.path().join("shot-2.png"));
-        fs::write(&second, b"x").unwrap();
-        assert_eq!(unique_path(dir.path(), "shot", "png"), dir.path().join("shot-3.png"));
+    fn timestamp_stem_is_zero_padded() {
+        assert_eq!(timestamp_stem(2026, 3, 7, 4, 5, 9), "20260307-040509");
     }
 
     #[test]
-    fn quick_stem_is_zero_padded() {
-        assert_eq!(quick_stem(2026, 3, 7, 4, 5, 9), "shot-20260307-040509");
-    }
-
-    #[test]
-    fn quick_save_creates_the_folder_and_does_not_overwrite() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("a").join("b");
-        let one = quick_save(&sample(), &target, "shot-1").unwrap();
-        let two = quick_save(&sample(), &target, "shot-1").unwrap();
-        assert_ne!(one, two);
-        assert!(one.exists() && two.exists());
+    fn file_name_appends_the_extension_once() {
+        assert_eq!(file_name("20260307-040509", Format::Png), "20260307-040509.png");
+        assert_eq!(file_name("a.jpg", Format::Jpg), "a.jpg");
+        assert_eq!(file_name("a.JPEG", Format::Jpg), "a.JPEG");
+        assert_eq!(file_name("a.png", Format::WebP), "a.png.webp");
     }
 
     #[test]

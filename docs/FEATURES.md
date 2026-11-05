@@ -369,8 +369,8 @@ A fast image and video viewer that knows its way around a folder.
 - **Freeze the screen, drag the area, annotate, save.**
 - **Resizable selection**: grab any side or corner to adjust the area, **Enter** to keep it.
 - **Line, Arrow (with 15 degree lock), Text and Select** tools, six colors, three sizes, **undo and redo**.
-- Save as **PNG, JPG or WebP** (with quality slider and lossless option).
-- **Quick save** to `~/Pictures/Screenshots`, or **Copy** to the clipboard.
+- **Save** requester: file name (date and time proposed), **PNG, JPG or WebP** (with quality slider and lossless option), width and height linked by the aspect ratio, then the system file dialog.
+- **Copy** to the clipboard.
 - **Capture delay** (0 to 60 seconds) for menus and hover states.
 
 ### 8.4 View Font
