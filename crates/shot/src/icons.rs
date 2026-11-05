@@ -23,6 +23,7 @@ pub enum Icon {
     Line,
     Arrow,
     Text,
+    Rect,
     Crop,
     Undo,
     Redo,
@@ -87,6 +88,10 @@ pub fn paint(cr: &cairo::Context, icon: Icon, rgba: (f64, f64, f64, f64), size: 
             cr.move_to(12.0, 6.0);
             cr.line_to(12.0, 19.0);
             cr.stroke()
+        }
+        Icon::Rect => {
+            cr.rectangle(4.0, 6.0, 16.0, 12.0);
+            cr.fill()
         }
         Icon::Crop => {
             // The two overlapping corners of a crop mark.
@@ -158,7 +163,7 @@ mod tests {
 
     #[test]
     fn every_icon_paints_something() {
-        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Crop, Icon::Undo, Icon::Redo, Icon::Width(Size::Small)] {
+        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Rect, Icon::Crop, Icon::Undo, Icon::Redo, Icon::Width(Size::Small)] {
             assert!(painted(icon) > 0, "{icon:?} is blank");
         }
     }

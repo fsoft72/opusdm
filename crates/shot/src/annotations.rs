@@ -84,6 +84,8 @@ pub enum Shape {
     Arrow { from: Point, to: Point },
     /// Text whose top left corner is `at`; lines are separated by `\n`.
     Text { at: Point, text: String },
+    /// A filled rectangle between two opposite corners (any order).
+    Rect { from: Point, to: Point },
 }
 
 /// A shape with its style.
@@ -111,6 +113,9 @@ impl Annotation {
                 let (w, h) = text_extent(text, self.size.font_size());
                 p.0 >= at.0 && p.0 <= at.0 + w && p.1 >= at.1 && p.1 <= at.1 + h
             }
+            Shape::Rect { from, to } => {
+                p.0 >= from.0.min(to.0) && p.0 <= from.0.max(to.0) && p.1 >= from.1.min(to.1) && p.1 <= from.1.max(to.1)
+            }
         }
     }
 
@@ -126,13 +131,14 @@ impl Annotation {
                 let (w, h) = text_extent(text, self.size.font_size());
                 (at.0, at.1, at.0 + w, at.1 + h)
             }
+            Shape::Rect { from, to } => (from.0.min(to.0), from.1.min(to.1), from.0.max(to.0), from.1.max(to.1)),
         }
     }
 
     /// Move the annotation by `(dx, dy)`.
     pub fn translate(&mut self, dx: f64, dy: f64) {
         match &mut self.shape {
-            Shape::Line { from, to } | Shape::Arrow { from, to } => {
+            Shape::Line { from, to } | Shape::Arrow { from, to } | Shape::Rect { from, to } => {
                 *from = (from.0 + dx, from.1 + dy);
                 *to = (to.0 + dx, to.1 + dy);
             }
@@ -307,6 +313,17 @@ mod tests {
         let mut t = text((1.0, 2.0), "x");
         t.translate(3.0, 3.0);
         assert_eq!(t.shape, Shape::Text { at: (4.0, 5.0), text: "x".into() });
+    }
+
+    #[test]
+    fn rect_hit_bounds_and_translate_ignore_the_corner_order() {
+        let mut r = Annotation::new(Shape::Rect { from: (50.0, 40.0), to: (10.0, 20.0) });
+        assert!(r.hit((30.0, 30.0)));
+        assert!(!r.hit((60.0, 30.0)));
+        assert!(!r.hit((30.0, 10.0)));
+        assert_eq!(r.bounds(), (10.0, 20.0, 50.0, 40.0));
+        r.translate(5.0, -5.0);
+        assert_eq!(r.shape, Shape::Rect { from: (55.0, 35.0), to: (15.0, 15.0) });
     }
 
     #[test]

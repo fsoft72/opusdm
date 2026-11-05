@@ -79,6 +79,7 @@ enum Tool {
     Line,
     Arrow,
     Text,
+    Rect,
     Crop,
 }
 
@@ -251,6 +252,7 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
         ("Line", Icon::Line, Tool::Line),
         ("Arrow", Icon::Arrow, Tool::Arrow),
         ("Text", Icon::Text, Tool::Text),
+        ("Filled rectangle: covers the area with the colour", Icon::Rect, Tool::Rect),
         ("Crop: drag the area to keep (drag its sides to adjust, click to remove it)", Icon::Crop, Tool::Crop),
     ];
     let mut first: Option<gtk::ToggleButton> = None;
@@ -506,8 +508,12 @@ fn begin_drag(ui: &Ui, p: Point) {
                 st.drag = Drag::Move { last: (0.0, 0.0) };
             }
         }
-        Tool::Line | Tool::Arrow => {
-            let shape = if st.tool == Tool::Line { Shape::Line { from: p, to: p } } else { Shape::Arrow { from: p, to: p } };
+        Tool::Line | Tool::Arrow | Tool::Rect => {
+            let shape = match st.tool {
+                Tool::Line => Shape::Line { from: p, to: p },
+                Tool::Rect => Shape::Rect { from: p, to: p },
+                _ => Shape::Arrow { from: p, to: p },
+            };
             let annotation = styled(&st, shape);
             let index = st.doc.add(annotation);
             st.selected = Some(index);
@@ -569,9 +575,11 @@ fn update_drag(ui: &Ui, start: Point, delta: Point, shift: bool) {
         Drag::CropNew { .. } | Drag::CropResize { .. } => {}
         Drag::Draw { start: from } => {
             let mut to = (start.0 + delta.0, start.1 + delta.1);
-            if shift { to = annotations::snap_angle(from, to); }
+            // Shift locks the angle of a line or arrow; a rectangle ignores it.
+            let is_rect = matches!(st.doc.items().get(index).map(|a| &a.shape), Some(Shape::Rect { .. }));
+            if shift && !is_rect { to = annotations::snap_angle(from, to); }
             st.doc.modify(index, |a| match &mut a.shape {
-                Shape::Line { to: t, .. } | Shape::Arrow { to: t, .. } => *t = to,
+                Shape::Line { to: t, .. } | Shape::Arrow { to: t, .. } | Shape::Rect { to: t, .. } => *t = to,
                 Shape::Text { .. } => {}
             });
         }

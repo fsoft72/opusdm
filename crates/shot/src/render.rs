@@ -16,6 +16,10 @@ pub fn draw(cr: &cairo::Context, items: &[Annotation]) -> Result<(), cairo::Erro
             Shape::Line { from, to } => stroke(cr, *from, *to, item.size.line_width())?,
             Shape::Arrow { from, to } => draw_arrow(cr, *from, *to, item.size.line_width())?,
             Shape::Text { at, text } => draw_text(cr, *at, text, item.size.font_size())?,
+            Shape::Rect { from, to } => {
+                cr.rectangle(from.0.min(to.0), from.1.min(to.1), (to.0 - from.0).abs(), (to.1 - from.1).abs());
+                cr.fill()?;
+            }
         }
     }
     Ok(())
@@ -132,6 +136,16 @@ mod tests {
         let out = render(&white(80, 60), &[arrow]).unwrap();
         let painted = |x: u32| (0..60).filter(|&y| *out.get_pixel(x, y) != WHITE).count();
         assert!(painted(66) > painted(20), "head {} vs shaft {}", painted(66), painted(20));
+    }
+
+    #[test]
+    fn a_rect_is_filled_inside_and_untouched_outside() {
+        let rect = Annotation::new(Shape::Rect { from: (30.0, 30.0), to: (10.0, 10.0) });
+        let out = render(&white(40, 40), &[rect]).unwrap();
+        let inside = out.get_pixel(20, 20);
+        assert!(inside[0] > 200 && inside[1] < 80 && inside[2] < 80, "inside is red: {inside:?}");
+        assert_eq!(*out.get_pixel(5, 5), WHITE);
+        assert_eq!(*out.get_pixel(35, 35), WHITE);
     }
 
     #[test]

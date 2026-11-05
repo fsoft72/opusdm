@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-11-05
+
+- opusdm-shot, editor: new **Rectangle** tool (filled rectangle in the colour of the tool bar). It is a normal annotation (`Shape::Rect`): select, move, delete, undo/redo; Shift is ignored for it. Tests: `rect_hit_bounds_and_translate_ignore_the_corner_order`, `a_rect_is_filled_inside_and_untouched_outside`. NOT verified: the tool on screen in the sandbox or the live session (hotkey, drawing, moving, saving).
+
 ## 2026-11-03
 
 - Applets, edit mode: a resize grip (`◢`, bottom right, dark pill like the icons) next to the Move handle and the gear. Dragging it resizes the window: position kept, never below the manifest `minWidth` / `minHeight`, never past the right and bottom edge of the monitor (new pure `placement::resized`). It is shown only when the manifest says `"resizable": true` (the default is false) and only in edit mode. Reuses the `Drag` of the move handle with `resize_min: Some(min)`, so the read-back pause and the single `on_moved` save at the end are the same; the grip's gesture holds only a `Weak<Drag>` (logged when gone), the new `resize_drag` is owned by `AppletWindow` like `drag` (rule 2: no new owner, no thread, no channel). Alt + right drag of Openbox still works. Tests: `resized_*` 2, `the_resize_grip_follows_edit_mode_and_resizes` (GTK, steps driven with pointer values like the handle test). NOT verified: the grip on screen with a real pointer (X11 `pin_geometry` resize while dragging, flicker, GTK relayout), Wayland (applet windows are X11 only), the grip over the applet content (it covers a few pixels of the bottom right corner in edit mode only).
