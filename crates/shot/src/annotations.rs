@@ -27,7 +27,7 @@ pub const DEFAULT_COLOR: Color = PALETTE[0].1;
 
 /// The three sizes of the tool bar. A line or arrow gets [`Size::line_width`],
 /// a text gets [`Size::font_size`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Size {
     Small,
     Medium,
@@ -44,6 +44,24 @@ impl Size {
             Size::Small => 2.0,
             Size::Medium => 4.0,
             Size::Large => 8.0,
+        }
+    }
+
+    /// Side of a mosaic block of the pixelate tool, in pixels.
+    pub fn block_size(self) -> u32 {
+        match self {
+            Size::Small => 6,
+            Size::Medium => 12,
+            Size::Large => 24,
+        }
+    }
+
+    /// Sigma of the gaussian blur of the blur tool, in pixels.
+    pub fn blur_sigma(self) -> f32 {
+        match self {
+            Size::Small => 4.0,
+            Size::Medium => 8.0,
+            Size::Large => 16.0,
         }
     }
 
@@ -86,6 +104,20 @@ pub enum Shape {
     Text { at: Point, text: String },
     /// A filled rectangle between two opposite corners (any order).
     Rect { from: Point, to: Point },
+    /// The image under the rectangle between two corners, as a mosaic.
+    Pixelate { from: Point, to: Point },
+    /// The image under the rectangle between two corners, blurred.
+    Blur { from: Point, to: Point },
+}
+
+impl Shape {
+    /// The two corners of a rectangle-like shape (rectangle, pixelate, blur).
+    pub fn corners(&self) -> Option<(Point, Point)> {
+        match self {
+            Shape::Rect { from, to } | Shape::Pixelate { from, to } | Shape::Blur { from, to } => Some((*from, *to)),
+            _ => None,
+        }
+    }
 }
 
 /// A shape with its style.
@@ -113,7 +145,7 @@ impl Annotation {
                 let (w, h) = text_extent(text, self.size.font_size());
                 p.0 >= at.0 && p.0 <= at.0 + w && p.1 >= at.1 && p.1 <= at.1 + h
             }
-            Shape::Rect { from, to } => {
+            Shape::Rect { from, to } | Shape::Pixelate { from, to } | Shape::Blur { from, to } => {
                 p.0 >= from.0.min(to.0) && p.0 <= from.0.max(to.0) && p.1 >= from.1.min(to.1) && p.1 <= from.1.max(to.1)
             }
         }
@@ -131,14 +163,17 @@ impl Annotation {
                 let (w, h) = text_extent(text, self.size.font_size());
                 (at.0, at.1, at.0 + w, at.1 + h)
             }
-            Shape::Rect { from, to } => (from.0.min(to.0), from.1.min(to.1), from.0.max(to.0), from.1.max(to.1)),
+            Shape::Rect { from, to } | Shape::Pixelate { from, to } | Shape::Blur { from, to } => (from.0.min(to.0), from.1.min(to.1), from.0.max(to.0), from.1.max(to.1)),
         }
     }
 
     /// Move the annotation by `(dx, dy)`.
     pub fn translate(&mut self, dx: f64, dy: f64) {
         match &mut self.shape {
-            Shape::Line { from, to } | Shape::Arrow { from, to } | Shape::Rect { from, to } => {
+            Shape::Line { from, to } | Shape::Arrow { from, to }
+            | Shape::Rect { from, to }
+            | Shape::Pixelate { from, to }
+            | Shape::Blur { from, to } => {
                 *from = (from.0 + dx, from.1 + dy);
                 *to = (to.0 + dx, to.1 + dy);
             }
@@ -324,6 +359,24 @@ mod tests {
         assert_eq!(r.bounds(), (10.0, 20.0, 50.0, 40.0));
         r.translate(5.0, -5.0);
         assert_eq!(r.shape, Shape::Rect { from: (55.0, 35.0), to: (15.0, 15.0) });
+    }
+
+    #[test]
+    fn pixelate_and_blur_behave_like_a_rectangle() {
+        for shape in [Shape::Pixelate { from: (50.0, 40.0), to: (10.0, 20.0) }, Shape::Blur { from: (50.0, 40.0), to: (10.0, 20.0) }] {
+            let mut a = Annotation::new(shape);
+            assert!(a.hit((30.0, 30.0)));
+            assert!(!a.hit((60.0, 30.0)));
+            assert_eq!(a.bounds(), (10.0, 20.0, 50.0, 40.0));
+            a.translate(1.0, 1.0);
+            assert_eq!(a.bounds(), (11.0, 21.0, 51.0, 41.0));
+        }
+    }
+
+    #[test]
+    fn effect_strength_grows_with_the_size() {
+        assert!(Size::Small.block_size() < Size::Medium.block_size() && Size::Medium.block_size() < Size::Large.block_size());
+        assert!(Size::Small.blur_sigma() < Size::Medium.blur_sigma() && Size::Medium.blur_sigma() < Size::Large.blur_sigma());
     }
 
     #[test]

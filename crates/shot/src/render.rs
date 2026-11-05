@@ -1,15 +1,38 @@
 //! Drawing of the annotations with cairo. The editor canvas and the export use
 //! the same [`draw`], so what the user sees is what gets saved.
 
-use crate::annotations::{arrow_head, Annotation, Shape, LINE_HEIGHT_FACTOR};
+use crate::annotations::{arrow_head, Annotation, Shape, Size, LINE_HEIGHT_FACTOR};
+use crate::effects;
 use gtk4::cairo;
 use image::RgbaImage;
+use std::collections::HashMap;
+
+/// Most patches kept by a [`PatchCache`]; the cache is emptied when it is full.
+const PATCH_CACHE_MAX: usize = 32;
+
+/// Which effect a patch has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Effect {
+    Pixelate,
+    Blur,
+}
+
+/// The place, effect and size of a patch.
+type PatchKey = (u32, u32, u32, u32, Effect, Size);
+
+/// The computed pixels of the pixelate and blur annotations, so a repaint (a
+/// mouse move on the canvas) does not blur the image again. It is only valid
+/// for one base image.
+#[derive(Default)]
+pub struct PatchCache(HashMap<PatchKey, cairo::ImageSurface>);
 
 /// Font family of the texts.
 const FONT_FAMILY: &str = "sans-serif";
 
-/// Draw `items` on `cr`, in image pixel coordinates, bottom item first.
-pub fn draw(cr: &cairo::Context, items: &[Annotation]) -> Result<(), cairo::Error> {
+/// Draw `items` on `cr`, in image pixel coordinates, bottom item first. `base`
+/// is the image the effects (pixelate, blur) take their pixels from, so they
+/// also cover what an earlier annotation drew below them.
+pub fn draw(cr: &cairo::Context, items: &[Annotation], base: &RgbaImage, cache: &mut PatchCache) -> Result<(), cairo::Error> {
     for item in items {
         cr.set_source_rgb(item.color.r, item.color.g, item.color.b);
         match &item.shape {
@@ -20,9 +43,47 @@ pub fn draw(cr: &cairo::Context, items: &[Annotation]) -> Result<(), cairo::Erro
                 cr.rectangle(from.0.min(to.0), from.1.min(to.1), (to.0 - from.0).abs(), (to.1 - from.1).abs());
                 cr.fill()?;
             }
+            Shape::Pixelate { from, to } => draw_effect(cr, base, cache, (*from, *to), Effect::Pixelate, item.size)?,
+            Shape::Blur { from, to } => draw_effect(cr, base, cache, (*from, *to), Effect::Blur, item.size)?,
         }
     }
     Ok(())
+}
+
+/// The pixels of `base` under the rectangle `corners`, with `effect` applied,
+/// painted in place. The rectangle is rounded outwards to whole pixels and
+/// cut to the image; nothing is drawn if nothing is left. The blur only sees
+/// the pixels inside the rectangle, so nothing from outside leaks in.
+fn draw_effect(
+    cr: &cairo::Context,
+    base: &RgbaImage,
+    cache: &mut PatchCache,
+    corners: ((f64, f64), (f64, f64)),
+    effect: Effect,
+    size: Size,
+) -> Result<(), cairo::Error> {
+    let ((ax, ay), (bx, by)) = corners;
+    let clamp = |v: f64, max: u32| v.clamp(0.0, max as f64);
+    let (x0, y0) = (clamp(ax.min(bx).floor(), base.width()) as u32, clamp(ay.min(by).floor(), base.height()) as u32);
+    let (x1, y1) = (clamp(ax.max(bx).ceil(), base.width()) as u32, clamp(ay.max(by).ceil(), base.height()) as u32);
+    if x1 <= x0 || y1 <= y0 { return Ok(()); }
+    let key = (x0, y0, x1 - x0, y1 - y0, effect, size);
+    if !cache.0.contains_key(&key) {
+        let region = image::imageops::crop_imm(base, x0, y0, x1 - x0, y1 - y0).to_image();
+        let done = match effect {
+            Effect::Pixelate => effects::pixelate(&region, size.block_size()),
+            Effect::Blur => effects::blur(&region, size.blur_sigma()),
+        };
+        let Ok(patch) = surface_from(&done) else {
+            opusdm_ipc::err_log!("opusdm-shot", "cannot build the {effect:?} patch of {}x{} pixels", x1 - x0, y1 - y0);
+            return Ok(());
+        };
+        if cache.0.len() >= PATCH_CACHE_MAX { cache.0.clear(); }
+        cache.0.insert(key, patch);
+    }
+    cr.set_source_surface(&cache.0[&key], x0 as f64, y0 as f64)?;
+    cr.rectangle(x0 as f64, y0 as f64, (x1 - x0) as f64, (y1 - y0) as f64);
+    cr.fill()
 }
 
 /// A straight stroke with round ends.
@@ -84,7 +145,7 @@ pub fn render(base: &RgbaImage, items: &[Annotation]) -> Result<RgbaImage, Strin
     let mut surface = surface_from(base)?;
     {
         let cr = cairo::Context::new(&surface).map_err(|e| format!("cannot draw: {e}"))?;
-        draw(&cr, items).map_err(|e| format!("cannot draw the annotations: {e}"))?;
+        draw(&cr, items, base, &mut PatchCache::default()).map_err(|e| format!("cannot draw the annotations: {e}"))?;
     }
     surface.flush();
     let (w, h) = (base.width(), base.height());
@@ -146,6 +207,53 @@ mod tests {
         assert!(inside[0] > 200 && inside[1] < 80 && inside[2] < 80, "inside is red: {inside:?}");
         assert_eq!(*out.get_pixel(5, 5), WHITE);
         assert_eq!(*out.get_pixel(35, 35), WHITE);
+    }
+
+    /// A 40 x 40 image of 1 pixel black and white vertical stripes.
+    fn stripes() -> RgbaImage {
+        RgbaImage::from_fn(40, 40, |x, _| if x % 2 == 0 { Rgba([0, 0, 0, 255]) } else { WHITE })
+    }
+
+    #[test]
+    fn pixelate_averages_inside_and_leaves_the_rest() {
+        let base = stripes();
+        let item = Annotation::new(Shape::Pixelate { from: (10.0, 10.0), to: (34.0, 34.0) });
+        let out = render(&base, &[item]).unwrap();
+        // Blocks of 12 pixels: the stripes become one grey inside a block.
+        assert_eq!(out.get_pixel(10, 10), out.get_pixel(11, 10));
+        assert_ne!(out.get_pixel(10, 10), base.get_pixel(10, 10));
+        assert_eq!(out.get_pixel(5, 5), base.get_pixel(5, 5));
+        assert_eq!(out.get_pixel(36, 36), base.get_pixel(36, 36));
+    }
+
+    #[test]
+    fn blur_softens_inside_and_leaves_the_rest() {
+        let base = stripes();
+        let item = Annotation::new(Shape::Blur { from: (4.0, 4.0), to: (36.0, 36.0) });
+        let out = render(&base, &[item]).unwrap();
+        let p = out.get_pixel(20, 20);
+        assert!(p[0] > 60 && p[0] < 200, "centre is grey: {p:?}");
+        assert_eq!(out.get_pixel(2, 2), base.get_pixel(2, 2));
+    }
+
+    #[test]
+    fn an_effect_covers_an_annotation_drawn_below_it() {
+        let rect = Annotation::new(Shape::Rect { from: (0.0, 0.0), to: (40.0, 40.0) });
+        let pix = Annotation::new(Shape::Pixelate { from: (10.0, 10.0), to: (30.0, 30.0) });
+        let out = render(&white(40, 40), &[rect, pix]).unwrap();
+        assert_eq!(*out.get_pixel(20, 20), WHITE, "the red below is hidden by the white base");
+        assert_ne!(*out.get_pixel(5, 5), WHITE);
+    }
+
+    #[test]
+    fn an_effect_partly_or_wholly_outside_the_image_is_cut() {
+        let base = stripes();
+        let wholly = Annotation::new(Shape::Blur { from: (100.0, 100.0), to: (200.0, 200.0) });
+        assert_eq!(render(&base, &[wholly]).unwrap(), base);
+        let partly = Annotation::new(Shape::Pixelate { from: (-20.0, -20.0), to: (10.0, 10.0) });
+        assert_eq!(render(&base, &[partly]).unwrap().dimensions(), (40, 40));
+        let empty = Annotation::new(Shape::Blur { from: (5.0, 5.0), to: (5.0, 5.0) });
+        assert_eq!(render(&base, &[empty]).unwrap(), base);
     }
 
     #[test]

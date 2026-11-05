@@ -80,6 +80,8 @@ enum Tool {
     Arrow,
     Text,
     Rect,
+    Pixelate,
+    Blur,
     Crop,
 }
 
@@ -152,6 +154,8 @@ struct Ui {
     /// Set while the code moves `scale`, so its handler ignores it.
     syncing: Cell<bool>,
     state: RefCell<State>,
+    /// The pixels of the pixelate and blur annotations (the base never changes).
+    patches: RefCell<render::PatchCache>,
 }
 
 /// Open the editor for `base`.
@@ -210,6 +214,7 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
         scale,
         scale_percent,
         syncing: Cell::new(false),
+        patches: RefCell::new(render::PatchCache::default()),
         state: RefCell::new(State {
             base,
             surface,
@@ -253,6 +258,8 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
         ("Arrow", Icon::Arrow, Tool::Arrow),
         ("Text", Icon::Text, Tool::Text),
         ("Filled rectangle: covers the area with the colour", Icon::Rect, Tool::Rect),
+        ("Pixelate: mosaic over the area (the size picks the blocks)", Icon::Pixelate, Tool::Pixelate),
+        ("Blur: blurs the area (the size picks the strength)", Icon::Blur, Tool::Blur),
         ("Crop: drag the area to keep (drag its sides to adjust, click to remove it)", Icon::Crop, Tool::Crop),
     ];
     let mut first: Option<gtk::ToggleButton> = None;
@@ -470,7 +477,7 @@ fn paint(ui: &Ui, cr: &cairo::Context) -> Result<(), cairo::Error> {
     cr.scale(st.zoom, st.zoom);
     cr.set_source_surface(&st.surface, 0.0, 0.0)?;
     cr.paint()?;
-    render::draw(cr, st.doc.items())?;
+    render::draw(cr, st.doc.items(), &st.base, &mut ui.patches.borrow_mut())?;
     if let Some((x0, y0, x1, y1)) = st.crop {
         let (x, y, w, h) = (x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs());
         // The dim layer is the whole image minus the crop (even-odd).
@@ -508,10 +515,12 @@ fn begin_drag(ui: &Ui, p: Point) {
                 st.drag = Drag::Move { last: (0.0, 0.0) };
             }
         }
-        Tool::Line | Tool::Arrow | Tool::Rect => {
+        Tool::Line | Tool::Arrow | Tool::Rect | Tool::Pixelate | Tool::Blur => {
             let shape = match st.tool {
                 Tool::Line => Shape::Line { from: p, to: p },
                 Tool::Rect => Shape::Rect { from: p, to: p },
+                Tool::Pixelate => Shape::Pixelate { from: p, to: p },
+                Tool::Blur => Shape::Blur { from: p, to: p },
                 _ => Shape::Arrow { from: p, to: p },
             };
             let annotation = styled(&st, shape);
@@ -575,11 +584,15 @@ fn update_drag(ui: &Ui, start: Point, delta: Point, shift: bool) {
         Drag::CropNew { .. } | Drag::CropResize { .. } => {}
         Drag::Draw { start: from } => {
             let mut to = (start.0 + delta.0, start.1 + delta.1);
-            // Shift locks the angle of a line or arrow; a rectangle ignores it.
-            let is_rect = matches!(st.doc.items().get(index).map(|a| &a.shape), Some(Shape::Rect { .. }));
+            // Shift locks the angle of a line or arrow; a rectangle-like shape ignores it.
+            let is_rect = st.doc.items().get(index).is_some_and(|a| a.shape.corners().is_some());
             if shift && !is_rect { to = annotations::snap_angle(from, to); }
             st.doc.modify(index, |a| match &mut a.shape {
-                Shape::Line { to: t, .. } | Shape::Arrow { to: t, .. } | Shape::Rect { to: t, .. } => *t = to,
+                Shape::Line { to: t, .. }
+                | Shape::Arrow { to: t, .. }
+                | Shape::Rect { to: t, .. }
+                | Shape::Pixelate { to: t, .. }
+                | Shape::Blur { to: t, .. } => *t = to,
                 Shape::Text { .. } => {}
             });
         }

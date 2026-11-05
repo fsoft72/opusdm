@@ -7,6 +7,7 @@ mod annotations;
 mod capture;
 mod config;
 mod editor;
+mod effects;
 mod export;
 mod icons;
 mod overlay;

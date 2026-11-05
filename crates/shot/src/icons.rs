@@ -24,6 +24,8 @@ pub enum Icon {
     Arrow,
     Text,
     Rect,
+    Pixelate,
+    Blur,
     Crop,
     Undo,
     Redo,
@@ -92,6 +94,25 @@ pub fn paint(cr: &cairo::Context, icon: Icon, rgba: (f64, f64, f64, f64), size: 
         Icon::Rect => {
             cr.rectangle(4.0, 6.0, 16.0, 12.0);
             cr.fill()
+        }
+        Icon::Pixelate => {
+            // A 3 x 3 checkerboard of squares.
+            for row in 0..3 {
+                for col in 0..3 {
+                    if (row + col) % 2 == 0 { cr.rectangle(4.0 + col as f64 * 5.0, 4.0 + row as f64 * 5.0, 5.0, 5.0); }
+                }
+            }
+            cr.fill()
+        }
+        Icon::Blur => {
+            // A disc fading out: three rings, fainter outwards.
+            let (alpha_base, centre) = (rgba.3, 12.0);
+            for (radius, fade) in [(3.5, 1.0), (7.0, 0.55), (10.0, 0.25)] {
+                cr.set_source_rgba(rgba.0, rgba.1, rgba.2, alpha_base * fade);
+                cr.arc(centre, centre, radius, 0.0, std::f64::consts::TAU);
+                if fade == 1.0 { cr.fill()?; } else { cr.stroke()?; }
+            }
+            Ok(())
         }
         Icon::Crop => {
             // The two overlapping corners of a crop mark.
@@ -163,7 +184,7 @@ mod tests {
 
     #[test]
     fn every_icon_paints_something() {
-        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Rect, Icon::Crop, Icon::Undo, Icon::Redo, Icon::Width(Size::Small)] {
+        for icon in [Icon::Select, Icon::Line, Icon::Arrow, Icon::Text, Icon::Rect, Icon::Pixelate, Icon::Blur, Icon::Crop, Icon::Undo, Icon::Redo, Icon::Width(Size::Small)] {
             assert!(painted(icon) > 0, "{icon:?} is blank");
         }
     }
