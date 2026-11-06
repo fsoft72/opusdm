@@ -12,6 +12,7 @@ mod export;
 mod icons;
 mod overlay;
 mod render;
+mod save_dialog;
 mod selection;
 
 use gtk4 as gtk;

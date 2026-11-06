@@ -606,19 +606,21 @@ little and save it.
   text 16, 24, 40 px) apply to what you draw next and to the selected annotation.
   **Ctrl+Z** undoes, **Ctrl+Shift+Z** (or **Ctrl+Y**) redoes. The defaults are red
   and M.
-- **Save as...:** choose the format in the bar first: **PNG** (lossless), **JPG**
-  or **WebP** with a quality slider (1-100, default 90; WebP also has a
-  **Lossless** switch). In the dialog the extension you type decides the format;
-  with no or an unknown extension the format of the bar is appended. The window
-  closes after a successful save; an error is shown under the image and nothing
-  is lost.
-- **Scale (%):** in the bar, 1 to 400 (default 100). Save as and Quick save
-  write the image at that percentage of its size (after the crop), with the
-  same factor on width and height so the aspect ratio is kept. Copy is not
-  scaled.
-- **Quick save:** writes a PNG named `shot-YYYYMMDD-HHMMSS.png` in
-  `~/Pictures/Screenshots` (created if needed, an existing name is never
-  overwritten) and closes.
+- **Save:** opens a requester with the **File name** (proposed as
+  `YYYYMMDD-HHMMSS`, editable), the **Format** (**PNG** lossless, **JPG** or
+  **WebP** with a quality slider 1-100, default 90; WebP also has a
+  **Lossless** switch) and the **Size** of the saved image: **Width** and
+  **Height** in pixels (default: the image after the crop, up to 400 %).
+  Changing one recalculates the other, so the aspect ratio is kept. Its
+  **Save** (or Enter in the name) opens the file dialog of the system with the
+  name and the format filter filled in; **Cancel** or **Esc** go back to the
+  editor. In the file dialog the extension you type decides the format; with no
+  or an unknown extension the format of the requester is appended. The format,
+  quality and lossless switch are offered again at the next Save of the same
+  window. The window closes after a successful save; an error is shown under
+  the image and nothing is lost.
+- **Delay (s):** in the bottom bar, 0 to 60 seconds to wait before the next
+  capture (saved when the window closes).
 - **Copy:** puts the image on the clipboard. The window stays open, because
   without a clipboard manager the image would vanish with the process.
 
