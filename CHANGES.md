@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-11-06
+
+- Version bump to **0.16.0** (`[workspace.package]` in `Cargo.toml`, inherited by all crates and `xtask`; `Cargo.lock` refreshed). No code change. Verified: `cargo build` passes. NOT verified: nothing else exercised, no behaviour touched.
+
 ## 2026-11-05
 
 - opusdm-shot, editor: new **Rectangle** tool (filled rectangle in the colour of the tool bar). It is a normal annotation (`Shape::Rect`): select, move, delete, undo/redo; Shift is ignored for it. Tests: `rect_hit_bounds_and_translate_ignore_the_corner_order`, `a_rect_is_filled_inside_and_untouched_outside`. See the next entry for what was verified.
