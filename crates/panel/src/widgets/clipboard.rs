@@ -149,7 +149,8 @@ impl ClipboardButton {
         // The row under the pointer is gone with the old list.
         self.pane.set_text(PREVIEW_HINT);
         let entries = center.entries(&self.search.text());
-        if entries.is_empty() {
+        let has_image = center.image_size().is_some() && self.search.text().trim().is_empty();
+        if entries.is_empty() && !has_image {
             let text = if center.len() == 0 { "Nothing copied yet" } else { "No match" };
             let empty = gtk::Label::new(Some(text));
             empty.add_css_class("dim-label");
@@ -158,9 +159,43 @@ impl ClipboardButton {
             self.list.append(&empty);
             return;
         }
+        // The image is not searchable text: it shows when the search is blank.
+        if self.search.text().trim().is_empty() {
+            if let Some((w, h)) = center.image_size() { self.list.append(&self.image_row(center, w, h)); }
+        }
         for (index, text) in entries {
             self.list.append(&self.row(center, index, &text));
         }
+    }
+
+    /// The remembered image: a button that copies it again, and one that
+    /// forgets it.
+    fn image_row(&self, center: &Rc<ClipboardCenter>, w: i32, h: i32) -> gtk::Box {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let label = gtk::Label::new(Some(&format!("Image {w} x {h}")));
+        label.set_xalign(0.0);
+        let pick = gtk::Button::new();
+        pick.set_child(Some(&label));
+        pick.set_hexpand(true);
+        pick.add_css_class("flat");
+        {
+            let center = center.clone();
+            let popover = self.popover.clone();
+            pick.connect_clicked(move |_| {
+                popover.popdown();
+                center.select_image();
+            });
+        }
+        let forget = gtk::Button::with_label("\u{d7}");
+        forget.add_css_class("flat");
+        forget.set_tooltip_text(Some("Forget the image"));
+        {
+            let center = center.clone();
+            forget.connect_clicked(move |_| center.remove_image());
+        }
+        line.append(&pick);
+        line.append(&forget);
+        line
     }
 
     /// One entry: a button that copies it again, and one that forgets it.
