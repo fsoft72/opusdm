@@ -4,10 +4,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
 use std::fs;
-use std::path::Path;
-
-/// Quality offered for JPG and WebP until the user changes it.
-pub const DEFAULT_QUALITY: u8 = 90;
+use std::path::{Path, PathBuf};
 
 /// Best and worst lossy quality.
 pub const MIN_QUALITY: u8 = 1;
@@ -73,10 +70,11 @@ pub struct Options {
     pub lossless: bool,
 }
 
+#[cfg(test)]
 impl Options {
     /// The default options of a format.
     pub fn new(format: Format) -> Self {
-        Options { format, quality: DEFAULT_QUALITY, lossless: false }
+        Options { format, quality: crate::config::DEFAULT_QUALITY, lossless: false }
     }
 }
 
@@ -152,9 +150,25 @@ pub fn save(image: &RgbaImage, path: &Path, options: &Options) -> Result<(), Str
     fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-/// File name stem proposed for a local time (`20261005-143015`).
-pub fn timestamp_stem(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> String {
-    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
+/// The file name stem of `pattern` for a local time: `YYYYMMDD` becomes the
+/// date and `HHMMSS` the time, both zero padded (`shot_YYYYMMDD_HHMMSS` gives
+/// `shot_20261005_143015`).
+pub fn expand_name(pattern: &str, year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> String {
+    pattern
+        .replace("YYYYMMDD", &format!("{year:04}{month:02}{day:02}"))
+        .replace("HHMMSS", &format!("{hour:02}{minute:02}{second:02}"))
+}
+
+/// The first free path in `dir` for `stem` saved as `format`: `stem.ext`, then
+/// `stem_1.ext`, `stem_2.ext` and so on, so a saved image is never replaced.
+pub fn unique_path(dir: &Path, stem: &str, format: Format) -> PathBuf {
+    let first = dir.join(file_name(stem, format));
+    if fs::symlink_metadata(&first).is_err() { return first; }
+    let base = stem.strip_suffix(&format!(".{}", format.extension())).unwrap_or(stem);
+    (1u32..)
+        .map(|n| dir.join(file_name(&format!("{base}_{n}"), format)))
+        .find(|p| fs::symlink_metadata(p).is_err())
+        .expect("an unbounded range always ends")
 }
 
 /// The file name for `stem` saved as `format`: the extension of the format is
@@ -264,8 +278,19 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_stem_is_zero_padded() {
-        assert_eq!(timestamp_stem(2026, 3, 7, 4, 5, 9), "20260307-040509");
+    fn expand_name_fills_date_and_time() {
+        assert_eq!(expand_name("shot_YYYYMMDD_HHMMSS", 2026, 3, 7, 4, 5, 9), "shot_20260307_040509");
+        assert_eq!(expand_name("plain", 2026, 3, 7, 4, 5, 9), "plain");
+    }
+
+    #[test]
+    fn unique_path_skips_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(unique_path(dir.path(), "a", Format::Png), dir.path().join("a.png"));
+        fs::write(dir.path().join("a.png"), b"x").unwrap();
+        assert_eq!(unique_path(dir.path(), "a", Format::Png), dir.path().join("a_1.png"));
+        fs::write(dir.path().join("a_1.png"), b"x").unwrap();
+        assert_eq!(unique_path(dir.path(), "a.png", Format::Png), dir.path().join("a_2.png"));
     }
 
     #[test]

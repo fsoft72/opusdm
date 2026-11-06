@@ -2,9 +2,10 @@
 //! arrows and text, and the Copy and Save actions.
 
 use crate::annotations::{self, Annotation, Color, Document, Point, Shape, Size, DEFAULT_COLOR, DEFAULT_SIZE, PALETTE};
-use crate::config;
+use crate::config::{self, ShotConfig};
 use crate::export::{self, Format, Options};
 use crate::save_dialog::{self, SaveChoice};
+use crate::settings_dialog;
 use crate::icons::{self, Icon};
 use crate::render;
 use crate::selection::{self, Area, Edges};
@@ -136,7 +137,8 @@ struct Ui {
     pointer: Cell<(f64, f64)>,
     status: gtk::Label,
     im: gtk::IMMulticontext,
-    delay: gtk::SpinButton,
+    /// The saved settings; replaced when the Settings window is saved.
+    settings: RefCell<ShotConfig>,
     /// Format, quality and lossless switch of the last Save requester, offered
     /// again the next time it opens.
     save_options: Cell<Options>,
@@ -170,10 +172,7 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     canvas.set_halign(gtk::Align::Start);
     canvas.set_valign(gtk::Align::Start);
 
-    let delay = gtk::SpinButton::with_range(0.0, config::MAX_DELAY_SECS as f64, 1.0);
-    delay.set_value(config::load().delay_secs as f64);
-    delay.set_tooltip_text(Some("Seconds to wait before the screen is captured, from the next launch"));
-
+    let settings = config::load();
 
     let scroll = gtk::ScrolledWindow::new();
     let ui = Rc::new(Ui {
@@ -183,9 +182,9 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
         pointer: Cell::new((0.0, 0.0)),
         status: gtk::Label::new(None),
         im: gtk::IMMulticontext::new(),
-        delay,
+        save_options: Cell::new(settings.options()),
+        settings: RefCell::new(settings),
         patches: RefCell::new(render::PatchCache::default()),
-        save_options: Cell::new(Options::new(Format::Png)),
         state: RefCell::new(State {
             base,
             surface,
@@ -216,6 +215,7 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     root.append(&bottom_bar(&ui));
     window.set_child(Some(&root));
     window.present();
+    if ui.settings.borrow().auto_copy { auto_copy(&ui); }
 }
 
 /// The tool bar: tools, colours, sizes, undo and redo.
@@ -305,26 +305,14 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar
 }
 
-/// Write the delay of `delay` to the config once, when `window` closes, and
-/// only when the user changed it.
-fn save_delay_on_close(window: &gtk::ApplicationWindow, delay: &gtk::SpinButton) {
-    let initial = delay.value_as_int();
-    let delay = delay.clone();
-    window.connect_close_request(move |_| {
-        // Takes a number typed but not yet confirmed with Enter.
-        delay.update();
-        let current = delay.value_as_int();
-        if current != initial { config::save(&config::ShotConfig { delay_secs: current.max(0) as u32 }); }
-        glib::Propagation::Proceed
-    });
-}
-
-/// The bottom bar: the capture delay on the left, Copy and Save on the right.
+/// The bottom bar: Settings on the left, Copy, Quick Save and Save on the right.
 fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     let bar = bar();
-    bar.append(&gtk::Label::new(Some("Delay (s)")));
-    bar.append(&ui.delay);
-    save_delay_on_close(&ui.window, &ui.delay);
+    let settings = gtk::Button::with_label("Settings");
+    settings.set_tooltip_text(Some("Folder, file name, format, quality, delay and auto copy (Ctrl+,)"));
+    settings.set_focus_on_click(false);
+    bar.append(&settings);
+    { let ui = ui.clone(); settings.connect_clicked(move |_| open_settings(&ui)); }
 
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -332,14 +320,17 @@ fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
 
     let copy = gtk::Button::with_label("Copy");
     copy.set_tooltip_text(Some("Copy the image to the clipboard"));
+    let quick = gtk::Button::with_label("Quick Save");
+    quick.set_tooltip_text(Some("Save at once in the folder, with the name and format of the Settings"));
     let save = gtk::Button::with_label("Save");
     save.set_tooltip_text(Some("Choose the name, format and size, then where to save"));
     save.add_css_class("suggested-action");
-    for b in [&copy, &save] {
+    for b in [&copy, &quick, &save] {
         b.set_focus_on_click(false);
         bar.append(b);
     }
     { let ui = ui.clone(); copy.connect_clicked(move |_| copy_to_clipboard(&ui)); }
+    { let ui = ui.clone(); quick.connect_clicked(move |_| quick_save(&ui)); }
     { let ui = ui.clone(); save.connect_clicked(move |_| ask_save(&ui)); }
     bar
 }
@@ -653,9 +644,13 @@ fn wire_keys(ui: &Rc<Ui>) {
 }
 
 /// Handle a key press that the input method did not take.
-fn on_key(ui: &Ui, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+fn on_key(ui: &Rc<Ui>, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
     let editing = ui.state.borrow().edit.is_some();
     let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+    if ctrl && key == gdk::Key::comma {
+        open_settings(ui);
+        return glib::Propagation::Stop;
+    }
     if editing {
         match key {
             gdk::Key::Escape => commit_text(ui),
@@ -785,18 +780,60 @@ fn final_image(ui: &Ui) -> Option<RgbaImage> {
 /// manager the content would vanish with the process.
 fn copy_to_clipboard(ui: &Ui) {
     let Some(img) = final_image(ui) else { return };
-    let (w, h) = img.dimensions();
-    let bytes = glib::Bytes::from_owned(img.into_raw());
-    let texture = gdk::MemoryTexture::new(w as i32, h as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, w as usize * 4);
-    WidgetExt::display(&ui.window).clipboard().set_texture(&texture);
+    set_clipboard(ui, &img);
     show_info(ui, "Copied to the clipboard (it stays available while this window is open)");
 }
 
-/// The file name proposed by the Save requester: the local time, or
-/// `screenshot` when the clock cannot be read.
-fn proposed_stem() -> String {
+/// Put `img` on the clipboard.
+fn set_clipboard(ui: &Ui, img: &RgbaImage) {
+    let (w, h) = img.dimensions();
+    let bytes = glib::Bytes::from_owned(img.as_raw().clone());
+    let texture = gdk::MemoryTexture::new(w as i32, h as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, w as usize * 4);
+    WidgetExt::display(&ui.window).clipboard().set_texture(&texture);
+}
+
+/// Copy the image to the clipboard because of the "auto copy" setting. A
+/// failure is shown and logged by `final_image`.
+fn auto_copy(ui: &Ui) {
+    let Some(img) = final_image(ui) else { return };
+    set_clipboard(ui, &img);
+}
+
+/// Open the Settings window; its Save stores the settings and applies them
+/// to this editor (the delay is used from the next launch).
+fn open_settings(ui: &Rc<Ui>) {
+    commit_text(ui);
+    let current = ui.settings.borrow().clone();
+    let ui2 = ui.clone();
+    settings_dialog::show(&ui.window, &current, move |new| {
+        config::save(&new);
+        // The Save requester starts from the new default format and quality.
+        ui2.save_options.set(new.options());
+        *ui2.settings.borrow_mut() = new;
+    });
+}
+
+/// Save the image at once in the folder of the Settings, with their name,
+/// format and quality (never replacing a file: a taken name gets `_1`, `_2`).
+fn quick_save(ui: &Rc<Ui>) {
+    let Some(img) = final_image(ui) else { return };
+    let settings = ui.settings.borrow().clone();
+    if settings.auto_copy { set_clipboard(ui, &img); }
+    let options = settings.options();
+    let stem = proposed_stem(&settings.name);
+    save_in_background(ui, move || {
+        std::fs::create_dir_all(&settings.dir).map_err(|e| format!("cannot create {}: {e}", settings.dir.display()))?;
+        let target = export::unique_path(&settings.dir, &stem, options.format);
+        export::save(&img, &target, &options)?;
+        Ok(target)
+    });
+}
+
+/// The file name for `pattern` (the Settings name) filled with the local
+/// time, or `screenshot` when the clock cannot be read.
+fn proposed_stem(pattern: &str) -> String {
     match glib::DateTime::now_local() {
-        Ok(n) => export::timestamp_stem(n.year(), n.month() as u32, n.day_of_month() as u32, n.hour() as u32, n.minute() as u32, n.second() as u32),
+        Ok(n) => export::expand_name(pattern, n.year(), n.month() as u32, n.day_of_month() as u32, n.hour() as u32, n.minute() as u32, n.second() as u32),
         Err(e) => {
             opusdm_ipc::err_log!("opusdm-shot", "cannot read the clock for the file name: {e}");
             "screenshot".to_string()
@@ -811,7 +848,8 @@ fn ask_save(ui: &Rc<Ui>) {
     commit_text(ui);
     let size = output_size(&ui.state.borrow());
     let ui2 = ui.clone();
-    save_dialog::show(&ui.window, &proposed_stem(), ui.save_options.get(), size, move |choice| {
+    let stem = proposed_stem(&ui.settings.borrow().name);
+    save_dialog::show(&ui.window, &stem, ui.save_options.get(), size, move |choice| {
         ui2.save_options.set(choice.options);
         save_as(&ui2, choice);
     });
@@ -821,6 +859,7 @@ fn ask_save(ui: &Rc<Ui>) {
 /// image at the chosen size and close.
 fn save_as(ui: &Rc<Ui>, choice: SaveChoice) {
     let Some(img) = final_image(ui) else { return };
+    if ui.settings.borrow().auto_copy { set_clipboard(ui, &img); }
     let img = export::scale_to_size(img, choice.size.0, choice.size.1);
     let format = choice.options.format;
     let filters = gio::ListStore::new::<gtk::FileFilter>();
@@ -837,9 +876,12 @@ fn save_as(ui: &Rc<Ui>, choice: SaveChoice) {
     dialog.set_filters(Some(&filters));
     dialog.set_default_filter(default_filter.as_ref());
     dialog.set_initial_name(Some(&export::file_name(&choice.stem, format)));
-    let remembered = config::last_dir().filter(|d| d.is_dir());
-    if let Some(dir) = remembered.or_else(|| dirs::picture_dir().filter(|d| d.is_dir())) {
-        dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
+    // The folder of the Settings; a missing one is created so the dialog
+    // opens there.
+    let dir = ui.settings.borrow().dir.clone();
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => dialog.set_initial_folder(Some(&gio::File::for_path(&dir))),
+        Err(e) => opusdm_ipc::err_log!("opusdm-shot", "cannot create {}: {e}", dir.display()),
     }
     let ui2 = ui.clone();
     dialog.save(Some(&ui.window), gio::Cancellable::NONE, move |result| {
@@ -854,7 +896,7 @@ fn save_as(ui: &Rc<Ui>, choice: SaveChoice) {
         let (target, chosen) = resolve_target(path.clone(), format);
         let options = Options { format: chosen, ..choice.options };
         if !needs_overwrite_confirm(&path, &target) {
-            return save_in_background(&ui2, move || save_and_remember(&img, target, &options));
+            return save_in_background(&ui2, move || save_image(&img, target, &options));
         }
         // The dialog asked about `path`, not about the name with the
         // extension added, so ask before replacing that one.
@@ -863,15 +905,14 @@ fn save_as(ui: &Rc<Ui>, choice: SaveChoice) {
         opusdm_ui::requester(&ui2.window, "Replace file?", &message, None, &[("Replace", true), ("Cancel", false)], move |replace| {
             if !replace { return; }
             let (img, target) = (img.clone(), target.clone());
-            save_in_background(&ui3, move || save_and_remember(&img, target, &options));
+            save_in_background(&ui3, move || save_image(&img, target, &options));
         });
     });
 }
 
-/// Write `img` to `target` and remember its folder for the next save dialog.
-fn save_and_remember(img: &RgbaImage, target: PathBuf, options: &export::Options) -> Result<PathBuf, String> {
+/// Write `img` to `target`.
+fn save_image(img: &RgbaImage, target: PathBuf, options: &export::Options) -> Result<PathBuf, String> {
     export::save(img, &target, options)?;
-    config::remember_dir(&target);
     Ok(target)
 }
 

@@ -14,6 +14,7 @@ mod overlay;
 mod render;
 mod save_dialog;
 mod selection;
+mod settings_dialog;
 
 use gtk4 as gtk;
 use gtk::gdk;
