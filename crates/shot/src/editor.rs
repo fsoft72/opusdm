@@ -305,9 +305,13 @@ fn top_bar(ui: &Rc<Ui>) -> gtk::Box {
     bar
 }
 
-/// The bottom bar: Settings on the left, Copy, Quick Save and Save on the right.
+/// Side of the camera icon at the left of the bottom bar, in pixels.
+const CAMERA_SIZE: i32 = 22;
+
+/// The bottom bar: the camera, Settings on the left, Copy, Quick Save and Save on the right.
 fn bottom_bar(ui: &Rc<Ui>) -> gtk::Box {
     let bar = bar();
+    bar.append(&icons::camera_image(CAMERA_SIZE));
     let settings = gtk::Button::with_label("Settings");
     settings.set_tooltip_text(Some("Folder, file name, format, quality, delay and auto copy (Ctrl+,)"));
     settings.set_focus_on_click(false);

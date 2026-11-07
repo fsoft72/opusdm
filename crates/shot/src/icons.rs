@@ -6,10 +6,36 @@ use gtk4 as gtk;
 use gtk::cairo;
 use gtk::prelude::*;
 
-/// The camera icon of `opusdm-shot` (vector, `currentColor` stroke), embedded
-/// at compile time so the binary needs no file at runtime.
-#[allow(dead_code)]
-pub const SVG_CAMERA: &[u8] = include_bytes!("../../../assets/icons/camera.svg");
+/// The camera drawing of `opusdm-shot` (outline, so it reads on a light and on
+/// a dark theme), embedded at compile time. Its black is [`CAMERA_INK`]; the
+/// widget swaps it for the foreground colour of the theme.
+const SVG_CAMERA: &[u8] = include_bytes!("../../../assets/apps/icons/photo-camera-light.svg");
+
+/// The colour the camera SVG is drawn in, replaced when tinting.
+const CAMERA_INK: &str = "#231F20";
+
+/// `svg` with every [`CAMERA_INK`] replaced by `rgba` as `#rrggbb`.
+fn tint_camera(svg: &[u8], rgba: (f64, f64, f64, f64)) -> Vec<u8> {
+    let channel = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let hex = format!("#{:02x}{:02x}{:02x}", channel(rgba.0), channel(rgba.1), channel(rgba.2));
+    String::from_utf8_lossy(svg).replace(CAMERA_INK, &hex).into_bytes()
+}
+
+/// The camera as an image of `size` pixels, in the foreground colour of the
+/// theme. The colour is read when the widget is mapped.
+pub fn camera_image(size: i32) -> gtk::Image {
+    let image = gtk::Image::new();
+    image.set_pixel_size(size);
+    image.connect_map(|image| {
+        let c = image.color();
+        let svg = tint_camera(SVG_CAMERA, (c.red() as f64, c.green() as f64, c.blue() as f64, c.alpha() as f64));
+        match gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(svg)) {
+            Ok(texture) => image.set_paintable(Some(&texture)),
+            Err(e) => opusdm_ipc::err_log!("opusdm-shot", "camera icon: {e}"),
+        }
+    });
+    image
+}
 
 /// Side of an icon, in pixels.
 pub const ICON_SIZE: i32 = 24;
@@ -188,10 +214,19 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_camera_svg_loads_as_a_texture() {
+    fn the_camera_svg_loads_in_any_colour() {
         gtk::init().ok();
-        let bytes = gtk::glib::Bytes::from_static(SVG_CAMERA);
-        assert!(gtk::gdk::Texture::from_bytes(&bytes).is_ok());
+        for rgba in [(0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0, 1.0)] {
+            let svg = tint_camera(SVG_CAMERA, rgba);
+            assert!(!String::from_utf8_lossy(&svg).contains(CAMERA_INK));
+            assert!(gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(svg)).is_ok());
+        }
+    }
+
+    #[test]
+    fn the_camera_is_tinted_with_the_given_colour() {
+        let svg = String::from_utf8(tint_camera(SVG_CAMERA, (1.0, 0.5, 0.0, 1.0))).unwrap();
+        assert!(svg.contains("#ff8000"));
     }
 
     #[test]

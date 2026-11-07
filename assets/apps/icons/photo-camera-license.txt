@@ -1,0 +1,5 @@
+COLLECTION: Responsive Line Icons
+LICENSE: CC Attribution License
+AUTHOR: pixelbazaar
+
+https://www.svgrepo.com/svg/513123/photo-camera
