@@ -6,6 +6,11 @@ use gtk4 as gtk;
 use gtk::cairo;
 use gtk::prelude::*;
 
+/// The camera icon of `opusdm-shot` (vector, `currentColor` stroke), embedded
+/// at compile time so the binary needs no file at runtime.
+#[allow(dead_code)]
+pub const SVG_CAMERA: &[u8] = include_bytes!("../../../assets/icons/camera.svg");
+
 /// Side of an icon, in pixels.
 pub const ICON_SIZE: i32 = 24;
 
@@ -180,6 +185,13 @@ mod tests {
         surface.flush();
         let data = surface.data().unwrap();
         data.as_chunks::<4>().0.iter().filter(|p| p[3] != 0).count()
+    }
+
+    #[test]
+    fn the_embedded_camera_svg_loads_as_a_texture() {
+        gtk::init().ok();
+        let bytes = gtk::glib::Bytes::from_static(SVG_CAMERA);
+        assert!(gtk::gdk::Texture::from_bytes(&bytes).is_ok());
     }
 
     #[test]
