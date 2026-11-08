@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 /// supervisor which reads it) that found a live owner of its socket.
 pub const EXIT_ALREADY_RUNNING: i32 = 3;
 
+/// Exit code of `opusdm-dock` when `dock.json` turns the dock off: the hub's
+/// dock supervisor then waits for the setting to come back instead of
+/// restarting it.
+pub const EXIT_DISABLED: i32 = 4;
+
 /// Result of trying to become the owner of a single-instance socket.
 #[derive(Debug)]
 pub enum Acquired {

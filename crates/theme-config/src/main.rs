@@ -236,7 +236,7 @@ fn build_dock_page(window: &gtk::ApplicationWindow, desktop: &opusdm_ipc::Deskto
     let dock = DockSection::new(desktop.dock_position, desktop.dock_icon_size, desktop.panel_position);
     page.append(&dock.root);
     page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    let apps = opusdm_ipc::dock::load_dock_config().map(|c| c.apps).unwrap_or_default();
+    let apps = opusdm_ipc::dock::load_dock_config().app_ids();
     let dock_look = DockLookSection::new(window, desktop.dock_visible, &desktop.dock_style);
     page.append(&dock_look.root);
     page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -415,7 +415,8 @@ fn connect_apply(apply: &gtk::Button, sections: &Rc<Sections>, note: &gtk::Label
     apply.connect_clicked(move |_| {
         let selected = sections.icon_set.borrow().value();
         let (prefs, desktop) = sections.read();
-        let dock_error = opusdm_ipc::dock::save_dock_config(&opusdm_ipc::DockConfig { apps: sections.dock_apps.apps() }).err().map(|e| e.to_string());
+        let dock_apps = sections.dock_apps.apps();
+        let dock_error = opusdm_ipc::dock::update_dock_config(|cfg| cfg.apps = Some(dock_apps)).err().map(|e| e.to_string());
         if let Some(e) = &dock_error {
             opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
         }

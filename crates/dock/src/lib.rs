@@ -9,7 +9,7 @@ use gtk4 as gtk;
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_ipc::{DockConfig, DockImageMode, DockPosition, DockStyle, PanelPosition};
+use opusdm_ipc::{DockImageMode, DockPosition, DockStyle, PanelPosition};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -236,12 +236,13 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
 /// The pinned app ids to start with: `dock.json`, or the default set written
 /// out as `dock.json` so the Settings tool and the dock start from one list.
 fn initial_app_ids() -> Vec<String> {
-    if let Some(cfg) = opusdm_ipc::dock::load_dock_config() {
-        return cfg.apps;
+    if let Some(ids) = opusdm_ipc::dock::load_dock_config().apps {
+        return ids;
     }
     let apps = apps::default_app_ids();
-    if let Err(e) = opusdm_ipc::dock::save_dock_config(&DockConfig { apps: apps.clone() }) {
-        opusdm_ipc::err_log!("dock", "cannot write dock.json: {e}");
+    let defaults = apps.clone();
+    if let Err(e) = opusdm_ipc::dock::update_dock_config(|cfg| cfg.apps = Some(defaults)) {
+        opusdm_ipc::err_log!("dock", "cannot write the default apps to dock.json: {e}");
     }
     apps
 }
@@ -467,7 +468,7 @@ impl Dock {
     fn commit(self: &Rc<Self>, ids: Vec<String>) {
         self.set_app_ids(&ids);
         let apps = apps::ids(&self.state.borrow().entries);
-        if let Err(e) = opusdm_ipc::dock::save_dock_config(&DockConfig { apps }) {
+        if let Err(e) = opusdm_ipc::dock::update_dock_config(|cfg| cfg.apps = Some(apps)) {
             opusdm_ipc::err_log!("dock", "cannot write dock.json: {e}");
         }
     }
@@ -625,9 +626,7 @@ impl Dock {
             if !matches!(event, ChangesDoneHint | Created | Deleted) {
                 return;
             }
-            let ids = opusdm_ipc::dock::load_dock_config()
-                .map(|cfg| cfg.apps)
-                .unwrap_or_else(apps::default_app_ids);
+            let ids = opusdm_ipc::dock::load_dock_config().apps.unwrap_or_else(apps::default_app_ids);
             dock.set_app_ids(&ids);
         });
         *self.config_monitor.borrow_mut() = Some(monitor);
