@@ -10,14 +10,19 @@ use gtk::glib;
 use gtk::prelude::*;
 use opusdm_iconview::{scan, IconEntry, IconField, LayoutMode};
 use opusdm_ipc::{Group, Groups, IconSetId};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// Default size of a new group window, in pixels.
 const WINDOW_WIDTH: i32 = 480;
 const WINDOW_HEIGHT: i32 = 360;
+
+/// A read of a group's members still running after this long is logged (a
+/// member on a slow or unreachable disk).
+const SLOW_READ: Duration = Duration::from_secs(5);
 
 /// Starts a member (double click).
 pub type LaunchFn = Rc<dyn Fn(&IconEntry)>;
@@ -38,28 +43,36 @@ pub struct GroupActions {
 struct Open {
     window: gtk::Window,
     field: IconField,
+    /// Ticket of the newest members read; an older one that comes back
+    /// later is dropped.
+    latest_read: Cell<u64>,
 }
 
 /// The group windows currently open, keyed by group id.
 #[derive(Default)]
 pub struct GroupWindows {
     open: Rc<RefCell<HashMap<String, Open>>>,
+    /// Last ticket handed out, shared by every window so a window closed
+    /// and opened again never takes a result meant for the old one.
+    last_ticket: Cell<u64>,
 }
 
-/// The icon entries of `group`'s members, in the order they were added. A
-/// member that no longer exists is a broken entry.
-fn member_entries(group: &Group) -> Vec<IconEntry> {
-    group.items.iter().map(|p| scan::entry_for_path(p)).collect()
+/// The icon entries of the member paths `items`, in the order they were
+/// added. A member that no longer exists is a broken entry. Touches the
+/// disk: runs on a worker thread.
+fn member_entries(items: &[PathBuf]) -> Vec<IconEntry> {
+    items.iter().map(|p| scan::entry_for_path(p)).collect()
 }
 
 impl GroupWindows {
     /// Open the window of `group`, or refresh and raise it when it is already
     /// open. `icon_set` is the desktop's current icon set.
     pub fn show(&self, app: &gtk::Application, group: &Group, icon_set: &IconSetId, actions: &GroupActions) {
-        if let Some(open) = self.open.borrow().get(&group.id) {
-            open.window.set_title(Some(&group.name));
-            open.field.set_entries(&member_entries(group));
-            open.window.present();
+        let open_window = self.open.borrow().get(&group.id).map(|o| o.window.clone());
+        if let Some(window) = open_window {
+            window.set_title(Some(&group.name));
+            self.load_members(&group.id, group.items.clone());
+            window.present();
             return;
         }
 
@@ -74,7 +87,6 @@ impl GroupWindows {
         field.set_icon_set(icon_set.clone());
         field.widget().set_hexpand(true);
         field.widget().set_vexpand(true);
-        field.set_entries(&member_entries(group));
         window.set_child(Some(field.widget()));
 
         {
@@ -120,7 +132,74 @@ impl GroupWindows {
         }
 
         window.present();
-        self.open.borrow_mut().insert(group.id.clone(), Open { window, field });
+        self.open.borrow_mut().insert(group.id.clone(), Open { window, field, latest_read: Cell::new(0) });
+        self.load_members(&group.id, group.items.clone());
+    }
+
+    /// Read the members `items` of the open window of group `id` on a worker
+    /// thread (a member on a dead network mount must not freeze the hub) and
+    /// show them when they are back, unless the window was closed or a newer
+    /// read was started. A read slower than [`SLOW_READ`] is logged.
+    ///
+    /// Ownership: the worker owns the paths and the sender; the future on the
+    /// main loop owns the receiver and a handle on the open windows map, and
+    /// ends when the result (or the worker's end) arrives.
+    fn load_members(&self, id: &str, items: Vec<PathBuf>) {
+        let ticket = self.last_ticket.get() + 1;
+        self.last_ticket.set(ticket);
+        let found = self.open.borrow().get(id).map(|o| o.latest_read.set(ticket)).is_some();
+        if !found {
+            opusdm_ipc::err_log!("hub", "group {id}: no open window to show the members in");
+            return;
+        }
+
+        let (tx, rx) = async_channel::bounded(1);
+        let worker_id = id.to_string();
+        let spawned = std::thread::Builder::new().name("opusdm-group-read".into()).spawn(move || {
+            if tx.send_blocking(member_entries(&items)).is_err() {
+                opusdm_ipc::err_log!("hub", "group {worker_id}: members read, but nobody waits for them any more");
+            }
+        });
+        if let Err(e) = spawned {
+            opusdm_ipc::err_log!("hub", "group {id}: cannot start reading the members: {e}");
+            return;
+        }
+
+        let done = Rc::new(Cell::new(false));
+        {
+            let done = done.clone();
+            let id = id.to_string();
+            glib::timeout_add_local_once(SLOW_READ, move || {
+                if done.get() { return; }
+                opusdm_ipc::err_log!("hub", "group {id}: reading the members takes more than {}s (a slow or unreachable disk?)", SLOW_READ.as_secs());
+            });
+        }
+
+        let started = Instant::now();
+        let open_map = self.open.clone();
+        let id = id.to_string();
+        glib::spawn_future_local(async move {
+            let result = rx.recv().await;
+            done.set(true);
+            let Ok(entries) = result else {
+                opusdm_ipc::err_log!("hub", "group {id}: the members reader ended without a result");
+                return;
+            };
+            if started.elapsed() >= SLOW_READ {
+                opusdm_ipc::err_log!("hub", "group {id}: members read after {}s", started.elapsed().as_secs());
+            }
+            let field = {
+                let map = open_map.borrow();
+                let Some(open) = map.get(&id) else {
+                    opusdm_ipc::debug_log!("hub", "group {id}: window closed before its members were read");
+                    return;
+                };
+                // A newer read is on its way: it will fill the window.
+                if open.latest_read.get() != ticket { return; }
+                open.field.clone()
+            };
+            field.set_entries(&entries);
+        });
     }
 
     /// Show or hide every open group window (used when the desktop is hidden
@@ -137,12 +216,12 @@ impl GroupWindows {
     pub fn refresh(&self, groups: &Groups) {
         let ids: Vec<String> = self.open.borrow().keys().cloned().collect();
         for id in ids {
-            let target = self.open.borrow().get(&id).map(|o| (o.window.clone(), o.field.clone()));
-            let Some((window, field)) = target else { continue };
+            let target = self.open.borrow().get(&id).map(|o| o.window.clone());
+            let Some(window) = target else { continue };
             match groups.get(&id) {
                 Some(group) => {
                     window.set_title(Some(&group.name));
-                    field.set_entries(&member_entries(group));
+                    self.load_members(&id, group.items.clone());
                 }
                 None => window.close(),
             }
@@ -176,4 +255,23 @@ fn popup_remove_menu(
     popover.set_child(Some(&btn));
     popover.connect_closed(|p| p.unparent());
     popover.popup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opusdm_iconview::IconKind;
+
+    #[test]
+    fn members_keep_their_order_and_a_missing_one_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("b.txt");
+        std::fs::write(&file, "x").unwrap();
+        let gone = dir.path().join("a-gone");
+        let entries = member_entries(&[file.clone(), gone.clone(), dir.path().to_path_buf()]);
+        let kinds: Vec<IconKind> = entries.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, vec![IconKind::File, IconKind::Broken, IconKind::Dir]);
+        assert_eq!(entries[0].path, file);
+        assert_eq!(entries[1].path, gone);
+    }
 }
