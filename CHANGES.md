@@ -1,6 +1,8 @@
 # Changes
 
 ## 2026-11-08
+- Lister row context menu (right click) is more compact: no border around each item, items flat with a hover highlight only (`.context-menu button` rules in `theme.rs`, spacing and margins reduced in `context_menu.rs`). New item **Change Permissions...** (after Delete...), acting on the clicked row or the selection holding it (`attr_dialogs::open_permissions_for`; `open_permissions` keeps the palette behaviour). Verified: `cargo build`, tests, clippy. NOT verified: the menu in a running Lister (look, hover, the new item opening the dialog and applying chmod), the other Lister checks of the rules list.
+
 - `scripts/live-update.sh` now installs `dist/share/applications/*.desktop` into `/usr/share/applications` (as `install.sh` does), before `update-desktop-database`. Header comment updated. Verified: `sh -n`. NOT verified: a real run of `live-update.sh` (needs sudo and restarts the hub), the entries showing in a menu.
 
 - `scripts/build-release.sh`: the per-app desktop entries (`share/applications/org.opusdm.<Id>.desktop`) of the stand-alone apps (Terminal, Run, Shot, Player, Viewer, Settings, Input, Screen, Apps Editor, Network, Printers, Bluetooth, Applets browser) are now **visible** in menus and launchers (Comment, Categories, `StartupWMClass=org.opusdm.<Id>`; no `NoDisplay`). Session components (Hub, Lister, Dock, PolkitAgent) stay hidden. Only the generated text of the entries changed; no Rust code. Verified: `bash -n`, the generation loop run on its own into a temp dir (17 files), `desktop-file-validate` clean. NOT verified: a full `build-release.sh` run, `install.sh` / the .deb, the entries showing in a real menu. Hidden entries added for Notify and Applets too.

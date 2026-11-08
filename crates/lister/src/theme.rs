@@ -83,6 +83,9 @@ pub fn generate_css(settings: &Settings) -> String {
              background: linear-gradient(to bottom, alpha({btn_bg}, 0.6), alpha({btn_bg}, 0.85)); \
              box-shadow: inset 1px 1px 2px rgba(0, 0, 0, 0.4); \
          }} \
+         .context-menu button {{ background: none; border: none; box-shadow: none; border-radius: 3px; \
+             min-height: 0; padding: 3px 10px; margin: 0; }} \
+         .context-menu button:hover {{ background: rgba(128, 128, 128, 0.3); }} \
          columnview > listview > row {{ padding: 0; margin: 0; border: none; min-height: 0; }} \
          columnview > listview > row > cell {{ padding: 0; min-height: 0; }} \
          /* Transparent border: without it the theme leaves a 1-2px dark gap

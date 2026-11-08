@@ -55,7 +55,12 @@ pub fn parse_octal(text: &str) -> Result<u32, String> {
 
 /// Open the permissions dialog for the current selection.
 pub fn open_permissions(ui: &Rc<Ui>) {
-    let srcs = ui.selected_paths();
+    open_permissions_for(ui, ui.selected_paths());
+}
+
+/// Open the permissions dialog for `srcs` (the context menu passes the
+/// clicked row or the selection that holds it).
+pub fn open_permissions_for(ui: &Rc<Ui>, srcs: Vec<std::path::PathBuf>) {
     let Some(first) = srcs.first() else {
         crate::actions::flash(ui, "nothing selected");
         return;

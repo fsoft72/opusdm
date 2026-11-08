@@ -24,11 +24,11 @@ impl Menu {
         popover.set_parent(anchor);
         popover.set_has_arrow(true);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        items.set_margin_start(4);
-        items.set_margin_end(4);
-        items.set_margin_top(4);
-        items.set_margin_bottom(4);
+        let items = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        items.set_margin_start(2);
+        items.set_margin_end(2);
+        items.set_margin_top(2);
+        items.set_margin_bottom(2);
         items.add_css_class("context-menu");
         Self { ui: ui.clone(), popover, items }
     }
@@ -205,6 +205,9 @@ pub fn show_context_menu(
     menu.item("Delete...", move |ui| {
         crate::actions::confirm_delete(ui, &format!("Delete \"{file_name}\" permanently?"), vec![t.to_path_buf()], true);
     });
+
+    let tg = targets.clone();
+    menu.item("Change Permissions...", move |ui| crate::attr_dialogs::open_permissions_for(ui, tg(ui)));
 
     // File type "Open With" entries: one per function of the type the file matches.
     if let Some(file_type) = crate::filetypes_ui::type_for(&target, row) {
