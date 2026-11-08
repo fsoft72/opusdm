@@ -4,8 +4,9 @@
 #
 # Usage: scripts/live-update.sh [--config] [--all | --no-restart] [--prefix DIR]
 #   (default)  replace the binaries in PREFIX/bin, install the folder handler
-#              (opusdm-lister.desktop) and restart only opusdm-hub.
-#              Listers, dock and other windows already open keep running the
+#              (opusdm-lister.desktop) and restart opusdm-hub, with the
+#              applets and the dock (the hub starts them again).
+#              Listers and other windows already open keep running the
 #              old binaries until they are closed and opened again.
 #   --config   also replace PREFIX/config (Openbox, picom and labwc
 #              configuration) and the session scripts, then ask the window
@@ -145,10 +146,10 @@ else
 fi
 
 # Stop the hub, or every OpusDM process with --all. Without --all the applets
-# process goes too: the new hub's supervisor starts it again with the new
-# code (left running, it would keep the old applets and the new hub would
-# only probe it).
-if [ "$RESTART_ALL" -eq 1 ]; then STOP="$PROCESSES"; else STOP="opusdm-hub opusdm-applets"; fi
+# and the dock processes go too: the new hub's supervisors start them again
+# with the new code (left running, they would keep the old code and the new
+# hub would only wait for them).
+if [ "$RESTART_ALL" -eq 1 ]; then STOP="$PROCESSES"; else STOP="opusdm-hub opusdm-applets opusdm-dock"; fi
 echo "Stopping: $STOP"
 for p in $STOP; do
     pkill -u "$(id -u)" -x "$(printf '%.*s' "$PROC_NAME_MAX" "$p")" || true
