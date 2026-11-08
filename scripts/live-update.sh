@@ -4,7 +4,7 @@
 #
 # Usage: scripts/live-update.sh [--config] [--all | --no-restart] [--prefix DIR]
 #   (default)  replace the binaries in PREFIX/bin, install the folder handler
-#              (opusdm-lister.desktop) and restart opusdm-hub, with the
+#              (opusdm-lister.desktop), the per-app desktop entries and restart opusdm-hub, with the
 #              applets and the dock (the hub starts them again).
 #              Listers and other windows already open keep running the
 #              old binaries until they are closed and opened again.
@@ -109,6 +109,10 @@ echo "Installing the folder handler"
 $SUDO mkdir -p /usr/local/bin /usr/share/applications
 $SUDO ln -sf "$PREFIX/bin/opusdm-open-folder" /usr/local/bin/opusdm-open-folder
 $SUDO install -m 644 "$DIST/opusdm-lister.desktop" /usr/share/applications/opusdm-lister.desktop
+# Per-app desktop entries (menus, launchers, Wayland icons), as install.sh does
+for f in "$DIST"/share/applications/*.desktop; do
+    $SUDO install -m 644 "$f" "/usr/share/applications/$(basename "$f")"
+done
 $SUDO update-desktop-database -q /usr/share/applications 2>/dev/null || echo "live-update: update-desktop-database failed or is missing" >&2
 
 if [ "$WITH_CONFIG" -eq 1 ]; then

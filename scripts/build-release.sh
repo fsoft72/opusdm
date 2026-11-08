@@ -55,7 +55,7 @@ cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.deskto
 mkdir -p "$DIST/share/icons/hicolor/512x512/apps" "$DIST/share/applications"
 cp "$REPO_ROOT/assets/ball.png" "$DIST/share/icons/hicolor/512x512/apps/opusdm.png"
 # Hidden entries: session components, not meant to be launched by hand
-for pair in Hub:hub Lister:lister Dock:dock PolkitAgent:polkit; do
+for pair in Hub:hub Lister:lister Dock:dock PolkitAgent:polkit Notify:notify Applets:applets; do
     id="${pair%%:*}"
     bin="opusdm-${pair#*:}"
     printf '[Desktop Entry]\nType=Application\nName=OpusDM %s\nExec=%s\nIcon=opusdm\nTerminal=false\nNoDisplay=true\n' "$id" "$bin" > "$DIST/share/applications/org.opusdm.$id.desktop"
