@@ -32,3 +32,4 @@ pub mod global_keys;
 pub mod global_keys_wl;
 pub mod script_events;
 pub mod scripting;
+pub mod watchdog;

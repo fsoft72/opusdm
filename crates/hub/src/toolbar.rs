@@ -58,6 +58,8 @@ pub fn run(handle: ServerHandle, _sock_path: PathBuf, config: opusdm_hub::startu
     app.connect_startup(|_| opusdm_ui::set_app_icon());
     app.connect_activate(move |app| {
         build_ui(app, cmd_tx.clone(), ui_rx.clone(), config.clone());
+        // After the UI is built, so its first build does not count as a stall.
+        opusdm_hub::watchdog::start();
     });
     app.run_with_args::<&str>(&[])
 }
