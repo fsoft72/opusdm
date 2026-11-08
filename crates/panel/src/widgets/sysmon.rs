@@ -1,6 +1,12 @@
 //! CPU and network monitors: a small text readout plus a sparkline of the
 //! last minute, sampled from `/proc/stat` and `/proc/net/dev` once a second.
 //! A click on either meter opens a borderless details popup below it.
+//!
+//! The `/proc` files are read on a worker thread, never on the GTK main
+//! thread: reading `/proc/net/dev` asks every network driver for its
+//! counters, and a driver that blocks there must not freeze the hub. While
+//! a read is still running the next ticks are skipped; one blocked for
+//! [`READ_STUCK_AFTER`] is logged, and so is its return.
 
 use crate::sysmon_model::{self as model, CpuTimes, IfaceBytes, IfaceRate, LoadAvg, ProcSample, ProcUsage};
 use gtk4 as gtk;
@@ -9,10 +15,15 @@ use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Sample interval and sparkline history length.
 const TICK: Duration = Duration::from_secs(1);
+/// A `/proc` read running for this long is logged as blocked.
+const READ_STUCK_AFTER: Duration = Duration::from_secs(5);
+/// Shortest time a rate is divided by, so two readings that come back
+/// together never divide by zero.
+const MIN_RATE_SECS: f64 = 1e-3;
 const HISTORY: usize = 60;
 /// Busiest processes listed in the CPU details.
 const TOP_PROCESSES: usize = 5;
@@ -109,14 +120,219 @@ fn install_mem_level(area: &gtk::DrawingArea, level: Rc<Cell<f64>>) {
     });
 }
 
-struct State {
-    cpu_prev: CpuTimes,
-    cores_prev: Vec<CpuTimes>,
-    net_prev: (u64, u64),
-    ifaces_prev: Vec<IfaceBytes>,
+/// The text of the `/proc` files of one tick.
+struct Reading {
+    /// When `/proc/net/dev` was read: the rates are per second between two.
+    at: Instant,
+    stat: String,
+    meminfo: String,
+    net: String,
+    /// `/proc/loadavg`, read only while the CPU details are open.
+    loadavg: Option<String>,
+}
+
+/// Read the files of one tick. Runs on a worker thread (see the module doc).
+fn read_files(with_load: bool) -> Reading {
+    let stat = read("/proc/stat");
+    let meminfo = read("/proc/meminfo");
+    let net = read("/proc/net/dev");
+    let at = Instant::now();
+    let loadavg = with_load.then(|| read("/proc/loadavg"));
+    Reading { at, stat, meminfo, net, loadavg }
+}
+
+/// The counters of the previous reading.
+struct Prev {
+    at: Instant,
+    /// `None` while `/proc/stat` could not be parsed yet.
+    cpu: Option<CpuTimes>,
+    cores: Vec<CpuTimes>,
+    net: (u64, u64),
+    ifaces: Vec<IfaceBytes>,
+}
+
+/// What one reading shows, measured against the previous one.
+#[derive(Debug, PartialEq)]
+struct Tick {
+    /// Total and per core CPU percent; `None` when `/proc/stat` has no
+    /// usable line in this reading or the previous one.
+    cpu: Option<(f64, Vec<f64>)>,
+    /// Used and total memory in KiB.
+    mem: Option<(u64, u64)>,
+    load: Option<LoadAvg>,
+    /// Download and upload, bytes per second.
+    rx: f64,
+    tx: f64,
+    ifaces: Vec<IfaceRate>,
+}
+
+/// Turns readings into values. The first reading only sets the base.
+#[derive(Default)]
+struct Sampler {
+    prev: Option<Prev>,
+}
+
+impl Sampler {
+    /// The values of `reading` against the previous one; `None` for the
+    /// first reading. A `/proc/stat` that cannot be parsed keeps the old CPU
+    /// base, like a missing sample.
+    fn next(&mut self, reading: &Reading) -> Option<Tick> {
+        let cpu_now = model::parse_proc_stat(&reading.stat);
+        let cores_now = model::parse_proc_stat_cores(&reading.stat);
+        let net_now = model::parse_net_dev(&reading.net);
+        let ifaces_now = model::parse_net_ifaces(&reading.net);
+        let Some(prev) = self.prev.as_mut() else {
+            self.prev = Some(Prev { at: reading.at, cpu: cpu_now, cores: cores_now, net: net_now, ifaces: ifaces_now });
+            return None;
+        };
+        let cpu = match (prev.cpu, cpu_now) {
+            (Some(before), Some(now)) => Some((model::cpu_percent(before, now), model::cores_percent(&prev.cores, &cores_now))),
+            _ => None,
+        };
+        if cpu_now.is_some() {
+            prev.cpu = cpu_now;
+            prev.cores = cores_now;
+        }
+        let secs = reading.at.saturating_duration_since(prev.at).as_secs_f64().max(MIN_RATE_SECS);
+        let rx = net_now.0.saturating_sub(prev.net.0) as f64 / secs;
+        let tx = net_now.1.saturating_sub(prev.net.1) as f64 / secs;
+        let ifaces = model::iface_rates(&prev.ifaces, &ifaces_now, secs);
+        prev.at = reading.at;
+        prev.net = net_now;
+        prev.ifaces = ifaces_now;
+        let mem = model::parse_mem_usage(&reading.meminfo);
+        let load = reading.loadavg.as_deref().and_then(model::parse_loadavg);
+        Some(Tick { cpu, mem, load, rx, tx, ifaces })
+    }
+}
+
+/// What a tick does about the `/proc` read.
+#[derive(Debug, PartialEq)]
+enum ReadStart {
+    /// No read is running: start one.
+    Start,
+    /// The previous read is still running: skip this tick.
+    Busy,
+    /// The previous read has been running this long: log it (once), skip.
+    Stuck(Duration),
+}
+
+/// Tracks the `/proc` read in flight, so only one runs and a blocked one is
+/// reported once.
+#[derive(Default)]
+struct ReadWatch {
+    started: Option<Instant>,
+    reported: bool,
+}
+
+impl ReadWatch {
+    /// A tick at `now` wants to read.
+    fn begin(&mut self, now: Instant) -> ReadStart {
+        let Some(started) = self.started else {
+            self.started = Some(now);
+            return ReadStart::Start;
+        };
+        let age = now.saturating_duration_since(started);
+        if self.reported || age < READ_STUCK_AFTER { return ReadStart::Busy; }
+        self.reported = true;
+        ReadStart::Stuck(age)
+    }
+
+    /// The read finished at `now`. Returns how long it took when it had
+    /// been reported blocked, so its return is logged too.
+    fn finish(&mut self, now: Instant) -> Option<Duration> {
+        let started = self.started.take()?;
+        let reported = std::mem::take(&mut self.reported);
+        reported.then(|| now.saturating_duration_since(started))
+    }
+}
+
+/// The widgets and the state a finished reading updates. Owned by the tick
+/// timer (until the bar is destroyed) and by the reading in flight.
+struct Meters {
+    cpu_label: gtk::Label,
+    cpu_spark: gtk::DrawingArea,
+    mem_bar: gtk::DrawingArea,
+    mem_level: Rc<Cell<f64>>,
+    net_in: gtk::Label,
+    net_out: gtk::Label,
+    net_spark: gtk::DrawingArea,
+    cpu_details: CpuDetails,
+    net_details: NetDetails,
+    procs: Rc<RefCell<ProcWatch>>,
     cpu_trace: Rc<RefCell<Trace>>,
     rx_trace: Rc<RefCell<Trace>>,
     tx_trace: Rc<RefCell<Trace>>,
+    sampler: RefCell<Sampler>,
+    reads: RefCell<ReadWatch>,
+}
+
+impl Meters {
+    /// Show one reading on the meters and the open details.
+    fn show(&self, reading: &Reading) {
+        let Some(tick) = self.sampler.borrow_mut().next(reading) else { return };
+
+        if let Some((pct, per_core)) = &tick.cpu {
+            self.cpu_trace.borrow_mut().push(*pct);
+            self.cpu_label.set_text(&format!("{pct:.0}%"));
+            self.cpu_spark.queue_draw();
+            if self.cpu_details.popover.is_visible() {
+                scan_processes(&self.procs);
+                self.cpu_details.update(*pct, per_core, tick.load, self.procs.borrow().top.as_deref());
+            }
+        }
+
+        match tick.mem {
+            Some((used_kb, total_kb)) => {
+                self.mem_level.set(used_kb as f64 / total_kb as f64 * 100.0);
+                self.mem_bar.set_tooltip_text(Some(&format!(
+                    "Mem: {} / {}",
+                    opusdm_ipc::size::binary_size(used_kb * 1024),
+                    opusdm_ipc::size::binary_size(total_kb * 1024),
+                )));
+                self.mem_bar.queue_draw();
+            }
+            None => opusdm_ipc::err_log!("opusdm-panel", "sysmon: /proc/meminfo has no usable MemTotal/MemAvailable"),
+        }
+
+        self.rx_trace.borrow_mut().push(tick.rx);
+        self.tx_trace.borrow_mut().push(tick.tx);
+        self.net_in.set_text(&format!("\u{2193} {}", human_rate(tick.rx)));
+        self.net_out.set_text(&format!("\u{2191} {}", human_rate(tick.tx)));
+        self.net_spark.queue_draw();
+        if self.net_details.popover.is_visible() {
+            let peaks = (peak(&self.rx_trace.borrow()), peak(&self.tx_trace.borrow()));
+            self.net_details.update(tick.rx, tick.tx, &tick.ifaces, peaks);
+        }
+    }
+}
+
+/// Start one tick's `/proc` read on a worker thread; the meters are updated
+/// when it is back. Skipped while the previous read still runs, which is
+/// logged once when it is blocked.
+fn start_reading(meters: &Rc<Meters>) {
+    let start = meters.reads.borrow_mut().begin(Instant::now());
+    match start {
+        ReadStart::Start => {}
+        ReadStart::Busy => return,
+        ReadStart::Stuck(age) => {
+            opusdm_ipc::err_log!("opusdm-panel", "sysmon: reading /proc is blocked for {}s, the CPU and network meters are not updated", age.as_secs());
+            return;
+        }
+    }
+    let with_load = meters.cpu_details.popover.is_visible();
+    let meters = meters.clone();
+    glib::spawn_future_local(async move {
+        let reading = gio::spawn_blocking(move || read_files(with_load)).await;
+        let blocked_for = meters.reads.borrow_mut().finish(Instant::now());
+        if let Some(took) = blocked_for {
+            opusdm_ipc::err_log!("opusdm-panel", "sysmon: reading /proc is back after {}s", took.as_secs());
+        }
+        match reading {
+            Ok(reading) => meters.show(&reading),
+            Err(_) => opusdm_ipc::err_log!("opusdm-panel", "sysmon: the /proc reader panicked, this tick is skipped"),
+        }
+    });
 }
 
 /// The busiest processes shown in the CPU details. Sampled only while the
@@ -440,18 +656,6 @@ pub fn build() -> gtk::Widget {
     let cpu_details = CpuDetails::new(&cpu_box, &cpu_trace);
     let net_details = NetDetails::new(&net_box, &rx_trace, &tx_trace);
 
-    let stat = read("/proc/stat");
-    let net = read("/proc/net/dev");
-    let state = Rc::new(RefCell::new(State {
-        cpu_prev: model::parse_proc_stat(&stat).unwrap_or_default(),
-        cores_prev: model::parse_proc_stat_cores(&stat),
-        net_prev: model::parse_net_dev(&net),
-        ifaces_prev: model::parse_net_ifaces(&net),
-        cpu_trace,
-        rx_trace,
-        tx_trace,
-    }));
-
     // Opening the CPU details starts a first process sample, so a later one
     // can tell the busiest processes; closing drops them.
     let procs = Rc::new(RefCell::new(ProcWatch::default()));
@@ -467,62 +671,32 @@ pub fn build() -> gtk::Widget {
         cpu_details.popover.connect_closed(move |_| procs.borrow_mut().reset());
     }
 
+    let meters = Rc::new(Meters {
+        cpu_label,
+        cpu_spark,
+        mem_bar,
+        mem_level,
+        net_in,
+        net_out,
+        net_spark,
+        cpu_details,
+        net_details,
+        procs,
+        cpu_trace,
+        rx_trace,
+        tx_trace,
+        sampler: RefCell::new(Sampler::default()),
+        reads: RefCell::new(ReadWatch::default()),
+    });
+
+    // The first reading only sets the base the next one is measured from.
+    start_reading(&meters);
     // The timer stops once the bar is destroyed (a monitor change or a
-    // screen resize rebuilds every bar), like the clock's.
+    // screen resize rebuilds every bar), like the clock's. It drops its
+    // `Meters` then; a reading still in flight keeps them until it is back.
     glib::timeout_add_local(TICK, move || {
-        if cpu_label.root().is_none() { return glib::ControlFlow::Break; }
-        let mut s = state.borrow_mut();
-
-        let stat = read("/proc/stat");
-        if let Some(now) = model::parse_proc_stat(&stat) {
-            let pct = model::cpu_percent(s.cpu_prev, now);
-            s.cpu_prev = now;
-            s.cpu_trace.borrow_mut().push(pct);
-            cpu_label.set_text(&format!("{pct:.0}%"));
-            cpu_spark.queue_draw();
-
-            let cores = model::parse_proc_stat_cores(&stat);
-            if cpu_details.popover.is_visible() {
-                scan_processes(&procs);
-                let load = model::parse_loadavg(&read("/proc/loadavg"));
-                let per_core = model::cores_percent(&s.cores_prev, &cores);
-                cpu_details.update(pct, &per_core, load, procs.borrow().top.as_deref());
-            }
-            s.cores_prev = cores;
-        }
-
-        match model::parse_mem_usage(&read("/proc/meminfo")) {
-            Some((used_kb, total_kb)) => {
-                mem_level.set(used_kb as f64 / total_kb as f64 * 100.0);
-                mem_bar.set_tooltip_text(Some(&format!(
-                    "Mem: {} / {}",
-                    opusdm_ipc::size::binary_size(used_kb * 1024),
-                    opusdm_ipc::size::binary_size(total_kb * 1024),
-                )));
-                mem_bar.queue_draw();
-            }
-            None => opusdm_ipc::err_log!("opusdm-panel", "sysmon: /proc/meminfo has no usable MemTotal/MemAvailable"),
-        }
-
-        let net = read("/proc/net/dev");
-        let now = model::parse_net_dev(&net);
-        let rx = now.0.saturating_sub(s.net_prev.0) as f64 / TICK.as_secs_f64();
-        let tx = now.1.saturating_sub(s.net_prev.1) as f64 / TICK.as_secs_f64();
-        s.net_prev = now;
-        s.rx_trace.borrow_mut().push(rx);
-        s.tx_trace.borrow_mut().push(tx);
-        net_in.set_text(&format!("\u{2193} {}", human_rate(rx)));
-        net_out.set_text(&format!("\u{2191} {}", human_rate(tx)));
-        net_spark.queue_draw();
-
-        let ifaces = model::parse_net_ifaces(&net);
-        if net_details.popover.is_visible() {
-            let rates = model::iface_rates(&s.ifaces_prev, &ifaces, TICK.as_secs_f64());
-            let peaks = (peak(&s.rx_trace.borrow()), peak(&s.tx_trace.borrow()));
-            net_details.update(rx, tx, &rates, peaks);
-        }
-        s.ifaces_prev = ifaces;
-
+        if meters.cpu_label.root().is_none() { return glib::ControlFlow::Break; }
+        start_reading(&meters);
         glib::ControlFlow::Continue
     });
 
@@ -593,6 +767,102 @@ mod tests {
         assert!(w.prev.is_some() && w.top.is_none());
         w.fold(w.generation, sample);
         assert_eq!(w.top, Some(Vec::new()));
+    }
+
+    /// A reading at `at` with total CPU `busy`/`idle` ticks and `rx`/`tx`
+    /// bytes on wlan0.
+    fn reading(at: Instant, busy: u64, idle: u64, rx: u64, tx: u64) -> Reading {
+        Reading {
+            at,
+            stat: format!("cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\ncpu0 {busy} 0 0 {idle} 0 0 0 0\n"),
+            meminfo: "MemTotal:       1000 kB\nMemAvailable:    250 kB\n".to_string(),
+            net: format!("Inter-|\n face |\n    lo: 9999 1 0 0 0 0 0 0 9999 1\n  wlan0: {rx} 1 0 0 0 0 0 0 {tx} 1\n"),
+            loadavg: None,
+        }
+    }
+
+    #[test]
+    fn the_first_reading_only_sets_the_base() {
+        let mut sampler = Sampler::default();
+        assert_eq!(sampler.next(&reading(Instant::now(), 10, 90, 1000, 500)), None);
+    }
+
+    #[test]
+    fn a_reading_is_measured_against_the_previous_one() {
+        let t0 = Instant::now();
+        let mut sampler = Sampler::default();
+        sampler.next(&reading(t0, 10, 90, 1000, 500));
+        let tick = sampler.next(&reading(t0 + Duration::from_secs(1), 60, 140, 3048, 1524)).unwrap();
+        let (pct, cores) = tick.cpu.unwrap();
+        assert!((pct - 50.0).abs() < 1e-9, "{pct}");
+        assert_eq!(cores.len(), 1);
+        assert!((tick.rx - 2048.0).abs() < 1e-9 && (tick.tx - 1024.0).abs() < 1e-9, "{} {}", tick.rx, tick.tx);
+        assert_eq!(tick.mem, Some((750, 1000)));
+        assert_eq!(tick.ifaces.len(), 1);
+    }
+
+    #[test]
+    fn a_late_reading_divides_by_the_real_interval() {
+        let t0 = Instant::now();
+        let mut sampler = Sampler::default();
+        sampler.next(&reading(t0, 10, 90, 0, 0));
+        // A read blocked for 4 s: 4096 bytes in 4 s is 1 KiB/s, not a 4 KiB/s spike.
+        let tick = sampler.next(&reading(t0 + Duration::from_secs(4), 10, 90, 4096, 0)).unwrap();
+        assert!((tick.rx - 1024.0).abs() < 1e-9, "{}", tick.rx);
+        assert!(tick.ifaces[0].rx_rate > 1023.0 && tick.ifaces[0].rx_rate < 1025.0);
+    }
+
+    #[test]
+    fn an_unparsable_stat_keeps_the_cpu_base() {
+        let t0 = Instant::now();
+        let mut sampler = Sampler::default();
+        sampler.next(&reading(t0, 10, 90, 0, 0));
+        let mut broken = reading(t0 + Duration::from_secs(1), 0, 0, 0, 0);
+        broken.stat = String::new();
+        assert_eq!(sampler.next(&broken).unwrap().cpu, None);
+        let tick = sampler.next(&reading(t0 + Duration::from_secs(2), 30, 170, 0, 0)).unwrap();
+        let (pct, _) = tick.cpu.unwrap();
+        assert!((pct - 20.0).abs() < 1e-9, "{pct}");
+    }
+
+    #[test]
+    fn the_load_is_read_only_when_asked() {
+        let t0 = Instant::now();
+        let mut sampler = Sampler::default();
+        sampler.next(&reading(t0, 10, 90, 0, 0));
+        let mut with_load = reading(t0 + Duration::from_secs(1), 20, 180, 0, 0);
+        with_load.loadavg = Some("0.50 1.25 2.00 3/400 1234\n".to_string());
+        assert!(sampler.next(&with_load).unwrap().load.is_some());
+    }
+
+    #[test]
+    fn only_one_read_runs_and_a_blocked_one_is_reported_once() {
+        let t0 = Instant::now();
+        let mut reads = ReadWatch::default();
+        assert_eq!(reads.begin(t0), ReadStart::Start);
+        assert_eq!(reads.begin(t0 + Duration::from_secs(1)), ReadStart::Busy);
+        assert_eq!(reads.begin(t0 + READ_STUCK_AFTER), ReadStart::Stuck(READ_STUCK_AFTER));
+        assert_eq!(reads.begin(t0 + READ_STUCK_AFTER * 3), ReadStart::Busy);
+        assert_eq!(reads.finish(t0 + READ_STUCK_AFTER * 4), Some(READ_STUCK_AFTER * 4));
+        assert_eq!(reads.begin(t0 + READ_STUCK_AFTER * 5), ReadStart::Start);
+    }
+
+    #[test]
+    fn a_quick_read_is_not_reported() {
+        let t0 = Instant::now();
+        let mut reads = ReadWatch::default();
+        assert_eq!(reads.begin(t0), ReadStart::Start);
+        assert_eq!(reads.finish(t0 + Duration::from_millis(5)), None);
+        assert_eq!(reads.begin(t0 + Duration::from_secs(1)), ReadStart::Start);
+    }
+
+    #[test]
+    fn the_real_proc_files_give_cpu_memory_and_a_base() {
+        let mut sampler = Sampler::default();
+        assert!(sampler.next(&read_files(true)).is_none());
+        std::thread::sleep(Duration::from_millis(50));
+        let tick = sampler.next(&read_files(true)).unwrap();
+        assert!(tick.cpu.is_some() && tick.mem.is_some() && tick.load.is_some(), "{tick:?}");
     }
 
     #[test]
