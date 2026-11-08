@@ -1,6 +1,8 @@
 # Changes
 
 ## 2026-11-08
+- `scripts/build-release.sh`: the per-app desktop entries (`share/applications/org.opusdm.<Id>.desktop`) of the stand-alone apps (Terminal, Run, Shot, Player, Viewer, Settings, Input, Screen, Apps Editor, Network, Printers, Bluetooth, Applets browser) are now **visible** in menus and launchers (Comment, Categories, `StartupWMClass=org.opusdm.<Id>`; no `NoDisplay`). Session components (Hub, Lister, Dock, PolkitAgent) stay hidden. Only the generated text of the entries changed; no Rust code. Verified: `bash -n`, the generation loop run on its own into a temp dir (17 files), `desktop-file-validate` clean. NOT verified: a full `build-release.sh` run, `install.sh` / the .deb, the entries showing in a real menu. `live-update.sh` still does not install `share/applications` (unchanged); they reach `/usr/share/applications` through `install.sh` / the .deb.
+
 - Version bump to **0.17.0** (`[workspace.package]` in `Cargo.toml`, inherited by all crates and `xtask`; `Cargo.lock` refreshed). No code change. Verified: `cargo build` passes. NOT verified: nothing else exercised, no behaviour touched.
 
 - `opusdm-settings`, Desktop tab: laid out on two columns so it is shorter (LIGHT / DARK, THEME and the theme buttons beside ICON GRID; PANEL with the dock box beside VIRTUAL SCREENS; DESKTOP FOLDER and BRIGHTNESS full width below). The tab now fits the default 680 px window without scrolling (the content ended at ~850 px, now ~570 px). Only the packing in `build_desktop_page` changed (a `gtk::Grid` with homogeneous columns); the sections, their owners and the Apply path are the same. The dock hint label wraps when its column is narrow.

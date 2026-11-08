@@ -50,15 +50,36 @@ done
 cp "$REPO_ROOT/scripts/opusdm-open-folder" "$DIST/bin/opusdm-open-folder"
 cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.desktop"
 
-# Shared window icon (hicolor "opusdm") and one hidden desktop entry per app,
+# Shared window icon (hicolor "opusdm") and one desktop entry per app,
 # named after its application id: Wayland compositors find the icon through it
 mkdir -p "$DIST/share/icons/hicolor/512x512/apps" "$DIST/share/applications"
 cp "$REPO_ROOT/assets/ball.png" "$DIST/share/icons/hicolor/512x512/apps/opusdm.png"
-for pair in Hub:hub Lister:lister Settings:settings Dock:dock Run:run Shot:shot Terminal:terminal Player:player Viewer:viewer InputConfig:input-config Screen:screen AppsEditor:apps-editor NetworkManager:network-manager PrinterManager:printer-manager BluetoothManager:bluetooth-manager PolkitAgent:polkit AppletBrowser:applet-browser; do
+# Hidden entries: session components, not meant to be launched by hand
+for pair in Hub:hub Lister:lister Dock:dock PolkitAgent:polkit; do
     id="${pair%%:*}"
     bin="opusdm-${pair#*:}"
     printf '[Desktop Entry]\nType=Application\nName=OpusDM %s\nExec=%s\nIcon=opusdm\nTerminal=false\nNoDisplay=true\n' "$id" "$bin" > "$DIST/share/applications/org.opusdm.$id.desktop"
 done
+# Visible entries: stand-alone apps, shown in menus and launchers.
+# Format: Id|binary|Name|Comment|Categories
+while IFS='|' read -r id bin name comment cats; do
+    [ -n "$id" ] || continue
+    printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s\nIcon=opusdm\nTerminal=false\nCategories=%s\nStartupWMClass=org.opusdm.%s\n' "$name" "$comment" "$bin" "$cats" "$id" > "$DIST/share/applications/org.opusdm.$id.desktop"
+done <<'APPS'
+Terminal|opusdm-terminal|OpusDM Terminal|Terminal emulator|System;TerminalEmulator;
+Run|opusdm-run|OpusDM Run|Run a command or open a file|Utility;
+Shot|opusdm-shot|OpusDM Shot|Take screenshots|Graphics;
+Player|opusdm-player|OpusDM Player|Play audio and video|AudioVideo;Player;
+Viewer|opusdm-viewer|OpusDM Viewer|View images and documents|Graphics;Viewer;
+Settings|opusdm-settings|OpusDM Settings|Configure the desktop|Settings;
+InputConfig|opusdm-input-config|OpusDM Input|Keyboard, mouse and touchpad settings|Settings;HardwareSettings;
+Screen|opusdm-screen|OpusDM Screen|Monitors and resolution settings|Settings;HardwareSettings;
+AppsEditor|opusdm-apps-editor|OpusDM Apps Editor|Edit the applications list|Settings;
+NetworkManager|opusdm-network-manager|OpusDM Network|Network connections|Settings;
+PrinterManager|opusdm-printer-manager|OpusDM Printers|Printers and print jobs|Settings;HardwareSettings;
+BluetoothManager|opusdm-bluetooth-manager|OpusDM Bluetooth|Bluetooth devices|Settings;HardwareSettings;
+AppletBrowser|opusdm-applet-browser|OpusDM Applets|Browse and add panel applets|Settings;
+APPS
 
 cp "$REPO_ROOT/openbox-rc.xml" "$REPO_ROOT/picom.conf" "$REPO_ROOT/labwc-rc.xml" "$REPO_ROOT/wayfire.ini" "$REPO_ROOT/opusdm-portals.conf" "$DIST/config/"
 cp "$REPO_ROOT"/target/themes/*.zip "$DIST/themes/"
