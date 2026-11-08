@@ -2972,7 +2972,6 @@ dependencies = [
  "gtk4",
  "libc",
  "opusdm-buttonbank",
- "opusdm-dock",
  "opusdm-fsops",
  "opusdm-iconview",
  "opusdm-input-config",

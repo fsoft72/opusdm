@@ -1,6 +1,6 @@
 //! Which parts of the desktop settings an Apply really changed, so the GTK
 //! side redoes only that work. Re-applying an unchanged part (reloading the
-//! compositor, re-laying out the icons, moving the dock) is visible as a
+//! compositor, re-laying out the icons) is visible as a
 //! flicker of the whole desktop. No GTK, no I/O - fully unit-testable.
 
 use opusdm_ipc::DesktopSettings;
@@ -20,8 +20,6 @@ pub struct DesktopChanges {
     pub grid: bool,
     /// Panel edge: moves the panel and the icon area margin.
     pub panel_position: bool,
-    /// Dock edge or icon size, or the panel edge it must avoid.
-    pub dock_layout: bool,
     /// Folder shown as the desktop.
     pub desktop_dir: bool,
 }
@@ -44,11 +42,6 @@ pub fn diff(old: &DesktopSettings, new: &DesktopSettings) -> DesktopChanges {
         icon_size: old.icon_size != new.icon_size,
         grid: old.grid_spacing != new.grid_spacing || old.grid_gap != new.grid_gap,
         panel_position: old.panel_position != new.panel_position,
-        dock_layout: old.dock_position != new.dock_position
-            || old.dock_icon_size != new.dock_icon_size
-            || old.dock_visible != new.dock_visible
-            || old.dock_style != new.dock_style
-            || old.panel_position != new.panel_position,
         desktop_dir: old.desktop_dir != new.desktop_dir,
     }
 }
@@ -74,28 +67,18 @@ mod tests {
     }
 
     #[test]
-    fn the_dock_look_and_visibility_reach_the_dock_only() {
+    fn the_dock_fields_are_not_applied_by_the_hub() {
+        // The dock process follows dock.json itself.
         let old = DesktopSettings::default();
-        let style = opusdm_ipc::DockStyle { zoom_enabled: true, ..Default::default() };
-        for new in [DesktopSettings { dock_visible: false, ..old.clone() }, DesktopSettings { dock_style: style, ..old.clone() }] {
-            assert_eq!(diff(&old, &new), DesktopChanges { dock_layout: true, ..DesktopChanges::default() });
-        }
+        let new = DesktopSettings { dock_position: DockPosition::Left, dock_icon_size: 40, dock_visible: false, ..old.clone() };
+        assert!(!diff(&old, &new).any());
     }
 
     #[test]
-    fn the_panel_edge_moves_the_panel_and_the_dock() {
+    fn the_panel_edge_moves_the_panel() {
         let old = DesktopSettings { panel_position: PanelPosition::Top, ..DesktopSettings::default() };
         let new = DesktopSettings { panel_position: PanelPosition::Bottom, ..old.clone() };
-        let c = diff(&old, &new);
-        assert!(c.panel_position && c.dock_layout);
-        assert!(!c.transparency && !c.icon_size && !c.grid && !c.desktop_dir);
-    }
-
-    #[test]
-    fn dock_edge_and_icon_size_change_only_the_dock() {
-        let old = DesktopSettings::default();
-        let new = DesktopSettings { dock_position: DockPosition::Left, dock_icon_size: 40, ..old.clone() };
-        assert_eq!(diff(&old, &new), DesktopChanges { dock_layout: true, ..DesktopChanges::default() });
+        assert_eq!(diff(&old, &new), DesktopChanges { panel_position: true, ..DesktopChanges::default() });
     }
 
     #[test]
@@ -118,7 +101,7 @@ mod tests {
         };
         let c = diff(&old, &new);
         assert!(c.virtual_screens && c.snap && c.desktop_dir);
-        assert!(!c.transparency && !c.dock_layout);
+        assert!(!c.transparency);
     }
 
     #[test]

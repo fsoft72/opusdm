@@ -20,7 +20,6 @@ opusdm-fsops = { path = "../fsops" }
 opusdm-iconview = { path = "../iconview" }
 opusdm-media = { path = "../media" }
 opusdm-panel = { path = "../panel" }
-opusdm-dock = { path = "../dock" }
 opusdm-buttonbank = { path = "../buttonbank" }
 opusdm-input-config = { path = "../input-config" }
 opusdm-screen = { path = "../screen" }

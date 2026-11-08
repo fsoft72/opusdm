@@ -145,9 +145,11 @@ pub(crate) struct Widgets {
     /// Re-docks the panel bars to another screen edge. Set once the panel
     /// is attached, which happens after the `Widgets` are built.
     pub(crate) set_panel_position: LateSetter<opusdm_ipc::PanelPosition>,
-    /// Re-lays out the dock (edge, icon size, panel edge). Set once the dock
-    /// window exists.
-    pub(crate) set_dock_layout: LateSetter<opusdm_dock::DockLayout>,
+    /// Starts and supervises the `opusdm-dock` process and sends it the
+    /// hidden state.
+    pub(crate) dock: opusdm_hub::dock_host::DockHost,
+    /// Watches `dock.json`, so turning the dock on starts its process.
+    pub(crate) dock_watch: RefCell<Option<gio::FileMonitor>>,
     /// The button banks (`buttons/<id>.json`), owned by the GTK side.
     pub(crate) banks: Rc<RefCell<opusdm_ipc::Banks>>,
     /// The open bank windows.
@@ -218,7 +220,8 @@ fn build_ui(
         functions,
         bank_windows,
         set_panel_position: RefCell::new(None),
-        set_dock_layout: RefCell::new(None),
+        dock: opusdm_hub::dock_host::DockHost::start(),
+        dock_watch: RefCell::new(None),
         io,
     });
 
@@ -272,9 +275,9 @@ fn build_ui(
     };
     *widgets.set_panel_position.borrow_mut() = Some(opusdm_panel::attach(app, panel_position, open_folder));
 
-    // The launcher dock is one more window on the same application.
-    let dock_layout = dock_layout(&widgets.desktop.settings.borrow());
-    *widgets.set_dock_layout.borrow_mut() = Some(opusdm_dock::attach(app, dock_layout));
+    // The launcher dock is its own process (opusdm-dock), started by the
+    // supervisor of `widgets.dock`; a change of dock.json may turn it on.
+    watch_dock_config(&widgets);
 
     // The panel reserves a top strut, which shrinks the work area and makes
     // GTK clamp the desktop windows a strip short. Re-assert the full-monitor
@@ -285,6 +288,31 @@ fn build_ui(
             crate::desktop::pin_geometry(&dw.window, dw.x, dw.y, dw.w, dw.h);
         }
     });
+}
+
+/// Wake the dock supervisor whenever `dock.json` changes, so a dock turned
+/// on (Settings, the desktop menu, the file edited by hand) is started. The
+/// monitor is kept in `widgets.dock_watch` for the whole run; a watch that
+/// cannot be set up is logged.
+fn watch_dock_config(widgets: &Rc<Widgets>) {
+    let path = opusdm_ipc::dock::dock_config_path();
+    let monitor = match gio::File::for_path(&path).monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+        Ok(m) => m,
+        Err(e) => {
+            opusdm_ipc::err_log!("opusdm-hub", "cannot watch {}: {e}; a dock turned on starts only after a hub restart", path.display());
+            return;
+        }
+    };
+    let host = Rc::downgrade(widgets);
+    monitor.connect_changed(move |_, _, _, event| {
+        use gio::FileMonitorEvent::{ChangesDoneHint, Created, Deleted};
+        if !matches!(event, ChangesDoneHint | Created | Deleted) { return; }
+        match host.upgrade() {
+            Some(widgets) => widgets.dock.wake(),
+            None => opusdm_ipc::err_log!("opusdm-hub", "dock.json changed but the hub widgets are gone: the dock supervisor is not woken"),
+        }
+    });
+    *widgets.dock_watch.borrow_mut() = Some(monitor);
 }
 
 /// Always confirm before shutting everything down, whether the request comes
@@ -458,11 +486,6 @@ fn apply_desktop_settings(widgets: &Rc<Widgets>, ds: opusdm_ipc::DesktopSettings
     if changes.panel_position {
         if let Some(set_position) = widgets.set_panel_position.borrow().as_ref() {
             set_position(ds.panel_position);
-        }
-    }
-    if changes.dock_layout {
-        if let Some(set_layout) = widgets.set_dock_layout.borrow().as_ref() {
-            set_layout(dock_layout(&ds));
         }
     }
     if changes.desktop_dir {

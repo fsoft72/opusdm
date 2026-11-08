@@ -463,17 +463,16 @@ pub(crate) fn hide_label(hidden: bool) -> &'static str {
 
 /// Hide (`true`) or show the panel, the dock and the group windows, and
 /// relabel the desktop menu button. The desktop itself always stays, so it can
-/// reveal the rest; the Lister windows react to their own `SetHidden`.
+/// reveal the rest; the Lister windows react to their own `SetHidden`, the
+/// dock process gets it through `widgets.dock`.
 pub(crate) fn apply_hidden(widgets: &Rc<Widgets>, hidden: bool) {
     widgets.desktop.hidden.set(hidden);
     opusdm_panel::set_hidden(hidden);
-    opusdm_dock::set_hidden(hidden);
+    widgets.dock.set_hidden(hidden);
     if let Some(app) = widgets.primary_window().application() {
         for window in app.windows() {
             match window.title().as_deref() {
                 Some(t) if t == opusdm_panel::WINDOW_TITLE => window.set_visible(!hidden),
-                // "Show All" must not bring back a dock the settings turned off.
-                Some(t) if t == opusdm_dock::WINDOW_TITLE => window.set_visible(opusdm_dock::is_shown()),
                 _ => {}
             }
         }
@@ -649,19 +648,6 @@ pub(crate) fn build_desktop_area(
     overlay.set_child(Some(&crate::background::new_view(monitor)));
     overlay.add_overlay(&bg);
     (overlay, field)
-}
-
-/// The dock layout `ds` asks for: its own edge and icon size, plus the
-/// panel's edge and height so it can keep clear of the panel.
-pub(crate) fn dock_layout(ds: &opusdm_ipc::DesktopSettings) -> opusdm_dock::DockLayout {
-    opusdm_dock::DockLayout {
-        position: ds.dock_position,
-        icon_size: ds.dock_icon_size,
-        panel: ds.panel_position,
-        panel_height: opusdm_panel::PANEL_HEIGHT,
-        visible: ds.dock_visible,
-        style: ds.dock_style.clone(),
-    }
 }
 
 /// Keep the icon area clear of the panel dock: the background box still

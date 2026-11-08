@@ -15,6 +15,7 @@ pub mod folder_handler;
 pub mod fullscreen;
 pub mod io_worker;
 pub mod desktop_settings;
+pub mod dock_host;
 pub mod functions;
 pub mod jobs;
 pub mod launch_focus;
