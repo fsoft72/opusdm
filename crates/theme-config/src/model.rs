@@ -43,7 +43,7 @@ pub fn apply_message(outcome: &ApplyOutcome, dock_error: Option<&str>) -> String
         ApplyOutcome::Failed(e) => format!("Could not apply: {e}"),
     };
     match dock_error {
-        Some(e) => format!("Could not save the dock apps (dock.json): {e}. {applied}"),
+        Some(e) => format!("Could not save the dock setting (dock.json): {e}. {applied}"),
         None => applied,
     }
 }

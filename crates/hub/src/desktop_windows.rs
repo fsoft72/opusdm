@@ -461,6 +461,38 @@ pub(crate) fn hide_label(hidden: bool) -> &'static str {
     }
 }
 
+/// Text of the desktop menu's dock button when the dock is `shown`.
+pub(crate) fn dock_label(shown: bool) -> &'static str {
+    if shown {
+        "Hide Dock"
+    } else {
+        "Show Dock"
+    }
+}
+
+/// `dock.json` turns the dock on (`shown`) or off: relabel the desktop menu
+/// buttons.
+pub(crate) fn apply_dock_shown(widgets: &Rc<Widgets>, shown: bool) {
+    widgets.dock_shown.set(shown);
+    let mut buttons = widgets.dock_buttons.borrow_mut();
+    buttons.retain(|b| b.root().is_some());
+    for button in buttons.iter() {
+        button.set_label(dock_label(shown));
+    }
+}
+
+/// Turn the dock on or off in `dock.json`, the opposite of what it is now.
+/// The write runs on the I/O worker; the supervisor and the dock follow the
+/// file. A failed write is logged.
+pub(crate) fn toggle_dock(widgets: &Rc<Widgets>) {
+    let want = !widgets.dock_shown.get();
+    widgets.io.submit(move || {
+        if let Err(e) = opusdm_ipc::dock::update_dock_config(|cfg| cfg.visible = want) {
+            opusdm_ipc::err_log!("opusdm-hub", "cannot {} the dock: {e}", if want { "show" } else { "hide" });
+        }
+    });
+}
+
 /// Hide (`true`) or show the panel, the dock and the group windows, and
 /// relabel the desktop menu button. The desktop itself always stays, so it can
 /// reveal the rest; the Lister windows react to their own `SetHidden`, the
@@ -666,6 +698,12 @@ pub(crate) fn keep_clear_of_panel(field: &impl IsA<gtk::Widget>, position: opusd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_dock_menu_item_offers_the_opposite_of_the_current_state() {
+        assert_eq!(dock_label(true), "Hide Dock");
+        assert_eq!(dock_label(false), "Show Dock");
+    }
 
     #[test]
     fn file_uri_escapes_names_that_a_plain_format_would_break() {

@@ -1,12 +1,12 @@
 //! `opusdm-settings`: pick the OpusDM theme and edit the user preferences
-//! (light / dark, wallpaper, icon grid, panel, dock, menu, Lister behaviour),
+//! (light / dark, wallpaper, icon grid, panel, dock on / off, menu, Lister
+//! behaviour),
 //! and apply them live to the running desktop. The look itself (colours,
 //! fonts, pictures, icons) is edited only in the Theme Editor.
 
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::gio;
-use opusdm_desktop_config::dock_ui::{DockAppsSection, DockLookSection, DockSection};
 use opusdm_ipc::IconSetId;
 use opusdm_desktop_config::background_ui::BackgroundSection;
 use opusdm_desktop_config::ui::{BrightnessSection, FolderSection, GridSection, PanelSection, StartupAppsSection, VirtualScreensSection, WindowsSection};
@@ -72,9 +72,7 @@ struct Sections {
     startup_apps: Rc<StartupAppsSection>,
     windows: Rc<WindowsSection>,
     bg: Rc<BackgroundSection>,
-    dock: Rc<DockSection>,
-    dock_look: Rc<DockLookSection>,
-    dock_apps: Rc<DockAppsSection>,
+    dock_shown: Rc<DockShownSection>,
     behavior: Rc<ui::BehaviorSection>,
 }
 
@@ -94,10 +92,6 @@ impl Sections {
             grid_gap: self.grid.grid_gap(),
             desktop_dir: self.folder.override_dir(),
             panel_position: self.panel.position(),
-            dock_position: self.dock.position(),
-            dock_icon_size: self.dock.icon_size(),
-            dock_visible: self.dock_look.visible(),
-            dock_style: self.dock_look.style(),
             virtual_screens: self.screens.count(),
             wrap_desktops: self.screens.wrap(),
             transparency_enabled: self.windows.enabled(),
@@ -109,6 +103,50 @@ impl Sections {
         }
         .sanitized();
         (prefs, desktop)
+    }
+}
+
+/// The "Show the dock" check box of the Desktop tab. The rest of the dock
+/// settings live in the dock itself (right click on it, "Settings...").
+/// Apply writes `dock.json` only when the box was changed here, so a change
+/// made in the dock meanwhile is not undone.
+struct DockShownSection {
+    root: gtk::Box,
+    check: gtk::CheckButton,
+    /// The value in `dock.json` when the window opened or last applied.
+    saved: Cell<bool>,
+}
+
+impl DockShownSection {
+    /// Build the section seeded with `shown`.
+    fn new(shown: bool) -> Rc<Self> {
+        // One row under the panel position: the window is tall already.
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let check = gtk::CheckButton::with_label("Show the dock");
+        check.set_active(shown);
+        root.append(&check);
+        let hint = gtk::Label::new(Some("(more dock settings: right click on the dock, Settings...)"));
+        hint.set_xalign(0.0);
+        hint.add_css_class("dim-label");
+        root.append(&hint);
+        Rc::new(Self { root, check, saved: Cell::new(shown) })
+    }
+
+    /// Write the box into `dock.json` if it was changed here. `Some(error)`
+    /// when the write failed (logged).
+    fn apply(&self) -> Option<String> {
+        let shown = self.check.is_active();
+        if shown == self.saved.get() { return None; }
+        match opusdm_ipc::dock::update_dock_config(|cfg| cfg.visible = shown) {
+            Ok(_) => {
+                self.saved.set(shown);
+                None
+            }
+            Err(e) => {
+                opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
+                Some(e.to_string())
+            }
+        }
     }
 }
 
@@ -129,6 +167,7 @@ struct DesktopTab {
     folder: Rc<FolderSection>,
     panel: Rc<PanelSection>,
     screens: Rc<VirtualScreensSection>,
+    dock_shown: Rc<DockShownSection>,
 }
 
 /// A vertical page box with the standard 12 px spacing and margins.
@@ -203,6 +242,9 @@ fn build_desktop_page(
     let folder = Rc::new(FolderSection::new(desktop.desktop_dir.as_deref()));
     let panel = Rc::new(PanelSection::new(desktop.panel_position));
     let screens = Rc::new(VirtualScreensSection::new(desktop.virtual_screens, desktop.wrap_desktops));
+    // Reading dock.json also moves the old dock keys out of desktop.json.
+    let dock_shown = DockShownSection::new(opusdm_ipc::dock::load_dock_config().visible);
+    panel.root.append(&dock_shown.root);
     for root in [&grid.root, &folder.root, &panel.root, &screens.root] {
         page.append(root);
         page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -211,7 +253,7 @@ fn build_desktop_page(
     // Applied live by its own worker: it is not part of desktop.json.
     let brightness = BrightnessSection::new();
     page.append(&brightness.root);
-    DesktopTab { page, theme_mode, icon_set, buttons, grid, folder, panel, screens }
+    DesktopTab { page, theme_mode, icon_set, buttons, grid, folder, panel, screens, dock_shown }
 }
 
 /// Desktop Background tab: the rotating list of backgrounds, which can also
@@ -228,21 +270,6 @@ fn build_background_page(window: &gtk::ApplicationWindow, theme: &opusdm_ipc::Th
     }
     page.append(&bg.root);
     (page, bg)
-}
-
-/// Dock tab: shown or hidden, edge, icon size, look and pinned apps.
-fn build_dock_page(window: &gtk::ApplicationWindow, desktop: &opusdm_ipc::DesktopSettings) -> (gtk::ScrolledWindow, Rc<DockSection>, Rc<DockLookSection>, Rc<DockAppsSection>) {
-    let page = page_box();
-    let dock = DockSection::new(desktop.dock_position, desktop.dock_icon_size, desktop.panel_position);
-    page.append(&dock.root);
-    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    let apps = opusdm_ipc::dock::load_dock_config().app_ids();
-    let dock_look = DockLookSection::new(window, desktop.dock_visible, &desktop.dock_style);
-    page.append(&dock_look.root);
-    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    let dock_apps = Rc::new(DockAppsSection::new(window, apps));
-    page.append(&dock_apps.root);
-    (scrolled(&page), dock, dock_look, dock_apps)
 }
 
 /// The note line under the tabs, showing `text` when there is one.
@@ -289,7 +316,7 @@ fn build_window(app: &gtk::Application) {
         notebook.append_page(page, Some(&gtk::Label::new(Some(title))));
     };
 
-    let DesktopTab { page: desktop_page, theme_mode, icon_set, buttons: theme_buttons, grid, folder, panel, screens } =
+    let DesktopTab { page: desktop_page, theme_mode, icon_set, buttons: theme_buttons, grid, folder, panel, screens, dock_shown } =
         build_desktop_page(&settings_data, &desktop_data, &chrome, &look_css);
     tab(desktop_page.upcast_ref(), "Desktop");
 
@@ -306,13 +333,6 @@ fn build_window(app: &gtk::Application) {
     let (background_page, bg) = build_background_page(&window, &settings_data.theme, &icon_set);
     tab(background_page.upcast_ref(), "Desktop Background");
 
-    let (dock_page, dock, dock_look, dock_apps) = build_dock_page(&window, &desktop_data);
-    tab(dock_page.upcast_ref(), "Dock");
-    // The panel edge and dock edge stay mutually exclusive live.
-    {
-        let dock = dock.clone();
-        panel.connect_position_changed(move |position| dock.set_panel(position));
-    }
 
     // Lister tab: behaviour (the colours belong to the theme).
     let lister_page = page_box();
@@ -352,7 +372,7 @@ fn build_window(app: &gtk::Application) {
     });
     window.set_child(Some(&outer));
 
-    let sections = Rc::new(Sections { theme_mode, icon_set, grid, folder, panel, screens, startup_apps, windows, bg, dock, dock_look, dock_apps, behavior });
+    let sections = Rc::new(Sections { theme_mode, icon_set, grid, folder, panel, screens, startup_apps, windows, bg, dock_shown, behavior });
     let select_theme = theme_selector(&sections.icon_set, &desktop_page);
     {
         let window = window.clone();
@@ -407,19 +427,15 @@ fn theme_selector(icon_set: &Rc<RefCell<Rc<ui::IconSetSection>>>, page: &gtk::Bo
     })
 }
 
-/// Apply: save the dock apps, then apply the selected theme with the
-/// preferences of the controls and tell how it went in `note`.
+/// Apply: save the "Show the dock" box, then apply the selected theme with
+/// the preferences of the controls and tell how it went in `note`.
 fn connect_apply(apply: &gtk::Button, sections: &Rc<Sections>, note: &gtk::Label) {
     let sections = sections.clone();
     let note = note.clone();
     apply.connect_clicked(move |_| {
         let selected = sections.icon_set.borrow().value();
         let (prefs, desktop) = sections.read();
-        let dock_apps = sections.dock_apps.apps();
-        let dock_error = opusdm_ipc::dock::update_dock_config(|cfg| cfg.apps = Some(dock_apps)).err().map(|e| e.to_string());
-        if let Some(e) = &dock_error {
-            opusdm_ipc::err_log!("theme-config", "cannot write dock.json: {e}");
-        }
+        let dock_error = sections.dock_shown.apply();
         let settings = model::resolve_selected(&selected, &prefs);
         let outcome = model::apply_full(&settings, &desktop);
         show_note(&note, &model::apply_message(&outcome, dock_error.as_deref()));

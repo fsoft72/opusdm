@@ -49,7 +49,7 @@ pub fn diff(old: &DesktopSettings, new: &DesktopSettings) -> DesktopChanges {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opusdm_ipc::{DockPosition, PanelPosition};
+    use opusdm_ipc::PanelPosition;
     use std::path::PathBuf;
 
     #[test]
@@ -64,14 +64,6 @@ mod tests {
         let new = DesktopSettings { active_opacity: old.active_opacity - 5, ..old.clone() };
         let c = diff(&old, &new);
         assert_eq!(c, DesktopChanges { transparency: true, ..DesktopChanges::default() });
-    }
-
-    #[test]
-    fn the_dock_fields_are_not_applied_by_the_hub() {
-        // The dock process follows dock.json itself.
-        let old = DesktopSettings::default();
-        let new = DesktopSettings { dock_position: DockPosition::Left, dock_icon_size: 40, dock_visible: false, ..old.clone() };
-        assert!(!diff(&old, &new).any());
     }
 
     #[test]

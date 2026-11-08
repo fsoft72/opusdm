@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
-opusdm-dock = { path = "../dock" }
 opusdm-ui = { path = "../ui" }
 opusdm-brightness = { path = "../brightness" }
 gtk4.workspace = true

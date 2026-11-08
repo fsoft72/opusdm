@@ -150,6 +150,12 @@ pub(crate) struct Widgets {
     pub(crate) dock: opusdm_hub::dock_host::DockHost,
     /// Watches `dock.json`, so turning the dock on starts its process.
     pub(crate) dock_watch: RefCell<Option<gio::FileMonitor>>,
+    /// Whether `dock.json` turns the dock on, as last read (off the main
+    /// loop after the first read); labels the desktop menu item.
+    pub(crate) dock_shown: Cell<bool>,
+    /// The "Show Dock" / "Hide Dock" buttons of the desktop menus, relabelled
+    /// when `dock_shown` changes. Buttons of destroyed windows are pruned.
+    pub(crate) dock_buttons: RefCell<Vec<gtk::Button>>,
     /// The button banks (`buttons/<id>.json`), owned by the GTK side.
     pub(crate) banks: Rc<RefCell<opusdm_ipc::Banks>>,
     /// The open bank windows.
@@ -199,6 +205,11 @@ fn build_ui(
         desktop_settings.desktop_dir.as_deref(),
     );
 
+    // One read at startup, like the other settings files: it also moves the
+    // old dock keys of desktop.json into dock.json before anything else
+    // (the dock supervisor, the Settings tool) looks at them.
+    let dock_shown = opusdm_ipc::dock::load_dock_config().visible;
+
     let banks = Rc::new(RefCell::new(opusdm_ipc::Banks::load()));
     let functions = Rc::new(RefCell::new(config.functions));
     let bank_windows = crate::bank_windows::BankWindows::new(banks.clone(), functions.clone(), cmd_tx.clone());
@@ -222,6 +233,8 @@ fn build_ui(
         set_panel_position: RefCell::new(None),
         dock: opusdm_hub::dock_host::DockHost::start(),
         dock_watch: RefCell::new(None),
+        dock_shown: Cell::new(dock_shown),
+        dock_buttons: RefCell::new(Vec::new()),
         io,
     });
 
@@ -291,10 +304,24 @@ fn build_ui(
 }
 
 /// Wake the dock supervisor whenever `dock.json` changes, so a dock turned
-/// on (Settings, the desktop menu, the file edited by hand) is started. The
+/// on (Settings, the desktop menu, the file edited by hand) is started, and
+/// re-read `visible` on the I/O worker for the desktop menu label. The
 /// monitor is kept in `widgets.dock_watch` for the whole run; a watch that
 /// cannot be set up is logged.
 fn watch_dock_config(widgets: &Rc<Widgets>) {
+    let (shown_tx, shown_rx) = async_channel::unbounded::<bool>();
+    {
+        let host = Rc::downgrade(widgets);
+        glib::spawn_future_local(async move {
+            while let Ok(shown) = shown_rx.recv().await {
+                match host.upgrade() {
+                    Some(widgets) => apply_dock_shown(&widgets, shown),
+                    None => opusdm_ipc::err_log!("opusdm-hub", "the hub widgets are gone: the dock menu label is not updated"),
+                }
+            }
+            opusdm_ipc::err_log!("opusdm-hub", "the dock.json watch ended: the dock menu label is no longer updated");
+        });
+    }
     let path = opusdm_ipc::dock::dock_config_path();
     let monitor = match gio::File::for_path(&path).monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
         Ok(m) => m,
@@ -307,10 +334,18 @@ fn watch_dock_config(widgets: &Rc<Widgets>) {
     monitor.connect_changed(move |_, _, _, event| {
         use gio::FileMonitorEvent::{ChangesDoneHint, Created, Deleted};
         if !matches!(event, ChangesDoneHint | Created | Deleted) { return; }
-        match host.upgrade() {
-            Some(widgets) => widgets.dock.wake(),
-            None => opusdm_ipc::err_log!("opusdm-hub", "dock.json changed but the hub widgets are gone: the dock supervisor is not woken"),
-        }
+        let Some(widgets) = host.upgrade() else {
+            opusdm_ipc::err_log!("opusdm-hub", "dock.json changed but the hub widgets are gone: the dock supervisor is not woken");
+            return;
+        };
+        widgets.dock.wake();
+        let shown_tx = shown_tx.clone();
+        widgets.io.submit(move || {
+            let shown = opusdm_ipc::dock::load_dock_config().visible;
+            if shown_tx.send_blocking(shown).is_err() {
+                opusdm_ipc::err_log!("opusdm-hub", "the dock menu label receiver is gone");
+            }
+        });
     });
     *widgets.dock_watch.borrow_mut() = Some(monitor);
 }

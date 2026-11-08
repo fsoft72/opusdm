@@ -422,6 +422,14 @@ fn add_file_items(menu: &gtk::Box, widgets: &Rc<Widgets>) {
         widgets.desktop.hide_buttons.borrow_mut().push(btn);
     }
 
+    // Show Dock / Hide Dock: turns the dock process on or off in dock.json;
+    // the label follows the file.
+    {
+        let target = widgets.clone();
+        let btn = add_item(menu, menu, dock_label(widgets.dock_shown.get()), move || toggle_dock(&target));
+        widgets.dock_buttons.borrow_mut().push(btn);
+    }
+
     {
         let widgets = widgets.clone();
         add_item(menu, menu, "New Group...", move || new_group_dialog(&widgets));

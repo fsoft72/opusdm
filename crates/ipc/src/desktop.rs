@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 /// [`DesktopSettings::sanitized`] so a hand-edited desktop.json cannot make an
 /// icon vanish or fill the screen.
 pub const ICON_SIZE_RANGE: (i32, i32) = (24, 256);
-/// Accepted range for [`DesktopSettings::dock_icon_size`], in pixels.
+/// Accepted range for [`crate::dock::DockConfig::icon_size`], in pixels.
 pub const DOCK_ICON_SIZE_RANGE: (i32, i32) = (16, 128);
 /// Accepted range, in percent, for [`DockStyle::opacity`]: 0 hides the dock
 /// background completely (the icons float), 100 is fully opaque.
@@ -405,14 +405,6 @@ pub struct DesktopSettings {
     pub desktop_dir: Option<PathBuf>,
     /// Screen edge the panel is docked to.
     pub panel_position: PanelPosition,
-    /// Screen edge the dock is docked to (see [`DockPosition::avoiding`]).
-    pub dock_position: DockPosition,
-    /// Dock launcher icon size in pixels.
-    pub dock_icon_size: i32,
-    /// Whether the dock is shown at all.
-    pub dock_visible: bool,
-    /// Background and zoom of the dock.
-    pub dock_style: DockStyle,
     /// Number of virtual screens (desktops) the window manager offers.
     pub virtual_screens: u32,
     /// Whether the next/previous desktop steps wrap around: from the last
@@ -443,10 +435,6 @@ impl Default for DesktopSettings {
             grid_gap: 4,
             desktop_dir: None,
             panel_position: PanelPosition::Top,
-            dock_position: DockPosition::Bottom,
-            dock_icon_size: 48,
-            dock_visible: true,
-            dock_style: DockStyle::default(),
             virtual_screens: DEFAULT_VIRTUAL_SCREENS,
             wrap_desktops: true,
             transparency_enabled: true,
@@ -469,9 +457,6 @@ impl DesktopSettings {
         self.grid_spacing = self.grid_spacing.clamp(lo, hi);
         let (lo, hi) = GRID_GAP_RANGE;
         self.grid_gap = self.grid_gap.clamp(lo, hi);
-        let (lo, hi) = DOCK_ICON_SIZE_RANGE;
-        self.dock_icon_size = self.dock_icon_size.clamp(lo, hi);
-        self.dock_style = self.dock_style.sanitized();
         let (lo, hi) = VIRTUAL_SCREENS_RANGE;
         self.virtual_screens = self.virtual_screens.clamp(lo, hi);
         let (lo, hi) = WINDOW_OPACITY_RANGE;
@@ -696,39 +681,23 @@ mod tests {
     }
 
     #[test]
-    fn dock_defaults_and_roundtrips() {
-        let d = DesktopSettings::default();
-        assert_eq!((d.dock_position, d.dock_icon_size), (DockPosition::Bottom, 48));
-        let d = DesktopSettings { dock_position: DockPosition::Left, ..Default::default() };
-        let json = serde_json::to_string(&d).unwrap();
-        assert!(json.contains("\"left\""));
-        assert_eq!(serde_json::from_str::<DesktopSettings>(&json).unwrap(), d);
-        // An older desktop.json without the fields keeps the defaults.
-        let old: DesktopSettings = serde_json::from_str("{\"icon_size\":64}").unwrap();
-        assert_eq!(old.dock_position, DockPosition::Bottom);
+    fn the_old_dock_keys_of_desktop_json_are_ignored() {
+        // They moved to dock.json (see `crate::dock::migrated`).
+        let old: DesktopSettings = serde_json::from_str(r#"{"icon_size":64,"dock_position":"left","dock_visible":false}"#).unwrap();
+        assert_eq!(old.icon_size, 64);
+        assert!(!serde_json::to_string(&old).unwrap().contains("dock_"));
     }
 
     #[test]
-    fn dock_style_defaults_to_the_classic_look_and_old_files_keep_it() {
-        let d = DesktopSettings::default();
-        assert!(d.dock_visible);
-        assert_eq!(d.dock_style, DockStyle { opacity: 100, image: None, image_mode: DockImageMode::Fill, zoom_enabled: false, zoom_percent: DEFAULT_DOCK_ZOOM });
-        let old: DesktopSettings = serde_json::from_str("{\"dock_icon_size\":32}").unwrap();
-        assert!(old.dock_visible);
-        assert_eq!(old.dock_style, DockStyle::default());
-    }
-
-    #[test]
-    fn dock_style_roundtrips_and_is_clamped() {
+    fn dock_style_defaults_roundtrips_and_is_clamped() {
+        assert_eq!(DockStyle::default(), DockStyle { opacity: 100, image: None, image_mode: DockImageMode::Fill, zoom_enabled: false, zoom_percent: DEFAULT_DOCK_ZOOM });
         let style = DockStyle { opacity: 40, image: Some("/tmp/wood.png".into()), image_mode: DockImageMode::Tile, zoom_enabled: true, zoom_percent: 200 };
-        let d = DesktopSettings { dock_visible: false, dock_style: style, ..Default::default() };
-        let json = serde_json::to_string(&d).unwrap();
+        let json = serde_json::to_string(&style).unwrap();
         assert!(json.contains("\"tile\""), "{json}");
-        assert_eq!(serde_json::from_str::<DesktopSettings>(&json).unwrap(), d);
+        assert_eq!(serde_json::from_str::<DockStyle>(&json).unwrap(), style);
         let wild = DockStyle { opacity: 500, zoom_percent: 9, image: Some(PathBuf::new()), ..Default::default() }.sanitized();
         assert_eq!((wild.opacity, wild.zoom_percent, wild.image), (DOCK_OPACITY_RANGE.1, DOCK_ZOOM_RANGE.0, None));
-        let d = DesktopSettings { dock_style: DockStyle { zoom_percent: 999, ..Default::default() }, ..Default::default() }.sanitized();
-        assert_eq!(d.dock_style.zoom_percent, DOCK_ZOOM_RANGE.1);
+        assert_eq!(DockStyle { zoom_percent: 999, ..Default::default() }.sanitized().zoom_percent, DOCK_ZOOM_RANGE.1);
     }
 
     #[test]
@@ -785,14 +754,6 @@ mod tests {
         assert!(d.transparency_enabled);
         assert_eq!(d.inactive_opacity, DEFAULT_INACTIVE_OPACITY);
         assert_eq!(d.active_opacity, DEFAULT_ACTIVE_OPACITY);
-    }
-
-    #[test]
-    fn dock_icon_size_is_clamped() {
-        let d = DesktopSettings { dock_icon_size: 999, ..Default::default() }.sanitized();
-        assert_eq!(d.dock_icon_size, DOCK_ICON_SIZE_RANGE.1);
-        let d = DesktopSettings { dock_icon_size: 1, ..Default::default() }.sanitized();
-        assert_eq!(d.dock_icon_size, DOCK_ICON_SIZE_RANGE.0);
     }
 
     #[test]

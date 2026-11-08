@@ -2883,7 +2883,6 @@ dependencies = [
  "dirs",
  "gtk4",
  "opusdm-brightness",
- "opusdm-dock",
  "opusdm-ipc",
  "opusdm-ui",
  "serde_json",
