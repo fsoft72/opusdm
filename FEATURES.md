@@ -18,7 +18,8 @@ How to read this document:
 - OpusDM architecture reminders for implementers:
   - `opusdm-hub` (crate `crates/hub`): background coordinator, runs all
     filesystem jobs asynchronously (progress, conflict handling, cancellation),
-    owns the panel/dock/desktop, talks IPC over a Unix socket.
+    owns the panel/desktop, starts and supervises the dock process
+    (`opusdm-dock`), talks IPC over a Unix socket.
   - `opusdm-lister` (crate `crates/lister`): GTK4 file windows; commands are
     dispatched through the Command Palette table (`palette.rs`) and the key
     table (`keys.rs`); lister -> hub jobs go through `ToHub::RunJob`.

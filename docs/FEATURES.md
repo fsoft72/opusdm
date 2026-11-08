@@ -307,6 +307,8 @@ compiling. The two samples are an analog **weather clock** and a **news feed** r
 - Launchers with tooltips, a busy cursor while the app starts, and the app's own **desktop actions** on right click.
 - **Drag to reorder**, drag out to remove, drop a `.desktop` file to add.
 - Sizes 32, 48 and 64 on any edge that the panel does not use.
+- Its **own process**: a stuck desktop never freezes the dock, and a dock turned off costs no memory.
+- **Settings** right on the dock (right click, Settings...): edge, size, background opacity and image, icon zoom, pinned apps. Turn it on or off from the desktop menu or the Settings tool.
 
 ### 7.3 Audio tray
 

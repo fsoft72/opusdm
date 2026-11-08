@@ -9,15 +9,19 @@ In scope:
 - Row (or column) of application launcher icons.
 - Position on one screen edge, configurable.
 - Icon size configurable.
-- Pinned app list edited by drag and drop, context menu and the Settings tool.
+- Pinned app list edited by drag and drop, context menu and the dock's own Settings window.
 - Look: background opacity (0-100 %, the icons stay solid), background image (fill or tile), macOS style icon zoom on mouse over, shown or hidden.
 
 Out of scope: window list, running-app indicators, previews, minimized windows, folder stacks, auto-hide, trash, Wayland.
 
 ## Architecture
 
-- New crate `crates/dock`, binary `opusdm-dock`, spawned by the hub.
-- Exposes `opusdm_dock::attach(app, settings)` following the pattern of `opusdm_panel::attach`, and returns a setter so the hub can re-dock it live on `DesktopSettingsChanged`.
+- Crate `crates/dock`, binary `opusdm-dock`: its own process (since 2026-11-08), so a stuck hub main loop cannot freeze the dock, the dock can be restarted or updated alone, and a dock turned off costs no memory.
+- `standalone.rs` runs it: reads `dock.json` (all its settings), `desktop.json` (only the panel edge) and `settings.json` (only the theme mode) and follows the three files with file monitors. It never asks the hub anything.
+- Exit codes: `EXIT_DISABLED` (4) when `dock.json` turns it off (at start, before opening a display, or later), `EXIT_ALREADY_RUNNING` (3) when another dock owns the socket.
+- Socket `dock.sock` next to the hub socket (`OPUSDM_DOCK_SOCK` overrides it), single instance (`instance.rs`), protocol `opusdm_ipc::dock::{DockRequest, DockReply}`: `Ping` and `SetHidden(bool)`, one reply each, 1 s client timeout. Thread `opusdm-dock-ipc` (`server.rs`) hands the requests to the GTK main loop and answers within 800 ms.
+- Hub side, `crates/hub/src/dock_host.rs`: thread `opusdm-dock-supervisor` starts the dock while `dock.json` says `visible`, parks on `EXIT_DISABLED` until the hub's watch on `dock.json` wakes it, retries every 30 s on `EXIT_ALREADY_RUNNING`, restarts a crashed dock after 1 / 2 / 4 s (at most 3 times in 60 s, then waits for the next change of `dock.json`). Thread `opusdm-dock-link` sends "Hide All" / "Reveal" (`SetHidden`), also to a freshly started dock. The hub GTK main loop never talks to the dock socket.
+- `opusdm_dock::attach(app, layout)` still builds the dock window in the process and returns a setter that applies a new layout live.
 - Launching uses `gio::AppInfo` / `gtk::AppLaunchContext` (honours `Exec` field codes, `Terminal=true`, startup notification). No custom launcher.
 - Icons come from the installed icon theme, like everywhere else in OpusDM (no font dependency).
 
@@ -56,11 +60,12 @@ Out of scope: window list, running-app indicators, previews, minimized windows, 
 
 ## Configuration
 
-- `~/.config/opusdm/dock.json`: pinned app ids (desktop file ids), in order.
-- Position and icon size live in `desktop.json` (`dock_position`, `dock_icon_size`, next to `panel_position`), and so do `dock_visible` and `dock_style` (`DockStyle`: `opacity`, `image`, `image_mode` fill or tile, `zoom_enabled`, `zoom_percent`). Missing fields keep the classic look.
-- Shown or hidden: `dock_visible`, applied live. The hub's "Hide All" / "Reveal" goes through `opusdm_dock::set_hidden` and `is_shown`, so "Reveal" never brings back a dock the settings turned off.
-- Missing `dock.json`: start with defaults (file manager, terminal, web browser), keeping only those installed.
-- New "Dock" tab in `opusdm-settings` (position, icon size, pinned apps list), applied live.
+- `~/.config/opusdm/dock.json` (`opusdm_ipc::dock::DockConfig`) holds every dock setting: `apps` (pinned desktop file ids, in order), `position`, `icon_size`, `visible`, `style` (`DockStyle`: `opacity`, `image`, `image_mode` fill or tile, `zoom_enabled`, `zoom_percent`) and `layout_migrated`. Missing fields keep the classic look.
+- The layout used to live in `desktop.json` (`dock_position`, `dock_icon_size`, `dock_visible`, `dock_style`): the first load copies those keys once; `desktop.json` no longer has them.
+- Every writer goes through `update_dock_config` (read fresh, change its own fields, atomic save): the dock (drag and drop, Settings window), the "Show the dock" box of `opusdm-settings`, the hub desktop menu. A malformed `dock.json` is logged and never overwritten.
+- `visible`: off ends the dock process; on (from `opusdm-settings`, the desktop menu "Show Dock", or the file) makes the hub start it. The hub's "Hide All" / "Reveal" is separate (`SetHidden` over the socket), so "Reveal" never brings back a dock that is turned off.
+- Missing `apps`: start with defaults (file manager, terminal, web browser), keeping only those installed.
+- Settings: right click on the dock background, "Settings..." opens "Dock Settings" (`settings_window.rs`, sections in `settings_ui.rs`): edge, icon size, look, "Show the dock", pinned apps; Cancel / Apply. `opusdm-settings` only keeps "Show the dock" under PANEL.
 
 ## Implementation status
 
@@ -72,3 +77,4 @@ All six steps below are implemented.
 4. Drag and drop: reorder within the dock, drop a `.desktop` file to pin it, drag an icon out to unpin it. Context menu: an icon's desktop actions plus "Remove from Dock"; the background's "Add Application...".
 5. "Dock" tab in `opusdm-settings` (`opusdm_desktop_config::dock_ui`): edge (only the ones free of the panel), icon size, and the pinned-apps list with up/down/remove/add. The Panel tab's edge change updates the Dock tab's offered edges live.
 6. Look: opacity, background image, icon zoom and the "Show the dock" checkbox, in `desktop.json` and in the Dock tab (`DockLookSection`).
+7. Separate process (2026-11-08, spec `docs/superpowers/specs/2026-11-08-dock-process-design.md`): settings moved to `dock.json`, dock socket, hub supervisor and link, Settings window in the dock, Dock tab removed from `opusdm-settings`, "Show Dock" / "Hide Dock" in the desktop menu. Steps 3, 5 and 6 above describe the old layout.

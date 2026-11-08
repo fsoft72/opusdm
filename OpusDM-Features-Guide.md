@@ -147,8 +147,11 @@ Il dock è una riga di icone lanciatore (di default sul bordo inferiore).
 3. **Click destro** su un'icona: compaiono le azioni dell'app e
    **Remove from Dock**.
 4. **Click destro** sullo sfondo del dock: **Add Application...** per aggiungere
-   un'applicazione.
+   un'applicazione, **Settings...** per le impostazioni del dock (bordo,
+   dimensione icone, sfondo, zoom, app fissate; vedi step 19.3).
 5. Trascinare un'icona fuori dal dock la rimuove.
+6. **Click destro** sul desktop: **Hide Dock** spegne il dock, **Show Dock** lo
+   riaccende.
 
 Nota: il dock non riserva spazio sullo schermo, quindi le finestre massimizzate
 lo coprono: si vede solo sopra il desktop.
@@ -1110,8 +1113,8 @@ può comandare una bank.
 ### Step 19.1 - Apri le Impostazioni
 
 **Click destro** sul desktop > **Desktop > Settings** (oppure **Settings** nel
-menu del desktop). Si apre **OpusDM Settings** con quattro schede: **Desktop**,
-**Dock**, **Menu**, **Lister**.
+menu del desktop). Si apre **OpusDM Settings** con le schede **Desktop**,
+**Menu**, **Lister** e le altre. Il dock ha le sue impostazioni (step 19.3).
 
 I cambiamenti si applicano subito a tutti i Lister aperti quando clicchi
 **Apply**.
@@ -1135,14 +1138,22 @@ Editor** (step 19.6).
    `L` o con il campo numerico.
 5. **DESKTOP FOLDER**: scegli una cartella diversa per le icone del desktop.
    **Reset to default** torna a quella predefinita.
-6. **PANEL**: posizione del pannello (**Top** o **Bottom**).
+6. **PANEL**: posizione del pannello (**Top** o **Bottom**) e **Show the dock**
+   per accendere o spegnere il dock.
 7. Clicca **Apply** per vedere subito il risultato.
 
-### Step 19.3 - Scheda Dock
+### Step 19.3 - Impostazioni del dock
+
+**Click destro** sullo sfondo del dock > **Settings...**: si apre **Dock
+Settings**.
 
 1. Scegli il bordo del dock (solo i bordi che il pannello non usa).
 2. Scegli la dimensione delle icone (32, 48 o 64).
-3. Nell'elenco delle app fissate usa i pulsanti su/giù/rimuovi/aggiungi.
+3. **Show the dock**, opacità e immagine dello sfondo, zoom delle icone.
+4. Nell'elenco delle app fissate usa i pulsanti su/giù/rimuovi/aggiungi.
+5. **Apply** applica subito; **Cancel** chiude senza salvare. Se togli **Show
+   the dock** e premi **Apply**, il dock si chiude: lo riaccendi da **Show Dock**
+   nel menu del desktop o da **Show the dock** nelle Impostazioni.
 
 ### Step 19.4 - Scheda Menu
 
