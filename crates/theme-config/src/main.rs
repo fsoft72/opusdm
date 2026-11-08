@@ -120,13 +120,16 @@ struct DockShownSection {
 impl DockShownSection {
     /// Build the section seeded with `shown`.
     fn new(shown: bool) -> Rc<Self> {
-        // One row under the panel position: the window is tall already.
+        // One row under the panel position.
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let check = gtk::CheckButton::with_label("Show the dock");
         check.set_active(shown);
         root.append(&check);
         let hint = gtk::Label::new(Some("(more dock settings: right click on the dock, Settings...)"));
         hint.set_xalign(0.0);
+        // The box sits in a half-width column of the Desktop tab: wrap the
+        // hint instead of widening the window.
+        hint.set_wrap(true);
         hint.add_css_class("dim-label");
         root.append(&hint);
         Rc::new(Self { root, check, saved: Cell::new(shown) })
@@ -203,8 +206,19 @@ fn install_chrome(mode: opusdm_ipc::ThemeMode, look_css: &str) -> gtk::CssProvid
     provider
 }
 
+/// Column gap of the Desktop tab's two-column grid.
+const DESKTOP_COLUMN_SPACING: i32 = 32;
+
 /// Desktop tab: theme mode, icon set and theme buttons, grid, folder, panel,
-/// virtual screens and brightness.
+/// virtual screens and brightness, laid out on two columns so the tab stays
+/// short:
+///
+/// ```text
+/// LIGHT / DARK, THEME, buttons | ICON GRID
+/// PANEL (and the dock box)     | VIRTUAL SCREENS
+/// DESKTOP FOLDER (full width)
+/// BRIGHTNESS (full width)
+/// ```
 fn build_desktop_page(
     settings: &opusdm_ipc::Settings,
     desktop: &opusdm_ipc::DesktopSettings,
@@ -213,7 +227,6 @@ fn build_desktop_page(
 ) -> DesktopTab {
     let page = page_box();
     let theme_mode = Rc::new(ui::ThemeModeSection::new(settings.appearance.theme_mode));
-    page.append(&theme_mode.root);
     {
         let chrome = chrome.clone();
         let look_css = look_css.to_string();
@@ -224,7 +237,6 @@ fn build_desktop_page(
     }
 
     let icon_set = Rc::new(RefCell::new(Rc::new(ui::IconSetSection::new(&settings.theme.icon_set))));
-    page.append(&icon_set.borrow().root);
 
     let buttons = ThemeButtons {
         edit: gtk::Button::with_label("Edit themes..."),
@@ -235,8 +247,12 @@ fn build_desktop_page(
     row.append(&buttons.edit);
     row.append(&buttons.import);
     row.append(&buttons.export);
-    page.append(&row);
-    page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Left cell of the first row: look of the desktop (mode, theme, buttons).
+    let look = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    look.append(&theme_mode.root);
+    look.append(&icon_set.borrow().root);
+    look.append(&row);
 
     let grid = Rc::new(GridSection::new(desktop.icon_size, desktop.grid_spacing, desktop.grid_gap));
     let folder = Rc::new(FolderSection::new(desktop.desktop_dir.as_deref()));
@@ -245,14 +261,28 @@ fn build_desktop_page(
     // Reading dock.json also moves the old dock keys out of desktop.json.
     let dock_shown = DockShownSection::new(opusdm_ipc::dock::load_dock_config().visible);
     panel.root.append(&dock_shown.root);
-    for root in [&grid.root, &folder.root, &panel.root, &screens.root] {
-        page.append(root);
-        page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    }
 
     // Applied live by its own worker: it is not part of desktop.json.
     let brightness = BrightnessSection::new();
-    page.append(&brightness.root);
+
+    let layout = gtk::Grid::new();
+    layout.set_column_spacing(DESKTOP_COLUMN_SPACING as u32);
+    layout.set_row_spacing(12);
+    layout.set_column_homogeneous(true);
+    let mut top = 0;
+    let rows: [(&gtk::Box, &gtk::Box); 2] = [(&look, &grid.root), (&panel.root, &screens.root)];
+    for (left, right) in rows {
+        left.set_valign(gtk::Align::Start);
+        right.set_valign(gtk::Align::Start);
+        layout.attach(left, 0, top, 1, 1);
+        layout.attach(right, 1, top, 1, 1);
+        layout.attach(&gtk::Separator::new(gtk::Orientation::Horizontal), 0, top + 1, 2, 1);
+        top += 2;
+    }
+    layout.attach(&folder.root, 0, top, 2, 1);
+    layout.attach(&gtk::Separator::new(gtk::Orientation::Horizontal), 0, top + 1, 2, 1);
+    layout.attach(&brightness.root, 0, top + 2, 2, 1);
+    page.append(&layout);
     DesktopTab { page, theme_mode, icon_set, buttons, grid, folder, panel, screens, dock_shown }
 }
 

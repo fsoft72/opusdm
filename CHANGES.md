@@ -2,6 +2,9 @@
 
 ## 2026-11-08
 
+- `opusdm-settings`, Desktop tab: laid out on two columns so it is shorter (LIGHT / DARK, THEME and the theme buttons beside ICON GRID; PANEL with the dock box beside VIRTUAL SCREENS; DESKTOP FOLDER and BRIGHTNESS full width below). The tab now fits the default 680 px window without scrolling (the content ended at ~850 px, now ~570 px). Only the packing in `build_desktop_page` changed (a `gtk::Grid` with homogeneous columns); the sections, their owners and the Apply path are the same. The dock hint label wraps when its column is narrow.
+  - Verified in a Xephyr sandbox (`:7`, private D-Bus session, real config, nothing applied): screenshot of the new layout. `cargo test -p opusdm-theme-config` and clippy pass. NOT verified: Apply from the new layout (no change to that code), the live session (`live-update.sh` not run), a light-mode screenshot.
+
 - Dock process: a confirmed **Quit OpusDM** ends the dock too, as when it was inside the hub (`DockHost::stop`: SIGTERM to the dock this hub started, and the supervisor starts no other, also when woken). A hub restart or crash still leaves the dock running, by design. Known limit: a dock started by an earlier hub (this hub only waits for it) is not stopped by Quit. Test: `a_quit_ends_the_supervisor_instead_of_restarting_the_dock`. Verified in the Xephyr sandbox: `WM_DELETE_WINDOW` on the desktop window, "Quit" in the requester: hub and dock gone, log `quit: opusdm-dock (pid N) asked to end`.
 
 - `scripts/live-update.sh`: without `--all` it now stops `opusdm-dock` too (with the hub and the applets), since the dock is a separate process that would otherwise survive the hub restart with the old binary; the new hub's supervisor starts it again. Docs updated (`docs/dock.md`, `docs/FEATURES.md`, `FEATURES.md`, `OpusDM-Features-Guide.md`). NOT run (the live session was not touched).
