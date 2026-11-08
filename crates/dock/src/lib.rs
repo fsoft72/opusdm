@@ -16,8 +16,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 mod icon;
+mod instance;
 pub mod list;
 mod placement;
+mod server;
+pub mod standalone;
 mod zoom;
 
 /// The pinned apps and the default menu live in `opusdm-apps`; re-exported
@@ -82,6 +85,21 @@ impl DockLayout {
 /// `set_visible(is_shown())`.
 pub fn set_hidden(hidden: bool) {
     HIDDEN.store(hidden, Ordering::Relaxed);
+}
+
+/// Whether the hub has hidden the desktop chrome ([`set_hidden`]).
+pub fn is_hidden() -> bool {
+    HIDDEN.load(Ordering::Relaxed)
+}
+
+/// Show or hide the dock window of `app` as [`is_shown`] says, after a
+/// [`set_hidden`]. Other windows of the dock (its Settings) are left alone.
+pub fn sync_visibility(app: &gtk::Application) {
+    for window in app.windows() {
+        if window.title().as_deref() == Some(WINDOW_TITLE) {
+            window.set_visible(is_shown());
+        }
+    }
 }
 
 /// Whether the dock window should be visible now: enabled in the settings

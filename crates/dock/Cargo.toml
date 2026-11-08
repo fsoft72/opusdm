@@ -18,6 +18,7 @@ opusdm-ui = { path = "../ui" }
 opusdm-ipc = { path = "../ipc" }
 gtk4.workspace = true
 opusdm-apps = { path = "../apps" }
+async-channel.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
