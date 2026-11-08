@@ -60,6 +60,13 @@ impl Trace {
     }
 }
 
+/// X of sample `index` of `count` in a graph `width` wide, `step` apart:
+/// the newest sample sits on the right edge, so a trace that is not full
+/// yet enters from the right, like a full one scrolls.
+fn sample_x(index: usize, count: usize, width: f64, step: f64) -> f64 {
+    width - (count - 1 - index) as f64 * step
+}
+
 /// Install `area`'s draw function once. The closure reads the shared traces
 /// on every redraw, scaled to `fixed_max` (or the observed maximum when
 /// `None`), so each tick only needs a `queue_draw` - no callback churn.
@@ -86,8 +93,9 @@ fn install_sparkline(
             }
             cr.set_source_rgb(*r, *g, *b);
             cr.set_line_width(1.0);
+            let count = trace.samples.len();
             for (i, v) in trace.samples.iter().enumerate() {
-                let x = i as f64 * step;
+                let x = sample_x(i, count, w, step);
                 let y = h - (v / max).clamp(0.0, 1.0) * h;
                 if i == 0 {
                     cr.move_to(x, y);
@@ -863,6 +871,17 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         let tick = sampler.next(&read_files(true)).unwrap();
         assert!(tick.cpu.is_some() && tick.mem.is_some() && tick.load.is_some(), "{tick:?}");
+    }
+
+    #[test]
+    fn the_newest_sample_is_on_the_right_edge() {
+        let (w, step) = (59.0, 1.0);
+        // A full trace spans the whole width, as before.
+        assert_eq!(sample_x(0, HISTORY, w, step), 0.0);
+        assert_eq!(sample_x(HISTORY - 1, HISTORY, w, step), w);
+        // A short one ends on the right edge, not the left.
+        assert_eq!(sample_x(2, 3, w, step), w);
+        assert_eq!(sample_x(0, 3, w, step), w - 2.0);
     }
 
     #[test]
