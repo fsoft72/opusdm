@@ -1,10 +1,10 @@
-//! The Dock tab sections of the settings window: which edge the dock uses,
-//! how big its icons are, and which apps are pinned.
+//! The sections of the dock Settings window: which edge the dock uses, how
+//! big its icons are, its look, and which apps are pinned.
 
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_dock::{apps, list};
+use crate::{apps, list};
 use opusdm_ipc::{DockImageMode, DockPosition, DockStyle, PanelPosition};
 use std::cell::RefCell;
 use opusdm_ui::{clear_children, labeled_row, pick_file, section_heading, FileFilterSpec, FilePick, LabelWidth};
@@ -210,7 +210,7 @@ impl AppsInner {
         let this = self.clone();
         pick_file(Some(window), &pick, move |path| {
             let Some(id) = apps::id_for_desktop_file(&path) else {
-                opusdm_ipc::err_log!("opusdm-settings", "{} is not an installed application", path.display());
+                opusdm_ipc::err_log!("opusdm-dock", "{} is not an installed application", path.display());
                 return;
             };
             let end = this.ids.borrow().len();

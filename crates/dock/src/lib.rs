@@ -20,7 +20,11 @@ mod instance;
 pub mod list;
 mod placement;
 mod server;
+pub mod settings_ui;
+mod settings_window;
 pub mod standalone;
+#[cfg(test)]
+mod gtk_test;
 mod zoom;
 
 /// The pinned apps and the default menu live in `opusdm-apps`; re-exported
@@ -158,6 +162,8 @@ struct Dock {
     see_through: Cell<bool>,
     /// Keeps the `dock.json` watch alive.
     config_monitor: RefCell<Option<gio::FileMonitor>>,
+    /// The open Settings window, so a second "Settings..." raises it.
+    settings_window: RefCell<Option<gtk::ApplicationWindow>>,
 }
 
 /// Title of the dock window; the hub uses it to hide and show the dock.
@@ -208,6 +214,7 @@ pub fn attach(app: &gtk::Application, layout: DockLayout) -> Rc<dyn Fn(DockLayou
         input_shaped: Cell::new(false),
         see_through: Cell::new(compositor_running()),
         config_monitor: RefCell::new(None),
+        settings_window: RefCell::new(None),
     });
 
     // Wayland: a bottom layer surface on its edge (a no-op on X11).
@@ -561,12 +568,38 @@ impl Dock {
         self.show_menu(image, None, items);
     }
 
-    /// Context menu of the dock background: "Add Application...".
+    /// Context menu of the dock background: "Add Application...", "Settings...".
     fn show_background_menu(self: &Rc<Self>, x: f64, y: f64) {
-        let dock = self.clone();
-        let items: Vec<(String, Box<dyn Fn()>)> =
-            vec![("Add Application...".to_string(), Box::new(move || dock.choose_app_to_add()))];
+        let add = self.clone();
+        let settings = self.clone();
+        let items: Vec<(String, Box<dyn Fn()>)> = vec![
+            ("Add Application...".to_string(), Box::new(move || add.choose_app_to_add())),
+            ("Settings...".to_string(), Box::new(move || settings.open_settings())),
+        ];
         self.show_menu(&self.window, Some((x, y)), items);
+    }
+
+    /// Open the dock Settings window, or raise it when it is already open.
+    fn open_settings(self: &Rc<Self>) {
+        if let Some(open) = self.settings_window.borrow().as_ref() {
+            open.present();
+            return;
+        }
+        let Some(app) = self.window.application() else {
+            opusdm_ipc::err_log!("opusdm-dock", "the dock window has no application: cannot open the dock settings");
+            return;
+        };
+        let cfg = opusdm_ipc::dock::load_dock_config();
+        let ids = apps::ids(&self.state.borrow().entries);
+        let panel = self.state.borrow().layout.panel;
+        let window = settings_window::build(&app, &cfg, ids, panel);
+        let dock = self.clone();
+        window.connect_close_request(move |_| {
+            dock.settings_window.borrow_mut().take();
+            gtk::glib::Propagation::Proceed
+        });
+        window.present();
+        *self.settings_window.borrow_mut() = Some(window);
     }
 
     /// Let the user pick a `.desktop` file and pin it at the end.
