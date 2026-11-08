@@ -373,6 +373,9 @@ pub(crate) fn request_quit(widgets: &Rc<Widgets>) {
             }
             widgets.quitting.set(true);
             widgets.bank_windows.begin_shutdown();
+            // The dock used to close with the hub: keep that on a Quit (a hub
+            // restart or crash leaves it running, by design).
+            widgets.dock.stop();
             let widgets = widgets.clone();
             glib::spawn_future_local(async move {
                 wait_for_shutdown(&widgets).await;

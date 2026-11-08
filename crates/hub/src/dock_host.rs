@@ -32,7 +32,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -74,6 +74,10 @@ pub struct DockHost {
     wake_tx: Sender<()>,
     link_tx: Sender<()>,
     hidden: Arc<AtomicBool>,
+    /// Pid of the dock the supervisor started, 0 when none runs.
+    pid: Arc<AtomicU32>,
+    /// Set by [`DockHost::stop`]: the supervisor starts no dock any more.
+    stopping: Arc<AtomicBool>,
 }
 
 impl DockHost {
@@ -84,6 +88,8 @@ impl DockHost {
         let (link_tx, link_rx) = mpsc::channel();
         let hidden = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(false));
+        let pid = Arc::new(AtomicU32::new(0));
+        let stopping = Arc::new(AtomicBool::new(false));
         let dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
         let sock = opusdm_ipc::dock::dock_socket_path();
 
@@ -99,13 +105,20 @@ impl DockHost {
         }
         {
             let link_tx = link_tx.clone();
+            let (pid, stopping) = (pid.clone(), stopping.clone());
             // Detached on purpose: the thread owns the child for the whole run.
             let spawned = std::thread::Builder::new().name(SUPERVISOR_THREAD.into()).spawn(move || {
                 let ops = Ops {
                     visible: || opusdm_ipc::dock::load_dock_config().visible,
                     spawn: || Command::new(opusdm_ipc::instance::sibling_bin_in(dir.as_deref(), TOOL)).spawn(),
-                    run: |child: &mut Child| run_child(child, &sock, &running, &link_tx),
+                    run: |child: &mut Child| {
+                        pid.store(child.id(), Ordering::SeqCst);
+                        let result = run_child(child, &sock, &running, &link_tx);
+                        pid.store(0, Ordering::SeqCst);
+                        result
+                    },
                     sleep: std::thread::sleep,
+                    stopping: || stopping.load(Ordering::SeqCst),
                 };
                 let report = supervise(ops, &wake_rx, PRODUCTION);
                 opusdm_ipc::err_log!(TAG, "{SUPERVISOR_THREAD} ended: {report:?}");
@@ -119,7 +132,24 @@ impl DockHost {
         if link_tx.send(()).is_err() {
             opusdm_ipc::err_log!(TAG, "the {LINK_THREAD} thread is gone: Hide All does not reach the dock");
         }
-        DockHost { wake_tx, link_tx, hidden }
+        DockHost { wake_tx, link_tx, hidden, pid, stopping }
+    }
+
+    /// The user quits OpusDM: end the dock this hub started (SIGTERM) and
+    /// start no other. A dock started by an earlier hub is left alone.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        let pid = self.pid.load(Ordering::SeqCst);
+        if pid == 0 {
+            opusdm_ipc::debug_log!(TAG, "quit: no {TOOL} started by this hub to stop");
+            return;
+        }
+        // SAFETY: kill only sends a signal to a pid; it touches no memory.
+        if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } != 0 {
+            opusdm_ipc::err_log!(TAG, "quit: cannot stop {TOOL} (pid {pid}): {}", io::Error::last_os_error());
+        } else {
+            opusdm_ipc::debug_log!(TAG, "quit: {TOOL} (pid {pid}) asked to end");
+        }
     }
 
     /// `dock.json` changed: let the supervisor check whether the dock must
@@ -200,6 +230,8 @@ enum Ended {
     MissingBinary,
     /// The wake channel closed: the hub is shutting down.
     HubGone,
+    /// The user quit OpusDM ([`DockHost::stop`]).
+    Stopped,
 }
 
 /// What a supervisor run did, for the logs and the tests.
@@ -211,7 +243,7 @@ struct Report {
 }
 
 /// What the supervisor loop calls; fakes in the tests.
-struct Ops<V, S, R, Sl> {
+struct Ops<V, S, R, Sl, St> {
     /// Whether `dock.json` asks for the dock now.
     visible: V,
     /// Start the dock process.
@@ -220,15 +252,18 @@ struct Ops<V, S, R, Sl> {
     run: R,
     /// Wait before a retry or a restart.
     sleep: Sl,
+    /// Whether the hub is quitting: no more starts.
+    stopping: St,
 }
 
 /// The supervisor loop, see the module documentation.
-fn supervise<V, S, R, Sl>(mut ops: Ops<V, S, R, Sl>, wake_rx: &Receiver<()>, timing: Timing) -> Report
+fn supervise<V, S, R, Sl, St>(mut ops: Ops<V, S, R, Sl, St>, wake_rx: &Receiver<()>, timing: Timing) -> Report
 where
     V: FnMut() -> bool,
     S: FnMut() -> io::Result<Child>,
     R: FnMut(&mut Child) -> io::Result<ExitStatus>,
     Sl: FnMut(Duration),
+    St: FnMut() -> bool,
 {
     let mut history = VecDeque::new();
     let mut waiting = false;
@@ -236,6 +271,10 @@ where
     loop {
         if !park_until_visible(&mut ops.visible, wake_rx) {
             return Report { ended: Ended::HubGone, starts };
+        }
+        // Woken while the hub quits: start nothing.
+        if (ops.stopping)() {
+            return Report { ended: Ended::Stopped, starts };
         }
         starts += 1;
         let status = match (ops.spawn)() {
@@ -253,6 +292,9 @@ where
                 log_exit(pid, (ops.run)(&mut child))
             }
         };
+        if (ops.stopping)() {
+            return Report { ended: Ended::Stopped, starts };
+        }
         let mut step = next_step(status, &mut history, Instant::now(), timing);
         // Turned off, but dock.json says on again already: a quick toggle,
         // or the dock and the hub do not agree on the file. Count it, so a
@@ -460,6 +502,7 @@ mod tests {
                     },
                     run: opusdm_ipc::reaped::wait,
                     sleep: |_| {},
+                    stopping: || false,
                 };
                 supervise(ops, &wake_rx, FAST)
             })
@@ -504,6 +547,7 @@ mod tests {
             },
             run: opusdm_ipc::reaped::wait,
             sleep: |d| sleeps.borrow_mut().push(d),
+            stopping: || false,
         };
         let closer = close_later(wake_tx);
         let report = supervise(ops, &wake_rx, FAST);
@@ -527,6 +571,7 @@ mod tests {
                     },
                     run: opusdm_ipc::reaped::wait,
                     sleep: |_| {},
+                    stopping: || false,
                 };
                 supervise(ops, &wake_rx, FAST)
             })
@@ -560,6 +605,7 @@ mod tests {
             },
             run: opusdm_ipc::reaped::wait,
             sleep: |_| {},
+            stopping: || false,
         };
         let closer = close_later(wake_tx);
         // Without the count this would spin forever.
@@ -581,10 +627,32 @@ mod tests {
             },
             run: opusdm_ipc::reaped::wait,
             sleep: |d| sleeps.borrow_mut().push(d),
+            stopping: || false,
         };
         let report = supervise(ops, &wake_rx, FAST);
         assert_eq!(report, Report { ended: Ended::MissingBinary, starts: 11 });
         assert_eq!(*sleeps.borrow(), vec![FAST.retry; 10]);
+    }
+
+    #[test]
+    fn a_quit_ends_the_supervisor_instead_of_restarting_the_dock() {
+        let (_wake_tx, wake_rx) = mpsc::channel();
+        let spawns = Cell::new(0);
+        let stopping = Cell::new(false);
+        let ops = Ops {
+            visible: || true,
+            spawn: || {
+                spawns.set(spawns.get() + 1);
+                // The hub quits while this dock runs; it ends by the signal.
+                stopping.set(true);
+                Command::new("/bin/false").spawn()
+            },
+            run: opusdm_ipc::reaped::wait,
+            sleep: |_| panic!("no restart after a quit"),
+            stopping: || stopping.get(),
+        };
+        assert_eq!(supervise(ops, &wake_rx, FAST), Report { ended: Ended::Stopped, starts: 1 });
+        assert_eq!(spawns.get(), 1);
     }
 
     #[test]
