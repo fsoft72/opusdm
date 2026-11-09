@@ -19,6 +19,13 @@ const MENU_WIDTH: i32 = 560;
 /// The settings application.
 const SETTINGS_BIN: &str = "opusdm-settings";
 
+/// The Apps editor.
+const APPS_EDITOR_BIN: &str = "opusdm-apps-editor";
+
+/// Prefix of the `.desktop` entries the Apps editor creates, the only ones
+/// "Delete" removes from disk.
+const OWN_ENTRY_PREFIX: &str = "opusdm-";
+
 /// Pixel size of the icon of a menu row.
 const MENU_ICON_SIZE: i32 = 24;
 
@@ -81,19 +88,38 @@ fn custom_app_row(id: &str, popover: &gtk::Popover, filter: &str) -> Option<gtk:
         menu.popdown();
         apps::launch(&info);
     });
-    attach_quick_apps_menu(&btn, id, popover);
+    attach_context_menu(&btn, id, popover);
     Some(btn)
 }
 
-/// Right click on a menu row opens "Add to quick apps" (disabled when the app
-/// is already one); `menu` is the application menu popover, closed on use.
-fn attach_quick_apps_menu(btn: &gtk::Button, id: &str, menu: &gtk::Popover) {
+/// A flat, left-aligned item of the row context menu.
+fn context_item(label: &str) -> gtk::Button {
+    let item = gtk::Button::with_label(label);
+    item.add_css_class("flat");
+    if let Some(child) = item.child().and_downcast::<gtk::Label>() {
+        child.set_xalign(0.0);
+    }
+    item
+}
+
+/// Right click on a menu row opens a context menu: "Add to quick apps" and
+/// "Add to Dock" (each disabled when the app is already there), "Edit App"
+/// (opens the Apps editor on this entry) and "Delete" (asks first, then
+/// removes the entry from the menu). `menu` is the application menu popover,
+/// closed on use.
+fn attach_context_menu(btn: &gtk::Button, id: &str, menu: &gtk::Popover) {
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
     popover.add_css_class(crate::hub_look::MENU_CLASS);
-    let add = gtk::Button::with_label("Add to quick apps");
-    add.add_css_class("flat");
-    popover.set_child(Some(&add));
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let add = context_item("Add to quick apps");
+    let dock = context_item("Add to Dock");
+    let edit = context_item("Edit App");
+    let delete = context_item("Delete");
+    for item in [&add, &dock, &edit, &delete] {
+        column.append(item);
+    }
+    popover.set_child(Some(&column));
     popover.set_parent(btn);
     {
         let popover = popover.clone();
@@ -107,14 +133,112 @@ fn attach_quick_apps_menu(btn: &gtk::Button, id: &str, menu: &gtk::Popover) {
             widgets::quickapps::add_app(&id);
         });
     }
-    let (id, add) = (id.to_string(), add.clone());
+    {
+        let (popover, menu, id) = (popover.clone(), menu.clone(), id.to_string());
+        dock.connect_clicked(move |_| {
+            popover.popdown();
+            menu.popdown();
+            add_to_dock(&id);
+        });
+    }
+    {
+        let (popover, menu, id) = (popover.clone(), menu.clone(), id.to_string());
+        edit.connect_clicked(move |_| {
+            popover.popdown();
+            menu.popdown();
+            edit_app(&id);
+        });
+    }
+    {
+        let (popover, menu, id) = (popover.clone(), menu.clone(), id.to_string());
+        delete.connect_clicked(move |_| {
+            popover.popdown();
+            menu.popdown();
+            delete_app(&menu, &id);
+        });
+    }
+    let (id, add, dock) = (id.to_string(), add.clone(), dock.clone());
     let click = gtk::GestureClick::new();
     click.set_button(gdk::BUTTON_SECONDARY);
     click.connect_pressed(move |_, _, _, _| {
         add.set_sensitive(!widgets::quickapps::contains(&id));
+        dock.set_sensitive(!dock_contains(&id));
         popover.popup();
     });
     btn.add_controller(click);
+}
+
+/// The apps pinned to the dock: `dock.json`, or the default set while no list
+/// was ever chosen (what the dock itself shows in that case).
+fn dock_app_ids() -> Vec<String> {
+    opusdm_ipc::dock::load_dock_config().apps.unwrap_or_else(apps::default_app_ids)
+}
+
+/// Whether `id` is already pinned to the dock.
+fn dock_contains(id: &str) -> bool {
+    dock_app_ids().iter().any(|a| a == id)
+}
+
+/// Pin `id` to the dock (a no-op when already there). The dock watches
+/// `dock.json` and follows the change.
+fn add_to_dock(id: &str) {
+    let result = opusdm_ipc::dock::update_dock_config(|cfg| {
+        let mut ids = cfg.apps.take().unwrap_or_else(apps::default_app_ids);
+        if !ids.iter().any(|a| a == id) {
+            ids.push(id.to_string());
+        }
+        cfg.apps = Some(ids);
+    });
+    if let Err(e) = result {
+        opusdm_ipc::err_log!("opusdm-panel", "cannot add {id} to the dock: {e}");
+    }
+}
+
+/// Open the Apps editor on the entry `id`, from the folder of the panel first.
+fn edit_app(id: &str) {
+    let sibling = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(APPS_EDITOR_BIN)));
+    let path = sibling.filter(|p| p.exists()).unwrap_or_else(|| std::path::PathBuf::from(APPS_EDITOR_BIN));
+    if let Err(e) = Command::new(&path).arg(id).spawn() {
+        opusdm_ipc::err_log!("opusdm-panel", "cannot start {}: {e}", path.display());
+    }
+}
+
+/// Ask for confirmation, then remove the app `id` from the menu (and delete
+/// its `.desktop` file when it is one the Apps editor created). `menu` is the
+/// application menu popover, used to find the panel window that owns the
+/// requester.
+fn delete_app(menu: &gtk::Popover, id: &str) {
+    let Some(window) = menu.parent().and_then(|p| p.root()).and_downcast::<gtk::ApplicationWindow>() else {
+        opusdm_ipc::err_log!("opusdm-panel", "cannot ask to delete {id}: the menu has no panel window");
+        return;
+    };
+    let name = apps::resolve(&[id.to_string()]).into_iter().next().map(|e| e.info.name().to_string()).unwrap_or_else(|| id.to_string());
+    let id = id.to_string();
+    confirm(&window, &format!("Delete \"{name}\"?"), "The application is removed from the menu.", move || remove_app(&id));
+}
+
+/// Remove every occurrence of `id` from `menu.json`; an own `.desktop` entry
+/// (`opusdm-` prefix, created by the Apps editor) is deleted too. Failures
+/// are logged.
+fn remove_app(id: &str) {
+    let Some(mut cfg) = opusdm_ipc::menu::load_menu_config() else {
+        opusdm_ipc::err_log!("opusdm-panel", "cannot delete {id}: menu.json cannot be read");
+        return;
+    };
+    if opusdm_ipc::menu::remove_app_everywhere(&mut cfg.items, id) {
+        if let Err(e) = opusdm_ipc::menu::save_menu_config(&cfg) {
+            opusdm_ipc::err_log!("panel", "cannot write menu.json: {e}");
+            return;
+        }
+    }
+    if id.starts_with('/') || !id.starts_with(OWN_ENTRY_PREFIX) { return; }
+    let Some(path) = dirs::data_dir().map(|d| d.join("applications").join(id)) else { return };
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            opusdm_ipc::err_log!("opusdm-panel", "cannot delete {}: {e}", path.display());
+        }
+        _ => {}
+    }
 }
 
 /// Render one level of the custom menu tree into `into`: apps as rows,

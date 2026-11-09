@@ -123,6 +123,20 @@ pub fn remove_at(items: &mut Vec<MenuItem>, path: &[usize]) {
     }
 }
 
+/// Remove every app entry with this `id`, at any depth. Returns whether
+/// something was removed.
+pub fn remove_app_everywhere(items: &mut Vec<MenuItem>, id: &str) -> bool {
+    let before = items.len();
+    items.retain(|i| !matches!(i, MenuItem::App { id: a } if a == id));
+    let mut removed = items.len() != before;
+    for item in items.iter_mut() {
+        if let MenuItem::Folder { items, .. } = item {
+            removed |= remove_app_everywhere(items, id);
+        }
+    }
+    removed
+}
+
 /// Swap the entry at `path` with its previous sibling. A no-op at the top
 /// of its list.
 pub fn move_up(items: &mut Vec<MenuItem>, path: &[usize]) {
@@ -196,6 +210,14 @@ mod tests {
 
     fn folder(name: &str, items: Vec<MenuItem>) -> MenuItem {
         MenuItem::Folder { name: name.to_string(), items }
+    }
+
+    #[test]
+    fn remove_app_everywhere_drops_every_copy_and_keeps_the_rest() {
+        let mut items = vec![app("a"), folder("f", vec![app("b"), app("a"), folder("g", vec![app("a")])]), app("c")];
+        assert!(remove_app_everywhere(&mut items, "a"));
+        assert_eq!(items, vec![folder("f", vec![app("b"), folder("g", vec![])]), app("c")]);
+        assert!(!remove_app_everywhere(&mut items, "missing"));
     }
 
     #[test]

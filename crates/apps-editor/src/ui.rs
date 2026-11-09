@@ -60,8 +60,9 @@ struct Editor {
     quiet: Cell<bool>,
 }
 
-/// Open the editor window.
-pub fn open(app: &gtk::Application) {
+/// Open the editor window, with the entry `select` (a desktop id) selected
+/// when it is in the menu.
+pub fn open(app: &gtk::Application, select: Option<String>) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Edit Apps")
@@ -111,6 +112,16 @@ pub fn open(app: &gtk::Application) {
     }
 
     editor.rebuild();
+    if let Some(id) = select {
+        let mut flat = Vec::new();
+        _flatten(&editor.items.borrow(), &[], &mut flat);
+        let found = flat.into_iter().map(|(path, _)| path).find(|p| matches!(_item_at(&editor.items.borrow(), p), Some(MenuItem::App { id: a }) if *a == id));
+        match found {
+            Some(path) => *editor.selected.borrow_mut() = Some(path),
+            None => opusdm_ipc::err_log!("opusdm-apps-editor", "entry {id} is not in the menu: nothing selected"),
+        }
+        editor.rebuild();
+    }
     editor.load_form();
     window.present();
 }
