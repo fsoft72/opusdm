@@ -40,6 +40,7 @@ pub fn run(connected: Connected, start: PathBuf, select: Vec<String>) -> glib::E
         .application_id("org.opusdm.Lister")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
+    opusdm_ui::set_app_window_icon(&app, "opusdm-lister", include_bytes!("../../../assets/apps/icons/lister.svg"));
 
     app.connect_activate(move |app| {
         crate::dlog!("activate");
