@@ -10,6 +10,7 @@ use opusdm_network_config::{window, APP_CSS};
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.NetworkManager").build();
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-network-manager", include_bytes!("../../../assets/apps/icons/network.svg"));
     app.connect_activate(|app| {
         // A second launch only raises the open window.
         if let Some(window) = app.windows().first() {

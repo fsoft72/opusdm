@@ -113,6 +113,12 @@ $SUDO install -m 644 "$DIST/opusdm-lister.desktop" /usr/share/applications/opusd
 for f in "$DIST"/share/applications/*.desktop; do
     $SUDO install -m 644 "$f" "/usr/share/applications/$(basename "$f")"
 done
+# Per-app SVG icons named by those entries
+$SUDO mkdir -p /usr/share/icons/hicolor/scalable/apps
+for f in "$DIST"/share/icons/hicolor/scalable/apps/*.svg; do
+    $SUDO install -m 644 "$f" "/usr/share/icons/hicolor/scalable/apps/$(basename "$f")"
+done
+$SUDO gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || echo "live-update: gtk-update-icon-cache failed or is missing" >&2
 $SUDO update-desktop-database -q /usr/share/applications 2>/dev/null || echo "live-update: update-desktop-database failed or is missing" >&2
 
 if [ "$WITH_CONFIG" -eq 1 ]; then

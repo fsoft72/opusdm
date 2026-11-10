@@ -19,6 +19,7 @@ fn apply_theme() {
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.Run").build();
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-run", include_bytes!("../../../assets/apps/icons/run-3.svg"));
     app.connect_activate(|app| {
         // A second launch only closes the open window: skip the heavy work.
         if app.windows().is_empty() {

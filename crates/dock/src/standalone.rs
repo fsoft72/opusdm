@@ -77,6 +77,7 @@ pub fn run() -> glib::ExitCode {
     // NON_UNIQUE: the dock socket decides about a second instance, not D-Bus.
     let app = gtk::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::NON_UNIQUE).build();
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-dock", include_bytes!("../../../assets/apps/icons/dock.svg"));
     let exit_code: Rc<Cell<Option<u8>>> = Rc::new(Cell::new(None));
     let pending = RefCell::new(Some((cfg, listener)));
     {

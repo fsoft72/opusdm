@@ -19,6 +19,7 @@ fn main() -> gtk::glib::ExitCode {
     let select = std::env::args().nth(1);
     let app = gtk::Application::builder().application_id("org.opusdm.AppsEditor").build();
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-apps-editor", include_bytes!("../../../assets/apps/icons/app-editor.svg"));
     app.connect_activate(move |app| {
         // A second launch only raises the open window.
         if let Some(window) = app.windows().first() {

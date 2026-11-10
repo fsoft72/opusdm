@@ -214,7 +214,6 @@ pub fn open(app: &gtk::Application, base: RgbaImage) {
     root.append(&ui.status);
     root.append(&bottom_bar(&ui));
     window.set_child(Some(&root));
-    icons::set_window_icon(&window);
     window.present();
     if ui.settings.borrow().auto_copy { auto_copy(&ui); }
 }

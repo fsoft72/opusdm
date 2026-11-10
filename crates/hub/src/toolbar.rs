@@ -56,6 +56,7 @@ pub fn run(handle: ServerHandle, _sock_path: PathBuf, config: opusdm_hub::startu
 
     let cmd_tx = handle.cmd_tx;
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-hub", include_bytes!("../../../assets/apps/icons/hub.svg"));
     app.connect_activate(move |app| {
         build_ui(app, cmd_tx.clone(), ui_rx.clone(), config.clone());
         // After the UI is built, so its first build does not count as a stall.

@@ -13,6 +13,7 @@ const APP_ID: &str = "org.opusdm.AppletBrowser";
 fn main() -> gtk::glib::ExitCode {
     let app = gtk::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-applet-browser", include_bytes!("../../../assets/apps/icons/applets-browser.svg"));
     app.connect_activate(window::activate);
     app.run()
 }

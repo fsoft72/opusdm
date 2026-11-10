@@ -54,6 +54,7 @@ fn main() -> gtk::glib::ExitCode {
     // D-Bus unique name would make a second process a silent "remote"
     // instance that never emits `startup`.
     let app = gtk::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::NON_UNIQUE).build();
+    opusdm_ui::set_app_window_icon(&app, "opusdm-applets", include_bytes!("../../../assets/apps/icons/applets.svg"));
     // OWNER: this local is the only strong reference to the host for the
     // whole run; it is dropped only after `app.run()` returns.
     let host: Rc<Host> = Host::new(&app);

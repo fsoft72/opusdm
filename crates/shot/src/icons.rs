@@ -5,9 +5,6 @@ use crate::annotations::Size;
 use gtk4 as gtk;
 use gtk::cairo;
 use gtk::prelude::*;
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{AtomEnum, PropMode};
-use x11rb::wrapper::ConnectionExt as _;
 
 /// The camera drawing of `opusdm-shot` (outline, so it reads on a light and on
 /// a dark theme), embedded at compile time. Its black is [`CAMERA_INK`]; the
@@ -22,57 +19,6 @@ fn tint_camera(svg: &[u8], rgba: (f64, f64, f64, f64)) -> Vec<u8> {
     let channel = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let hex = format!("#{:02x}{:02x}{:02x}", channel(rgba.0), channel(rgba.1), channel(rgba.2));
     String::from_utf8_lossy(svg).replace(CAMERA_INK, &hex).into_bytes()
-}
-
-/// Side, in pixels, of the camera drawn into `_NET_WM_ICON`.
-const WINDOW_ICON_SIZE: i32 = 48;
-
-/// Side the camera SVG declares in its `width` / `height`.
-const CAMERA_DECLARED_SIDE: &str = "800px";
-
-/// The camera as `_NET_WM_ICON` words: width, height, then one `ARGB` word
-/// per pixel (not premultiplied), drawn in `rgba`. `None` when the SVG cannot
-/// be rendered (logged by the caller).
-fn camera_icon_words(rgba: (f64, f64, f64, f64), side: i32) -> Result<Vec<u32>, String> {
-    let svg = String::from_utf8_lossy(&tint_camera(SVG_CAMERA, rgba)).replace(CAMERA_DECLARED_SIDE, &format!("{side}px"));
-    let texture = gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(svg.into_bytes())).map_err(|e| e.to_string())?;
-    let (w, h) = (texture.width() as usize, texture.height() as usize);
-    if w == 0 || h == 0 { return Err("the camera SVG has no size".to_string()); }
-    // Native download format: premultiplied ARGB, one little endian word per pixel.
-    let mut data = vec![0u8; w * h * 4];
-    texture.download(&mut data, w * 4);
-    let mut words = vec![w as u32, h as u32];
-    words.extend(data.as_chunks::<4>().0.iter().map(|px| {
-        let word = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
-        let a = word >> 24;
-        if a == 0 || a == 255 { return word; }
-        let un = |c: u32| ((c * 255 + a / 2) / a).min(255);
-        (a << 24) | (un((word >> 16) & 0xff) << 16) | (un((word >> 8) & 0xff) << 8) | un(word & 0xff)
-    }));
-    Ok(words)
-}
-
-/// Give `window` the camera as its icon in window lists. GTK4 does not write
-/// `_NET_WM_ICON` on X11, so without this the panel shows a generic icon. Done
-/// when the window is mapped (it needs its X11 id and its theme colour); under
-/// Wayland nothing is done, the compositor finds the icon through the desktop
-/// entry of the application id. Failures are logged.
-pub fn set_window_icon(window: &gtk::ApplicationWindow) {
-    window.connect_map(|window| {
-        let Some(xid) = opusdm_ui::x11_window_id(window) else { return };
-        let c = window.color();
-        let words = match camera_icon_words((c.red() as f64, c.green() as f64, c.blue() as f64, 1.0), WINDOW_ICON_SIZE) {
-            Ok(words) => words,
-            Err(e) => return opusdm_ipc::err_log!("opusdm-shot", "window icon: {e}"),
-        };
-        let result = opusdm_ui::with_x11(|x11| {
-            let atom = x11.atom("_NET_WM_ICON")?;
-            x11.conn().change_property32(PropMode::REPLACE, xid, atom, AtomEnum::CARDINAL, &words)?;
-            x11.conn().flush()?;
-            Ok(())
-        });
-        if let Err(e) = result { opusdm_ipc::err_log!("opusdm-shot", "window icon: {e}"); }
-    });
 }
 
 /// The camera as an image of `size` pixels, in the foreground colour of the
@@ -275,16 +221,6 @@ mod tests {
             assert!(!String::from_utf8_lossy(&svg).contains(CAMERA_INK));
             assert!(gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(svg)).is_ok());
         }
-    }
-
-    #[test]
-    fn the_window_icon_has_the_declared_size_and_some_visible_pixels() {
-        gtk::init().ok();
-        let words = camera_icon_words((1.0, 1.0, 1.0, 1.0), 48).unwrap();
-        assert_eq!((words[0], words[1]), (48, 48));
-        assert_eq!(words.len(), 2 + 48 * 48);
-        assert!(words[2..].iter().any(|w| w >> 24 != 0), "blank icon");
-        assert!(words[2..].iter().any(|w| w >> 24 == 255 && w & 0x00ff_ffff == 0x00ff_ffff), "no opaque white pixel");
     }
 
     #[test]

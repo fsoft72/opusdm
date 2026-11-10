@@ -78,6 +78,7 @@ fn main() -> ExitCode {
     let app = gtk::Application::builder().application_id("org.opusdm.Viewer").flags(gio::ApplicationFlags::NON_UNIQUE).build();
     let gallery = std::cell::RefCell::new(Some(gallery));
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-viewer", include_bytes!("../../../assets/apps/icons/viewer.svg"));
     app.connect_activate(move |app| {
         let Some(gallery) = gallery.borrow_mut().take() else { return };
         apply_theme();

@@ -54,17 +54,33 @@ cp "$REPO_ROOT/assets/desktop/opusdm-lister.desktop" "$DIST/opusdm-lister.deskto
 # named after its application id: Wayland compositors find the icon through it
 mkdir -p "$DIST/share/icons/hicolor/512x512/apps" "$DIST/share/applications"
 cp "$REPO_ROOT/assets/ball.png" "$DIST/share/icons/hicolor/512x512/apps/opusdm.png"
+# Per-app icons: assets/apps/maps.txt lists "org.opusdm.<Id>.desktop:<file>.svg".
+# The SVG is installed as hicolor "org.opusdm.<Id>" and named by the entry; an
+# app with no SVG in the map keeps the shared "opusdm" icon.
+mkdir -p "$DIST/share/icons/hicolor/scalable/apps"
+app_icon() {
+    svg=$(grep "^org\.opusdm\.$1\.desktop:" "$REPO_ROOT/assets/apps/maps.txt" | cut -d: -f2)
+    if [ -z "$svg" ]; then echo opusdm; return; fi
+    if [ ! -f "$REPO_ROOT/assets/apps/icons/$svg" ]; then
+        echo "build-release: missing icon assets/apps/icons/$svg for $1" >&2
+        exit 1
+    fi
+    cp "$REPO_ROOT/assets/apps/icons/$svg" "$DIST/share/icons/hicolor/scalable/apps/org.opusdm.$1.svg"
+    echo "org.opusdm.$1"
+}
 # Hidden entries: session components, not meant to be launched by hand
 for pair in Hub:hub Lister:lister Dock:dock PolkitAgent:polkit Notify:notify Applets:applets; do
     id="${pair%%:*}"
     bin="opusdm-${pair#*:}"
-    printf '[Desktop Entry]\nType=Application\nName=OpusDM %s\nExec=%s\nIcon=opusdm\nTerminal=false\nNoDisplay=true\n' "$id" "$bin" > "$DIST/share/applications/org.opusdm.$id.desktop"
+    icon=$(app_icon "$id")
+    printf '[Desktop Entry]\nType=Application\nName=OpusDM %s\nExec=%s\nIcon=%s\nTerminal=false\nNoDisplay=true\n' "$id" "$bin" "$icon" > "$DIST/share/applications/org.opusdm.$id.desktop"
 done
 # Visible entries: stand-alone apps, shown in menus and launchers.
 # Format: Id|binary|Name|Comment|Categories
 while IFS='|' read -r id bin name comment cats; do
     [ -n "$id" ] || continue
-    printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s\nIcon=opusdm\nTerminal=false\nCategories=%s\nStartupWMClass=org.opusdm.%s\n' "$name" "$comment" "$bin" "$cats" "$id" > "$DIST/share/applications/org.opusdm.$id.desktop"
+    icon=$(app_icon "$id")
+    printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s\nIcon=%s\nTerminal=false\nCategories=%s\nStartupWMClass=org.opusdm.%s\n' "$name" "$comment" "$bin" "$icon" "$cats" "$id" > "$DIST/share/applications/org.opusdm.$id.desktop"
 done <<'APPS'
 Terminal|opusdm-terminal|OpusDM Terminal|Terminal emulator|System;TerminalEmulator;
 Run|opusdm-run|OpusDM Run|Run a command or open a file|Utility;
@@ -307,6 +323,8 @@ $SUDO cp "$HERE/opusdm-lister.desktop" /usr/share/applications/opusdm-lister.des
 $SUDO cp "$HERE"/share/applications/*.desktop /usr/share/applications/
 $SUDO mkdir -p /usr/share/icons/hicolor/512x512/apps
 $SUDO cp "$HERE/share/icons/hicolor/512x512/apps/opusdm.png" /usr/share/icons/hicolor/512x512/apps/opusdm.png
+$SUDO mkdir -p /usr/share/icons/hicolor/scalable/apps
+$SUDO cp "$HERE"/share/icons/hicolor/scalable/apps/*.svg /usr/share/icons/hicolor/scalable/apps/
 $SUDO gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 echo "Installed to $PREFIX"
 

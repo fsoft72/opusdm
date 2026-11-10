@@ -60,6 +60,7 @@ fn main() -> glib::ExitCode {
     app.connect_startup(move |app| start(app, &running));
     // Nothing to show on activation: the dialogs open on request.
     app.connect_startup(|_| opusdm_ui::set_app_icon());
+    opusdm_ui::set_app_window_icon(&app, "opusdm-polkit", include_bytes!("../../../assets/apps/icons/polkit.svg"));
     app.connect_activate(|_| {});
     app.run()
 }

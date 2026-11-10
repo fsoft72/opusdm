@@ -18,6 +18,7 @@ mod screen;
 mod shell;
 mod theme_mode;
 mod version;
+mod window_icon;
 mod x11;
 
 pub use about::show_about;
@@ -34,4 +35,5 @@ pub use screen::{list_monitors, MonitorRect, watch_layout, watch_monitors, watch
 pub use shell::DialogShell;
 pub use theme_mode::{app_css, apply_theme_mode, chrome_css, install_app_css, ACCENT_COLOR_NAME};
 pub use version::VERSION;
+pub use window_icon::set_app_window_icon;
 pub use x11::{retry_after_map, with_x11, x11_window_id, wrapped_desktop, x11_sync, X11Error, PLACEMENT_RETRY_MS, X11};
