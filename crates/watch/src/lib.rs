@@ -82,6 +82,39 @@ pub fn drain_burst(rx: &Receiver<()>, quiet: Duration) -> bool {
     }
 }
 
+/// Why [`wait_for_change`] returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wake {
+    /// A burst of signals ended (or went on for longer than the cap).
+    Signals,
+    /// No signal came for the refresh interval: read the state anyway.
+    Refresh,
+    /// The sender is gone.
+    Closed,
+}
+
+/// Like [`drain_burst`], with two guards for a state that must never go
+/// stale: without any tick for `refresh` it wakes anyway, and a burst that
+/// never goes quiet (signals coming more often than `quiet`) ends after
+/// `max_burst` instead of waiting forever.
+pub fn wait_for_change(rx: &Receiver<()>, quiet: Duration, max_burst: Duration, refresh: Duration) -> Wake {
+    match rx.recv_timeout(refresh) {
+        Ok(()) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => return Wake::Refresh,
+        Err(mpsc::RecvTimeoutError::Disconnected) => return Wake::Closed,
+    }
+    let deadline = std::time::Instant::now() + max_burst;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() { return Wake::Signals; }
+        match rx.recv_timeout(quiet.min(left)) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => return Wake::Signals,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Wake::Closed,
+        }
+    }
+}
+
 /// Forward every signal sent by the bus name `sender` as a tick, from a reader
 /// thread that ends when the bus drops or the receiver does.
 pub fn signal_ticks(conn: &Connection, sender: &'static str) -> Result<Receiver<()>, String> {
@@ -124,6 +157,42 @@ mod tests {
         });
         assert!(drain_burst(&rx, Duration::from_millis(100)));
         assert!(!drain_burst(&rx, Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn no_tick_for_the_refresh_interval_wakes_anyway() {
+        let (_tx, rx) = mpsc::channel::<()>();
+        let w = wait_for_change(&rx, Duration::from_millis(10), Duration::from_millis(100), Duration::from_millis(30));
+        assert_eq!(w, Wake::Refresh);
+    }
+
+    #[test]
+    fn a_burst_that_never_goes_quiet_ends_at_the_cap() {
+        let (tx, rx) = mpsc::channel();
+        let feeder = std::thread::spawn(move || {
+            // A tick every 5 ms for 2 s: never quiet for 50 ms.
+            for _ in 0..400 {
+                if tx.send(()).is_err() { return; }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let start = std::time::Instant::now();
+        let w = wait_for_change(&rx, Duration::from_millis(50), Duration::from_millis(200), Duration::from_secs(5));
+        assert_eq!(w, Wake::Signals);
+        assert!(start.elapsed() < Duration::from_millis(1000), "the burst cap must end the wait");
+        drop(rx);
+        feeder.join().unwrap();
+    }
+
+    #[test]
+    fn a_short_burst_wakes_once_and_a_dropped_sender_closes() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(()).unwrap();
+        tx.send(()).unwrap();
+        let w = wait_for_change(&rx, Duration::from_millis(20), Duration::from_secs(1), Duration::from_secs(1));
+        assert_eq!(w, Wake::Signals);
+        drop(tx);
+        assert_eq!(wait_for_change(&rx, Duration::from_millis(20), Duration::from_secs(1), Duration::from_secs(1)), Wake::Closed);
     }
 
     #[test]

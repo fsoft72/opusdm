@@ -1,6 +1,7 @@
 //! The network state as the panel sees it: pure logic, no GTK.
 
-use opusdm_network::{AccessPoint, NetState, Security, WatchMsg};
+use opusdm_network::{AccessPoint, ConnectStep, NetState, Security, WatchMsg};
+use std::time::{Duration, Instant};
 #[cfg(test)]
 use opusdm_network::VpnEntry;
 
@@ -164,6 +165,129 @@ pub fn is_locked(security: Security) -> bool {
     security != Security::Open
 }
 
+/// How a connect attempt ended, or that it did not yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Running,
+    Connected,
+    /// The reason, for the user.
+    Failed(String),
+}
+
+/// How one line of the status section is marked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineMark {
+    /// A step already passed.
+    Done,
+    /// The step in progress.
+    Current,
+    /// The step that failed, or the reason of the failure.
+    Failed,
+}
+
+/// One line of the status section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepLine {
+    pub mark: LineMark,
+    pub text: String,
+}
+
+/// A Wi-Fi connect as the status section shows it: the network, the steps
+/// reached so far in their order, and how it ended.
+#[derive(Clone, Debug)]
+pub struct Attempt {
+    pub ssid: String,
+    pub steps: Vec<ConnectStep>,
+    pub outcome: Outcome,
+    started: Instant,
+    ended: Option<Instant>,
+}
+
+impl Attempt {
+    /// A connect to `ssid` asked for at `now`.
+    pub fn new(ssid: &str, now: Instant) -> Self {
+        Self { ssid: ssid.to_string(), steps: Vec::new(), outcome: Outcome::Running, started: now, ended: None }
+    }
+
+    /// Whether the connect has not ended yet.
+    pub fn is_running(&self) -> bool {
+        self.outcome == Outcome::Running
+    }
+
+    /// A step was reached; repeated steps and steps after the end are
+    /// ignored. The steps are kept in their natural order: the device
+    /// signals of a fast connect can arrive out of order.
+    pub fn step(&mut self, step: ConnectStep) {
+        if !self.is_running() { return; }
+        let Err(at) = self.steps.binary_search(&step) else { return };
+        self.steps.insert(at, step);
+    }
+
+    /// The connect ended at `now`: `Ok`, or the reason of the failure.
+    /// Only the first end counts.
+    pub fn finish(&mut self, result: Result<(), String>, now: Instant) {
+        if !self.is_running() { return; }
+        self.outcome = match result {
+            Ok(()) => {
+                self.step(ConnectStep::Connected);
+                Outcome::Connected
+            }
+            Err(why) => Outcome::Failed(why),
+        };
+        self.ended = Some(now);
+    }
+
+    /// How long the connect has been running, or ran, at `now`.
+    pub fn elapsed(&self, now: Instant) -> Duration {
+        self.ended.unwrap_or(now).saturating_duration_since(self.started)
+    }
+
+    /// Whether the connect has been running for longer than `limit` at
+    /// `now`: the worker must have lost it.
+    pub fn is_overdue(&self, limit: Duration, now: Instant) -> bool {
+        self.is_running() && self.elapsed(now) > limit
+    }
+
+    /// The title of the status section.
+    pub fn headline(&self) -> String {
+        match &self.outcome {
+            Outcome::Running => format!("Connecting to {}", self.ssid),
+            Outcome::Connected => format!("Connected to {}", self.ssid),
+            Outcome::Failed(_) => format!("Could not connect to {}", self.ssid),
+        }
+    }
+
+    /// One line for the icon tooltip.
+    pub fn summary(&self, now: Instant) -> String {
+        let secs = self.elapsed(now).as_secs();
+        match (&self.outcome, self.steps.last()) {
+            (Outcome::Running, Some(step)) => format!("Connecting to {}: {} ({secs} s)", self.ssid, step.text()),
+            (Outcome::Running, None) => format!("Connecting to {} ({secs} s)", self.ssid),
+            (Outcome::Connected, _) => self.headline(),
+            (Outcome::Failed(why), _) => format!("{}: {why}", self.headline()),
+        }
+    }
+
+    /// The lines of the status section: the steps passed, the one in
+    /// progress, and on a failure the step that failed and the reason.
+    pub fn lines(&self) -> Vec<StepLine> {
+        let line = |mark, text: &str| StepLine { mark, text: text.to_string() };
+        let mut out: Vec<StepLine> = self.steps.iter().map(|s| line(LineMark::Done, s.text())).collect();
+        match &self.outcome {
+            Outcome::Running => match out.last_mut() {
+                Some(last) => last.mark = LineMark::Current,
+                None => out.push(line(LineMark::Current, "Waiting for the previous request")),
+            },
+            Outcome::Connected => {}
+            Outcome::Failed(why) => {
+                if let Some(last) = out.last_mut() { last.mark = LineMark::Failed; }
+                out.push(line(LineMark::Failed, why));
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +407,66 @@ mod tests {
         assert!(!format!("{up:?}").contains("hunter2"));
         let batch = vec![up.clone(), Request::VpnDown("u".into()), up.clone()];
         assert_eq!(coalesce(batch.clone()), batch);
+    }
+
+    #[test]
+    fn an_attempt_marks_the_current_step_and_ignores_repeats() {
+        let t0 = Instant::now();
+        let mut a = Attempt::new("home", t0);
+        assert!(a.is_running());
+        assert_eq!(a.lines(), vec![StepLine { mark: LineMark::Current, text: "Waiting for the previous request".into() }]);
+        a.step(ConnectStep::Searching);
+        a.step(ConnectStep::Associating);
+        a.step(ConnectStep::Associating);
+        let marks: Vec<LineMark> = a.lines().iter().map(|l| l.mark).collect();
+        assert_eq!(marks, vec![LineMark::Done, LineMark::Current]);
+        assert_eq!(a.headline(), "Connecting to home");
+        assert_eq!(a.summary(t0 + Duration::from_secs(7)), "Connecting to home: Joining the access point (7 s)");
+        // A step that arrives late takes its place; the furthest is current.
+        a.step(ConnectStep::Starting);
+        assert_eq!(a.steps, vec![ConnectStep::Searching, ConnectStep::Starting, ConnectStep::Associating]);
+        assert_eq!(a.lines().last().unwrap().mark, LineMark::Current);
+    }
+
+    #[test]
+    fn a_connected_attempt_ends_with_every_step_done() {
+        let t0 = Instant::now();
+        let mut a = Attempt::new("home", t0);
+        a.step(ConnectStep::Searching);
+        a.finish(Ok(()), t0 + Duration::from_secs(3));
+        assert_eq!(a.outcome, Outcome::Connected);
+        assert!(a.lines().iter().all(|l| l.mark == LineMark::Done));
+        assert_eq!(a.lines().last().unwrap().text, "Connected");
+        // The time stops at the end.
+        assert_eq!(a.elapsed(t0 + Duration::from_secs(60)), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_failed_attempt_shows_where_and_why_and_only_the_first_end_counts() {
+        let t0 = Instant::now();
+        let mut a = Attempt::new("home", t0);
+        a.step(ConnectStep::Searching);
+        a.step(ConnectStep::Authenticating);
+        a.finish(Err("The password was refused".into()), t0);
+        a.finish(Ok(()), t0);
+        a.step(ConnectStep::Address);
+        assert_eq!(a.outcome, Outcome::Failed("The password was refused".into()));
+        let lines = a.lines();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1], StepLine { mark: LineMark::Failed, text: "Checking the password".into() });
+        assert_eq!(lines[2], StepLine { mark: LineMark::Failed, text: "The password was refused".into() });
+        assert_eq!(a.summary(t0), "Could not connect to home: The password was refused");
+    }
+
+    #[test]
+    fn only_a_running_attempt_can_be_overdue() {
+        let t0 = Instant::now();
+        let mut a = Attempt::new("home", t0);
+        let limit = Duration::from_secs(10);
+        assert!(!a.is_overdue(limit, t0 + Duration::from_secs(5)));
+        assert!(a.is_overdue(limit, t0 + Duration::from_secs(11)));
+        a.finish(Err("x".into()), t0 + Duration::from_secs(11));
+        assert!(!a.is_overdue(limit, t0 + Duration::from_secs(100)));
     }
 
     #[test]

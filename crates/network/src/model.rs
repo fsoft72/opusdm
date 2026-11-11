@@ -26,6 +26,59 @@ impl Security {
     }
 }
 
+/// One step of a Wi-Fi connect, in the order they happen, as the tray shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConnectStep {
+    /// Finding the network and its saved profile.
+    Searching,
+    /// Reading or storing the key in the keyring.
+    Keyring,
+    /// Asking NetworkManager to start the connection.
+    Starting,
+    /// The device gets ready (`PREPARE`).
+    Preparing,
+    /// Joining the access point (`CONFIG`).
+    Associating,
+    /// Waiting for the key (`NEED_AUTH`).
+    Authenticating,
+    /// Getting an IP address (`IP_CONFIG`).
+    Address,
+    /// Checking the connection (`IP_CHECK`, `SECONDARIES`).
+    Checking,
+    /// The connection is up.
+    Connected,
+}
+
+impl ConnectStep {
+    /// Every step, in order.
+    pub const ALL: [ConnectStep; 9] = [
+        ConnectStep::Searching,
+        ConnectStep::Keyring,
+        ConnectStep::Starting,
+        ConnectStep::Preparing,
+        ConnectStep::Associating,
+        ConnectStep::Authenticating,
+        ConnectStep::Address,
+        ConnectStep::Checking,
+        ConnectStep::Connected,
+    ];
+
+    /// One line for the user.
+    pub fn text(self) -> &'static str {
+        match self {
+            ConnectStep::Searching => "Looking for the network",
+            ConnectStep::Keyring => "Reading the key from the keyring",
+            ConnectStep::Starting => "Starting the connection",
+            ConnectStep::Preparing => "Preparing the Wi-Fi device",
+            ConnectStep::Associating => "Joining the access point",
+            ConnectStep::Authenticating => "Checking the password",
+            ConnectStep::Address => "Getting an IP address",
+            ConnectStep::Checking => "Checking the connection",
+            ConnectStep::Connected => "Connected",
+        }
+    }
+}
+
 /// One Wi-Fi network in range (access points with the same name are merged).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPoint {

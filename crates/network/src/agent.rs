@@ -13,6 +13,7 @@ use crate::profile::{peer_secret_key, ovpn_key, SecretKey, TYPE_WIREGUARD};
 use crate::settings::{self, owned, Settings};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use zbus::blocking::Connection;
 use zbus::message::Header;
 use zbus::zvariant::{ObjectPath, Value};
@@ -36,6 +37,10 @@ const CONNECTION_GROUP: &str = "connection";
 const VPN_GROUP: &str = "vpn";
 /// The VPN secrets always looked for, besides the ones NetworkManager hints.
 const VPN_SECRETS: [&str; 2] = [ovpn_key::PASSWORD, ovpn_key::CERT_PASS];
+/// How long the agent waits for the keyring before it answers with an
+/// error. NetworkManager gives up on an agent after two minutes; this
+/// answers well before, so the connect fails with a reason.
+const KEYRING_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The errors a secret agent may answer with.
 #[derive(Debug, zbus::DBusError)]
@@ -52,6 +57,7 @@ pub enum AgentError {
 }
 
 /// Where the agent finds secrets: the one-shot store first, then the keyring.
+#[derive(Clone)]
 pub struct SecretSources {
     pub keys: Arc<dyn KeyStore>,
     pub once: Arc<OneShotSecrets>,
@@ -170,35 +176,71 @@ impl SecretAgent {
     }
 }
 
+/// Run the keyring work `work` on its own thread and wait for it without
+/// blocking: the agent is served on the executor of the system bus
+/// connection, and a keyring call made there (an unlock prompt, a slow
+/// keyring) would freeze every call and signal of the tray until it ends.
+/// Gives up after [`KEYRING_TIMEOUT`]. Every failure is logged.
+async fn off_bus<T: Send + 'static>(what: &'static str, work: impl FnOnce() -> Result<T, AgentError> + Send + 'static) -> Result<T, AgentError> {
+    off_bus_within(KEYRING_TIMEOUT, what, work).await
+}
+
+/// [`off_bus`] with the time limit given, for tests.
+async fn off_bus_within<T: Send + 'static>(limit: Duration, what: &'static str, work: impl FnOnce() -> Result<T, AgentError> + Send + 'static) -> Result<T, AgentError> {
+    let (tx, rx) = async_channel::bounded(1);
+    let spawned = std::thread::Builder::new().name("opusdm-network-agent".into()).spawn(move || {
+        // The waiter may have timed out and gone: nothing is left to tell.
+        let _ = tx.send_blocking(work());
+    });
+    let result = match spawned {
+        Err(e) => Err(AgentError::InternalError(format!("Cannot start a thread for the keyring: {e}"))),
+        Ok(_) => {
+            let answer = async { rx.recv().await.unwrap_or_else(|_| Err(AgentError::InternalError("The keyring thread ended without an answer".to_string()))) };
+            let timeout = async {
+                async_io::Timer::after(limit).await;
+                Err(AgentError::InternalError(format!("The keyring did not answer in {} ms", limit.as_millis())))
+            };
+            futures_lite::future::or(answer, timeout).await
+        }
+    };
+    if let Err(e) = &result {
+        eprintln!("[opusdm-network:{}] secret agent: {what}: {e:?}", std::process::id());
+    }
+    result
+}
+
 #[zbus::interface(name = "org.freedesktop.NetworkManager.SecretAgent")]
 impl SecretAgent {
     /// The secrets of one setting of a profile.
-    fn get_secrets(
+    async fn get_secrets(
         &self,
         connection: Settings,
         _connection_path: ObjectPath<'_>,
-        setting_name: &str,
+        setting_name: String,
         hints: Vec<String>,
         flags: u32,
         #[zbus(header)] header: Header<'_>,
     ) -> Result<Settings, AgentError> {
         self.check_sender(&header)?;
-        secrets_for(&self.src, &connection, setting_name, &hints, flags)
+        let src = self.src.clone();
+        off_bus("get secrets", move || secrets_for(&src, &connection, &setting_name, &hints, flags)).await
     }
 
     /// Nothing waits for the user here, so there is nothing to cancel.
     fn cancel_get_secrets(&self, _connection_path: ObjectPath<'_>, _setting_name: &str) {}
 
     /// Keep the secrets of a profile that was just added.
-    fn save_secrets(&self, connection: Settings, _connection_path: ObjectPath<'_>, #[zbus(header)] header: Header<'_>) -> Result<(), AgentError> {
+    async fn save_secrets(&self, connection: Settings, _connection_path: ObjectPath<'_>, #[zbus(header)] header: Header<'_>) -> Result<(), AgentError> {
         self.check_sender(&header)?;
-        save_secrets(&*self.src.keys, &connection)
+        let keys = self.src.keys.clone();
+        off_bus("save secrets", move || save_secrets(&*keys, &connection)).await
     }
 
     /// Forget the secrets of a profile that was removed.
-    fn delete_secrets(&self, connection: Settings, _connection_path: ObjectPath<'_>, #[zbus(header)] header: Header<'_>) -> Result<(), AgentError> {
+    async fn delete_secrets(&self, connection: Settings, _connection_path: ObjectPath<'_>, #[zbus(header)] header: Header<'_>) -> Result<(), AgentError> {
         self.check_sender(&header)?;
-        delete_secrets(&*self.src.keys, &connection)
+        let keys = self.src.keys.clone();
+        off_bus("delete secrets", move || delete_secrets(&*keys, &connection)).await
     }
 }
 
@@ -233,6 +275,27 @@ mod tests {
     fn sources() -> (SecretSources, Arc<FakeKeyStore>) {
         let keys = Arc::new(FakeKeyStore::default());
         (SecretSources { keys: keys.clone(), once: Arc::new(OneShotSecrets::default()) }, keys)
+    }
+
+    #[test]
+    fn keyring_work_answers_through_the_waiter() {
+        let got = zbus::block_on(off_bus_within(Duration::from_secs(5), "test", || Ok(42)));
+        assert_eq!(got.unwrap(), 42);
+        let err = zbus::block_on(off_bus_within(Duration::from_secs(5), "test", || Err::<(), _>(AgentError::NoSecrets("none".into()))));
+        assert!(matches!(err, Err(AgentError::NoSecrets(_))));
+    }
+
+    #[test]
+    fn a_stuck_keyring_never_blocks_the_waiter() {
+        // The work blocks far longer than the limit: the waiter must answer
+        // at the limit, so the bus executor it runs on keeps going.
+        let start = std::time::Instant::now();
+        let err = zbus::block_on(off_bus_within(Duration::from_millis(50), "test", || {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(())
+        }));
+        assert!(matches!(err, Err(AgentError::InternalError(_))));
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
