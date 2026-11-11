@@ -12,22 +12,31 @@ pub struct DbusError {
     /// The network is saved but its key is not: the caller must ask for it
     /// and connect again with it. Only NetworkManager calls set it.
     pub needs_password: bool,
+    /// The password given was refused by the network: the caller should ask
+    /// for it again, saying so. Always set together with `needs_password`.
+    pub password_refused: bool,
 }
 
 impl DbusError {
     /// Build from a D-Bus error name and message.
     pub fn from_dbus(name: &str, message: &str) -> Self {
-        Self { name: name.to_string(), message: message.to_string(), needs_password: false }
+        Self { name: name.to_string(), message: message.to_string(), needs_password: false, password_refused: false }
     }
 
     /// An error with no D-Bus name (connection problems and similar).
     pub fn other(message: impl Into<String>) -> Self {
-        Self { name: String::new(), message: message.into(), needs_password: false }
+        Self { name: String::new(), message: message.into(), needs_password: false, password_refused: false }
     }
 
     /// The saved network has no stored key, so a password is needed to join it.
     pub fn password_needed() -> Self {
-        Self { name: String::new(), message: "A password is needed".to_string(), needs_password: true }
+        Self { name: String::new(), message: "A password is needed".to_string(), needs_password: true, password_refused: false }
+    }
+
+    /// The network refused the password given (`message` says how), so a
+    /// new one is needed to join it.
+    pub fn password_refused(message: impl Into<String>) -> Self {
+        Self { name: String::new(), message: message.into(), needs_password: true, password_refused: true }
     }
 
     /// One line for the user: permission errors and a busy device get a

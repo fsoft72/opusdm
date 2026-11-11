@@ -1,6 +1,6 @@
 //! Turns NetworkManager properties into the model, with no bus access.
 
-use crate::model::{AccessPoint, Security};
+use crate::model::{AccessPoint, ConnectStep, Security};
 use std::collections::{HashMap, HashSet};
 use zbus::zvariant::OwnedValue;
 
@@ -19,6 +19,21 @@ const STATE_UNAVAILABLE: u32 = 20;
 const STATE_PREPARE: u32 = 40;
 /// `NM_DEVICE_STATE_ACTIVATED`.
 pub const STATE_ACTIVATED: u32 = 100;
+
+/// `NM_DEVICE_STATE_CONFIG`.
+const STATE_CONFIG: u32 = 50;
+/// `NM_DEVICE_STATE_NEED_AUTH`.
+const STATE_NEED_AUTH: u32 = 60;
+/// `NM_DEVICE_STATE_IP_CONFIG`.
+const STATE_IP_CONFIG: u32 = 70;
+/// `NM_DEVICE_STATE_IP_CHECK`.
+const STATE_IP_CHECK: u32 = 80;
+/// `NM_DEVICE_STATE_SECONDARIES`.
+const STATE_SECONDARIES: u32 = 90;
+/// `NM_DEVICE_STATE_DEACTIVATING`.
+pub const STATE_DEACTIVATING: u32 = 110;
+/// `NM_DEVICE_STATE_FAILED`.
+pub const STATE_FAILED: u32 = 120;
 
 /// `NM_DEVICE_TYPE_ETHERNET`.
 pub const DEVICE_ETHERNET: u32 = 1;
@@ -107,6 +122,19 @@ pub fn is_busy(state: u32) -> bool {
     (STATE_PREPARE..STATE_ACTIVATED).contains(&state)
 }
 
+/// The connect step a device in `state` is at; `None` outside a connect.
+pub fn step_of_device_state(state: u32) -> Option<ConnectStep> {
+    match state {
+        STATE_PREPARE => Some(ConnectStep::Preparing),
+        STATE_CONFIG => Some(ConnectStep::Associating),
+        STATE_NEED_AUTH => Some(ConnectStep::Authenticating),
+        STATE_IP_CONFIG => Some(ConnectStep::Address),
+        STATE_IP_CHECK | STATE_SECONDARIES => Some(ConnectStep::Checking),
+        STATE_ACTIVATED => Some(ConnectStep::Connected),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +209,19 @@ mod tests {
         assert!(is_busy(90));
         assert!(!is_busy(100));
         assert!(!is_busy(110));
+    }
+
+    #[test]
+    fn device_states_map_to_connect_steps() {
+        assert_eq!(step_of_device_state(30), None);
+        assert_eq!(step_of_device_state(40), Some(ConnectStep::Preparing));
+        assert_eq!(step_of_device_state(50), Some(ConnectStep::Associating));
+        assert_eq!(step_of_device_state(60), Some(ConnectStep::Authenticating));
+        assert_eq!(step_of_device_state(70), Some(ConnectStep::Address));
+        assert_eq!(step_of_device_state(80), Some(ConnectStep::Checking));
+        assert_eq!(step_of_device_state(90), Some(ConnectStep::Checking));
+        assert_eq!(step_of_device_state(100), Some(ConnectStep::Connected));
+        assert_eq!(step_of_device_state(STATE_FAILED), None);
     }
 
     #[test]

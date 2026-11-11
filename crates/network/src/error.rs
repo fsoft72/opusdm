@@ -19,6 +19,14 @@ mod tests {
         assert!(NetError::password_needed().needs_password);
         assert!(!NetError::other("x").needs_password);
         assert!(!NetError::from_dbus("org.x.Failed", "boom").needs_password);
+        assert!(!NetError::password_needed().password_refused);
+    }
+
+    #[test]
+    fn a_refused_password_asks_again_and_says_why() {
+        let e = NetError::password_refused("The password was refused");
+        assert!(e.needs_password && e.password_refused);
+        assert_eq!(e.text(), "The password was refused");
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub mod wgkey;
 
 pub use backend::{Backend, FakeBackend};
 pub use error::NetError;
-pub use model::{AccessPoint, NetState, Security, VpnEntry};
+pub use model::{AccessPoint, ConnectStep, NetState, Security, VpnEntry};
 pub use profiles::{FakeProfiles, Loaded, ProfileBackend, ProfileSummary};
 pub use nm::NmBackend;
 pub use watch::{ProfilesMsg, WatchMsg};

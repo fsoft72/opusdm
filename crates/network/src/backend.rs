@@ -1,7 +1,7 @@
 //! The operations the panel needs, behind a trait so tests need no bus.
 
 use crate::error::NetError;
-use crate::model::NetState;
+use crate::model::{ConnectStep, NetState};
 use std::sync::Mutex;
 
 /// Operations on the network.
@@ -14,9 +14,12 @@ pub trait Backend: Send + Sync {
     fn set_eth_enabled(&self, on: bool) -> Result<(), NetError>;
     /// Ask for a new scan of the Wi-Fi networks.
     fn scan(&self) -> Result<(), NetError>;
-    /// Join the network `ssid`. `password` is only used for a network with no
-    /// saved profile. Returns when the connection is up or has failed.
-    fn connect(&self, ssid: &str, password: Option<&str>) -> Result<(), NetError>;
+    /// Join the network `ssid`. `password` is the key typed by the user: it
+    /// creates the profile of a new network, or replaces the key of a saved
+    /// one. `progress` gets every step as it starts. Returns when the
+    /// connection is up or has failed; a refused key is an error with
+    /// `password_refused` set.
+    fn connect(&self, ssid: &str, password: Option<&str>, progress: &dyn Fn(ConnectStep)) -> Result<(), NetError>;
     /// Disconnect the Wi-Fi device.
     fn disconnect_wifi(&self) -> Result<(), NetError>;
     /// Bring the VPN `uuid` up; `password` is asked from the user and used
@@ -32,6 +35,8 @@ pub struct FakeBackend {
     pub state: Mutex<NetState>,
     pub calls: Mutex<Vec<String>>,
     pub fail_connect: Mutex<Option<NetError>>,
+    /// The steps a `connect` reports before it ends.
+    pub connect_steps: Mutex<Vec<ConnectStep>>,
     /// How many of the next `state` calls fail.
     pub fail_state: Mutex<u32>,
     /// The error of a failing `state` call; a generic one when `None`.
@@ -76,8 +81,11 @@ impl Backend for FakeBackend {
         Ok(())
     }
 
-    fn connect(&self, ssid: &str, password: Option<&str>) -> Result<(), NetError> {
+    fn connect(&self, ssid: &str, password: Option<&str>, progress: &dyn Fn(ConnectStep)) -> Result<(), NetError> {
         self.record(format!("connect {ssid} password={}", password.is_some()));
+        for step in self.connect_steps.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            progress(*step);
+        }
         match self.fail_connect.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(e) => Err(e),
             None => Ok(()),
@@ -110,7 +118,7 @@ mod tests {
     #[test]
     fn fake_records_calls_without_the_password() {
         let fake = FakeBackend::default();
-        fake.connect("home", Some("secret")).unwrap();
+        fake.connect("home", Some("secret"), &|_| {}).unwrap();
         fake.set_wifi_enabled(false).unwrap();
         assert_eq!(fake.calls(), vec!["connect home password=true", "wifi false"]);
     }
@@ -119,6 +127,6 @@ mod tests {
     fn fake_can_fail_a_connect() {
         let fake = FakeBackend::default();
         *fake.fail_connect.lock().unwrap_or_else(|e| e.into_inner()) = Some(NetError::other("bad"));
-        assert_eq!(fake.connect("home", None).unwrap_err().text(), "bad");
+        assert_eq!(fake.connect("home", None, &|_| {}).unwrap_err().text(), "bad");
     }
 }

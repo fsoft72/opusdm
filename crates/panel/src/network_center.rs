@@ -219,7 +219,7 @@ fn run_request(backend: &dyn Backend, request: &Request, done: &async_channel::S
         Request::SetWifi(on) => backend.set_wifi_enabled(*on),
         Request::SetEth(on) => backend.set_eth_enabled(*on),
         Request::DisconnectWifi => backend.disconnect_wifi(),
-        Request::Connect { ssid, password } => backend.connect(ssid, password.as_deref()),
+        Request::Connect { ssid, password } => backend.connect(ssid, password.as_deref(), &|_| {}),
         Request::VpnUp { uuid, password } => backend.activate_vpn(uuid, password.as_deref()),
         Request::VpnDown(uuid) => backend.deactivate_vpn(uuid),
         Request::Scan => {
