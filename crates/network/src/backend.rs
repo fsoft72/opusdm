@@ -32,6 +32,10 @@ pub struct FakeBackend {
     pub state: Mutex<NetState>,
     pub calls: Mutex<Vec<String>>,
     pub fail_connect: Mutex<Option<NetError>>,
+    /// How many of the next `state` calls fail.
+    pub fail_state: Mutex<u32>,
+    /// The error of a failing `state` call; a generic one when `None`.
+    pub state_error: Mutex<Option<NetError>>,
 }
 
 impl FakeBackend {
@@ -47,6 +51,13 @@ impl FakeBackend {
 
 impl Backend for FakeBackend {
     fn state(&self) -> Result<NetState, NetError> {
+        let mut fail = self.fail_state.lock().unwrap_or_else(|e| e.into_inner());
+        if *fail > 0 {
+            *fail -= 1;
+            let e = self.state_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            return Err(e.unwrap_or_else(|| NetError::other("state failed")));
+        }
+        drop(fail);
         Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 

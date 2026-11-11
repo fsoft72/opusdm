@@ -89,14 +89,26 @@ impl NmBackend {
         Ok(proxy)
     }
 
-    /// Every device with its type and state, one `GetAll` per device.
+    /// Every device with its type and state, one `GetAll` per device. A
+    /// device that cannot be read is logged and left out.
     fn devices(&self) -> Result<Vec<Device>, NetError> {
         let nm = self.proxy(ROOT_PATH, NM_IFACE)?;
         let paths: Vec<OwnedObjectPath> = nm.call("GetDevices", &())?;
         let mut out = Vec::new();
         for path in paths {
-            let props = self.get_all(path.as_str(), DEVICE_IFACE)?;
-            let device = device_from_props(path, &props).ok_or_else(|| NetError::other("A device has no type or state"))?;
+            // A device can vanish between the two calls (a virtual
+            // interface going away): skip it, the next read sees the truth.
+            let props = match self.get_all(path.as_str(), DEVICE_IFACE) {
+                Ok(props) => props,
+                Err(e) => {
+                    eprintln!("[opusdm-network:{}] device {path} skipped: {}", std::process::id(), e.text());
+                    continue;
+                }
+            };
+            let Some(device) = device_from_props(path.clone(), &props) else {
+                eprintln!("[opusdm-network:{}] device {path} skipped: no type or state", std::process::id());
+                continue;
+            };
             out.push(device);
         }
         Ok(out)
