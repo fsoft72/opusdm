@@ -1,14 +1,15 @@
 //! The network icon and its popover, in the right side of the panel.
 
 use crate::network_center::NetworkCenter;
-use crate::network_model::{is_locked, row_action, IconState, Request, RowAction};
+use crate::network_model::{is_locked, row_action, Attempt, IconState, LineMark, Outcome, Request, RowAction};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use opusdm_network::{AccessPoint, NetState, Security, VpnEntry};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::f64::consts::PI;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Instant;
 
 /// The program that edits the connections, started by "Configure connections".
 const MANAGER_BIN: &str = "opusdm-network-manager";
@@ -29,6 +30,8 @@ const SIGNAL_CHARS: i32 = 5;
 const ARCS: u8 = 3;
 /// Opacity of an arc that is not lit.
 const DIM_ALPHA: f64 = 0.3;
+/// Width of the mark column of the status section, in characters.
+const MARK_CHARS: i32 = 2;
 
 /// A switch with its label, and a flag that tells `refresh` from the user.
 struct SwitchRow {
@@ -101,6 +104,95 @@ impl SwitchRow {
     }
 }
 
+/// The section above "Configure connections": the connect in progress (its
+/// steps and time) or how the last one ended. Hidden with no connect.
+struct StatusSection {
+    root: gtk::Box,
+    spinner: gtk::Spinner,
+    headline: gtk::Label,
+    time: gtk::Label,
+    lines: gtk::Box,
+    /// The lines shown now, so a refresh that changes only the time does
+    /// not rebuild them.
+    shown: RefCell<Vec<(LineMark, String)>>,
+}
+
+impl StatusSection {
+    /// Build the empty, hidden section.
+    fn new() -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        root.set_visible(false);
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let spinner = gtk::Spinner::new();
+        let headline = gtk::Label::new(None);
+        headline.set_xalign(0.0);
+        headline.set_hexpand(true);
+        headline.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        headline.add_css_class("heading");
+        let time = gtk::Label::new(None);
+        time.add_css_class("dim-label");
+        top.append(&spinner);
+        top.append(&headline);
+        top.append(&time);
+        let lines = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        root.append(&top);
+        root.append(&lines);
+        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        Self { root, spinner, headline, time, lines, shown: RefCell::new(Vec::new()) }
+    }
+
+    /// Show `attempt`, or hide the section without one. `ip4` is the address
+    /// shown once connected.
+    fn show(&self, attempt: Option<&Attempt>, ip4: Option<&str>) {
+        let Some(a) = attempt else {
+            self.root.set_visible(false);
+            self.shown.borrow_mut().clear();
+            return;
+        };
+        self.root.set_visible(true);
+        let running = a.is_running();
+        self.spinner.set_visible(running);
+        self.spinner.set_spinning(running);
+        self.headline.set_text(&a.headline());
+        self.time.set_text(&format!("{} s", a.elapsed(Instant::now()).as_secs()));
+        let mut wanted: Vec<(LineMark, String)> = a.lines().into_iter().map(|l| (l.mark, l.text)).collect();
+        if let (Outcome::Connected, Some(ip4), Some(last)) = (&a.outcome, ip4, wanted.last_mut()) {
+            last.1 = format!("{} ({ip4})", last.1);
+        }
+        if *self.shown.borrow() == wanted { return; }
+        while let Some(child) = self.lines.first_child() {
+            self.lines.remove(&child);
+        }
+        for (mark, text) in &wanted {
+            self.lines.append(&step_line(*mark, text));
+        }
+        *self.shown.borrow_mut() = wanted;
+    }
+}
+
+/// One line of the status section: a mark and the text.
+fn step_line(mark: LineMark, text: &str) -> gtk::Box {
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let (sign, class) = match mark {
+        LineMark::Done => ("\u{2713}", "dim-label"),
+        LineMark::Current => ("\u{2022}", ""),
+        LineMark::Failed => ("\u{2717}", "error"),
+    };
+    let sign = gtk::Label::new(Some(sign));
+    sign.set_width_chars(MARK_CHARS);
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_wrap(true);
+    for widget in [&sign, &label] {
+        if !class.is_empty() { widget.add_css_class(class); }
+    }
+    if mark == LineMark::Current { label.add_css_class("heading"); }
+    line.append(&sign);
+    line.append(&label);
+    line
+}
+
 /// The button and its popover. Hidden while NetworkManager is not reachable.
 pub struct NetworkButton {
     root: gtk::Box,
@@ -108,10 +200,13 @@ pub struct NetworkButton {
     shown: Rc<Cell<IconState>>,
     /// A VPN is up: the icon gets a small lock.
     vpn_shown: Rc<Cell<bool>>,
+    /// Takes the place of the icon while a connect is in progress.
+    icon_spinner: gtk::Spinner,
     button: gtk::MenuButton,
     popover: gtk::Popover,
     message: gtk::Label,
-    status: gtk::Label,
+    /// The connect in progress or just ended, above "Configure connections".
+    status: StatusSection,
     eth: SwitchRow,
     wifi: SwitchRow,
     list: gtk::Box,
@@ -140,9 +235,15 @@ impl NetworkButton {
                 if vpn_shown.get() { draw_vpn_lock(area, cr, w, h); }
             });
         }
+        let icon_spinner = gtk::Spinner::new();
+        icon_spinner.set_size_request(ICON_SIZE, ICON_SIZE);
+        icon_spinner.set_visible(false);
+        let icon_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        icon_box.append(&icon);
+        icon_box.append(&icon_spinner);
         let button = gtk::MenuButton::new();
         button.add_css_class("flat");
-        button.set_child(Some(&icon));
+        button.set_child(Some(&icon_box));
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
         content.set_margin_top(8);
@@ -155,10 +256,7 @@ impl NetworkButton {
         message.set_visible(false);
         message.set_xalign(0.0);
         message.set_wrap(true);
-        let status = gtk::Label::new(None);
-        status.add_css_class("dim-label");
-        status.set_visible(false);
-        status.set_xalign(0.0);
+        let status = StatusSection::new();
 
         let eth = {
             let center = center.clone();
@@ -187,12 +285,12 @@ impl NetworkButton {
         configure.add_css_class("flat");
 
         content.append(&message);
-        content.append(&status);
         content.append(&eth.root);
         content.append(&wifi.root);
         content.append(&scroll);
         content.append(&vpn_section);
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        content.append(&status.root);
         content.append(&configure);
         let popover = gtk::Popover::new();
         popover.set_child(Some(&content));
@@ -217,7 +315,7 @@ impl NetworkButton {
 
         root.append(&button);
         root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        Rc::new(Self { root, icon, shown, vpn_shown, button, popover, message, status, eth, wifi, list, scroll, vpn_section, vpn_rows })
+        Rc::new(Self { root, icon, shown, vpn_shown, icon_spinner, button, popover, message, status, eth, wifi, list, scroll, vpn_section, vpn_rows })
     }
 
     /// The widget to put in the bar.
@@ -225,9 +323,10 @@ impl NetworkButton {
         self.root.clone().upcast()
     }
 
-    /// Ask for the password of `ssid` and connect with it.
-    pub fn prompt_password(&self, center: &Rc<NetworkCenter>, ssid: &str, security: Security) {
-        ask_and_connect(center, &self.popover, &self.button, ssid, security);
+    /// Ask for the password of `ssid` and connect with it; `error` says why
+    /// it is asked again (the last one was refused).
+    pub fn prompt_password(&self, center: &Rc<NetworkCenter>, ssid: &str, security: Security, error: Option<&str>) {
+        ask_and_connect(center, &self.popover, &self.button, ssid, security, error);
     }
 
     /// Whether the widget is still inside a bar window.
@@ -241,17 +340,26 @@ impl NetworkButton {
         self.shown.set(center.icon_state());
         self.vpn_shown.set(center.vpn_active());
         self.icon.queue_draw();
-        self.button.set_tooltip_text(Some(&center.tooltip()));
         let msg = center.message();
         self.message.set_visible(msg.is_some());
         self.message.set_text(msg.as_deref().unwrap_or(""));
-        let connecting = center.connecting();
-        self.status.set_visible(connecting.is_some());
-        self.status.set_text(&connecting.map(|s| format!("Connecting to {s}...")).unwrap_or_default());
+        self.refresh_status(center);
         let state = center.state();
         self.show_switches(&state);
         self.show_list(center, &state);
         self.show_vpns(center, &state);
+    }
+
+    /// Show the connect in progress: the spinner of the icon, the tooltip and
+    /// the status section. Cheap: called every second while connecting.
+    pub fn refresh_status(&self, center: &Rc<NetworkCenter>) {
+        let busy = center.is_busy();
+        self.icon.set_visible(!busy);
+        self.icon_spinner.set_visible(busy);
+        self.icon_spinner.set_spinning(busy);
+        self.button.set_tooltip_text(Some(&center.tooltip()));
+        let ip4 = center.state().wifi_ip4;
+        self.status.show(center.attempt().as_ref(), ip4.as_deref());
     }
 
     /// Rebuild the VPN rows; the section is hidden without VPN profiles.
@@ -289,22 +397,37 @@ impl NetworkButton {
             self.list.append(&empty);
             return;
         }
+            let connecting = center.connecting();
         for ap in &state.aps {
-            self.list.append(&build_row(center, &self.popover, &self.button, ap));
+            let busy = connecting.as_deref() == Some(ap.ssid.as_str());
+            self.list.append(&build_row(center, &self.popover, &self.button, ap, busy));
         }
     }
 }
 
-/// One network row: a check on the active one, the name, a lock and the signal.
-fn build_row(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::MenuButton, ap: &AccessPoint) -> gtk::Button {
+/// One network row: a check on the active one (a spinner while `busy`
+/// connecting to it), the name, a lock and the signal.
+fn build_row(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::MenuButton, ap: &AccessPoint, busy: bool) -> gtk::Button {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let check = gtk::Label::new(Some(if ap.active { "\u{2713}" } else { "" }));
-    check.set_width_chars(2);
     let name = gtk::Label::new(Some(&ap.ssid));
     name.set_xalign(0.0);
     name.set_hexpand(true);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    line.append(&check);
+    if busy {
+        let spinner = gtk::Spinner::new();
+        spinner.set_spinning(true);
+        // As wide as the check column, so the names stay aligned.
+        let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        slot.set_size_request(check_width(&name), -1);
+        spinner.set_hexpand(true);
+        spinner.set_halign(gtk::Align::Center);
+        slot.append(&spinner);
+        line.append(&slot);
+    } else {
+        let check = gtk::Label::new(Some(if ap.active { "\u{2713}" } else { "" }));
+        check.set_width_chars(2);
+        line.append(&check);
+    }
     line.append(&name);
     if is_locked(ap.security) {
         let lock = gtk::DrawingArea::new();
@@ -334,18 +457,32 @@ fn on_row_clicked(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &g
         RowAction::Disconnect => center.send(Request::DisconnectWifi),
         RowAction::Connect => center.send(Request::Connect { ssid: ap.ssid.clone(), password: None }),
         RowAction::Unsupported(why) => center.show_error(why.to_string()),
-        RowAction::AskPassword => ask_and_connect(center, popover, button, &ap.ssid, ap.security),
+        RowAction::AskPassword => ask_and_connect(center, popover, button, &ap.ssid, ap.security, None),
     }
 }
 
-/// Close the popover, ask for the password of `ssid` and connect with it.
-fn ask_and_connect(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::MenuButton, ssid: &str, security: Security) {
+/// Close the popover, ask for the password of `ssid` (saying `error` when
+/// it is asked again) and connect with it; the popover opens again to show
+/// the progress.
+fn ask_and_connect(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::MenuButton, ssid: &str, security: Security, error: Option<&str>) {
     popover.popdown();
     let parent = button.root().and_then(|r| r.downcast::<gtk::Window>().ok());
-    let (center, name) = (center.clone(), ssid.to_string());
-    ask_password(parent.as_ref(), ssid, security, move |password| {
+    let (center, name, button) = (center.clone(), ssid.to_string(), button.clone());
+    ask_password(parent.as_ref(), ssid, security, error, move |password| {
         center.send(Request::Connect { ssid: name.clone(), password: Some(password) });
+        // A bar closed by a monitor change has no window to open it in.
+        if button.root().is_some() {
+            button.popup();
+        } else {
+            opusdm_ipc::err_log!("opusdm-panel", "network tray: the bar of the password dialog is gone, progress not shown");
+        }
     });
+}
+
+/// The width of the check column of a row: two characters of `label`'s font.
+fn check_width(label: &gtk::Label) -> i32 {
+    let layout = label.create_pango_layout(Some("MM"));
+    layout.pixel_size().0.max(LOCK_WIDTH)
 }
 
 /// One VPN row: a check on the active one, the name and a switch.
@@ -368,7 +505,7 @@ fn vpn_row(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::Men
         popover.popdown();
         let parent = button.root().and_then(|r| r.downcast::<gtk::Window>().ok());
         let (center, uuid) = (center.clone(), vpn.uuid.clone());
-        ask_secret(parent.as_ref(), "VPN password", &format!("Password for {}", vpn.name), move |password| {
+        ask_secret(parent.as_ref(), "VPN password", &format!("Password for {}", vpn.name), None, move |password| {
             center.send(Request::VpnUp { uuid: uuid.clone(), password: Some(password) });
         });
     });
@@ -387,16 +524,19 @@ fn open_manager() {
     }
 }
 
-/// A small modal window that asks for the password of `ssid`.
-/// `on_submit` gets the password when the user confirms.
-fn ask_password(parent: Option<&gtk::Window>, ssid: &str, security: Security, on_submit: impl Fn(String) + 'static) {
+/// A small modal window that asks for the password of `ssid`; `error`, in
+/// red, says why it is asked again. `on_submit` gets the password when the
+/// user confirms.
+fn ask_password(parent: Option<&gtk::Window>, ssid: &str, security: Security, error: Option<&str>, on_submit: impl Fn(String) + 'static) {
     let kind = if security == Security::Sae { "WPA3" } else { "WPA" };
-    ask_secret(parent, "Wi-Fi password", &format!("Password for {ssid} ({kind})"), on_submit);
+    let error = error.map(|why| format!("{why}. Try again."));
+    ask_secret(parent, "Wi-Fi password", &format!("Password for {ssid} ({kind})"), error.as_deref(), on_submit);
 }
 
 /// A small modal window titled `title` that asks for a password with the
-/// line `prompt`. `on_submit` gets the password when the user confirms.
-fn ask_secret(parent: Option<&gtk::Window>, title: &str, prompt: &str, on_submit: impl Fn(String) + 'static) {
+/// line `prompt`, and the red line `error` above it when given.
+/// `on_submit` gets the password when the user confirms.
+fn ask_secret(parent: Option<&gtk::Window>, title: &str, prompt: &str, error: Option<&str>, on_submit: impl Fn(String) + 'static) {
     let window = gtk::Window::builder().title(title).modal(true).resizable(false).build();
     window.set_transient_for(parent);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -405,6 +545,14 @@ fn ask_secret(parent: Option<&gtk::Window>, title: &str, prompt: &str, on_submit
     }
     let label = gtk::Label::new(Some(prompt));
     label.set_xalign(0.0);
+    if let Some(error) = error {
+        let line = gtk::Label::new(Some(error));
+        line.add_css_class("error");
+        line.set_xalign(0.0);
+        line.set_wrap(true);
+        line.set_max_width_chars(36);
+        content.append(&line);
+    }
     let entry = gtk::PasswordEntry::new();
     entry.set_show_peek_icon(true);
     entry.set_width_chars(28);
