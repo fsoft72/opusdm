@@ -413,21 +413,20 @@ fn build_row(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &gtk::M
     name.set_xalign(0.0);
     name.set_hexpand(true);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // The spinner sits over the (empty) check label, so the column keeps the
+    // same width and the name does not move.
+    let check = gtk::Label::new(Some(if ap.active && !busy { "\u{2713}" } else { "" }));
+    check.set_width_chars(2);
+    let slot = gtk::Overlay::new();
+    slot.set_child(Some(&check));
     if busy {
         let spinner = gtk::Spinner::new();
         spinner.set_spinning(true);
-        // As wide as the check column, so the names stay aligned.
-        let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        slot.set_size_request(check_width(&name), -1);
-        spinner.set_hexpand(true);
         spinner.set_halign(gtk::Align::Center);
-        slot.append(&spinner);
-        line.append(&slot);
-    } else {
-        let check = gtk::Label::new(Some(if ap.active { "\u{2713}" } else { "" }));
-        check.set_width_chars(2);
-        line.append(&check);
+        spinner.set_valign(gtk::Align::Center);
+        slot.add_overlay(&spinner);
     }
+    line.append(&slot);
     line.append(&name);
     if is_locked(ap.security) {
         let lock = gtk::DrawingArea::new();
@@ -477,12 +476,6 @@ fn ask_and_connect(center: &Rc<NetworkCenter>, popover: &gtk::Popover, button: &
             opusdm_ipc::err_log!("opusdm-panel", "network tray: the bar of the password dialog is gone, progress not shown");
         }
     });
-}
-
-/// The width of the check column of a row: two characters of `label`'s font.
-fn check_width(label: &gtk::Label) -> i32 {
-    let layout = label.create_pango_layout(Some("MM"));
-    layout.pixel_size().0.max(LOCK_WIDTH)
 }
 
 /// One VPN row: a check on the active one, the name and a switch.
