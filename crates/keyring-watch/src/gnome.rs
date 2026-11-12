@@ -5,6 +5,8 @@
 
 use crate::probe::{SecretServiceVault, Vault};
 use std::io::Write;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use zbus::blocking::fdo::DBusProxy;
 use zbus::names::BusName;
@@ -21,6 +23,15 @@ const SERVICE_NAME: &str = "org.freedesktop.secrets";
 /// Test only: the environment variable that replaces the daemon binary.
 #[cfg(test)]
 const DAEMON_ENV: &str = "OPUSDM_KEYRING_DAEMON";
+/// The environment variable the daemon reads to find the one that runs.
+const CONTROL_VAR: &str = "GNOME_KEYRING_CONTROL";
+/// The name of the control socket inside the control folder.
+const CONTROL_SOCKET: &str = "control";
+/// The control folder inside the runtime folder of the user.
+const CONTROL_SUBDIR: &str = "keyring";
+/// Test only: the environment variable that replaces the control folder.
+#[cfg(test)]
+const CONTROL_ENV: &str = "OPUSDM_KEYRING_CONTROL";
 /// The other wallets that compete for the Secret Service name, stopped
 /// before a restart like `opusdm-session` does.
 const OTHER_WALLETS: [&str; 3] = ["ksecretd", "kwalletd5", "kwalletd6"];
@@ -109,12 +120,34 @@ fn unlock_and_verify(password: Zeroizing<String>, vault: &dyn Vault) -> Result<(
     if locked { Err(WRONG_PASSWORD.to_string()) } else { Ok(()) }
 }
 
+/// The control folder of the daemon of this session.
+fn control_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Ok(dir) = std::env::var(CONTROL_ENV) { return Some(PathBuf::from(dir)); }
+    std::env::var_os("XDG_RUNTIME_DIR").map(|runtime| PathBuf::from(runtime).join(CONTROL_SUBDIR))
+}
+
+/// The control folder of the running daemon, only when its socket answers.
+/// Without it `gnome-keyring-daemon --unlock` does not unlock the running
+/// daemon: it starts a second one and leaves it behind, so it is never run
+/// in that case.
+fn live_control_dir() -> Result<PathBuf, String> {
+    let dir = control_dir().ok_or("XDG_RUNTIME_DIR is not set, cannot find the keyring control socket")?;
+    let socket = dir.join(CONTROL_SOCKET);
+    UnixStream::connect(&socket).map_err(|e| {
+        format!("Cannot reach the keyring control socket {}: {e}. Unlocking with a password needs it (use Restart gnome-keyring, or Unlock).", socket.display())
+    })?;
+    Ok(dir)
+}
+
 /// Run the daemon with `--unlock`, write the password and a newline to its
 /// standard input, close it and wait. The error is the text the daemon wrote
 /// to its standard error.
 fn _run_unlock(password: Zeroizing<String>) -> Result<(), String> {
+    let control = live_control_dir()?;
     let mut child = Command::new(daemon_bin())
         .args(unlock_args())
+        .env(CONTROL_VAR, control)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -205,6 +238,7 @@ fn _replace() -> Result<(), String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
 
     /// The tests that replace the daemon through the environment run one at a time.
@@ -237,12 +271,17 @@ mod tests {
         let script = dir.path().join("fake-daemon");
         let stdin_file = dir.path().join("stdin");
         let args_file = dir.path().join("args");
-        std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" > '{}'\ncat > '{}'\n", args_file.display(), stdin_file.display())).unwrap();
+        let env_file = dir.path().join("env");
+        std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" > '{}'\necho \"$GNOME_KEYRING_CONTROL\" > '{}'\ncat > '{}'\n", args_file.display(), env_file.display(), stdin_file.display())).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _listener = UnixListener::bind(dir.path().join(CONTROL_SOCKET)).unwrap();
         std::env::set_var(DAEMON_ENV, &script);
+        std::env::set_var(CONTROL_ENV, dir.path());
         let result = _run_unlock(Zeroizing::new("s3cret".to_string()));
         std::env::remove_var(DAEMON_ENV);
+        std::env::remove_var(CONTROL_ENV);
         assert_eq!(result, Ok(()));
+        assert_eq!(std::fs::read_to_string(env_file).unwrap().trim(), dir.path().to_str().unwrap(), "the daemon is told where the running one is");
         assert_eq!(std::fs::read_to_string(stdin_file).unwrap(), "s3cret\n");
         assert_eq!(std::fs::read_to_string(args_file).unwrap().trim(), "--unlock");
     }
@@ -279,9 +318,12 @@ mod tests {
         let script = dir.path().join("quiet-daemon");
         std::fs::write(&script, "#!/bin/sh\ncat > /dev/null\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _listener = UnixListener::bind(dir.path().join(CONTROL_SOCKET)).unwrap();
         std::env::set_var(DAEMON_ENV, &script);
+        std::env::set_var(CONTROL_ENV, dir.path());
         let result = unlock_and_verify(Zeroizing::new("pw".to_string()), vault);
         std::env::remove_var(DAEMON_ENV);
+        std::env::remove_var(CONTROL_ENV);
         result
     }
 
@@ -338,5 +380,40 @@ mod tests {
         assert_eq!(pauses, 2);
         let err = wait_for_service(&Flaky(Default::default()), 2, |_| {}).unwrap_err();
         assert!(err.contains("did not come back") && err.contains("no such object"), "{err}");
+    }
+
+    /// Run the unlock with a control folder that does not answer and a daemon
+    /// script that leaves a marker file when it runs. Returns the result and
+    /// whether the daemon ran.
+    fn unlock_without_a_live_socket(make_stale_socket: bool) -> (Result<(), String>, bool) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = dir.path().join("daemon");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\ncat > /dev/null\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A stale socket: the file is there, nobody listens.
+        if make_stale_socket { drop(UnixListener::bind(dir.path().join(CONTROL_SOCKET)).unwrap()); }
+        std::env::set_var(DAEMON_ENV, &script);
+        std::env::set_var(CONTROL_ENV, dir.path());
+        let result = _run_unlock(Zeroizing::new("pw".to_string()));
+        std::env::remove_var(DAEMON_ENV);
+        std::env::remove_var(CONTROL_ENV);
+        (result, marker.exists())
+    }
+
+    #[test]
+    fn no_control_socket_never_starts_a_daemon() {
+        let (result, ran) = unlock_without_a_live_socket(false);
+        let err = result.unwrap_err();
+        assert!(err.contains("control socket"), "{err}");
+        assert!(!ran, "the daemon must not run: it would start a second one");
+    }
+
+    #[test]
+    fn a_stale_control_socket_never_starts_a_daemon() {
+        let (result, ran) = unlock_without_a_live_socket(true);
+        assert!(result.unwrap_err().contains("control socket"));
+        assert!(!ran, "the daemon must not run: it would start a second one");
     }
 }
