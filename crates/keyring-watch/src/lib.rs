@@ -2,3 +2,5 @@
 //! tray icon plus a notification when it is missing or locked.
 
 pub mod health;
+pub mod probe;
+pub mod selftest;
