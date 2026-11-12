@@ -18,6 +18,11 @@ const TAG: &str = "opusdm-keyring-watch";
 const DAEMON: &str = "gnome-keyring-daemon";
 /// The systemd user unit of the daemon.
 const UNIT: &str = "gnome-keyring-daemon.service";
+/// The systemd user socket unit that owns the control socket of the daemon.
+/// It is restarted with the service: restarting only the service hands it the
+/// same old socket, and when that socket lost its path on disk the control
+/// folder would never come back.
+const SOCKET_UNIT: &str = "gnome-keyring-daemon.socket";
 /// The well known name of the Secret Service.
 const SERVICE_NAME: &str = "org.freedesktop.secrets";
 /// Test only: the environment variable that replaces the daemon binary.
@@ -88,7 +93,7 @@ pub fn unlock_args() -> Vec<&'static str> {
 /// restarted; [`Step::Replace`] only runs when the unit does not exist.
 pub fn restart_steps() -> Vec<Step> {
     let mut steps: Vec<Step> = OTHER_WALLETS.iter().map(|n| Step::Kill(n)).collect();
-    steps.push(Step::Systemctl(&["restart", UNIT]));
+    steps.push(Step::Systemctl(&["restart", SOCKET_UNIT, UNIT]));
     steps.push(Step::Replace);
     steps
 }
@@ -261,7 +266,7 @@ mod tests {
     fn restart_stops_other_wallets_first() {
         let steps = restart_steps();
         assert_eq!(&steps[..3], &[Step::Kill("ksecretd"), Step::Kill("kwalletd5"), Step::Kill("kwalletd6")]);
-        assert_eq!(steps[3], Step::Systemctl(&["restart", "gnome-keyring-daemon.service"]));
+        assert_eq!(steps[3], Step::Systemctl(&["restart", "gnome-keyring-daemon.socket", "gnome-keyring-daemon.service"]), "the socket unit is restarted too, it owns the control socket");
     }
 
     #[test]
