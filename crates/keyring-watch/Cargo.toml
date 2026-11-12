@@ -15,6 +15,10 @@ path = "src/main.rs"
 
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
+gtk4.workspace = true
+async-channel.workspace = true
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 zbus = { version = "5.19.0", features = ["blocking"] }
 libc.workspace = true
 secret-service = { version = "5.2", features = ["rt-async-io-crypto-rust"] }
