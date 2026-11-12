@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 async-channel.workspace = true
 thiserror.workspace = true
+zbus = { version = "5.19.0", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile.workspace = true

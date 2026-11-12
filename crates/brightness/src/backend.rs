@@ -137,13 +137,39 @@ impl Backend for Sysfs {
         Ok(raw_to_percent(read_number(&self.dir.join("brightness"))?, self.max()?))
     }
 
-    /// Write the raw value; needs write access to the file (a udev rule or
-    /// the `video` group on most systems).
+    /// Write the raw value to the file. When the file is not writable (no
+    /// udev rule, not in the `video` group, the usual case) ask logind to
+    /// do it for the active session instead, like `brightnessctl` does.
     fn set(&self, percent: u8) -> Result<(), BrightnessError> {
         let raw = percent_to_raw(clamp_percent(percent), self.max()?);
         let path = self.dir.join("brightness");
-        fs::write(&path, raw.to_string()).map_err(|e| BrightnessError::Io { path: path.display().to_string(), reason: e.to_string() })
+        let io = |reason: String| BrightnessError::Io { path: path.display().to_string(), reason };
+        match fs::write(&path, raw.to_string()) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let name = self.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                logind_set_brightness(&name, raw).map_err(|why| io(format!("{e}; logind SetBrightness failed too: {why}")))
+            }
+            Err(e) => Err(io(e.to_string())),
+        }
     }
+}
+
+/// Set the backlight `name` to `raw` through logind
+/// (`org.freedesktop.login1.Session.SetBrightness` of the caller's session),
+/// which lets the active session change it without root.
+fn logind_set_brightness(name: &str, raw: u32) -> Result<(), String> {
+    if name.is_empty() { return Err("the backlight has no name".to_string()); }
+    let bus = zbus::blocking::Connection::system().map_err(|e| format!("system bus: {e}"))?;
+    bus.call_method(
+        Some("org.freedesktop.login1"),
+        "/org/freedesktop/login1/session/auto",
+        Some("org.freedesktop.login1.Session"),
+        "SetBrightness",
+        &("backlight", name, raw),
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// The I2C bus of the monitor `ddcutil` talks to. Passing it with `--bus`
