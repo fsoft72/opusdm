@@ -1,6 +1,7 @@
 # Changes
 
 ## 2026-11-12
+- Version bump to **0.18.1** (`[workspace.package]` in `Cargo.toml`, inherited by all crates and `xtask`; `Cargo.lock` refreshed) with `scripts/release.sh`. No code change. Verified: `cargo build --release --workspace` passes. NOT verified: nothing else exercised, no behaviour touched.
 - `scripts/release.sh` now takes the new version as a required argument (`scripts/release.sh 0.19.0 [-y]`) and does the whole release: checks first (X.Y.Z, greater than the current version, clean tree, branch, tag free locally and on `origin`), asks for confirmation, sets `[workspace.package] version` in `Cargo.toml`, adds a version bump line to `CHANGES.md`, runs `cargo build --release --workspace` (refreshes `Cargo.lock`), commits the three files as "Bump version to X.Y.Z", tags `vX.Y.Z` and pushes the branch and the tag. A failed build or commit puts the files back as in HEAD; a failed push prints the commands to retry. Verified in a throw-away clone with a local bare remote and a stub `cargo`: no argument, bad format, same and lower version, answer "n", failing build (files restored, tree clean), full run (commit, tag and push on the bare remote, `CHANGES.md` line under today's heading), second run refused. NOT verified: a real `cargo build` inside the script, a real push to GitHub and the release workflow it starts.
 
 ## 2026-11-11
