@@ -1,10 +1,12 @@
 //! Where the Run window's suggestions come from: the OpusDM application menu,
 //! the other installed applications and the executables on `PATH`.
 
-use opusdm_apps::entries::app_entry;
+use gtk4::gio;
+use gtk4::prelude::*;
+use opusdm_apps::entries::{app_entry, program_name};
 use opusdm_apps::search::{Entry, Kind};
 use opusdm_ipc::MenuItem;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 
@@ -12,6 +14,49 @@ use std::os::unix::fs::PermissionsExt;
 /// directory, so it belongs on a worker thread, not the GTK one.
 pub fn path_commands() -> Vec<Entry> {
     scan_path(&std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// The icon (serialized `gio::Icon`) of the installed app that runs each
+/// program, keyed by program name, for the `PATH` commands. Reads the desktop
+/// entries, so it runs on the GTK thread; the map is then moved to the worker.
+pub fn app_icons() -> HashMap<String, String> {
+    let pairs = gio::AppInfo::all()
+        .into_iter()
+        .filter(|info| info.should_show())
+        .filter_map(|info| info.downcast::<gio::DesktopAppInfo>().ok())
+        .filter_map(|info| {
+            let icon = info.icon().and_then(|icon| IconExt::to_string(&icon))?.to_string();
+            Some((program_name(&info)?, icon))
+        })
+        .collect();
+    icons_by_program(pairs)
+}
+
+/// The `(program, icon)` pairs as a map, leaving out a program that apps
+/// with different icons share (`env`, `flatpak`): it belongs to no single app.
+fn icons_by_program(pairs: Vec<(String, String)>) -> HashMap<String, String> {
+    let mut by_program: HashMap<String, Option<String>> = HashMap::new();
+    for (program, icon) in pairs {
+        by_program
+            .entry(program)
+            .and_modify(|known| if known.as_deref() != Some(icon.as_str()) { *known = None })
+            .or_insert(Some(icon));
+    }
+    by_program.into_iter().filter_map(|(program, icon)| Some((program, icon?))).collect()
+}
+
+/// `commands` with the icon of the app that runs each of them, from `icons`
+/// (see [`app_icons`]); the others keep no icon (the generic one is shown).
+pub fn with_app_icons(commands: Vec<Entry>, icons: &HashMap<String, String>) -> Vec<Entry> {
+    commands
+        .into_iter()
+        .map(|mut entry| {
+            if entry.icon.is_none() {
+                entry.icon = icons.get(&entry.name).cloned();
+            }
+            entry
+        })
+        .collect()
 }
 
 /// The desktop file ids of `items`, folders flattened in menu order.
@@ -92,6 +137,33 @@ mod tests {
     fn merge_apps_with_an_empty_menu_lists_every_installed_app() {
         let installed = vec![app_entry("a.desktop"), app_entry("b.desktop")];
         assert_eq!(ids_of(&merge_apps(Vec::new(), installed)), ["a.desktop", "b.desktop"]);
+    }
+
+    fn command(name: &str) -> Entry {
+        Entry { kind: Kind::Command, id: name.to_string(), name: name.to_string(), comment: String::new(), extra: Vec::new(), icon: None }
+    }
+
+    fn pair(program: &str, icon: &str) -> (String, String) {
+        (program.to_string(), icon.to_string())
+    }
+
+    /// `opusdm-terminal` on PATH is the program of `org.opusdm.Terminal`: its
+    /// command row shows the app icon instead of the generic terminal one.
+    #[test]
+    fn a_command_takes_the_icon_of_the_app_that_runs_it() {
+        let icons = icons_by_program(vec![pair("opusdm-terminal", "org.opusdm.Terminal")]);
+        let found = with_app_icons(vec![command("opusdm-terminal"), command("ls")], &icons);
+        assert_eq!(found[0].icon.as_deref(), Some("org.opusdm.Terminal"));
+        assert_eq!(found[1].icon, None);
+    }
+
+    /// `env` or `flatpak` start many apps: no single app owns them, so their
+    /// command row keeps the generic icon.
+    #[test]
+    fn a_program_shared_by_several_apps_gives_no_icon() {
+        let icons = icons_by_program(vec![pair("flatpak", "a"), pair("flatpak", "b"), pair("kitty", "kitty"), pair("kitty", "kitty")]);
+        assert_eq!(icons.get("flatpak"), None);
+        assert_eq!(icons.get("kitty").map(String::as_str), Some("kitty"));
     }
 
     #[test]
