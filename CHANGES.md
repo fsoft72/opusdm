@@ -1,5 +1,8 @@
 # Changes
 
+## 2026-11-12
+- `scripts/release.sh` now takes the new version as a required argument (`scripts/release.sh 0.19.0 [-y]`) and does the whole release: checks first (X.Y.Z, greater than the current version, clean tree, branch, tag free locally and on `origin`), asks for confirmation, sets `[workspace.package] version` in `Cargo.toml`, adds a version bump line to `CHANGES.md`, runs `cargo build --release --workspace` (refreshes `Cargo.lock`), commits the three files as "Bump version to X.Y.Z", tags `vX.Y.Z` and pushes the branch and the tag. A failed build or commit puts the files back as in HEAD; a failed push prints the commands to retry. Verified in a throw-away clone with a local bare remote and a stub `cargo`: no argument, bad format, same and lower version, answer "n", failing build (files restored, tree clean), full run (commit, tag and push on the bare remote, `CHANGES.md` line under today's heading), second run refused. NOT verified: a real `cargo build` inside the script, a real push to GitHub and the release workflow it starts.
+
 ## 2026-11-11
 - Network tray: the spinner of the row being joined now sits over the check label (`gtk::Overlay`) instead of a box sized from the text "MM", so the network name no longer moves right while connecting. Verified in the Xephyr sandbox (connect to a saved network: the spinner is in the check column, the name stays aligned with the other rows). NOT verified: the running session.
 
