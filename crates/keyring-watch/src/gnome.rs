@@ -7,7 +7,6 @@ use crate::probe::{SecretServiceVault, Vault};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use zbus::blocking::fdo::DBusProxy;
-use zbus::blocking::Connection;
 use zbus::names::BusName;
 use zeroize::Zeroizing;
 
@@ -61,7 +60,7 @@ pub fn owner_is_gnome() -> bool {
 
 /// The process name of the owner of the Secret Service name.
 fn _owner_comm() -> Result<String, String> {
-    let conn = Connection::session().map_err(|e| e.to_string())?;
+    let conn = crate::probe::session_bus(crate::probe::PROBE_TIMEOUT).map_err(|e| e.to_string())?;
     let bus = DBusProxy::new(&conn).map_err(|e| e.to_string())?;
     let name = BusName::try_from(SERVICE_NAME).map_err(|e| e.to_string())?;
     let pid = bus.get_connection_unix_process_id(name).map_err(|e| e.to_string())?;
@@ -99,12 +98,15 @@ pub fn unlock_with_password(password: Zeroizing<String>) -> Result<(), String> {
 }
 
 /// [`unlock_with_password`] with the vault that answers the lock state given.
+/// The daemon unlocks the `login` keyring, so that is the one looked at (the
+/// default one when there is no `login`); no keyring at all is an error.
 fn unlock_and_verify(password: Zeroizing<String>, vault: &dyn Vault) -> Result<(), String> {
     _run_unlock(password)?;
-    match vault.default_locked()? {
-        Some(true) => Err(WRONG_PASSWORD.to_string()),
-        Some(false) | None => Ok(()),
-    }
+    let locked = match vault.login_locked()? {
+        Some(locked) => locked,
+        None => vault.default_locked()?.ok_or("the unlock ended but no keyring was found")?,
+    };
+    if locked { Err(WRONG_PASSWORD.to_string()) } else { Ok(()) }
 }
 
 /// Run the daemon with `--unlock`, write the password and a newline to its
@@ -147,7 +149,29 @@ pub fn restart(password: Zeroizing<String>) -> Result<(), String> {
             Step::Systemctl(_) | Step::Replace => {}
         }
     }
+    // The new daemon needs a moment to own its name: unlocking before that
+    // may start a second daemon.
+    wait_for_service(&SecretServiceVault::new(), SERVICE_WAIT_TRIES, std::thread::sleep)?;
     unlock_with_password(password)
+}
+
+/// How many times the restarted service is asked before giving up.
+const SERVICE_WAIT_TRIES: u32 = 20;
+/// The pause between two of those questions.
+const SERVICE_WAIT_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Wait until the Secret Service answers (any lock state), asking up to
+/// `tries` times with a pause in between (`sleep` is given the pause).
+fn wait_for_service(vault: &dyn Vault, tries: u32, mut sleep: impl FnMut(std::time::Duration)) -> Result<(), String> {
+    let mut last = String::from("no answer");
+    for _ in 0..tries {
+        match vault.default_locked() {
+            Ok(_) => return Ok(()),
+            Err(e) => last = e,
+        }
+        sleep(SERVICE_WAIT_PAUSE);
+    }
+    Err(format!("the keyring did not come back after the restart: {last}"))
 }
 
 /// Stop the processes called `name` of this user. "None found" is fine.
@@ -226,15 +250,30 @@ mod tests {
     /// A vault that only knows whether the default collection is locked.
     struct LockVault(Result<Option<bool>, String>);
 
+    /// A vault with separate answers for the default and the `login` collection.
+    struct TwoVault {
+        default: Option<bool>,
+        login: Option<bool>,
+    }
+
+    impl Vault for TwoVault {
+        fn bus_ok(&self) -> bool { true }
+        fn service_present(&self) -> Result<bool, String> { Ok(true) }
+        fn default_locked(&self) -> Result<Option<bool>, String> { Ok(self.default) }
+        fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> { Ok(self.login) }
+        fn login_locked(&self) -> Result<Option<bool>, String> { Ok(self.login) }
+    }
+
     impl Vault for LockVault {
         fn bus_ok(&self) -> bool { true }
         fn service_present(&self) -> Result<bool, String> { Ok(true) }
         fn default_locked(&self) -> Result<Option<bool>, String> { self.0.clone() }
         fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> { Ok(None) }
+        fn login_locked(&self) -> Result<Option<bool>, String> { self.0.clone() }
     }
 
     /// Run the unlock against a daemon script that exits 0 and prints nothing.
-    fn unlock_with_quiet_daemon(vault: &LockVault) -> Result<(), String> {
+    fn unlock_with_quiet_daemon(vault: &dyn Vault) -> Result<(), String> {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("quiet-daemon");
@@ -260,5 +299,44 @@ mod tests {
     #[test]
     fn vault_error_after_unlock_is_reported() {
         assert_eq!(unlock_with_quiet_daemon(&LockVault(Err("bus gone".into()))), Err("bus gone".to_string()));
+    }
+
+    #[test]
+    fn the_login_collection_decides_not_the_default_one() {
+        // default is another, still locked collection; login is unlocked now.
+        assert_eq!(unlock_with_quiet_daemon(&TwoVault { default: Some(true), login: Some(false) }), Ok(()));
+        assert_eq!(unlock_with_quiet_daemon(&TwoVault { default: Some(false), login: Some(true) }), Err(WRONG_PASSWORD.to_string()));
+    }
+
+    #[test]
+    fn without_a_login_collection_the_default_decides() {
+        assert_eq!(unlock_with_quiet_daemon(&TwoVault { default: Some(true), login: None }), Err(WRONG_PASSWORD.to_string()));
+        assert_eq!(unlock_with_quiet_daemon(&TwoVault { default: Some(false), login: None }), Ok(()));
+    }
+
+    #[test]
+    fn no_keyring_at_all_is_an_error_not_a_success() {
+        let err = unlock_with_quiet_daemon(&TwoVault { default: None, login: None }).unwrap_err();
+        assert!(err.contains("no keyring"), "{err}");
+    }
+
+    #[test]
+    fn waiting_for_the_service_retries_then_succeeds() {
+        struct Flaky(std::cell::Cell<u32>);
+        impl Vault for Flaky {
+            fn bus_ok(&self) -> bool { true }
+            fn service_present(&self) -> Result<bool, String> { Ok(true) }
+            fn default_locked(&self) -> Result<Option<bool>, String> {
+                self.0.set(self.0.get() + 1);
+                if self.0.get() < 3 { Err("no such object".into()) } else { Ok(Some(true)) }
+            }
+            fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> { Ok(None) }
+            fn login_locked(&self) -> Result<Option<bool>, String> { Ok(None) }
+        }
+        let mut pauses = 0;
+        assert_eq!(wait_for_service(&Flaky(Default::default()), 5, |_| pauses += 1), Ok(()));
+        assert_eq!(pauses, 2);
+        let err = wait_for_service(&Flaky(Default::default()), 2, |_| {}).unwrap_err();
+        assert!(err.contains("did not come back") && err.contains("no such object"), "{err}");
     }
 }

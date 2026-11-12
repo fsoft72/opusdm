@@ -91,14 +91,19 @@ fn build(app: &gtk::Application, mode: AskMode, code: &Rc<Cell<i32>>) {
     shell.content().append(&message);
     shell.content().append(&entry);
     shell.content().append(&status);
-    shell.close_button("Cancel");
+    let cancel = shell.close_button("Cancel");
     let ok = shell.button(mode.action());
     ok.add_css_class("suggested-action");
     let window = shell.window().clone();
+    // While the unlock runs the window cannot be closed: closing it ends the
+    // process and would kill a restart half way, leaving the keyring locked.
+    let working = Rc::new(Cell::new(false));
+    let busy = working.clone();
+    window.connect_close_request(move |_| if busy.get() { glib::Propagation::Stop } else { glib::Propagation::Proceed });
 
     let submit = {
-        let (entry, status, ok, window, code) = (entry.clone(), status.clone(), ok.clone(), window.clone(), code.clone());
-        Rc::new(move || submit_password(mode, &entry, &status, &ok, &window, &code))
+        let (entry, status, ok, cancel, window, code, working) = (entry.clone(), status.clone(), ok.clone(), cancel.clone(), window.clone(), code.clone(), working.clone());
+        Rc::new(move || submit_password(mode, &Widgets { entry: &entry, status: &status, ok: &ok, cancel: &cancel }, &window, &code, &working))
     };
     let on_ok = submit.clone();
     ok.connect_clicked(move |_| on_ok());
@@ -107,9 +112,22 @@ fn build(app: &gtk::Application, mode: AskMode, code: &Rc<Cell<i32>>) {
     entry.grab_focus();
 }
 
+/// The widgets that change while the unlock runs.
+struct Widgets<'a> {
+    /// The password entry.
+    entry: &'a gtk::PasswordEntry,
+    /// The status line.
+    status: &'a gtk::Label,
+    /// The main button.
+    ok: &'a gtk::Button,
+    /// The Cancel button.
+    cancel: &'a gtk::Button,
+}
+
 /// Take the password out of the entry and run the unlock on a worker thread,
-/// then show the outcome.
-fn submit_password(mode: AskMode, entry: &gtk::PasswordEntry, status: &gtk::Label, ok: &gtk::Button, window: &gtk::Window, code: &Rc<Cell<i32>>) {
+/// then show the outcome. `working` is true while the worker runs.
+fn submit_password(mode: AskMode, w: &Widgets, window: &gtk::Window, code: &Rc<Cell<i32>>, working: &Rc<Cell<bool>>) {
+    let (entry, status, ok, cancel) = (w.entry, w.status, w.ok, w.cancel);
     let password = Zeroizing::new(entry.text().to_string());
     if password.is_empty() {
         show_status(status, "Type the password first.");
@@ -118,6 +136,8 @@ fn submit_password(mode: AskMode, entry: &gtk::PasswordEntry, status: &gtk::Labe
     entry.set_text("");
     entry.set_sensitive(false);
     ok.set_sensitive(false);
+    cancel.set_sensitive(false);
+    working.set(true);
     show_status(status, "Working...");
     let (tx, rx) = async_channel::bounded(1);
     let spawned = std::thread::Builder::new().name("opusdm-keyring-unlock".into()).spawn(move || {
@@ -133,18 +153,25 @@ fn submit_password(mode: AskMode, entry: &gtk::PasswordEntry, status: &gtk::Labe
         show_status(status, &format!("Cannot start the unlock: {e}"));
         entry.set_sensitive(true);
         ok.set_sensitive(true);
+        cancel.set_sensitive(true);
+        working.set(false);
         return;
     }
-    let (entry, status, ok, window, code) = (entry.clone(), status.clone(), ok.clone(), window.clone(), code.clone());
+    let (entry, status, ok, cancel) = (entry.clone(), status.clone(), ok.clone(), cancel.clone());
+    let (window, code, working) = (window.clone(), code.clone(), working.clone());
     glib::spawn_future_local(async move {
         let result = rx.recv().await;
+        working.set(false);
         match result {
             Ok(Ok(())) => {
                 code.set(EXIT_OK);
                 window.close();
                 return;
             }
-            Ok(Err(e)) if e == gnome::WRONG_PASSWORD => show_status(&status, gnome::WRONG_PASSWORD),
+            Ok(Err(e)) if e == gnome::WRONG_PASSWORD => {
+                opusdm_ipc::debug_log!(TAG, "the keyring did not accept the password");
+                show_status(&status, gnome::WRONG_PASSWORD)
+            }
             Ok(Err(e)) => {
                 opusdm_ipc::err_log!(TAG, "unlock failed: {e}");
                 code.set(EXIT_FAILED);
@@ -158,6 +185,7 @@ fn submit_password(mode: AskMode, entry: &gtk::PasswordEntry, status: &gtk::Labe
         }
         entry.set_sensitive(true);
         ok.set_sensitive(true);
+        cancel.set_sensitive(true);
         entry.grab_focus();
     });
 }

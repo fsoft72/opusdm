@@ -3,6 +3,7 @@
 //! run for real against the session bus by [`SecretServiceVault`].
 
 use crate::health::{Health, Reason};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 use zbus::blocking::fdo::DBusProxy;
@@ -47,6 +48,9 @@ pub trait Vault {
     /// Whether the collection labelled `login` is locked, when it is a
     /// different one from the default; `None` when there is no such one.
     fn login_locked_if_distinct(&self) -> Result<Option<bool>, String>;
+    /// Whether the collection labelled `login` (the one the daemon unlocks
+    /// with the login password) is locked; `None` when there is none.
+    fn login_locked(&self) -> Result<Option<bool>, String>;
 }
 
 /// The health of `v`: bus, service, default collection, locked, then the
@@ -97,9 +101,32 @@ pub fn run_with_timeout(check: impl FnOnce() -> Health + Send + 'static, timeout
     }
 }
 
-/// One check against the real session bus, with [`PROBE_TIMEOUT`].
+/// Whether a check of the real session bus is still running (a stuck daemon
+/// keeps its worker thread and connection until the call returns).
+static PROBE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// One check against the real session bus, with `timeout`. While an earlier
+/// check is still stuck no new thread or connection is started: the answer
+/// is [`Reason::Timeout`] at once, so a stuck daemon costs one thread, not
+/// one per check.
 pub fn probe_with_timeout(timeout: Duration) -> Health {
-    run_with_timeout(|| evaluate(&SecretServiceVault::new()), timeout)
+    run_guarded(&PROBE_RUNNING, || evaluate(&SecretServiceVault::new()), timeout)
+}
+
+/// [`run_with_timeout`] unless `running` says the previous check never ended.
+fn run_guarded(running: &'static AtomicBool, check: impl FnOnce() -> Health + Send + 'static, timeout: Duration) -> Health {
+    if running.swap(true, Ordering::SeqCst) {
+        opusdm_ipc::err_log!(TAG, "the previous Secret Service check is still running, not starting another");
+        return Health::Unhealthy(Reason::Timeout);
+    }
+    run_with_timeout(
+        move || {
+            let health = check();
+            running.store(false, Ordering::SeqCst);
+            health
+        },
+        timeout,
+    )
 }
 
 /// The Secret Service on the session bus. It only reads properties, so no
@@ -112,7 +139,7 @@ pub struct SecretServiceVault {
 impl SecretServiceVault {
     /// Connect to the session bus.
     pub fn new() -> Self {
-        let conn = Connection::session().map_err(|e| format!("session bus: {e}"));
+        let conn = session_bus(PROBE_TIMEOUT).map_err(|e| format!("session bus: {e}"));
         if let Err(e) = &conn { opusdm_ipc::err_log!(TAG, "{e}"); }
         SecretServiceVault { conn }
     }
@@ -188,12 +215,27 @@ impl Vault for SecretServiceVault {
         }
     }
 
+    /// See [`Vault::login_locked`].
+    fn login_locked(&self) -> Result<Option<bool>, String> {
+        match self._login_path()? {
+            Some(path) => self._locked(&path).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// See [`Vault::login_locked_if_distinct`].
     fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> {
         let Some(login) = self._login_path()? else { return Ok(None) };
         if self._default_path()?.as_ref() == Some(&login) { return Ok(None); }
         self._locked(&login).map(Some)
     }
+}
+
+/// The session bus with a limit on the time a method call may wait for its
+/// reply, so a stuck service ends the call with an error instead of keeping
+/// the thread for ever.
+pub fn session_bus(method_timeout: Duration) -> zbus::Result<Connection> {
+    zbus::blocking::connection::Builder::session()?.method_timeout(method_timeout).build()
 }
 
 /// A bus error as one line.
@@ -204,6 +246,8 @@ fn _call_error(e: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
 
     /// A vault whose answers are set by the test.
     struct FakeVault {
@@ -225,6 +269,7 @@ mod tests {
         fn service_present(&self) -> Result<bool, String> { self.service.clone() }
         fn default_locked(&self) -> Result<Option<bool>, String> { self.default.clone() }
         fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> { self.login.clone() }
+        fn login_locked(&self) -> Result<Option<bool>, String> { self.login.clone() }
     }
 
     #[test]
@@ -287,6 +332,28 @@ mod tests {
             Health::Healthy
         };
         assert_eq!(run_with_timeout(slow, Duration::from_millis(20)), Health::Unhealthy(Reason::Timeout));
+    }
+
+    #[test]
+    fn a_stuck_probe_blocks_new_ones_until_it_ends() {
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        let started = Arc::new(AtomicUsize::new(0));
+        let counter = started.clone();
+        let slow = move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Health::Healthy
+        };
+        assert_eq!(run_guarded(&RUNNING, slow, Duration::from_millis(20)), Health::Unhealthy(Reason::Timeout));
+        let counter = started.clone();
+        let second = move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Health::Healthy
+        };
+        assert_eq!(run_guarded(&RUNNING, second, Duration::from_secs(1)), Health::Unhealthy(Reason::Timeout), "refused while the first is stuck");
+        assert_eq!(started.load(Ordering::SeqCst), 1, "no second thread was started");
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(run_guarded(&RUNNING, || Health::Healthy, Duration::from_secs(1)), Health::Healthy, "a check runs again once the stuck one ended");
     }
 
     #[test]
