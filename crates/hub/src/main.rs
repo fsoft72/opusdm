@@ -97,6 +97,11 @@ fn main() {
     // hub) exits and the supervisor waits for the old one.
     opusdm_hub::applet_host::start();
 
+    // The keyring watcher (X11 and Wayland): a supervisor thread starts
+    // opusdm-keyring-watch and restarts it when it exits. It shows a tray
+    // icon only while the keyring is locked or missing.
+    opusdm_hub::keyring_host::start();
+
     // Launch the Startup Apps of Settings, each after its own wait time,
     // unless the hub was restarted with --no-startup-apps.
     let desktop_settings = &config.desktop;
