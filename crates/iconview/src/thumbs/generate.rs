@@ -154,6 +154,10 @@ fn non_empty_png(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
 /// Stdout is drained on a helper thread while the child runs: a PNG larger
 /// than the pipe buffer (64 KiB) would otherwise block the child on write
 /// until the timeout killed it.
+///
+/// The child is waited for through `opusdm_ipc::reaped`: inside the hub the
+/// SIGCHLD reaper (`waitpid(-1)`) can collect it first, and a plain
+/// `try_wait` then fails with `ECHILD` although the generator succeeded.
 fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Vec<u8>> {
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -168,14 +172,19 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Vec<u8>>
         io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
     })?;
     let start = Instant::now();
+    let mut lost_since = None;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = opusdm_ipc::reaped::poll_exit(&mut child, &mut lost_since)? {
             break status;
         }
         if start.elapsed() >= timeout {
             // Killing closes the pipe, so the reader thread ends too.
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Err(e) = child.kill() {
+                opusdm_ipc::err_log!("iconview", "cannot kill the timed out generator pid {}: {e}", child.id());
+            }
+            if let Err(e) = opusdm_ipc::reaped::wait(&mut child) {
+                opusdm_ipc::err_log!("iconview", "cannot reap the timed out generator pid {}: {e}", child.id());
+            }
             let _ = reader.join();
             return Err(io::Error::new(io::ErrorKind::TimedOut, "generator timed out"));
         }
@@ -242,8 +251,52 @@ mod tests {
         let _ = generate(&fake_pdf, ThumbKind::Pdf, 128);
     }
 
+    /// Serialises the tests that start child processes: the reaper test
+    /// collects every child of the test process while it runs.
+    static CHILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn child_lock() -> std::sync::MutexGuard<'static, ()> {
+        CHILD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Regression: inside the hub a SIGCHLD reaper calls `waitpid(-1)` and can
+    /// collect the generator before `run_with_timeout` waits for it. The wait
+    /// then failed with `ECHILD` ("No child processes") and the thumbnail was
+    /// marked as failed, though the generator wrote its PNG.
+    #[test]
+    fn output_is_kept_when_another_reaper_collects_the_child() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let _guard = child_lock();
+        let stop = Arc::new(AtomicBool::new(false));
+        let reaper = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut reaped = 0;
+                while !stop.load(Ordering::SeqCst) {
+                    let mut status: libc::c_int = 0;
+                    // SAFETY: waits for any child of the test process, like the
+                    // hub reaper; `status` is a valid out-pointer.
+                    let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+                    if pid > 0 {
+                        opusdm_ipc::reaped::record(pid as u32, status);
+                        reaped += 1;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                reaped
+            })
+        };
+        let out = run_with_timeout(Command::new("printf").arg("generated"), Duration::from_secs(10));
+        stop.store(true, Ordering::SeqCst);
+        let reaped = reaper.join().unwrap();
+        assert_eq!(reaped, 1, "the reaper must have taken the child, or the test proves nothing");
+        assert_eq!(out.unwrap(), b"generated");
+    }
+
     #[test]
     fn output_larger_than_the_pipe_buffer_is_read_while_running() {
+        let _guard = child_lock();
         // 256 KiB is well past the 64 KiB pipe buffer: a child writing it
         // blocks until someone reads, so reading only after exit times out.
         const BYTES: usize = 256 * 1024;
@@ -257,6 +310,7 @@ mod tests {
 
     #[test]
     fn a_hung_child_is_killed_after_the_timeout() {
+        let _guard = child_lock();
         let start = Instant::now();
         let err = run_with_timeout(Command::new("sleep").arg("30"), Duration::from_millis(200)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
@@ -269,6 +323,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_generators_produce_pngs() {
+        let _guard = child_lock();
         let td = tempfile::tempdir().unwrap();
 
         if tools_available().pdf {

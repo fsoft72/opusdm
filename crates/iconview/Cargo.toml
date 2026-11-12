@@ -14,3 +14,4 @@ opusdm-ipc = { path = "../ipc" }
 
 [dev-dependencies]
 filetime.workspace = true
+libc.workspace = true

@@ -3037,6 +3037,7 @@ dependencies = [
  "async-channel",
  "filetime",
  "gtk4",
+ "libc",
  "md-5",
  "opusdm-ipc",
  "tempfile",
