@@ -1,5 +1,5 @@
-//! Where the Run window's suggestions come from: the OpusDM application menu
-//! and the executables on `PATH`.
+//! Where the Run window's suggestions come from: the OpusDM application menu,
+//! the other installed applications and the executables on `PATH`.
 
 use opusdm_apps::entries::app_entry;
 use opusdm_apps::search::{Entry, Kind};
@@ -26,15 +26,21 @@ pub fn flatten_menu(items: &[MenuItem]) -> Vec<String> {
     ids
 }
 
-/// The applications of the custom menu (`menu.json`) when it lists any, else
-/// every installed application a menu would show.
+/// The applications of the custom menu (`menu.json`), in menu order, then
+/// every other installed application a menu would show. `menu.json` is
+/// seeded once, so an app installed later is only in the second list; without
+/// it the Run window offered that app only as a `PATH` command.
 pub fn app_entries() -> Vec<Entry> {
     let ids = opusdm_ipc::menu::load_menu_config().map(|cfg| flatten_menu(&cfg.items)).unwrap_or_default();
-    if !ids.is_empty() {
-        let infos = opusdm_apps::apps::resolve(&ids).into_iter().map(|e| e.info);
-        return infos.filter_map(|info| app_entry(&info)).collect();
-    }
-    opusdm_apps::entries::installed_entries()
+    let menu = opusdm_apps::apps::resolve(&ids).into_iter().filter_map(|e| app_entry(&e.info)).collect();
+    merge_apps(menu, opusdm_apps::entries::installed_entries())
+}
+
+/// `menu` followed by the entries of `installed` it does not hold, each id
+/// once, the first occurrence winning.
+fn merge_apps(menu: Vec<Entry>, installed: Vec<Entry>) -> Vec<Entry> {
+    let mut seen = HashSet::new();
+    menu.into_iter().chain(installed).filter(|entry| seen.insert(entry.id.clone())).collect()
 }
 
 /// The executables in the directories of `path_var` (a `PATH` value), each
@@ -63,6 +69,29 @@ mod tests {
 
     fn app(id: &str) -> MenuItem {
         MenuItem::App { id: id.to_string() }
+    }
+
+    fn app_entry(id: &str) -> Entry {
+        Entry { kind: Kind::App, id: id.to_string(), name: id.to_string(), comment: String::new(), extra: Vec::new(), icon: None }
+    }
+
+    fn ids_of(entries: &[Entry]) -> Vec<&str> {
+        entries.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    /// An app installed after `menu.json` was seeded must still be an
+    /// application of the Run window (with its icon), not only a command.
+    #[test]
+    fn merge_apps_keeps_the_menu_order_then_adds_the_other_installed_apps() {
+        let menu = vec![app_entry("b.desktop"), app_entry("a.desktop")];
+        let installed = vec![app_entry("a.desktop"), app_entry("new.desktop"), app_entry("b.desktop"), app_entry("new.desktop")];
+        assert_eq!(ids_of(&merge_apps(menu, installed)), ["b.desktop", "a.desktop", "new.desktop"]);
+    }
+
+    #[test]
+    fn merge_apps_with_an_empty_menu_lists_every_installed_app() {
+        let installed = vec![app_entry("a.desktop"), app_entry("b.desktop")];
+        assert_eq!(ids_of(&merge_apps(Vec::new(), installed)), ["a.desktop", "b.desktop"]);
     }
 
     #[test]

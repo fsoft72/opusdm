@@ -573,8 +573,8 @@ hub bar, to start a program by typing its name.
   Alt or Super) to open it from anywhere. Pressing the key again closes it. In
   an OpusDM session the binaries are on `PATH`; otherwise type the full path.
 - **Suggestions:** as you type, a list shows up to eight matches. *Applications*
-  are the apps of the OpusDM menu (the custom menu when you built one, else
-  every installed app); *Commands* are the programs found on `PATH`. The best
+  are every installed app (the apps of the OpusDM menu first, then the ones
+  installed after the menu was made); *Commands* are the programs found on `PATH`. The best
   match comes first: exact name, name start, start of a word, anywhere in the
   name, then the generic name, keywords and program name.
 - **Run:** **Up / Down** move through the list, **Enter** (or a click) runs the

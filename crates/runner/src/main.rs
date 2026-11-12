@@ -1,6 +1,6 @@
 //! `opusdm-run`: the Run window. A key combination (a hotkey bound to
 //! `exec:opusdm-run`) opens it at the top of the screen; the user types the
-//! name of an application of the OpusDM menu or a command, picks one of the
+//! name of an installed application or a command, picks one of the
 //! suggestions and presses Enter. See
 //! `docs/superpowers/specs/2026-10-05-run-dialog-design.md`.
 
