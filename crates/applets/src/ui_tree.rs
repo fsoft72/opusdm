@@ -14,7 +14,7 @@ pub const MAX_DEPTH: usize = 32;
 pub const MAX_SIZE: i64 = 16384;
 
 /// Props every node type accepts.
-const COMMON_PROPS: [&str; 4] = ["type", "id", "class", "visible"];
+const COMMON_PROPS: [&str; 6] = ["type", "id", "class", "visible", "hexpand", "halign"];
 
 /// One node of the tree: the common props and the type-specific ones.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +25,10 @@ pub struct Node {
     pub classes: Vec<String>,
     /// Whether the widget is shown (default `true`).
     pub visible: bool,
+    /// Whether the widget takes the free horizontal room of its box (default `false`).
+    pub hexpand: bool,
+    /// Where the widget sits in the room it gets (`None`: the GTK default, fill).
+    pub halign: Option<Align>,
     /// The node type and its props.
     pub kind: Kind,
 }
@@ -36,13 +40,24 @@ pub enum Orientation {
     Horizontal,
 }
 
+/// Where a widget sits horizontally in the room it gets (`halign`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+    Fill,
+}
+
 /// A node type with its props. Handler props hold the id the prelude
 /// registered (`None` when the applet gave no function).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     Box { orientation: Orientation, spacing: i32, padding: i32, children: Vec<Node> },
     Label { text: String },
-    Button { label: String, on_click: Option<u32> },
+    /// A button shows `label`, or the theme icon `icon` when given (then
+    /// `label` is empty); `tooltip` is shown on hover.
+    Button { label: String, icon: Option<String>, tooltip: Option<String>, on_click: Option<u32> },
     Entry { text: String, on_change: Option<u32> },
     Switch { active: bool, on_toggle: Option<u32> },
     /// `scroll`: the list sits in a vertical scrolled window that fills the room it gets and never makes its parent grow.
@@ -125,8 +140,16 @@ fn parse_node(value: &Value, depth: usize, ids: &mut HashSet<String>) -> Result<
             Kind::Label { text: text_value(&what, "text", props.required("text")?)? }
         }
         "button" => {
-            props.allow(&["label", "onClick"])?;
-            Kind::Button { label: text_value(&what, "label", props.required("label")?)?, on_click: props.handler("onClick")? }
+            props.allow(&["label", "icon", "tooltip", "onClick"])?;
+            let icon = props.get("icon").map(|v| icon_value(&what, v)).transpose()?;
+            let label = match (props.get("label"), &icon) {
+                (Some(_), Some(_)) => return Err(format!("{what}: give \"label\" or \"icon\", not both")),
+                (Some(value), None) => text_value(&what, "label", value)?,
+                (None, Some(_)) => String::new(),
+                (None, None) => return Err(format!("{what}: missing prop \"label\" (or \"icon\")")),
+            };
+            let tooltip = props.get("tooltip").map(|v| text_value(&what, "tooltip", v)).transpose()?;
+            Kind::Button { label, icon, tooltip, on_click: props.handler("onClick")? }
         }
         "entry" => {
             props.allow(&["text", "onChange"])?;
@@ -166,7 +189,9 @@ fn parse_node(value: &Value, depth: usize, ids: &mut HashSet<String>) -> Result<
     };
     let classes = props.get("class").map(|v| classes_value(&what, v)).transpose()?.unwrap_or_default();
     let visible = props.get("visible").map(|v| bool_value(&what, "visible", v)).transpose()?.unwrap_or(true);
-    Ok(Node { id, classes, visible, kind })
+    let hexpand = props.get("hexpand").map(|v| bool_value(&what, "hexpand", v)).transpose()?.unwrap_or(false);
+    let halign = props.get("halign").map(|v| align_value(&what, v)).transpose()?;
+    Ok(Node { id, classes, visible, hexpand, halign, kind })
 }
 
 /// The props of one node, with the node's description for errors.
@@ -317,6 +342,26 @@ pub(crate) fn path_value(what: &str, value: &Value) -> Result<String, String> {
         return Err(format!("{what}: \"path\" must be absolute (use opus.applet.assetPath), not \"{path}\""));
     }
     Ok(path)
+}
+
+/// The `halign` prop: `"start"`, `"center"`, `"end"` or `"fill"`.
+pub(crate) fn align_value(what: &str, value: &Value) -> Result<Align, String> {
+    match value.as_str() {
+        Some("start") => Ok(Align::Start),
+        Some("center") => Ok(Align::Center),
+        Some("end") => Ok(Align::End),
+        Some("fill") => Ok(Align::Fill),
+        _ => Err(format!("{what}: \"halign\" must be \"start\", \"center\", \"end\" or \"fill\", not {value}")),
+    }
+}
+
+/// The `icon` prop of a button: a theme icon name such as
+/// `view-refresh-symbolic` (letters, digits, `-`, `_`, `.`; no path).
+pub(crate) fn icon_value(what: &str, value: &Value) -> Result<String, String> {
+    let bad = || format!("{what}: \"icon\" must be a theme icon name such as \"view-refresh-symbolic\", not {value}");
+    let Some(name) = value.as_str() else { return Err(bad()) };
+    let valid = !name.is_empty() && name.len() <= 128 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if valid { Ok(name.to_string()) } else { Err(bad()) }
 }
 
 /// CSS classes: one string of names separated by spaces, or an array of names.

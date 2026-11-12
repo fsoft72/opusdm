@@ -78,6 +78,40 @@ fn gtk_widget_checks() {
     a_script_canvas_reaches_its_drawing_area();
     the_error_listener_reaches_every_canvas_of_the_tree();
     long_text_does_not_widen_the_window();
+    an_icon_button_and_alignment();
+}
+
+/// A button with `icon` shows that theme icon and its tooltip; `hexpand`
+/// and `halign` reach the widget at build and by update; a box whose
+/// child expands is not forced to `hexpand: false`.
+fn an_icon_button_and_alignment() {
+    let recorder = Rc::new(Recorder::default());
+    let tree = build_json(json!({ "type": "box", "id": "row", "orientation": "horizontal", "children": [
+        { "type": "label", "id": "l", "text": "Date" },
+        { "type": "button", "id": "b", "icon": "view-refresh-symbolic", "tooltip": "Refresh", "hexpand": true, "halign": "end", "onClick": { "handler": 4 } }
+    ] }), &recorder).unwrap();
+    let button = get::<gtk::Button>(&tree, "b");
+    assert_eq!(button.icon_name().as_deref(), Some("view-refresh-symbolic"));
+    assert_eq!(button.tooltip_text().as_deref(), Some("Refresh"));
+    assert!(button.hexpands());
+    assert_eq!(button.halign(), gtk::Align::End);
+    let label = get::<gtk::Label>(&tree, "l");
+    assert!(!label.is_hexpand_set(), "a node without hexpand leaves GTK's default alone");
+    assert_eq!(label.halign(), gtk::Align::Fill);
+    let row = get::<gtk::Box>(&tree, "row");
+    assert!(!row.is_hexpand_set() && row.compute_expand(gtk::Orientation::Horizontal), "the box follows its expanding child");
+    button.emit_clicked();
+    assert_eq!(recorder.calls(), [(4, Value::Null)]);
+    apply_update(&tree, "b", &json!({ "icon": "process-working-symbolic", "tooltip": "Refreshing" })).unwrap();
+    assert_eq!(button.icon_name().as_deref(), Some("process-working-symbolic"));
+    assert_eq!(button.tooltip_text().as_deref(), Some("Refreshing"));
+    apply_update(&tree, "l", &json!({ "hexpand": true, "halign": "start" })).unwrap();
+    assert!(label.hexpands());
+    assert_eq!(label.halign(), gtk::Align::Start);
+    let e = apply_update(&tree, "l", &json!({ "icon": "x" })).unwrap_err();
+    assert!(e.contains("icon"), "{e}");
+    let e = apply_update(&tree, "b", &json!({ "halign": "left" })).unwrap_err();
+    assert!(e.contains("halign"), "{e}");
 }
 
 /// Long text never forces the applet window wider than the applet asked: a
@@ -318,8 +352,8 @@ fn image_and_canvas() {
 /// Two nodes with the same id are refused by `build` too (a tree made by
 /// hand, not by `parse`).
 fn duplicate_ids_are_refused_at_build() {
-    let label = |id: &str| Node { id: Some(id.to_string()), classes: vec![], visible: true, kind: Kind::Label { text: id.to_string() } };
-    let node = Node { id: None, classes: vec![], visible: true, kind: Kind::Box { orientation: Orientation::Vertical, spacing: 0, padding: 0, children: vec![label("x"), label("x")] } };
+    let label = |id: &str| Node { id: Some(id.to_string()), classes: vec![], visible: true, hexpand: false, halign: None, kind: Kind::Label { text: id.to_string() } };
+    let node = Node { id: None, classes: vec![], visible: true, hexpand: false, halign: None, kind: Kind::Box { orientation: Orientation::Vertical, spacing: 0, padding: 0, children: vec![label("x"), label("x")] } };
     let recorder = Rc::new(Recorder::default());
     let e = build(&node, recorder).err().expect("duplicate ids must fail the build");
     assert!(e.contains("\"x\"") && e.contains("duplicate"), "{e}");

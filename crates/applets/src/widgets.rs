@@ -10,7 +10,7 @@
 //! calls JavaScript.
 
 use crate::canvas::{self, Command};
-use crate::ui_tree::{self, Kind, ListItem, Node, Orientation};
+use crate::ui_tree::{self, Align, Kind, ListItem, Node, Orientation};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
@@ -85,6 +85,10 @@ enum Change {
     Selected(Option<usize>),
     Visible(bool),
     Classes(Vec<String>),
+    Hexpand(bool),
+    Halign(Align),
+    Icon(String),
+    Tooltip(String),
 }
 
 impl View {
@@ -170,8 +174,12 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
             label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
             (label.clone().upcast(), View::Label(label))
         }
-        Kind::Button { label, on_click } => {
-            let button = gtk::Button::with_label(label);
+        Kind::Button { label, icon, tooltip, on_click } => {
+            let button = match icon {
+                Some(icon) => gtk::Button::from_icon_name(icon),
+                None => gtk::Button::with_label(label),
+            };
+            if let Some(tooltip) = tooltip { button.set_tooltip_text(Some(tooltip)); }
             handler.set(*on_click);
             let (cell, dispatch) = (handler.clone(), dispatch.clone());
             button.connect_clicked(move |_| fire(dispatch.as_ref(), &cell, "click", Value::Null));
@@ -249,10 +257,24 @@ fn build_node(node: &Node, dispatch: &Rc<dyn Dispatch>, ids: &mut HashMap<String
         widget.add_css_class(class);
     }
     widget.set_visible(node.visible);
+    // Only an explicit `hexpand: true` is set: setting `false` would stop GTK
+    // from passing the expansion of a child up to this widget.
+    if node.hexpand { widget.set_hexpand(true); }
+    if let Some(align) = node.halign { widget.set_halign(gtk_align(align)); }
     if let Some(id) = &node.id {
         ids.insert(id.clone(), Item { widget: widget.clone(), view, handler, classes: RefCell::new(node.classes.clone()) });
     }
     Ok(widget)
+}
+
+/// The GTK alignment of an `halign` prop.
+fn gtk_align(align: Align) -> gtk::Align {
+    match align {
+        Align::Start => gtk::Align::Start,
+        Align::Center => gtk::Align::Center,
+        Align::End => gtk::Align::End,
+        Align::Fill => gtk::Align::Fill,
+    }
 }
 
 /// Dispatch the handler in `cell` with `arg`; a widget without a handler
@@ -336,6 +358,10 @@ fn parse_changes(view: &View, what: &str, props: &Map<String, Value>) -> Result<
         let change = match (view, key.as_str()) {
             (_, "visible") => Change::Visible(ui_tree::bool_value(what, key, value)?),
             (_, "class") => Change::Classes(if value.is_null() { Vec::new() } else { ui_tree::classes_value(what, value)? }),
+            (_, "hexpand") => Change::Hexpand(ui_tree::bool_value(what, key, value)?),
+            (_, "halign") => Change::Halign(ui_tree::align_value(what, value)?),
+            (View::Button(_), "icon") => Change::Icon(ui_tree::icon_value(what, value)?),
+            (View::Button(_), "tooltip") => Change::Tooltip(ui_tree::text_value(what, key, value)?),
             (View::Label(_), "text") | (View::Button(_), "label") | (View::Entry(..), "text") => Change::Text(ui_tree::text_value(what, key, value)?),
             (View::Switch(..), "active") => Change::Active(ui_tree::bool_value(what, key, value)?),
             (View::Image(_), "path") => Change::Texture(load_texture(what, &ui_tree::path_value(what, value)?)?),
@@ -371,6 +397,11 @@ fn apply_change(item: &Item, change: Change) {
             *item.classes.borrow_mut() = classes;
         }
         (_, Change::Handler(handler)) => item.handler.set(handler),
+        (_, Change::Hexpand(expand)) => item.widget.set_hexpand(expand),
+        (_, Change::Halign(align)) => item.widget.set_halign(gtk_align(align)),
+        // A button shows a label or an icon: setting one replaces the other.
+        (View::Button(button), Change::Icon(icon)) => button.set_icon_name(&icon),
+        (View::Button(button), Change::Tooltip(tooltip)) => button.set_tooltip_text(Some(&tooltip)),
         (View::Label(label), Change::Text(text)) => label.set_text(&text),
         (View::Button(button), Change::Text(text)) => button.set_label(&text),
         (View::Entry(entry, signal), Change::Text(text)) => {

@@ -1275,13 +1275,17 @@ surface:
 | `opus.ui.show(tree)`, `opus.ui.update(id, props)`, `opus.ui.redraw(canvasId)` | Show a widget tree, change props of the node `id`, paint a canvas again |
 | `opus.ui.openWindow({title, width, height, tree, onClose})` | Opens a secondary window (default 400 x 300, the applet name as title) with its own widget tree and returns `{ id, update(nodeId, props), close() }`. Ids are scoped to the window, so `opus.ui.update` of the main window is not affected. `onClose()` runs when the user closes the window and when `close()` is called, once. At most 8 windows are open at once (a ninth throws), a `canvas` is not supported in them, and `update` of a closed window is ignored with a warning. Disabling or reloading the applet closes them all |
 
-**Widgets.** A tree is plain objects: `{ type, id?, class?, visible?, ...props }`, functions as handlers.
+**Widgets.** A tree is plain objects: `{ type, id?, class?, visible?, hexpand?, halign?, ...props }`, functions as handlers.
+`hexpand: true` makes the widget take the free horizontal room of its box; `halign` (`"start"`, `"center"`,
+`"end"`, `"fill"`) places it in the room it gets. A button at the right end of a row:
+`{ type: "button", icon: "view-refresh-symbolic", hexpand: true, halign: "end", ... }`. `class`, `visible`,
+`hexpand` and `halign` can also be changed with `opus.ui.update`.
 
 | `type` | Props |
 |---|---|
 | `box` | `orientation` (`"vertical"`, default, or `"horizontal"`), `spacing`, `padding` (margin around the box, pixels, default 0), `children` |
 | `label` | `text` |
-| `button` | `label`, `onClick()` |
+| `button` | `label`, or `icon` (a theme icon name such as `view-refresh-symbolic`, not both), `tooltip`, `onClick()`. An update of `label` or `icon` replaces what the button shows |
 | `entry` | `text`, `onChange(text)` |
 | `switch` | `active`, `onToggle(active)` |
 | `list` | `items`: `[{ text, onClick() }]`, a row runs its `onClick` when activated; `scroll` (default `false`): the list sits in a vertical scrolled window that fills the room it gets, so many rows scroll instead of growing the window |

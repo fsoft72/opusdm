@@ -41,7 +41,7 @@ fn handler_ids_are_kept() {
     ] });
     let node = parse(&tree).unwrap();
     let Kind::Box { children, .. } = node.kind else { panic!("not a box") };
-    assert_eq!(children[0].kind, Kind::Button { label: "Go".into(), on_click: Some(3) });
+    assert_eq!(children[0].kind, Kind::Button { label: "Go".into(), icon: None, tooltip: None, on_click: Some(3) });
     assert_eq!(children[1].kind, Kind::Entry { text: "a".into(), on_change: Some(4) });
     assert_eq!(children[2].kind, Kind::Switch { active: true, on_toggle: Some(5) });
     assert_eq!(
@@ -49,7 +49,7 @@ fn handler_ids_are_kept() {
         Kind::List { items: vec![ListItem { text: "one".into(), on_click: Some(6) }, ListItem { text: "two".into(), on_click: None }], scroll: false }
     );
     assert_eq!(children[4].kind, Kind::Canvas { width: 10, height: 20, draw: Some(7) });
-    assert_eq!(children[5].kind, Kind::Button { label: "None".into(), on_click: None });
+    assert_eq!(children[5].kind, Kind::Button { label: "None".into(), icon: None, tooltip: None, on_click: None });
 }
 
 #[test]
@@ -142,4 +142,34 @@ fn a_bad_dropdown_is_an_error_naming_the_prop() {
     assert!(e.contains("selected"), "{e}");
     let e = error_of(json!({ "type": "dropdown", "items": [], "onClick": null, "foo": 1 }));
     assert!(e.contains("foo"), "{e}");
+}
+
+#[test]
+fn a_button_has_a_label_or_an_icon_and_an_optional_tooltip() {
+    let node = parse(&json!({ "type": "button", "icon": "view-refresh-symbolic", "tooltip": "Refresh" })).unwrap();
+    assert_eq!(node.kind, Kind::Button { label: String::new(), icon: Some("view-refresh-symbolic".into()), tooltip: Some("Refresh".into()), on_click: None });
+    let e = error_of(json!({ "type": "button", "id": "b", "label": "Go", "icon": "go-next" }));
+    assert!(e.contains("\"b\"") && e.contains("not both"), "{e}");
+    for bad in [json!(""), json!("../x"), json!("/usr/share/icons/a.png"), json!("a b"), json!(5)] {
+        let e = error_of(json!({ "type": "button", "id": "b", "icon": bad }));
+        assert!(e.contains("icon"), "{e}");
+    }
+    let e = error_of(json!({ "type": "button", "label": "Go", "tooltip": 3 }));
+    assert!(e.contains("tooltip"), "{e}");
+}
+
+#[test]
+fn hexpand_and_halign_are_common_props() {
+    let node = parse(&json!({ "type": "label", "text": "x" })).unwrap();
+    assert!(!node.hexpand);
+    assert_eq!(node.halign, None);
+    let node = parse(&json!({ "type": "button", "label": "x", "hexpand": true, "halign": "end" })).unwrap();
+    assert!(node.hexpand);
+    assert_eq!(node.halign, Some(Align::End));
+    for (name, align) in [("start", Align::Start), ("center", Align::Center), ("fill", Align::Fill)] {
+        assert_eq!(parse(&json!({ "type": "box", "halign": name })).unwrap().halign, Some(align));
+    }
+    let e = error_of(json!({ "type": "box", "id": "r", "halign": "right" }));
+    assert!(e.contains("\"r\"") && e.contains("halign"), "{e}");
+    assert!(error_of(json!({ "type": "box", "hexpand": "yes" })).contains("hexpand"));
 }
