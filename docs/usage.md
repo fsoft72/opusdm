@@ -1313,6 +1313,35 @@ opus.ui.show({ type: "box", spacing: 4, children: [
 setInterval(() => opus.ui.update("time", { text: now() }), 1000);
 ```
 
+### 3.42 Keyring watch (`opusdm-keyring-watch`)
+
+Programs keep their saved passwords in the desktop keyring (Secret Service, gnome-keyring on a normal
+OpusDM install). When the keyring is locked or not running they "forget" their passwords and nothing
+says why. `opusdm-keyring-watch` is a small process that the hub starts at login (X11 and Wayland) and
+restarts if it crashes. It stays invisible while the keyring is fine. Every 30 seconds (the first check
+20 seconds after login) it looks at the keyring behind the `default` alias and, if there is a `login`
+keyring that is a different one, at that too. After two bad checks in a row it shows a **tray icon**
+(a lock) and one **notification** with the reason in plain words; the icon goes away by itself after
+one good check. If the reason changes the notification is shown again.
+
+The tray menu starts with the reason (a disabled line), then:
+
+- **Unlock:** asks the keyring to unlock; the keyring shows its own prompt (only when it is locked).
+- **Unlock with password...:** a small OpusDM window: type your login password, it goes to
+  the running keyring daemon through its control socket (`$XDG_RUNTIME_DIR/keyring/control`, the way the
+  login does it) and nowhere else (never in a file, a log, an argument or the clipboard); no process is
+  started to unlock. A wrong password is reported and the window stays open. gnome-keyring only.
+- **Test:** writes an item, reads it back, compares and deletes it, and tells the result (only when the
+  keyring is locked or fine; it never leaves the item behind).
+- **Restart gnome-keyring...:** asks the password, stops other wallets (`ksecretd`, `kwalletd5`,
+  `kwalletd6`), restarts the `gnome-keyring-daemon.service` user unit and unlocks again. Programs
+  using the keyring lose their open session. gnome-keyring only.
+- **Check now:** runs the check at once.
+
+Without a tray, `opusdm-keyring-watch --unlock` opens the password window directly. For the keyring to be
+unlocked by the login itself the system needs the PAM module (`libpam-gnome-keyring` on Debian and
+Ubuntu) and the login password must be the one of the `login` keyring.
+
 ---
 
 ## 4. Keyboard Shortcuts Reference
