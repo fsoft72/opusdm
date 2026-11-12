@@ -7,7 +7,7 @@ use gtk4::prelude::*;
 
 /// The file name of the program `info` runs; `None` when the entry has no
 /// `Exec=`: GIO returns NULL there and the binding would panic.
-fn program_name(info: &gio::DesktopAppInfo) -> Option<String> {
+pub fn program_name(info: &gio::DesktopAppInfo) -> Option<String> {
     if !info.has_key("Exec") {
         return None;
     }

@@ -7,6 +7,7 @@
 
 use gtk4 as gtk;
 use gtk::gdk;
+use gtk::gio;
 use gtk::prelude::*;
 use crate::widgets;
 use opusdm_apps::apps;
@@ -60,12 +61,28 @@ fn matches_filter(name: &str, filter: &str) -> bool {
     filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
 }
 
+/// True when the search `filter` matches `name` or any of the `extra` texts
+/// (case-insensitive substring); an empty filter matches everything.
+fn matches_filter_any(name: &str, extra: &[String], filter: &str) -> bool {
+    matches_filter(name, filter) || extra.iter().any(|text| matches_filter(text, filter))
+}
+
+/// The texts of `info` the menu filter looks at besides its name, the same
+/// ones the Run window matches: generic name, keywords and program name.
+fn filter_extra(info: &gio::DesktopAppInfo) -> Vec<String> {
+    let mut extra: Vec<String> = info.generic_name().map(|s| s.to_string()).into_iter().collect();
+    extra.extend(info.keywords().iter().map(|k| k.to_string()));
+    extra.extend(opusdm_apps::entries::program_name(info));
+    extra
+}
+
 /// A menu row for a custom-menu app entry, resolved by desktop file id (or
-/// absolute path). `None` when `id` is not installed or its name does not match
-/// `filter`, so the caller can skip it rather than show a dead entry.
+/// absolute path). `None` when `id` is not installed or neither its name nor
+/// its generic name, keywords or program match `filter`, so the caller can
+/// skip it rather than show a dead entry.
 fn custom_app_row(id: &str, popover: &gtk::Popover, filter: &str) -> Option<gtk::Button> {
     let entry = apps::resolve(&[id.to_string()]).into_iter().next()?;
-    if !matches_filter(entry.info.name().as_str(), filter) { return None; }
+    if !matches_filter_any(entry.info.name().as_str(), &filter_extra(&entry.info), filter) { return None; }
     let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let image = match entry.info.icon() {
         Some(icon) => gtk::Image::from_gicon(&icon),
@@ -284,7 +301,7 @@ fn load_items() -> Vec<MenuItem> {
 }
 
 /// Replace the content of `custom` with the current menu tree, narrowed to
-/// the apps whose name matches `filter`.
+/// the apps whose name, generic name, keywords or program match `filter`.
 fn fill_custom(custom: &gtk::Box, popover: &gtk::Popover, filter: &str) {
     while let Some(child) = custom.first_child() {
         custom.remove(&child);
@@ -474,7 +491,7 @@ fn show_about(parent: &gtk::ApplicationWindow) {
 
 #[cfg(test)]
 mod tests {
-    use super::matches_filter;
+    use super::{matches_filter, matches_filter_any};
 
     #[test]
     fn empty_filter_matches_everything() {
@@ -486,5 +503,18 @@ mod tests {
         assert!(matches_filter("Firefox", "fire"));
         assert!(matches_filter("Firefox", "FOX"));
         assert!(!matches_filter("Firefox", "chrome"));
+    }
+
+    /// The menu filter must find an app by its program name too, like the
+    /// Run window does: "DreamOS Installer" runs `dreamos-install`, and typing
+    /// the command name found nothing.
+    #[test]
+    fn filter_matches_the_program_name_and_keywords() {
+        let extra = ["dreamos-install".to_string(), "catalog".to_string()];
+        assert!(matches_filter_any("DreamOS Installer", &extra, "dreamos-install"));
+        assert!(matches_filter_any("DreamOS Installer", &extra, "CATALOG"));
+        assert!(matches_filter_any("DreamOS Installer", &extra, "installer"));
+        assert!(!matches_filter_any("DreamOS Installer", &extra, "firefox"));
+        assert!(matches_filter_any("DreamOS Installer", &[], ""));
     }
 }
