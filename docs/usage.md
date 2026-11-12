@@ -1328,8 +1328,9 @@ The tray menu starts with the reason (a disabled line), then:
 
 - **Unlock:** asks the keyring to unlock; the keyring shows its own prompt (only when it is locked).
 - **Unlock with password...:** a small OpusDM window: type your login password, it goes to
-  `gnome-keyring-daemon --unlock` on standard input and nowhere else (never in a file, a log, an
-  argument or the clipboard). A wrong password is reported and the window stays open. gnome-keyring only.
+  the running keyring daemon through its control socket (`$XDG_RUNTIME_DIR/keyring/control`, the way the
+  login does it) and nowhere else (never in a file, a log, an argument or the clipboard); no process is
+  started to unlock. A wrong password is reported and the window stays open. gnome-keyring only.
 - **Test:** writes an item, reads it back, compares and deletes it, and tells the result (only when the
   keyring is locked or fine; it never leaves the item behind).
 - **Restart gnome-keyring...:** asks the password, stops other wallets (`ksecretd`, `kwalletd5`,
