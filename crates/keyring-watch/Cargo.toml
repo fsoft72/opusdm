@@ -1,0 +1,17 @@
+[package]
+name = "opusdm-keyring-watch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "opusdm_keyring_watch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opusdm-keyring-watch"
+path = "src/main.rs"
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }

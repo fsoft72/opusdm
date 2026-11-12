@@ -3039,6 +3039,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-keyring-watch"
+version = "0.18.1"
+dependencies = [
+ "opusdm-ipc",
+]
+
+[[package]]
 name = "opusdm-lister"
 version = "0.18.1"
 dependencies = [
