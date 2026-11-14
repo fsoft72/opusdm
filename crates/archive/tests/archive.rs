@@ -1,6 +1,6 @@
 //! Behaviour of the archive crate on real archives built by the tests.
 
-use opusdm_archive::{extract, extract_entry, list, list_watched, read_files, ArchiveError, EntryKind};
+use opusdm_archive::{extract, extract_entry, has_root_folder, list, list_watched, read_files, ArchiveError, EntryKind};
 use std::cell::Cell;
 use std::fs;
 use std::io::Write;
@@ -147,6 +147,29 @@ fn a_wildcard_name_does_not_match_other_entries() {
     let arch = _tar(td.path());
     let err = extract_entry(&arch, "st*", &mut Vec::new()).unwrap_err();
     assert!(matches!(err, ArchiveError::NotFound(_)), "{err}");
+}
+
+#[test]
+fn files_at_the_top_mean_no_root_folder_in_every_format() {
+    let td = tempfile::tempdir().unwrap();
+    for (label, arch) in _all(td.path()) {
+        assert!(!has_root_folder(&arch, &_never).unwrap_or_else(|e| panic!("{label}: {e}")), "{label}");
+    }
+}
+
+#[test]
+fn one_top_folder_is_a_root_folder() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("proj.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.add_directory("proj/", opts).unwrap();
+    zip.start_file("proj/a.txt", opts).unwrap();
+    zip.write_all(b"a").unwrap();
+    zip.start_file("proj/sub/b.txt", opts).unwrap();
+    zip.write_all(b"b").unwrap();
+    zip.finish().unwrap();
+    assert!(has_root_folder(&path, &_never).unwrap());
 }
 
 #[test]

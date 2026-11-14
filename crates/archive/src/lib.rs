@@ -11,7 +11,7 @@ mod writer;
 
 pub use error::{ArchiveError, Result};
 pub use extract::{extract, extract_entry, read_files, Extracted};
-pub use names::is_archive_name;
+pub use names::{archive_stem, is_archive_name};
 pub use reader::EntryKind;
 
 use reader::Reader;
@@ -61,4 +61,22 @@ pub fn list_watched(archive: &Path, step: &mut dyn FnMut(u64, u64) -> bool) -> R
         });
     }
     Ok(entries)
+}
+
+/// Whether every entry of `archive` sits in one top folder (an empty archive
+/// counts as one). Reading stops at the first entry that proves otherwise.
+/// `cancel` is polled before every entry.
+pub fn has_root_folder(archive: &Path, cancel: &dyn Fn() -> bool) -> Result<bool> {
+    let mut reader = Reader::open(archive)?;
+    let mut check = names::RootCheck::default();
+    while reader.next_header()? {
+        if cancel() {
+            return Err(ArchiveError::Cancelled);
+        }
+        let name = names::normalize(&reader.entry_path());
+        if !check.add(&name, reader.entry_kind() == EntryKind::Dir) {
+            return Ok(false);
+        }
+    }
+    Ok(check.has_root_folder())
 }

@@ -229,6 +229,8 @@ pub fn show_context_menu(
     if !row.is_dir && !crate::extract_dialog::extractable(vec![target.to_path_buf()]).is_empty() {
         let tg = targets.clone();
         menu.item("Extract archive", move |ui| crate::extract_dialog::open_extract(ui, tg(ui)));
+        let tg = targets.clone();
+        menu.item("Extract here", move |ui| crate::extract_dialog::extract_here(ui, tg(ui)));
     }
     let tg = targets.clone();
     menu.item("Encrypt...", move |ui| crate::crypt_dialog::open_crypt(ui, true, tg(ui)));

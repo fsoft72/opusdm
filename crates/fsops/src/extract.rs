@@ -1,5 +1,6 @@
 //! Extract: unpack archives into a folder with libarchive (`opusdm-archive`).
-//! Existing files are never overwritten.
+//! Existing files are never overwritten. An archive whose entries are not all
+//! inside one top folder is unpacked into a new folder named after it.
 
 use crate::cancel::CancelToken;
 use crate::types::Progress;
@@ -9,6 +10,10 @@ use std::sync::mpsc::Sender;
 
 /// Tag of the debug lines written to the console.
 const LOG_TAG: &str = "extract";
+
+/// How many `-N` names are tried for the container folder when a file holds
+/// the plain name.
+const MAX_NAME_TRIES: u32 = 1000;
 
 /// Whether `name` is an archive `Extract` can unpack.
 pub fn is_extractable(name: &str) -> bool {
@@ -49,8 +54,21 @@ pub fn run_extract(srcs: &[PathBuf], dest_dir: &Path, tx: &Sender<Progress>, can
 
 /// Unpack one archive. `Ok(false)` when cancelled.
 fn _extract_one(src: &Path, dest_dir: &Path, cancel: &CancelToken) -> Result<bool, String> {
-    opusdm_ipc::err_log!(LOG_TAG, "extract {} into {}", src.display(), dest_dir.display());
-    match opusdm_archive::extract(src, dest_dir, None, &|| cancel.is_cancelled()) {
+    let is_cancelled = || cancel.is_cancelled();
+    let (target, created) = match _target_dir(src, dest_dir, &is_cancelled) {
+        Ok(t) => t,
+        Err(ArchiveError::Cancelled) => return Ok(false),
+        Err(e) => {
+            opusdm_ipc::err_log!(LOG_TAG, "{}: cannot prepare the folder: {e}", src.display());
+            return Err(e.to_string());
+        }
+    };
+    opusdm_ipc::err_log!(LOG_TAG, "extract {} into {}", src.display(), target.display());
+    let result = opusdm_archive::extract(src, &target, None, &is_cancelled);
+    if result.is_err() && created {
+        _remove_if_empty(&target);
+    }
+    match result {
         Ok(done) => {
             opusdm_ipc::err_log!(LOG_TAG, "{} entries written, {} kept", done.written, done.skipped);
             Ok(true)
@@ -63,6 +81,44 @@ fn _extract_one(src: &Path, dest_dir: &Path, cancel: &CancelToken) -> Result<boo
     }
 }
 
+/// The folder `src` is unpacked into, and whether it was created here:
+/// `dest_dir` when the archive keeps everything in one top folder, otherwise
+/// `dest_dir/<archive name without suffix>`. A folder already there is
+/// reused (existing files are kept anyway); when a file holds that name,
+/// `<name>-1`, `<name>-2` ... is used instead.
+fn _target_dir(src: &Path, dest_dir: &Path, cancel: &dyn Fn() -> bool) -> Result<(PathBuf, bool), ArchiveError> {
+    if opusdm_archive::has_root_folder(src, cancel)? {
+        return Ok((dest_dir.to_path_buf(), false));
+    }
+    let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = opusdm_archive::archive_stem(&name);
+    for i in 0..=MAX_NAME_TRIES {
+        let candidate = if i == 0 { dest_dir.join(stem) } else { dest_dir.join(format!("{stem}-{i}")) };
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok((candidate, true)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // A real folder (not a link to one) is reused.
+                if candidate.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                    return Ok((candidate, false));
+                }
+            }
+            Err(e) => return Err(ArchiveError::Io(std::io::Error::new(e.kind(), format!("{}: {e}", candidate.display())))),
+        }
+    }
+    Err(ArchiveError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("no free folder name for {stem} in {}", dest_dir.display()),
+    )))
+}
+
+/// Remove the folder this job created for a failed or cancelled extraction,
+/// when nothing was written in it. Other failures are logged.
+fn _remove_if_empty(dir: &Path) {
+    let Err(e) = std::fs::remove_dir(dir) else { return };
+    if e.kind() == std::io::ErrorKind::DirectoryNotEmpty || e.kind() == std::io::ErrorKind::NotFound { return; }
+    opusdm_ipc::err_log!(LOG_TAG, "cannot remove the empty folder {}: {e}", dir.display());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,13 +129,20 @@ mod tests {
         run_extract(srcs, dest, &tx, &CancelToken::new())
     }
 
-    /// A tar holding `a.txt` with `body`.
+    /// A tar holding `a.txt` with `body`, at the top level.
     fn make_tar(path: &Path, body: &str) {
+        make_tar_with(path, &[("a.txt", body)]);
+    }
+
+    /// A tar holding the files `entries` (`(name, body)`).
+    fn make_tar_with(path: &Path, entries: &[(&str, &str)]) {
         let mut builder = tar::Builder::new(std::fs::File::create(path).unwrap());
-        let mut header = tar::Header::new_gnu();
-        header.set_size(body.len() as u64);
-        header.set_mode(0o644);
-        builder.append_data(&mut header, "a.txt", body.as_bytes()).unwrap();
+        for (name, body) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            builder.append_data(&mut header, name, body.as_bytes()).unwrap();
+        }
         builder.finish().unwrap();
     }
 
@@ -97,17 +160,17 @@ mod tests {
         let tar = dir.path().join("a.tar");
         make_tar(&tar, "new");
         let out = dir.path().join("out");
-        std::fs::create_dir(&out).unwrap();
-        std::fs::write(out.join("a.txt"), "keep").unwrap();
+        std::fs::create_dir_all(out.join("a")).unwrap();
+        std::fs::write(out.join("a").join("a.txt"), "keep").unwrap();
         let _ = run(std::slice::from_ref(&tar), &out);
-        assert_eq!(std::fs::read_to_string(out.join("a.txt")).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(out.join("a").join("a.txt")).unwrap(), "keep");
         let fresh = dir.path().join("fresh");
         std::fs::create_dir(&fresh).unwrap();
         match run(&[tar], &fresh) {
             Progress::Done { copied, errors, .. } => assert_eq!((copied, errors.len()), (1, 0)),
             _ => panic!("not a Done"),
         }
-        assert_eq!(std::fs::read_to_string(fresh.join("a.txt")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(fresh.join("a").join("a.txt")).unwrap(), "new");
     }
 
     #[test]
@@ -138,7 +201,8 @@ mod tests {
             }
             _ => panic!("not a Done"),
         }
-        assert_eq!(std::fs::read_to_string(out.join("a.txt")).unwrap(), "ok");
+        assert_eq!(std::fs::read_to_string(out.join("good").join("a.txt")).unwrap(), "ok");
+        assert!(!out.join("bad").exists(), "a failed archive leaves no empty folder");
     }
 
     #[test]
@@ -156,5 +220,45 @@ mod tests {
             _ => panic!("not a Done"),
         }
         assert!(!out.join("a.txt").exists());
+        assert!(!out.join("a").exists());
+    }
+
+    #[test]
+    fn an_archive_with_one_top_folder_is_unpacked_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = dir.path().join("pack.tar");
+        make_tar_with(&tar, &[("proj/a.txt", "a"), ("proj/sub/b.txt", "b")]);
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let _ = run(&[tar], &out);
+        assert_eq!(std::fs::read_to_string(out.join("proj/a.txt")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(out.join("proj/sub/b.txt")).unwrap(), "b");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1, "nothing but the archive folder");
+    }
+
+    #[test]
+    fn an_archive_without_a_top_folder_gets_one_named_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = dir.path().join("Photos.TAR");
+        make_tar_with(&tar, &[("one.txt", "1"), ("sub/two.txt", "2")]);
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let _ = run(&[tar], &out);
+        assert_eq!(std::fs::read_to_string(out.join("Photos/one.txt")).unwrap(), "1");
+        assert_eq!(std::fs::read_to_string(out.join("Photos/sub/two.txt")).unwrap(), "2");
+        assert!(!out.join("one.txt").exists());
+    }
+
+    #[test]
+    fn a_file_with_the_folder_name_moves_the_folder_to_a_numbered_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = dir.path().join("a.tar");
+        make_tar(&tar, "x");
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(out.join("a"), "a plain file").unwrap();
+        let _ = run(&[tar], &out);
+        assert_eq!(std::fs::read_to_string(out.join("a")).unwrap(), "a plain file");
+        assert_eq!(std::fs::read_to_string(out.join("a-1/a.txt")).unwrap(), "x");
     }
 }

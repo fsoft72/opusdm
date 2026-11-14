@@ -39,6 +39,19 @@ pub fn open_extract(ui: &Rc<Ui>, srcs: Vec<PathBuf>) {
     });
 }
 
+/// Extract here: unpack `srcs` into the current folder of this Lister, with
+/// no question (an archive without one top folder gets its own folder, see
+/// `opusdm_fsops::extract`).
+pub fn extract_here(ui: &Rc<Ui>, srcs: Vec<PathBuf>) {
+    let srcs = extractable(srcs);
+    if srcs.is_empty() {
+        crate::actions::flash(ui, "no supported archive selected");
+        return;
+    }
+    let cwd = ui.cwd_path();
+    crate::job_submit::submit_job(ui, Op::Extract, srcs, Some(cwd), JobOptions::default());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
