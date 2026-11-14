@@ -1,0 +1,110 @@
+Package: opusdm
+Architecture: amd64
+Version: 0.18.0
+Priority: optional
+Section: x11
+Maintainer: Fabio Rotondo <fabio.rotondo@gmail.com>
+Installed-Size: 112732
+Depends: libarchive13t64 (>= 3.0.4), libbz2-1.0, libc6 (>= 2.43), libcairo2 (>= 1.10.0), libfontconfig1 (>= 2.12.6), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.31.1), libglib2.0-0t64 (>= 2.54.0), libgraphene-1.0-0 (>= 1.5.4), libgstreamer1.0-0 (>= 1.10.0), libgtk-4-1 (>= 4.9.4), libgtk4-layer-shell0 (>= 1.0.2), liblzma5 (>= 5.1.1alpha+20120614), libpango-1.0-0 (>= 1.14.0), libpangocairo-1.0-0 (>= 1.14.0), libpangoft2-1.0-0 (>= 1.37.2), libpulse0 (>= 0.99.4), libssl3t64 (>= 3.0.0), libvte-2.91-gtk4-0 (>= 0.69.90), zlib1g (>= 1:1.1.4)
+Recommends: openbox, picom, labwc, wayfire, wlr-randr, grim, curl, gnome-keyring, gstreamer1.0-gtk4, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, webp-pixbuf-loader
+Filename: pool/stable/main/o/opusdm/opusdm_0.18.0_amd64.deb
+Size: 27275794
+MD5sum: f8733d5f6d3d0e343a106a38e8f5c0f0
+SHA1: 02e66f84d51211402de6967d437be10a31b71b7e
+SHA256: 511881b3d5fb089fde642e73e042ef7834250e4ff4fc0015ef157f448c205937
+SHA512: e1fc456456ec985e0545664190194af5833da94112bbaff381e7fd7b6e1dc863cd956ad1aad27d3a7b5d6b2eca434b51b5889ee3f3117b4a00a8df44df4e925b
+Homepage: https://github.com/fsoft72/opusdm
+Description: OpusDM desktop environment and file manager
+ OpusDM is a desktop made of a hub, the Lister file manager, a panel and a
+ dock, global hotkeys, a media player, a viewer, a terminal and a screenshot
+ tool. It registers the sessions "OpusDM (X11)", "OpusDM (labwc)" and
+ "OpusDM (wayfire)" in the login manager.
+
+Package: opusdm
+Architecture: amd64
+Version: 0.18.1
+Priority: optional
+Section: x11
+Maintainer: Fabio Rotondo <fabio.rotondo@gmail.com>
+Installed-Size: 112956
+Depends: libarchive13t64 (>= 3.0.4), libbz2-1.0, libc6 (>= 2.43), libcairo2 (>= 1.10.0), libfontconfig1 (>= 2.12.6), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.31.1), libglib2.0-0t64 (>= 2.54.0), libgraphene-1.0-0 (>= 1.5.4), libgstreamer1.0-0 (>= 1.10.0), libgtk-4-1 (>= 4.9.4), libgtk4-layer-shell0 (>= 1.0.2), liblzma5 (>= 5.1.1alpha+20120614), libpango-1.0-0 (>= 1.14.0), libpangocairo-1.0-0 (>= 1.14.0), libpangoft2-1.0-0 (>= 1.37.2), libpulse0 (>= 0.99.4), libssl3t64 (>= 3.0.0), libvte-2.91-gtk4-0 (>= 0.69.90), zlib1g (>= 1:1.1.4)
+Recommends: openbox, picom, labwc, wayfire, wlr-randr, grim, curl, gnome-keyring, gstreamer1.0-gtk4, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, webp-pixbuf-loader
+Filename: pool/stable/main/o/opusdm/opusdm_0.18.1_amd64.deb
+Size: 27355690
+MD5sum: 5f758b8907e1088afb6145f8eaf1283e
+SHA1: 15d2ea38b517c203d121157944c2789c5c5c6618
+SHA256: f86313cebbcecab5e3e5c7cd5cb2ee779dce3c7a1a3b02900d666cc0ec48bba2
+SHA512: 589c9ed0eaf1c0bf1423be5717e97520b28f7d0bee6137c220d2440700a66181d6cee4112412f1aa015865cd1fa7a9f3ef4ef54765f29c91043803970065c31a
+Homepage: https://github.com/fsoft72/opusdm
+Description: OpusDM desktop environment and file manager
+ OpusDM is a desktop made of a hub, the Lister file manager, a panel and a
+ dock, global hotkeys, a media player, a viewer, a terminal and a screenshot
+ tool. It registers the sessions "OpusDM (X11)", "OpusDM (labwc)" and
+ "OpusDM (wayfire)" in the login manager.
+
+Package: opusdm
+Architecture: amd64
+Version: 0.19.0
+Priority: optional
+Section: x11
+Maintainer: Fabio Rotondo <fabio.rotondo@gmail.com>
+Installed-Size: 118880
+Depends: libarchive13t64 (>= 3.0.4), libbz2-1.0, libc6 (>= 2.43), libcairo2 (>= 1.10.0), libfontconfig1 (>= 2.12.6), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.31.1), libglib2.0-0t64 (>= 2.54.0), libgraphene-1.0-0 (>= 1.5.4), libgstreamer1.0-0 (>= 1.10.0), libgtk-4-1 (>= 4.9.4), libgtk4-layer-shell0 (>= 1.0.2), liblzma5 (>= 5.1.1alpha+20120614), libpango-1.0-0 (>= 1.14.0), libpangocairo-1.0-0 (>= 1.14.0), libpangoft2-1.0-0 (>= 1.37.2), libpulse0 (>= 0.99.4), libssl3t64 (>= 3.0.0), libvte-2.91-gtk4-0 (>= 0.69.90), zlib1g (>= 1:1.1.4)
+Recommends: openbox, picom, labwc, wayfire, wlr-randr, grim, curl, gnome-keyring, gstreamer1.0-gtk4, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, webp-pixbuf-loader
+Filename: pool/stable/main/o/opusdm/opusdm_0.19.0_amd64.deb
+Size: 28893302
+MD5sum: e15b83781516bfab2859dea4ed8ab5df
+SHA1: 006089a585540a9148c7a088e9bda4dc22aaee87
+SHA256: 81ce8dbb5778d38780e194b90d27cc1ee5b0d38a6933b8b308a6d4a2baa28edf
+SHA512: ed0899c2e127c8ce4b615b2efe94910a0f350b5e8b073f7fa1314eab3895fed2222fd602dae8a937569c4d83d534e40504217017210a9531aeb4d6408d055324
+Homepage: https://github.com/fsoft72/opusdm
+Description: OpusDM desktop environment and file manager
+ OpusDM is a desktop made of a hub, the Lister file manager, a panel and a
+ dock, global hotkeys, a media player, a viewer, a terminal and a screenshot
+ tool. It registers the sessions "OpusDM (X11)", "OpusDM (labwc)" and
+ "OpusDM (wayfire)" in the login manager.
+
+Package: opusdm
+Architecture: amd64
+Version: 0.19.1
+Priority: optional
+Section: x11
+Maintainer: Fabio Rotondo <fabio.rotondo@gmail.com>
+Installed-Size: 119076
+Depends: libarchive13t64 (>= 3.0.4), libbz2-1.0, libc6 (>= 2.43), libcairo2 (>= 1.10.0), libfontconfig1 (>= 2.12.6), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.31.1), libglib2.0-0t64 (>= 2.54.0), libgraphene-1.0-0 (>= 1.5.4), libgstreamer1.0-0 (>= 1.10.0), libgtk-4-1 (>= 4.9.4), libgtk4-layer-shell0 (>= 1.0.2), liblzma5 (>= 5.1.1alpha+20120614), libpango-1.0-0 (>= 1.14.0), libpangocairo-1.0-0 (>= 1.14.0), libpangoft2-1.0-0 (>= 1.37.2), libpulse0 (>= 0.99.4), libssl3t64 (>= 3.0.0), libvte-2.91-gtk4-0 (>= 0.69.90), zlib1g (>= 1:1.1.4)
+Recommends: openbox, picom, labwc, wayfire, wlr-randr, grim, curl, gnome-keyring, gstreamer1.0-gtk4, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, webp-pixbuf-loader
+Filename: pool/stable/main/o/opusdm/opusdm_0.19.1_amd64.deb
+Size: 28926308
+MD5sum: 780fafb8516c02544459b675a619f338
+SHA1: 059532a21c755560f415d02f24abaaf9966dfd2b
+SHA256: 05d93fa0b3b4de2512d43c80e3a3bedcb53416469da96e4c7f0588919a140abf
+SHA512: 997129513733fd3b5cdbb507e0e1b9d5eb44e2f208be77812ab3aa95652333bea90155183708a4c3e2cdd9c67f41be8ecc73e18e3a8e17e490986d40451b3601
+Homepage: https://github.com/fsoft72/opusdm
+Description: OpusDM desktop environment and file manager
+ OpusDM is a desktop made of a hub, the Lister file manager, a panel and a
+ dock, global hotkeys, a media player, a viewer, a terminal and a screenshot
+ tool. It registers the sessions "OpusDM (X11)", "OpusDM (labwc)" and
+ "OpusDM (wayfire)" in the login manager.
+
+Package: opusdm
+Architecture: amd64
+Version: 0.19.2
+Priority: optional
+Section: x11
+Maintainer: Fabio Rotondo <fabio.rotondo@gmail.com>
+Installed-Size: 119116
+Depends: libarchive13t64 (>= 3.0.4), libbz2-1.0, libc6 (>= 2.43), libcairo2 (>= 1.10.0), libfontconfig1 (>= 2.12.6), libgcc-s1 (>= 4.2), libgdk-pixbuf-2.0-0 (>= 2.31.1), libglib2.0-0t64 (>= 2.54.0), libgraphene-1.0-0 (>= 1.5.4), libgstreamer1.0-0 (>= 1.10.0), libgtk-4-1 (>= 4.9.4), libgtk4-layer-shell0 (>= 1.0.2), liblzma5 (>= 5.1.1alpha+20120614), libpango-1.0-0 (>= 1.14.0), libpangocairo-1.0-0 (>= 1.14.0), libpangoft2-1.0-0 (>= 1.37.2), libpulse0 (>= 0.99.4), libssl3t64 (>= 3.0.0), libvte-2.91-gtk4-0 (>= 0.69.90), zlib1g (>= 1:1.1.4)
+Recommends: openbox, picom, labwc, wayfire, wlr-randr, grim, curl, gnome-keyring, gstreamer1.0-gtk4, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, webp-pixbuf-loader
+Filename: pool/stable/main/o/opusdm/opusdm_0.19.2_amd64.deb
+Size: 28946082
+MD5sum: da9c0cf83cb04a024b8c78d69701ef53
+SHA1: 7ab5611126f11ac479b4051f99d4d3127ec05364
+SHA256: ac980e345eefd75bd104f32e0013a9cb7d14cea90833cbe910c8de20496aeee8
+SHA512: 44de4f86e82e200265eae280c3278bfb93265790c92571b35432df25902f4086943189dbb57befd28ddf4897a2b780c07e8b53defae9503d1a53ab4ef8297391
+Homepage: https://github.com/fsoft72/opusdm
+Description: OpusDM desktop environment and file manager
+ OpusDM is a desktop made of a hub, the Lister file manager, a panel and a
+ dock, global hotkeys, a media player, a viewer, a terminal and a screenshot
+ tool. It registers the sessions "OpusDM (X11)", "OpusDM (labwc)" and
+ "OpusDM (wayfire)" in the login manager.
+
