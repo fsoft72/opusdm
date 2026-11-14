@@ -798,9 +798,12 @@ impl Ui {
             let rx = crate::archive::extract_single_file_in_background(arch, next_inner);
             let ui = self.clone();
             glib::spawn_future_local(async move {
-                let Ok(result) = rx.recv().await else { return };
+                let Ok(result) = rx.recv().await else {
+                    opusdm_ipc::err_log!("opusdm-lister", "archive extraction worker ended without a result");
+                    return;
+                };
                 match result {
-                    Ok(temp_path) => ui.open_with_default(&temp_path),
+                    Ok(temp_path) => ui.open_extracted(&temp_path, &row),
                     Err(e) => crate::actions::flash(&ui, &format!("cannot extract from the archive: {e}")),
                 }
             });
@@ -829,6 +832,18 @@ impl Ui {
         } else {
             self.open_with_default(&target);
         }
+    }
+
+    /// Open `path`, the temporary copy of the archive entry `row`, the way a
+    /// local file is opened: with the double click function of its file type
+    /// (for example `opusdm-viewer`), else with its default application.
+    fn open_extracted(self: &Rc<Self>, path: &Path, row: &Row) {
+        let Some(function) = crate::filetypes_ui::type_for(path, row).and_then(|t| t.actions.dblclick) else {
+            self.open_with_default(path);
+            return;
+        };
+        crate::dlog!("archive entry {} opens with {function}", path.display());
+        self.start_run(ToHub::RunFunctionOnPaths { id: function, paths: vec![path.to_path_buf()] });
     }
 
     /// Hand the local file `path` to its default application, logging and

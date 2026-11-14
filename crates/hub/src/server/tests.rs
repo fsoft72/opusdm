@@ -1231,6 +1231,53 @@ fn run_function_by_id_runs_an_inline_exec_line() {
 }
 
 #[test]
+fn run_function_on_paths_runs_on_the_given_file_without_a_selection_query() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+    let marker = out.path().join("marker");
+    let file = out.path().join("a.png");
+    std::fs::write(&file, b"x").unwrap();
+
+    let (_td, listener, path) = bind_temp();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut a = connect(&path);
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+    // The form of a file type's double click: `exec:program {f}`.
+    let id = format!("exec:sh -c 'echo \"$0\" >> {}' {{f}}", marker.display());
+    send(&mut a, &ToHub::RunFunctionOnPaths { id, paths: vec![file.clone()] }).unwrap();
+
+    wait_for_lines(&marker, 1);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), file.display().to_string());
+    // The Lister is told the run ended, so its busy spinner stops; it is
+    // never asked for its selection.
+    loop {
+        let got: ToLister = recv(&mut a).unwrap().unwrap();
+        assert!(!matches!(got, ToLister::QuerySelection | ToLister::FunctionFailed { .. }), "got {got:?}");
+        if matches!(got, ToLister::FunctionDone) { break; }
+    }
+}
+
+#[test]
+fn run_function_on_paths_with_an_unknown_id_reports_failure_to_the_lister() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", cfg.path());
+    let (_td, listener, path) = bind_temp();
+    let _handle = spawn_server(listener, Box::new(|_p| {}));
+    let mut a = connect(&path);
+    send(&mut a, &ToHub::Register { pid: 1, initial_path: "/a".into(), version: opusdm_ipc::PROTOCOL_VERSION }).unwrap();
+    let _w: Welcome = recv(&mut a).unwrap().unwrap();
+
+    send(&mut a, &ToHub::RunFunctionOnPaths { id: "nope".into(), paths: vec!["/tmp/a.png".into()] }).unwrap();
+    let got: ToLister = recv(&mut a).unwrap().unwrap();
+    assert!(matches!(got, ToLister::FunctionFailed { step_idx: 0, .. }), "got {got:?}");
+}
+
+#[test]
 fn an_inline_command_that_cannot_run_reports_failure() {
     let _guard = ENV_LOCK.lock().unwrap();
     let cfg = tempfile::tempdir().unwrap();

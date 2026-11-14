@@ -244,6 +244,12 @@ pub enum ToHub {
     /// hotkey does. Sent by `opusdm-hub --run` (a compositor keybind on
     /// Wayland). No reply.
     RunFunctionHeadless { id: crate::function::FunctionId },
+    /// Run the saved Function or inline command `id` on the local files
+    /// `paths` (the selection it sees, with their folder as working
+    /// directory), with no selection query. This Lister gets the run's
+    /// progress. Sent when a file inside an archive is double clicked: the
+    /// run works on the extracted temporary copy.
+    RunFunctionOnPaths { id: crate::function::FunctionId, paths: Vec<std::path::PathBuf> },
     /// Kill the programs that the Function runs started by this Lister are
     /// waiting on, and cancel those runs. Sent before the window closes when
     /// the user chose to stop them; a Lister that just goes away leaves its
@@ -701,6 +707,7 @@ mod tests {
         roundtrip_tohub(ToHub::SelectionReply { paths: vec!["/a".into()], cwd: "/home/x".into() });
         roundtrip_tohub(ToHub::RunFunctionById { id: "fn-1".into() });
         roundtrip_tohub(ToHub::RunFunctionHeadless { id: "exec:opusdm-run".into() });
+        roundtrip_tohub(ToHub::RunFunctionOnPaths { id: "exec:opusdm-viewer {f}".into(), paths: vec!["/tmp/p/a.png".into()] });
         roundtrip_tohub(ToHub::StopFunctions);
         roundtrip_tohub(ToHub::SetFunctions(vec![crate::function::Function::new("f")]));
         roundtrip_tohub(ToHub::QueryConfig);

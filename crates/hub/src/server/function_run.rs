@@ -123,13 +123,15 @@ impl Hub {
 
     /// Run the function or inline command `id` names on the files `paths`
     /// (the selection it sees, with their folder as working directory), with
-    /// no Lister involved. Used by the desktop, whose icons are not in a
-    /// Lister. Returns the run id.
-    pub(super) fn run_on_paths(&mut self, id: &str, paths: Vec<PathBuf>) -> Option<u64> {
-        let steps = self.steps_for(None, id)?;
+    /// no selection query. Used by the desktop, whose icons are not in a
+    /// Lister (`requester` `None`), and by a Lister for a file extracted from
+    /// an archive (`requester` is that Lister, told of failures and of the
+    /// end of the run). Returns the run id.
+    pub(super) fn run_on_paths(&mut self, requester: Option<u64>, id: &str, paths: Vec<PathBuf>) -> Option<u64> {
+        let steps = self.steps_for(requester, id)?;
         let cwd = paths.first().and_then(|p| p.parent()).map(PathBuf::from).unwrap_or_else(home_dir);
         let run_id = self.runs.next_id();
-        self.spawn_run(run_id, None, steps, SelectionCtx { paths, cwd });
+        self.spawn_run(run_id, requester, steps, SelectionCtx { paths, cwd });
         Some(run_id)
     }
 

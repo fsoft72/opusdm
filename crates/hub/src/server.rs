@@ -643,6 +643,10 @@ impl Hub {
                 self.run_headless(&id);
             }
 
+            ToHub::RunFunctionOnPaths { id, paths } => {
+                self.run_on_paths(Some(cid), &id, paths);
+            }
+
             ToHub::StopFunctions => {
                 let stopped = self.runs.stop_runs_of(cid);
                 opusdm_ipc::debug_log!("hub", "conn {cid} asked to stop its function runs: {stopped:?}");
@@ -1152,7 +1156,7 @@ impl Hub {
             }
 
             HubCmd::RunFunctionOnPaths { id, paths } => {
-                self.run_on_paths(&id, paths);
+                self.run_on_paths(None, &id, paths);
             }
 
             HubCmd::SetHidden(hidden) => self.set_hidden(hidden),
