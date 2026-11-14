@@ -1,7 +1,7 @@
 //! The thumbnail strip: one button per file, thumbnails made by a worker thread.
 
 use crate::comic;
-use crate::kind::{kind_or_image, MediaKind};
+use crate::kind::{kind_for, kind_or_image, MediaKind};
 use crate::loader::{decode_within, load_thumb, RawImage};
 use crate::pdf::render_thumb;
 use gtk4 as gtk;
@@ -44,12 +44,15 @@ pub struct Strip {
     picked: async_channel::Sender<PathBuf>,
     /// Where a right click on a thumbnail goes.
     menu: async_channel::Sender<ThumbMenuAt>,
+    /// Audio files are known (Sidecar): they get an `AUDIO` label, no thumbnail.
+    audio: bool,
 }
 
 impl Strip {
     /// Build the strip for `items`; a click sends the path through `picked`, a
-    /// right click asks for the menu of the thumbnail through `menu`.
-    pub fn new(items: &[PathBuf], picked: async_channel::Sender<PathBuf>, menu: async_channel::Sender<ThumbMenuAt>) -> Rc<Self> {
+    /// right click asks for the menu of the thumbnail through `menu`. With
+    /// `audio` (Sidecar) audio files are known, see [`kind_for`].
+    pub fn new(items: &[PathBuf], picked: async_channel::Sender<PathBuf>, menu: async_channel::Sender<ThumbMenuAt>, audio: bool) -> Rc<Self> {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         row.set_margin_start(4);
         row.set_margin_end(4);
@@ -59,7 +62,7 @@ impl Strip {
         root.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
         root.set_child(Some(&row));
         let (requests, results) = _start_worker();
-        let this = Rc::new(Strip { root, row, buttons: RefCell::new(Vec::new()), requested: RefCell::new(HashSet::new()), current: RefCell::new(None), requests, picked, menu });
+        let this = Rc::new(Strip { root, row, buttons: RefCell::new(Vec::new()), requested: RefCell::new(HashSet::new()), current: RefCell::new(None), requests, picked, menu, audio });
         this.set_items(items);
         let weak = Rc::downgrade(&this);
         glib::spawn_future_local(async move {
@@ -116,8 +119,9 @@ impl Strip {
         let button = gtk::Button::new();
         button.set_focusable(false);
         button.set_size_request(THUMB_PX + 8, THUMB_PX * 3 / 4 + 8);
-        let text = match kind_or_image(path) {
+        let text = match kind_for(path, self.audio) {
             MediaKind::Video => "VIDEO".to_string(),
+            MediaKind::Audio => "AUDIO".to_string(),
             MediaKind::Markdown => "MD".to_string(),
             MediaKind::Ebook => "EPUB".to_string(),
             MediaKind::Source => _source_label(path),
@@ -154,7 +158,7 @@ impl Strip {
 
     /// Ask the worker for a thumbnail, once per picture.
     fn _request(&self, path: &Path) {
-        if matches!(kind_or_image(path), MediaKind::Markdown | MediaKind::Source | MediaKind::Ebook) { return; }
+        if matches!(kind_for(path, self.audio), MediaKind::Markdown | MediaKind::Source | MediaKind::Ebook | MediaKind::Audio) { return; }
         if !self.requested.borrow_mut().insert(path.to_path_buf()) { return; }
         if self.requests.send(path.to_path_buf()).is_err() { opusdm_ipc::err_log!("viewer", "the thumbnail worker stopped"); }
     }

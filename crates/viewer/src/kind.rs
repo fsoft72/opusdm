@@ -7,6 +7,8 @@ use std::path::Path;
 pub const IMAGE_EXTS: [&str; 9] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "tiff"];
 /// Video extensions (lower case).
 pub const VIDEO_EXTS: [&str; 11] = ["mp4", "mkv", "webm", "avi", "mov", "m4v", "mpg", "mpeg", "wmv", "flv", "ogv"];
+/// Audio extensions (lower case): shown by the Sidecar only, see [`is_audio`].
+pub const AUDIO_EXTS: [&str; 10] = ["mp3", "flac", "ogg", "oga", "opus", "wav", "m4a", "aac", "wma", "mka"];
 /// Document extension (lower case).
 pub const PDF_EXT: &str = "pdf";
 /// Comic book extensions (lower case).
@@ -34,6 +36,10 @@ const SNIFF_BYTES: usize = 4096;
 pub enum MediaKind {
     Image,
     Video,
+    /// An audio file: cover and tags, played like a video. Only the Sidecar
+    /// shows it; [`kind_of`] and [`kind_or_image`] never return it, so the
+    /// viewer opened on its own works as before.
+    Audio,
     /// A PDF document, shown one page at a time like a picture.
     Pdf,
     /// A comic book archive (`.cbz`, `.cbr`), shown one page at a time like a PDF.
@@ -51,6 +57,18 @@ impl MediaKind {
     pub fn is_paged(self) -> bool {
         matches!(self, MediaKind::Pdf | MediaKind::Comic)
     }
+}
+
+/// True for an audio file, by extension (case-insensitive).
+pub fn is_audio(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| AUDIO_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_str()))
+}
+
+/// Kind used to show a file, with audio files known (`audio`, the Sidecar)
+/// or not (the viewer on its own, see [`kind_or_image`]).
+pub fn kind_for(path: &Path, audio: bool) -> MediaKind {
+    if audio && is_audio(path) { return MediaKind::Audio; }
+    kind_or_image(path)
 }
 
 /// True for an SVG drawing, by extension (case-insensitive): it can be rendered again at any zoom.
@@ -124,6 +142,17 @@ mod tests {
         assert_eq!(kind_of(Path::new("archive.zip")), None);
         assert_eq!(kind_of(Path::new("noext")), None);
         assert_eq!(kind_of(Path::new(".png")), None);
+    }
+
+    #[test]
+    fn audio_is_known_only_when_asked_for() {
+        assert!(is_audio(Path::new("a/Song.MP3")));
+        assert!(is_audio(Path::new("b.flac")));
+        assert!(!is_audio(Path::new("c.mp4")));
+        assert_eq!(kind_of(Path::new("a.mp3")), None);
+        assert_eq!(kind_for(Path::new("a.mp3"), true), MediaKind::Audio);
+        assert_eq!(kind_for(Path::new("a.mp3"), false), kind_or_image(Path::new("a.mp3")));
+        assert_eq!(kind_for(Path::new("a.png"), true), MediaKind::Image);
     }
 
     #[test]

@@ -1,10 +1,12 @@
-//! The video area: the engine's paintable and the shared control bar.
+//! The video area: the engine's paintable (or, for an audio file, its cover
+//! and tags) and the shared control bar.
 
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
 use opusdm_media::timefmt::{offset, slider_to_ns};
 use opusdm_media::{Engine, EngineOptions, Event, MediaError, PlayState};
+use opusdm_media_ui::audio_view::AudioView;
 use opusdm_media_ui::controls::{Controls, Handlers};
 use std::cell::RefCell;
 use std::path::Path;
@@ -26,10 +28,18 @@ pub enum VideoNotice {
 /// with the control bar handlers.
 type SharedEngine = Rc<RefCell<Option<Rc<Engine>>>>;
 
+/// Page of [`VideoView::frames`] with the video frames.
+const FRAMES_PAGE: &str = "video";
+/// Page of [`VideoView::frames`] with the cover and tags of an audio file.
+const AUDIO_PAGE: &str = "audio";
+
 /// One engine, the frames and the control bar.
 pub struct VideoView {
     /// The frames.
     pub stage: gtk::Picture,
+    /// The frames, or the audio view while an audio file plays.
+    pub frames: gtk::Stack,
+    audio: AudioView,
     /// The control bar; hidden in full screen.
     pub bar: gtk::Box,
     controls: Rc<Controls>,
@@ -47,11 +57,32 @@ impl VideoView {
         stage.add_css_class("viewer-stage");
         let engine: SharedEngine = Rc::new(RefCell::new(None));
         let controls = Controls::new(_handlers(&engine), false);
-        Rc::new(VideoView { stage, bar: controls.root.clone(), controls, engine, notify })
+        let audio = AudioView::new("");
+        let frames = gtk::Stack::new();
+        frames.set_hexpand(true);
+        frames.set_vexpand(true);
+        frames.add_named(&stage, Some(FRAMES_PAGE));
+        frames.add_named(&audio.root, Some(AUDIO_PAGE));
+        Rc::new(VideoView { stage, frames, audio, bar: controls.root.clone(), controls, engine, notify })
     }
 
-    /// Open `path` and start playing it.
+    /// Open the video `path` and start playing it.
     pub fn open(self: &Rc<Self>, path: &Path) -> Result<(), MediaError> {
+        self.frames.set_visible_child_name(FRAMES_PAGE);
+        self._play(path)
+    }
+
+    /// Open the audio file `path` and start playing it; its cover and tags
+    /// show in place of the frames (the file name until the tags arrive).
+    pub fn open_audio(self: &Rc<Self>, path: &Path) -> Result<(), MediaError> {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        self.audio.reset(&name);
+        self.frames.set_visible_child_name(AUDIO_PAGE);
+        self._play(path)
+    }
+
+    /// Load `path` in the engine and play it.
+    fn _play(self: &Rc<Self>, path: &Path) -> Result<(), MediaError> {
         let engine = self._engine()?;
         self.controls.set_duration(0);
         self.controls.set_position(0);
@@ -119,7 +150,9 @@ impl VideoView {
                 opusdm_ipc::err_log!("viewer", "{e}");
                 let _ = self.notify.try_send(VideoNotice::Failed(e.to_string()));
             }
-            Event::Tags(_) | Event::Streams(_) => {}
+            // Only an audio file shows them; a video's tags fill the hidden view.
+            Event::Tags(tags) => self.audio.set_tags(&tags),
+            Event::Streams(_) => {}
         }
     }
 }

@@ -5,7 +5,7 @@
 
 use super::State;
 use crate::gallery::Gallery;
-use crate::kind::kind_of;
+use crate::kind::{is_audio, kind_of};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
@@ -51,16 +51,17 @@ pub(super) fn follow_stdin(state: &Rc<State>) {
     });
 }
 
-/// The folders and the files of a known kind among `targets`: walking past an
-/// archive or a disk image in the Lister must not decode it as a picture.
+/// The folders and the files of a known kind (audio included) among
+/// `targets`: walking past an archive or a disk image in the Lister must not
+/// decode it as a picture.
 fn showable(targets: &[PathBuf]) -> Vec<PathBuf> {
-    targets.iter().filter(|t| t.is_dir() || kind_of(t).is_some()).cloned().collect()
+    targets.iter().filter(|t| t.is_dir() || kind_of(t).is_some() || is_audio(t)).cloned().collect()
 }
 
 impl State {
     /// Show `targets` (files and folders) in place of the gallery of before.
     fn _replace_gallery(self: &Rc<Self>, targets: &[PathBuf]) {
-        let mut gallery = Gallery::from_targets(&showable(targets)).unwrap_or_else(|_| Gallery::empty());
+        let mut gallery = Gallery::from_targets(&showable(targets), true).unwrap_or_else(|_| Gallery::empty());
         gallery.keep_place(&self.gallery.borrow());
         self.strip.set_items(gallery.items());
         *self.gallery.borrow_mut() = gallery;
@@ -98,7 +99,7 @@ mod tests {
     #[test]
     fn only_folders_and_known_files_are_shown() {
         let td = tempfile::tempdir().unwrap();
-        let targets: Vec<PathBuf> = ["a.png", "b.zip", "c.md"].iter().map(|n| td.path().join(n)).chain([td.path().to_path_buf()]).collect();
-        assert_eq!(showable(&targets), vec![td.path().join("a.png"), td.path().join("c.md"), td.path().to_path_buf()]);
+        let targets: Vec<PathBuf> = ["a.png", "b.zip", "c.md", "d.mp3"].iter().map(|n| td.path().join(n)).chain([td.path().to_path_buf()]).collect();
+        assert_eq!(showable(&targets), vec![td.path().join("a.png"), td.path().join("c.md"), td.path().join("d.mp3"), td.path().to_path_buf()]);
     }
 }

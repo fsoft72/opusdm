@@ -24,9 +24,9 @@ impl Slideshow {
     }
 
     /// A timer is needed only for pictures, PDF files (their first page) and Markdown texts; a
-    /// video advances at its end.
+    /// video (or an audio file) advances at its end.
     pub fn wants_timer(&self, kind: MediaKind) -> bool {
-        self.on && kind != MediaKind::Video
+        self.on && !matches!(kind, MediaKind::Video | MediaKind::Audio)
     }
 
     /// A video that reached its end moves on when the slideshow runs.
@@ -56,6 +56,7 @@ mod tests {
         assert!(s.wants_timer(MediaKind::Image));
         assert!(s.wants_timer(MediaKind::Pdf));
         assert!(!s.wants_timer(MediaKind::Video));
+        assert!(!s.wants_timer(MediaKind::Audio));
     }
 
     #[test]

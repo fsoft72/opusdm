@@ -13,7 +13,7 @@ use crate::font_scale::FontScale;
 use crate::gallery::Gallery;
 use crate::image_view::ImageView;
 use crate::keys::{map, Action};
-use crate::kind::{kind_or_image, MediaKind};
+use crate::kind::{kind_for, MediaKind};
 use crate::loader::{load_raw, RawImage};
 use crate::markdown_view::MarkdownView;
 use crate::source_view::SourceView;
@@ -95,7 +95,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
     error.add_css_class("viewer-stage");
     error.add_css_class("viewer-error");
     let video_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    video_page.append(&video.stage);
+    video_page.append(&video.frames);
     video_page.append(&video.bar);
     let stack = gtk::Stack::new();
     stack.set_vexpand(true);
@@ -104,7 +104,7 @@ pub fn open(app: &gtk::Application, gallery: Gallery, sidecar: bool) {
     stack.add_named(&markdown.root, Some("markdown"));
     stack.add_named(&source.root, Some("source"));
     stack.add_named(&error, Some("error"));
-    let strip = Strip::new(gallery.items(), pick_tx, menu_tx);
+    let strip = Strip::new(gallery.items(), pick_tx, menu_tx, sidecar);
     let info = gtk::Label::new(None);
     info.set_xalign(0.0);
     info.add_css_class("viewer-info");
@@ -202,7 +202,8 @@ impl State {
     fn _current(&self) -> Option<(PathBuf, MediaKind)> {
         let g = self.gallery.borrow();
         let path = g.current()?.to_path_buf();
-        let kind = kind_or_image(&path);
+        // Only the Sidecar shows audio files.
+        let kind = kind_for(&path, self.sidecar);
         Some((path, kind))
     }
 
@@ -241,6 +242,13 @@ impl State {
             MediaKind::Video => match self.video.open(&path) {
                 Ok(()) => self.stack.set_visible_child_name("video"),
                 Err(e) => self._show_error(&format!("Cannot play {}: {e}", _name(&path))),
+            },
+            MediaKind::Audio => match self.video.open_audio(&path) {
+                Ok(()) => self.stack.set_visible_child_name("video"),
+                Err(e) => {
+                    opusdm_ipc::err_log!("viewer", "cannot play {}: {e}", path.display());
+                    self._show_error(&format!("Cannot play {}: {e}", _name(&path)));
+                }
             },
         }
         self._update_info();
@@ -350,6 +358,7 @@ impl State {
         let detail = match (kind, self.stack.visible_child_name().as_deref()) {
             (_, Some("error")) => "error".to_string(),
             (MediaKind::Video, _) => "video".to_string(),
+            (MediaKind::Audio, _) => "audio".to_string(),
             (MediaKind::Markdown, _) => format!("markdown{}", self.font.label()),
             (MediaKind::Ebook, _) => format!("epub{}", self.font.label()),
             (MediaKind::Source, _) => format!("{}{}", self.source.detail(), self.font.label()),

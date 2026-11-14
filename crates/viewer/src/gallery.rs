@@ -1,7 +1,7 @@
 //! The gallery: the files given on the command line and the pictures, PDF
 //! files, Markdown texts, source texts and videos of the folders given with them.
 
-use crate::kind::kind_of;
+use crate::kind::{is_audio, kind_of};
 use std::cmp::Ordering;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -54,10 +54,11 @@ impl Gallery {
     /// picture, PDF and video it holds (not the hidden ones, not its sub
     /// folders) in natural order. The order of the arguments is kept, a file
     /// met twice is shown once, and the first file is the one on screen.
-    pub fn from_targets(targets: &[PathBuf]) -> io::Result<Gallery> {
+    /// With `audio` (the Sidecar) a folder brings its audio files too.
+    pub fn from_targets(targets: &[PathBuf], audio: bool) -> io::Result<Gallery> {
         let mut items: Vec<PathBuf> = Vec::new();
         for target in targets {
-            let found = if target.is_dir() { _folder_items(target)? } else { vec![target.clone()] };
+            let found = if target.is_dir() { _folder_items(target, audio)? } else { vec![target.clone()] };
             for path in found {
                 if !items.contains(&path) { items.push(path); }
             }
@@ -160,13 +161,15 @@ impl Gallery {
     }
 }
 
-/// The pictures, PDF files, Markdown texts, source texts and videos of `dir`, in natural order.
-fn _folder_items(dir: &Path) -> io::Result<Vec<PathBuf>> {
+/// The pictures, PDF files, Markdown texts, source texts and videos of `dir`
+/// (and its audio files with `audio`), in natural order.
+fn _folder_items(dir: &Path, audio: bool) -> io::Result<Vec<PathBuf>> {
     let mut items = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         let hidden = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
-        if hidden || kind_of(&path).is_none() || !path.is_file() { continue; }
+        let known = kind_of(&path).is_some() || (audio && is_audio(&path));
+        if hidden || !known || !path.is_file() { continue; }
         items.push(path);
     }
     items.sort_by(|a, b| _name_cmp(a, b));
@@ -325,16 +328,16 @@ mod tests {
     #[test]
     fn a_single_file_is_shown_alone() {
         let dir = folder(&["a.png", "b.png", "odd.xyz"]);
-        let g = Gallery::from_targets(&[dir.path().join("b.png")]).unwrap();
+        let g = Gallery::from_targets(&[dir.path().join("b.png")], false).unwrap();
         assert_eq!(names(&g), ["b.png"]);
-        let g = Gallery::from_targets(&[dir.path().join("odd.xyz")]).unwrap();
+        let g = Gallery::from_targets(&[dir.path().join("odd.xyz")], false).unwrap();
         assert_eq!(names(&g), ["odd.xyz"]);
     }
 
     #[test]
     fn several_files_keep_their_order_and_nothing_else_is_added() {
         let dir = folder(&["a.png", "b.png", "c.pdf"]);
-        let g = Gallery::from_targets(&[dir.path().join("c.pdf"), dir.path().join("a.png"), dir.path().join("c.pdf")]).unwrap();
+        let g = Gallery::from_targets(&[dir.path().join("c.pdf"), dir.path().join("a.png"), dir.path().join("c.pdf")], false).unwrap();
         assert_eq!(names(&g), ["c.pdf", "a.png"]);
         assert_eq!(g.index(), 0);
     }
@@ -343,7 +346,7 @@ mod tests {
     fn a_folder_brings_what_can_be_shown() {
         let dir = folder(&["b2.png", "b10.JPG", "clip.mp4", "doc.pdf", "notes.txt", ".hidden.png", "odd.xyz"]);
         std::fs::create_dir(dir.path().join("sub.png")).unwrap();
-        let g = Gallery::from_targets(&[dir.path().to_path_buf()]).unwrap();
+        let g = Gallery::from_targets(&[dir.path().to_path_buf()], false).unwrap();
         assert_eq!(names(&g), ["b2.png", "b10.JPG", "clip.mp4", "doc.pdf", "notes.txt"]);
     }
 
@@ -352,13 +355,22 @@ mod tests {
         let pics = folder(&["p2.png", "p1.png"]);
         let other = folder(&["x.pdf"]);
         let targets = [other.path().join("x.pdf"), pics.path().to_path_buf(), pics.path().join("p1.png")];
-        let g = Gallery::from_targets(&targets).unwrap();
+        let g = Gallery::from_targets(&targets, false).unwrap();
         assert_eq!(names(&g), ["x.pdf", "p1.png", "p2.png"]);
     }
 
     #[test]
     fn nothing_to_show_is_an_error() {
         let dir = folder(&["data.bin", "odd.xyz"]);
-        assert!(Gallery::from_targets(&[dir.path().to_path_buf()]).is_err());
+        assert!(Gallery::from_targets(&[dir.path().to_path_buf()], false).is_err());
+    }
+
+    #[test]
+    fn a_folder_brings_its_audio_files_only_for_the_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.png", "b.mp3", "c.FLAC"] { std::fs::write(dir.path().join(name), b"x").unwrap(); }
+        let names = |g: &Gallery| g.items().iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>();
+        assert_eq!(names(&Gallery::from_targets(&[dir.path().to_path_buf()], false).unwrap()), ["a.png"]);
+        assert_eq!(names(&Gallery::from_targets(&[dir.path().to_path_buf()], true).unwrap()), ["a.png", "b.mp3", "c.FLAC"]);
     }
 }

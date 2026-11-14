@@ -41,7 +41,8 @@ pub enum Action {
 
 /// The action of `key` while `kind` is on screen; `None` when the key is unused.
 pub fn map(key: Key, kind: MediaKind) -> Option<Action> {
-    let video = kind == MediaKind::Video;
+    // Audio has the same keys as a video: play, seek, volume.
+    let video = matches!(kind, MediaKind::Video | MediaKind::Audio);
     let source = kind == MediaKind::Source;
     let text = matches!(kind, MediaKind::Markdown | MediaKind::Ebook) || source;
     let pdf = kind.is_paged();

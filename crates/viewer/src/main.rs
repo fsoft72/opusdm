@@ -66,7 +66,7 @@ fn main() -> ExitCode {
     let sidecar = parsed.sidecar;
     let targets: Vec<PathBuf> = parsed.targets.iter().map(PathBuf::from).collect();
     // A Sidecar may start empty: the Lister sends what to show on stdin.
-    let gallery = match gallery::Gallery::from_targets(&targets) {
+    let gallery = match gallery::Gallery::from_targets(&targets, sidecar) {
         Ok(g) => g,
         Err(_) if sidecar => gallery::Gallery::empty(),
         Err(e) => {
