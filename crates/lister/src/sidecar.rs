@@ -3,6 +3,8 @@
 //! writes the new paths to the viewer's standard input. Closing the pipe, by
 //! toggling it off or by closing the Lister, closes the viewer. The viewer
 //! writes back the file on screen, which Delete takes instead of the selection.
+//! Inside an archive the files are first extracted to temporary copies on a
+//! worker thread, and the viewer gets the copies.
 
 use crate::window::Ui;
 use gtk4 as gtk;
@@ -10,7 +12,8 @@ use gtk::glib;
 use gtk::prelude::*;
 use opusdm_ipc::sidecar::{encode, read_update, SIDECAR_FLAG};
 use opusdm_ipc::{JobOptions, Op};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
@@ -20,6 +23,23 @@ use std::time::Duration;
 /// Milliseconds before the Lister takes the keyboard back from a new Sidecar,
 /// so the arrows keep walking the list.
 const SIDECAR_REFOCUS_MS: u64 = 400;
+
+/// At most this many files of an archive are extracted for one update.
+const MAX_ARCHIVE_PREVIEWS: usize = 20;
+
+/// Archive entries bigger than this are not extracted just to be previewed.
+const MAX_ARCHIVE_PREVIEW_BYTES: u64 = 256 * 1024 * 1024;
+
+thread_local! {
+    /// Id of the last archive preview request, across every Sidecar of this
+    /// process: only the answer to the newest request is shown.
+    static LAST_ARCHIVE_REQUEST: Cell<u64> = const { Cell::new(0) };
+}
+
+/// One archive entry as listed: archive, inner path, size and date. The
+/// size and the date are part of the key so a changed archive is extracted
+/// again.
+type EntryKey = (PathBuf, String, u64, i64);
 
 /// A running Sidecar viewer.
 pub struct Sidecar {
@@ -32,6 +52,15 @@ pub struct Sidecar {
     /// Send the paths again when the running delete is done: the file went
     /// from a folder the viewer shows, which the Lister does not list.
     resend_after_job: bool,
+    /// Temporary copies of the archive entries already extracted for it.
+    previews: HashMap<EntryKey, PathBuf>,
+    /// The archive preview request whose answer is awaited (0: none).
+    pending: u64,
+    /// True while an archive preview worker runs: one at a time, so walking
+    /// a big archive does not start a worker per row.
+    extracting: bool,
+    /// The selection changed while the worker ran: follow it again after.
+    queued: bool,
 }
 
 impl Sidecar {
@@ -74,15 +103,128 @@ pub fn stop(ui: &Ui) {
 }
 
 /// Send the current selection to the Sidecar, if one is open. A viewer the
-/// user closed is forgotten.
-pub fn follow(ui: &Ui) {
+/// user closed is forgotten. Inside an archive see [`_follow_archive`].
+pub fn follow(ui: &Rc<Ui>) {
+    if ui.sidecar.borrow().is_none() { return; }
+    let cwd = ui.cwd_path();
+    if let Some((arch, inner)) = crate::archive::parse_archive_path(&cwd) {
+        return _follow_archive(ui, &arch, &inner);
+    }
+    let cursor = ui.row_at(ui.view.cursor.get()).map(|r| cwd.join(&r.name));
+    _send(ui, sidecar_paths(ui.selected_paths(), cursor, &cwd));
+}
+
+/// Write `paths` to the open Sidecar; a viewer that is gone is forgotten.
+fn _send(ui: &Ui, paths: Vec<PathBuf>) {
     let mut slot = ui.sidecar.borrow_mut();
     let Some(sidecar) = slot.as_mut() else { return };
-    let cursor = ui.row_at(ui.view.cursor.get()).map(|r| ui.cwd_path().join(&r.name));
-    if let Err(e) = sidecar.send(sidecar_paths(ui.selected_paths(), cursor, &ui.cwd_path())) {
+    sidecar.pending = 0;
+    if let Err(e) = sidecar.send(paths) {
         crate::dlog!("sidecar gone: {e}");
         if let Some(gone) = slot.take() { gone.close(); }
     }
+}
+
+/// The Lister shows the folder `inner` of the archive `arch`: send the
+/// temporary copies of the selected files (else of the cursor file). Copies
+/// extracted before are reused; the missing ones are extracted on a worker
+/// thread and sent when they are ready, unless a newer update came first.
+fn _follow_archive(ui: &Rc<Ui>, arch: &Path, inner: &str) {
+    let mut rows: Vec<_> = ui.selected_positions().into_iter().filter_map(|i| ui.row_at(i)).collect();
+    if rows.is_empty() { rows.extend(ui.row_at(ui.view.cursor.get())); }
+    let keys = archive_preview_keys(arch, inner, rows.iter().map(|r| (r.name.as_str(), r.is_dir, r.size, r.modified_unix)));
+    let missing: Vec<EntryKey> = {
+        let slot = ui.sidecar.borrow();
+        let Some(sidecar) = slot.as_ref() else { return };
+        keys.iter().filter(|k| !sidecar.previews.contains_key(*k)).cloned().collect()
+    };
+    if missing.is_empty() { return _send_previews(ui, &keys); }
+    let request = LAST_ARCHIVE_REQUEST.with(|last| { last.set(last.get() + 1); last.get() });
+    {
+        let mut slot = ui.sidecar.borrow_mut();
+        let Some(sidecar) = slot.as_mut() else { return };
+        if sidecar.extracting {
+            sidecar.queued = true;
+            return;
+        }
+        sidecar.extracting = true;
+        sidecar.pending = request;
+    }
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let done: Vec<(EntryKey, io::Result<PathBuf>)> =
+            missing.into_iter().map(|k| { let copy = crate::archive::extract_single_file_temp(&k.0, &k.1); (k, copy) }).collect();
+        let _ = tx.send_blocking(done);
+    });
+    // OWNER: the future holds a strong `Rc<Ui>` only until this one answer
+    // arrives (the worker always sends it), like the double click extraction.
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let Ok(done) = rx.recv().await else {
+            opusdm_ipc::err_log!("opusdm-lister", "Sidecar archive extraction ended without a result");
+            return;
+        };
+        _previews_ready(&ui, request, &keys, done);
+    });
+}
+
+/// The worker of request `request` extracted `done`: keep the copies and,
+/// when the request is still the one awaited, send the copies of `keys`.
+/// A selection change that came while the worker ran is followed now.
+fn _previews_ready(ui: &Rc<Ui>, request: u64, keys: &[EntryKey], done: Vec<(EntryKey, io::Result<PathBuf>)>) {
+    let (current, queued) = {
+        let mut slot = ui.sidecar.borrow_mut();
+        let Some(sidecar) = slot.as_mut() else {
+            crate::dlog!("Sidecar closed before archive preview {request} was ready");
+            return;
+        };
+        sidecar.extracting = false;
+        for (key, copy) in done {
+            match copy {
+                Ok(path) => { sidecar.previews.insert(key, path); }
+                Err(e) => opusdm_ipc::err_log!("opusdm-lister", "cannot extract {} from {} for the Sidecar: {e}", key.1, key.0.display()),
+            }
+        }
+        (sidecar.pending == request, std::mem::take(&mut sidecar.queued))
+    };
+    if queued { return follow(ui); }
+    if !current {
+        crate::dlog!("archive preview {request} is out of date, not sent");
+        return;
+    }
+    _send_previews(ui, keys);
+}
+
+/// Send the temporary copies of `keys` that exist.
+fn _send_previews(ui: &Ui, keys: &[EntryKey]) {
+    let paths: Vec<PathBuf> = {
+        let slot = ui.sidecar.borrow();
+        let Some(sidecar) = slot.as_ref() else { return };
+        keys.iter().filter_map(|k| sidecar.previews.get(k).cloned()).collect()
+    };
+    _send(ui, paths);
+}
+
+/// The entries to preview among `rows` (name, is a folder, size, date) of the
+/// folder `inner` of `arch`: files only (a folder of an archive has no copy
+/// to show), none bigger than [`MAX_ARCHIVE_PREVIEW_BYTES`], at most
+/// [`MAX_ARCHIVE_PREVIEWS`].
+pub fn archive_preview_keys<'a>(arch: &Path, inner: &str, rows: impl Iterator<Item = (&'a str, bool, u64, i64)>) -> Vec<EntryKey> {
+    let mut keys = Vec::new();
+    for (name, is_dir, size, modified) in rows {
+        if keys.len() >= MAX_ARCHIVE_PREVIEWS {
+            crate::dlog!("Sidecar: only the first {MAX_ARCHIVE_PREVIEWS} files of the archive selection are previewed");
+            break;
+        }
+        if is_dir { continue; }
+        if size > MAX_ARCHIVE_PREVIEW_BYTES {
+            crate::dlog!("Sidecar: {name} is too big ({size} bytes) to be extracted for a preview");
+            continue;
+        }
+        let entry = if inner.is_empty() { name.to_string() } else { format!("{inner}/{name}") };
+        keys.push((arch.to_path_buf(), entry, size, modified));
+    }
+    keys
 }
 
 /// Launch the viewer with pipes on its stdin and stdout and send it the selection.
@@ -101,7 +243,7 @@ fn start(ui: &Rc<Ui>) {
     };
     let shown = Rc::new(RefCell::new(None));
     if let Some(stdout) = child.stdout.take() { _read_shown(stdout, shown.clone()); }
-    *ui.sidecar.borrow_mut() = Some(Sidecar { child, stdin, last: None, shown, resend_after_job: false });
+    *ui.sidecar.borrow_mut() = Some(Sidecar { child, stdin, last: None, shown, resend_after_job: false, previews: HashMap::new(), pending: 0, extracting: false, queued: false });
     follow(ui);
     let window = ui.window.clone();
     glib::timeout_add_local_once(Duration::from_millis(SIDECAR_REFOCUS_MS), move || window.present());
@@ -149,6 +291,8 @@ pub fn pick_shown(shown: Option<&Path>, sent: &[PathBuf]) -> Option<PathBuf> {
 /// viewer move on to the next one. False when there is no
 /// Sidecar or it shows nothing: the caller deletes the selection as usual.
 pub fn delete_shown(ui: &Rc<Ui>, permanent: bool) -> bool {
+    // Inside an archive the viewer shows a temporary copy: never delete it.
+    if crate::archive::parse_archive_path(&ui.cwd_path()).is_some() { return false; }
     let Some(target) = _shown_file(ui) else { return false };
     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let (message, button, op) = if permanent {
@@ -191,7 +335,7 @@ fn _row_position(ui: &Ui, path: &Path) -> Option<u32> {
 }
 
 /// A job finished: send the paths again when a delete asked for it.
-pub fn job_done(ui: &Ui) {
+pub fn job_done(ui: &Rc<Ui>) {
     {
         let mut slot = ui.sidecar.borrow_mut();
         let Some(sidecar) = slot.as_mut().filter(|s| s.resend_after_job) else { return };
@@ -202,8 +346,8 @@ pub fn job_done(ui: &Ui) {
 }
 
 /// What the Sidecar shows: the selected paths, else the cursor row, all in
-/// the folder `cwd`. Only a local folder sends anything (not the inside of an
-/// archive or a server). The rows come from the listing, so they are not
+/// the folder `cwd`. Only a local folder sends anything (not a server; the
+/// inside of an archive goes through [`_follow_archive`] instead). The rows come from the listing, so they are not
 /// checked on disk: this runs on every selection change on the GTK thread.
 pub fn sidecar_paths(selected: Vec<PathBuf>, cursor: Option<PathBuf>, cwd: &Path) -> Vec<PathBuf> {
     let local = crate::archive::parse_archive_path(cwd).is_none() && crate::remote::url_of(cwd).is_none();
@@ -233,6 +377,18 @@ mod tests {
         assert!(sidecar_paths(vec![in_archive.join("a.png")], None, in_archive).is_empty());
         let remote = crate::remote::path_of(&opusdm_ftp::RemoteUrl::parse("sftp://host/pub").unwrap());
         assert!(sidecar_paths(vec![remote.join("a.png")], None, &remote).is_empty());
+    }
+
+    #[test]
+    fn archive_previews_skip_folders_and_big_files_and_are_capped() {
+        let arch = Path::new("/d/x.zip");
+        let rows = [("dir", true, 0, 1), ("a.png", false, 10, 2), ("huge.mkv", false, MAX_ARCHIVE_PREVIEW_BYTES + 1, 3)];
+        let keys = archive_preview_keys(arch, "sub", rows.into_iter());
+        assert_eq!(keys, vec![(arch.to_path_buf(), "sub/a.png".to_string(), 10, 2)]);
+        assert_eq!(archive_preview_keys(arch, "", [("a.png", false, 10, 2)].into_iter())[0].1, "a.png");
+        let names: Vec<String> = (0..MAX_ARCHIVE_PREVIEWS + 5).map(|i| format!("f{i}.png")).collect();
+        let many = archive_preview_keys(arch, "", names.iter().map(|n| (n.as_str(), false, 1, 0)));
+        assert_eq!(many.len(), MAX_ARCHIVE_PREVIEWS);
     }
 
     #[test]

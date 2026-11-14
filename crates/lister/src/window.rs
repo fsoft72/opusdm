@@ -596,7 +596,7 @@ impl Ui {
     /// Positions of all currently selected rows, without testing every row
     /// in the list: `MultiSelection::selection()` already tracks them as a
     /// `gtk::Bitset`, so walk only that instead of scanning `0..n_items()`.
-    fn selected_positions(&self) -> Vec<u32> {
+    pub(crate) fn selected_positions(&self) -> Vec<u32> {
         let bitset = self.view.selection.selection();
         let mut out = Vec::with_capacity(bitset.size() as usize);
         if let Some((iter, first)) = gtk::BitsetIter::init_first(&bitset) {
