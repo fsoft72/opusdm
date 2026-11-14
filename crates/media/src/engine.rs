@@ -52,6 +52,8 @@ pub struct Engine {
     uri: Rc<RefCell<String>>,
     looping: Rc<Cell<bool>>,
     timer: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Tags of the open file, merged as they arrive; emptied by `open`.
+    tags: Rc<RefCell<TagInfo>>,
     _watch: gst::bus::BusWatchGuard,
 }
 
@@ -83,17 +85,17 @@ impl Engine {
         let looping = Rc::new(Cell::new(options.looping));
         let timer = Rc::new(RefCell::new(None));
         let rewinding = Rc::new(Cell::new(false));
-        let mut tags = TagInfo::default();
+        let tags = Rc::new(RefCell::new(TagInfo::default()));
         let watch = {
-            let (playbin, on_event, uri, looping, timer) = (playbin.clone(), on_event.clone(), uri.clone(), looping.clone(), timer.clone());
+            let (playbin, on_event, uri, looping, timer, tags) = (playbin.clone(), on_event.clone(), uri.clone(), looping.clone(), timer.clone(), tags.clone());
             bus.add_watch_local(move |_, msg| {
                 let shared = Shared { on_event: &on_event, timer: &timer, rewinding: &rewinding };
-                _handle_message(&playbin, msg, &shared, &uri.borrow(), looping.get(), &mut tags);
+                _handle_message(&playbin, msg, &shared, &uri.borrow(), looping.get(), &tags);
                 glib::ControlFlow::Continue
             })
             .map_err(|e| MediaError::pipeline(format!("cannot watch the bus: {e}")))?
         };
-        Ok(Engine { playbin, paintable, uri, looping, timer, _watch: watch })
+        Ok(Engine { playbin, paintable, uri, looping, timer, tags, _watch: watch })
     }
 
     /// The video frames, for a `gtk::Picture`. `None` with `VideoSink::Discard`.
@@ -105,9 +107,16 @@ impl Engine {
     /// argument that is not a valid path or URL. A file that cannot be opened or
     /// played is reported as `Event::Error` (GStreamer always posts it on the bus
     /// when the state change fails), so there is a single channel for those.
+    /// The tags start empty again, and the messages the previous file left on
+    /// the bus are dropped, so none of its tags or events reach the new one.
     pub fn open(&self, arg: &str) -> Result<(), MediaError> {
         let uri = to_uri(arg)?;
         self._set_state(gst::State::Null)?;
+        if let Some(bus) = self.playbin.bus() {
+            bus.set_flushing(true);
+            bus.set_flushing(false);
+        }
+        *self.tags.borrow_mut() = TagInfo::default();
         self.playbin.set_property("uri", &uri);
         *self.uri.borrow_mut() = uri;
         let _ = self.playbin.set_state(gst::State::Paused);
@@ -215,7 +224,7 @@ struct Shared<'a> {
 }
 
 /// Translate one bus message into events and side effects (timer, loop).
-fn _handle_message(playbin: &gst::Element, msg: &gst::Message, shared: &Shared, uri: &str, looping: bool, tags: &mut TagInfo) {
+fn _handle_message(playbin: &gst::Element, msg: &gst::Message, shared: &Shared, uri: &str, looping: bool, tags: &RefCell<TagInfo>) {
     use gst::MessageView;
     let (on_event, timer) = (shared.on_event, shared.timer);
     let from_playbin = msg.src().map(|s| s == playbin.upcast_ref::<gst::Object>()).unwrap_or(false);
@@ -245,8 +254,13 @@ fn _handle_message(playbin: &gst::Element, msg: &gst::Message, shared: &Shared, 
             on_event(Event::Streams(info));
         }
         MessageView::Tag(t) => {
-            tags.merge(TagInfo::from_taglist(&t.tags()));
-            on_event(Event::Tags(tags.clone()));
+            // The borrow ends before `on_event`, which may open another file.
+            let merged = {
+                let mut tags = tags.borrow_mut();
+                tags.merge(TagInfo::from_taglist(&t.tags()));
+                tags.clone()
+            };
+            on_event(Event::Tags(merged));
         }
         MessageView::Eos(_) => {
             // Rewind in both cases; keep going only when looping.

@@ -31,6 +31,28 @@ fn write_wav(path: &Path, secs: u32) {
     std::fs::write(path, out).unwrap();
 }
 
+/// Write `secs` seconds of silence as a WAV file with a `LIST INFO` chunk
+/// holding the `(id, text)` tags (`INAM` title, `IART` artist).
+fn write_tagged_wav(path: &Path, secs: u32, tags: &[(&[u8; 4], &str)]) {
+    write_wav(path, secs);
+    let mut info = b"INFO".to_vec();
+    for (id, text) in tags {
+        let mut value = text.as_bytes().to_vec();
+        value.push(0);
+        if value.len() % 2 == 1 { value.push(0); }
+        info.extend_from_slice(*id);
+        info.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        info.extend_from_slice(&value);
+    }
+    let mut out = std::fs::read(path).unwrap();
+    out.extend_from_slice(b"LIST");
+    out.extend_from_slice(&(info.len() as u32).to_le_bytes());
+    out.extend_from_slice(&info);
+    let riff = (out.len() - 8) as u32;
+    out[4..8].copy_from_slice(&riff.to_le_bytes());
+    std::fs::write(path, out).unwrap();
+}
+
 /// An engine plus the events it has produced.
 struct Rig {
     engine: Engine,
@@ -110,6 +132,22 @@ fn engine_scenarios() {
     r.wait_for("first end", |e| *e == Event::Eos);
     r.wait_for("second end", |_| r.count(|e| *e == Event::Eos) >= 2);
     assert_eq!(r.count(|e| *e == Event::State(PlayState::Paused)), 1, "only the preroll pause: looping never pauses");
+    drop(r);
+
+    // A second file on the same engine starts with empty tags: the artist of
+    // the first one must not stick to it (the Sidecar reuses one engine).
+    let first = dir.path().join("first.wav");
+    let second = dir.path().join("second.wav");
+    write_tagged_wav(&first, 1, &[(b"INAM", "First"), (b"IART", "Artist A")]);
+    write_tagged_wav(&second, 1, &[(b"INAM", "Second")]);
+    let r = rig(false);
+    r.engine.open(first.to_str().unwrap()).unwrap();
+    r.wait_for("tags of the first file", |e| matches!(e, Event::Tags(t) if t.title.as_deref() == Some("First") && t.artist.as_deref() == Some("Artist A")));
+    r.clear();
+    r.engine.open(second.to_str().unwrap()).unwrap();
+    r.wait_for("tags of the second file", |e| matches!(e, Event::Tags(t) if t.title.as_deref() == Some("Second")));
+    let stale = r.count(|e| matches!(e, Event::Tags(t) if t.artist.is_some() || t.title.as_deref() == Some("First")));
+    assert_eq!(stale, 0, "tags of the first file reached the second: {:?}", r.events.borrow());
     drop(r);
 
     // A file that is not media is reported as an error event.
