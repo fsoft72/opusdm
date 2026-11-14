@@ -803,7 +803,7 @@ impl Ui {
                     return;
                 };
                 match result {
-                    Ok(temp_path) => ui.open_extracted(&temp_path, &row),
+                    Ok(temp_path) => ui.open_temp_copy(&temp_path, &row),
                     Err(e) => crate::actions::flash(&ui, &format!("cannot extract from the archive: {e}")),
                 }
             });
@@ -815,10 +815,12 @@ impl Ui {
                 self.navigate_to(&target);
             } else {
                 let item = opusdm_ftp::RemoteItem { path: url.join(&row.name).path, name: row.name.clone(), is_dir: false, is_symlink: false };
-                self.download_remote(&url, vec![item], |ui, paths| {
-                    if let Some(path) = paths.first() {
-                        ui.open_with_default(path);
-                    }
+                self.download_remote(&url, vec![item], move |ui, paths| {
+                    let Some(path) = paths.first() else {
+                        opusdm_ipc::err_log!("opusdm-lister", "download of {} gave no local file", row.name);
+                        return;
+                    };
+                    ui.open_temp_copy(path, &row);
                 });
             }
             return;
@@ -834,15 +836,16 @@ impl Ui {
         }
     }
 
-    /// Open `path`, the temporary copy of the archive entry `row`, the way a
-    /// local file is opened: with the double click function of its file type
-    /// (for example `opusdm-viewer`), else with its default application.
-    fn open_extracted(self: &Rc<Self>, path: &Path, row: &Row) {
+    /// Open `path`, the local temporary copy of `row` (extracted from an
+    /// archive or downloaded from a server), the way a local file is opened:
+    /// with the double click function of its file type (for example
+    /// `opusdm-viewer`), else with its default application.
+    fn open_temp_copy(self: &Rc<Self>, path: &Path, row: &Row) {
         let Some(function) = crate::filetypes_ui::type_for(path, row).and_then(|t| t.actions.dblclick) else {
             self.open_with_default(path);
             return;
         };
-        crate::dlog!("archive entry {} opens with {function}", path.display());
+        crate::dlog!("temporary copy {} opens with {function}", path.display());
         self.start_run(ToHub::RunFunctionOnPaths { id: function, paths: vec![path.to_path_buf()] });
     }
 
