@@ -64,9 +64,15 @@ fn _seven_z() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.7z")
 }
 
+/// An ISO 9660 image (Rock Ridge and Joliet) holding `FILES`, made with
+/// `genisoimage -R -J -no-pad`.
+fn _iso() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.iso")
+}
+
 /// Every format of the fixtures, with a label for the failure message.
 fn _all(dir: &Path) -> Vec<(&'static str, PathBuf)> {
-    vec![("tar", _tar(dir)), ("tar.gz", _tar_gz(dir)), ("tar.zst", _tar_zst(dir)), ("zip", _zip(dir)), ("7z", _seven_z())]
+    vec![("tar", _tar(dir)), ("tar.gz", _tar_gz(dir)), ("tar.zst", _tar_zst(dir)), ("zip", _zip(dir)), ("7z", _seven_z()), ("iso", _iso())]
 }
 
 fn _never() -> bool {

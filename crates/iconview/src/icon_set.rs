@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 const S_IFMT: u32 = 0o170_000;
 const EXEC_BITS: u32 = 0o111;
 
-const ARCHIVE_EXTS: &[&str] = &["zip", "tar", "gz", "bz2", "xz", "7z", "rar"];
+const ARCHIVE_EXTS: &[&str] = &["zip", "tar", "gz", "bz2", "xz", "7z", "rar", "iso"];
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp"];
 const AUDIO_EXTS: &[&str] = &["mp3", "flac", "ogg", "opus", "wav", "m4a"];
 const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm"];
@@ -122,6 +122,12 @@ pub fn icon_texture_for(kind: IconKind, mode: u32, ext: Option<&str>, set: &Icon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_disc_image_gets_the_archive_icon() {
+        assert_eq!(icon_filename(IconKind::File, 0o644, Some("iso")), "archive.png");
+        assert_eq!(icon_filename(IconKind::File, 0o644, Some("zip")), "archive.png");
+    }
 
     #[test]
     fn default_set_is_installed_on_demand_and_has_a_dir_icon() {

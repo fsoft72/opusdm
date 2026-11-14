@@ -89,6 +89,7 @@ mod tests {
         assert_eq!(kind_of("png", b"\x89PNG"), FileKind::Image);
         assert_eq!(kind_of("rs", b"\x00\x01"), FileKind::Text, "a known text extension wins");
         assert_eq!(kind_of("zip", b"PK"), FileKind::Archive);
+        assert_eq!(kind_of("iso", &[0; 16]), FileKind::Archive);
         assert_eq!(kind_of("weird", b"plain words\n"), FileKind::Text);
         assert_eq!(kind_of("weird", b"a\x00b"), FileKind::Binary);
         assert_eq!(kind_of("weird", b""), FileKind::Binary);

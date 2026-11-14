@@ -23,7 +23,7 @@ pub struct ArchiveItem {
 /// what this app can actually extract/browse - is checked by
 /// [`is_archive_file`], which also recognizes `.tar.<ext>` compound suffixes.
 pub const ARCHIVE_EXTS: &[&str] =
-    &["zip", "tar", "tgz", "7z", "gz", "bz2", "tbz2", "xz", "txz", "zst", "rar"];
+    &["zip", "tar", "tgz", "7z", "gz", "bz2", "tbz2", "xz", "txz", "zst", "rar", "iso"];
 
 /// Check if a path points to a supported archive file, by its name.
 pub fn is_archive_file(path: &Path) -> bool {
@@ -358,6 +358,7 @@ mod tests {
         assert!(is_archive_file(Path::new("data.tar.xz")));
         assert!(is_archive_file(Path::new("project.tgz")));
         assert!(is_archive_file(Path::new("archive.7z")));
+        assert!(is_archive_file(Path::new("disk.ISO")));
         assert!(!is_archive_file(Path::new("code.rs")));
         assert!(!is_archive_file(Path::new("data.json")));
     }
