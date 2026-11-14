@@ -42,6 +42,17 @@ impl AudioView {
         AudioView { root, cover, icon, title, artist, album }
     }
 
+    /// Start over for another file: `fallback_title` (the file name), no
+    /// artist, album or cover until its tags arrive.
+    pub fn reset(&self, fallback_title: &str) {
+        self.title.set_text(fallback_title);
+        self.artist.set_text("");
+        self.album.set_text("");
+        self.cover.set_paintable(None::<&gdk::Paintable>);
+        self.cover.set_visible(false);
+        self.icon.set_visible(true);
+    }
+
     /// Show the tags that are known; the cover replaces the icon when it decodes.
     pub fn set_tags(&self, tags: &TagInfo) {
         if let Some(t) = &tags.title { self.title.set_text(t); }

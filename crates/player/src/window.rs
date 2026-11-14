@@ -1,7 +1,7 @@
 //! The player window: video or audio view, control bar, full screen and keys.
 
 use crate::args::Args;
-use crate::audio_view::AudioView;
+use opusdm_media_ui::audio_view::AudioView;
 use opusdm_media_ui::controls::{Controls, Handlers};
 use opusdm_media::timefmt::{offset, slider_to_ns};
 use crate::view::{choose, ViewKind};
