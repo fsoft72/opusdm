@@ -28,6 +28,8 @@ const SERVICE_PATH: &str = "/org/freedesktop/secrets";
 const SERVICE_IFACE: &str = "org.freedesktop.Secret.Service";
 /// The collection interface.
 const COLLECTION_IFACE: &str = "org.freedesktop.Secret.Collection";
+/// The prompt interface.
+const PROMPT_IFACE: &str = "org.freedesktop.Secret.Prompt";
 /// The alias apps use to find the keyring.
 const DEFAULT_ALIAS: &str = "default";
 /// The label of the keyring that the login unlocks.
@@ -51,6 +53,12 @@ pub trait Vault {
     /// Whether the collection labelled `login` (the one the daemon unlocks
     /// with the login password) is locked; `None` when there is none.
     fn login_locked(&self) -> Result<Option<bool>, String>;
+    /// Ask the service to unlock the collection behind the `default` alias
+    /// without ever showing a prompt: one that needs no password (an
+    /// unencrypted keyring, or one whose password the open `login` keyring
+    /// keeps) opens, any other stays locked. The caller reads the lock
+    /// state again to know which.
+    fn unlock_default_without_prompt(&self) -> Result<(), String>;
 }
 
 /// The health of `v`: bus, service, default collection, locked, then the
@@ -229,6 +237,20 @@ impl Vault for SecretServiceVault {
         if self._default_path()?.as_ref() == Some(&login) { return Ok(None); }
         self._locked(&login).map(Some)
     }
+
+    /// See [`Vault::unlock_default_without_prompt`]. `Unlock` answers a
+    /// prompt path when a password is needed; the prompt is only shown by
+    /// its `Prompt` call, which is never made: it is dismissed at once.
+    fn unlock_default_without_prompt(&self) -> Result<(), String> {
+        let path = self._default_path()?.ok_or("no default keyring to unlock")?;
+        let (_, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) =
+            self._proxy(SERVICE_PATH, SERVICE_IFACE)?.call("Unlock", &(vec![path.clone()],)).map_err(_call_error)?;
+        if prompt.as_str() == NO_OBJECT { return Ok(()); }
+        opusdm_ipc::debug_log!(TAG, "unlocking {} needs a prompt, dismissed", path.as_str());
+        let dismissed: Result<(), String> = self._proxy(prompt.as_str(), PROMPT_IFACE)?.call("Dismiss", &()).map_err(_call_error);
+        if let Err(e) = dismissed { opusdm_ipc::err_log!(TAG, "cannot dismiss the unlock prompt {}: {e}", prompt.as_str()); }
+        Ok(())
+    }
 }
 
 /// The session bus with a limit on the time a method call may wait for its
@@ -270,6 +292,7 @@ mod tests {
         fn default_locked(&self) -> Result<Option<bool>, String> { self.default.clone() }
         fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> { self.login.clone() }
         fn login_locked(&self) -> Result<Option<bool>, String> { self.login.clone() }
+        fn unlock_default_without_prompt(&self) -> Result<(), String> { Err("the check never unlocks".into()) }
     }
 
     #[test]

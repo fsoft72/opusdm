@@ -1336,6 +1336,9 @@ The tray menu starts with the reason (a disabled line), then:
   the running keyring daemon through its control socket (`$XDG_RUNTIME_DIR/keyring/control`, the way the
   login does it) and nowhere else (never in a file, a log, an argument or the clipboard); no process is
   started to unlock. A wrong password is reported and the window stays open. gnome-keyring only.
+  The daemon unlocks the `login` keyring; when the `default` keyring (the one apps use) is another one
+  and still locked, it is unlocked too without a prompt (works when it has no password of its own).
+  If it stays locked the window says so: make `login` the default keyring (Seahorse) or use Unlock.
 - **Test:** writes an item, reads it back, compares and deletes it, and tells the result (only when the
   keyring is locked or fine; it never leaves the item behind).
 - **Restart gnome-keyring...:** asks the password, stops other wallets (`ksecretd`, `kwalletd5`,

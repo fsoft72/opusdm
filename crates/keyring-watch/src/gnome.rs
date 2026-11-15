@@ -110,16 +110,32 @@ pub fn unlock_with_password(password: Zeroizing<String>) -> Result<(), String> {
 
 /// [`unlock_with_password`] with the control socket and the vault that
 /// answers the lock state given. The daemon unlocks the `login` keyring, so
-/// that is the one looked at (the default one when there is no `login`); no
-/// keyring at all is an error.
+/// that is the one that tells whether the password was right (the default
+/// one when there is no `login`); no keyring at all is an error.
+///
+/// Apps and the health check use the `default` keyring. When it is another
+/// one and still locked after `login` opened, it is unlocked without a
+/// prompt (that works when it needs no password of its own); if it stays
+/// locked the answer is [`DEFAULT_STILL_LOCKED`], never a success that the
+/// next check would undo.
 fn unlock_and_verify(password: Zeroizing<String>, socket: &Path, vault: &dyn Vault) -> Result<(), String> {
     control_unlock(socket, &password)?;
-    let locked = match vault.login_locked()? {
-        Some(locked) => locked,
-        None => vault.default_locked()?.ok_or("the unlock ended but no keyring was found")?,
+    let Some(login_locked) = vault.login_locked()? else {
+        let locked = vault.default_locked()?.ok_or("the unlock ended but no keyring was found")?;
+        return if locked { Err(WRONG_PASSWORD.to_string()) } else { Ok(()) };
     };
-    if locked { Err(WRONG_PASSWORD.to_string()) } else { Ok(()) }
+    if login_locked { return Err(WRONG_PASSWORD.to_string()); }
+    if vault.default_locked()? != Some(true) { return Ok(()); }
+    opusdm_ipc::err_log!(TAG, "the login keyring is unlocked but the default keyring is another one and still locked, unlocking it without a prompt");
+    vault.unlock_default_without_prompt()?;
+    if vault.default_locked()? != Some(true) { return Ok(()); }
+    opusdm_ipc::err_log!(TAG, "the default keyring is still locked after the login keyring was unlocked");
+    Err(DEFAULT_STILL_LOCKED.to_string())
 }
+
+/// The error text when the password opened the `login` keyring but the
+/// `default` one, a different keyring, needs a password of its own.
+pub const DEFAULT_STILL_LOCKED: &str = "The password unlocked the login keyring, but the default keyring apps use is a different one and is still locked. Make login the default keyring (Seahorse: right click, Set as default), or use Unlock to type that keyring's own password.";
 
 /// The control socket of the daemon of this session.
 fn control_socket() -> Result<PathBuf, String> {
@@ -342,18 +358,26 @@ mod tests {
         assert!(err.contains("control socket"), "{err}");
     }
 
-    /// A vault that only knows the lock state of the collections.
+    /// A vault that only knows the lock state of the collections. An unlock
+    /// without prompt opens the default one when `opens_without_prompt`.
     struct LockVault {
-        default: Result<Option<bool>, String>,
+        default: std::cell::RefCell<Result<Option<bool>, String>>,
         login: Result<Option<bool>, String>,
+        opens_without_prompt: bool,
+        quiet_unlocks: std::cell::Cell<u32>,
     }
 
     impl Vault for LockVault {
         fn bus_ok(&self) -> bool { true }
         fn service_present(&self) -> Result<bool, String> { Ok(true) }
-        fn default_locked(&self) -> Result<Option<bool>, String> { self.default.clone() }
+        fn default_locked(&self) -> Result<Option<bool>, String> { self.default.borrow().clone() }
         fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> { Ok(None) }
         fn login_locked(&self) -> Result<Option<bool>, String> { self.login.clone() }
+        fn unlock_default_without_prompt(&self) -> Result<(), String> {
+            self.quiet_unlocks.set(self.quiet_unlocks.get() + 1);
+            if self.opens_without_prompt { *self.default.borrow_mut() = Ok(Some(false)); }
+            Ok(())
+        }
     }
 
     /// Unlock through a fake daemon that accepts the password, then look at `vault`.
@@ -366,7 +390,11 @@ mod tests {
     }
 
     fn lock(default: Option<bool>, login: Option<bool>) -> LockVault {
-        LockVault { default: Ok(default), login: Ok(login) }
+        vault(Ok(default), Ok(login), false)
+    }
+
+    fn vault(default: Result<Option<bool>, String>, login: Result<Option<bool>, String>, opens_without_prompt: bool) -> LockVault {
+        LockVault { default: std::cell::RefCell::new(default), login, opens_without_prompt, quiet_unlocks: Default::default() }
     }
 
     #[test]
@@ -380,9 +408,32 @@ mod tests {
     }
 
     #[test]
-    fn the_login_collection_decides_not_the_default_one() {
-        assert_eq!(unlock_accepted(&lock(Some(true), Some(false))), Ok(()));
+    fn a_locked_login_is_a_wrong_password_whatever_the_default() {
         assert_eq!(unlock_accepted(&lock(Some(false), Some(true))), Err(WRONG_PASSWORD.to_string()));
+        assert_eq!(unlock_accepted(&lock(Some(true), Some(true))), Err(WRONG_PASSWORD.to_string()));
+    }
+
+    #[test]
+    fn a_distinct_locked_default_is_unlocked_without_a_prompt() {
+        let v = vault(Ok(Some(true)), Ok(Some(false)), true);
+        assert_eq!(unlock_accepted(&v), Ok(()));
+        assert_eq!(v.quiet_unlocks.get(), 1);
+    }
+
+    #[test]
+    fn a_default_that_stays_locked_is_not_a_success() {
+        // The bug seen live: login opened, the default (another keyring)
+        // stayed locked, the window said OK and the check asked again.
+        let v = vault(Ok(Some(true)), Ok(Some(false)), false);
+        assert_eq!(unlock_accepted(&v), Err(DEFAULT_STILL_LOCKED.to_string()));
+        assert_ne!(DEFAULT_STILL_LOCKED, WRONG_PASSWORD);
+    }
+
+    #[test]
+    fn an_open_default_is_not_unlocked_again() {
+        let v = vault(Ok(Some(false)), Ok(Some(false)), true);
+        assert_eq!(unlock_accepted(&v), Ok(()));
+        assert_eq!(v.quiet_unlocks.get(), 0);
     }
 
     #[test]
@@ -399,16 +450,16 @@ mod tests {
 
     #[test]
     fn vault_error_after_unlock_is_reported() {
-        let vault = LockVault { default: Err("bus gone".into()), login: Err("bus gone".into()) };
-        assert_eq!(unlock_accepted(&vault), Err("bus gone".to_string()));
+        assert_eq!(unlock_accepted(&vault(Err("bus gone".into()), Err("bus gone".into()), false)), Err("bus gone".to_string()));
+        assert_eq!(unlock_accepted(&vault(Err("bus gone".into()), Ok(Some(false)), false)), Err("bus gone".to_string()));
     }
 
     #[test]
     fn a_denied_password_never_reads_the_vault() {
         let dir = tempfile::tempdir().unwrap();
         let server = fake_server(dir.path(), reply(CONTROL_RESULT_DENIED));
-        let vault = LockVault { default: Err("must not be asked".into()), login: Err("must not be asked".into()) };
-        let result = unlock_and_verify(Zeroizing::new("pw".to_string()), &dir.path().join(CONTROL_SOCKET), &vault);
+        let v = vault(Err("must not be asked".into()), Err("must not be asked".into()), false);
+        let result = unlock_and_verify(Zeroizing::new("pw".to_string()), &dir.path().join(CONTROL_SOCKET), &v);
         assert_eq!(result, Err(WRONG_PASSWORD.to_string()));
         server.join().unwrap();
     }
@@ -425,6 +476,7 @@ mod tests {
             }
             fn login_locked_if_distinct(&self) -> Result<Option<bool>, String> { Ok(None) }
             fn login_locked(&self) -> Result<Option<bool>, String> { Ok(None) }
+            fn unlock_default_without_prompt(&self) -> Result<(), String> { Err("not used".into()) }
         }
         let mut pauses = 0;
         assert_eq!(wait_for_service(&Flaky(Default::default()), 5, |_| pauses += 1), Ok(()));
