@@ -1,0 +1,42 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sun, 15 Nov 2026 08:37:09 +0000
+Label: OpusDM
+Origin: OpusDM
+Suite: stable
+MD5Sum:
+ cf6c22dda039f16176e5ce2963cf339f              136 Release
+ afdfa8d2e7ce2d9bf96329d5cbad2a8c             8165 main/binary-amd64/Packages
+ effb7db8643ce5c86ed8f90d6adce06f             1780 main/binary-amd64/Packages.gz
+SHA1:
+ 3f1b5a178af36172f954f8634f56ee130e12eb92              136 Release
+ 911dd3c63c0d30ccffeaaf8a63c1d3d57a41f4ac             8165 main/binary-amd64/Packages
+ 6e9099eb1a46a24fe84f962496104e495a100d9e             1780 main/binary-amd64/Packages.gz
+SHA256:
+ 7479c79f2f2ec634c2442d978db6dd58e8085dda38f7a0d4fd40d2d93929296c              136 Release
+ e287d3a9c2bd96af741461e57ebc4c5e6f7cfe620a2f1ac4f1efcd297eb5743d             8165 main/binary-amd64/Packages
+ 3d94007b7deb1302e941aa483f091a14a66fd7535de628522439f599aa2ccfa6             1780 main/binary-amd64/Packages.gz
+SHA512:
+ e851800de3dd82096b0778b527875d0ba8a28ca1ad7c44a403b8ffd76c0bbb3c80929f01efd6efcdc140cee7b23f2063ff0a395642eae79a1f91b0ac7525a2a8              136 Release
+ 083643da6c1d906f8b709bdb5e74309389540abc81e1abc818b8128f15435445bc7821a7d84eba7547c9dae4fa334424e2a664a128265130957669c503e8710c             8165 main/binary-amd64/Packages
+ a738daef552e5bca16c0613129a714d4d543868731477b3e4380d45d76d41b4d5e9e33db54a62730397fcf5844a24f00b89797c87c5a303e39883f3555748880             1780 main/binary-amd64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEEP3KN4tqPBrvbPxfcLv3oyoOLBlkFAmr5bzUACgkQLv3oyoOL
+BllFaw//ZVEc1LCYop4CtjyMzo6teaV25nlurKpxGdcOkxzFUAyiBEtV4fo5b7Bv
++yAmaCNR6QCNjUzu2Ryf02RtoQnnIcDbpS70ZIOiy0xqesacxHRBTh+xghqxbTfD
+xmhfK8uipdaZra6V/CdhuBwupfmyHM7hsiZKiumuevqHXI1ePOGmcLHxzJ/9zYu8
+y0xATbAxx9jpF8tlRLTU5UoQt7vGkeXEYP7waqtNoPl+GWyjf1/sjrAN9JZo4+lz
+ZU1nXel5CopcsArQuqSQIRZBD3RKX86j7kNH9mX5NfPYEm7CsUe/k7Q+3ZX3OyuC
+BkZeQG1RBBwdpJqUuOctLMTpuqAvKW305AIn8X7sIsQ2+pywZcL+QE3S0hwQagGg
+O6GEjrSUpFQB+P3joq5YNpng6JVB+eOUewfClzBqtCQ8seY/BUhcrSSczg7I5zEU
+Tg3oT6tQIcsmerMfqbkfT/0MjdiNypl/5sN4/uuwy0IeM0v/yMRm7VDVPSr3W277
+AKqScC45RGUI7Qm4yt1X0hEJ4Az0pqkMT0YZ/N3xNdcw8PCxN/mxbg1b8vmNbeEO
+LfYLRTDHlolp6tUEW9dPNBspu4lPRF6sZTXf7gBa/e3PoWGnHFGYj6T4irnmMNKx
+lwsC9bTZBhakOT5kuJjw2IT+OR0YAAoFuoQjEG+Jcc04jpaBBiE=
+=WeKq
+-----END PGP SIGNATURE-----
