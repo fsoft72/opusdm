@@ -1,0 +1,16 @@
+[package]
+name = "opusdm-fileactions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+opusdm-ipc = { path = "../ipc" }
+opusdm-ui = { path = "../ui" }
+opusdm-apps = { path = "../apps" }
+opusdm-fsops = { path = "../fsops" }
+gtk4.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -36,6 +36,7 @@ pub mod viewpos;
 pub mod context_menu;
 pub mod dircache;
 pub mod dnd;
+pub mod file_host;
 pub mod filetype_form;
 pub mod remote;
 pub mod remote_ui;

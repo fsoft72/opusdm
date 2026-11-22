@@ -33,32 +33,7 @@ pub fn run_on_row(ui: &Rc<Ui>, name: &str, function: &FunctionId) {
     ui.start_run(opusdm_ipc::ToHub::RunFunctionById { id: function.clone() });
 }
 
-/// The "Open With" entries of `file_type`: reference and label (the
-/// function name, or the command for an inline bash or exec one, the latter
-/// with no `exec:` prefix). Saved
-/// functions that no longer exist and inline commands that cannot run are
-/// left out.
-pub fn menu_entries(file_type: &FileType, functions: &[Function]) -> Vec<(FunctionId, String)> {
-    file_type
-        .actions
-        .menu
-        .iter()
-        .filter(|id| match opusdm_ipc::funcref::parse(id) {
-            opusdm_ipc::funcref::FuncRef::Saved(_) => functions.iter().any(|f| &f.id == *id),
-            inline => opusdm_ipc::funcref::problem(&inline).is_none(),
-        })
-        .map(|id| (id.clone(), menu_label(id, functions)))
-        .collect()
-}
-
-/// The label of an Open With entry. Like [`opusdm_ipc::funcref::title`], but an
-/// exec command shows its command line with no `exec:` prefix.
-fn menu_label(reference: &str, functions: &[Function]) -> String {
-    match opusdm_ipc::funcref::parse(reference) {
-        opusdm_ipc::funcref::FuncRef::Exec { line } => line,
-        _ => opusdm_ipc::funcref::title(reference, functions),
-    }
-}
+pub use opusdm_fileactions::menu::menu_entries;
 
 /// Problems in the actions of one file type: an inline bash or exec command
 /// that cannot run, and an Open With entry nobody chose. A saved function id

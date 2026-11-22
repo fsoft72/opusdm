@@ -2951,6 +2951,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opusdm-fileactions"
+version = "0.19.3"
+dependencies = [
+ "gtk4",
+ "opusdm-apps",
+ "opusdm-fsops",
+ "opusdm-ipc",
+ "opusdm-ui",
+ "tempfile",
+]
+
+[[package]]
 name = "opusdm-firewall-config"
 version = "0.19.3"
 dependencies = [
@@ -3105,6 +3117,7 @@ dependencies = [
  "md-5",
  "opusdm-apps",
  "opusdm-archive",
+ "opusdm-fileactions",
  "opusdm-fsops",
  "opusdm-ftp",
  "opusdm-highlight",
