@@ -211,7 +211,9 @@ fn _delete_selected(dialog: &Rc<TrashDialog>) {
     if items.is_empty() { return; }
     let message = format!("Delete {} item(s) permanently?", items.len());
     let this = dialog.clone();
-    opusdm_ui::requester(&dialog.window, "Request", &message, None, &[("Delete", true), ("Cancel", false)], move |yes| {
+    let originals: Vec<PathBuf> = items.iter().map(|i| i.original.clone()).collect();
+    let names = opusdm_fileactions::keys::entry_names(&originals);
+    opusdm_ui::requester_list(&dialog.window, "Request", &message, &names, &[("Delete", true), ("Cancel", false)], move |yes| {
         if !yes { return; }
         let items = items.clone();
         _run(&this, move || items.iter().filter_map(|i| trash_items::erase(i).err()).collect());

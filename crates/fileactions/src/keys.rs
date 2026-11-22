@@ -110,6 +110,12 @@ pub fn delete_message(count: usize, permanent: bool) -> String {
     }
 }
 
+/// The names a delete requester lists for `paths`: the last component of
+/// each, or the whole path when it has none (the root).
+pub fn entry_names(paths: &[std::path::PathBuf]) -> Vec<String> {
+    paths.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())).collect()
+}
+
 /// F2: rename the one selected entry.
 pub fn rename_selection(host: &dyn FileActionHost) {
     let selected = host.selected_paths();
@@ -145,5 +151,11 @@ mod tests {
     fn the_delete_question_says_trash_or_permanently() {
         assert_eq!(delete_message(2, false), "Move 2 item(s) to the trash?");
         assert_eq!(delete_message(1, true), "Delete 1 item(s) permanently?");
+    }
+
+    #[test]
+    fn the_delete_list_shows_the_file_names() {
+        let paths = vec![std::path::PathBuf::from("/home/u/a.txt"), std::path::PathBuf::from("/home/u/dir"), std::path::PathBuf::from("/")];
+        assert_eq!(entry_names(&paths), vec!["a.txt", "dir", "/"]);
     }
 }

@@ -388,8 +388,8 @@ pub fn on_conflict(ui: &Rc<Ui>, req_id: u64, path: &Path, src: FileMeta, dst: Fi
     );
 }
 
-/// Ask the user to confirm a deletion, then hand `srcs` to the hub: moved to
-/// the trash, or deleted for good when `permanent`.
+/// Ask the user to confirm a deletion, listing the names of `srcs`, then hand
+/// `srcs` to the hub: moved to the trash, or deleted for good when `permanent`.
 ///
 /// `message` is the question shown in the requester; it differs between the
 /// toolbar (a count of selected entries) and the context menu (one name).
@@ -397,11 +397,12 @@ pub fn confirm_delete(ui: &Rc<Ui>, message: &str, srcs: Vec<PathBuf>, permanent:
     let (button, op) = if permanent { ("Delete", Op::Delete) } else { ("Trash", Op::Trash) };
     let win = ui.window.clone();
     let ui = ui.clone();
-    opusdm_ui::requester(
+    let names = opusdm_fileactions::keys::entry_names(&srcs);
+    opusdm_ui::requester_list(
         &win,
         "Request",
         message,
-        None,
+        &names,
         &[(button, true), ("Cancel", false)],
         move |confirmed| {
             if !confirmed {

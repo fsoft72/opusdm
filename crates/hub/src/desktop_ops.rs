@@ -87,7 +87,7 @@ pub fn rename(parent: &gtk::ApplicationWindow, old: PathBuf, old_name: &str) {
     );
 }
 
-/// Ask for confirmation, then move `srcs` to the trash, or delete them for
+/// Ask for confirmation listing the names of `srcs`, then move `srcs` to the trash, or delete them for
 /// good when `permanent` (the same requester as the Lister's).
 pub fn confirm_delete(
     parent: &gtk::ApplicationWindow,
@@ -99,11 +99,12 @@ pub fn confirm_delete(
 ) {
     let (button, op) = if permanent { ("Delete", Op::Delete) } else { ("Trash", Op::Trash) };
     let cmd_tx = cmd_tx.clone();
-    opusdm_ui::requester(
+    let names = opusdm_fileactions::keys::entry_names(&srcs);
+    opusdm_ui::requester_list(
         parent,
         "Request",
         message,
-        None,
+        &names,
         &[(button, true), ("Cancel", false)],
         move |confirmed| {
             if !confirmed {

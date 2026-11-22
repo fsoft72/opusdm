@@ -15,6 +15,12 @@ const BODY_MAX_WIDTH_CHARS: i32 = 50;
 /// Minimum width of a requester button, in pixels.
 const BUTTON_MIN_WIDTH: i32 = 90;
 
+/// Most names a list requester shows before it ends with "... and N more".
+pub const LIST_MAX_NAMES: usize = 10;
+
+/// Width, in characters, past which a listed name is ellipsized in the middle.
+const LIST_MAX_WIDTH_CHARS: i32 = 60;
+
 /// The body of a requester: either plain text or Pango markup.
 enum Body<'a> {
     Text(&'a str),
@@ -72,6 +78,57 @@ pub fn requester_entry<T: Clone + 'static>(
         &labels,
         _by_value(values, on_choice),
     );
+}
+
+/// Like [`requester`], with `names` listed one per line in a monospace font
+/// under the message (a deletion shows the files it removes). Past
+/// [`LIST_MAX_NAMES`] the list ends with "... and N more".
+pub fn requester_list<T: Clone + 'static>(
+    parent: &impl IsA<gtk::Window>,
+    title: &str,
+    message: &str,
+    names: &[String],
+    buttons: &[(&str, T)],
+    on_choice: impl Fn(T) + 'static,
+) {
+    let (labels, values) = _split(buttons);
+    build_with_header(
+        parent.upcast_ref(),
+        title,
+        None,
+        Body::Text(message),
+        _name_list(names),
+        None,
+        None,
+        &labels,
+        _by_value(values, move |value, _text| on_choice(value)),
+    );
+}
+
+/// The lines a list requester shows for `names`: at most [`LIST_MAX_NAMES`]
+/// names, then "... and N more" for the rest.
+pub fn list_lines(names: &[String]) -> Vec<String> {
+    if names.len() <= LIST_MAX_NAMES { return names.to_vec(); }
+    let mut lines: Vec<String> = names[..LIST_MAX_NAMES].to_vec();
+    lines.push(format!("... and {} more", names.len() - LIST_MAX_NAMES));
+    lines
+}
+
+/// The monospace, left aligned block of [`list_lines`] for `names`; `None`
+/// when there is nothing to list.
+fn _name_list(names: &[String]) -> Option<gtk::Widget> {
+    if names.is_empty() { return None; }
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list.set_halign(gtk::Align::Center);
+    for line in list_lines(names) {
+        let label = gtk::Label::new(Some(&line));
+        label.add_css_class("monospace");
+        label.set_xalign(0.0);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        label.set_max_width_chars(LIST_MAX_WIDTH_CHARS);
+        list.append(&label);
+    }
+    Some(list.upcast())
 }
 
 /// Like [`requester_entry`], but the entry gets the keyboard focus with the
@@ -146,6 +203,7 @@ pub(crate) fn requester_rich_header<T: Clone + 'static>(
         Body::Markup(body_markup),
         None,
         None,
+        None,
         &labels,
         _by_value(values, move |value, _text| on_choice(value)),
     );
@@ -190,16 +248,18 @@ fn build(
     buttons: &[&str],
     on_choice: Rc<dyn Fn(usize, String)>,
 ) {
-    build_with_header(parent, title, None, body, detail, entry, buttons, on_choice);
+    build_with_header(parent, title, None, body, None, detail, entry, buttons, on_choice);
 }
 
-/// [`build`] with an optional `header` widget (a logo, say) above the body.
+/// [`build`] with an optional `header` widget (a logo, say) above the body
+/// and an optional `list` widget (the names a deletion removes) under it.
 #[allow(clippy::too_many_arguments)]
 fn build_with_header(
     parent: &gtk::Window,
     title: &str,
     header: Option<gtk::Widget>,
     body: Body,
+    list: Option<gtk::Widget>,
     detail: Option<&str>,
     entry: Option<gtk::Entry>,
     buttons: &[&str],
@@ -244,6 +304,10 @@ fn build_with_header(
 
     if !matches!(body, Body::Text("")) {
         vbox.append(&_body_label(&body));
+    }
+
+    if let Some(list) = &list {
+        vbox.append(list);
     }
 
     if let Some(detail) = detail {
@@ -332,4 +396,27 @@ fn build_with_header(
 
     dialog.set_child(Some(&vbox));
     dialog.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(count: usize) -> Vec<String> {
+        (1..=count).map(|i| format!("file{i}.txt")).collect()
+    }
+
+    #[test]
+    fn a_short_list_is_shown_whole() {
+        assert_eq!(list_lines(&names(LIST_MAX_NAMES)), names(LIST_MAX_NAMES));
+        assert!(list_lines(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_long_list_ends_with_the_count_of_the_rest() {
+        let lines = list_lines(&names(LIST_MAX_NAMES + 3));
+        assert_eq!(lines.len(), LIST_MAX_NAMES + 1);
+        assert_eq!(lines[..LIST_MAX_NAMES], names(LIST_MAX_NAMES)[..]);
+        assert_eq!(lines[LIST_MAX_NAMES], "... and 3 more");
+    }
 }
