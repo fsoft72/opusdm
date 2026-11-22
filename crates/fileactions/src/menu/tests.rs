@@ -210,6 +210,17 @@ fn delete_asks_to_delete_the_clicked_entry_for_good() {
 }
 
 #[test]
+fn delete_on_a_selected_entry_asks_for_the_whole_selection() {
+    let selected = vec![PathBuf::from("/d/a.txt"), PathBuf::from("/d/b.txt")];
+    let (host, rec) = fill(FakeHost { selected: selected.clone(), ..Default::default() }, file("a.txt"));
+    rec.click("Delete...");
+    assert_eq!(*host.calls.borrow(), strs(&["delete Delete 2 item(s) permanently? [\"/d/a.txt\", \"/d/b.txt\"] true"]));
+    let (other, rec_other) = fill(FakeHost { selected, ..Default::default() }, file("c.txt"));
+    rec_other.click("Delete...");
+    assert_eq!(*other.calls.borrow(), strs(&["delete Delete \"c.txt\" permanently? [\"/d/c.txt\"] true"]));
+}
+
+#[test]
 fn the_viewer_gets_the_selection_only_when_it_holds_the_clicked_entry() {
     let selected = vec![PathBuf::from("/d/a.txt"), PathBuf::from("/d/b.txt")];
     let (host, rec) = fill(FakeHost { selected: selected.clone(), ..Default::default() }, file("a.txt"));

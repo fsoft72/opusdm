@@ -131,6 +131,10 @@ impl FileActionHost for DesktopHost {
         selectable_paths(&self.selected_entries(), self.own_files_only)
     }
 
+    fn own_selected_paths(&self) -> Vec<PathBuf> {
+        selectable_paths(&self.selected_entries(), true)
+    }
+
     fn dest_check(&self) -> Result<(), String> {
         dest_check_of(&self.widgets.dest_dirs.borrow())
     }

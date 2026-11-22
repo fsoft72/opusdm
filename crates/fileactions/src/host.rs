@@ -55,6 +55,12 @@ pub trait FileActionHost {
     fn folder(&self) -> PathBuf;
     /// The selected entries, as absolute paths.
     fn selected_paths(&self) -> Vec<PathBuf>;
+    /// The selected entries an action that removes files may get: the
+    /// selection without the entries that stand for files elsewhere (the
+    /// Desktop left-out icons). Every entry of a Lister is its own.
+    fn own_selected_paths(&self) -> Vec<PathBuf> {
+        self.selected_paths()
+    }
     /// `Ok` when a button Copy / Move has somewhere to go (a DEST Lister),
     /// else the reason.
     fn dest_check(&self) -> Result<(), String>;

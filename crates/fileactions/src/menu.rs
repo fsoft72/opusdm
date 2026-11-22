@@ -13,6 +13,13 @@ fn targets(host: &Rc<dyn FileActionHost>, target: &MenuTarget) -> Vec<PathBuf> {
     targets_for(host.selected_paths(), &target.path)
 }
 
+/// The question of the menu Delete: the name of `target` when it is the only
+/// entry, else the count of the `count` entries.
+fn delete_question(target: &MenuTarget, count: usize) -> String {
+    if count == 1 { return format!("Delete \"{}\" permanently?", target.name); }
+    crate::keys::delete_message(count, true)
+}
+
 /// Copy or move `target` to the DEST Lister, when there is one.
 fn transfer(host: &dyn FileActionHost, op: Op, target: &MenuTarget) {
     if let Err(msg) = host.dest_check() {
@@ -42,7 +49,8 @@ pub fn fill_entry_menu(menu: &dyn MenuSink, host: &Rc<dyn FileActionHost>, targe
         add(menu, host, &target, "Rename...", |h, t| h.rename(&t.path, &t.name));
         add(menu, host, &target, "Move (Source -> Dest)", |h, t| transfer(&**h, Op::Move, t));
         add(menu, host, &target, "Delete...", |h, t| {
-            h.confirm_delete(&format!("Delete \"{}\" permanently?", t.name), vec![t.path.clone()], true);
+            let paths = targets_for(h.own_selected_paths(), &t.path);
+            h.confirm_delete(&delete_question(t, paths.len()), paths, true);
         });
     }
     add(menu, host, &target, "Change Permissions...", |h, t| crate::permissions::open_permissions(h, targets(h, t)));
