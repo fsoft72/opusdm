@@ -163,6 +163,11 @@ pub(crate) struct Widgets {
     /// The saved Functions, kept in step with the hub by `HubEvent::FunctionsChanged`.
     pub(crate) functions: Rc<RefCell<Vec<opusdm_ipc::function::Function>>>,
     pub(crate) bank_windows: crate::bank_windows::BankWindows,
+    /// The current folder of every DEST Lister, from the last
+    /// `HubEvent::Roles`. Only the Desktop menu reads it, to say "no DEST
+    /// Lister set" before asking the server (which resolves the folders
+    /// again itself when the job runs).
+    pub(crate) dest_dirs: RefCell<Vec<PathBuf>>,
     /// Runs the blocking saves and compositor reloads off the GTK thread.
     pub(crate) io: opusdm_hub::io_worker::IoWorker,
 }
@@ -231,6 +236,7 @@ fn build_ui(
         banks,
         functions,
         bank_windows,
+        dest_dirs: RefCell::new(Vec::new()),
         set_panel_position: RefCell::new(None),
         dock: opusdm_hub::dock_host::DockHost::start(),
         dock_watch: RefCell::new(None),
@@ -462,13 +468,16 @@ fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
             widgets.progress_window.update(job_id, &current_file, files_done, files_total, file_bytes_done, file_bytes_total);
         }
         HubEvent::JobFinished { job_id, .. } => widgets.progress_window.finish(job_id),
-        // Roles no longer have a home in the hub chrome (they moved out with
-        // the old toolbar strip); the server still emits them.
-        HubEvent::ListerRegistered { .. }
-        | HubEvent::ListerGone(_)
-        | HubEvent::AllListersGone
-        | HubEvent::Roles { .. } => {}
+        // The Desktop menu needs the DEST folders (Copy / Move to DEST).
+        HubEvent::Roles { dests, paths, .. } => *widgets.dest_dirs.borrow_mut() = dest_dirs_of(&dests, &paths),
+        HubEvent::ListerRegistered { .. } | HubEvent::ListerGone(_) | HubEvent::AllListersGone => {}
     }
+}
+
+/// The folder of each Lister in `dests`, in that order, from the
+/// `(Lister, folder)` pairs of a `HubEvent::Roles`.
+fn dest_dirs_of(dests: &[opusdm_ipc::ListerId], paths: &[(opusdm_ipc::ListerId, PathBuf)]) -> Vec<PathBuf> {
+    dests.iter().filter_map(|d| paths.iter().find(|(id, _)| id == d).map(|(_, p)| p.clone())).collect()
 }
 
 /// Re-assert every desktop window's type and geometry, not present(): a

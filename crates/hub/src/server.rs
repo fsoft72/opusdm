@@ -105,6 +105,12 @@ pub enum HubCmd {
     /// Run a file operation from the hub GUI itself (a drop on the desktop
     /// window). The destination is always concrete.
     RunJob { op: Op, srcs: Vec<PathBuf>, dest_dir: PathBuf },
+    /// Copy / Move `srcs` from the hub GUI (a Desktop icon) into the current
+    /// folder of every DEST Lister. Unlike a Lister's button Copy, no SOURCE
+    /// role is needed: the Desktop is not a Lister.
+    RunJobToDests { op: Op, srcs: Vec<PathBuf> },
+    /// Make `path` the desktop background (a Desktop icon menu).
+    SetBackground(PathBuf),
     /// Cancel a running or queued job.
     CancelJob(u64),
     /// Ask a Lister to raise its window.
@@ -1117,6 +1123,24 @@ impl Hub {
         }
     }
 
+    /// The current folder of every DEST Lister, in role order.
+    fn dest_dirs(&self) -> Vec<PathBuf> {
+        self.roles.dests().iter().filter_map(|d| self.conns.get(&d.0).map(|c| c.path.clone())).collect()
+    }
+
+    /// Run a job from the hub GUI (the Desktop) into `dest_dir`. A
+    /// hub-originated job has no requesting Lister, so progress and
+    /// completion just do not route back to one; the hub's own job box
+    /// still tracks it.
+    fn desktop_run_job(&mut self, op: Op, srcs: Vec<PathBuf>, dest_dir: PathBuf) {
+        if let Err(msg) = validate_op(&op, &srcs, &dest_dir) {
+            opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
+            return;
+        }
+        let spec = opusdm_fsops::JobSpec { op, srcs, dest_dir, options: Default::default() };
+        self.submit_job(None, spec, None, 0);
+    }
+
     /// Hand `spec` to the job engine on behalf of `requester` (a connection
     /// id, or `None` for a hub-originated job) and start tracking it.
     /// `waiter`, when set, is told the outcome on `Done` (a Function step).
@@ -1137,17 +1161,23 @@ impl Hub {
         match cmd {
             HubCmd::SpawnRequested { start_path } => self.spawn_lister(start_path),
 
-            HubCmd::RunJob { op, srcs, dest_dir } => {
-                // A hub-originated job has no requesting Lister, so progress and
-                // completion just do not route back to one; the hub's own job
-                // box still tracks it.
-                if let Err(msg) = validate_op(&op, &srcs, &dest_dir) {
-                    opusdm_ipc::err_log!("hub", "desktop job rejected: {msg}");
-                    return true;
+            HubCmd::RunJob { op, srcs, dest_dir } => self.desktop_run_job(op, srcs, dest_dir),
+
+            HubCmd::RunJobToDests { op, srcs } => {
+                let dest_dirs = self.dest_dirs();
+                if dest_dirs.is_empty() {
+                    opusdm_ipc::err_log!("hub", "desktop {op:?} dropped: no DEST Lister set");
                 }
-                let spec = opusdm_fsops::JobSpec { op, srcs, dest_dir, options: Default::default() };
-                self.submit_job(None, spec, None, 0);
+                for dest_dir in dest_dirs {
+                    if crate::jobs::is_remote_path(&dest_dir) {
+                        opusdm_ipc::err_log!("hub", "desktop {op:?} to the remote DEST {} skipped: only a Lister can reach it", dest_dir.display());
+                        continue;
+                    }
+                    self.desktop_run_job(op.clone(), srcs.clone(), dest_dir);
+                }
             }
+
+            HubCmd::SetBackground(path) => self.apply_background_image(path, None),
 
             HubCmd::CancelJob(id) => self.engine.cancel(id),
 

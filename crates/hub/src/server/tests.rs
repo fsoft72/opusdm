@@ -2158,3 +2158,51 @@ fn a_lister_that_goes_away_leaves_the_waited_program_running_and_the_run_stops()
     std::thread::sleep(Duration::from_millis(500));
     assert!(!second.exists(), "the steps after the program did not run");
 }
+
+/// Poll until `path` exists (a job runs on the engine thread).
+fn wait_for_path(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !path.exists() {
+        assert!(std::time::Instant::now() < deadline, "{path:?} never appeared");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_desktop_copy_goes_to_the_dest_lister_without_a_source() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let file = src_dir.path().join("note.txt");
+    std::fs::write(&file, b"x").unwrap();
+
+    let (_td, listener, path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    let (mut a, _) = register(&path, 1, &dest.path().to_string_lossy());
+    let (_b, _) = register(&path, 2, &other.path().to_string_lossy());
+    send(&mut a, &ToHub::SetRole(opusdm_ipc::Role::Dest)).unwrap();
+    recv_until(&mut a, |m| matches!(m, ToLister::RoleChanged { .. }).then_some(()));
+    // The role change must be handled before the GTK command arrives.
+    send(&mut a, &ToHub::QueryCaches).unwrap();
+    recv_until(&mut a, |m| matches!(m, ToLister::CacheList(_)).then_some(()));
+
+    handle.cmd_tx.send(HubCmd::RunJobToDests { op: Op::Copy, srcs: vec![file.clone()] }).unwrap();
+    wait_for_path(&dest.path().join("note.txt"));
+    assert!(file.exists(), "a Copy keeps the source");
+    assert!(!other.path().join("note.txt").exists(), "a Lister with no role gets nothing");
+}
+
+#[test]
+fn a_desktop_copy_with_no_dest_does_nothing() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let file = src_dir.path().join("note.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let (_td, listener, _path) = bind_temp();
+    let handle = spawn_server(listener, Box::new(|_p| {}));
+    handle.cmd_tx.send(HubCmd::RunJobToDests { op: Op::Move, srcs: vec![file.clone()] }).unwrap();
+    // No job may start: no JobUpdate / JobFinished arrives.
+    while let Ok(ev) = handle.evt_rx.recv_timeout(Duration::from_millis(300)) {
+        assert!(!matches!(ev, HubEvent::JobUpdate { .. } | HubEvent::JobFinished { .. }), "a job ran with no DEST");
+    }
+    assert!(file.exists());
+}

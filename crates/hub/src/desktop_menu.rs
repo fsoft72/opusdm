@@ -220,9 +220,10 @@ pub(crate) fn attach_desktop_menu(overlay: &gtk::Overlay, widgets: &Rc<Widgets>,
 }
 
 /// The per-icon context menu, rebuilt into `menu` on every click since its
-/// content (name, file vs. directory) depends on the clicked entry: Open,
-/// Cut, Copy, Rename, Delete. Every item hides the menu before running its
-/// action.
+/// content depends on the clicked entry: a program group gets its own menu,
+/// any other icon the entry menu of a Lister file (`opusdm_fileactions`)
+/// with the Desktop as its host, after Open, Put Away, Cut and Copy. Every
+/// item hides the menu before running its action.
 pub(crate) fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opusdm_iconview::IconEntry) {
     while let Some(child) = menu.first_child() {
         menu.remove(&child);
@@ -232,102 +233,27 @@ pub(crate) fn fill_icon_menu(menu: &gtk::Box, widgets: &Rc<Widgets>, entry: &opu
         fill_group_menu(menu, widgets, entry);
         return;
     }
+    let Some(dir) = widgets.desktop.dir.borrow().clone() else {
+        opusdm_ipc::err_log!("hub", "icon menu of {} not shown: no desktop folder", entry.path.display());
+        return;
+    };
+    let host = crate::desktop_host::DesktopHost::rc(widgets, dir, Some(entry.clone()));
+    let sink = BoxSink { menu: menu.clone() };
+    opusdm_fileactions::menu::fill_entry_menu(&sink, &host, crate::desktop_host::target_of(entry));
+}
 
-    // Open
-    {
-        let path = entry.path.clone();
-        let opens_in_lister = opusdm_hub::leftout::opens_in_lister(entry);
-        let widgets = widgets.clone();
-        let menu_ref = menu.clone();
-        let btn = menu_button("Open");
-        btn.connect_clicked(move |_| {
-            menu_ref.set_visible(false);
-            if opens_in_lister {
-                opusdm_hub::channels::send_or_log(&widgets.cmd_tx, HubCmd::SpawnRequested { start_path: Some(path.clone()) }, "hub command");
-            } else {
-                crate::desktop_windows::open_file(&widgets.primary_window(), &widgets.cmd_tx, &path);
-            }
-        });
-        menu.append(&btn);
+/// A Desktop menu box as the sink of the shared entry menu.
+struct BoxSink {
+    menu: gtk::Box,
+}
+
+impl opusdm_fileactions::MenuSink for BoxSink {
+    fn item(&self, title: &str, action: Box<dyn Fn()>) {
+        add_item(&self.menu, &self.menu, title, action);
     }
 
-    // Put Away (left-out icons only): forget the icon, never touch the file.
-    if entry.left_out {
-        let path = entry.path.clone();
-        let widgets = widgets.clone();
-        let menu_ref = menu.clone();
-        let btn = menu_button("Put Away");
-        btn.connect_clicked(move |_| {
-            menu_ref.set_visible(false);
-            widgets.desktop.leftout.borrow_mut().remove(std::slice::from_ref(&path));
-            save_leftout(&widgets);
-            reload_desktop_field(&widgets);
-        });
-        menu.append(&btn);
-    }
-
-    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    // Cut, Rename and Delete act on the real file, which for a left-out icon
-    // lives somewhere else and is not what the user sees: not offered there.
-    // Cut
-    if !entry.left_out {
-        let path = entry.path.clone();
-        let menu_ref = menu.clone();
-        let btn = menu_button("Cut");
-        btn.connect_clicked(move |_| {
-            menu_ref.set_visible(false);
-            crate::desktop_ops::copy_or_cut(std::slice::from_ref(&path), true);
-        });
-        menu.append(&btn);
-    }
-
-    // Copy
-    {
-        let path = entry.path.clone();
-        let menu_ref = menu.clone();
-        let btn = menu_button("Copy");
-        btn.connect_clicked(move |_| {
-            menu_ref.set_visible(false);
-            crate::desktop_ops::copy_or_cut(std::slice::from_ref(&path), false);
-        });
-        menu.append(&btn);
-    }
-
-    // Rename...
-    if !entry.left_out {
-        let path = entry.path.clone();
-        let name = entry.name.clone();
-        let widgets = widgets.clone();
-        let menu_ref = menu.clone();
-        let btn = menu_button("Rename...");
-        btn.connect_clicked(move |_| {
-            menu_ref.set_visible(false);
-            crate::desktop_ops::rename(&widgets.primary_window(), path.clone(), &name);
-        });
-        menu.append(&btn);
-    }
-
-    // Delete...
-    if !entry.left_out {
-        menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        let path = entry.path.clone();
-        let name = entry.name.clone();
-        let widgets = widgets.clone();
-        let menu_ref = menu.clone();
-        let btn = menu_button("Delete...");
-        btn.connect_clicked(move |_| {
-            menu_ref.set_visible(false);
-            let Some(dest_dir) = widgets.desktop.dir.borrow().clone() else { return };
-            crate::desktop_ops::confirm_delete(
-                &widgets.primary_window(),
-                &widgets.cmd_tx,
-                &format!("Delete \"{name}\" permanently?"),
-                vec![path.clone()],
-                dest_dir,
-            );
-        });
-        menu.append(&btn);
+    fn separator(&self) {
+        self.menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     }
 }
 

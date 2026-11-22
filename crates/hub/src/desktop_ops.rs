@@ -1,6 +1,6 @@
 //! File operations triggered from the desktop context menu: clipboard
-//! cut/copy/paste, rename, delete, new folder/file, and opening a terminal
-//! in the desktop directory.
+//! cut/copy/paste, rename, delete or trash, new folder/file, and opening a
+//! terminal in the desktop directory.
 //!
 //! These mirror the equivalent Lister actions (`lister::clip`,
 //! `lister::actions`), but issue `HubCmd::RunJob` directly rather than
@@ -87,26 +87,29 @@ pub fn rename(parent: &gtk::ApplicationWindow, old: PathBuf, old_name: &str) {
     );
 }
 
-/// Ask for confirmation, then permanently delete `paths` (no trash).
+/// Ask for confirmation, then move `srcs` to the trash, or delete them for
+/// good when `permanent` (the same requester as the Lister's).
 pub fn confirm_delete(
     parent: &gtk::ApplicationWindow,
     cmd_tx: &Sender<HubCmd>,
     message: &str,
     srcs: Vec<PathBuf>,
     dest_dir: PathBuf,
+    permanent: bool,
 ) {
+    let (button, op) = if permanent { ("Delete", Op::Delete) } else { ("Trash", Op::Trash) };
     let cmd_tx = cmd_tx.clone();
     opusdm_ui::requester(
         parent,
         "Request",
         message,
         None,
-        &[("Delete", true), ("Cancel", false)],
+        &[(button, true), ("Cancel", false)],
         move |confirmed| {
             if !confirmed {
                 return;
             }
-            let job = HubCmd::RunJob { op: Op::Delete, srcs: srcs.clone(), dest_dir: dest_dir.clone() };
+            let job = HubCmd::RunJob { op: op.clone(), srcs: srcs.clone(), dest_dir: dest_dir.clone() };
             opusdm_hub::channels::send_or_log(&cmd_tx, job, "hub command");
         },
     );

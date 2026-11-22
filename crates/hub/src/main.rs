@@ -2,6 +2,7 @@
 
 mod background;
 mod desktop;
+mod desktop_host;
 mod desktop_ops;
 mod bank_windows;
 mod group_window;
