@@ -21,6 +21,20 @@ pub const LIST_MAX_NAMES: usize = 10;
 /// Width, in characters, past which a listed name is ellipsized in the middle.
 const LIST_MAX_WIDTH_CHARS: i32 = 60;
 
+/// CSS class of the box holding the names of a list requester.
+const LIST_CLASS: &str = "opus-requester-list";
+
+/// The look of the name box: a slightly different background than the
+/// requester (a tint of the text colour, so it works on light and dark
+/// themes) with some inner padding. The selector beats the "inner boxes are
+/// transparent" rule a requester picture adds (`look_css.rs`).
+const LIST_CSS: &str = "window.opus-requester box.opus-requester-list { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px 12px; }";
+
+thread_local! {
+    /// Whether [`LIST_CSS`] is installed for the default display yet.
+    static LIST_CSS_INSTALLED: Cell<bool> = const { Cell::new(false) };
+}
+
 /// The body of a requester: either plain text or Pango markup.
 enum Body<'a> {
     Text(&'a str),
@@ -118,8 +132,10 @@ pub fn list_lines(names: &[String]) -> Vec<String> {
 /// when there is nothing to list.
 fn _name_list(names: &[String]) -> Option<gtk::Widget> {
     if names.is_empty() { return None; }
+    _install_list_css();
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     list.set_halign(gtk::Align::Center);
+    list.add_css_class(LIST_CLASS);
     for line in list_lines(names) {
         let label = gtk::Label::new(Some(&line));
         label.add_css_class("monospace");
@@ -129,6 +145,21 @@ fn _name_list(names: &[String]) -> Option<gtk::Widget> {
         list.append(&label);
     }
     Some(list.upcast())
+}
+
+/// Install [`LIST_CSS`] for the default display, once per process. Not every
+/// OpusDM process loads the shared app CSS (the hub draws the Desktop
+/// requesters), so the list requester brings its own rule.
+fn _install_list_css() {
+    if LIST_CSS_INSTALLED.with(|done| done.get()) { return; }
+    let Some(display) = gtk::gdk::Display::default() else {
+        opusdm_ipc::err_log!("ui", "no default display: the requester name list is drawn without its box");
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(LIST_CSS);
+    gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    LIST_CSS_INSTALLED.with(|done| done.set(true));
 }
 
 /// Like [`requester_entry`], but the entry gets the keyboard focus with the
@@ -404,6 +435,11 @@ mod tests {
 
     fn names(count: usize) -> Vec<String> {
         (1..=count).map(|i| format!("file{i}.txt")).collect()
+    }
+
+    #[test]
+    fn the_list_css_styles_the_list_class_inside_a_requester() {
+        assert!(LIST_CSS.starts_with(&format!("window.{} box.{LIST_CLASS} ", crate::REQUESTER_CLASS)));
     }
 
     #[test]
