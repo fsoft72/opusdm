@@ -246,6 +246,87 @@ pub(crate) fn requester_rich_header<T: Clone + 'static>(
     );
 }
 
+/// Minimum width, in pixels, of the content of a branded requester: about
+/// twice a plain yes/no requester, so the logo has room to breathe.
+const BRANDED_MIN_WIDTH: i32 = 540;
+
+/// Space, in pixels, between the logo, the separator and the text of a
+/// branded requester header.
+const BRANDED_HEADER_SPACING: i32 = 14;
+
+/// The Pango markup of a branded requester body: `message` large and bold,
+/// `detail` (when given) under it in a dimmer colour. Both are escaped.
+pub fn branded_markup(message: &str, detail: Option<&str>) -> String {
+    let title = gtk::glib::markup_escape_text(message);
+    let Some(detail) = detail else { return format!("<span size='x-large' weight='bold'>{title}</span>"); };
+    let detail = gtk::glib::markup_escape_text(detail);
+    format!("<span size='x-large' weight='bold'>{title}</span>\n\n<span alpha='65%'>{detail}</span>")
+}
+
+/// Width, in pixels, of the logo of a branded requester.
+const BRANDED_LOGO_WIDTH: i32 = 200;
+
+/// The OpusDM logo scaled down to [`BRANDED_LOGO_WIDTH`], keeping its
+/// proportions. A `gtk::Picture` asks for the natural size of its texture,
+/// so the texture itself is scaled: sizing only the widget lets the logo
+/// grow back to the 640 pixels of the file. `None` (logged) when the logo
+/// cannot be decoded or scaled.
+fn _branded_logo() -> Option<gtk::Widget> {
+    use gtk::gdk_pixbuf::{InterpType, PixbufLoader};
+    let loader = PixbufLoader::new();
+    if let Err(e) = loader.write(crate::about::LOGO_PNG).and_then(|_| loader.close()) {
+        opusdm_ipc::err_log!("ui", "cannot decode the requester logo: {e}");
+        return None;
+    }
+    let Some(full) = loader.pixbuf() else {
+        opusdm_ipc::err_log!("ui", "the requester logo decoded to no picture");
+        return None;
+    };
+    let height = BRANDED_LOGO_WIDTH * full.height() / full.width().max(1);
+    let Some(scaled) = full.scale_simple(BRANDED_LOGO_WIDTH, height, InterpType::Hyper) else {
+        opusdm_ipc::err_log!("ui", "cannot scale the requester logo");
+        return None;
+    };
+    #[allow(deprecated)]
+    let picture = gtk::Picture::for_pixbuf(&scaled);
+    picture.set_can_shrink(false);
+    Some(picture.upcast())
+}
+
+/// The header of a branded requester: the OpusDM logo, on the left, over a
+/// separator, in a
+/// box as wide as [`BRANDED_MIN_WIDTH`]. Without a logo (it failed to decode,
+/// already logged) only the separator is shown.
+fn _branded_header() -> gtk::Widget {
+    let header = gtk::Box::new(gtk::Orientation::Vertical, BRANDED_HEADER_SPACING);
+    header.set_size_request(BRANDED_MIN_WIDTH, -1);
+    header.set_margin_top(8);
+    if let Some(logo) = _branded_logo() {
+        // In the vertical header the picture would get the whole width and
+        // grow with it (height-for-width); a horizontal row gives it only its
+        // natural width, on the left.
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row.append(&logo);
+        header.append(&row);
+    }
+    header.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    header.upcast()
+}
+
+/// Like [`requester`], with the OpusDM logo on top, the message large and
+/// bold and the detail dimmed under it, in a wider window. Meant for the
+/// session requesters (log out, shut down).
+pub fn requester_branded<T: Clone + 'static>(
+    parent: &impl IsA<gtk::Window>,
+    title: &str,
+    message: &str,
+    detail: Option<&str>,
+    buttons: &[(&str, T)],
+    on_choice: impl Fn(T) + 'static,
+) {
+    requester_rich_header(parent, title, Some(_branded_header()), &branded_markup(message, detail), buttons, on_choice);
+}
+
 /// Split the caller's `(label, value)` pairs into the two vectors `build`
 /// and the choice adapter need.
 fn _split<'a, T: Clone>(buttons: &[(&'a str, T)]) -> (Vec<&'a str>, Vec<T>) {
@@ -446,6 +527,13 @@ mod tests {
     #[test]
     fn the_list_css_styles_the_list_class_inside_a_requester() {
         assert!(LIST_CSS.starts_with(&format!("window.{} box.{LIST_CLASS} ", crate::REQUESTER_CLASS)));
+    }
+
+    #[test]
+    fn branded_markup_escapes_and_dims_the_detail() {
+        assert_eq!(branded_markup("A & B?", None), "<span size='x-large' weight='bold'>A &amp; B?</span>");
+        let both = branded_markup("Shut down?", Some("<now>"));
+        assert!(both.ends_with("\n\n<span alpha='65%'>&lt;now&gt;</span>"), "{both}");
     }
 
     #[test]

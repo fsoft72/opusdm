@@ -400,7 +400,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
         let row = menu_row(Some("system-log-out"), "Logout");
         row.connect_clicked(move |_| {
             popover.popdown();
-            confirm(&parent, "Log out?", "This ends the OpusDM session.", logout);
+            confirm_session(&parent, "Log out?", "This ends the OpusDM session.", "Log Out", logout);
         });
         footer.append(&row);
     }
@@ -411,7 +411,7 @@ pub fn build(parent: &gtk::ApplicationWindow, position: PanelPosition) -> gtk::M
         let row = menu_row(Some("system-shutdown"), "Shutdown");
         row.connect_clicked(move |_| {
             popover.popdown();
-            confirm(&parent, "Shut down?", "This powers the machine off now.", || {
+            confirm_session(&parent, "Shut down?", "This powers the machine off now.", "Shut Down", || {
                 run_detached("systemctl", &["poweroff"]);
             });
         });
@@ -477,6 +477,29 @@ fn confirm(
         message,
         Some(detail),
         &[("Yes", true), ("Cancel", false)],
+        move |ok| {
+            if ok {
+                action();
+            }
+        },
+    );
+}
+
+/// The branded (logo, wide) yes/no requester of the session actions: `yes`
+/// labels the confirm button, `action` runs on confirm.
+fn confirm_session(
+    parent: &gtk::ApplicationWindow,
+    message: &str,
+    detail: &str,
+    yes: &str,
+    action: impl Fn() + 'static,
+) {
+    opusdm_ui::requester_branded(
+        parent,
+        "OpusDM",
+        message,
+        Some(detail),
+        &[(yes, true), ("Cancel", false)],
         move |ok| {
             if ok {
                 action();

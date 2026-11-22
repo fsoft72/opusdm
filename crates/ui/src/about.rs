@@ -5,7 +5,7 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 
 /// The OpusDM logo shown at the top of the About window.
-const LOGO_PNG: &[u8] = include_bytes!("../../../assets/opusdm-full.png");
+pub(crate) const LOGO_PNG: &[u8] = include_bytes!("../../../assets/opusdm-full.png");
 
 /// Width of the logo in the window, in pixels (the file is 640x210).
 const LOGO_WIDTH: i32 = 320;
