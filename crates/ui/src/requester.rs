@@ -21,6 +21,10 @@ pub const LIST_MAX_NAMES: usize = 10;
 /// Width, in characters, past which a listed name is ellipsized in the middle.
 const LIST_MAX_WIDTH_CHARS: i32 = 60;
 
+/// Minimum width, in pixels, of the name box of a list requester: it makes
+/// the delete requester about twice as wide as a plain one.
+const LIST_MIN_WIDTH: i32 = 440;
+
 /// CSS class of the box holding the names of a list requester.
 const LIST_CLASS: &str = "opus-requester-list";
 
@@ -134,7 +138,9 @@ fn _name_list(names: &[String]) -> Option<gtk::Widget> {
     if names.is_empty() { return None; }
     _install_list_css();
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    list.set_halign(gtk::Align::Center);
+    // The box spans the whole width inside the requester margins.
+    list.set_halign(gtk::Align::Fill);
+    list.set_size_request(LIST_MIN_WIDTH, -1);
     list.add_css_class(LIST_CLASS);
     for line in list_lines(names) {
         let label = gtk::Label::new(Some(&line));
