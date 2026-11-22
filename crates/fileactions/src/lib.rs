@@ -7,6 +7,7 @@ pub mod compress;
 pub mod crypt;
 pub mod extract;
 pub mod host;
+pub mod keys;
 pub mod menu;
 pub mod open_with;
 pub mod permissions;

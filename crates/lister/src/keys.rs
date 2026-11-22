@@ -589,4 +589,25 @@ mod tests {
         }
         assert!(CommandId::RunFunction(Default::default()).meta().is_none());
     }
+
+    #[test]
+    fn the_shared_file_keys_do_the_same_here_as_on_the_desktop() {
+        use opusdm_fileactions::keys::{FileKey, FILE_KEYS};
+        for (key, ctrl, shift, file_key) in FILE_KEYS {
+            let want = match file_key {
+                FileKey::OpenViewer => CommandId::OpenViewer,
+                FileKey::Copy => CommandId::Copy,
+                FileKey::Move => CommandId::Move,
+                FileKey::Trash => CommandId::Delete,
+                FileKey::DeletePermanent => CommandId::DeletePermanent,
+                FileKey::Rename => CommandId::Rename,
+                FileKey::ClipCopy => CommandId::ClipCopy,
+                FileKey::ClipCut => CommandId::ClipCut,
+                FileKey::ClipPaste => CommandId::ClipPaste,
+                FileKey::MakeDir => CommandId::Mkdir,
+                FileKey::NewFile => CommandId::NewFile,
+            };
+            assert_eq!(resolve(key, ctrl, shift, false, Focus::List), Some(Action::Command(want)), "{key:?} ctrl={ctrl} shift={shift}");
+        }
+    }
 }

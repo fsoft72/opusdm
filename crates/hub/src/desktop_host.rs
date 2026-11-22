@@ -5,13 +5,15 @@
 //! Ownership: a `DesktopHost` holds a strong `Rc<Widgets>`, as every other
 //! Desktop menu item already does. It is made when the icon menu is filled
 //! (or a key is pressed) and lives as long as the items of that menu and the
-//! dialogs they open. `Widgets` itself is owned by the GTK side for the
+//! dialogs they open. The file keys of a Lister are wired on the Desktop
+//! window by [`attach_keys`]. `Widgets` itself is owned by the GTK side for the
 //! whole run (see `toolbar.rs`).
 
 use super::toolbar::Widgets;
 use crate::server::HubCmd;
 use gtk4 as gtk;
 use gtk::prelude::*;
+use opusdm_fileactions::keys::FileKey;
 use opusdm_fileactions::{ExtraPlace, FileActionHost, MenuSink, MenuTarget};
 use opusdm_ipc::filetypes::FileType;
 use opusdm_ipc::function::{Function, FunctionId};
@@ -38,13 +40,29 @@ pub(crate) struct DesktopHost {
     dir: PathBuf,
     /// The icon the menu was opened on (`None` for a key press).
     entry: Option<opusdm_iconview::IconEntry>,
+    /// Leave the left-out icons out of the selection: a key that changes or
+    /// removes files (Move, Delete, Rename, Cut) must not reach the real
+    /// file elsewhere, as the menu does not offer those items on them.
+    own_files_only: bool,
 }
 
 impl DesktopHost {
     /// The host of the Desktop folder `dir`, for the menu of `entry` (or a
     /// key press when `None`).
     pub(crate) fn rc(widgets: &Rc<Widgets>, dir: PathBuf, entry: Option<opusdm_iconview::IconEntry>) -> Rc<dyn FileActionHost> {
-        Rc::new(Self { widgets: widgets.clone(), dir, entry })
+        Rc::new(Self { widgets: widgets.clone(), dir, entry, own_files_only: false })
+    }
+
+    /// The host of a key press; `own_files_only` leaves the left-out icons
+    /// out of the selection.
+    fn for_key(widgets: &Rc<Widgets>, dir: PathBuf, own_files_only: bool) -> Self {
+        Self { widgets: widgets.clone(), dir, entry: None, own_files_only }
+    }
+
+    /// The selected entries of the icon field.
+    fn selected_entries(&self) -> Vec<opusdm_iconview::IconEntry> {
+        let Some(field) = self.widgets.desktop.field.borrow().clone() else { return Vec::new() };
+        field.selected_indices().into_iter().filter_map(|i| field.entry(i)).collect()
     }
 
     /// Send `cmd` to the hub server.
@@ -110,8 +128,7 @@ impl FileActionHost for DesktopHost {
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
-        let Some(field) = self.widgets.desktop.field.borrow().clone() else { return Vec::new() };
-        selectable_paths(field.selected_paths())
+        selectable_paths(&self.selected_entries(), self.own_files_only)
     }
 
     fn dest_check(&self) -> Result<(), String> {
@@ -170,9 +187,78 @@ impl FileActionHost for DesktopHost {
 }
 
 /// The selected Desktop paths an action may get: a program group icon has
-/// a virtual `group:<id>` path, not a file, so it is left out.
-fn selectable_paths(selected: Vec<PathBuf>) -> Vec<PathBuf> {
-    selected.into_iter().filter(|p| opusdm_ipc::groups::group_id(p).is_none()).collect()
+/// a virtual `group:<id>` path, not a file, so it is left out; so are the
+/// left-out icons when `own_files_only`.
+fn selectable_paths(selected: &[opusdm_iconview::IconEntry], own_files_only: bool) -> Vec<PathBuf> {
+    selected
+        .iter()
+        .filter(|e| !e.group && opusdm_ipc::groups::group_id(&e.path).is_none())
+        .filter(|e| !(own_files_only && e.left_out))
+        .map(|e| e.path.clone())
+        .collect()
+}
+
+/// What the Desktop says when a key that changes files finds only left-out
+/// icons selected.
+const ONLY_LEFT_OUT: &str = "left-out icons stand for files elsewhere: use Put Away, or open their folder";
+
+/// Whether `key` changes or removes the selected files themselves, so it
+/// must not act on the real file behind a left-out icon.
+fn changes_files(key: FileKey) -> bool {
+    matches!(key, FileKey::Move | FileKey::Trash | FileKey::DeletePermanent | FileKey::Rename | FileKey::ClipCut)
+}
+
+/// Wire the file keys of a Lister (F2, F3, F5, F6, Delete, Shift+Delete,
+/// Ctrl+C / X / V, Ctrl+N, Ctrl+Shift+N) on the Desktop `window`. Runs in
+/// the capture phase, so F2 opens the Rename requester like in a Lister
+/// instead of the icon field's inline edit; keys typed in a text field go
+/// through untouched. The handler holds a strong `Rc<Widgets>`, like the
+/// other Desktop handlers (`Widgets` lives for the whole run).
+pub(crate) fn attach_keys(window: &gtk::ApplicationWindow, widgets: &Rc<Widgets>) {
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let widgets = widgets.clone();
+    let win = window.clone();
+    keys.connect_key_pressed(move |_, keyval, _, state| {
+        let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+        let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+        let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
+        let Some(key) = opusdm_fileactions::keys::resolve(keyval, ctrl, shift, alt) else { return gtk::glib::Propagation::Proceed };
+        if gtk::prelude::GtkWindowExt::focus(&win).is_some_and(|w| w.is::<gtk::Editable>()) {
+            return gtk::glib::Propagation::Proceed;
+        }
+        run_key(&widgets, key);
+        gtk::glib::Propagation::Stop
+    });
+    window.add_controller(keys);
+}
+
+/// Run the file key `key` on the Desktop selection.
+fn run_key(widgets: &Rc<Widgets>, key: FileKey) {
+    let Some(dir) = widgets.desktop.dir.borrow().clone() else {
+        opusdm_ipc::err_log!(TAG, "desktop key {key:?} ignored: no desktop folder");
+        return;
+    };
+    let host = DesktopHost::for_key(widgets, dir.clone(), changes_files(key));
+    if changes_files(key) && host.selected_paths().is_empty() && !host.selected_entries().is_empty() {
+        return host.notify(ONLY_LEFT_OUT);
+    }
+    match key {
+        FileKey::OpenViewer => host.open_in_viewer(host.selected_paths()),
+        FileKey::Copy => opusdm_fileactions::keys::transfer_selection(&host, Op::Copy),
+        FileKey::Move => opusdm_fileactions::keys::transfer_selection(&host, Op::Move),
+        FileKey::Trash => opusdm_fileactions::keys::delete_selection(&host, false),
+        FileKey::DeletePermanent => opusdm_fileactions::keys::delete_selection(&host, true),
+        FileKey::Rename => opusdm_fileactions::keys::rename_selection(&host),
+        FileKey::ClipCopy | FileKey::ClipCut => {
+            let paths = host.selected_paths();
+            if paths.is_empty() { return host.notify("nothing selected"); }
+            crate::desktop_ops::copy_or_cut(&paths, key == FileKey::ClipCut);
+        }
+        FileKey::ClipPaste => crate::desktop_ops::paste(&widgets.cmd_tx, dir),
+        FileKey::MakeDir => crate::desktop_ops::prompt_new(&widgets.primary_window(), "New folder name", &widgets.cmd_tx, dir, |name| Op::MakeDir { name }),
+        FileKey::NewFile => crate::desktop_ops::prompt_new(&widgets.primary_window(), "New file name", &widgets.cmd_tx, dir, |name| Op::NewFile { name }),
+    }
 }
 
 /// `Ok` when at least one DEST Lister shows a local folder, else what to
@@ -206,10 +292,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_icons_are_not_files_to_act_on() {
-        let group = opusdm_ipc::groups::group_path("work");
-        let file = PathBuf::from("/home/me/Desktop/a.txt");
-        assert_eq!(selectable_paths(vec![group, file.clone()]), vec![file]);
+    fn group_icons_are_not_files_to_act_on_and_left_out_ones_only_when_asked() {
+        let mut group = opusdm_iconview::scan::entry_for_path(Path::new("/nowhere"));
+        group.path = opusdm_ipc::groups::group_path("work");
+        group.group = true;
+        let file = opusdm_iconview::scan::entry_for_path(Path::new("/home/me/Desktop/a.txt"));
+        let mut left = opusdm_iconview::scan::entry_for_path(Path::new("/elsewhere/b.txt"));
+        left.left_out = true;
+        let selected = [group, file.clone(), left.clone()];
+        assert_eq!(selectable_paths(&selected, false), vec![file.path.clone(), left.path]);
+        assert_eq!(selectable_paths(&selected, true), vec![file.path]);
+    }
+
+    #[test]
+    fn only_the_keys_that_change_files_skip_left_out_icons() {
+        let changing: Vec<FileKey> = opusdm_fileactions::keys::FILE_KEYS.iter().map(|k| k.3).filter(|k| changes_files(*k)).collect();
+        assert_eq!(changing, vec![FileKey::Move, FileKey::Trash, FileKey::DeletePermanent, FileKey::Rename, FileKey::ClipCut]);
     }
 
     #[test]

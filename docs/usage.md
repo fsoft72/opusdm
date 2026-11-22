@@ -361,6 +361,8 @@ Desktop folder are not saved; only left-out icons (see 3.21) remember where they
 
 ---
 
+**Desktop icons work like files in a lister.** Right-click a Desktop icon for the menu of a lister file: **Copy / Move (Source -> Dest)**, **Rename...**, **Delete...**, **Change Permissions...**, the **Open With** entries of its file type, **Open with...**, **Compress...**, **Extract archive / here**, **Encrypt... / Decrypt...**, **Open in Viewer** and **Set as Desktop Background**, after the Desktop's own **Open**, **Put Away** (left-out icons), **Cut** and **Copy**. Copy / Move go to the current folder of the DEST lister; with no DEST lister a message says so. Click an icon, then the lister keys work on the Desktop selection: `F2` rename, `F3` viewer, `F5` copy and `F6` move to DEST, `Delete` moves to the trash (after a question), `Shift+Delete` deletes for good, `Ctrl+C` / `Ctrl+X` / `Ctrl+V` clipboard (shared with the listers), `Ctrl+N` new folder, `Ctrl+Shift+N` new file. A program group icon keeps its own menu. Program groups are never part of a key action.
+
 ### 3.13 User Hotkeys
 
 Any saved function (see Manage Functions) can be bound to a key. Open the
@@ -522,7 +524,7 @@ Any file or folder can sit on the desktop as a permanent icon with a small arrow
 - Or use the **Leave Out** and **Put Away** steps of the Function Editor on the SOURCE selection, so they can be bound to a hotkey.
 - **Put Away** is also in the context menu of a left-out icon on the desktop. It only removes the icon; the file is never touched.
 
-Drag a left-out icon to place it: the position is remembered across restarts (icons of the Desktop folder itself are still auto-arranged). A left-out entry whose file disappeared (deleted, or its disk not mounted) shows as a broken icon and stays until you put it away; the desktop only notices a change outside the Desktop folder the next time it reloads (for instance with **Desktop -> Rearrange icons**). The icon menu of a left-out icon offers Open, Put Away and Copy, but not Cut, Rename or Delete, since those would act on the real file somewhere else: do them from a lister. Double click opens a folder in a new lister and a file with its default application. Left-out icons appear on the primary monitor only. Stored in `~/.config/opusdm/leftout.json`.
+Drag a left-out icon to place it: the position is remembered across restarts (icons of the Desktop folder itself are still auto-arranged). A left-out entry whose file disappeared (deleted, or its disk not mounted) shows as a broken icon and stays until you put it away; the desktop only notices a change outside the Desktop folder the next time it reloads (for instance with **Desktop -> Rearrange icons**). The icon menu of a left-out icon offers Open, Put Away, Copy and the lister items that do not change the file (Copy to DEST, Compress, Open in Viewer, ...), but not Cut, Rename, Move or Delete, since those would act on the real file somewhere else: do them from a lister. For the same reason `F2`, `F6`, `Delete`, `Shift+Delete` and `Ctrl+X` skip left-out icons. Double click opens a folder in a new lister and a file with its default application. Left-out icons appear on the primary monitor only. Stored in `~/.config/opusdm/leftout.json`.
 
 ### 3.22 Program Groups
 

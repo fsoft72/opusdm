@@ -193,6 +193,7 @@ pub(crate) fn build_one_desktop_window(
             f.set_grid_gap(ds.grid_gap);
             drop(ds);
             wire_primary_icon_field(widgets, &f);
+            crate::desktop_host::attach_keys(&window, widgets);
             spawn_desktop_watch(widgets, &f, dir);
         }
     }
