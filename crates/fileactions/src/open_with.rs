@@ -6,7 +6,7 @@ use crate::host::FileActionHost;
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
-use opusdm_apps::search::{self, Catalog};
+use opusdm_apps::search::{self, Catalog, Kind, Suggestion};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -28,9 +28,11 @@ struct State {
     handlers_list: gtk::ListBox,
     input: gtk::Entry,
     suggestions_list: gtk::ListBox,
-    catalog: Catalog,
-    /// Catalog entry index of each row of `suggestions_list`.
-    suggestions: RefCell<Vec<usize>>,
+    /// The installed applications, plus the commands on `PATH` once their
+    /// scan (on a worker thread) is done.
+    catalog: RefCell<Catalog>,
+    /// The suggestion shown on each row of `suggestions_list`.
+    suggestions: RefCell<Vec<Suggestion>>,
 }
 
 /// The content type of the file called `name`, guessed from the name.
@@ -95,11 +97,31 @@ pub fn open_with(host: &Rc<dyn FileActionHost>, paths: Vec<PathBuf>) {
         handlers_list,
         input: input.clone(),
         suggestions_list,
-        catalog: Catalog::new(opusdm_apps::entries::installed_entries()),
+        catalog: RefCell::new(Catalog::new(opusdm_apps::entries::installed_entries())),
         suggestions: RefCell::new(Vec::new()),
     });
     wire(&state, &open_btn);
+    load_path_commands(&state);
     input.grab_focus();
+}
+
+/// Scan `PATH` on a worker thread and add its commands to the catalog, so a
+/// program without a desktop entry can be typed too. The future owns `state`
+/// until the scan ends (a short time), so the dialog is never dropped under it.
+fn load_path_commands(state: &Rc<State>) {
+    let state = state.clone();
+    gtk::glib::spawn_future_local(async move {
+        match gio::spawn_blocking(opusdm_apps::entries::path_commands).await {
+            Ok(commands) => state.catalog.borrow_mut().extend(commands),
+            Err(_) => {
+                opusdm_ipc::err_log!(crate::TAG, "open with: scanning the commands on PATH panicked");
+                return;
+            }
+        }
+        if !state.input.text().trim().is_empty() {
+            refresh(&state);
+        }
+    });
 }
 
 /// One row: icon, name and the dimmed comment.
@@ -206,19 +228,18 @@ fn refresh(state: &Rc<State>) {
     while let Some(row) = state.suggestions_list.first_child() {
         state.suggestions_list.remove(&row);
     }
-    let found = search::suggest(&state.catalog, &state.input.text(), search::MAX_SUGGESTIONS);
-    let mut indexes = Vec::with_capacity(found.len());
+    let catalog = state.catalog.borrow();
+    let found = search::suggest(&catalog, &state.input.text(), search::MAX_SUGGESTIONS);
     for suggestion in &found {
-        let entry = &state.catalog.entries()[suggestion.entry];
+        let entry = &catalog.entries()[suggestion.entry];
         let icon = entry.icon.as_deref().and_then(|text| gio::Icon::for_string(text).ok());
         state.suggestions_list.append(&build_row(icon.as_ref(), &entry.name, &entry.comment));
-        indexes.push(suggestion.entry);
     }
     state.suggestions_list.set_visible(!found.is_empty());
     if let Some(row) = state.suggestions_list.row_at_index(0) {
         state.suggestions_list.select_row(Some(&row));
     }
-    *state.suggestions.borrow_mut() = indexes;
+    *state.suggestions.borrow_mut() = found;
 }
 
 /// Open the files with the handler on row `index` of the type's list.
@@ -230,17 +251,41 @@ fn run_handler(state: &Rc<State>, index: i32) {
     launch(state, app);
 }
 
-/// Open the files with the suggested application on row `index`.
+/// Open the files with the suggestion on row `index`: an application by its
+/// desktop id, a command from `PATH` with the arguments typed after its name.
 fn run_suggestion(state: &Rc<State>, index: i32) {
-    let entry = usize::try_from(index).ok().and_then(|i| state.suggestions.borrow().get(i).copied());
-    let Some(entry) = entry else {
+    let suggestion = usize::try_from(index).ok().and_then(|i| state.suggestions.borrow().get(i).cloned());
+    let Some(suggestion) = suggestion else {
         opusdm_ipc::err_log!(crate::TAG, "open with: no suggestion on row {index}");
         return;
     };
-    let id = &state.catalog.entries()[entry].id;
-    match gio::DesktopAppInfo::new(id) {
-        Some(info) => launch(state, info.upcast_ref()),
-        None => state.host.notify(&format!("application '{id}' is not installed")),
+    let (kind, id) = {
+        let catalog = state.catalog.borrow();
+        let entry = &catalog.entries()[suggestion.entry];
+        (entry.kind, entry.id.clone())
+    };
+    match kind {
+        Kind::App => match gio::DesktopAppInfo::new(&id) {
+            Some(info) => launch(state, info.upcast_ref()),
+            None => state.host.notify(&format!("application '{id}' is not installed")),
+        },
+        Kind::Command => match gio::AppInfo::create_from_commandline(command_line(&id, &suggestion.args), Some(&id), gio::AppInfoCreateFlags::NONE) {
+            Ok(info) => launch(state, &info),
+            Err(e) => {
+                opusdm_ipc::err_log!(crate::TAG, "open with: cannot use command '{id}': {e}");
+                state.host.notify(&format!("cannot use command '{id}': {e}"));
+            }
+        },
+    }
+}
+
+/// The command line that runs `program` with the typed `args` on the files
+/// (`%F`: the Exec field code that expands to the file list).
+fn command_line(program: &str, args: &str) -> String {
+    let program = gtk::glib::shell_quote(program).to_string_lossy().to_string();
+    match args.trim() {
+        "" => format!("{program} %F"),
+        args => format!("{program} {args} %F"),
     }
 }
 
@@ -262,5 +307,23 @@ fn launch(state: &Rc<State>, app: &gio::AppInfo) {
             opusdm_ipc::err_log!(crate::TAG, "{msg}");
             state.host.notify(&msg);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_line;
+
+    /// The files are passed through `%F`, after the typed arguments.
+    #[test]
+    fn a_command_line_ends_with_the_file_list() {
+        assert_eq!(command_line("mpv", ""), "'mpv' %F");
+        assert_eq!(command_line("mpv", "  --loop "), "'mpv' --loop %F");
+    }
+
+    /// A program name with a space or a quote stays one word.
+    #[test]
+    fn the_program_name_is_quoted() {
+        assert_eq!(command_line("my tool", ""), "'my tool' %F");
     }
 }

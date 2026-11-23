@@ -4,6 +4,9 @@
 use crate::search::{Entry, Kind};
 use gtk4::gio;
 use gtk4::prelude::*;
+use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::os::unix::fs::PermissionsExt;
 
 /// The file name of the program `info` runs; `None` when the entry has no
 /// `Exec=`: GIO returns NULL there and the binding would panic.
@@ -44,6 +47,31 @@ pub fn installed_entries() -> Vec<Entry> {
         .filter_map(|info| info.downcast::<gio::DesktopAppInfo>().ok())
         .filter_map(|info| app_entry(&info))
         .collect()
+}
+
+/// The executables on this process's `PATH`. Stats every file of every
+/// directory, so it belongs on a worker thread, not the GTK one.
+pub fn path_commands() -> Vec<Entry> {
+    scan_path(&std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// The executables in the directories of `path_var` (a `PATH` value), each
+/// name once, the first directory winning.
+pub fn scan_path(path_var: &OsStr) -> Vec<Entry> {
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    for dir in std::env::split_paths(path_var) {
+        let Ok(read) = std::fs::read_dir(&dir) else { continue };
+        for item in read.flatten() {
+            let name = item.file_name().to_string_lossy().to_string();
+            let runnable = std::fs::metadata(item.path()).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+            if !runnable || !seen.insert(name.clone()) {
+                continue;
+            }
+            entries.push(Entry { kind: Kind::Command, id: name.clone(), name, comment: String::new(), extra: Vec::new(), icon: None });
+        }
+    }
+    entries
 }
 
 #[cfg(test)]

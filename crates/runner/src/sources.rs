@@ -4,17 +4,11 @@
 use gtk4::gio;
 use gtk4::prelude::*;
 use opusdm_apps::entries::{app_entry, program_name};
-use opusdm_apps::search::{Entry, Kind};
+use opusdm_apps::search::Entry;
 use opusdm_ipc::MenuItem;
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsStr;
-use std::os::unix::fs::PermissionsExt;
 
-/// The executables on this process's `PATH`. Stats every file of every
-/// directory, so it belongs on a worker thread, not the GTK one.
-pub fn path_commands() -> Vec<Entry> {
-    scan_path(&std::env::var_os("PATH").unwrap_or_default())
-}
+pub use opusdm_apps::entries::path_commands;
 
 /// The icon (serialized `gio::Icon`) of the installed app that runs each
 /// program, keyed by program name, for the `PATH` commands. Reads the desktop
@@ -88,29 +82,13 @@ fn merge_apps(menu: Vec<Entry>, installed: Vec<Entry>) -> Vec<Entry> {
     menu.into_iter().chain(installed).filter(|entry| seen.insert(entry.id.clone())).collect()
 }
 
-/// The executables in the directories of `path_var` (a `PATH` value), each
-/// name once, the first directory winning.
-pub fn scan_path(path_var: &OsStr) -> Vec<Entry> {
-    let mut seen = HashSet::new();
-    let mut entries = Vec::new();
-    for dir in std::env::split_paths(path_var) {
-        let Ok(read) = std::fs::read_dir(&dir) else { continue };
-        for item in read.flatten() {
-            let name = item.file_name().to_string_lossy().to_string();
-            let runnable = std::fs::metadata(item.path()).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
-            if !runnable || !seen.insert(name.clone()) {
-                continue;
-            }
-            entries.push(Entry { kind: Kind::Command, id: name.clone(), name, comment: String::new(), extra: Vec::new(), icon: None });
-        }
-    }
-    entries
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opusdm_apps::entries::scan_path;
+    use opusdm_apps::search::Kind;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     fn app(id: &str) -> MenuItem {
         MenuItem::App { id: id.to_string() }
