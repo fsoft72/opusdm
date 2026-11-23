@@ -4,6 +4,7 @@ use crate::args::Args;
 use opusdm_media_ui::audio_view::AudioView;
 use opusdm_media_ui::controls::{Controls, Handlers};
 use opusdm_media::timefmt::{offset, slider_to_ns};
+use crate::snapshot;
 use crate::view::{choose, ViewKind};
 use gtk4 as gtk;
 use gtk::gdk;
@@ -55,12 +56,12 @@ pub fn open(app: &gtk::Application, args: &Args) {
     // The controls and the keys hold the engine weakly: closing the window
     // drops the only strong reference, and with it the GStreamer pipeline.
     let weak_engine = Rc::downgrade(&engine);
-    let controls = Controls::new(_handlers(&weak_engine), args.looping);
+    let controls = Controls::new(_handlers(&weak_engine, &window, &args.target), args.looping);
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
     vbox.append(&stack);
     vbox.append(&controls.root);
     window.set_child(Some(&vbox));
-    _wire_keys(&window, &weak_engine, &controls);
+    _wire_keys(&window, &weak_engine, &controls, &args.target);
     _wire_fullscreen(&window, &stack, &controls);
     _drop_engine_on_close(&window, engine.clone());
 
@@ -89,8 +90,10 @@ fn _drop_engine_on_close(window: &gtk::ApplicationWindow, engine: Rc<Engine>) {
 }
 
 /// What each control does to the engine, while the engine is alive.
-fn _handlers(engine: &Weak<Engine>) -> Handlers {
+fn _handlers(engine: &Weak<Engine>, window: &gtk::ApplicationWindow, target: &str) -> Handlers {
     let (e_play, e_seek, e_vol, e_mute, e_loop) = (engine.clone(), engine.clone(), engine.clone(), engine.clone(), engine.clone());
+    // The window owns the controls, so the handler holds it weakly.
+    let (e_snap, w_snap, target) = (engine.clone(), window.downgrade(), target.to_string());
     Handlers {
         toggle_play: Box::new(move || if let Some(e) = e_play.upgrade() { _toggle_play(&e) }),
         seek: Box::new(move |value, accurate| {
@@ -102,6 +105,12 @@ fn _handlers(engine: &Weak<Engine>) -> Handlers {
         volume: Box::new(move |v| if let Some(e) = e_vol.upgrade() { e.set_volume(v) }),
         mute: Box::new(move |m| if let Some(e) = e_mute.upgrade() { e.set_muted(m) }),
         looping: Some(Box::new(move |on| if let Some(e) = e_loop.upgrade() { e.set_loop(on) })),
+        snapshot: Some(Box::new(move || {
+            let (Some(e), Some(w)) = (e_snap.upgrade(), w_snap.upgrade()) else {
+                return opusdm_ipc::err_log!("player", "save frame: the engine or the window is gone");
+            };
+            snapshot::save_frame(&w, &e, &target);
+        })),
     }
 }
 
@@ -112,11 +121,11 @@ fn _toggle_play(engine: &Engine) {
     if let Err(e) = result { opusdm_ipc::err_log!("player", "{e}"); }
 }
 
-/// Space, arrows, F, M, Q and Esc.
-fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Weak<Engine>, controls: &Rc<Controls>) {
+/// Space, arrows, F, M, S, Q and Esc.
+fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Weak<Engine>, controls: &Rc<Controls>, target: &str) {
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let (w, engine, controls) = (window.clone(), engine.clone(), controls.clone());
+    let (w, engine, controls, target) = (window.clone(), engine.clone(), controls.clone(), target.to_string());
     key.connect_key_pressed(move |_, k, _, _| {
         let Some(engine) = engine.upgrade() else { return glib::Propagation::Proceed };
         let skip = |delta: i64| {
@@ -134,6 +143,7 @@ fn _wire_keys(window: &gtk::ApplicationWindow, engine: &Weak<Engine>, controls: 
             gdk::Key::f | gdk::Key::F => w.set_fullscreened(!w.is_fullscreen()),
             gdk::Key::m | gdk::Key::M => controls.toggle_mute(),
             gdk::Key::Escape if w.is_fullscreen() => w.set_fullscreened(false),
+            gdk::Key::s | gdk::Key::S => snapshot::save_frame(&w, &engine, &target),
             gdk::Key::q | gdk::Key::Q => w.close(),
             _ => return glib::Propagation::Proceed,
         }

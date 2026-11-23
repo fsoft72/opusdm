@@ -27,6 +27,8 @@ pub enum Icon {
     /// Speaker crossed out.
     Muted,
     Loop,
+    /// Camera, for saving the current frame.
+    Camera,
 }
 
 /// A drawing area whose icon can be swapped, in the foreground colour of the widget.
@@ -96,6 +98,7 @@ pub fn paint(cr: &cairo::Context, icon: Icon, rgba: (f64, f64, f64, f64), size: 
             cr.stroke()
         }
         Icon::Loop => loop_arrow(cr),
+        Icon::Camera => camera(cr),
     }
 }
 
@@ -107,6 +110,19 @@ fn speaker(cr: &cairo::Context) -> Result<(), cairo::Error> {
     }
     cr.close_path();
     cr.fill()
+}
+
+/// A camera body with a lens, drawn as an outline.
+fn camera(cr: &cairo::Context) -> Result<(), cairo::Error> {
+    cr.move_to(3.0, 8.0);
+    for (x, y) in [(7.5, 8.0), (9.0, 5.0), (15.0, 5.0), (16.5, 8.0), (21.0, 8.0), (21.0, 19.0), (3.0, 19.0)] {
+        cr.line_to(x, y);
+    }
+    cr.close_path();
+    cr.stroke()?;
+    cr.new_sub_path();
+    cr.arc(12.0, 13.0, 3.5, 0.0, std::f64::consts::TAU);
+    cr.stroke()
 }
 
 /// A nearly closed circle with an arrow head at its end, the repeat symbol.
@@ -130,7 +146,7 @@ fn loop_arrow(cr: &cairo::Context) -> Result<(), cairo::Error> {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 5] = [Icon::Play, Icon::Pause, Icon::Volume, Icon::Muted, Icon::Loop];
+    const ALL: [Icon; 6] = [Icon::Play, Icon::Pause, Icon::Volume, Icon::Muted, Icon::Loop, Icon::Camera];
 
     /// Number of pixels painted by `icon` on a transparent surface.
     fn painted(icon: Icon) -> usize {

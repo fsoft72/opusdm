@@ -3,6 +3,7 @@
 //! `docs/superpowers/specs/2026-10-05-player-design.md`.
 
 mod args;
+mod snapshot;
 mod view;
 mod window;
 

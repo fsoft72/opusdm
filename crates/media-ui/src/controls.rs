@@ -23,6 +23,8 @@ pub struct Handlers {
     pub mute: Box<dyn Fn(bool)>,
     /// Loop switch; `None` leaves the Loop button out of the bar.
     pub looping: Option<Box<dyn Fn(bool)>>,
+    /// Save-frame button; `None` leaves it out of the bar.
+    pub snapshot: Option<Box<dyn Fn()>>,
 }
 
 /// The bar widget and the bits of state it needs.
@@ -65,6 +67,10 @@ impl Controls {
         loop_btn.set_tooltip_text(Some("Loop"));
         loop_btn.set_active(looping);
 
+        let snap_btn = gtk::Button::new();
+        snap_btn.set_child(Some(&IconView::new(Icon::Camera).area));
+        snap_btn.set_tooltip_text(Some("Save frame as PNG (S)"));
+
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         root.set_margin_start(8);
         root.set_margin_end(8);
@@ -78,6 +84,10 @@ impl Controls {
         if h.looping.is_some() {
             root.append(&loop_btn);
             loop_btn.set_focusable(false);
+        }
+        if h.snapshot.is_some() {
+            root.append(&snap_btn);
+            snap_btn.set_focusable(false);
         }
 
         let dragging = Rc::new(Cell::new(false));
@@ -113,6 +123,10 @@ impl Controls {
         });
         let hh = h.clone();
         this.volume.connect_value_changed(move |s| (hh.volume)(s.value() / VOLUME_MAX));
+        let hh = h.clone();
+        snap_btn.connect_clicked(move |_| {
+            if let Some(snapshot) = &hh.snapshot { snapshot(); }
+        });
         loop_btn.connect_toggled(move |b| {
             if let Some(looping) = &h.looping { looping(b.is_active()); }
         });

@@ -180,5 +180,6 @@ fn _handlers(engine: &SharedEngine) -> Handlers {
         volume: Box::new(move |v| { if let Some(e) = c_vol() { e.set_volume(v); } }),
         mute: Box::new(move |m| { if let Some(e) = c_mute() { e.set_muted(m); } }),
         looping: None,
+        snapshot: None,
     }
 }
