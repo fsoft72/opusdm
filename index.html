@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OpusDM apt repository</title>
+<h1>OpusDM apt repository</h1>
+<p>amd64. Use the suite of your Ubuntu release: <code>resolute</code> (26.04) or <code>stonking</code> (26.10).
+The suite <code>stable</code> is the legacy one and holds the 26.04 build.</p>
+<pre>
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://fsoft72.github.io/opusdm/opusdm.gpg -o /etc/apt/keyrings/opusdm.gpg
+echo "deb [signed-by=/etc/apt/keyrings/opusdm.gpg] https://fsoft72.github.io/opusdm $(. /etc/os-release; echo $VERSION_CODENAME) main" | sudo tee /etc/apt/sources.list.d/opusdm.list
+sudo apt update
+sudo apt install opusdm
+</pre>
