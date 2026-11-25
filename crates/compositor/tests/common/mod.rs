@@ -10,6 +10,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -42,7 +44,7 @@ use tempfile::TempDir;
 use wayland_client::{
     backend::ObjectId,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface::WlSurface},
+    protocol::{wl_callback, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface::WlSurface},
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
 };
 use wayland_protocols::xdg::shell::client::{
@@ -59,6 +61,10 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a surface waits for its first configure.
 const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long `TestClient::roundtrip` waits for the answer to its sync: a
+/// hung compositor fails the test instead of hanging `cargo test`.
+const ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Size of the output the harness asks for.
 const OUTPUT_SIZE: &str = "1920x1080";
@@ -84,6 +90,8 @@ pub struct Compositor {
 impl Compositor {
     /// Starts the compositor in a fresh `XDG_RUNTIME_DIR` and waits (at most
     /// `START_TIMEOUT`) for the `WAYLAND_DISPLAY=<name>` line on its stdout.
+    /// The rest of its stdout (a `--startup` child may print there) is
+    /// drained for the whole run, so a writer never gets EPIPE / SIGPIPE.
     pub fn start() -> Compositor {
         let runtime = tempfile::tempdir().expect("temp XDG_RUNTIME_DIR");
         let mut child = Command::new(env!("CARGO_BIN_EXE_opusdm-compositor"))
@@ -97,9 +105,12 @@ impl Compositor {
         let stdout = child.stdout.take().expect("compositor stdout");
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
             let mut line = String::new();
-            let read = BufReader::new(stdout).read_line(&mut line);
+            let read = reader.read_line(&mut line);
             let _ = tx.send(read.map(|_| line));
+            // Ends when the compositor (and every child holding the pipe) is gone.
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
         });
         let line = match rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(line)) => line,
@@ -569,9 +580,20 @@ impl TestClient {
         ok
     }
 
-    /// Sends a `wl_display.sync` and handles every event up to its answer.
+    /// Sends a `wl_display.sync` and handles every event up to its answer;
+    /// panics when the answer does not come within `ROUNDTRIP_TIMEOUT`.
     pub fn roundtrip(&mut self) {
-        self.queue.roundtrip(&mut self.app).expect("roundtrip");
+        let done = Arc::new(AtomicBool::new(false));
+        self.conn.display().sync(&self.qh, Arc::clone(&done));
+        let ok = self.dispatch_until(ROUNDTRIP_TIMEOUT, |_| done.load(Ordering::SeqCst));
+        assert!(ok, "roundtrip: no answer from the compositor within {ROUNDTRIP_TIMEOUT:?} (hung?)");
+    }
+
+    /// Waits at most `timeout` until the last configure of `window` has
+    /// `size`. True when it has.
+    pub fn wait_configure(&mut self, window: &TestWindow, size: (i32, i32), timeout: Duration) -> bool {
+        let id = window.wl_surface().id();
+        self.dispatch_until(timeout, |app| app.surfaces.get(&id).is_some_and(|s| s.last_configure == size))
     }
 
     /// Requests a frame callback on `surface`, commits and waits at most
@@ -676,6 +698,22 @@ impl LayerShellHandler for ClientApp {
         }
         let size = (i32::try_from(w).unwrap_or(i32::MAX), i32::try_from(h).unwrap_or(i32::MAX));
         self.answer_configure(layer.wl_surface(), size);
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, Arc<AtomicBool>> for ClientApp {
+    /// Answer to a `wl_display.sync` of `roundtrip`: sets its flag.
+    fn event(
+        _: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        done: &Arc<AtomicBool>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            done.store(true, Ordering::SeqCst);
+        }
     }
 }
 

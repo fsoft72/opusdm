@@ -234,3 +234,28 @@ fn a_menu_of_the_exclusive_layer_gets_its_grab() {
     // The housekeeping tick moves the keyboard off the dead menu.
     assert!(c.wait_keyboard_focus(&run, Duration::from_secs(2)), "the keyboard did not go back to the layer");
 }
+
+#[test]
+fn a_maximized_window_grows_when_the_panel_client_is_killed() {
+    let comp = Compositor::start();
+    let mut app = TestClient::new(&comp);
+    let mut panel_client = TestClient::new(&comp);
+    let _panel =
+        panel_client.map_layer(Layer::Top, Anchor::TOP | Anchor::LEFT | Anchor::RIGHT, (0, 30), 30, KeyboardInteractivity::None);
+    let w = app.map_toplevel((400, 300));
+    w.xdg().set_maximized();
+    app.roundtrip();
+    assert_eq!(app.last_configure(&w), (1920, 1050));
+    drop(panel_client); // socket closed with the panel still mapped, like a killed panel
+    assert!(app.wait_configure(&w, (1920, 1080), Duration::from_secs(2)), "got {:?}", app.last_configure(&w));
+    assert!(app.wait_frame(&w, Duration::from_secs(2)));
+}
+
+#[test]
+#[should_panic(expected = "roundtrip: no answer from the compositor")]
+fn a_hung_compositor_fails_the_roundtrip_instead_of_hanging() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    comp.signal(libc::SIGSTOP); // the drop of `comp` kills it, stopped or not
+    c.roundtrip();
+}
