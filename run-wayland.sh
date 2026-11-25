@@ -25,7 +25,7 @@ set -euo pipefail
 # live hub. The script runs itself again under dbus-run-session;
 # OPUSDM_SANDBOX_BUS (the marker) names a file this outer run created.
 # dbus-run-session dies on TERM without passing it on, so the outer run
-# stays: it passes TERM / INT to the whole process group of dbus-run-session
+# stays: it passes TERM / INT / HUP to the inner run (the group of dbus-run-session before the inner run has started) and waits for it
 # (labwc / Wayfire run in the foreground of the inner run, in that group, as
 # a Ctrl+C in the terminal reached them before) and exits with the status
 # dbus-run-session hands back.
@@ -36,8 +36,21 @@ if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
     # Own process group: a Ctrl+C reaches only this run, which passes it on.
     # The trap comes first (an empty BUS_PID is skipped); HUP too: closing the
     # terminal reaches only this run, as the sandbox is in a group of its own.
+    # Passes a signal on as TERM to the inner run (its pid is in the marker
+    # file); before that, to the whole group of dbus-run-session (nothing
+    # started yet). The inner run's trap does the cleanup; this run waits for
+    # it below. TERM to dbus-run-session itself would return it early.
+    _forward_term() {
+        local pid
+        pid="$(cat "$BUS_MARKER" 2>/dev/null || true)"
+        if [ -n "$pid" ]; then
+            kill -TERM "$pid" 2>/dev/null || true
+        elif [ -n "$BUS_PID" ]; then
+            kill -TERM -- "-$BUS_PID" 2>/dev/null || true
+        fi
+    }
     BUS_PID=""
-    trap '[ -n "$BUS_PID" ] && kill -TERM -- "-$BUS_PID" 2>/dev/null; true' TERM INT HUP
+    trap _forward_term TERM INT HUP
     set -m
     OPUSDM_SANDBOX_BUS="$BUS_MARKER" dbus-run-session -- bash "$0" "$@" &
     BUS_PID=$!
@@ -51,6 +64,8 @@ if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
     done
     exit "$STATUS"
 fi
+# The outer run passes its signals on to this pid
+echo "$$" >"$OPUSDM_SANDBOX_BUS"
 unset OPUSDM_SANDBOX_BUS
 
 DEBUG=0
@@ -169,10 +184,21 @@ _run_compositor() {
     # The group of the autostart script (hub and tools), recorded by it.
     local hub_pgid=""
     hub_pgid="$(cat "$CONFIG_DIR/autostart.pgid" 2>/dev/null || true)"
+    # Only a real group of its own: not 0 / 1 (every process) nor this script's
+    local own_pgid
+    own_pgid="$(ps -o pgid= -p $$ | tr -d ' ')"
     case "$hub_pgid" in
-        ''|*[!0-9]*) ;;
-        *) kill -TERM -- "-$hub_pgid" 2>/dev/null || true ;;
+        ''|*[!0-9]*) [ -n "$hub_pgid" ] && echo "run-wayland.sh: bad autostart pgid '$hub_pgid', not ended" >&2 ;;
+        *)
+            if [ "$hub_pgid" -gt 1 ] && [ "$hub_pgid" != "$own_pgid" ]; then
+                kill -TERM -- "-$hub_pgid" 2>/dev/null || true
+            else
+                echo "run-wayland.sh: unsafe autostart pgid '$hub_pgid', not ended" >&2
+            fi
+            ;;
     esac
+    # No signal may reach the local pid above once this function is gone
+    trap - TERM INT HUP
     return "$status"
 }
 

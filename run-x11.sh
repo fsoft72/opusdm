@@ -20,7 +20,6 @@
 #                                    # picom.conf); XDG_CONFIG_HOME points to a
 #                                    # private folder, so ~/.config/mimeapps.list
 #                                    # is not touched either. Same as XEPHYR_CONFIG_DIR.
-
 set -euo pipefail
 
 # A private D-Bus session bus, always: on the live bus the sandbox hub would
@@ -28,10 +27,10 @@ set -euo pipefail
 # live hub. The script runs itself again under dbus-run-session;
 # OPUSDM_SANDBOX_BUS (the marker) names a file this outer run created.
 # dbus-run-session dies on TERM without passing it on, so the outer run
-# stays: it passes TERM / INT / HUP to the whole process group of
-# dbus-run-session (Xephyr, the window manager, picom and the hub run in that
-# group; the inner run's own trap cleans up) and exits with the status
-# dbus-run-session hands back. This runs before the arguments are parsed, so
+# stays: it passes TERM / INT / HUP to the inner run (the group of
+# dbus-run-session before the inner run has started), waits until it is gone
+# (its trap cleans up), ends what is left of the group and exits with the
+# status dbus-run-session hands back (the inner run's). This runs before the arguments are parsed, so
 # the inner run gets them unchanged.
 if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
     command -v dbus-run-session >/dev/null 2>&1 || { echo "dbus-run-session not found (package: dbus-daemon or dbus-bin): the sandbox needs a private D-Bus session"; exit 1; }
@@ -39,8 +38,21 @@ if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
     trap 'rm -f "$BUS_MARKER"' EXIT
     # The forwarding trap comes first (an empty BUS_PID is skipped); HUP too:
     # closing the terminal reaches only this run, the sandbox has a group of its own.
+    # Passes a signal on as TERM to the inner run (its pid is in the marker
+    # file); before that, to the whole group of dbus-run-session (nothing
+    # started yet). The inner run's trap does the cleanup; this run waits for
+    # it below. TERM to dbus-run-session itself would return it early.
+    _forward_term() {
+        local pid
+        pid="$(cat "$BUS_MARKER" 2>/dev/null || true)"
+        if [ -n "$pid" ]; then
+            kill -TERM "$pid" 2>/dev/null || true
+        elif [ -n "$BUS_PID" ]; then
+            kill -TERM -- "-$BUS_PID" 2>/dev/null || true
+        fi
+    }
     BUS_PID=""
-    trap '[ -n "$BUS_PID" ] && kill -TERM -- "-$BUS_PID" 2>/dev/null; true' TERM INT HUP
+    trap _forward_term TERM INT HUP
     # Own process group: a Ctrl+C reaches only this run, which passes it on.
     set -m
     OPUSDM_SANDBOX_BUS="$BUS_MARKER" dbus-run-session -- bash "$0" "$@" &
@@ -53,8 +65,12 @@ if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
         STATUS=0
         wait "$BUS_PID" || STATUS=$?
     done
+    # Whatever of the sandbox is left in the group (the hub's tools).
+    kill -TERM -- "-$BUS_PID" 2>/dev/null || true
     exit "$STATUS"
 fi
+# The outer run passes its signals on to this pid
+echo "$$" >"$OPUSDM_SANDBOX_BUS"
 unset OPUSDM_SANDBOX_BUS
 
 DEBUG=0
