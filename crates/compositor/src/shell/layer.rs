@@ -196,6 +196,26 @@ fn _release_keyboard(state: &mut State, surface: &WlSurface) {
     }
 }
 
+/// Ends the popup grab (an open menu) of another surface before the
+/// exclusive layer `layer` takes the keyboard: the popups of the grab root
+/// get `popup_done` and the keyboard and pointer grabs are unset. A grab
+/// rooted at `layer` itself (its own menu) is left alone; no grab: nothing.
+fn _end_popup_grabs_for(state: &mut State, layer: &WlSurface) {
+    let mut roots: Vec<WlSurface> = Vec::new();
+    if let Some(root) = state.seat.get_keyboard().and_then(|k| k.grab_start_data().and_then(|d| d.focus.clone())) {
+        roots.push(root);
+    }
+    if let Some((root, _)) = state.seat.get_pointer().and_then(|p| p.grab_start_data().and_then(|d| d.focus.clone())) {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    for root in roots.iter().filter(|r| *r != layer) {
+        opusdm_ipc::debug_log!(LOG_TAG, "exclusive layer {} ends the popup grab rooted at {}", layer.id(), root.id());
+        state.dismiss_popups_and_grabs(root);
+    }
+}
+
 /// True when the layer surface `layer` committed a buffer and was not
 /// hidden since.
 fn _is_shown(layer: &LayerSurface) -> bool {
@@ -280,6 +300,7 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let holds = state.exclusive_layer.as_ref() == Some(surface);
     if exclusive && !holds {
         opusdm_ipc::debug_log!(LOG_TAG, "exclusive keyboard layer {} mapped, it takes the keyboard", surface.id());
+        _end_popup_grabs_for(state, surface);
         state.exclusive_layer = Some(surface.clone());
         state.focus_layer(surface);
     } else if !exclusive && holds {

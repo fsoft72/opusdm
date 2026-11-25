@@ -276,6 +276,18 @@ fn a_window_menu_does_not_take_the_keyboard_from_an_exclusive_layer() {
 }
 
 #[test]
+fn an_exclusive_layer_mapped_over_an_open_menu_keeps_the_keyboard() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let menu = c.map_popup_with_grab(&w, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    assert!(c.popup_done(&menu));
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+}
+
+#[test]
 fn a_menu_of_the_exclusive_layer_gets_its_grab() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);
