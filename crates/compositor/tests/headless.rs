@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use common::ipc::{ipc_hub, ipc_request, ipc_watch};
-use common::{Anchor, Compositor, HasSurface, KeyboardInteractivity, Layer, Rect, TestClient};
+use common::{Anchor, Compositor, HasSurface, KeyboardInteractivity, Layer, Rect, TestClient, WindowDecorations};
 
 #[test]
 fn a_toplevel_gets_configured_and_frame_callbacks() {
@@ -1886,4 +1886,149 @@ fn set_geometry_ends_the_snapped_state() {
     c.roundtrip();
     assert_eq!(c.last_configure(&w), (500, 400), "not re-fitted to the half");
     assert_eq!(window_rect(&comp, 1), ((100, 100, 500, 400), false));
+}
+
+// Server side decorations (xdg-decoration) and the frame geometry.
+
+/// Border width of the default decoration theme (OpusDMTheme).
+const BORDER: i32 = 4;
+
+/// Height of the title bar of a decorated window.
+const TITLE: i32 = 24;
+
+/// Maps a 400x300 toplevel that asks for server side decorations.
+fn map_decorated(c: &mut TestClient) -> common::TestWindow {
+    c.map_toplevel_decorated((400, 300), WindowDecorations::RequestServer)
+}
+
+#[test]
+fn a_client_asking_server_side_gets_server_side() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = map_decorated(&mut c);
+    c.roundtrip();
+    assert!(c.server_side(&w), "the configure had the server side mode");
+}
+
+#[test]
+fn a_client_asking_client_side_or_no_mode_stays_client_side() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    for decorations in [WindowDecorations::RequestClient, WindowDecorations::ServerDefault, WindowDecorations::None] {
+        let w = c.map_toplevel_decorated((400, 300), decorations);
+        c.roundtrip();
+        assert!(!c.server_side(&w), "{decorations:?} stays client side");
+    }
+}
+
+#[test]
+fn a_decorated_window_cascades_by_its_frame() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = map_decorated(&mut c);
+    c.roundtrip();
+    assert_eq!(c.last_configure(&w), (400, 300), "the client keeps its size");
+    let frame = (0, 0, i64::from(400 + 2 * BORDER), i64::from(300 + TITLE + 2 * BORDER));
+    assert_eq!(window_rect(&comp, 1), (frame, false), "windows/list shows the frame at the cascade origin");
+}
+
+#[test]
+fn a_maximized_decorated_window_fills_the_usable_area_with_its_frame() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _panel = map_panel(&mut c);
+    let w = map_decorated(&mut c);
+    w.xdg().set_maximized();
+    let inner = (1920 - 2 * BORDER, 1040 - TITLE - 2 * BORDER);
+    assert!(c.wait_configure(&w, inner, Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 40, 1920, 1040), true), "the frame is the usable area");
+    w.xdg().unset_maximized();
+    assert!(c.wait_configure(&w, (400, 300), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+}
+
+#[test]
+fn a_fullscreen_decorated_window_covers_the_output_without_a_frame() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _panel = map_panel(&mut c);
+    let w = map_decorated(&mut c);
+    w.xdg().set_fullscreen(None);
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    let ((x, y, width, height), _) = window_rect(&comp, 1);
+    assert_eq!((x, y, width, height), (0, 0, 1920, 1080));
+}
+
+#[test]
+fn snap_and_set_geometry_give_a_decorated_client_the_area_minus_the_frame() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = map_decorated(&mut c);
+    alt_drag(&comp, (200, 150), (2, 500));
+    let half = (960 - 2 * BORDER, 1080 - TITLE - 2 * BORDER);
+    assert!(c.wait_configure(&w, half, Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 960, 1080), false), "the frame is the left half");
+    let reply = ipc_request(&comp, "window/set-geometry", json!({"id": 1, "x": 100, "y": 100, "width": 500, "height": 400}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let inner = (500 - 2 * BORDER, 400 - TITLE - 2 * BORDER);
+    assert!(c.wait_configure(&w, inner, Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((100, 100, 500, 400), false), "set-geometry sets the frame");
+    let reply = ipc_request(&comp, "window/set-geometry", json!({"id": 1, "x": 0, "y": 0, "width": 8, "height": 32}));
+    assert!(reply["error"].is_string(), "a geometry with no room for the client is refused: {reply}");
+}
+
+#[test]
+fn a_client_side_window_keeps_the_stage_1_sizes_and_positions() {
+    // GTK4 apps (the Lister) ask for client side decorations: nothing changes for them.
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _panel = map_panel(&mut c);
+    let w = c.map_toplevel_decorated((400, 300), WindowDecorations::RequestClient);
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 40, 400, 300), false), "stage 1 cascade position and size");
+    w.xdg().set_maximized();
+    assert!(c.wait_configure(&w, (1920, 1040), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 40, 1920, 1040), true));
+    let reply = ipc_request(&comp, "window/set-geometry", json!({"id": 1, "x": 100, "y": 100, "width": 500, "height": 400}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(c.wait_configure(&w, (500, 400), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((100, 100, 500, 400), false));
+}
+
+#[test]
+fn a_maximized_window_that_turns_server_side_fits_its_frame_in_the_area() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel_decorated((400, 300), WindowDecorations::RequestClient);
+    w.xdg().set_maximized();
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    w.request_server_side(true);
+    let inner = (1920 - 2 * BORDER, 1080 - TITLE - 2 * BORDER);
+    assert!(c.wait_configure(&w, inner, Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    assert!(c.server_side(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 1920, 1080), true));
+    w.request_server_side(false);
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    assert!(!c.server_side(&w));
+}
+
+#[test]
+fn a_maximized_decorated_window_dragged_away_keeps_the_pointer_on_its_frame() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = map_decorated(&mut c);
+    w.xdg().set_maximized();
+    assert!(c.wait_configure(&w, (1920 - 2 * BORDER, 1080 - TITLE - 2 * BORDER), Duration::from_secs(2)));
+    c.roundtrip();
+    alt_drag(&comp, (960, 540), (1000, 560));
+    assert!(c.wait_configure(&w, (400, 300), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    // The frame is 408x332: 960 - 960 * 408 / 1920 = 756, 540 - 540 * 332 / 1080 = 374, then +40, +20.
+    assert_eq!(window_rect(&comp, 1), ((796, 394, 408, 332), false));
 }

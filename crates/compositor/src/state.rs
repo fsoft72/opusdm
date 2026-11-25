@@ -34,7 +34,10 @@ use smithay::{
             },
             SelectionHandler,
         },
-        shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
+        shell::{
+            wlr_layer::WlrLayerShellState,
+            xdg::{decoration::XdgDecorationState, XdgShellState},
+        },
         shm::ShmState,
         xdg_activation::XdgActivationState,
     },
@@ -43,6 +46,7 @@ use smithay::{
 use opusdm_ipc::desktop::DesktopSettings;
 
 use crate::config::CompositorConfig;
+use crate::decor::theme::DecorTheme;
 use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
 use crate::hotkeys::HotkeyTable;
@@ -86,6 +90,11 @@ pub struct WindowInfo {
     pub opacity_override: Option<u8>,
     /// True while the window is maximized (it fills `usable_area()`).
     pub maximized: bool,
+    /// True when the client asked for server side decorations
+    /// (`zxdg_toplevel_decoration_v1.set_mode(server_side)`): the window
+    /// manager places its frame, the client sits inside it by the insets
+    /// (`decor`). False for client side, no mode or no decoration object.
+    pub decorated: bool,
     /// True while the window is fullscreen (it fills the whole output and is
     /// shown above the TOP layer when it is the topmost window).
     pub fullscreen: bool,
@@ -115,6 +124,7 @@ impl WindowInfo {
             snapped: None,
             opacity_override: None,
             maximized: false,
+            decorated: false,
             fullscreen: false,
             last_position: None,
             resize: ResizeTrack::default(),
@@ -175,6 +185,10 @@ pub struct State {
     pub layer_shell_state: WlrLayerShellState,
     /// `xdg_activation_v1`: the activation tokens (see `activation.rs`).
     pub xdg_activation_state: XdgActivationState,
+    /// `zxdg_decoration_manager_v1`: server side decorations (see `decor`).
+    pub xdg_decoration_state: XdgDecorationState,
+    /// Metrics of the frame of the decorated windows (OpusDMTheme defaults).
+    pub decor_theme: DecorTheme,
     /// Mapped TOP / OVERLAY layer surface with exclusive keyboard
     /// interactivity: it keeps the keyboard while it is mapped.
     pub exclusive_layer: Option<WlSurface>,
@@ -258,6 +272,7 @@ impl State {
         let xdg_shell_state = XdgShellState::new::<State>(display);
         let layer_shell_state = WlrLayerShellState::new::<State>(display);
         let xdg_activation_state = XdgActivationState::new::<State>(display);
+        let xdg_decoration_state = XdgDecorationState::new::<State>(display);
         let shm_state = ShmState::new::<State>(display, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<State>(display);
         let mut seat_state = SeatState::new();
@@ -283,6 +298,8 @@ impl State {
             xdg_shell_state,
             layer_shell_state,
             xdg_activation_state,
+            xdg_decoration_state,
+            decor_theme: DecorTheme::default(),
             exclusive_layer: None,
             hidden_layers: Vec::new(),
             shm_state,

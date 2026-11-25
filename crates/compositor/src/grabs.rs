@@ -25,6 +25,7 @@ use smithay::{
     wayland::shell::xdg::ToplevelSurface,
 };
 
+use crate::decor::geometry::frame_rect;
 use crate::geometry::{resize_rect, Edges, Rect, MIN_WINDOW_SIZE};
 use crate::state::{State, LOG_TAG};
 
@@ -498,8 +499,9 @@ impl State {
     /// Called when a move grab of `window` goes past the drag threshold: a
     /// maximized, fullscreen or snapped window leaves that state, gets a
     /// configure of its restore size and is placed so the point under
-    /// `press` (the pointer at the press) keeps its relative position.
-    /// Returns the new origin and size; `None` when the window is in the
+    /// `press` (the pointer at the press) keeps its relative position in
+    /// the frame (the client rectangle of a window without one). Returns
+    /// the new client origin and size; `None` when the window is in the
     /// normal state or was restored to no stored size (the client decides),
     /// or is not a mapped toplevel in the table (logged).
     pub fn restore_for_drag(&mut self, window: &Window, press: Point<f64, Logical>) -> Option<(Point<i32, Logical>, (i32, i32))> {
@@ -518,12 +520,16 @@ impl State {
             opusdm_ipc::err_log!(LOG_TAG, "move drag: toplevel {} is not mapped, not restored", wl.id());
             return None;
         };
+        let geo = window.geometry().size;
+        // The frame now (a fullscreen window has none), then the insets of the normal state.
+        let current = self.frame_rect_of(wl, Rect { x: loc.x, y: loc.y, w: geo.w, h: geo.h });
         self._leave_fill(&toplevel, restore);
         let restored = restore?;
-        let geo = window.geometry().size;
-        let current = Rect { x: loc.x, y: loc.y, w: geo.w, h: geo.h };
+        let insets = self.insets_of(wl);
+        let restored_frame = frame_rect(Rect { x: 0, y: 0, w: restored.0, h: restored.1 }, insets);
         let p = press.to_i32_round();
-        let origin = restored_origin(current, restored, (p.x, p.y));
+        let (fx, fy) = restored_origin(current, (restored_frame.w, restored_frame.h), (p.x, p.y));
+        let origin = (fx.saturating_add(insets.left), fy.saturating_add(insets.top));
         self.move_window(window, origin);
         self.notify_watchers();
         Some((origin.into(), restored))

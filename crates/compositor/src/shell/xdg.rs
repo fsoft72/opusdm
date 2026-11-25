@@ -348,9 +348,11 @@ impl State {
     /// Puts the toplevel `surface` in the `fill` state: stores the geometry
     /// to restore (the first time it leaves the normal state; a snapped
     /// window keeps the geometry it had before the snap), configures the
-    /// area size and moves a mapped window to the area origin. An unmapped
-    /// window is placed at the origin when it maps. Always answers with a
-    /// configure once the initial one was sent, as the protocol asks.
+    /// client size of the area (the area minus the frame insets of a
+    /// decorated window; a fullscreen window has none) and moves a mapped
+    /// window there. An unmapped window is placed there when it maps.
+    /// Always answers with a configure once the initial one was sent, as
+    /// the protocol asks.
     fn fill_window(&mut self, surface: &ToplevelSurface, fill: Fill) {
         let wl = surface.wl_surface();
         let window = self.mapped_window(wl);
@@ -376,16 +378,17 @@ impl State {
             Fill::Maximized => info.maximized = true,
             Fill::Fullscreen => info.fullscreen = true,
         }
+        let target = self.client_rect_in(wl, area);
         surface.with_pending_state(|state| {
             state.states.set(match fill {
                 Fill::Maximized => xdg_toplevel::State::Maximized,
                 Fill::Fullscreen => xdg_toplevel::State::Fullscreen,
             });
-            state.size = Some((area.w, area.h).into());
+            state.size = Some((target.w, target.h).into());
         });
-        opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} {fill:?} to {area:?}", wl.id());
+        opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} {fill:?} to {area:?}, client {target:?}", wl.id());
         if let Some(window) = window {
-            self.move_window(&window, (area.x, area.y));
+            self.move_window(&window, (target.x, target.y));
         }
         if surface.is_initial_configure_sent() {
             surface.send_configure();
@@ -394,7 +397,8 @@ impl State {
     }
 
     /// Takes the toplevel `surface` out of the `fill` state: when the other
-    /// fill state is still on, it fills that area; otherwise it gets back the
+    /// fill state is still on, it fills that area (minus the frame insets);
+    /// otherwise it gets back the
     /// stored geometry (size sent explicitly, so the client goes back to it)
     /// or, with none stored, a configure that leaves the size to the client;
     /// a window maximized from a snap is then no longer snapped.
@@ -413,7 +417,7 @@ impl State {
         }
         let other = if info.maximized { Some(Fill::Maximized) } else if info.fullscreen { Some(Fill::Fullscreen) } else { None };
         let target = match other {
-            Some(other) => Some(self.fill_area(other)),
+            Some(other) => Some(self.client_rect_in(wl, self.fill_area(other))),
             None => {
                 info.snapped = None;
                 info.restore.take()
@@ -475,10 +479,12 @@ impl State {
         }
     }
 
-    /// Configures the toplevel `wl` (mapped or not) to the size of `area`
-    /// and moves it to the area origin when it is mapped; `what` names the
-    /// fill (or snap) state in the logs.
-    fn refill_window(&mut self, wl: &WlSurface, area: Rect, what: &str) {
+    /// Configures the toplevel `wl` (mapped or not) to the client size of
+    /// `area` (the area minus the frame insets of a decorated window) and
+    /// moves it there when it is mapped; `what` names the fill (or snap)
+    /// state in the logs.
+    pub(crate) fn refill_window(&mut self, wl: &WlSurface, area: Rect, what: &str) {
+        let area = self.client_rect_in(wl, area);
         let window = self.mapped_window(wl);
         // The table has every toplevel: mapped, unmapped or hidden.
         let toplevel = self.windows.get(wl).and_then(|info| info.window.toplevel()).cloned();
@@ -527,8 +533,9 @@ impl State {
 /// Commit of a toplevel not mapped yet: sends the initial configure, or maps
 /// the window and focuses it once a buffer is committed. It maps on the
 /// current desktop, not minimized, on top of the stack. A fullscreen or
-/// maximized window maps at the origin of its area, a new window takes the
-/// next cascade position, a window unmapped by a null buffer its old one.
+/// maximized window maps at the client origin of its area, a new window
+/// takes the next cascade position (of its frame, when it is decorated), a
+/// window unmapped by a null buffer its old one.
 /// An xdg-activation request that came before the map is applied then.
 /// Mapping ends show-desktop mode without restoring its windows.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
@@ -560,14 +567,16 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let size = window.geometry().size;
     let (x, y) = match (fill, last) {
         (Some(fill), _) => {
-            let area = state.fill_area(fill);
+            let area = state.client_rect_in(surface, state.fill_area(fill));
             (area.x, area.y)
         }
         (None, Some(pos)) => pos,
         (None, None) => {
-            let pos = cascade_position(state.usable_area(), (size.w, size.h), state.cascade_index);
+            let frame = state.frame_rect_of(surface, Rect { x: 0, y: 0, w: size.w, h: size.h });
+            let (x, y) = cascade_position(state.usable_area(), (frame.w, frame.h), state.cascade_index);
             state.cascade_index = state.cascade_index.wrapping_add(1);
-            pos
+            // `frame` is around a client at the origin: its origin is minus the left / top insets.
+            (x.saturating_sub(frame.x), y.saturating_sub(frame.y))
         }
     };
     opusdm_ipc::debug_log!(LOG_TAG, "map toplevel {} {}x{} at {x},{y}", surface.id(), size.w, size.h);

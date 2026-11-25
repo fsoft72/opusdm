@@ -5,6 +5,7 @@ mod args;
 mod backend;
 mod child;
 mod config;
+mod decor;
 mod draw;
 mod geometry;
 mod grabs;

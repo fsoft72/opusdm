@@ -78,7 +78,8 @@ impl State {
 
     /// Snaps the mapped `window`, released by a move grab in `zone`, that
     /// has (or was just configured to) `size`: `Left` / `Right` configure it
-    /// to the half of the usable area and move it there, `Top` maximizes it
+    /// to the half of the usable area (its frame fills the half: the client
+    /// gets the half minus the insets) and move it there, `Top` maximizes it
     /// (the stage 1 maximize path). Its geometry before the snap (position
     /// now, `size`) is kept in `restore`, so a later drag (or unmaximize)
     /// gives the size back. A window that is gone, not mapped, not in the
@@ -94,7 +95,7 @@ impl State {
             return;
         };
         let pre_snap = Rect { x: loc.x, y: loc.y, w: size.0, h: size.1 };
-        let target = self.snap_target(zone);
+        let target = self.client_rect_in(&wl, self.snap_target(zone));
         let Some(info) = self.windows.get_mut(&wl) else {
             opusdm_ipc::err_log!(LOG_TAG, "snap {zone:?} refused: toplevel {} has no window entry", wl.id());
             return;

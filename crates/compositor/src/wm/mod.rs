@@ -24,6 +24,7 @@ use smithay::{
     wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData},
 };
 
+use crate::decor::geometry::{client_rect, insets};
 use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
 use crate::ipc::protocol::WindowView;
@@ -250,15 +251,24 @@ impl State {
         window_opacity(&self.wm, active, info.opacity_override)
     }
 
-    /// Gives the window `id` the geometry `rect` (IPC `window/set-geometry`):
-    /// it leaves maximized, fullscreen and snapped (the stored geometry to
-    /// restore is dropped), is configured to the size of `rect` (a client
-    /// with a bigger minimum size takes its own, as usual) and moved to its
-    /// origin; a hidden or unmapped window shows there when it maps again.
-    /// Unknown window or an empty size: an error.
+    /// Gives the window `id` the geometry `rect` (IPC `window/set-geometry`),
+    /// the rectangle of its frame (`windows/list` geometry): it leaves
+    /// maximized, fullscreen and snapped (the stored geometry to restore is
+    /// dropped), is configured to the client size inside `rect` (`rect`
+    /// minus the insets of a decorated window; a client with a bigger
+    /// minimum size takes its own, as usual) and moved there; a hidden or
+    /// unmapped window shows there when it maps again. Unknown window, an
+    /// empty size or a size with no room for the client inside the frame:
+    /// an error.
     pub fn set_window_geometry(&mut self, id: WindowId, rect: Rect) -> Result<(), String> {
         if rect.w <= 0 || rect.h <= 0 {
             return Err(format!("set geometry: the size {}x{} is empty", rect.w, rect.h));
+        }
+        let decorated = self.window_by_id(id).map(|(_, i)| i.decorated).ok_or_else(|| format!("set geometry: unknown window {}", id.0))?;
+        // The window leaves fullscreen: the insets of the normal state.
+        let client = client_rect(rect, insets(decorated, false, &self.decor_theme));
+        if client.w <= 0 || client.h <= 0 {
+            return Err(format!("set geometry: the size {}x{} leaves no room for the client inside the frame", rect.w, rect.h));
         }
         let info = self._info_by_id_mut(id).ok_or_else(|| format!("set geometry: unknown window {}", id.0))?;
         info.maximized = false;
@@ -274,17 +284,17 @@ impl State {
         toplevel.with_pending_state(|state| {
             state.states.unset(xdg_toplevel::State::Maximized);
             state.states.unset(xdg_toplevel::State::Fullscreen);
-            state.size = Some((rect.w, rect.h).into());
+            state.size = Some((client.w, client.h).into());
         });
         if self.space.element_location(&window).is_some() {
-            self.move_window(&window, (rect.x, rect.y));
+            self.move_window(&window, (client.x, client.y));
         } else if let Some(info) = self._info_by_id_mut(id) {
-            info.last_position = Some((rect.x, rect.y));
+            info.last_position = Some((client.x, client.y));
         }
         if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }
-        opusdm_ipc::debug_log!(LOG_TAG, "window {} set to {rect:?}", id.0);
+        opusdm_ipc::debug_log!(LOG_TAG, "window {} set to {rect:?}, client {client:?}", id.0);
         self.notify_watchers();
         Ok(())
     }
@@ -334,7 +344,9 @@ impl State {
         }
     }
 
-    /// The IPC view of the live toplevel `wl` with the info `info`.
+    /// The IPC view of the live toplevel `wl` with the info `info`; its
+    /// geometry is the frame (the client rectangle when it has none), the
+    /// one the foreign-toplevel and workspace clients see too.
     fn _window_view(&self, wl: &WlSurface, info: &WindowInfo) -> WindowView {
         let (app_id, title) = with_states(wl, |states| {
             let Some(data) = states.data_map.get::<XdgToplevelSurfaceData>() else { return (String::new(), String::new()) };
@@ -357,7 +369,7 @@ impl State {
             app_id,
             title,
             pid: info.pid,
-            geometry: Rect { x, y, w: size.w, h: size.h },
+            geometry: self.frame_rect_of(wl, Rect { x, y, w: size.w, h: size.h }),
             desktop: info.desktop,
             minimized: info.minimized,
             maximized: info.maximized,
@@ -461,9 +473,10 @@ impl State {
         opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} hidden at {position:?}", wl.id());
     }
 
-    /// Where the hidden toplevel `wl` is shown again: the origin of its fill
-    /// area when it is fullscreen or maximized, else the position it had
-    /// (the origin of the usable area when it has none).
+    /// Where the hidden toplevel `wl` is shown again: the client origin of
+    /// its fill area when it is fullscreen or maximized (inside the frame
+    /// of a decorated window), else the position it had (the client origin
+    /// of the usable area when it has none).
     fn _show_position(&mut self, wl: &WlSurface) -> (i32, i32) {
         let usable = self.usable_area();
         let output = self.output_area();
@@ -472,8 +485,9 @@ impl State {
             return (usable.x, usable.y);
         };
         if info.fullscreen { return (output.x, output.y); }
-        if info.maximized { return (usable.x, usable.y); }
-        info.last_position.take().unwrap_or((usable.x, usable.y))
+        let last = if info.maximized { None } else { info.last_position.take() };
+        let inner = self.client_rect_in(wl, usable);
+        last.unwrap_or((inner.x, inner.y))
     }
 
     /// Gives the keyboard to the topmost shown window when the keyboard is

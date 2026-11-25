@@ -32,7 +32,7 @@ use smithay_client_toolkit::{
         wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
         xdg::{
             popup::{Popup, PopupConfigure, PopupHandler},
-            window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
+            window::{DecorationMode, Window, WindowConfigure, WindowHandler},
             XdgPositioner, XdgShell, XdgSurface as _,
         },
         WaylandSurface,
@@ -70,6 +70,7 @@ use wayland_protocols::xdg::shell::client::{
 };
 
 pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
+pub use smithay_client_toolkit::shell::xdg::window::WindowDecorations;
 
 /// How long `Compositor::start` waits for the socket name.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -313,6 +314,15 @@ impl TestWindow {
     pub fn xdg(&self) -> &XdgToplevel {
         self.window.xdg_toplevel()
     }
+
+    /// Asks for server side (`true`) or client side (`false`) decorations
+    /// on the decoration object of the window (one made by
+    /// `map_toplevel_decorated` with a mode or `ServerDefault`); the test
+    /// waits for the configure after it.
+    pub fn request_server_side(&self, server: bool) {
+        let mode = if server { DecorationMode::Server } else { DecorationMode::Client };
+        self.window.request_decoration_mode(Some(mode));
+    }
 }
 
 impl HasSurface for TestWindow {
@@ -442,12 +452,15 @@ struct SurfaceInfo {
     popup_rect: Rect,
     /// Size sent by the last layer surface configure (0 = the client decides).
     layer_size: (u32, u32),
+    /// True when the last toplevel configure had the server side decoration
+    /// mode (`zxdg_toplevel_decoration_v1.configure` with `server_side`).
+    server_side: bool,
 }
 
 impl SurfaceInfo {
     /// Info of a new surface the test wants of size `requested`.
     fn new(requested: (i32, i32)) -> SurfaceInfo {
-        SurfaceInfo { requested, last_configure: (0, 0), configured: false, buffer: None, popup_rect: Rect::default(), layer_size: (0, 0) }
+        SurfaceInfo { requested, last_configure: (0, 0), configured: false, buffer: None, popup_rect: Rect::default(), layer_size: (0, 0), server_side: false }
     }
 }
 
@@ -600,8 +613,17 @@ impl TestClient {
     /// configure, answers it with a buffer and waits until the compositor has
     /// handled that commit.
     pub fn map_toplevel(&mut self, size: (i32, i32)) -> TestWindow {
+        self.map_toplevel_decorated(size, WindowDecorations::None)
+    }
+
+    /// Maps an xdg toplevel of `size` as `map_toplevel` does, asking for
+    /// `decorations` through `zxdg_decoration_manager_v1` before the initial
+    /// commit (`RequestServer`: `set_mode(server_side)`, `RequestClient`:
+    /// `set_mode(client_side)`, `ServerDefault`: a decoration object and no
+    /// mode, `None` / `ClientOnly`: no decoration object at all).
+    pub fn map_toplevel_decorated(&mut self, size: (i32, i32), decorations: WindowDecorations) -> TestWindow {
         let surface = self.app.compositor.create_surface(&self.qh);
-        let window = self.app.xdg.create_window(surface, WindowDecorations::None, &self.qh);
+        let window = self.app.xdg.create_window(surface, decorations, &self.qh);
         window.set_title("opusdm-compositor test");
         let id = window.wl_surface().id();
         let info = SurfaceInfo::new(size);
@@ -1020,6 +1042,13 @@ impl TestClient {
         self.dispatch_until(timeout, |app| app.frames.contains(&id))
     }
 
+    /// True when the last configure of `window` had the server side
+    /// decoration mode.
+    pub fn server_side(&self, window: &TestWindow) -> bool {
+        let id = window.wl_surface().id();
+        self.app.surfaces.get(&id).map(|s| s.server_side).expect("known window")
+    }
+
     /// Size of the last configure of `window` (the requested size on an axis
     /// the compositor left to the client).
     pub fn last_configure(&self, window: &TestWindow) -> (i32, i32) {
@@ -1082,6 +1111,9 @@ impl WindowHandler for ClientApp {
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, window: &Window, configure: WindowConfigure, _serial: u32) {
         let w = configure.new_size.0.map_or(0, |v| i32::try_from(v.get()).unwrap_or(i32::MAX));
         let h = configure.new_size.1.map_or(0, |v| i32::try_from(v.get()).unwrap_or(i32::MAX));
+        if let Some(info) = self.surfaces.get_mut(&window.wl_surface().id()) {
+            info.server_side = configure.decoration_mode == DecorationMode::Server;
+        }
         self.answer_configure(window.wl_surface(), (w, h));
     }
 }
