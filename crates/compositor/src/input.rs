@@ -259,8 +259,8 @@ impl State {
     /// goes to the focused client as usual (its release does too, so the
     /// client never sees a modifier stuck); the quit binding still runs and
     /// the window menu binding runs too (it closes the menu); a hub hotkey
-    /// is swallowed with an `err_log!`; any other press (repeats included)
-    /// goes to the menu. Every press taken has its keycode recorded so its
+    /// is swallowed with an `err_log!`; a window manager built-in does not
+    /// run and, as any other press (repeats included), goes to the menu. Every press taken has its keycode recorded so its
     /// release is swallowed.
     fn _menu_filter(&mut self, keycode: Keycode, mods: &ModifiersState, handle: &KeysymHandle<'_>) -> FilterResult<KeyRoute> {
         if handle.raw_syms().iter().any(|sym| sym.is_modifier_key()) { return FilterResult::Forward; }
@@ -273,6 +273,11 @@ impl State {
             Some((Binding::Hub(function), name)) => {
                 opusdm_ipc::err_log!(LOG_TAG, "hotkey {}: swallowed, the window menu is open ({function} not run)", combo_text(mods, &name));
                 return FilterResult::Intercept(KeyRoute::Swallowed);
+            }
+            // Not run while the menu is open; the key goes to the menu as before the built-ins
+            // were matched (Alt+Escape still closes the menu).
+            Some((Binding::BuiltIn(action), name)) => {
+                opusdm_ipc::debug_log!(LOG_TAG, "hotkey {}: {action:?} not run, the key goes to the window menu", combo_text(mods, &name));
             }
             None => {}
         }

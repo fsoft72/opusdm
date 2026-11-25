@@ -150,7 +150,7 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
             let bindings: Vec<Value> = state.hotkeys.list().into_iter().map(|(name, key)| json!({"name": name, "key": key})).collect();
             Ok(json!({"bindings": bindings}))
         }
-        "debug/key" => _debug_key(state, _str(data, "key")?).map(|_| json!({})),
+        "debug/key" => _debug_key(state, _str(data, "key")?, _key_state(data)?).map(|_| json!({})),
         "debug/click" => _debug_click(state, _u32(data, "x")?, _u32(data, "y")?).map(|_| json!({})),
         "debug/foreign-toplevels" => _debug_foreign_toplevels(state),
         "debug/workspaces" => _debug_workspaces(state),
@@ -189,11 +189,37 @@ fn _hotkey_entries(data: &Value) -> Result<Vec<(String, String)>, String> {
     items.iter().map(|item| Ok((_str(item, "key")?.to_string(), _str(item, "function")?.to_string()))).collect()
 }
 
-/// `debug/key`: presses the modifiers of `combo` (`Ctrl+Alt+u`), presses and
-/// releases its key, then releases the modifiers, all through
-/// `State::keyboard_key` so the xkb state stays right. Refused unless the
-/// compositor runs with test input (`--headless`).
-fn _debug_key(state: &mut State, combo: &str) -> Result<(), String> {
+/// What `debug/key` does with its key (`"state"` of the request).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyStep {
+    /// Presses the modifiers and the key, and releases nothing.
+    Press,
+    /// Releases the key, then the modifiers.
+    Release,
+    /// Presses and releases them (the default).
+    Tap,
+}
+
+/// The `"state"` of a `debug/key` request: `"press"`, `"release"` or
+/// `"tap"`; `"tap"` when it is missing.
+fn _key_state(data: &Value) -> Result<KeyStep, String> {
+    if data.get("state").is_none() { return Ok(KeyStep::Tap); }
+    match _str(data, "state")? {
+        "press" => Ok(KeyStep::Press),
+        "release" => Ok(KeyStep::Release),
+        "tap" => Ok(KeyStep::Tap),
+        other => Err(format!("'state' must be press, release or tap, got '{other}'")),
+    }
+}
+
+/// `debug/key`: with `Tap` presses the modifiers of `combo` (`Ctrl+Alt+u`),
+/// presses and releases its key, then releases the modifiers; `Press` does
+/// only the presses (modifiers, then the key) and `Release` only the
+/// releases (the key, then the modifiers), so a key (`Alt_L`) can be held
+/// across requests. All through `State::keyboard_key`, so the xkb state
+/// stays right. Refused unless the compositor runs with test input
+/// (`--headless`).
+fn _debug_key(state: &mut State, combo: &str, step: KeyStep) -> Result<(), String> {
     if !state.test_input { return Err("debug/key is only available with --headless".to_string()); }
     let parsed = opusdm_ipc::bindings::parse_key(combo)?;
     let m = parsed.mods;
@@ -205,15 +231,19 @@ fn _debug_key(state: &mut State, combo: &str) -> Result<(), String> {
     }
     let key = _keycode_for(state, &parsed.normalized_name())?;
     let time = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
-    for code in &modifiers {
-        state.keyboard_key(*code, true, time);
+    if step != KeyStep::Release {
+        for code in &modifiers {
+            state.keyboard_key(*code, true, time);
+        }
+        state.keyboard_key(key, true, time);
     }
-    state.keyboard_key(key, true, time);
-    state.keyboard_key(key, false, time);
-    for code in modifiers.iter().rev() {
-        state.keyboard_key(*code, false, time);
+    if step != KeyStep::Press {
+        state.keyboard_key(key, false, time);
+        for code in modifiers.iter().rev() {
+            state.keyboard_key(*code, false, time);
+        }
     }
-    opusdm_ipc::debug_log!(LOG_TAG, "debug/key {combo} sent");
+    opusdm_ipc::debug_log!(LOG_TAG, "debug/key {combo} ({step:?}) sent");
     Ok(())
 }
 

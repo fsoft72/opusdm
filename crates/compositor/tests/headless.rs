@@ -1318,3 +1318,153 @@ fn activating_a_window_under_an_exclusive_layer_makes_it_active() {
     assert_eq!(active_ids(&comp), vec![1], "A, activated from the tasklist, is the active window");
     assert_eq!(foreign_active_titles(&mut c), vec!["A".to_string()]);
 }
+
+/// Sends the key `combo` through `debug/key` (a tap) and checks the reply.
+fn key(comp: &Compositor, combo: &str) {
+    let reply = ipc_request(comp, "debug/key", json!({"key": combo}));
+    assert_eq!(reply["ok"], true, "debug/key {combo} refused: {reply}");
+}
+
+/// The window ids of `windows/list`, in stack order (bottom first).
+fn stack_ids(comp: &Compositor) -> Vec<u64> {
+    let reply = ipc_request(comp, "windows/list", json!({}));
+    reply["windows"].as_array().expect("windows").iter().map(|w| w["id"].as_u64().expect("id")).collect()
+}
+
+/// The `minimized` flag of every window of `windows/list`, in stack order.
+fn minimized_flags(comp: &Compositor) -> Vec<bool> {
+    let reply = ipc_request(comp, "windows/list", json!({}));
+    reply["windows"].as_array().expect("windows").iter().map(|w| w["minimized"].as_bool().expect("minimized")).collect()
+}
+
+/// The current desktop from `desktops/list`.
+fn current_desktop(comp: &Compositor) -> u64 {
+    ipc_request(comp, "desktops/list", json!({}))["current"].as_u64().expect("current")
+}
+
+#[test]
+fn alt_f4_closes_the_active_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    key(&comp, "Alt+F4");
+    assert!(c.wait_close_request(&w, Duration::from_secs(2)), "xdg_toplevel.close reaches the active window");
+    assert_eq!(c.keys_received(), 0, "the close binding swallows F4");
+}
+
+#[test]
+fn ctrl_alt_left_on_the_first_desktop_wraps_to_the_last() {
+    let comp = Compositor::start();
+    key(&comp, "Ctrl+Alt+Left");
+    assert_eq!(current_desktop(&comp), 3);
+    key(&comp, "Ctrl+Alt+Right");
+    assert_eq!(current_desktop(&comp), 0);
+}
+
+#[test]
+fn super_f2_shows_the_second_desktop() {
+    let comp = Compositor::start();
+    key(&comp, "Super+F2");
+    assert_eq!(current_desktop(&comp), 1);
+}
+
+#[test]
+fn shift_alt_right_sends_the_active_window_to_the_next_desktop_and_follows_it() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    key(&comp, "Shift+Alt+Right");
+    c.roundtrip();
+    assert_eq!(current_desktop(&comp), 1);
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["desktop"], 1);
+    assert_eq!(active_ids(&comp), vec![1]);
+    assert_eq!(c.keyboard_focus(), Some(w.wl_surface().clone()));
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn alt_escape_lowers_the_active_window_and_the_next_one_gets_the_keyboard() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let b = map_titled(&mut c, "B");
+    let a = map_titled(&mut c, "A"); // A over B, A has the keyboard
+    assert!(c.wait_keyboard_focus(&a, Duration::from_secs(2)));
+    assert_eq!(stack_ids(&comp), vec![1, 2]);
+    key(&comp, "Alt+Escape");
+    c.roundtrip();
+    assert_eq!(stack_ids(&comp), vec![2, 1], "A is at the bottom");
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()));
+    assert_eq!(active_ids(&comp), vec![1]);
+}
+
+#[test]
+fn super_d_twice_minimizes_every_window_then_restores_them() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    key(&comp, "Super+d");
+    assert_eq!(minimized_flags(&comp), vec![true, true]);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), None, "no window keeps the keyboard");
+    key(&comp, "Super+d");
+    assert_eq!(minimized_flags(&comp), vec![false, false]);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()), "the top window gets the keyboard back");
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn a_window_mapped_while_the_desktop_is_shown_ends_show_desktop_without_restoring() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = c.map_toplevel((400, 300));
+    key(&comp, "Super+d");
+    assert_eq!(minimized_flags(&comp), vec![true]);
+    let _b = c.map_toplevel((400, 300));
+    assert_eq!(minimized_flags(&comp), vec![true, false], "the earlier window stays minimized");
+    key(&comp, "Super+d");
+    assert_eq!(minimized_flags(&comp), vec![true, true], "a new show desktop hides B and does not restore A");
+}
+
+#[test]
+fn super_shift_left_focuses_the_window_on_the_left() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300)); // cascaded right and down of A
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    key(&comp, "Super+Shift+Left");
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+    key(&comp, "Super+Shift+Left");
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()), "nothing on the left of A: focus unchanged");
+}
+
+#[test]
+fn a_built_in_key_with_no_active_window_does_nothing() {
+    let mut comp = Compositor::start_debug();
+    key(&comp, "Alt+F4");
+    assert!(comp.wait_log("close: no active window", Duration::from_secs(2)));
+    assert!(comp.is_running());
+}
+
+#[test]
+fn debug_key_press_and_release_hold_a_modifier_across_calls() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    let press = ipc_request(&comp, "debug/key", json!({"key": "Control_L", "state": "press"}));
+    assert_eq!(press["ok"], true, "{press}");
+    key(&comp, "Alt+Left"); // Ctrl still held: Ctrl+Alt+Left
+    let release = ipc_request(&comp, "debug/key", json!({"key": "Control_L", "state": "release"}));
+    assert_eq!(release["ok"], true, "{release}");
+    assert_eq!(current_desktop(&comp), 3, "the held Ctrl made Ctrl+Alt+Left");
+    let bad = ipc_request(&comp, "debug/key", json!({"key": "a", "state": "hold"}));
+    assert!(bad["error"].is_string(), "{bad}");
+}

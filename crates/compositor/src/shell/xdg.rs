@@ -513,6 +513,7 @@ impl State {
 /// maximized window maps at the origin of its area, a new window takes the
 /// next cascade position, a window unmapped by a null buffer its old one.
 /// An xdg-activation request that came before the map is applied then.
+/// Mapping ends show-desktop mode without restoring its windows.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let found = state.unmapped.iter().position(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface));
     let Some(index) = found else { return };
@@ -553,6 +554,7 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
         }
     };
     opusdm_ipc::debug_log!(LOG_TAG, "map toplevel {} {}x{} at {x},{y}", surface.id(), size.w, size.h);
+    state.leave_show_desktop("a window was mapped");
     state.space.map_element(window.clone(), (x, y), true);
     state.focus_window(Some(window));
     state.foreign_toplevels_sync();

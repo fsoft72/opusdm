@@ -1,6 +1,7 @@
 //! Compositor state: the Smithay protocol states, the windows and the seat.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -38,6 +39,8 @@ use smithay::{
         xdg_activation::XdgActivationState,
     },
 };
+
+use opusdm_ipc::desktop::DesktopSettings;
 
 use crate::config::CompositorConfig;
 use crate::geometry::Rect;
@@ -219,6 +222,10 @@ pub struct State {
     /// Pointer buttons whose press the window menu took: their release is
     /// swallowed too, so no client sees half a click.
     pub swallowed_buttons: HashSet<u32>,
+    /// Show-desktop mode (`Super+d`): the ids of the windows it minimized,
+    /// restored by the next toggle when still alive; `None` when the mode
+    /// is off. Only ids: a closed window is simply skipped.
+    pub show_desktop: Option<Vec<WindowId>>,
 }
 
 impl State {
@@ -281,22 +288,33 @@ impl State {
             menu: None,
             menu_theme: MenuTheme::load(),
             swallowed_buttons: HashSet::new(),
+            show_desktop: None,
         }
     }
 
     /// The IPC `reload`: reads `compositor.json` and `desktop.json` again
     /// (read only), stores them in `config` and `wm`, applies the desktop
     /// count with `set_desktop_count` and rebuilds the built-in bindings,
-    /// keeping the hotkeys of the hub. Returns the problems of
-    /// `compositor.json` (each also logged); a missing file is not one.
+    /// keeping the hotkeys of the hub. Returns the problems (each also
+    /// logged): those of `compositor.json`, the hub hotkeys a built-in now
+    /// takes, and a `desktop.json` that exists but cannot be read or parsed
+    /// (then the desktop count and `wm` are kept as they are). A missing
+    /// file is not a problem: it gives the defaults, as at startup.
     pub fn reload(&mut self) -> Vec<String> {
         let (config, mut errors) = CompositorConfig::load_with_errors();
-        let desktop = opusdm_ipc::settings::load_desktop_settings(LOG_TAG);
         errors.extend(self.hotkeys.rebuild_builtins(&config));
         self.config = config;
-        self.wm = WmSettings::from_desktop(&desktop);
-        self.set_desktop_count(desktop.virtual_screens);
-        opusdm_ipc::debug_log!(LOG_TAG, "reload: {:?}, {} config errors", self.wm, errors.len());
+        match read_desktop_settings(&opusdm_ipc::settings::desktop_settings_path()) {
+            Ok(desktop) => {
+                self.wm = WmSettings::from_desktop(&desktop);
+                self.set_desktop_count(desktop.virtual_screens);
+            }
+            Err(e) => {
+                opusdm_ipc::err_log!(LOG_TAG, "reload: {e}");
+                errors.push(e);
+            }
+        }
+        opusdm_ipc::debug_log!(LOG_TAG, "reload: {:?}, {} errors", self.wm, errors.len());
         errors
     }
 
@@ -504,6 +522,24 @@ impl State {
             opusdm_ipc::debug_log!(LOG_TAG, "keyboard focus on a dead surface, refocusing");
             self.focus_topmost();
         }
+    }
+}
+
+/// The `DesktopSettings` of the file `path`, sanitized: the defaults when
+/// the file does not exist; an error naming the file when it exists but
+/// cannot be read or parsed (nothing is written, no backup is made).
+pub fn read_desktop_settings(path: &Path) -> Result<DesktopSettings, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            opusdm_ipc::debug_log!(LOG_TAG, "{} not found, default desktop settings", path.display());
+            return Ok(DesktopSettings::default().sanitized());
+        }
+        Err(e) => return Err(format!("{} not read, desktops and window settings kept: {e}", path.display())),
+    };
+    match serde_json::from_str::<DesktopSettings>(&text) {
+        Ok(settings) => Ok(settings.sanitized()),
+        Err(e) => Err(format!("{} is not valid, desktops and window settings kept: {e}", path.display())),
     }
 }
 

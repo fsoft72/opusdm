@@ -6,6 +6,7 @@
 //! the table first and then calls `sync_space`, which puts the space and the
 //! keyboard focus in line with it.
 
+pub mod actions;
 pub mod desktops;
 pub mod settings;
 
@@ -93,6 +94,7 @@ impl State {
 
     /// Activates the window `id`: shows its desktop, clears its minimized
     /// state, raises it to the top of the stack and gives it the keyboard.
+    /// It leaves show-desktop mode without restoring the other windows.
     /// A window without a buffer yet is only raised (it maps on top).
     pub fn activate_window(&mut self, id: WindowId) -> Result<(), String> {
         let info = self._info_by_id_mut(id).ok_or_else(|| format!("activate: unknown window {}", id.0))?;
@@ -103,6 +105,7 @@ impl State {
         if !self.desktops.switch_to(desktop) {
             return Err(format!("activate: window {} is on desktop {desktop}, out of range", id.0));
         }
+        self.leave_show_desktop("a window was activated");
         self._raise_id(id);
         self.sync_space();
         if self.space.element_location(&window).is_some() {
@@ -119,11 +122,15 @@ impl State {
         Ok(())
     }
 
-    /// Minimizes (or unminimizes, without focusing it) the window `id`.
+    /// Minimizes (or unminimizes, without focusing it) the window `id`; an
+    /// unminimize leaves show-desktop mode without restoring the others.
     pub fn set_minimized(&mut self, id: WindowId, minimized: bool) -> Result<(), String> {
         let info = self._info_by_id_mut(id).ok_or_else(|| format!("minimize: unknown window {}", id.0))?;
         info.minimized = minimized;
         opusdm_ipc::debug_log!(LOG_TAG, "window {} minimized: {minimized}", id.0);
+        if !minimized {
+            self.leave_show_desktop("a window was restored");
+        }
         self.sync_space();
         self.notify_watchers();
         Ok(())
@@ -145,14 +152,18 @@ impl State {
 
     /// Shows the desktop `index` (0-based).
     /// The topmost shown window of the new desktop gets the keyboard and
-    /// becomes the active window (`_focus_desktop_top`); a switch to the
-    /// current desktop changes nothing.
+    /// becomes the active window (`_focus_desktop_top`) and show-desktop
+    /// mode ends without restoring; a switch to the current desktop changes
+    /// nothing.
     pub fn switch_desktop(&mut self, index: u32) -> Result<(), String> {
         let switched = index != self.desktops.current();
         if !self.desktops.switch_to(index) {
             return Err(format!("switch desktop: desktop {index} is out of range (count {})", self.desktops.count()));
         }
         opusdm_ipc::debug_log!(LOG_TAG, "switched to desktop {index}");
+        if switched {
+            self.leave_show_desktop("the desktop changed");
+        }
         self.sync_space();
         if switched {
             self._focus_desktop_top();

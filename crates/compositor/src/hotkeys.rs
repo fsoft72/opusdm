@@ -1,8 +1,8 @@
 //! Global hotkeys: the built-in bindings of `compositor.json` (quit, window
-//! menu, and the stage 3 built-ins, stored and listed but not matched yet)
-//! and the table the hub sends with `hotkeys/set`. A key press is
-//! matched here before it reaches the focused client (see
-//! `State::keyboard_key`): a matched press and its release never reach it.
+//! menu and the window manager actions of `wm::actions`) and the table the
+//! hub sends with `hotkeys/set`. A key press is matched here before it
+//! reaches the focused client (see `State::keyboard_key`): a matched press
+//! and its release never reach it.
 
 use opusdm_ipc::bindings::{format_key, parse_key, KeyCombo, Mods};
 use serde_json::json;
@@ -10,6 +10,7 @@ use smithay::input::keyboard::ModifiersState;
 
 use crate::config::{builtin_default, CompositorConfig};
 use crate::state::{State, LOG_TAG};
+use crate::wm::actions::{action_for, Action};
 
 /// What a matched key does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,8 @@ pub enum Binding {
     Quit,
     /// Opens the window menu of the focused window.
     WindowMenu,
+    /// Runs a built-in window manager action.
+    BuiltIn(Action),
     /// Tells the hub (every `watch` connection) to run this function.
     Hub(String),
 }
@@ -45,6 +48,9 @@ pub fn combo_text(mods: Mods, keysym_name: &str) -> String {
     format_key(&KeyCombo { mods, name: keysym_name.to_string() })
 }
 
+/// The usable hotkeys of the hub: key and function name.
+type HubHotkeys = Vec<(KeyCombo, String)>;
+
 /// The built-in bindings and the hotkeys of the hub.
 #[derive(Debug, Clone, Default)]
 pub struct HotkeyTable {
@@ -52,12 +58,15 @@ pub struct HotkeyTable {
     quit: Option<KeyCombo>,
     /// The window menu key, `None` when its key is empty.
     window_menu: Option<KeyCombo>,
-    /// The other enabled built-ins (name, key), in `BUILTIN_DEFAULTS`
-    /// order. Listed by `bindings/list`; not matched by `lookup` until
-    /// their actions exist, so their keys still reach the clients.
-    others: Vec<(&'static str, KeyCombo)>,
-    /// The hotkeys of the hub: key and function name.
-    hub: Vec<(KeyCombo, String)>,
+    /// The other enabled built-ins (name, action, key), in
+    /// `BUILTIN_DEFAULTS` order; the first one wins when two share a key.
+    others: Vec<(&'static str, Action, KeyCombo)>,
+    /// The whole table the hub sent (key text, function), kept so that an
+    /// entry a built-in takes comes back when the built-in moves away.
+    hub_entries: Vec<(String, String)>,
+    /// The usable hotkeys of the hub (key, function): `hub_entries` minus
+    /// the bad keys, the keys of a built-in and the duplicates.
+    hub: HubHotkeys,
 }
 
 impl HotkeyTable {
@@ -71,8 +80,10 @@ impl HotkeyTable {
     }
 
     /// Replaces the built-in bindings with those of `config` and keeps the
-    /// hotkeys of the hub. Returns the errors (each also logged): a key
-    /// that does not parse (its default is used instead).
+    /// hotkeys of the hub, resolved again against the new built-ins.
+    /// Returns the errors (each also logged): a key that does not parse
+    /// (its default is used instead) and a hub hotkey a built-in now takes
+    /// (the built-in wins; the entry comes back when the built-in moves).
     pub fn rebuild_builtins(&mut self, config: &CompositorConfig) -> Vec<String> {
         let mut errors = Vec::new();
         let mut others = Vec::new();
@@ -83,13 +94,23 @@ impl HotkeyTable {
             match name {
                 "quit" => self.quit = combo.filter(|_| config.quit_enabled),
                 "window_menu" => self.window_menu = combo,
-                _ => others.extend(combo.map(|c| (name, c))),
+                _ => match action_for(name) {
+                    Some(action) => others.extend(combo.map(|c| (name, action, c))),
+                    None => opusdm_ipc::err_log!(LOG_TAG, "built-in {name} has no action, binding off"),
+                },
             }
         }
         if !config.quit_enabled {
             opusdm_ipc::debug_log!(LOG_TAG, "quit binding disabled by compositor.json");
         }
         self.others = others;
+        let (hub, problems) = self._resolve_hub();
+        let clashes: Vec<String> = problems.into_iter().filter(|(clash, _)| *clash).map(|(_, e)| e).collect();
+        for e in &clashes {
+            opusdm_ipc::err_log!(LOG_TAG, "{e}");
+        }
+        self.hub = hub;
+        errors.extend(clashes);
         opusdm_ipc::debug_log!(LOG_TAG, "built-in bindings set: {} enabled, {} errors, {} hub hotkeys kept", self.list().len(), errors.len(), self.hub.len());
         errors
     }
@@ -97,37 +118,22 @@ impl HotkeyTable {
     /// The enabled built-in bindings as (name, canonical key text), in
     /// `BUILTIN_DEFAULTS` order (quit only when enabled).
     pub fn list(&self) -> Vec<(&'static str, String)> {
-        let mut list: Vec<(&'static str, String)> = self.others.iter().map(|(name, combo)| (*name, format_key(combo))).collect();
+        let mut list: Vec<(&'static str, String)> = self.others.iter().map(|(name, _, combo)| (*name, format_key(combo))).collect();
         list.extend(self.window_menu.as_ref().map(|c| ("window_menu", format_key(c))));
         list.extend(self.quit.as_ref().map(|c| ("quit", format_key(c))));
         list
     }
 
-    /// Replaces the hotkeys of the hub with `entries` (key, function).
-    /// Returns the errors, each also logged: a key that does not parse, a
-    /// key taken by a built-in binding (the built-in wins, the entry is
-    /// dropped) and a key already bound by an earlier entry (the first wins).
+    /// Replaces the hotkeys of the hub with `entries` (key, function); the
+    /// whole table is kept for later `rebuild_builtins`. Returns the errors,
+    /// each also logged: a key that does not parse, a key taken by a
+    /// built-in binding (the built-in wins, the entry is not matched while
+    /// it holds the key) and a key already bound by an earlier entry (the
+    /// first wins).
     pub fn set_hub(&mut self, entries: &[(String, String)]) -> Vec<String> {
-        let mut errors = Vec::new();
-        let mut hub = Vec::new();
-        for (key, function) in entries {
-            let combo = match parse_key(key) {
-                Ok(combo) => combo,
-                Err(e) => {
-                    errors.push(format!("hotkey {key}: {function}: {e}"));
-                    continue;
-                }
-            };
-            if let Some(name) = self._builtin_name(&combo) {
-                errors.push(format!("hotkey {}: {function} conflicts with the built-in {name}, the built-in wins", format_key(&combo)));
-                continue;
-            }
-            if let Some((_, first)) = hub.iter().find(|(c, _): &&(KeyCombo, String)| c.identity() == combo.identity()) {
-                errors.push(format!("hotkey {}: {function} duplicates {first}", format_key(&combo)));
-                continue;
-            }
-            hub.push((combo, function.clone()));
-        }
+        self.hub_entries = entries.to_vec();
+        let (hub, problems) = self._resolve_hub();
+        let errors: Vec<String> = problems.into_iter().map(|(_, e)| e).collect();
         for e in &errors {
             opusdm_ipc::err_log!(LOG_TAG, "{e}");
         }
@@ -136,12 +142,44 @@ impl HotkeyTable {
         errors
     }
 
+    /// The usable hotkeys of `hub_entries` against the current built-ins,
+    /// in order, with the messages (not logged here) of the entries left
+    /// out, in entry order, each flagged true when a built-in takes its key
+    /// (false: a key that does not parse, a duplicate).
+    fn _resolve_hub(&self) -> (HubHotkeys, Vec<(bool, String)>) {
+        let mut problems = Vec::new();
+        let mut hub: HubHotkeys = Vec::new();
+        for (key, function) in &self.hub_entries {
+            let combo = match parse_key(key) {
+                Ok(combo) => combo,
+                Err(e) => {
+                    problems.push((false, format!("hotkey {key}: {function}: {e}")));
+                    continue;
+                }
+            };
+            if let Some(name) = self._builtin_name(&combo) {
+                problems.push((true, format!("hotkey {}: {function} conflicts with the built-in {name}, the built-in wins", format_key(&combo))));
+                continue;
+            }
+            if let Some((_, first)) = hub.iter().find(|(c, _)| c.identity() == combo.identity()) {
+                problems.push((false, format!("hotkey {}: {function} duplicates {first}", format_key(&combo))));
+                continue;
+            }
+            hub.push((combo, function.clone()));
+        }
+        (hub, problems)
+    }
+
     /// The binding of the key `keysym_name` with `mods`, looked up in the
-    /// order Quit (when enabled), WindowMenu, the hub hotkeys.
+    /// order Quit (when enabled), WindowMenu, the other built-ins, the hub
+    /// hotkeys.
     pub fn lookup(&self, mods: Mods, keysym_name: &str) -> Option<Binding> {
         let hit = |combo: &Option<KeyCombo>| combo.as_ref().is_some_and(|c| combo_matches(c, mods, keysym_name));
         if hit(&self.quit) { return Some(Binding::Quit); }
         if hit(&self.window_menu) { return Some(Binding::WindowMenu); }
+        if let Some((_, action, _)) = self.others.iter().find(|(_, _, c)| combo_matches(c, mods, keysym_name)) {
+            return Some(Binding::BuiltIn(*action));
+        }
         self.hub.iter().find(|(c, _)| combo_matches(c, mods, keysym_name)).map(|(_, f)| Binding::Hub(f.clone()))
     }
 
@@ -150,7 +188,7 @@ impl HotkeyTable {
         let same = |builtin: &Option<KeyCombo>| builtin.as_ref().is_some_and(|b| b.identity() == combo.identity());
         if same(&self.quit) { return Some("quit"); }
         if same(&self.window_menu) { return Some("window menu"); }
-        None
+        self.others.iter().find(|(_, _, c)| c.identity() == combo.identity()).map(|(name, _, _)| *name)
     }
 }
 
@@ -191,6 +229,7 @@ impl State {
             // A second press closes the open menu, as in Openbox.
             Binding::WindowMenu if self.menu.is_some() => self.close_window_menu("the window menu key was pressed again"),
             Binding::WindowMenu => self.open_window_menu(),
+            Binding::BuiltIn(action) => self.run_action(action),
             Binding::Hub(function) => {
                 if !self.ipc.send_to_hub(&json!({"event": "hotkey", "function": function})) {
                     opusdm_ipc::err_log!(LOG_TAG, "hotkey {combo}: no hub connected");
@@ -313,10 +352,33 @@ mod tests {
     }
 
     #[test]
-    fn the_built_ins_not_wired_yet_never_take_a_key() {
+    fn the_window_manager_built_ins_take_their_keys_before_the_hub() {
         let mut table = HotkeyTable::new(&CompositorConfig::default());
-        assert_eq!(table.lookup(mods("a"), "Tab"), None, "Alt+Tab still reaches the client");
-        assert!(table.set_hub(&[("Alt+F4".into(), "x".into())]).is_empty(), "no conflict with an unwired built-in");
+        assert_eq!(table.lookup(mods("a"), "Tab"), Some(Binding::BuiltIn(Action::SwitcherNext)));
+        assert_eq!(table.lookup(mods("as"), "Tab"), Some(Binding::BuiltIn(Action::SwitcherPrev)));
+        assert_eq!(table.lookup(mods("a"), "F4"), Some(Binding::BuiltIn(Action::Close)));
+        assert_eq!(table.lookup(mods("w"), "F3"), Some(Binding::BuiltIn(Action::Desktop(2))));
+        assert_eq!(table.lookup(mods("w"), "D"), Some(Binding::BuiltIn(Action::ShowDesktop)));
+        assert_eq!(table.lookup(mods("ws"), "Up"), Some(Binding::BuiltIn(Action::Focus(crate::wm::actions::Direction::Up))));
+        let errors = table.set_hub(&[("Alt+F4".into(), "x".into())]);
+        assert_eq!(errors, ["hotkey Alt+F4: x conflicts with the built-in close, the built-in wins"]);
+        assert_eq!(table.lookup(mods("a"), "F4"), Some(Binding::BuiltIn(Action::Close)));
+    }
+
+    #[test]
+    fn a_hub_hotkey_shadowed_after_a_rebuild_is_reported_and_comes_back_later() {
+        let mut table = HotkeyTable::new(&CompositorConfig::default());
+        assert!(table.set_hub(&[("Super+q".into(), "run".into())]).is_empty());
+        assert_eq!(table.lookup(mods("w"), "q"), Some(Binding::Hub("run".into())));
+        let config = CompositorConfig { close: "Super+q".into(), ..CompositorConfig::default() };
+        let errors = table.rebuild_builtins(&config);
+        assert_eq!(errors, ["hotkey Super+q: run conflicts with the built-in close, the built-in wins"]);
+        assert_eq!(table.lookup(mods("w"), "q"), Some(Binding::BuiltIn(Action::Close)));
+        let errors = table.rebuild_builtins(&CompositorConfig { quit: "Super+q".into(), ..CompositorConfig::default() });
+        assert_eq!(errors, ["hotkey Super+q: run conflicts with the built-in quit, the built-in wins"]);
+        assert!(table.rebuild_builtins(&CompositorConfig::default()).is_empty());
+        assert_eq!(table.lookup(mods("w"), "q"), Some(Binding::Hub("run".into())), "the entry is back");
+        assert_eq!(table.lookup(mods("a"), "F4"), Some(Binding::BuiltIn(Action::Close)));
     }
 
     #[test]

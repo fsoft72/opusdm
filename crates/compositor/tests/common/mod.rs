@@ -215,6 +215,14 @@ impl Compositor {
         std::fs::write(dir.join(name), text).expect("write the test config file");
     }
 
+    /// Path of the file `name` of the compositor's OpusDM config directory
+    /// (inside the test's temp dir); the directory is created.
+    pub fn config_path(&self, name: &str) -> PathBuf {
+        let dir = self._runtime.path().join("config").join("opusdm");
+        std::fs::create_dir_all(&dir).expect("create the test config dir");
+        dir.join(name)
+    }
+
     /// Sends the signal `sig` to the compositor process.
     pub fn signal(&self, sig: i32) {
         let pid = i32::try_from(self.child.id()).expect("pid fits in i32");

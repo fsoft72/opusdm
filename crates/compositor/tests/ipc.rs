@@ -381,3 +381,50 @@ fn reload_with_a_broken_compositor_json_reports_it_and_uses_the_defaults() {
     assert_eq!(reply["errors"].as_array().map(Vec::len), Some(1), "{reply}");
     assert!(listed_bindings(&comp).contains(&json!({"name": "close", "key": "Alt+F4"})));
 }
+
+#[test]
+fn reload_reports_a_hub_hotkey_shadowed_by_a_built_in_and_gives_it_back_later() {
+    let comp = Compositor::start();
+    let (mut hub, reply) = common::ipc::ipc_hub(&comp, json!({"hotkeys": [{"key": "Super+q", "function": "run"}]}));
+    assert_eq!(reply["errors"], json!([]), "{reply}");
+    comp.write_config("compositor.json", r#"{"close": "Super+q"}"#);
+    let reply = ipc_request(&comp, "reload", json!({}));
+    assert_eq!(reply["errors"], json!(["hotkey Super+q: run conflicts with the built-in close, the built-in wins"]), "{reply}");
+    assert!(comp.wait_log("hotkey Super+q: run conflicts with the built-in close, the built-in wins", Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "Super+q"}));
+    assert!(!hub.wait_for_hotkey("run", Duration::from_millis(300)), "the built-in wins");
+    comp.write_config("compositor.json", "{}");
+    assert_eq!(ipc_request(&comp, "reload", json!({}))["errors"], json!([]));
+    ipc_request(&comp, "debug/key", json!({"key": "Super+q"}));
+    assert!(hub.wait_for_hotkey("run", Duration::from_secs(2)), "the hub entry is back once the built-in moved away");
+}
+
+#[test]
+fn reload_with_a_broken_desktop_json_keeps_the_desktops_and_the_wm_settings() {
+    let comp = Compositor::start();
+    comp.write_config("desktop.json", r#"{"virtual_screens": 6, "wrap_desktops": false}"#);
+    assert_eq!(ipc_request(&comp, "reload", json!({}))["errors"], json!([]));
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 6);
+    comp.write_config("desktop.json", "not json");
+    let reply = ipc_request(&comp, "reload", json!({}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let errors = reply["errors"].as_array().cloned().unwrap_or_default();
+    assert_eq!(errors.len(), 1, "{reply}");
+    assert!(errors[0].as_str().is_some_and(|e| e.contains("desktop.json")), "{reply}");
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 6, "the desktop count is kept");
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+Alt+Left"}));
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["current"], 0, "wrap_desktops false is kept");
+    // A desktop.json that exists but cannot be read (a directory) is kept as well.
+    let path = comp.config_path("desktop.json");
+    std::fs::remove_file(&path).expect("remove desktop.json");
+    std::fs::create_dir(&path).expect("desktop.json as a directory");
+    let reply = ipc_request(&comp, "reload", json!({}));
+    assert_eq!(reply["errors"].as_array().map(Vec::len), Some(1), "{reply}");
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 6);
+    // A missing desktop.json gives the defaults, as at startup.
+    std::fs::remove_dir(&path).expect("remove the directory");
+    assert_eq!(ipc_request(&comp, "reload", json!({}))["errors"], json!([]));
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 4);
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+Alt+Left"}));
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["current"], 3, "the default wrap is back");
+}
