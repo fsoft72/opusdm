@@ -9,12 +9,14 @@
 //! from `SeatHandler::focus_changed`, `update_selection_focus` for a focus
 //! that goes to nothing). A drag whose source is destroyed mid-drag is
 //! cancelled (`cancel_dead_drag`): `leave` to the target, never a `drop`.
-//! A drag whose source client is killed is ended by Smithay itself on the
-//! next pointer event (its pointer grab drops a grab whose origin surface
-//! is dead): the target gets `leave`, and a `drop` first when it had
-//! accepted the offer; a `receive` then reads end of file at once, as the
-//! source is dead. Smithay 0.7 gives no hook while the killed client's
-//! objects are still alive. No wlr-data-control: GDK does not use it.
+//! A drag whose source client is killed cannot be cancelled (Smithay 0.7.0
+//! limit): its origin surface is dead too, so the first pointer event after
+//! the death (normally the motion `cancel_dead_drag` sends from `refresh`,
+//! else a real pointer event) makes `PointerInner::with_grab` discard the
+//! grab through `DnDGrab::drop`: a target that had accepted gets `drop`,
+//! then `leave` (one that had not gets only `leave`); its `receive` reads
+//! end of file at once, as the source is dead. `dropped` logs that case.
+//! No hook runs while the killed client's objects are still alive. No wlr-data-control: GDK does not use it.
 
 use smithay::{
     delegate_data_device, delegate_primary_selection,
@@ -91,8 +93,9 @@ impl State {
     /// target and deactivates its offer, then the grab ends (no `drop`) and
     /// the surface under the pointer gets the pointer back. Called by
     /// `refresh` and before every pointer event. When the source client was
-    /// killed, Smithay ends the grab on that first motion instead (see the
-    /// module doc). True when a dead drag was ended.
+    /// killed, that first motion makes Smithay discard the grab instead,
+    /// with a `drop` to a target that accepted (see the module doc). True
+    /// when a dead drag was ended.
     pub fn cancel_dead_drag(&mut self) -> bool {
         if !self.drag.as_ref().is_some_and(Drag::is_dead) { return false; }
         let Some(pointer) = self.seat.get_pointer() else {
@@ -160,8 +163,17 @@ impl ClientDndGrabHandler for State {
     }
 
     /// The drag ended (drop, release on nothing, or cancel). Called with
-    /// the pointer locked: only forgets the drag.
+    /// the pointer locked: only logs and forgets the drag. A validated drop
+    /// whose source is dead (its client was killed, Smithay discarded the
+    /// grab) is an error line: the target got `drop` with no data to read.
     fn dropped(&mut self, target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
+        if validated && self.drag.as_ref().is_some_and(Drag::is_dead) {
+            opusdm_ipc::err_log!(
+                LOG_TAG,
+                "drag: the source client died, Smithay dropped on target {} (its receive reads nothing)",
+                target.as_ref().map(|t| t.id().to_string()).unwrap_or_default()
+            );
+        }
         opusdm_ipc::debug_log!(
             LOG_TAG,
             "drag ended: target {}, validated {validated}",

@@ -2583,9 +2583,12 @@ fn a_drag_from_one_client_drops_its_data_on_another() {
 
 #[test]
 fn a_drag_whose_source_client_dies_sends_leave_to_the_target() {
-    // Smithay 0.7 ends the grab of a dead origin with a drop when the target
-    // had accepted: the target gets leave, and its receive reads end of
-    // file at once (the compositor never holds or reads the pipe).
+    // Smithay 0.7.0 limit, accepted: the killed client's origin surface is
+    // dead, so the next pointer event (the motion of `cancel_dead_drag` in
+    // `refresh`) makes `PointerInner::with_grab` discard the grab through
+    // `DnDGrab::drop`, which sends `drop` to a target that accepted, then
+    // `leave`. The receive reads end of file at once (the compositor never
+    // holds or reads the pipe).
     let mut comp = Compositor::start();
     let (mut a, wa, mut b, wb) = drag_setup(&comp);
     let icon = a.start_drag(&wa, TEXT_MIME, TEXT);
@@ -2596,6 +2599,10 @@ fn a_drag_whose_source_client_dies_sends_leave_to_the_target() {
     drop(wa);
     drop(a); // killed mid-drag, the button still held
     assert!(b.wait_dnd_event("leave", SELECTION_TIMEOUT), "the target gets leave: {:?}", b.dnd_events());
+    b.roundtrip();
+    let events = b.dnd_events();
+    assert!(events.ends_with(&["drop", "leave"]), "the drag ends with drop then leave, leave last: {events:?}");
+    assert_eq!(events.iter().filter(|e| **e == "drop").count(), 1, "{events:?}");
     assert!(comp.is_running());
     let fd = b.receive_dnd(TEXT_MIME);
     assert_eq!(common::read_pipe(fd, SELECTION_TIMEOUT), Ok(Vec::new()), "the dead source's offer reads end of file at once");
