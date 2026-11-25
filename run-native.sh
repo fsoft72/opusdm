@@ -33,9 +33,21 @@ set -- ${ARGS[@]+"${ARGS[@]}"}
 RESOLUTION="${1:-${NATIVE_RES:-1920x1080}}"
 DEBUG_LOG="${NATIVE_LOG:-/ramdisk/opusdm.log}"   # hub output with --debug
 
+# Variables of a running OpusDM session that would point the sandbox at the
+# live one: the base picom config (the hub would rewrite the user's
+# picom.conf and signal the live picom) and the IPC socket overrides.
+LIVE_SESSION_VARS=(OPUSDM_PICOM_BASE OPUSDM_HUB_SOCK OPUSDM_DOCK_SOCK OPUSDM_APPLETS_SOCK OPUSDM_LABWC_RC)
+
 # Exit conditions up front
 command -v cargo >/dev/null 2>&1 || { echo "cargo not found (install Rust: https://rustup.rs)"; exit 1; }
 [[ "$RESOLUTION" =~ ^[0-9]+x[0-9]+$ ]] || { echo "Bad resolution: $RESOLUTION (expected WxH, e.g. 1280x800)"; exit 1; }
+if [ "$DEBUG" = "1" ] && [ ! -d "$(dirname "$DEBUG_LOG")" ]; then
+    echo "Debug log folder not found: $(dirname "$DEBUG_LOG") (set NATIVE_LOG to a file in an existing folder)"
+    exit 1
+fi
+
+# Nothing started from here on (compositor, hub, tools) inherits them.
+unset "${LIVE_SESSION_VARS[@]}"
 
 # Build the workspace before entering the sandbox
 echo "Building opusdm (release)"
@@ -74,4 +86,24 @@ HUB_OUT="/dev/stderr"
 
 echo "Starting opusdm-compositor ($RESOLUTION)"
 # Not exec: the shell stays to run the EXIT trap that removes the temp dirs.
-"$COMPOSITOR_BIN" --nested --size "$RESOLUTION" --startup "sh $CONFIG_DIR/autostart"
+# The compositor runs in the background so a TERM / INT to this script is
+# passed on to it (it quits, and its clients, the hub first, lose their
+# display) before the trap cleans up; its exit code is this script's.
+# `set -m` gives it a process group of its own, which the hub and every
+# tool it starts inherit.
+set -m
+"$COMPOSITOR_BIN" --nested --size "$RESOLUTION" --startup "sh $CONFIG_DIR/autostart" &
+COMPOSITOR_PID=$!
+set +m
+trap 'kill -TERM "$COMPOSITOR_PID" 2>/dev/null || true' TERM INT
+STATUS=0
+wait "$COMPOSITOR_PID" || STATUS=$?
+# A trapped signal ends `wait` early: wait again until the compositor is gone.
+while kill -0 "$COMPOSITOR_PID" 2>/dev/null; do
+    STATUS=0
+    wait "$COMPOSITOR_PID" || STATUS=$?
+done
+# Tools that outlive the hub (opusdm-keyring-watch is not a Wayland client
+# and does not quit with it) are still in the compositor's process group.
+kill -TERM -- "-$COMPOSITOR_PID" 2>/dev/null || true
+exit "$STATUS"

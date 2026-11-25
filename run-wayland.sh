@@ -47,6 +47,19 @@ else
     [ -f "$LABWC_CONFIG" ] || { echo "labwc config not found: $LABWC_CONFIG"; exit 1; }
 fi
 command -v wlr-randr >/dev/null 2>&1 || { echo "wlr-randr not found (package: wlr-randr)"; exit 1; }
+DEBUG_LOG="/ramdisk/opusdm.log"   # hub output with --debug
+if [ "$DEBUG" = "1" ] && [ ! -d "$(dirname "$DEBUG_LOG")" ]; then
+    echo "Debug log folder not found: $(dirname "$DEBUG_LOG")"
+    exit 1
+fi
+
+# Variables of a running OpusDM session that would point the sandbox at the
+# live one: the base picom config (the hub would rewrite the user's
+# picom.conf and signal the live picom) and the IPC socket overrides.
+# OPUSDM_LABWC_RC is set again below for the sandbox's own rc.xml.
+LIVE_SESSION_VARS=(OPUSDM_PICOM_BASE OPUSDM_HUB_SOCK OPUSDM_DOCK_SOCK OPUSDM_APPLETS_SOCK OPUSDM_LABWC_RC)
+# Nothing started from here on (labwc / Wayfire, hub, tools) inherits them.
+unset "${LIVE_SESSION_VARS[@]}"
 
 # Build the workspace before entering the sandbox
 echo "Building opusdm (release)"
@@ -66,7 +79,7 @@ trap 'rm -rf "$CONFIG_DIR"' EXIT
 cp "$LABWC_CONFIG" "$CONFIG_DIR/rc.xml"
 
 HUB_OUT="/dev/stderr"
-[ "$DEBUG" = "1" ] && HUB_OUT="/ramdisk/opusdm.log" && echo "Debug log: $HUB_OUT"
+[ "$DEBUG" = "1" ] && HUB_OUT="$DEBUG_LOG" && echo "Debug log: $HUB_OUT"
 
 {
     echo '# Size the nested output (its name depends on the host: WL-1, X11-1...)'
