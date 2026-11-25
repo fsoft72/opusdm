@@ -710,6 +710,9 @@ fn activation_restores_a_window_on_another_desktop() {
     let a = c.map_toplevel((400, 300));
     let id = ipc_request(&comp, "windows/list", json!({}))["windows"][0]["id"].as_u64().unwrap();
     ipc_request(&comp, "window/move-to-desktop", json!({"id": id, "desktop": 1}));
+    // Strict policy: the token maker must hold the keyboard (b, mapped here, gets it).
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
     let token = c.activation_token();
     c.request_activation(&a, &token);
     c.roundtrip();
@@ -796,6 +799,124 @@ fn a_pending_activation_goes_away_with_its_window() {
     c.activate_toplevel_destroyed_before_map(&token);
     assert!(comp.wait_log("pending activation of window 2 discarded", Duration::from_secs(2)));
     assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()));
+}
+
+/// `urgent` of window `id` in `windows/list`; panics when it has none.
+fn urgent_of(comp: &Compositor, id: u64) -> bool {
+    let reply = ipc_request(comp, "windows/list", json!({}));
+    let windows = reply["windows"].as_array().expect("windows array");
+    let w = windows.iter().find(|w| w["id"] == id).expect("window in the list");
+    w["urgent"].as_bool().unwrap_or_else(|| panic!("no urgent: {w}"))
+}
+
+#[test]
+fn a_token_without_a_serial_marks_the_window_urgent_instead_of_focusing_it() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    assert!(!urgent_of(&comp, 1), "a window starts not urgent");
+    let token = c.activation_token_with_serial(None);
+    c.request_activation(&a, &token);
+    c.roundtrip();
+    assert!(comp.wait_log("activation of window 1 refused", Duration::from_secs(2)), "the refusal is a debug line");
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()), "no focus stealing");
+    assert!(urgent_of(&comp, 1), "the refused window is urgent");
+    assert!(!urgent_of(&comp, 2));
+    assert_eq!(active_ids(&comp), vec![2]);
+}
+
+#[test]
+fn a_token_with_the_serial_of_the_last_key_activates_and_clears_urgent() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    let refused = c.activation_token_with_serial(None);
+    c.request_activation(&a, &refused);
+    c.roundtrip();
+    assert!(urgent_of(&comp, 1));
+    ipc_request(&comp, "debug/key", json!({"key": "x"}));
+    assert!(c.wait_keys(2, Duration::from_secs(2)), "b gets the key tap");
+    let serial = c.last_key_serial();
+    assert_ne!(serial, 0);
+    let token = c.activation_token_with_serial(Some(serial));
+    c.request_activation(&a, &token);
+    assert!(c.wait_keyboard_focus(&a, Duration::from_secs(2)), "a fresh key serial activates a");
+    assert!(!urgent_of(&comp, 1), "becoming active clears urgent");
+    assert_eq!(active_ids(&comp), vec![1]);
+}
+
+#[test]
+fn a_token_with_the_serial_of_a_click_press_is_honoured_after_the_release() {
+    // GTK sends the serial of the press of the click (the panel or dock
+    // launches on release): the release must not make it stale. The click
+    // also focuses the window it lands on, whose keyboard enter takes a
+    // newer serial than the press: the press, sent after it, still counts.
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    let (x, y) = window_geometry(&comp, 1);
+    click(&comp, x + 5, y + 5); // the corner of a that b does not cover
+    assert!(c.wait_keyboard_focus(&a, Duration::from_secs(2)), "the click focuses a");
+    let press = c.last_button_serial();
+    assert_ne!(press, 0, "a got the press");
+    let token = c.activation_token_with_serial(Some(press));
+    c.request_activation(&b, &token);
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)), "the press serial activates b");
+}
+
+#[test]
+fn a_token_from_a_client_that_never_had_input_is_refused() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    let mut other = TestClient::new(&comp);
+    let token = other.activation_token_with_serial(Some(c.last_key_serial().max(1)));
+    c.request_activation(&a, &token);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()), "no focus stealing");
+    assert!(urgent_of(&comp, 1));
+}
+
+#[test]
+fn a_stale_serial_is_refused() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "x"}));
+    assert!(c.wait_keys(2, Duration::from_secs(2)));
+    let old = c.last_key_serial();
+    ipc_request(&comp, "debug/key", json!({"key": "x"}));
+    assert!(c.wait_keys(4, Duration::from_secs(2)));
+    let token = c.activation_token_with_serial(Some(old));
+    c.request_activation(&a, &token);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()), "a serial older than the last key press is refused");
+    assert!(urgent_of(&comp, 1));
+}
+
+#[test]
+fn a_refused_activation_of_an_unmapped_window_is_a_debug_line_and_it_still_gets_focus() {
+    // S3-R2: a new window gets focus anyway; the refused pending activation
+    // is only a debug line and does not mark it urgent.
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let _b = c.map_toplevel((400, 300));
+    let token = c.activation_token_with_serial(None);
+    let a = c.map_toplevel_activated((400, 300), &token);
+    assert!(comp.wait_log("activation of window 2 refused", Duration::from_secs(2)));
+    assert!(c.wait_keyboard_focus(&a, Duration::from_secs(2)), "a new window gets focus");
+    assert!(!urgent_of(&comp, 2));
+    assert_eq!(comp.log_count("pending activation of window 2 applied"), 0);
 }
 
 #[test]
@@ -1275,7 +1396,11 @@ fn an_activation_while_another_window_has_a_menu_open_moves_the_keyboard() {
     let a = ca.map_toplevel((400, 300));
     let menu = ca.map_popup_with_grab(&a, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
     assert_eq!(ca.keyboard_focus(), Some(menu.wl_surface().clone()), "the menu of A has the keyboard");
-    let token = cb.activation_token();
+    // Strict policy: the token comes from the client holding the keyboard
+    // (A, through its menu), handed to B as a launcher would.
+    let token = ca.activation_token();
+    cb.roundtrip(); // B reads its keyboard leave, so the wait below sees the new enter
+    assert_eq!(cb.keyboard_focus(), None);
     cb.request_activation(&b, &token);
     assert!(cb.wait_keyboard_focus(&b, Duration::from_secs(2)), "the activated window B must get the keyboard");
     ca.roundtrip();

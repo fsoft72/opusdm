@@ -22,7 +22,7 @@ use smithay::{
         protocol::wl_surface::WlSurface,
         DisplayHandle, Resource,
     },
-    utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
+    utils::{IsAlive, Logical, Point, Serial, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::{DmabufState, ImportNotifier},
@@ -108,6 +108,11 @@ pub struct WindowInfo {
     /// An xdg-activation request came while the toplevel was not mapped:
     /// it is activated when it maps (the flag goes away with the window).
     pub pending_activation: bool,
+    /// An xdg-activation request for this mapped window was refused by the
+    /// strict policy (`activation.rs`): it asks for attention instead of
+    /// taking the focus. Cleared when the window becomes active
+    /// (`remember_active`).
+    pub urgent: bool,
 }
 
 impl WindowInfo {
@@ -128,6 +133,7 @@ impl WindowInfo {
             resize: ResizeTrack::default(),
             pid: None,
             pending_activation: false,
+            urgent: false,
         }
     }
 }
@@ -277,6 +283,12 @@ pub struct State {
     /// window (`MoveGrab`); the nested backend draws it as a translucent
     /// preview. `None` when no grab is in a zone.
     pub snap_preview: Option<Rect>,
+    /// Serial of the last input event sent to each client: key press,
+    /// keyboard enter, pointer button press (`note_client_input`). The
+    /// strict xdg-activation policy compares token serials with it. Owned
+    /// here for the whole run; the entry of a client that disconnected is
+    /// dropped by the next `refresh`.
+    pub last_input: HashMap<ClientId, Serial>,
 }
 
 impl State {
@@ -353,6 +365,7 @@ impl State {
             mru: Vec::new(),
             switcher: None,
             snap_preview: None,
+            last_input: HashMap::new(),
         }
     }
 
@@ -561,7 +574,8 @@ impl State {
     /// Drops dead windows and layer surfaces from the space, the layer map and
     /// the tables (a safety net for `toplevel_destroyed` / `layer_destroyed`),
     /// closes a window menu whose window is gone or hidden, drops the
-    /// switcher entries of the windows that are gone (closing it under an
+    /// input serials of disconnected clients (`prune_last_input`), drops
+    /// the switcher entries of the windows that are gone (closing it under an
     /// exclusive keyboard layer) and moves a dead keyboard focus to the top
     /// window.
     pub fn refresh(&mut self) {
@@ -575,6 +589,7 @@ impl State {
             self.active_window = None;
         }
         self.unmapped.retain(|w| w.alive());
+        self.prune_last_input();
         self.popups.cleanup();
         let before = self.usable_area();
         layer_map_for_output(&self.output).cleanup();
@@ -672,9 +687,13 @@ impl SeatHandler for State {
     }
 
     /// The one choke point of every keyboard focus change to a surface:
-    /// the clipboard and primary selection focus follow it.
+    /// the clipboard and primary selection focus follow it, and the
+    /// keyboard enter just sent counts as input of the focused client
+    /// (`note_client_input`, for the strict xdg-activation policy).
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         self.set_selection_focus(focused);
+        let Some(surface) = focused else { return };
+        self.note_keyboard_enter(surface);
     }
 
     /// Stores the cursor image the focused client asked for.

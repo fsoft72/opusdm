@@ -88,10 +88,14 @@ impl WindowSwitcher {
 
 impl State {
     /// Puts the window `id` at the front of the focus history (`mru`): it
-    /// just became the active window.
+    /// just became the active window. It no longer asks for attention:
+    /// its `urgent` flag (a refused xdg-activation) is cleared.
     pub fn remember_active(&mut self, id: WindowId) {
         self.mru.retain(|i| *i != id);
         self.mru.insert(0, id);
+        if let Some(info) = self.windows.values_mut().find(|info| info.id == id) {
+            info.urgent = false;
+        }
     }
 
     /// Opens the window switcher over the windows of the current desktop

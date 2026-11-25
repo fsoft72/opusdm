@@ -598,6 +598,8 @@ struct ClientApp {
     dismissed: Vec<ObjectId>,
     /// `wl_keyboard.key` events (press and release) of non-modifier keys.
     keys: u32,
+    /// Serial of the last `wl_keyboard.key` event (any key, press or release).
+    key_serial: u32,
     /// `mods_depressed` of the last `wl_keyboard.modifiers` (0: no modifier held).
     mods_depressed: u32,
     /// Surface with the pointer of this client and the surface-local
@@ -731,6 +733,7 @@ impl TestClient {
             keyboard_serial: 0,
             dismissed: Vec::new(),
             keys: 0,
+            key_serial: 0,
             mods_depressed: 0,
             pointer: None,
             presses: Vec::new(),
@@ -845,9 +848,18 @@ impl TestClient {
     /// Asks the compositor for an xdg-activation token (with the serial of
     /// the last keyboard enter of this client) and waits for it.
     pub fn activation_token(&mut self) -> String {
+        self.activation_token_with_serial(Some(self.app.keyboard_serial))
+    }
+
+    /// Asks the compositor for an xdg-activation token carrying `serial`
+    /// (`set_serial` with this client's seat; `None`: no serial at all) and
+    /// waits for it.
+    pub fn activation_token_with_serial(&mut self, serial: Option<u32>) -> String {
         let cell: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
         let token = self._activation().get_activation_token(&self.qh, Arc::clone(&cell));
-        token.set_serial(self.app.keyboard_serial, &self._seat);
+        if let Some(serial) = serial {
+            token.set_serial(serial, &self._seat);
+        }
         token.commit();
         let ok = self.dispatch_until(TOKEN_TIMEOUT, |_| cell.lock().expect("token lock").is_some());
         assert!(ok, "no activation token within {TOKEN_TIMEOUT:?}");
@@ -1098,6 +1110,18 @@ impl TestClient {
     /// Key events (presses and releases) of non-modifier keys received so far.
     pub fn keys_received(&self) -> u32 {
         self.app.keys
+    }
+
+    /// Serial of the last `wl_keyboard.key` event (press or release, any
+    /// key) this client got; 0 before the first one.
+    pub fn last_key_serial(&self) -> u32 {
+        self.app.key_serial
+    }
+
+    /// Serial of the last `wl_pointer.button` press this client got; 0
+    /// before the first one.
+    pub fn last_button_serial(&self) -> u32 {
+        self.app.button_serial
     }
 
     /// `mods_depressed` of the last `wl_keyboard.modifiers` this client got
@@ -1804,7 +1828,8 @@ impl Dispatch<wl_seat::WlSeat, ()> for ClientApp {
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
     /// Tracks the surface that has the keyboard and the enter serial (enter /
-    /// leave) and counts the key events of non-modifier keys.
+    /// leave), the serial of the last key event and counts the key events
+    /// of non-modifier keys.
     fn event(app: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
             wl_keyboard::Event::Enter { serial, surface, .. } => {
@@ -1814,8 +1839,11 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
             wl_keyboard::Event::Leave { surface, .. } if app.keyboard_focus.as_ref() == Some(&surface) => {
                 app.keyboard_focus = None;
             }
-            wl_keyboard::Event::Key { key, .. } if !MODIFIER_KEYCODES.contains(&key) => {
-                app.keys += 1;
+            wl_keyboard::Event::Key { key, serial, .. } => {
+                app.key_serial = serial;
+                if !MODIFIER_KEYCODES.contains(&key) {
+                    app.keys += 1;
+                }
             }
             wl_keyboard::Event::Modifiers { mods_depressed, .. } => app.mods_depressed = mods_depressed,
             _ => {}

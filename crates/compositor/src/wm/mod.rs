@@ -376,6 +376,7 @@ impl State {
             fullscreen: info.fullscreen,
             activated,
             opacity: window_opacity(&self.wm, activated, info.opacity_override),
+            urgent: info.urgent,
         }
     }
 

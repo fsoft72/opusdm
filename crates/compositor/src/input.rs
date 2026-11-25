@@ -19,7 +19,7 @@ use smithay::{
 
 use crate::decor::geometry::{frame_rect, frame_zone, FrameZone, Insets, TitleButton};
 use crate::geometry::{Edges, Rect};
-use crate::grabs::edges_for_point;
+use crate::grabs::{edges_for_point, MoveGrab, ResizeGrab};
 use crate::hotkeys::{combo_matches, combo_text, mods_of, Binding};
 use crate::menu::model::MenuKey;
 use crate::switcher::SwitcherKey;
@@ -288,14 +288,23 @@ impl State {
     }
 
     /// Sends the button event to the pointer (its grab, or the surface
-    /// with the pointer focus) and ends the pointer frame.
+    /// with the pointer focus) and ends the pointer frame. A press that
+    /// reaches a client (no move / resize grab of ours takes it) is that
+    /// client's last input (`note_client_input`, strict xdg-activation); a
+    /// release is not: GTK puts the serial of the press in the token of a
+    /// click that acts on release.
     fn _send_button(&mut self, button: u32, state: ButtonState, serial: Serial, time_msec: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "pointer button: the seat has no pointer");
             return;
         };
+        let ours = pointer.with_grab(|_, grab| grab.is::<MoveGrab>() || grab.is::<ResizeGrab>()).unwrap_or(false);
+        let receiver = if state == ButtonState::Pressed && !ours { pointer.current_focus() } else { None };
         pointer.button(self, &ButtonEvent { serial, time: time_msec, button, state });
         pointer.frame(self);
+        if let Some(surface) = receiver {
+            self.note_client_input(&surface, serial);
+        }
     }
 
     /// The pointer moved, with no grab, onto the frame part `frame` (or off
@@ -465,6 +474,13 @@ impl State {
         let routed = keyboard.input::<KeyRoute, _>(self, keycode, state, serial, time_msec, |s, mods, handle| {
             s._hotkey_filter(keycode, pressed, mods, &handle)
         });
+        // A forwarded press is the focused client's last input (strict
+        // xdg-activation); a release is not, it ends the same key stroke.
+        if pressed && routed.is_none() {
+            if let Some(focus) = keyboard.current_focus() {
+                self.note_client_input(&focus, serial);
+            }
+        }
         match routed {
             Some(KeyRoute::Binding(binding, combo)) => self.run_binding(binding, &combo),
             Some(KeyRoute::Menu(key)) => self.window_menu_key(key),

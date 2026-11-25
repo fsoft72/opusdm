@@ -378,6 +378,7 @@ mod tests {
             fullscreen,
             activated,
             opacity: 100,
+            urgent: false,
         }
     }
 

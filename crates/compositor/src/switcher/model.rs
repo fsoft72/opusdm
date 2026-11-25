@@ -74,6 +74,7 @@ mod tests {
             fullscreen: false,
             activated: false,
             opacity: 100,
+            urgent: false,
         }
     }
 

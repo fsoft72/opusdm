@@ -43,6 +43,10 @@ pub struct WindowView {
     /// Opacity in percent the window is drawn with (`window_opacity`): the
     /// override of `window/set-opacity`, else from `desktop.json`.
     pub opacity: u8,
+    /// True when an xdg-activation request for the window was refused by
+    /// the strict policy: it asks for attention; cleared when it becomes
+    /// the active window.
+    pub urgent: bool,
 }
 
 /// Writes `rect` as `{"x","y","width","height"}`.
@@ -480,6 +484,7 @@ mod tests {
             fullscreen: false,
             activated: false,
             opacity: 100,
+            urgent: false,
         }
     }
 
