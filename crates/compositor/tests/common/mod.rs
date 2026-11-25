@@ -1,0 +1,389 @@
+//! Test harness: starts `opusdm-compositor --headless` and drives it with a
+//! smithay-client-toolkit client connected to its socket.
+//!
+//! Every `Compositor` has its own `XDG_RUNTIME_DIR` and the client connects to
+//! the socket path directly, never through the process environment, so the
+//! tests run in parallel.
+
+// Each test binary uses only a part of the harness.
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler, CompositorState},
+    delegate_compositor, delegate_output, delegate_registry, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
+    output::{OutputHandler, OutputState},
+    registry::{ProvidesRegistryState, RegistryState},
+    registry_handlers,
+    shell::{
+        xdg::{
+            window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
+            XdgShell,
+        },
+        WaylandSurface,
+    },
+    shm::{
+        slot::{Buffer, SlotPool},
+        Shm, ShmHandler,
+    },
+};
+use tempfile::TempDir;
+use wayland_client::{
+    backend::ObjectId,
+    globals::registry_queue_init,
+    protocol::{wl_output, wl_shm, wl_surface::WlSurface},
+    Connection, EventQueue, Proxy, QueueHandle,
+};
+use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
+
+/// How long `Compositor::start` waits for the socket name.
+const START_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a surface waits for its first configure.
+const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Size of the output the harness asks for.
+const OUTPUT_SIZE: &str = "1920x1080";
+
+/// A rectangle in surface or output coordinates (the binary's `Rect` is not
+/// visible to integration tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// A running headless compositor, killed when dropped.
+pub struct Compositor {
+    /// Path of the Wayland socket.
+    pub socket: PathBuf,
+    child: Child,
+    _runtime: TempDir,
+}
+
+impl Compositor {
+    /// Starts the compositor in a fresh `XDG_RUNTIME_DIR` and waits (at most
+    /// `START_TIMEOUT`) for the `WAYLAND_DISPLAY=<name>` line on its stdout.
+    pub fn start() -> Compositor {
+        let runtime = tempfile::tempdir().expect("temp XDG_RUNTIME_DIR");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_opusdm-compositor"))
+            .args(["--headless", "--size", OUTPUT_SIZE])
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .env_remove("WAYLAND_DISPLAY")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn opusdm-compositor");
+        let stdout = child.stdout.take().expect("compositor stdout");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let read = BufReader::new(stdout).read_line(&mut line);
+            let _ = tx.send(read.map(|_| line));
+        });
+        let line = match rx.recv_timeout(START_TIMEOUT) {
+            Ok(Ok(line)) => line,
+            other => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("compositor did not print its socket: {other:?}");
+            }
+        };
+        let Some(name) = line.trim().strip_prefix("WAYLAND_DISPLAY=") else {
+            let _ = child.kill();
+            let status = child.wait();
+            panic!("compositor did not print WAYLAND_DISPLAY (got {line:?}, exit {status:?})");
+        };
+        let socket = runtime.path().join(name);
+        Compositor { socket, child, _runtime: runtime }
+    }
+
+    /// True while the compositor process has not exited.
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Sends the signal `sig` to the compositor process.
+    pub fn signal(&self, sig: i32) {
+        let pid = i32::try_from(self.child.id()).expect("pid fits in i32");
+        // SAFETY: kill(2) on the pid of our own child, no memory involved.
+        let rc = unsafe { libc::kill(pid, sig) };
+        assert_eq!(rc, 0, "kill({pid}, {sig}) failed");
+    }
+
+    /// Waits at most `timeout` for the process to exit; returns its exit code
+    /// (`None` on timeout or when a signal killed it).
+    pub fn wait_exit(&mut self, timeout: Duration) -> Option<i32> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return status.code();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+}
+
+impl Drop for Compositor {
+    /// Kills the compositor and reaps it.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Opens a client connection to `comp` through its socket path.
+pub fn connect(comp: &Compositor) -> Connection {
+    let stream = UnixStream::connect(&comp.socket).expect("connect to the compositor socket");
+    Connection::from_socket(stream).expect("wayland connection")
+}
+
+/// Anything that has a `wl_surface` (toplevels now, popups and layer surfaces later).
+pub trait HasSurface {
+    /// The surface of the object.
+    fn wl_surface(&self) -> &WlSurface;
+}
+
+/// A mapped xdg toplevel of a `TestClient`.
+pub struct TestWindow {
+    window: Window,
+}
+
+impl TestWindow {
+    /// The `xdg_toplevel` of the window, to send requests on it.
+    pub fn xdg(&self) -> &XdgToplevel {
+        self.window.xdg_toplevel()
+    }
+}
+
+impl HasSurface for TestWindow {
+    /// The surface of the toplevel.
+    fn wl_surface(&self) -> &WlSurface {
+        self.window.wl_surface()
+    }
+}
+
+/// What the client knows about one of its surfaces (any role).
+struct SurfaceInfo {
+    /// Size the test asked for, used when a configure leaves the size to the client.
+    requested: (i32, i32),
+    /// Size of the last configure answered (the requested size when it was 0x0).
+    last_configure: (i32, i32),
+    /// True once the first configure was answered with a buffer.
+    configured: bool,
+    /// Buffer attached last; kept alive while the compositor may use it.
+    buffer: Option<Buffer>,
+}
+
+/// Client side state handed to the event queue.
+struct ClientApp {
+    registry_state: RegistryState,
+    output_state: OutputState,
+    compositor: CompositorState,
+    xdg: XdgShell,
+    shm: Shm,
+    pool: SlotPool,
+    /// Surfaces keyed by the `wl_surface` id.
+    surfaces: HashMap<ObjectId, SurfaceInfo>,
+    /// Surfaces that got a frame callback since their last `wait_frame` request.
+    frames: Vec<ObjectId>,
+}
+
+impl ClientApp {
+    /// Answers a configure of `surface`: picks the size (0 on an axis keeps the
+    /// requested size), attaches a buffer of that size and commits.
+    fn answer_configure(&mut self, surface: &WlSurface, size: (i32, i32)) {
+        let id = surface.id();
+        let Some(info) = self.surfaces.get(&id) else { panic!("configure for an unknown surface {id}") };
+        let w = if size.0 > 0 { size.0 } else { info.requested.0 };
+        let h = if size.1 > 0 { size.1 } else { info.requested.1 };
+        let (buffer, canvas) = self.pool.create_buffer(w, h, w * 4, wl_shm::Format::Argb8888).expect("shm buffer");
+        canvas.fill(0x80);
+        surface.damage_buffer(0, 0, w, h);
+        buffer.attach_to(surface).expect("attach buffer");
+        surface.commit();
+        let info = self.surfaces.get_mut(&id).expect("surface still known");
+        info.last_configure = (w, h);
+        info.configured = true;
+        info.buffer = Some(buffer);
+    }
+}
+
+/// A smithay-client-toolkit client connected to a `Compositor`.
+pub struct TestClient {
+    conn: Connection,
+    queue: EventQueue<ClientApp>,
+    qh: QueueHandle<ClientApp>,
+    app: ClientApp,
+}
+
+impl TestClient {
+    /// Connects to `comp` and binds the globals the tests need.
+    pub fn new(comp: &Compositor) -> TestClient {
+        let conn = connect(comp);
+        let (globals, queue) = registry_queue_init::<ClientApp>(&conn).expect("registry");
+        let qh = queue.handle();
+        let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor");
+        let xdg = XdgShell::bind(&globals, &qh).expect("xdg_wm_base");
+        let shm = Shm::bind(&globals, &qh).expect("wl_shm");
+        let pool = SlotPool::new(400 * 300 * 4, &shm).expect("shm pool");
+        let app = ClientApp {
+            registry_state: RegistryState::new(&globals),
+            output_state: OutputState::new(&globals, &qh),
+            compositor,
+            xdg,
+            shm,
+            pool,
+            surfaces: HashMap::new(),
+            frames: Vec::new(),
+        };
+        let mut client = TestClient { conn, queue, qh, app };
+        client.roundtrip();
+        client
+    }
+
+    /// Maps an xdg toplevel of `size`: initial commit, waits for the first
+    /// configure, answers it with a buffer and waits until the compositor has
+    /// handled that commit.
+    pub fn map_toplevel(&mut self, size: (i32, i32)) -> TestWindow {
+        let surface = self.app.compositor.create_surface(&self.qh);
+        let window = self.app.xdg.create_window(surface, WindowDecorations::None, &self.qh);
+        window.set_title("opusdm-compositor test");
+        let id = window.wl_surface().id();
+        let info = SurfaceInfo { requested: size, last_configure: (0, 0), configured: false, buffer: None };
+        self.app.surfaces.insert(id.clone(), info);
+        window.commit();
+        let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
+        assert!(ok, "the toplevel got no configure");
+        // The compositor has handled the buffer commit (the window is mapped) after this.
+        self.roundtrip();
+        TestWindow { window }
+    }
+
+    /// Sends a `wl_display.sync` and handles every event up to its answer.
+    pub fn roundtrip(&mut self) {
+        self.queue.roundtrip(&mut self.app).expect("roundtrip");
+    }
+
+    /// Requests a frame callback on `surface`, commits and waits at most
+    /// `timeout` for it. True when the callback came.
+    pub fn wait_frame(&mut self, surface: &impl HasSurface, timeout: Duration) -> bool {
+        let wl = surface.wl_surface();
+        let id = wl.id();
+        self.app.frames.retain(|f| f != &id);
+        wl.frame(&self.qh, wl.clone());
+        wl.commit();
+        self.dispatch_until(timeout, |app| app.frames.contains(&id))
+    }
+
+    /// Size of the last configure of `window` (the requested size on an axis
+    /// the compositor left to the client).
+    pub fn last_configure(&self, window: &TestWindow) -> (i32, i32) {
+        let id = window.wl_surface().id();
+        self.app.surfaces.get(&id).map(|s| s.last_configure).expect("known window")
+    }
+
+    /// Dispatches events until `done` is true or `timeout` passes. True when `done`.
+    fn dispatch_until(&mut self, timeout: Duration, done: impl Fn(&ClientApp) -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.queue.dispatch_pending(&mut self.app).expect("dispatch");
+            if done(&self.app) {
+                return true;
+            }
+            self.conn.flush().expect("flush");
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let Some(guard) = self.queue.prepare_read() else { continue };
+            let mut pfd = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            let ms = i32::try_from((deadline - now).as_millis()).unwrap_or(i32::MAX).max(1);
+            // SAFETY: one valid pollfd for the duration of the call.
+            let ready = unsafe { libc::poll(&mut pfd, 1, ms) };
+            if ready > 0 {
+                guard.read().expect("read events");
+            }
+        }
+    }
+}
+
+impl CompositorHandler for ClientApp {
+    /// Not used by the tests.
+    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: i32) {}
+
+    /// Not used by the tests.
+    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: wl_output::Transform) {}
+
+    /// Records the frame callback of `surface`.
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _time: u32) {
+        self.frames.push(surface.id());
+    }
+
+    /// Not used by the tests.
+    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
+
+    /// Not used by the tests.
+    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
+}
+
+impl WindowHandler for ClientApp {
+    /// The tests close windows by dropping them.
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {}
+
+    /// Answers every configure (SCTK has already acked it) with a buffer.
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, window: &Window, configure: WindowConfigure, _serial: u32) {
+        let w = configure.new_size.0.map_or(0, |v| i32::try_from(v.get()).unwrap_or(i32::MAX));
+        let h = configure.new_size.1.map_or(0, |v| i32::try_from(v.get()).unwrap_or(i32::MAX));
+        self.answer_configure(window.wl_surface(), (w, h));
+    }
+}
+
+impl OutputHandler for ClientApp {
+    /// The output state.
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+
+    /// Not used by the tests.
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+
+    /// Not used by the tests.
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+
+    /// Not used by the tests.
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+}
+
+impl ShmHandler for ClientApp {
+    /// The shm global.
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+impl ProvidesRegistryState for ClientApp {
+    /// The registry state.
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+    registry_handlers![OutputState];
+}
+
+delegate_compositor!(ClientApp);
+delegate_output!(ClientApp);
+delegate_shm!(ClientApp);
+delegate_xdg_shell!(ClientApp);
+delegate_xdg_window!(ClientApp);
+delegate_registry!(ClientApp);

@@ -3506,6 +3506,7 @@ dependencies = [
 name = "opusdm-compositor"
 version = "0.20.1"
 dependencies = [
+ "libc",
  "opusdm-ipc",
  "signal-hook",
  "smithay",

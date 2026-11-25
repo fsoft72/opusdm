@@ -2,12 +2,10 @@
 
 mod args;
 mod backend;
-// Used by the backends from Task 3 on.
-#[allow(dead_code)]
 mod child;
-// Used by the backends from Task 3 on.
-#[allow(dead_code)]
 mod geometry;
+mod shell;
+mod state;
 
 use std::process::ExitCode;
 
