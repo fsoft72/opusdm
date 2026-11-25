@@ -122,10 +122,15 @@ impl State {
     ///
     /// A motion that ends a grab is sent once more. Smithay 0.7's popup grab
     /// (`PopupPointerGrab::motion`), once its menus are gone, only unsets
-    /// itself and drops that motion: the pointer kept its old position, so
-    /// the next click went where the menu had been (the first pager click
-    /// after a tasklist menu was lost). Our own grabs forward the motion
-    /// before they end, so for them the second motion changes nothing.
+    /// itself and drops that motion: the pointer kept its old position and
+    /// the focus restored by `unset_grab` entered with those stale
+    /// coordinates, so the next click went where the menu had been (the
+    /// first pager click after a tasklist menu was lost). The second motion
+    /// corrects position and focus in the same frame. Our move / resize
+    /// grabs also end on a motion (their window died or was unmapped), but
+    /// they forward the motion first: there the second one repeats one
+    /// `wl_pointer.motion` with the same coordinates in the same frame
+    /// (harmless).
     pub fn pointer_motion(&mut self, position: Point<f64, Logical>, time_msec: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "pointer motion: the seat has no pointer");

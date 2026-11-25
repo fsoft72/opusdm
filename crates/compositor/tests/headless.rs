@@ -1047,9 +1047,10 @@ fn the_first_click_after_a_menu_closed_goes_where_the_pointer_is() {
     click(&comp, 1050, 100);
     c.roundtrip();
     c.destroy_popup(menu);
-    // As a user does: some time passes, the compositor's housekeeping
-    // (every 16 ms here) cleans the dead menu up and the grab has ended.
-    std::thread::sleep(Duration::from_millis(200));
+    // As a user does: wait until the compositor's housekeeping has cleaned
+    // the dead menu up (the grab has ended then). A frame callback asked now
+    // is flushed by the housekeeping of its tick, after that cleanup.
+    assert!(c.wait_frame(&a, Duration::from_secs(2)), "no housekeeping tick after the menu went");
     // Window A is at the cascade origin, far from the menu.
     let before = c.pointer_presses().len();
     click(&comp, 50, 100);
