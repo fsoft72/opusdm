@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use common::ipc::{ipc_request, ipc_send_raw, ipc_watch};
+use common::ipc::{ipc_request, ipc_requests_then_half_close, ipc_send_raw, ipc_watch};
 use common::{Compositor, HasSurface, TestClient};
 
 /// Environment variable that turns `kill_helper_client` into a real client.
@@ -302,4 +302,31 @@ fn kill_helper_client() {
         c.roundtrip();
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn a_client_that_half_closes_after_its_request_gets_the_reply() {
+    let comp = Compositor::start();
+    let replies = ipc_requests_then_half_close(&comp, "desktops/list", 1, Duration::from_secs(2));
+    assert_eq!(replies.len(), 1, "one reply after shutdown(Write)");
+    assert_eq!(replies[0]["count"], 4);
+}
+
+#[test]
+fn a_client_that_half_closes_gets_every_reply_even_past_the_socket_buffer() {
+    let comp = Compositor::start();
+    std::thread::sleep(Duration::from_millis(200));
+    let baseline = comp.open_fds();
+    // About 3 MiB of replies (under IPC_MAX_PENDING): far more than the socket buffer, so some are still pending at EOF.
+    let count = 100_000;
+    let replies = ipc_requests_then_half_close(&comp, "desktops/list", count, Duration::from_secs(10));
+    assert_eq!(replies.len(), count, "every reply reaches a client that half-closed");
+    assert!(replies.iter().all(|r| r["count"] == 4));
+    // Once flushed the connection is removed and its fds go back.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while comp.open_fds() > baseline && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(comp.open_fds(), baseline, "the half-closed connection gave its fds back");
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 4);
 }

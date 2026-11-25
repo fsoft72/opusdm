@@ -12,7 +12,11 @@
 //! connection drops it from the table and shuts its socket down: its
 //! sources wake up (hang-up), find no connection and remove themselves. A
 //! dead or flooding client is dropped with an `err_log!` line, the server
-//! keeps accepting. Dropping the server (the loop has ended: quit, signal,
+//! keeps accepting. A client that half-closes (EOF on its side) is no longer
+//! read (its read source goes) but keeps its connection until its pending
+//! replies are written, then it is removed as above; a write error drops it
+//! earlier, and a half-closed watcher that never reads is bounded by
+//! `IPC_MAX_PENDING` like any other. Dropping the server (the loop has ended: quit, signal,
 //! error) removes the socket file.
 //!
 //! The hub is the connection that sent `hotkeys/set` and is a `watch`
@@ -76,6 +80,9 @@ struct Conn {
     watch: bool,
     /// True while a write source is registered for it.
     writing: bool,
+    /// True once the peer closed its side (EOF) with replies still pending:
+    /// nothing more is read, the connection goes once they are written.
+    eof: bool,
 }
 
 /// The IPC server: the listening socket and every connection.
@@ -197,7 +204,7 @@ impl IpcServer {
                 Ok(_on_readable(&mut data.state, id))
             })
             .map_err(|e| format!("read source: {e}"))?;
-        self.conns.insert(id, Conn { stream, read_buf: Vec::new(), pending: Vec::new(), watch: false, writing: false });
+        self.conns.insert(id, Conn { stream, read_buf: Vec::new(), pending: Vec::new(), watch: false, writing: false, eof: false });
         opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} open");
         Ok(())
     }
@@ -295,6 +302,10 @@ impl IpcServer {
             self._close(id, &e);
             return;
         }
+        if conn.pending.is_empty() && conn.eof {
+            self._remove_closed(id);
+            return;
+        }
         if conn.pending.is_empty() || conn.writing { return; }
         if let Err(e) = self._watch_writable(id) {
             self._close(id, &e);
@@ -318,13 +329,38 @@ impl IpcServer {
     }
 
     /// The socket of the connection `id` takes bytes: flushes it. The
-    /// source goes away when the connection is gone or has nothing pending.
+    /// source goes away when the connection is gone or has nothing pending
+    /// (a half-closed connection is removed by `_flush` then).
     fn _on_writable(&mut self, id: u64) -> PostAction {
         self._flush(id);
         let Some(conn) = self.conns.get_mut(&id) else { return PostAction::Remove };
         if !conn.pending.is_empty() { return PostAction::Continue; }
         conn.writing = false;
         PostAction::Remove
+    }
+
+    /// The peer of the connection `id` closed its side (EOF): with nothing
+    /// pending the connection is removed now; otherwise it is marked `eof`
+    /// (not read any more) and `_flush` removes it once its replies are
+    /// written (a write error drops it with `err_log!`).
+    fn _peer_closed(&mut self, id: u64) {
+        let Some(conn) = self.conns.get_mut(&id) else { return };
+        if conn.pending.is_empty() {
+            self._remove_closed(id);
+            return;
+        }
+        conn.eof = true;
+        opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} half-closed by the client, {} bytes still to write", conn.pending.len());
+    }
+
+    /// Removes the connection `id`, closed by its client, and shuts its
+    /// socket down (its sources then remove themselves).
+    fn _remove_closed(&mut self, id: u64) {
+        let Some(conn) = self.conns.remove(&id) else { return };
+        opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} closed by the client");
+        // Wakes a write source of this connection so it removes itself.
+        _shutdown(&conn.stream);
+        self._forget_hub(id);
     }
 
     /// Reads what the connection `id` has (at most `READ_BUDGET`) into its
@@ -397,10 +433,10 @@ fn _shutdown(stream: &UnixStream) {
 }
 
 /// The connection `id` is readable: reads it, runs each whole request and
-/// queues its reply, then tells the watchers what changed. A peer that
-/// closed, a read error, a message over `IPC_MAX_MESSAGE` or a body that is
-/// not a request drops the connection. The source goes away with the
-/// connection.
+/// queues its reply, then tells the watchers what changed. A read error, a
+/// message over `IPC_MAX_MESSAGE` or a body that is not a request drops the
+/// connection. A peer that closed (EOF) gets its pending replies first
+/// (`_peer_closed`). The source goes away with the connection, or at EOF.
 fn _on_readable(state: &mut State, id: u64) -> PostAction {
     if !state.ipc.conns.contains_key(&id) { return PostAction::Remove; }
     let closed = match state.ipc._read(id) {
@@ -440,14 +476,10 @@ fn _on_readable(state: &mut State, id: u64) -> PostAction {
     }
     state.notify_watchers();
     if closed {
-        if let Some(conn) = state.ipc.conns.remove(&id) {
-            opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} closed by the client");
-            // Wakes a write source of this connection so it removes itself.
-            _shutdown(&conn.stream);
-            state.ipc._forget_hub(id);
-        }
+        state.ipc._peer_closed(id);
     }
-    if state.ipc.conns.contains_key(&id) { PostAction::Continue } else { PostAction::Remove }
+    // At EOF nothing more is read: the read source goes, the write source drains what is left.
+    if state.ipc.conns.get(&id).is_some_and(|c| !c.eof) { PostAction::Continue } else { PostAction::Remove }
 }
 
 impl State {
@@ -515,7 +547,7 @@ mod tests {
         let (ours, peer) = UnixStream::pair().unwrap();
         ours.set_nonblocking(true).unwrap();
         let mut server = IpcServer::default();
-        let conn = Conn { stream: ours, read_buf: Vec::new(), pending: vec![0; pending], watch: true, writing: pending > 0 };
+        let conn = Conn { stream: ours, read_buf: Vec::new(), pending: vec![0; pending], watch: true, writing: pending > 0, eof: false };
         server.conns.insert(1, conn);
         (server, peer)
     }
@@ -565,11 +597,44 @@ mod tests {
         server._hotkeys_sent(1);
         assert_eq!(server.hub, Some(1), "a watcher that sends hotkeys/set is the hub at once");
         let (ours, _peer2) = UnixStream::pair().unwrap();
-        server.conns.insert(2, Conn { stream: ours, read_buf: Vec::new(), pending: Vec::new(), watch: false, writing: false });
+        server.conns.insert(2, Conn { stream: ours, read_buf: Vec::new(), pending: Vec::new(), watch: false, writing: false, eof: false });
         server._hotkeys_sent(2);
         assert_eq!((server.hub, server.hub_candidate), (Some(1), Some(2)));
         server._close(2, "one-shot done");
         assert_eq!((server.hub, server.hub_candidate), (Some(1), None));
+    }
+
+    #[test]
+    fn a_half_closed_connection_stays_until_its_replies_are_written() {
+        let (mut server, mut peer) = server_with_conn(0);
+        server._send(1, &serde_json::json!({"ok": true}));
+        // The first reply sits unread in the socket, the second one is pending.
+        server.conns.get_mut(&1).unwrap().pending.extend_from_slice(b"\x0b\x00\x00\x00{\"ok\":true}");
+        server._peer_closed(1);
+        assert!(server.conns.get(&1).is_some_and(|c| c.eof), "kept while a reply is pending");
+        server._flush(1);
+        assert!(!server.conns.contains_key(&1), "removed once its replies are written");
+        let mut sink = Vec::new();
+        peer.read_to_end(&mut sink).unwrap();
+        assert_eq!(sink.len(), 30, "both replies, then EOF");
+    }
+
+    #[test]
+    fn a_half_closed_connection_with_nothing_pending_goes_at_once() {
+        let (mut server, _peer) = server_with_conn(0);
+        server._hotkeys_sent(1);
+        server._peer_closed(1);
+        assert!(!server.conns.contains_key(&1));
+        assert_eq!(server.hub, None, "the closed hub is forgotten");
+    }
+
+    #[test]
+    fn a_half_closed_connection_whose_peer_is_gone_is_dropped_on_write() {
+        let (mut server, peer) = server_with_conn(16);
+        server._peer_closed(1);
+        drop(peer);
+        server._flush(1);
+        assert!(!server.conns.contains_key(&1), "a write error drops it");
     }
 
     #[test]

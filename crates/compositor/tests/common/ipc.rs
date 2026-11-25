@@ -67,6 +67,28 @@ pub fn ipc_request(comp: &Compositor, method: &str, data: Value) -> Value {
         .unwrap_or_else(|| panic!("no reply to {method} within {REQUEST_TIMEOUT:?}"))
 }
 
+/// Sends `count` `method` requests in one go on a new connection, then
+/// half-closes it (`shutdown(Write)`, the peer sees EOF) and reads replies
+/// until the compositor closes it or `timeout` goes by. Returns the
+/// replies read.
+pub fn ipc_requests_then_half_close(comp: &Compositor, method: &str, count: usize, timeout: Duration) -> Vec<Value> {
+    let mut stream = _connect(comp);
+    let mut bytes = Vec::new();
+    for _ in 0..count {
+        let body = serde_json::to_vec(&json!({"method": method, "data": {}})).expect("request json");
+        bytes.extend_from_slice(&u32::try_from(body.len()).expect("request length").to_le_bytes());
+        bytes.extend_from_slice(&body);
+    }
+    stream.write_all(&bytes).expect("write the requests");
+    stream.shutdown(std::net::Shutdown::Write).expect("half-close the connection");
+    let deadline = Instant::now() + timeout;
+    let mut replies = Vec::new();
+    while let Some(reply) = _read_message(&mut stream, deadline) {
+        replies.push(reply);
+    }
+    replies
+}
+
 /// Writes `bytes` as they are on a new connection, then waits (at most
 /// `REQUEST_TIMEOUT`) until the compositor closes it. True when it did.
 pub fn ipc_send_raw(comp: &Compositor, bytes: &[u8]) -> bool {
