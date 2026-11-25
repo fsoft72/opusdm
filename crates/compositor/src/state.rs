@@ -7,9 +7,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smithay::{
+    backend::allocator::dmabuf::Dmabuf,
     delegate_data_device, delegate_output, delegate_seat,
     desktop::{layer_map_for_output, PopupManager, Space, Window},
-    input::{Seat, SeatHandler, SeatState},
+    input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
     output::Output,
     reexports::wayland_server::{
         backend::{ClientData, ClientId, DisconnectReason},
@@ -19,6 +20,7 @@ use smithay::{
     utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        dmabuf::{DmabufState, ImportNotifier},
         output::{OutputHandler, OutputManagerState},
         selection::{
             data_device::{
@@ -49,7 +51,7 @@ pub struct WindowInfo {
     /// True while the window is maximized (it fills `usable_area()`).
     pub maximized: bool,
     /// True while the window is fullscreen (it fills the whole output and is
-    /// shown above the TOP layer; the render order comes in task 7).
+    /// shown above the TOP layer when it is the topmost window).
     pub fullscreen: bool,
     /// Position the window had when it was unmapped by a null buffer; it
     /// maps there again instead of taking a new cascade position.
@@ -109,6 +111,14 @@ pub struct State {
     pub start_time: Instant,
     /// True once `refresh` has logged that the seat has no keyboard.
     pub no_keyboard_logged: bool,
+    /// Cursor image asked by the client with the pointer focus (drawn by
+    /// the nested backend; the headless backend ignores it).
+    pub cursor_status: CursorImageStatus,
+    /// `linux-dmabuf` state; its global exists only in the nested backend.
+    pub dmabuf_state: DmabufState,
+    /// Dmabufs imported by clients and not yet checked by the renderer:
+    /// the nested backend answers each notifier on its next frame.
+    pub pending_dmabufs: Vec<(Dmabuf, ImportNotifier)>,
 }
 
 impl State {
@@ -147,6 +157,9 @@ impl State {
             quit: Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             no_keyboard_logged: false,
+            cursor_status: CursorImageStatus::default_named(),
+            dmabuf_state: DmabufState::new(),
+            pending_dmabufs: Vec::new(),
         }
     }
 
@@ -303,6 +316,11 @@ impl SeatHandler for State {
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client);
+    }
+
+    /// Stores the cursor image the focused client asked for.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor_status = image;
     }
 }
 

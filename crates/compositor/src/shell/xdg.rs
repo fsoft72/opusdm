@@ -381,23 +381,43 @@ impl State {
         let maximized: Vec<WlSurface> =
             self.windows.iter().filter(|(_, i)| i.maximized && !i.fullscreen).map(|(s, _)| s.clone()).collect();
         for wl in maximized {
-            let window = self.mapped_window(&wl);
-            let toplevel = window
-                .as_ref()
-                .or_else(|| self.unmapped.iter().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &wl)))
-                .and_then(|w| w.toplevel())
-                .cloned();
-            let Some(toplevel) = toplevel else {
-                opusdm_ipc::err_log!(LOG_TAG, "maximized toplevel {} not found, not reconfigured", wl.id());
-                continue;
-            };
-            toplevel.with_pending_state(|state| state.size = Some((area.w, area.h).into()));
-            if let Some(window) = window {
-                self.move_window(&window, (area.x, area.y));
-            }
-            if toplevel.is_initial_configure_sent() {
-                toplevel.send_pending_configure();
-            }
+            self.refill_window(&wl, area, "maximized");
+        }
+    }
+
+    /// Called after the output changed size (the nested host window was
+    /// resized), with the usable area `before` it: the maximized windows
+    /// follow the new usable area (`usable_area_changed`) and every
+    /// fullscreen window is configured to the new output size.
+    pub fn output_area_changed(&mut self, before_usable: Rect) {
+        self.usable_area_changed(before_usable);
+        let area = self.output_area();
+        let fullscreen: Vec<WlSurface> = self.windows.iter().filter(|(_, i)| i.fullscreen).map(|(s, _)| s.clone()).collect();
+        for wl in fullscreen {
+            self.refill_window(&wl, area, "fullscreen");
+        }
+    }
+
+    /// Configures the toplevel `wl` (mapped or not) to the size of `area`
+    /// and moves it to the area origin when it is mapped; `what` names the
+    /// fill state in the logs.
+    fn refill_window(&mut self, wl: &WlSurface, area: Rect, what: &str) {
+        let window = self.mapped_window(wl);
+        let toplevel = window
+            .as_ref()
+            .or_else(|| self.unmapped.iter().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl)))
+            .and_then(|w| w.toplevel())
+            .cloned();
+        let Some(toplevel) = toplevel else {
+            opusdm_ipc::err_log!(LOG_TAG, "{what} toplevel {} not found, not reconfigured", wl.id());
+            return;
+        };
+        toplevel.with_pending_state(|state| state.size = Some((area.w, area.h).into()));
+        if let Some(window) = window {
+            self.move_window(&window, (area.x, area.y));
+        }
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_pending_configure();
         }
     }
 

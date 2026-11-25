@@ -72,8 +72,6 @@ pub struct Hit {
     pub owner: HitOwner,
 }
 
-// The input entry points are called by the nested backend (stage 1, task 7).
-#[allow(dead_code)]
 impl State {
     /// Surface under `pos` (space coordinates), searched in `HIT_ORDER`;
     /// popups are hit before their parent.
