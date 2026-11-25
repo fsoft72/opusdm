@@ -517,6 +517,32 @@ impl TestClient {
         self.queue.roundtrip(&mut self.app).map(|_| ()).map_err(|e| e.to_string())
     }
 
+    /// Hides the layer surface `l` keeping its role (the wlr-layer-shell
+    /// unmap): attaches a null buffer, commits and waits until the
+    /// compositor has handled it.
+    pub fn hide_layer(&mut self, l: &TestLayer) {
+        let wl = l.wl_surface();
+        let info = self.app.surfaces.get_mut(&wl.id()).expect("known layer surface");
+        info.configured = false;
+        wl.attach(None, 0, 0);
+        wl.commit();
+        self.roundtrip();
+    }
+
+    /// Shows the layer surface `l` hidden by `hide_layer` again, as the
+    /// protocol asks: a new initial commit (no buffer), then waits for a
+    /// configure, answered with a buffer. True when the configure came;
+    /// then waits until the compositor has handled the buffer.
+    pub fn show_layer_again(&mut self, l: &TestLayer) -> bool {
+        let id = l.wl_surface().id();
+        l.wl_surface().commit();
+        let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
+        if ok {
+            self.roundtrip();
+        }
+        ok
+    }
+
     /// Size sent by the last configure of the layer surface `l`.
     pub fn layer_configure(&self, l: &TestLayer) -> (u32, u32) {
         let id = l.wl_surface().id();

@@ -4,6 +4,8 @@
 //! is arranged on every commit of a layer surface and its non exclusive zone
 //! is `State::usable_area()`.
 
+use std::cell::Cell;
+
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
     desktop::{layer_map_for_output, LayerSurface, WindowSurfaceType},
@@ -32,7 +34,12 @@ use smithay::{
     },
 };
 
+use crate::geometry::Rect;
 use crate::state::{State, LOG_TAG};
+
+/// Mark in the user data of a layer surface: true once it committed a
+/// buffer, until it is hidden by a null buffer.
+struct LayerShown(Cell<bool>);
 
 impl WlrLayerShellHandler for State {
     /// The layer shell state.
@@ -64,11 +71,16 @@ impl WlrLayerShellHandler for State {
         self.unconstrain_popup(&popup);
     }
 
-    /// Removes the layer surface from the layer map; maximized windows follow
-    /// the new usable area and the keyboard goes back to the topmost window
-    /// when the layer had it.
+    /// Removes the layer surface from the layer map (or from the hidden
+    /// layers); maximized windows follow the new usable area and the keyboard
+    /// goes back to the topmost window when the layer had it.
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
         let wl = surface.wl_surface().clone();
+        let hidden = self.hidden_layers.len();
+        self.hidden_layers.retain(|l| l.layer_surface() != &surface);
+        if self.hidden_layers.len() != hidden {
+            opusdm_ipc::debug_log!(LOG_TAG, "hidden layer surface {} destroyed", wl.id());
+        }
         let before = self.usable_area();
         {
             let mut map = layer_map_for_output(&self.output);
@@ -184,13 +196,67 @@ fn _release_keyboard(state: &mut State, surface: &WlSurface) {
     }
 }
 
-/// Commit of a layer surface: arranges the layer map, sends the initial
-/// configure on the first commit, follows a change of the usable area and
-/// gives the keyboard to (or takes it from) an exclusive keyboard layer when
-/// it maps (buffer attached) or unmaps (null buffer). Not a layer surface:
-/// nothing to do.
+/// True when the layer surface `layer` committed a buffer and was not
+/// hidden since.
+fn _is_shown(layer: &LayerSurface) -> bool {
+    layer.user_data().get::<LayerShown>().is_some_and(|shown| shown.0.get())
+}
+
+/// Records whether the layer surface `layer` shows a buffer.
+fn _set_shown(layer: &LayerSurface, shown: bool) {
+    layer.user_data().insert_if_missing(|| LayerShown(Cell::new(false)));
+    match layer.user_data().get::<LayerShown>() {
+        Some(mark) => mark.0.set(shown),
+        None => opusdm_ipc::err_log!(LOG_TAG, "layer {}: shown mark not stored", layer.wl_surface().id()),
+    }
+}
+
+/// A commit of a hidden layer surface (the client's new initial commit):
+/// puts it back in the layer map, where the rest of `handle_commit` sends
+/// it a fresh initial configure. Not a hidden layer: nothing to do.
+fn _map_hidden_again(state: &mut State, surface: &WlSurface) {
+    let Some(index) = state.hidden_layers.iter().position(|l| l.wl_surface() == surface) else { return };
+    let layer = state.hidden_layers.remove(index);
+    opusdm_ipc::debug_log!(LOG_TAG, "hidden layer {} committed again, back in the layer map", surface.id());
+    if let Err(err) = layer_map_for_output(&state.output).map_layer(&layer) {
+        opusdm_ipc::err_log!(LOG_TAG, "hidden layer {} not mapped again: {err}", surface.id());
+    }
+}
+
+/// Hides the layer surface `layer`, which committed a null buffer with its
+/// role kept, as an xdg toplevel is unmapped: out of the layer map (its
+/// exclusive zone goes), parked in `hidden_layers`, its initial configure
+/// marked as not sent (the protocol asks the client for a new initial
+/// commit, answered with a configure), its keyboard given back. `before`
+/// is the usable area before the commit.
+fn _hide_layer(state: &mut State, layer: &LayerSurface, before: Rect) {
+    let surface = layer.wl_surface().clone();
+    layer_map_for_output(&state.output).unmap_layer(layer);
+    let reset = with_states(&surface, |states| {
+        let data = states.data_map.get::<LayerSurfaceData>()?;
+        let mut attrs = data.lock().ok()?;
+        attrs.initial_configure_sent = false;
+        Some(())
+    });
+    if reset.is_none() {
+        opusdm_ipc::err_log!(LOG_TAG, "hidden layer {}: no layer surface data, initial configure not reset", surface.id());
+    }
+    _set_shown(layer, false);
+    state.hidden_layers.push(layer.clone());
+    opusdm_ipc::debug_log!(LOG_TAG, "layer {} hidden by a null buffer, out of the layer map", surface.id());
+    state.usable_area_changed(before);
+    _release_keyboard(state, &surface);
+}
+
+/// Commit of a layer surface: maps a hidden layer again, arranges the layer
+/// map, sends the initial configure on the first commit, hides a shown
+/// layer that commits a null buffer, follows a change of the usable area
+/// and gives the keyboard to (or takes it from) an exclusive keyboard layer
+/// when it maps (buffer attached) or unmaps (null buffer). Not a layer
+/// surface: nothing to do.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let before = state.usable_area();
+    _map_hidden_again(state, surface);
     let layer = {
         let mut map = layer_map_for_output(&state.output);
         let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL).cloned() else { return };
@@ -201,8 +267,15 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     if !initial_sent {
         layer.layer_surface().send_configure();
     }
-    state.usable_area_changed(before);
     let has_buffer = with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
+    if !has_buffer && _is_shown(&layer) {
+        _hide_layer(state, &layer, before);
+        return;
+    }
+    if has_buffer {
+        _set_shown(&layer, true);
+    }
+    state.usable_area_changed(before);
     let exclusive = has_buffer && _wants_exclusive_keyboard(&layer);
     let holds = state.exclusive_layer.as_ref() == Some(surface);
     if exclusive && !holds {

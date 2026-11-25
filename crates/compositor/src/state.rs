@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
     delegate_data_device, delegate_output, delegate_seat,
-    desktop::{layer_map_for_output, PopupManager, Space, Window},
+    desktop::{layer_map_for_output, LayerSurface, PopupManager, Space, Window},
     input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
     output::Output,
     reexports::wayland_server::{
@@ -96,6 +96,9 @@ pub struct State {
     /// Mapped TOP / OVERLAY layer surface with exclusive keyboard
     /// interactivity: it keeps the keyboard while it is mapped.
     pub exclusive_layer: Option<WlSurface>,
+    /// Layer surfaces hidden by a null buffer (their role kept): out of the
+    /// layer map until their next commit, which maps them again.
+    pub hidden_layers: Vec<LayerSurface>,
     pub shm_state: ShmState,
     pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
@@ -146,6 +149,7 @@ impl State {
             xdg_shell_state,
             layer_shell_state,
             exclusive_layer: None,
+            hidden_layers: Vec::new(),
             shm_state,
             seat_state,
             data_device_state,
@@ -283,6 +287,11 @@ impl State {
         let before = self.usable_area();
         layer_map_for_output(&self.output).cleanup();
         self.usable_area_changed(before);
+        let hidden = self.hidden_layers.len();
+        self.hidden_layers.retain(|l| l.alive());
+        if self.hidden_layers.len() != hidden {
+            opusdm_ipc::debug_log!(LOG_TAG, "{} dead hidden layer surface(s) dropped", hidden - self.hidden_layers.len());
+        }
         if self.exclusive_layer.as_ref().is_some_and(|l| !l.alive()) {
             opusdm_ipc::debug_log!(LOG_TAG, "exclusive keyboard layer is dead, released");
             self.exclusive_layer = None;

@@ -259,3 +259,48 @@ fn a_hung_compositor_fails_the_roundtrip_instead_of_hanging() {
     comp.signal(libc::SIGSTOP); // the drop of `comp` kills it, stopped or not
     c.roundtrip();
 }
+
+#[test]
+fn a_panel_hidden_by_a_null_buffer_gives_back_its_zone_and_maps_again() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let panel = c.map_layer(Layer::Top, Anchor::TOP | Anchor::LEFT | Anchor::RIGHT, (0, 30), 30, KeyboardInteractivity::None);
+    let w = c.map_toplevel((400, 300));
+    w.xdg().set_maximized();
+    c.roundtrip();
+    assert_eq!(c.last_configure(&w), (1920, 1050));
+    c.hide_layer(&panel);
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)), "got {:?}", c.last_configure(&w));
+    assert!(c.show_layer_again(&panel), "the hidden panel got no configure after its new initial commit");
+    assert_eq!(c.layer_configure(&panel), (1920, 30));
+    assert!(c.wait_configure(&w, (1920, 1050), Duration::from_secs(2)), "got {:?}", c.last_configure(&w));
+    assert!(c.wait_frame(&panel, Duration::from_secs(2)));
+}
+
+#[test]
+fn an_exclusive_layer_hidden_by_a_null_buffer_gives_back_the_keyboard_and_takes_it_again() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    assert!(c.wait_keyboard_focus(&run, Duration::from_secs(2)));
+    c.hide_layer(&run);
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)), "the keyboard did not go back to the window");
+    assert!(c.show_layer_again(&run), "the hidden layer got no configure after its new initial commit");
+    assert!(c.wait_keyboard_focus(&run, Duration::from_secs(2)), "the layer did not get the keyboard again");
+}
+
+#[test]
+fn a_hidden_exclusive_layer_whose_client_dies_leaves_nothing_behind() {
+    let comp = Compositor::start();
+    let mut app = TestClient::new(&comp);
+    let mut run_client = TestClient::new(&comp);
+    let _a = app.map_toplevel((400, 300));
+    let run = run_client.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    run_client.hide_layer(&run);
+    drop(run);
+    drop(run_client); // killed while its layer is hidden
+    let b = app.map_toplevel((200, 100));
+    assert!(app.wait_keyboard_focus(&b, Duration::from_secs(2)), "a new window must get the keyboard");
+    assert!(app.wait_frame(&b, Duration::from_secs(2)));
+}
