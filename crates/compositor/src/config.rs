@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
 
 use crate::state::LOG_TAG;
 
@@ -22,9 +23,9 @@ pub const DEFAULT_QUIT: &str = "Ctrl+Alt+BackSpace";
 /// The keys `compositor.json` may have.
 const KNOWN_KEYS: [&str; 3] = ["window_menu", "quit", "quit_enabled"];
 
-/// The settings of `compositor.json`; a missing key takes its default.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+/// The settings of `compositor.json`; a missing key, or a key with a value
+/// of the wrong type, takes its default.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompositorConfig {
     /// Key that opens the window menu of the focused window.
     pub window_menu: String,
@@ -47,13 +48,35 @@ impl Default for CompositorConfig {
 
 impl CompositorConfig {
     /// Parses the JSON object `json`; missing keys take their default, an
-    /// unknown key is logged with `err_log!` and ignored.
+    /// unknown key is logged with `err_log!` and ignored, a key with a value
+    /// of the wrong type is logged with `err_log!` (naming the key) and
+    /// takes its default, the other keys still apply. Not JSON, or not an
+    /// object: `Err`.
     pub fn parse(json: &str) -> Result<CompositorConfig, String> {
-        let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let (config, bad) = CompositorConfig::parse_with_errors(json)?;
+        for error in bad {
+            opusdm_ipc::err_log!(LOG_TAG, "compositor.json: {error}");
+        }
+        Ok(config)
+    }
+
+    /// The work of `parse`: the config and one message per key whose value
+    /// has the wrong type (that key took its default). Logs the unknown
+    /// keys. Not JSON, or not an object: `Err`.
+    pub fn parse_with_errors(json: &str) -> Result<(CompositorConfig, Vec<String>), String> {
+        let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
         for key in unknown_keys(&value) {
             opusdm_ipc::err_log!(LOG_TAG, "compositor.json: unknown key '{key}' ignored");
         }
-        serde_json::from_value(value).map_err(|e| e.to_string())
+        let Value::Object(object) = value else { return Err("not a JSON object".to_string()) };
+        let defaults = CompositorConfig::default();
+        let mut bad = Vec::new();
+        let config = CompositorConfig {
+            window_menu: _key_or_default(&object, "window_menu", defaults.window_menu, &mut bad),
+            quit: _key_or_default(&object, "quit", defaults.quit, &mut bad),
+            quit_enabled: _key_or_default(&object, "quit_enabled", defaults.quit_enabled, &mut bad),
+        };
+        Ok((config, bad))
     }
 
     /// Reads `$OPUSDM_COMPOSITOR_CONFIG`, else `config_dir()/compositor.json`
@@ -81,6 +104,20 @@ impl CompositorConfig {
                 opusdm_ipc::err_log!(LOG_TAG, "{} is not valid, default bindings: {e}", path.display());
                 CompositorConfig::default()
             }
+        }
+    }
+}
+
+/// The value of `key` in `object`, `default` when it is missing; a value of
+/// the wrong type also gives `default` and pushes a message naming the key
+/// to `bad`.
+fn _key_or_default<T: DeserializeOwned + std::fmt::Debug>(object: &Map<String, Value>, key: &str, default: T, bad: &mut Vec<String>) -> T {
+    let Some(value) = object.get(key) else { return default };
+    match serde_json::from_value(value.clone()) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            bad.push(format!("key '{key}' has a bad value {value} ({e}), default {default:?} used"));
+            default
         }
     }
 }
@@ -137,6 +174,27 @@ mod tests {
         assert_eq!((config.window_menu.as_str(), config.quit.as_str()), ("Super+m", "Ctrl+Alt+q"));
         assert!(CompositorConfig::parse("not json").is_err());
         assert!(CompositorConfig::parse("[1]").is_err());
-        assert!(CompositorConfig::parse(r#"{"quit_enabled": "yes"}"#).is_err());
+    }
+
+    #[test]
+    fn a_key_with_the_wrong_type_takes_its_default_and_the_rest_applies() {
+        let json = r#"{"quit_enabled": "false", "window_menu": "Super+m", "quit": "Ctrl+Alt+q"}"#;
+        let (config, bad) = CompositorConfig::parse_with_errors(json).unwrap();
+        assert!(config.quit_enabled, "the bad key takes its default");
+        assert_eq!((config.window_menu.as_str(), config.quit.as_str()), ("Super+m", "Ctrl+Alt+q"), "the good keys apply");
+        assert_eq!(bad.len(), 1, "one error: {bad:?}");
+        assert!(bad[0].contains("'quit_enabled'"), "the error names the key: {bad:?}");
+    }
+
+    #[test]
+    fn every_bad_key_is_reported_and_falls_back_on_its_own() {
+        let json = r#"{"quit_enabled": false, "window_menu": 3, "quit": null}"#;
+        let (config, bad) = CompositorConfig::parse_with_errors(json).unwrap();
+        assert!(!config.quit_enabled, "the good key applies");
+        assert_eq!(config.window_menu, DEFAULT_WINDOW_MENU);
+        assert_eq!(config.quit, DEFAULT_QUIT);
+        assert_eq!(bad.len(), 2, "{bad:?}");
+        assert!(bad.iter().any(|e| e.contains("'window_menu'")) && bad.iter().any(|e| e.contains("'quit'")), "{bad:?}");
+        assert_eq!(CompositorConfig::parse(json).unwrap(), config, "parse gives the same config");
     }
 }
