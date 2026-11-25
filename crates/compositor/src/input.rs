@@ -308,8 +308,9 @@ impl State {
     /// modifier goes to the focused client as usual (so its release does
     /// too, and the switcher sees the hold modifiers go); the key of the
     /// opening combo moves the selection (with Shift toggled, the other
-    /// way); Escape cancels; any other key, bindings included, is swallowed
-    /// with a `debug_log!`. Every press taken has its keycode recorded so
+    /// way); Escape cancels; the quit binding still runs; a hub hotkey is
+    /// swallowed with an `err_log!`; any other key, the other built-ins
+    /// included, is swallowed with a `debug_log!`. Every press taken has its keycode recorded so
     /// its release is swallowed.
     fn _switcher_filter(&mut self, keycode: Keycode, mods: &ModifiersState, handle: &KeysymHandle<'_>) -> FilterResult<KeyRoute> {
         if handle.raw_syms().iter().any(|sym| sym.is_modifier_key()) { return FilterResult::Forward; }
@@ -318,6 +319,18 @@ impl State {
             opusdm_ipc::err_log!(LOG_TAG, "window switcher filter: the switcher closed, key swallowed");
             return FilterResult::Intercept(KeyRoute::Swallowed);
         };
+        let combo_mods = mods_of(mods);
+        match self._lookup_key(combo_mods, handle) {
+            // The quit binding still runs, as with the window menu open.
+            Some((Binding::Quit, name)) => {
+                return FilterResult::Intercept(KeyRoute::Binding(Binding::Quit, combo_text(combo_mods, &name)));
+            }
+            Some((Binding::Hub(function), name)) => {
+                opusdm_ipc::err_log!(LOG_TAG, "hotkey {}: swallowed, the window switcher is open ({function} not run)", combo_text(combo_mods, &name));
+                return FilterResult::Intercept(KeyRoute::Swallowed);
+            }
+            _ => {}
+        }
         // Only the key name is compared: the modifiers decide the direction.
         let probe = KeyCombo { mods: Mods::default(), name: switcher.key.clone() };
         let raw = handle.raw_latin_sym_or_raw_current_sym();

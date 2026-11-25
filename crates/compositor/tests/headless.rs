@@ -1569,6 +1569,8 @@ fn the_selected_window_destroyed_while_the_switcher_is_open_selects_the_next_one
     c.roundtrip();
     assert!(comp.is_running());
     assert_eq!(active_ids(&comp), vec![1], "A, the entry after B");
+    assert_eq!(c.keyboard_focus(), Some(w[0].wl_surface().clone()));
+    assert_eq!(c.modifiers_depressed(), 0, "A gets the keyboard with no modifier stuck");
     assert_eq!(c.keys_received(), 0);
 }
 
@@ -1620,4 +1622,49 @@ fn an_exclusive_layer_mapped_over_the_switcher_closes_it() {
     c.roundtrip();
     assert_eq!(active_ids(&comp), vec![3], "no window was activated");
     assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+    assert_eq!(c.modifiers_depressed(), 0, "the layer sees Alt released");
+}
+
+#[test]
+fn alt_held_tab_tapped_twice_activates_the_third_window_in_focus_order() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = three_windows(&mut c);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    key(&comp, "Tab");
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![1], "focus order C, B, A: two steps from C is A");
+    assert_eq!(c.keyboard_focus(), Some(w[0].wl_surface().clone()));
+    assert_eq!(c.modifiers_depressed(), 0);
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn the_quit_binding_still_ends_the_compositor_while_the_switcher_is_open() {
+    let mut comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = three_windows(&mut c);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    key(&comp, "Ctrl+BackSpace"); // Alt still held: Ctrl+Alt+BackSpace
+    assert_eq!(comp.wait_exit(Duration::from_secs(2)), Some(0));
+}
+
+#[test]
+fn a_hub_hotkey_is_swallowed_and_logged_while_the_switcher_is_open() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let _w = three_windows(&mut c);
+    let reply = ipc_request(&comp, "hotkeys/set", json!({"hotkeys": [{"key": "Alt+t", "function": "terminal"}]}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    key(&comp, "t");
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert!(comp.wait_log("hotkey Alt+t: swallowed, the window switcher is open (terminal not run)", Duration::from_secs(2)));
+    assert_eq!(active_ids(&comp), vec![2]);
+    assert_eq!(c.keys_received(), 0);
 }

@@ -458,6 +458,8 @@ struct ClientApp {
     dismissed: Vec<ObjectId>,
     /// `wl_keyboard.key` events (press and release) of non-modifier keys.
     keys: u32,
+    /// `mods_depressed` of the last `wl_keyboard.modifiers` (0: no modifier held).
+    mods_depressed: u32,
     /// Surface with the pointer of this client and the surface-local
     /// position of the pointer on it (`wl_pointer` enter / motion / leave).
     pointer: Option<(WlSurface, f64, f64)>,
@@ -551,6 +553,7 @@ impl TestClient {
             keyboard_serial: 0,
             dismissed: Vec::new(),
             keys: 0,
+            mods_depressed: 0,
             pointer: None,
             presses: Vec::new(),
             close_requests: Vec::new(),
@@ -882,6 +885,12 @@ impl TestClient {
     /// Key events (presses and releases) of non-modifier keys received so far.
     pub fn keys_received(&self) -> u32 {
         self.app.keys
+    }
+
+    /// `mods_depressed` of the last `wl_keyboard.modifiers` this client got
+    /// (0 when no modifier is held, as the client sees it).
+    pub fn modifiers_depressed(&self) -> u32 {
+        self.app.mods_depressed
     }
 
     /// Surface that has this client's keyboard, from `wl_keyboard` enter / leave.
@@ -1293,6 +1302,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
             wl_keyboard::Event::Key { key, .. } if !MODIFIER_KEYCODES.contains(&key) => {
                 app.keys += 1;
             }
+            wl_keyboard::Event::Modifiers { mods_depressed, .. } => app.mods_depressed = mods_depressed,
             _ => {}
         }
     }
