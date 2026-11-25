@@ -70,6 +70,25 @@ fn a_minimized_window_unmapped_by_a_null_buffer_maps_again_and_takes_the_keyboar
 }
 
 #[test]
+fn minimizing_a_window_with_an_open_menu_gives_the_keyboard_to_the_shown_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    let menu = c.map_popup_with_grab(&b, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert_eq!(c.keyboard_focus(), Some(menu.wl_surface().clone()));
+    b.xdg().set_minimized();
+    c.roundtrip();
+    assert!(c.popup_done(&menu), "the menu of a minimized window must be dismissed");
+    assert!(c.wait_keyboard_focus(&a, Duration::from_secs(2)), "the keyboard must go to the shown window");
+    c.destroy_popup(menu);
+    // A few housekeeping ticks: the end of the grab must not give the keyboard back to the hidden window.
+    assert!(c.wait_frame(&a, Duration::from_secs(2)));
+    assert!(c.wait_frame(&a, Duration::from_secs(2)));
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+}
+
+#[test]
 fn sigterm_ends_the_compositor_cleanly() {
     let mut comp = Compositor::start();
     comp.signal(libc::SIGTERM); // harness helper, `libc` dev-dependency (workspace)

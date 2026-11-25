@@ -13,6 +13,7 @@ use std::time::Duration;
 use smithay::{
     desktop::{find_popup_root_surface, PopupManager, Window},
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
+    utils::SERIAL_COUNTER,
 };
 
 use crate::state::{has_buffer, State, WindowInfo, LOG_TAG};
@@ -174,6 +175,47 @@ impl State {
         self._raise_id(id);
     }
 
+    /// Dismisses every popup of `root` (a toplevel or a layer surface) and
+    /// ends the keyboard and pointer grabs that started on `root` (a popup
+    /// grab keeps `root` as its start focus). Without this a popup keyboard
+    /// grab ignores every later `set_focus` and, when the client destroys
+    /// the popup, gives the keyboard back to `root`. A keyboard left on one
+    /// of the dismissed popups goes to `root`, as at the end of a Smithay
+    /// popup grab (the caller moves it on when `root` is hidden).
+    pub fn dismiss_popups_and_grabs(&mut self, root: &WlSurface) {
+        let popups: Vec<WlSurface> = PopupManager::popups_for_surface(root).map(|(p, _)| p.wl_surface().clone()).collect();
+        for (popup, _) in PopupManager::popups_for_surface(root) {
+            if let Err(err) = PopupManager::dismiss_popup(root, &popup) {
+                opusdm_ipc::err_log!(LOG_TAG, "popup of {} not dismissed: {err:?}", root.id());
+            }
+        }
+        match self.seat.get_keyboard() {
+            Some(keyboard) => {
+                let on_root = keyboard.grab_start_data().is_some_and(|d| d.focus.as_ref() == Some(root));
+                if on_root {
+                    keyboard.unset_grab(self);
+                    opusdm_ipc::debug_log!(LOG_TAG, "keyboard grab on {} ended", root.id());
+                }
+                if keyboard.current_focus().is_some_and(|f| popups.contains(&f)) {
+                    keyboard.set_focus(self, Some(root.clone()), SERIAL_COUNTER.next_serial());
+                    opusdm_ipc::debug_log!(LOG_TAG, "keyboard back on {} from its dismissed popup", root.id());
+                }
+            }
+            None => opusdm_ipc::err_log!(LOG_TAG, "grabs of {}: the seat has no keyboard", root.id()),
+        }
+        match self.seat.get_pointer() {
+            Some(pointer) => {
+                let on_root = pointer.grab_start_data().is_some_and(|d| d.focus.as_ref().is_some_and(|(f, _)| f == root));
+                if on_root {
+                    let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+                    pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+                    opusdm_ipc::debug_log!(LOG_TAG, "pointer grab on {} ended", root.id());
+                }
+            }
+            None => opusdm_ipc::err_log!(LOG_TAG, "grabs of {}: the seat has no pointer", root.id()),
+        }
+    }
+
     /// Moves `id` to the top of `stack`.
     fn _raise_id(&mut self, id: WindowId) {
         self.stack.retain(|i| *i != id);
@@ -191,7 +233,8 @@ impl State {
     }
 
     /// Takes `window` out of the space: stores its position, dismisses its
-    /// popups and takes its `Activated` state away.
+    /// popups (ending their keyboard and pointer grabs) and takes its
+    /// `Activated` state away.
     fn _hide(&mut self, window: &Window) {
         let position = self.space.element_location(window).map(|p| (p.x, p.y));
         self.space.unmap_elem(window);
@@ -205,11 +248,7 @@ impl State {
             Some(info) => info.last_position = position,
             None => opusdm_ipc::err_log!(LOG_TAG, "hide: toplevel {} has no window entry", wl.id()),
         }
-        for (popup, _) in PopupManager::popups_for_surface(wl) {
-            if let Err(err) = PopupManager::dismiss_popup(wl, &popup) {
-                opusdm_ipc::err_log!(LOG_TAG, "hide: popup of {} not dismissed: {err:?}", wl.id());
-            }
-        }
+        self.dismiss_popups_and_grabs(wl);
         if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }

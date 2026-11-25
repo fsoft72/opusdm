@@ -396,6 +396,12 @@ impl TestClient {
         self._map_popup(parent, anchor, size, true)
     }
 
+    /// Maps an xdg popup with a popup grab (a menu): the same as
+    /// `map_popup_grabbed`, under the name the stage 2 tests use.
+    pub fn map_popup_with_grab(&mut self, parent: &impl PopupParent, anchor: Rect, size: (i32, i32)) -> TestPopup {
+        self._map_popup(parent, anchor, size, true)
+    }
+
     /// Maps an xdg popup (see `map_popup`), with a popup grab when `grab`.
     fn _map_popup(&mut self, parent: &impl PopupParent, anchor: Rect, size: (i32, i32), grab: bool) -> TestPopup {
         let positioner = XdgPositioner::new(&self.app.xdg).expect("xdg_positioner");
@@ -556,6 +562,12 @@ impl TestClient {
     /// True once the compositor dismissed `popup` (`xdg_popup.popup_done`).
     pub fn popup_dismissed(&self, popup: &TestPopup) -> bool {
         self.app.dismissed.contains(&popup.wl_surface().id())
+    }
+
+    /// True once the compositor sent `xdg_popup.popup_done` to `popup`: the
+    /// same as `popup_dismissed`, under the name the stage 2 tests use.
+    pub fn popup_done(&self, popup: &TestPopup) -> bool {
+        self.popup_dismissed(popup)
     }
 
     /// Destroys `popup` (a menu closed by the client) and waits until the
