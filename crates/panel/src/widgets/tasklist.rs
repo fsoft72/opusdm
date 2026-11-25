@@ -215,8 +215,9 @@ fn desktop_label(index: u32, names: &[String]) -> String {
 /// client published its pid. Returns the popover so the caller can release it.
 fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) -> gtk::PopoverMenu {
     let menu = gio::Menu::new();
-    // Wayland has no request that moves another client's window.
-    if opusdm_ipc::session::is_x11() {
+    // Wayland has no request that moves another client's window; X11 and
+    // opusdm-compositor's IPC have one.
+    if opusdm_ipc::session::is_x11() || crate::wl_windows::under_native() {
         let desktops = gio::Menu::new();
         for i in 0..count {
             desktops.append(Some(&desktop_label(i, names)), Some(&format!("win.move({i})")));
@@ -241,7 +242,12 @@ fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) 
     actions.add_action(&close_action);
     if let Some(pid) = c.pid {
         let kill_action = gio::SimpleAction::new("kill", None);
-        kill_action.connect_activate(move |_, _| ewmh::force_kill(pid));
+        // Under opusdm-compositor the compositor kills the window's process
+        // with its own pid guards; elsewhere the panel kills the pid.
+        kill_action.connect_activate(move |_, _| {
+            if crate::wl_windows::kill_window(xid) { return; }
+            ewmh::force_kill(pid);
+        });
         actions.add_action(&kill_action);
     }
     btn.insert_action_group("win", Some(&actions));

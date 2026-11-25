@@ -10,9 +10,14 @@
 //! Under Wayfire its IPC (`opusdm_wayland::wayfire`) is used instead, which
 //! tells all of that but the icons: the pager draws the real window boxes on
 //! the right desktop, and windows can be moved to another desktop.
+//!
+//! Under opusdm-compositor its private IPC (`opusdm_wayland::native`) comes
+//! first and tells the same (desktop of each window, pid, geometry). Whether
+//! the panel runs under it is decided once per process ([`under_native`]).
 
 use std::sync::{mpsc, Mutex, OnceLock};
 
+use opusdm_wayland::native;
 use opusdm_wayland::wayfire;
 use opusdm_wayland::Snapshot;
 
@@ -21,6 +26,7 @@ use crate::ewmh::{ClientWin, EwmhEvent, WinRect};
 /// Start forwarding the compositor's changes to `tx`. Nothing is sent when
 /// the session or the compositor offers neither windows nor workspaces.
 pub fn spawn(tx: async_channel::Sender<EwmhEvent>) {
+    if under_native() && spawn_native(tx.clone()) { return; }
     if wayfire::under_wayfire() && spawn_wayfire(tx.clone()) { return; }
     let Some(session) = opusdm_wayland::shared() else { return };
     let last: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -84,6 +90,77 @@ fn wayfire_client(state: &wayfire::State, v: &wayfire::View) -> ClientWin {
     }
 }
 
+/// Whether the panel runs under opusdm-compositor, decided once for the
+/// whole process: the compositor removes its socket file when it quits,
+/// and a check per call would then send the panel down the labwc /
+/// foreign-toplevel paths in the middle of the shutdown.
+static UNDER_NATIVE: OnceLock<bool> = OnceLock::new();
+
+/// Whether the panel runs under opusdm-compositor (see [`UNDER_NATIVE`]).
+pub(crate) fn under_native() -> bool {
+    *UNDER_NATIVE.get_or_init(native::under_native)
+}
+
+/// Forward opusdm-compositor's changes to `tx` through its private IPC.
+/// `false` when it cannot be watched (the caller then falls back to the
+/// Wayland protocols).
+///
+/// Ownership: the watch threads of `native::watch` own the closure, and
+/// with it `tx` and the last state, for the whole run. When the compositor
+/// goes away they stop with a log line each and are not restarted: the
+/// panel keeps showing the last state it received.
+fn spawn_native(tx: async_channel::Sender<EwmhEvent>) -> bool {
+    let mut last: Option<native::NativeState> = None;
+    let watched = native::watch(move |state| {
+        for event in native_events(last.as_ref(), state) {
+            if let Err(e) = tx.send_blocking(event) {
+                opusdm_ipc::err_log!("opusdm-panel", "compositor window event dropped, the panel is gone: {e}");
+            }
+        }
+        last = Some(state.clone());
+    });
+    if let Err(e) = &watched {
+        opusdm_ipc::err_log!("opusdm-panel", "compositor IPC not usable, window list through Wayland: {e}");
+    }
+    watched.is_ok()
+}
+
+/// The events that bring a panel showing opusdm-compositor state `prev`
+/// (nothing yet when `None`) up to `now`.
+pub fn native_events(prev: Option<&native::NativeState>, now: &native::NativeState) -> Vec<EwmhEvent> {
+    let desktops = |s: &native::NativeState| (s.count, s.current);
+    let clients = |s: &native::NativeState| s.windows.iter().map(native_client).collect::<Vec<_>>();
+    let active = |s: &native::NativeState| s.active().map(|w| w.id);
+    let mut out = Vec::new();
+    if prev.map(desktops) != Some(desktops(now)) {
+        let (count, current) = desktops(now);
+        out.push(EwmhEvent::Desktops { count, current, names: (1..=count).map(|i| i.to_string()).collect() });
+    }
+    let now_clients = clients(now);
+    if prev.map(clients).as_ref() != Some(&now_clients) {
+        out.push(EwmhEvent::Clients(now_clients));
+    }
+    if prev.map(active) != Some(active(now)) {
+        out.push(EwmhEvent::ActiveWindow(active(now)));
+    }
+    out
+}
+
+/// One opusdm-compositor window as the tasklist and the pager show it.
+fn native_client(w: &native::NativeWindow) -> ClientWin {
+    let r = &w.geometry;
+    ClientWin {
+        xid: w.id,
+        title: w.title.clone(),
+        desktop: i64::from(w.desktop),
+        minimized: w.minimized,
+        pid: w.pid,
+        icon: None,
+        app_id: (!w.app_id.is_empty()).then(|| w.app_id.clone()),
+        rect: WinRect { x: r.x, y: r.y, w: r.w.max(0) as u32, h: r.h.max(0) as u32 },
+    }
+}
+
 /// The events that bring a panel showing `prev` (nothing yet when `None`)
 /// up to `now`.
 pub fn events(prev: Option<&Snapshot>, now: &Snapshot) -> Vec<EwmhEvent> {
@@ -121,18 +198,21 @@ fn client(t: &opusdm_wayland::Toplevel) -> ClientWin {
 /// Switch to workspace `index`. `false` when not on Wayland (the caller then
 /// takes the X11 path).
 pub fn switch_desktop(index: u32) -> bool {
+    if under_native() { return with_native("switch desktop", move || native::switch_desktop(index)); }
     if wayfire::under_wayfire() { return with_wayfire("switch desktop", move || wayfire::switch_desktop(index)); }
     with_session(|s| s.activate_workspace(index as usize))
 }
 
 /// Raise and focus window `id`; `false` when not on Wayland.
 pub fn activate_window(id: u32) -> bool {
+    if under_native() { return with_native("activate window", move || native::activate(id)); }
     if wayfire::under_wayfire() { return with_wayfire("activate window", move || wayfire::focus(id)); }
     with_session(|s| s.activate(id))
 }
 
 /// Minimize window `id`; `false` when not on Wayland.
 pub fn iconify_window(id: u32) -> bool {
+    if under_native() { return with_native("minimize window", move || native::set_minimized(id, true)); }
     if wayfire::under_wayfire() { return with_wayfire("minimize window", move || wayfire::set_minimized(id, true)); }
     with_session(|s| s.minimize(id))
 }
@@ -140,15 +220,76 @@ pub fn iconify_window(id: u32) -> bool {
 /// Ask window `id` to close, like its close button; `false` when not on
 /// Wayland.
 pub fn close_window(id: u32) -> bool {
+    if under_native() { return with_native("close window", move || native::close(id)); }
     if wayfire::under_wayfire() { return with_wayfire("close window", move || wayfire::close(id)); }
     with_session(|s| s.close(id))
 }
 
 /// Move window `id` to desktop `index`; `false` when not on Wayland. Only
-/// Wayfire can do it: no Wayland protocol moves another client's window.
+/// opusdm-compositor and Wayfire can do it: no Wayland protocol moves
+/// another client's window.
 pub fn move_window_to_desktop(id: u32, index: u32) -> bool {
+    if under_native() { return with_native("move window to desktop", move || native::move_to_desktop(id, index)); }
     if wayfire::under_wayfire() { return with_wayfire("move window to desktop", move || wayfire::move_to_desktop(id, index)); }
     opusdm_ipc::session::is_wayland()
+}
+
+/// Kill the process of window `id` through opusdm-compositor, which does
+/// the kill with its own pid guards. `false` when not under it (the caller
+/// then kills the window's pid itself).
+pub fn kill_window(id: u32) -> bool {
+    if !under_native() { return false; }
+    with_native("kill window", move || native::kill(id))
+}
+
+/// An opusdm-compositor request queued for the native worker thread.
+type NativeJob = Box<dyn FnOnce() + Send>;
+
+/// Queue of the worker thread that runs opusdm-compositor requests in click
+/// order; `None` when the thread could not be started.
+static NATIVE_JOBS: OnceLock<Option<mpsc::Sender<NativeJob>>> = OnceLock::new();
+
+/// Start the worker thread behind [`NATIVE_JOBS`].
+///
+/// Ownership: the thread owns the receiving end and lives as long as the
+/// process (the sending end is in a static and is never dropped). Each job
+/// opens its own short request connection, so a compositor that went away
+/// only makes the next jobs fail, each with a log line.
+fn start_native_worker() -> Option<mpsc::Sender<NativeJob>> {
+    let (tx, rx) = mpsc::channel::<NativeJob>();
+    let spawned = std::thread::Builder::new().name("opusdm-native-call".into()).spawn(move || {
+        while let Ok(job) = rx.recv() {
+            job();
+        }
+    });
+    match spawned {
+        Ok(_) => Some(tx),
+        Err(e) => {
+            opusdm_ipc::err_log!("opusdm-panel", "cannot start the compositor request thread: {e}");
+            None
+        }
+    }
+}
+
+/// Run the opusdm-compositor request `f` on the native worker thread, so a
+/// slow compositor never blocks the GTK thread, logging a failure. Runs `f`
+/// in place when the worker is not available. Always `true`.
+fn with_native(what: &'static str, f: impl FnOnce() -> Result<(), String> + Send + 'static) -> bool {
+    let job: NativeJob = Box::new(move || {
+        if let Err(e) = f() {
+            opusdm_ipc::err_log!("opusdm-panel", "compositor: {what} failed: {e}");
+        }
+    });
+    match NATIVE_JOBS.get_or_init(start_native_worker) {
+        Some(tx) => {
+            if let Err(mpsc::SendError(job)) = tx.send(job) {
+                opusdm_ipc::err_log!("opusdm-panel", "compositor request thread gone, running {what} in place");
+                job();
+            }
+        }
+        None => job(),
+    }
+    true
 }
 
 /// A Wayfire request queued for the worker thread.
@@ -262,6 +403,72 @@ mod tests {
         after.views[0].geometry.x -= 1000;
         let out = wayfire_events(Some(&before), &after);
         assert!(matches!(out.as_slice(), [EwmhEvent::Desktops { current: 3, .. }]));
+    }
+
+    fn native_state(current: u32, active: Option<u32>) -> native::NativeState {
+        let window = |id: u32, desktop: u32| native::NativeWindow {
+            id,
+            app_id: "foot".into(),
+            title: format!("w{id}"),
+            pid: Some(100 + id),
+            geometry: native::Rect { x: 10 * id as i32, y: 20, w: 300, h: 200 },
+            desktop,
+            activated: active == Some(id),
+            ..Default::default()
+        };
+        native::NativeState { windows: vec![window(1, 0), window(2, 2)], count: 4, current }
+    }
+
+    #[test]
+    fn native_windows_carry_desktop_pid_and_rect() {
+        let out = native_events(None, &native_state(1, Some(2)));
+        assert_eq!(out.len(), 3);
+        let EwmhEvent::Desktops { count, current, names } = &out[0] else { panic!("desktops first") };
+        assert_eq!((*count, *current), (4, 1));
+        assert_eq!(names, &["1", "2", "3", "4"]);
+        let EwmhEvent::Clients(clients) = &out[1] else { panic!("then clients") };
+        assert_eq!((clients[0].xid, clients[0].desktop, clients[0].pid), (1, 0, Some(101)));
+        assert_eq!((clients[1].xid, clients[1].desktop, clients[1].pid), (2, 2, Some(102)));
+        assert_eq!(clients[1].rect, WinRect { x: 20, y: 20, w: 300, h: 200 });
+        assert_eq!(clients[0].app_id.as_deref(), Some("foot"));
+        assert_eq!(clients[0].title, "w1");
+        assert!(clients.iter().all(|c| c.icon.is_none() && !c.minimized));
+        assert!(matches!(out[2], EwmhEvent::ActiveWindow(Some(2))));
+    }
+
+    #[test]
+    fn a_native_window_on_desktop_two_is_never_sticky() {
+        let out = native_events(None, &native_state(0, None));
+        let EwmhEvent::Clients(clients) = &out[1] else { panic!("clients") };
+        assert_eq!(clients[1].desktop, 2);
+        assert!(clients.iter().all(|c| c.desktop >= 0));
+    }
+
+    #[test]
+    fn native_only_what_changed_is_sent() {
+        let before = native_state(0, Some(1));
+        assert!(native_events(Some(&before), &before).is_empty());
+        let out = native_events(Some(&before), &native_state(3, Some(1)));
+        assert!(matches!(out.as_slice(), [EwmhEvent::Desktops { current: 3, .. }]));
+        let out = native_events(Some(&before), &native_state(0, None));
+        // Focus is not part of a ClientWin: only the active window moves.
+        assert!(matches!(out.as_slice(), [EwmhEvent::ActiveWindow(None)]));
+        let mut minimized = before.clone();
+        minimized.windows[0].minimized = true;
+        let out = native_events(Some(&before), &minimized);
+        let [EwmhEvent::Clients(clients)] = out.as_slice() else { panic!("clients only") };
+        assert!(clients[0].minimized);
+    }
+
+    #[test]
+    fn native_empty_app_id_is_none_and_negative_size_is_zero() {
+        let mut state = native_state(0, None);
+        state.windows[0].app_id.clear();
+        state.windows[0].geometry = native::Rect { x: -5, y: -6, w: -1, h: 0 };
+        let out = native_events(None, &state);
+        let EwmhEvent::Clients(clients) = &out[1] else { panic!("clients") };
+        assert_eq!(clients[0].app_id, None);
+        assert_eq!(clients[0].rect, WinRect { x: -5, y: -6, w: 0, h: 0 });
     }
 
     #[test]
