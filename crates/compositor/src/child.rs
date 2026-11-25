@@ -11,10 +11,12 @@ use std::process::{Child, Command};
 /// `OPUSDM_PICOM_BASE` a hub started here would rewrite the user's picom.conf
 /// and signal the live picom, the socket overrides would point it at the live
 /// hub, dock and applets. That list must stay the same as
-/// `LIVE_SESSION_VARS` in `run-native.sh`.
-pub fn child_env(socket_name: &str) -> Vec<(&'static str, Option<String>)> {
+/// `LIVE_SESSION_VARS` in `run-native.sh`. `OPUSDM_COMPOSITOR_SOCKET` is the
+/// private IPC socket of this compositor (`ipc_socket`).
+pub fn child_env(socket_name: &str, ipc_socket: &str) -> Vec<(&'static str, Option<String>)> {
     vec![
         ("WAYLAND_DISPLAY", Some(socket_name.to_string())),
+        ("OPUSDM_COMPOSITOR_SOCKET", Some(ipc_socket.to_string())),
         ("XDG_SESSION_TYPE", Some("wayland".to_string())),
         ("DISPLAY", None),
         ("GDK_BACKEND", None),
@@ -30,17 +32,17 @@ pub fn child_env(socket_name: &str) -> Vec<(&'static str, Option<String>)> {
 }
 
 /// Starts `sh -c command` with the `child_env` changes applied.
-pub fn spawn_startup(command: &str, socket_name: &str) -> std::io::Result<Child> {
+pub fn spawn_startup(command: &str, socket_name: &str, ipc_socket: &str) -> std::io::Result<Child> {
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(command);
-    _apply_child_env(&mut cmd, socket_name);
+    _apply_child_env(&mut cmd, socket_name, ipc_socket);
     cmd.spawn()
 }
 
 /// Applies the `child_env` changes to `cmd`, after any variable `cmd`
 /// already sets (so a test can give it a parent environment of its own).
-fn _apply_child_env(cmd: &mut Command, socket_name: &str) {
-    for (key, value) in child_env(socket_name) {
+fn _apply_child_env(cmd: &mut Command, socket_name: &str, ipc_socket: &str) {
+    for (key, value) in child_env(socket_name, ipc_socket) {
         match value {
             Some(v) => cmd.env(key, v),
             None => cmd.env_remove(key),
@@ -71,8 +73,9 @@ mod tests {
 
     #[test]
     fn children_see_only_this_compositor() {
-        let env = child_env("wayland-3");
+        let env = child_env("wayland-3", "/run/user/1/opusdm-compositor-wayland-3.sock");
         assert!(env.contains(&("WAYLAND_DISPLAY", Some("wayland-3".into()))));
+        assert!(env.contains(&("OPUSDM_COMPOSITOR_SOCKET", Some("/run/user/1/opusdm-compositor-wayland-3.sock".into()))));
         assert!(env.contains(&("XDG_SESSION_TYPE", Some("wayland".into()))));
         let live_session = ["OPUSDM_PICOM_BASE", "OPUSDM_HUB_SOCK", "OPUSDM_DOCK_SOCK", "OPUSDM_APPLETS_SOCK", "OPUSDM_LABWC_RC"];
         for gone in ["DISPLAY", "GDK_BACKEND", "LABWC_PID", "WAYFIRE_SOCKET"].into_iter().chain(live_session) {
@@ -85,7 +88,7 @@ mod tests {
         let script = include_str!("../../../run-native.sh");
         let line = script.lines().find_map(|l| l.strip_prefix("LIVE_SESSION_VARS=(")).unwrap();
         let script_vars: Vec<&str> = line.trim_end_matches(')').split_whitespace().collect();
-        let env = child_env("wayland-3");
+        let env = child_env("wayland-3", "/x.sock");
         let removed: Vec<&str> = env.iter().filter(|(k, v)| v.is_none() && k.starts_with("OPUSDM_")).map(|(k, _)| *k).collect();
         assert_eq!(removed, script_vars);
     }
@@ -94,7 +97,7 @@ mod tests {
     /// sees this compositor and nothing of the host session.
     const CHECK_ENV: &str = "test -z \"${DISPLAY+set}\" && test -z \"${OPUSDM_PICOM_BASE+set}\" \
         && test -z \"${OPUSDM_HUB_SOCK+set}\" && test \"$WAYLAND_DISPLAY\" = wayland-9 \
-        && test \"$XDG_SESSION_TYPE\" = wayland";
+        && test \"$XDG_SESSION_TYPE\" = wayland && test \"$OPUSDM_COMPOSITOR_SOCKET\" = /tmp/ipc-9.sock";
 
     #[test]
     fn a_child_does_not_inherit_the_host_display_or_the_live_overrides() {
@@ -104,20 +107,20 @@ mod tests {
         cmd.arg("-c").arg(CHECK_ENV);
         cmd.env("DISPLAY", ":99").env("OPUSDM_PICOM_BASE", "/opt/opusdm/config/picom.conf");
         cmd.env("OPUSDM_HUB_SOCK", "/tmp/live-hub.sock");
-        _apply_child_env(&mut cmd, "wayland-9");
+        _apply_child_env(&mut cmd, "wayland-9", "/tmp/ipc-9.sock");
         let status = cmd.status().unwrap();
         assert!(status.success(), "the child saw the host session: {status}");
     }
 
     #[test]
     fn spawn_startup_applies_the_child_environment() {
-        let status = spawn_startup(CHECK_ENV, "wayland-9").unwrap().wait().unwrap();
+        let status = spawn_startup(CHECK_ENV, "wayland-9", "/tmp/ipc-9.sock").unwrap().wait().unwrap();
         assert!(status.success(), "the startup command saw the host session: {status}");
     }
 
     #[test]
     fn reap_clears_the_slot_once_the_child_has_exited() {
-        let mut child = Some(spawn_startup("exit 3", "wayland-9").unwrap());
+        let mut child = Some(spawn_startup("exit 3", "wayland-9", "/tmp/ipc-9.sock").unwrap());
         for _ in 0..200 {
             reap(&mut child);
             if child.is_none() {

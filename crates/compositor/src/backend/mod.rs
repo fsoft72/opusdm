@@ -22,6 +22,7 @@ use smithay::{
 
 use crate::args::{Args, BackendKind};
 use crate::child::{reap, spawn_startup};
+use crate::ipc::{socket_path, IpcServer};
 use crate::state::{ClientState, State, LOG_TAG};
 
 /// Refresh rate given to the output of every backend, in mHz.
@@ -64,8 +65,8 @@ pub fn run(args: &Args) -> Result<(), String> {
 
 /// Setup shared by every backend: event loop, display, the state with
 /// `output` and the desktop count of `DesktopSettings.virtual_screens`,
-/// the SIGTERM / SIGINT flag, keyboard and pointer, and the Wayland socket
-/// with its client sources.
+/// the SIGTERM / SIGINT flag, keyboard and pointer, the Wayland socket
+/// with its client sources and the private IPC socket next to it.
 fn setup_common(output: Output) -> Result<Common, String> {
     let event_loop: EventLoop<'static, LoopData> = EventLoop::try_new().map_err(|e| format!("event loop: {e}"))?;
     let mut display: Display<State> = Display::new().map_err(|e| format!("wayland display: {e}"))?;
@@ -75,6 +76,8 @@ fn setup_common(output: Output) -> Result<Common, String> {
     register_quit_signals(&state.quit)?;
     add_input_devices(&mut state)?;
     let socket_name = init_wayland(&event_loop, &mut display)?;
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or("ipc: XDG_RUNTIME_DIR is not set")?;
+    state.ipc = IpcServer::bind(event_loop.handle(), &socket_path(std::path::Path::new(&runtime_dir), &socket_name))?;
     Ok(Common { event_loop, display, state, socket_name })
 }
 
@@ -91,15 +94,18 @@ fn new_output(name: &str, model: &str, size: (i32, i32)) -> Output {
     output
 }
 
-/// Prints `WAYLAND_DISPLAY=<socket_name>` on stdout (the tests and the
-/// scripts read it) and starts the `--startup` command. Called once every
-/// global of the backend exists, so the first client sees them all.
+/// Prints `WAYLAND_DISPLAY=<socket_name>` and then
+/// `OPUSDM_COMPOSITOR_SOCKET=<path>` on stdout (the tests and the scripts
+/// read them) and starts the `--startup` command. Called once every global
+/// of the backend exists, so the first client sees them all.
 fn announce(state: &mut State, args: &Args, socket_name: &str) -> Result<(), String> {
+    let ipc = state.ipc.path().ok_or("ipc: the socket is not bound")?.to_string_lossy().into_owned();
     let mut stdout = std::io::stdout();
     writeln!(stdout, "WAYLAND_DISPLAY={socket_name}")
+        .and_then(|_| writeln!(stdout, "OPUSDM_COMPOSITOR_SOCKET={ipc}"))
         .and_then(|_| stdout.flush())
-        .map_err(|e| format!("print the socket name: {e}"))?;
-    start_startup(state, args, socket_name);
+        .map_err(|e| format!("print the socket names: {e}"))?;
+    start_startup(state, args, socket_name, &ipc);
     Ok(())
 }
 
@@ -113,10 +119,12 @@ fn stop_on_quit(data: &LoopData, signal: &LoopSignal) -> bool {
 }
 
 /// Work shared by the frame timers after the frame callbacks: reaps the
-/// startup command, drops dead windows and flushes the clients.
+/// startup command, drops dead windows, tells the IPC watchers what
+/// changed (input focus, dead windows) and flushes the clients.
 fn housekeeping(data: &mut LoopData) {
     reap(&mut data.state.startup);
     data.state.refresh();
+    data.state.notify_watchers();
     if let Err(e) = data.display.flush_clients() {
         opusdm_ipc::err_log!(LOG_TAG, "flush clients: {e}");
     }
@@ -159,6 +167,7 @@ fn init_wayland(event_loop: &EventLoop<'static, LoopData>, display: &mut Display
             if let Err(e) = data.display.dispatch_clients(&mut data.state) {
                 opusdm_ipc::err_log!(LOG_TAG, "dispatch clients: {e}");
             }
+            data.state.notify_watchers();
             if let Err(e) = data.display.flush_clients() {
                 opusdm_ipc::err_log!(LOG_TAG, "flush clients: {e}");
             }
@@ -168,11 +177,12 @@ fn init_wayland(event_loop: &EventLoop<'static, LoopData>, display: &mut Display
     Ok(name)
 }
 
-/// Starts the `--startup` command, if any, on the socket `socket_name`; a
-/// failed start is logged and the compositor goes on without it.
-fn start_startup(state: &mut State, args: &Args, socket_name: &str) {
+/// Starts the `--startup` command, if any, on the socket `socket_name`
+/// with the IPC socket `ipc_socket`; a failed start is logged and the
+/// compositor goes on without it.
+fn start_startup(state: &mut State, args: &Args, socket_name: &str, ipc_socket: &str) {
     let Some(command) = args.startup.as_deref() else { return };
-    match spawn_startup(command, socket_name) {
+    match spawn_startup(command, socket_name, ipc_socket) {
         Ok(child) => state.startup = Some(child),
         Err(e) => opusdm_ipc::err_log!(LOG_TAG, "startup command '{command}' failed to start: {e}"),
     }

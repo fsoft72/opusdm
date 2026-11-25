@@ -6,6 +6,7 @@ mod child;
 mod geometry;
 mod grabs;
 mod input;
+mod ipc;
 mod shell;
 mod state;
 mod wm;

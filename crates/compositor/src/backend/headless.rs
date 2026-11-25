@@ -26,6 +26,8 @@ pub fn run(args: &Args) -> Result<(), String> {
         .handle()
         .insert_source(Timer::from_duration(TICK), move |_, _, data| _tick(data, &signal))
         .map_err(|e| format!("frame timer: {e}"))?;
+    // Only the test backend takes synthetic input from the IPC (`debug/key`).
+    state.test_input = true;
     announce(&mut state, args, &common.socket_name)?;
     let mut data = LoopData { state, display: common.display };
     event_loop.run(None, &mut data, |_| {}).map_err(|e| format!("event loop: {e}"))?;

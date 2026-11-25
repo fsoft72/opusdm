@@ -8,13 +8,15 @@
 // Each test binary uses only a part of the harness.
 #![allow(dead_code)]
 
+pub mod ipc;
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -79,10 +81,16 @@ pub struct Rect {
     pub h: i32,
 }
 
+/// Linux input codes (evdev) of the modifier keys: Ctrl, Shift, Alt and
+/// Super, left and right. `keys_received` does not count them.
+const MODIFIER_KEYCODES: [u32; 8] = [29, 97, 42, 54, 56, 100, 125, 126];
+
 /// A running headless compositor, killed when dropped.
 pub struct Compositor {
     /// Path of the Wayland socket.
     pub socket: PathBuf,
+    /// Path of the private IPC socket (`OPUSDM_COMPOSITOR_SOCKET`).
+    pub ipc_socket: PathBuf,
     child: Child,
     _runtime: TempDir,
 }
@@ -91,7 +99,8 @@ impl Compositor {
     /// Starts the compositor in a fresh `XDG_RUNTIME_DIR` (also its `HOME`
     /// and `XDG_CONFIG_HOME`, so the owner's `~/.config/opusdm` is never read
     /// or written) and waits (at most `START_TIMEOUT`) for the
-    /// `WAYLAND_DISPLAY=<name>` line on its stdout.
+    /// `WAYLAND_DISPLAY=<name>` and `OPUSDM_COMPOSITOR_SOCKET=<path>` lines
+    /// on its stdout.
     /// The rest of its stdout (a `--startup` child may print there) is
     /// drained for the whole run, so a writer never gets EPIPE / SIGPIPE.
     pub fn start() -> Compositor {
@@ -110,27 +119,18 @@ impl Compositor {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            let read = reader.read_line(&mut line);
-            let _ = tx.send(read.map(|_| line));
+            for _ in 0..2 {
+                let mut line = String::new();
+                let read = reader.read_line(&mut line);
+                let _ = tx.send(read.map(|_| line));
+            }
             // Ends when the compositor (and every child holding the pipe) is gone.
             let _ = std::io::copy(&mut reader, &mut std::io::sink());
         });
-        let line = match rx.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(line)) => line,
-            other => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("compositor did not print its socket: {other:?}");
-            }
-        };
-        let Some(name) = line.trim().strip_prefix("WAYLAND_DISPLAY=") else {
-            let _ = child.kill();
-            let status = child.wait();
-            panic!("compositor did not print WAYLAND_DISPLAY (got {line:?}, exit {status:?})");
-        };
+        let name = _read_announce(&mut child, &rx, "WAYLAND_DISPLAY=");
+        let ipc = _read_announce(&mut child, &rx, "OPUSDM_COMPOSITOR_SOCKET=");
         let socket = runtime.path().join(name);
-        Compositor { socket, child, _runtime: runtime }
+        Compositor { socket, ipc_socket: PathBuf::from(ipc), child, _runtime: runtime }
     }
 
     /// True while the compositor process has not exited.
@@ -160,6 +160,25 @@ impl Compositor {
     }
 }
 
+/// The value of the next stdout line of `child`, which must start with
+/// `prefix`; kills `child` and panics on a timeout or another line.
+fn _read_announce(child: &mut Child, rx: &mpsc::Receiver<std::io::Result<String>>, prefix: &str) -> String {
+    let line = match rx.recv_timeout(START_TIMEOUT) {
+        Ok(Ok(line)) => line,
+        other => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("compositor did not print {prefix}: {other:?}");
+        }
+    };
+    let Some(value) = line.trim().strip_prefix(prefix) else {
+        let _ = child.kill();
+        let status = child.wait();
+        panic!("compositor did not print {prefix} (got {line:?}, exit {status:?})");
+    };
+    value.to_string()
+}
+
 impl Drop for Compositor {
     /// Kills the compositor and reaps it.
     fn drop(&mut self) {
@@ -170,7 +189,12 @@ impl Drop for Compositor {
 
 /// Opens a client connection to `comp` through its socket path.
 pub fn connect(comp: &Compositor) -> Connection {
-    let stream = UnixStream::connect(&comp.socket).expect("connect to the compositor socket");
+    connect_path(&comp.socket)
+}
+
+/// Opens a client connection to the Wayland socket at `socket`.
+pub fn connect_path(socket: &Path) -> Connection {
+    let stream = UnixStream::connect(socket).expect("connect to the compositor socket");
     Connection::from_socket(stream).expect("wayland connection")
 }
 
@@ -294,6 +318,8 @@ struct ClientApp {
     keyboard_serial: u32,
     /// Popups the compositor dismissed (`xdg_popup.popup_done`), by `wl_surface` id.
     dismissed: Vec<ObjectId>,
+    /// `wl_keyboard.key` events (press and release) of non-modifier keys.
+    keys: u32,
 }
 
 impl ClientApp {
@@ -334,7 +360,13 @@ pub struct TestClient {
 impl TestClient {
     /// Connects to `comp` and binds the globals the tests need.
     pub fn new(comp: &Compositor) -> TestClient {
-        let conn = connect(comp);
+        TestClient::connect_to(&comp.socket)
+    }
+
+    /// Connects to the Wayland socket at `socket` (a helper process that
+    /// has no `Compositor`) and binds the globals the tests need.
+    pub fn connect_to(socket: &Path) -> TestClient {
+        let conn = connect_path(socket);
         let (globals, queue) = registry_queue_init::<ClientApp>(&conn).expect("registry");
         let qh = queue.handle();
         let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor");
@@ -357,6 +389,7 @@ impl TestClient {
             keyboard_focus: None,
             keyboard_serial: 0,
             dismissed: Vec::new(),
+            keys: 0,
         };
         let mut client = TestClient { conn, queue, qh, app, _seat: seat, _keyboard: keyboard, layers: Vec::new() };
         client.roundtrip();
@@ -586,6 +619,17 @@ impl TestClient {
         self.dispatch_until(timeout, |app| app.keyboard_focus.as_ref() == Some(&target))
     }
 
+    /// Waits at most `timeout` until this client got `count` key events
+    /// (presses and releases) of non-modifier keys. True when it did.
+    pub fn wait_keys(&mut self, count: u32, timeout: Duration) -> bool {
+        self.dispatch_until(timeout, |app| app.keys >= count)
+    }
+
+    /// Key events (presses and releases) of non-modifier keys received so far.
+    pub fn keys_received(&self) -> u32 {
+        self.app.keys
+    }
+
     /// Surface that has this client's keyboard, from `wl_keyboard` enter / leave.
     pub fn keyboard_focus(&self) -> Option<WlSurface> {
         self.app.keyboard_focus.clone()
@@ -766,7 +810,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for ClientApp {
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
     /// Tracks the surface that has the keyboard and the enter serial (enter /
-    /// leave); keys are ignored.
+    /// leave) and counts the key events of non-modifier keys.
     fn event(app: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
             wl_keyboard::Event::Enter { serial, surface, .. } => {
@@ -775,6 +819,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
             }
             wl_keyboard::Event::Leave { surface, .. } if app.keyboard_focus.as_ref() == Some(&surface) => {
                 app.keyboard_focus = None;
+            }
+            wl_keyboard::Event::Key { key, .. } if !MODIFIER_KEYCODES.contains(&key) => {
+                app.keys += 1;
             }
             _ => {}
         }

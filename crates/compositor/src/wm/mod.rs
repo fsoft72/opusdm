@@ -10,12 +10,20 @@ pub mod desktops;
 
 use std::time::Duration;
 
+use std::collections::HashMap;
+
 use smithay::{
     desktop::{find_popup_root_surface, PopupManager, Window},
-    reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
-    utils::SERIAL_COUNTER,
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::{protocol::wl_surface::WlSurface, Resource},
+    },
+    utils::{IsAlive, SERIAL_COUNTER},
+    wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData},
 };
 
+use crate::geometry::Rect;
+use crate::ipc::protocol::WindowView;
 use crate::state::{has_buffer, State, WindowInfo, LOG_TAG};
 use desktops::Desktops;
 
@@ -85,8 +93,6 @@ impl State {
     /// Activates the window `id`: shows its desktop, clears its minimized
     /// state, raises it to the top of the stack and gives it the keyboard.
     /// A window without a buffer yet is only raised (it maps on top).
-    // Called by the IPC and the tasklist from stage 2 task 2 on.
-    #[allow(dead_code)]
     pub fn activate_window(&mut self, id: WindowId) -> Result<(), String> {
         let info = self._info_by_id_mut(id).ok_or_else(|| format!("activate: unknown window {}", id.0))?;
         info.minimized = false;
@@ -101,6 +107,7 @@ impl State {
             self.focus_window(Some(window));
         }
         opusdm_ipc::debug_log!(LOG_TAG, "window {} activated on desktop {desktop}", id.0);
+        self.notify_watchers();
         Ok(())
     }
 
@@ -110,12 +117,11 @@ impl State {
         info.minimized = minimized;
         opusdm_ipc::debug_log!(LOG_TAG, "window {} minimized: {minimized}", id.0);
         self.sync_space();
+        self.notify_watchers();
         Ok(())
     }
 
     /// Moves the window `id` to the desktop `desktop` (0-based).
-    // Called by the IPC and the tasklist from stage 2 task 2 on.
-    #[allow(dead_code)]
     pub fn move_to_desktop(&mut self, id: WindowId, desktop: u32) -> Result<(), String> {
         let count = self.desktops.count();
         if desktop >= count {
@@ -125,25 +131,23 @@ impl State {
         info.desktop = desktop;
         opusdm_ipc::debug_log!(LOG_TAG, "window {} moved to desktop {desktop}", id.0);
         self.sync_space();
+        self.notify_watchers();
         Ok(())
     }
 
     /// Shows the desktop `index` (0-based).
-    // Called by the IPC and the tasklist from stage 2 task 2 on.
-    #[allow(dead_code)]
     pub fn switch_desktop(&mut self, index: u32) -> Result<(), String> {
         if !self.desktops.switch_to(index) {
             return Err(format!("switch desktop: desktop {index} is out of range (count {})", self.desktops.count()));
         }
         opusdm_ipc::debug_log!(LOG_TAG, "switched to desktop {index}");
         self.sync_space();
+        self.notify_watchers();
         Ok(())
     }
 
     /// Sets the number of desktops (clamped) and returns it; the windows of
     /// removed desktops move to the new last desktop.
-    // Called by the IPC and the tasklist from stage 2 task 2 on.
-    #[allow(dead_code)]
     pub fn set_desktop_count(&mut self, count: u32) -> u32 {
         let count = self.desktops.set_count(count);
         let desktops = self.desktops;
@@ -152,17 +156,78 @@ impl State {
         }
         opusdm_ipc::debug_log!(LOG_TAG, "{count} desktops, current {}", desktops.current());
         self.sync_space();
+        self.notify_watchers();
         count
     }
 
     /// Asks the window `id` to close (`xdg_toplevel.close`).
-    // Called by the IPC and the tasklist from stage 2 task 2 on.
-    #[allow(dead_code)]
     pub fn close_window(&mut self, id: WindowId) -> Result<(), String> {
         let (_, info) = self.window_by_id(id).ok_or_else(|| format!("close: unknown window {}", id.0))?;
         let toplevel = info.window.toplevel().ok_or_else(|| format!("close: window {} has no toplevel", id.0))?;
         toplevel.send_close();
         Ok(())
+    }
+
+    /// The windows the IPC shows, in `stack` order: every live toplevel
+    /// that has been mapped (shown or hidden); a toplevel waiting for its
+    /// first buffer, or unmapped by a null buffer, is left out.
+    pub fn window_views(&self) -> Vec<WindowView> {
+        let by_id: HashMap<WindowId, (&WlSurface, &WindowInfo)> = self.windows.iter().map(|(wl, info)| (info.id, (wl, info))).collect();
+        self.stack
+            .iter()
+            .filter_map(|id| {
+                // `sync_space` logs a stack id missing from the table; a dead surface waits for `refresh`.
+                let (wl, info) = by_id.get(id)?;
+                if !wl.alive() || self.unmapped.contains(&info.window) { return None; }
+                Some(self._window_view(wl, info))
+            })
+            .collect()
+    }
+
+    /// Tells the IPC `watch` connections what changed since they were last
+    /// told (windows added, changed or removed, desktops changed). Cheap
+    /// when nobody watches; called after every state change.
+    pub fn notify_watchers(&mut self) {
+        if !self.ipc.has_watchers() { return; }
+        let views = self.window_views();
+        let desktops = (self.desktops.count(), self.desktops.current());
+        for event in self.ipc.take_events(views, desktops) {
+            self.ipc.broadcast(&event);
+        }
+    }
+
+    /// The IPC view of the live toplevel `wl` with the info `info`.
+    fn _window_view(&self, wl: &WlSurface, info: &WindowInfo) -> WindowView {
+        let (app_id, title) = with_states(wl, |states| {
+            let Some(data) = states.data_map.get::<XdgToplevelSurfaceData>() else { return (String::new(), String::new()) };
+            match data.lock() {
+                Ok(attrs) => (attrs.app_id.clone().unwrap_or_default(), attrs.title.clone().unwrap_or_default()),
+                Err(_) => {
+                    opusdm_ipc::err_log!(LOG_TAG, "window {}: toplevel data lock poisoned, no title", info.id.0);
+                    (String::new(), String::new())
+                }
+            }
+        });
+        let dh = &self.display_handle;
+        let pid = dh.get_client(wl.id()).ok().and_then(|c| c.get_credentials(dh).ok()).and_then(|c| u32::try_from(c.pid).ok());
+        let (x, y) = self.space.element_location(&info.window).map(|p| (p.x, p.y)).or(info.last_position).unwrap_or_default();
+        let size = info.window.geometry().size;
+        let activated = info
+            .window
+            .toplevel()
+            .is_some_and(|t| t.with_pending_state(|s| s.states.contains(xdg_toplevel::State::Activated)));
+        WindowView {
+            id: info.id.0,
+            app_id,
+            title,
+            pid,
+            geometry: Rect { x, y, w: size.w, h: size.h },
+            desktop: info.desktop,
+            minimized: info.minimized,
+            maximized: info.maximized,
+            fullscreen: info.fullscreen,
+            activated,
+        }
     }
 
     /// Moves the window of `window` to the top of `stack`; logs a window

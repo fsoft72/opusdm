@@ -36,6 +36,7 @@ use smithay::{
 
 use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
+use crate::ipc::IpcServer;
 use crate::wm::desktops::Desktops;
 use crate::wm::{WindowId, HIDDEN_FRAME_INTERVAL};
 
@@ -162,6 +163,11 @@ pub struct State {
     /// Dmabufs imported by clients and not yet checked by the renderer:
     /// the nested backend answers each notifier on its next frame.
     pub pending_dmabufs: Vec<(Dmabuf, ImportNotifier)>,
+    /// The private IPC server (unbound until the backend binds it).
+    pub ipc: IpcServer,
+    /// True when the IPC accepts synthetic input (`debug/key`): only with
+    /// `--headless`, the test backend.
+    pub test_input: bool,
 }
 
 impl State {
@@ -208,6 +214,8 @@ impl State {
             cursor_status: CursorImageStatus::default_named(),
             dmabuf_state: DmabufState::new(),
             pending_dmabufs: Vec::new(),
+            ipc: IpcServer::default(),
+            test_input: false,
         }
     }
 
