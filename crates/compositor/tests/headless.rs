@@ -1543,6 +1543,25 @@ fn super_d_twice_minimizes_every_window_then_restores_them() {
 }
 
 #[test]
+fn super_d_then_alt_f4_under_an_exclusive_layer_closes_no_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+    key(&comp, "Super+d");
+    assert_eq!(minimized_flags(&comp), vec![true, true]);
+    assert!(active_ids(&comp).is_empty(), "every hide forgets the active window");
+    key(&comp, "Alt+F4");
+    assert!(!c.wait_close_request(&b, Duration::from_millis(300)), "no close for the hidden B");
+    assert!(!c.wait_close_request(&a, Duration::from_millis(300)), "no close for the hidden A");
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()), "the exclusive layer keeps the keyboard");
+}
+
+#[test]
 fn a_window_mapped_while_the_desktop_is_shown_ends_show_desktop_without_restoring() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);

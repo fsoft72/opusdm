@@ -149,7 +149,10 @@ impl State {
     /// keeps its place otherwise; a hidden or not yet mapped window is
     /// placed by its frame when it shows).
     fn _keep_title_in_area(&mut self, wl: &WlSurface) {
-        let Some(window) = self.windows.get(wl).map(|info| info.window.clone()) else { return };
+        let Some(window) = self.windows.get(wl).map(|info| info.window.clone()) else {
+            opusdm_ipc::err_log!(LOG_TAG, "decoration of {}: not in the window table, title not kept in the usable area", wl.id());
+            return;
+        };
         let Some(loc) = self.space.element_location(&window) else {
             opusdm_ipc::debug_log!(LOG_TAG, "decoration of {}: not shown, placed by its frame when shown", wl.id());
             return;
