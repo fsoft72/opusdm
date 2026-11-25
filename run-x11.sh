@@ -127,12 +127,17 @@ command -v "$TERMINAL" >/dev/null 2>&1 || { echo "Terminal '$TERMINAL' not found
 # compositor instead of Xephyr.
 unset WAYLAND_DISPLAY
 export GDK_BACKEND=x11
-# A live OpusDM session exports OPUSDM_PICOM_BASE: with it the sandbox hub
-# would rewrite $XDG_CONFIG_HOME/opusdm/picom.conf (the live file when no
-# --config-dir is given) and signal every picom of the user, the live one
-# included. Without it the hub leaves picom alone: transparency changes made
-# inside the sandbox do not apply live there.
-unset OPUSDM_PICOM_BASE
+# Variables of a running OpusDM session that would point the sandbox at the
+# live one. OPUSDM_PICOM_BASE: the sandbox hub would rewrite
+# $XDG_CONFIG_HOME/opusdm/picom.conf (the live file when no --config-dir is
+# given) and signal every picom of the user, the live one included; without
+# it the hub leaves picom alone (transparency changes made inside the sandbox
+# do not apply live there). The socket overrides replace XDG_RUNTIME_DIR in
+# crates/ipc (sockpath.rs, dock.rs), so the hub would talk to the live hub,
+# dock and applets. Keep this list identical to LIVE_SESSION_VARS in
+# run-native.sh and run-wayland.sh.
+LIVE_SESSION_VARS=(OPUSDM_PICOM_BASE OPUSDM_HUB_SOCK OPUSDM_DOCK_SOCK OPUSDM_APPLETS_SOCK OPUSDM_LABWC_RC)
+unset "${LIVE_SESSION_VARS[@]}"
 
 # Use DIR as the OpusDM configuration: OpusDM reads $XDG_CONFIG_HOME/opusdm,
 # so XDG_CONFIG_HOME becomes a private folder whose `opusdm` entry is DIR.

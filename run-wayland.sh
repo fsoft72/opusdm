@@ -25,10 +25,12 @@ set -euo pipefail
 # live hub. The script runs itself again under dbus-run-session;
 # OPUSDM_SANDBOX_BUS (the marker) names a file this outer run created.
 # dbus-run-session dies on TERM without passing it on, so the outer run
-# stays: it passes TERM / INT / HUP to the inner run (the group of dbus-run-session before the inner run has started) and waits for it
-# (labwc / Wayfire run in the foreground of the inner run, in that group, as
-# a Ctrl+C in the terminal reached them before) and exits with the status
-# dbus-run-session hands back.
+# stays: it passes TERM / INT / HUP to the inner run (to the whole group of
+# dbus-run-session only before the inner run has started), waits until it is
+# gone and exits with the status dbus-run-session hands back (the inner run's).
+# labwc / Wayfire run in the background of the inner run (`set -m`, a process
+# group of their own): the inner run passes the signals on to them and then
+# ends their group and the group of the autostart script (hub and tools).
 if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
     command -v dbus-run-session >/dev/null 2>&1 || { echo "dbus-run-session not found (package: dbus-daemon or dbus-bin): the sandbox needs a private D-Bus session"; exit 1; }
     BUS_MARKER="$(mktemp /tmp/opusdm-wayland-bus-XXXXXX)"
@@ -110,6 +112,7 @@ fi
 # OPUSDM_LABWC_RC is set again below for the sandbox's own rc.xml.
 LIVE_SESSION_VARS=(OPUSDM_PICOM_BASE OPUSDM_HUB_SOCK OPUSDM_DOCK_SOCK OPUSDM_APPLETS_SOCK OPUSDM_LABWC_RC)
 # Nothing started from here on (labwc / Wayfire, hub, tools) inherits them.
+# Keep this list identical to LIVE_SESSION_VARS in run-native.sh and run-x11.sh.
 unset "${LIVE_SESSION_VARS[@]}"
 
 # Build the workspace before entering the sandbox
@@ -186,11 +189,11 @@ _run_compositor() {
     hub_pgid="$(cat "$CONFIG_DIR/autostart.pgid" 2>/dev/null || true)"
     # Only a real group of its own: not 0 / 1 (every process) nor this script's
     local own_pgid
-    own_pgid="$(ps -o pgid= -p $$ | tr -d ' ')"
+    own_pgid="$(ps -o pgid= -p $$ | tr -d ' ' || true)"
     case "$hub_pgid" in
         ''|*[!0-9]*) [ -n "$hub_pgid" ] && echo "run-wayland.sh: bad autostart pgid '$hub_pgid', not ended" >&2 ;;
         *)
-            if [ "$hub_pgid" -gt 1 ] && [ "$hub_pgid" != "$own_pgid" ]; then
+            if [ -n "$own_pgid" ] && [ "$hub_pgid" -gt 1 ] && [ "$hub_pgid" != "$own_pgid" ]; then
                 kill -TERM -- "-$hub_pgid" 2>/dev/null || true
             else
                 echo "run-wayland.sh: unsafe autostart pgid '$hub_pgid', not ended" >&2
