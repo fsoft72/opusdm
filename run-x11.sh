@@ -23,6 +23,40 @@
 
 set -euo pipefail
 
+# A private D-Bus session bus, always: on the live bus the sandbox hub would
+# take org.freedesktop.FileManager1, the notification and SNI names from the
+# live hub. The script runs itself again under dbus-run-session;
+# OPUSDM_SANDBOX_BUS (the marker) names a file this outer run created.
+# dbus-run-session dies on TERM without passing it on, so the outer run
+# stays: it passes TERM / INT / HUP to the whole process group of
+# dbus-run-session (Xephyr, the window manager, picom and the hub run in that
+# group; the inner run's own trap cleans up) and exits with the status
+# dbus-run-session hands back. This runs before the arguments are parsed, so
+# the inner run gets them unchanged.
+if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
+    command -v dbus-run-session >/dev/null 2>&1 || { echo "dbus-run-session not found (package: dbus-daemon or dbus-bin): the sandbox needs a private D-Bus session"; exit 1; }
+    BUS_MARKER="$(mktemp /tmp/opusdm-xephyr-bus-XXXXXX)"
+    trap 'rm -f "$BUS_MARKER"' EXIT
+    # The forwarding trap comes first (an empty BUS_PID is skipped); HUP too:
+    # closing the terminal reaches only this run, the sandbox has a group of its own.
+    BUS_PID=""
+    trap '[ -n "$BUS_PID" ] && kill -TERM -- "-$BUS_PID" 2>/dev/null; true' TERM INT HUP
+    # Own process group: a Ctrl+C reaches only this run, which passes it on.
+    set -m
+    OPUSDM_SANDBOX_BUS="$BUS_MARKER" dbus-run-session -- bash "$0" "$@" &
+    BUS_PID=$!
+    set +m
+    STATUS=0
+    wait "$BUS_PID" || STATUS=$?
+    # A trapped signal ends `wait` early: wait again until the inner run is gone.
+    while kill -0 "$BUS_PID" 2>/dev/null; do
+        STATUS=0
+        wait "$BUS_PID" || STATUS=$?
+    done
+    exit "$STATUS"
+fi
+unset OPUSDM_SANDBOX_BUS
+
 DEBUG=0
 GRID_DEBUG=0
 CONFIG_DIR="${XEPHYR_CONFIG_DIR:-}"
@@ -82,6 +116,7 @@ if [ -n "$CONFIG_DIR" ]; then
 fi
 
 CHILD_PIDS=()
+HUB_RUNTIME_DIR=""
 
 # Kill every process we spawned when the script exits
 _cleanup() {
@@ -89,6 +124,8 @@ _cleanup() {
     for pid in "${CHILD_PIDS[@]:-}"; do
         [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     done
+    # The hub's runtime dir (made by mktemp below); never an empty path
+    [ -n "$HUB_RUNTIME_DIR" ] && rm -rf "$HUB_RUNTIME_DIR"
     # Only the symlink to the config folder lives here; rm never follows it
     [ -n "$CONFIG_DIR" ] && rm -rf "$XDG_CONFIG_HOME"
 }
@@ -173,7 +210,8 @@ if [ ! -x "$HUB_BIN" ]; then
 fi
 echo "Starting opusdm-hub"
 # Give the hub its own runtime dir so a stale socket never blocks the sandbox
-export XDG_RUNTIME_DIR="$(mktemp -d /tmp/opusdm-xephyr-XXXXXX)"
+HUB_RUNTIME_DIR="$(mktemp -d /tmp/opusdm-xephyr-XXXXXX)"
+export XDG_RUNTIME_DIR="$HUB_RUNTIME_DIR"
 # Hotkeys such as exec:opusdm-run find the OpusDM binaries by name
 export PATH="$(pwd)/target/release:$PATH"
 # Draw a red box around every icon-view item (hub desktop and every Lister)
