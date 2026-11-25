@@ -46,8 +46,17 @@ use tempfile::TempDir;
 use wayland_client::{
     backend::ObjectId,
     globals::registry_queue_init,
-    protocol::{wl_callback, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface::WlSurface},
+    protocol::{
+        wl_callback, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_keyboard, wl_output,
+        wl_pointer, wl_seat, wl_shm, wl_surface::WlSurface,
+    },
     event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
+};
+use wayland_protocols::wp::primary_selection::zv1::client::{
+    zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+    zwp_primary_selection_device_v1::{self, ZwpPrimarySelectionDeviceV1},
+    zwp_primary_selection_offer_v1::{self, ZwpPrimarySelectionOfferV1},
+    zwp_primary_selection_source_v1::{self, ZwpPrimarySelectionSourceV1},
 };
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
@@ -397,6 +406,71 @@ impl HasSurface for TestPopup {
     }
 }
 
+/// The drag and drop icon surface of a drag started by a `TestClient`.
+pub struct TestIcon {
+    surface: WlSurface,
+}
+
+impl HasSurface for TestIcon {
+    /// The icon surface.
+    fn wl_surface(&self) -> &WlSurface {
+        &self.surface
+    }
+}
+
+/// Reads `fd` until end of file, waiting at most `timeout` in all: the
+/// bytes read, or an error when the end of file did not come in time (a
+/// transfer that hangs).
+pub fn read_pipe(fd: std::os::fd::OwnedFd, timeout: Duration) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let deadline = Instant::now() + timeout;
+    let mut file = std::fs::File::from(fd);
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!("no end of file within {timeout:?} ({} bytes read)", out.len()));
+        }
+        let mut pfd = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let ms = i32::try_from((deadline - now).as_millis()).unwrap_or(i32::MAX).max(1);
+        // SAFETY: one valid pollfd for the duration of the call.
+        if unsafe { libc::poll(&mut pfd, 1, ms) } <= 0 {
+            continue;
+        }
+        match file.read(&mut chunk) {
+            Ok(0) => return Ok(out),
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            Err(e) => return Err(format!("read: {e}")),
+        }
+    }
+}
+
+/// A new close-on-exec pipe: (read end, write end).
+fn _pipe() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe2 writes.
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    assert_eq!(rc, 0, "pipe2: {}", std::io::Error::last_os_error());
+    // SAFETY: pipe2 succeeded, both descriptors are new and owned here only.
+    unsafe { (std::os::fd::OwnedFd::from_raw_fd(fds[0]), std::os::fd::OwnedFd::from_raw_fd(fds[1])) }
+}
+
+/// True when the offer `offer` (by id) announced `mime`.
+fn _offer_has(app: &ClientApp, offer: Option<ObjectId>, mime: &str) -> bool {
+    offer.and_then(|id| app.offer_mimes.get(&id)).is_some_and(|m| m.iter().any(|t| t == mime))
+}
+
+/// Writes the bytes of source `source` into `fd` and closes it (the
+/// `send` event of a data device or primary selection source).
+fn _write_source(app: &ClientApp, source: &ObjectId, fd: std::os::fd::OwnedFd) {
+    use std::io::Write;
+    let data = app.source_data.get(source).cloned().unwrap_or_default();
+    let mut file = std::fs::File::from(fd);
+    file.write_all(&data).expect("source write");
+}
+
 /// What a `zwlr_screencopy_frame_v1` told the client so far.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CaptureEvents {
@@ -544,6 +618,31 @@ struct ClientApp {
     workspace_groups: Vec<ExtWorkspaceGroupHandleV1>,
     /// Events of every screen capture frame, by frame id.
     captures: HashMap<ObjectId, CaptureEvents>,
+    /// Serial of the last `wl_pointer.button` press (for `start_drag`).
+    button_serial: u32,
+    /// Mime types announced by every data offer (clipboard, primary and
+    /// drag and drop), by offer id.
+    offer_mimes: HashMap<ObjectId, Vec<String>>,
+    /// Number of `wl_data_device.selection` events and the offer of the last
+    /// one (`None`: the clipboard was cleared).
+    clipboard_events: u32,
+    clipboard_offer: Option<wl_data_offer::WlDataOffer>,
+    /// Number of `zwp_primary_selection_device_v1.selection` events and the
+    /// offer of the last one (`None`: the primary selection was cleared).
+    primary_events: u32,
+    primary_offer: Option<ZwpPrimarySelectionOfferV1>,
+    /// Drag and drop events of the data device, in order: "enter",
+    /// "motion", "leave", "drop".
+    dnd_events: Vec<&'static str>,
+    /// The offer and the serial of the last `wl_data_device.enter`.
+    dnd_offer: Option<wl_data_offer::WlDataOffer>,
+    dnd_serial: u32,
+    /// Bytes each source of this client writes on `send`, by source id
+    /// (data device and primary selection sources).
+    source_data: HashMap<ObjectId, Vec<u8>>,
+    /// Events of the sources of this client, in order: "send", "cancelled",
+    /// "dnd_drop_performed", "dnd_finished".
+    source_events: Vec<&'static str>,
 }
 
 impl ClientApp {
@@ -587,6 +686,15 @@ pub struct TestClient {
     activation: Option<XdgActivationV1>,
     /// The `zwlr_screencopy_manager_v1`, when the compositor has it.
     screencopy: Option<ZwlrScreencopyManagerV1>,
+    /// `wl_data_device_manager` and this client's `wl_data_device` (clipboard
+    /// and drag and drop), when the compositor has the global.
+    data_manager: Option<(wl_data_device_manager::WlDataDeviceManager, wl_data_device::WlDataDevice)>,
+    /// `zwp_primary_selection_device_manager_v1` and this client's device,
+    /// when the compositor has the global.
+    primary_manager: Option<(ZwpPrimarySelectionDeviceManagerV1, ZwpPrimarySelectionDeviceV1)>,
+    /// Data sources of this client, kept alive for the whole client.
+    data_sources: Vec<wl_data_source::WlDataSource>,
+    primary_sources: Vec<ZwpPrimarySelectionSourceV1>,
 }
 
 impl TestClient {
@@ -632,12 +740,31 @@ impl TestClient {
             workspaces_published: Vec::new(),
             workspace_groups: Vec::new(),
             captures: HashMap::new(),
+            button_serial: 0,
+            offer_mimes: HashMap::new(),
+            clipboard_events: 0,
+            clipboard_offer: None,
+            primary_events: 0,
+            primary_offer: None,
+            dnd_events: Vec::new(),
+            dnd_offer: None,
+            dnd_serial: 0,
+            source_data: HashMap::new(),
+            source_events: Vec::new(),
         };
         // Bound after `wl_output` (bound by `OutputState::new`); `None` when the compositor has no such global.
         let foreign_manager = globals.bind::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ()).ok();
         let workspace_manager = globals.bind::<ExtWorkspaceManagerV1, _, _>(&qh, 1..=1, ()).ok();
         let activation = globals.bind::<XdgActivationV1, _, _>(&qh, 1..=1, ()).ok();
         let screencopy = globals.bind::<ZwlrScreencopyManagerV1, _, _>(&qh, 1..=3, ()).ok();
+        let data_manager = globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(&qh, 3..=3, ()).ok().map(|m| {
+            let device = m.get_data_device(&seat, &qh, ());
+            (m, device)
+        });
+        let primary_manager = globals.bind::<ZwpPrimarySelectionDeviceManagerV1, _, _>(&qh, 1..=1, ()).ok().map(|m| {
+            let device = m.get_device(&seat, &qh, ());
+            (m, device)
+        });
         let mut client = TestClient {
             conn,
             queue,
@@ -650,6 +777,10 @@ impl TestClient {
             workspace_manager,
             activation,
             screencopy,
+            data_manager,
+            primary_manager,
+            data_sources: Vec::new(),
+            primary_sources: Vec::new(),
         };
         client.roundtrip();
         client
@@ -1161,6 +1292,168 @@ impl TestClient {
         self.conn.flush().expect("flush");
     }
 
+    /// True when the compositor has `zwp_primary_selection_device_manager_v1`.
+    pub fn has_primary_selection(&self) -> bool {
+        self.primary_manager.is_some()
+    }
+
+    /// Sets the clipboard to a new source offering `mime` that writes `text`
+    /// (`wl_data_device.set_selection` with the last keyboard enter serial)
+    /// and waits until the compositor has handled it.
+    pub fn set_clipboard(&mut self, mime: &str, text: &str) {
+        let source = self._data_source(mime, text);
+        let (_, device) = self.data_manager.as_ref().expect("wl_data_device_manager");
+        device.set_selection(Some(&source), self.app.keyboard_serial);
+        self.roundtrip();
+    }
+
+    /// Sets the primary selection to a new source offering `mime` that
+    /// writes `text` and waits until the compositor has handled it.
+    pub fn set_primary(&mut self, mime: &str, text: &str) {
+        let (manager, device) = self.primary_manager.as_ref().expect("zwp_primary_selection_device_manager_v1");
+        let source = manager.create_source(&self.qh, ());
+        source.offer(mime.to_string());
+        device.set_selection(Some(&source), self.app.keyboard_serial);
+        self.app.source_data.insert(source.id(), text.as_bytes().to_vec());
+        self.primary_sources.push(source);
+        self.roundtrip();
+    }
+
+    /// Number of `wl_data_device.selection` events received so far.
+    pub fn clipboard_events(&self) -> u32 {
+        self.app.clipboard_events
+    }
+
+    /// Number of `zwp_primary_selection_device_v1.selection` events so far.
+    pub fn primary_events(&self) -> u32 {
+        self.app.primary_events
+    }
+
+    /// Waits at most `timeout` until the current clipboard offer has `mime`.
+    pub fn wait_clipboard_offer(&mut self, mime: &str, timeout: Duration) -> bool {
+        self.dispatch_until(timeout, |app| _offer_has(app, app.clipboard_offer.as_ref().map(Proxy::id), mime))
+    }
+
+    /// Waits at most `timeout` until the current primary offer has `mime`.
+    pub fn wait_primary_offer(&mut self, mime: &str, timeout: Duration) -> bool {
+        self.dispatch_until(timeout, |app| _offer_has(app, app.primary_offer.as_ref().map(Proxy::id), mime))
+    }
+
+    /// Waits at most `timeout` for a `wl_data_device.selection` event after
+    /// the first `after` ones that clears the clipboard (no offer).
+    pub fn wait_clipboard_cleared(&mut self, after: u32, timeout: Duration) -> bool {
+        self.dispatch_until(timeout, |app| app.clipboard_events > after && app.clipboard_offer.is_none())
+    }
+
+    /// Asks the current clipboard offer for `mime` into a new pipe and
+    /// returns its read end (the write end is closed once sent).
+    pub fn receive_clipboard(&mut self, mime: &str) -> std::os::fd::OwnedFd {
+        let offer = self.app.clipboard_offer.clone().expect("a clipboard offer");
+        let (read, write) = _pipe();
+        offer.receive(mime.to_string(), std::os::fd::AsFd::as_fd(&write));
+        self.conn.flush().expect("flush");
+        read
+    }
+
+    /// Asks the current primary offer for `mime` into a new pipe and
+    /// returns its read end.
+    pub fn receive_primary(&mut self, mime: &str) -> std::os::fd::OwnedFd {
+        let offer = self.app.primary_offer.clone().expect("a primary offer");
+        let (read, write) = _pipe();
+        offer.receive(mime.to_string(), std::os::fd::AsFd::as_fd(&write));
+        self.conn.flush().expect("flush");
+        read
+    }
+
+    /// Starts a drag from `origin` with the serial of the last button
+    /// press: a new source offering `mime` (copy action) that writes
+    /// `text`, and a 16x16 icon surface with a buffer. Returns the icon.
+    pub fn start_drag(&mut self, origin: &impl HasSurface, mime: &str, text: &str) -> TestIcon {
+        let source = self._data_source(mime, text);
+        source.set_actions(wl_data_device_manager::DndAction::Copy);
+        let icon = self.app.compositor.create_surface(&self.qh);
+        let (buffer, canvas) = self.app.pool.create_buffer(16, 16, 64, wl_shm::Format::Argb8888).expect("shm buffer");
+        canvas.fill(0xff);
+        let (_, device) = self.data_manager.as_ref().expect("wl_data_device_manager");
+        device.start_drag(Some(&source), origin.wl_surface(), Some(&icon), self.app.button_serial);
+        buffer.attach_to(&icon).expect("attach buffer");
+        icon.damage_buffer(0, 0, 16, 16);
+        icon.commit();
+        let mut info = SurfaceInfo::new((16, 16));
+        info.configured = true;
+        info.buffer = Some(buffer);
+        self.app.surfaces.insert(icon.id(), info);
+        self.roundtrip();
+        TestIcon { surface: icon }
+    }
+
+    /// Drag and drop events of the data device so far ("enter", "motion",
+    /// "leave", "drop").
+    pub fn dnd_events(&self) -> Vec<&'static str> {
+        self.app.dnd_events.clone()
+    }
+
+    /// Waits at most `timeout` for the drag and drop event `name`.
+    pub fn wait_dnd_event(&mut self, name: &str, timeout: Duration) -> bool {
+        self.dispatch_until(timeout, |app| app.dnd_events.contains(&name))
+    }
+
+    /// Accepts `mime` with the copy action on the offer of the last enter.
+    pub fn dnd_accept(&mut self, mime: &str) {
+        let offer = self.app.dnd_offer.clone().expect("a drag and drop offer");
+        offer.accept(self.app.dnd_serial, Some(mime.to_string()));
+        let copy = wl_data_device_manager::DndAction::Copy;
+        offer.set_actions(copy, copy);
+        self.roundtrip();
+    }
+
+    /// Asks the drag and drop offer for `mime` into a new pipe and returns
+    /// its read end.
+    pub fn receive_dnd(&mut self, mime: &str) -> std::os::fd::OwnedFd {
+        let offer = self.app.dnd_offer.clone().expect("a drag and drop offer");
+        let (read, write) = _pipe();
+        offer.receive(mime.to_string(), std::os::fd::AsFd::as_fd(&write));
+        self.conn.flush().expect("flush");
+        read
+    }
+
+    /// Ends the drop: `wl_data_offer.finish` on the offer of the last enter.
+    pub fn dnd_finish(&mut self) {
+        let offer = self.app.dnd_offer.clone().expect("a drag and drop offer");
+        offer.finish();
+        self.roundtrip();
+    }
+
+    /// Events of this client's data sources so far ("send", "cancelled",
+    /// "dnd_drop_performed", "dnd_finished").
+    pub fn source_events(&self) -> Vec<&'static str> {
+        self.app.source_events.clone()
+    }
+
+    /// Waits at most `timeout` for the source event `name`.
+    pub fn wait_source_event(&mut self, name: &str, timeout: Duration) -> bool {
+        self.dispatch_until(timeout, |app| app.source_events.contains(&name))
+    }
+
+    /// Destroys every `wl_data_source` of this client (the client and its
+    /// windows stay) and waits until the compositor has handled it.
+    pub fn destroy_data_sources(&mut self) {
+        for source in self.data_sources.drain(..) {
+            source.destroy();
+        }
+        self.roundtrip();
+    }
+
+    /// A new `wl_data_source` offering `mime` that writes `text` on `send`.
+    fn _data_source(&mut self, mime: &str, text: &str) -> wl_data_source::WlDataSource {
+        let (manager, _) = self.data_manager.as_ref().expect("wl_data_device_manager");
+        let source = manager.create_data_source(&self.qh, ());
+        source.offer(mime.to_string());
+        self.app.source_data.insert(source.id(), text.as_bytes().to_vec());
+        self.data_sources.push(source.clone());
+        source
+    }
+
     /// Sends a `wl_display.sync` and handles every event up to its answer;
     /// panics when the answer does not come within `ROUNDTRIP_TIMEOUT`.
     pub fn roundtrip(&mut self) {
@@ -1543,11 +1836,122 @@ impl Dispatch<wl_pointer::WlPointer, ()> for ClientApp {
                     p.2 = surface_y;
                 }
             }
-            wl_pointer::Event::Button { state: WEnum::Value(wl_pointer::ButtonState::Pressed), .. } => {
+            wl_pointer::Event::Button { serial, state: WEnum::Value(wl_pointer::ButtonState::Pressed), .. } => {
+                app.button_serial = serial;
                 if let Some(p) = app.pointer.clone() {
                     app.presses.push(p);
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for ClientApp {
+    /// The manager has no events.
+    fn event(_: &mut Self, _: &wl_data_device_manager::WlDataDeviceManager, _: wl_data_device_manager::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+
+impl Dispatch<wl_data_device::WlDataDevice, ()> for ClientApp {
+    /// Records the clipboard selection and the drag and drop events.
+    fn event(app: &mut Self, _: &wl_data_device::WlDataDevice, event: wl_data_device::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        use wl_data_device::Event;
+        match event {
+            Event::DataOffer { id } => {
+                app.offer_mimes.insert(id.id(), Vec::new());
+            }
+            Event::Selection { id } => {
+                app.clipboard_events += 1;
+                app.clipboard_offer = id;
+            }
+            Event::Enter { serial, id, .. } => {
+                app.dnd_serial = serial;
+                app.dnd_offer = id;
+                app.dnd_events.push("enter");
+            }
+            Event::Motion { .. } => app.dnd_events.push("motion"),
+            Event::Leave => app.dnd_events.push("leave"),
+            Event::Drop => app.dnd_events.push("drop"),
+            _ => {}
+        }
+    }
+
+    event_created_child!(ClientApp, wl_data_device::WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (wl_data_offer::WlDataOffer, ()),
+    ]);
+}
+
+impl Dispatch<wl_data_offer::WlDataOffer, ()> for ClientApp {
+    /// Records the mime types of the offer.
+    fn event(app: &mut Self, offer: &wl_data_offer::WlDataOffer, event: wl_data_offer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            app.offer_mimes.entry(offer.id()).or_default().push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<wl_data_source::WlDataSource, ()> for ClientApp {
+    /// Writes the source data on `send` and records the source events.
+    fn event(app: &mut Self, source: &wl_data_source::WlDataSource, event: wl_data_source::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        use wl_data_source::Event;
+        match event {
+            Event::Send { fd, .. } => {
+                _write_source(app, &source.id(), fd);
+                app.source_events.push("send");
+            }
+            Event::Cancelled => app.source_events.push("cancelled"),
+            Event::DndDropPerformed => app.source_events.push("dnd_drop_performed"),
+            Event::DndFinished => app.source_events.push("dnd_finished"),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ClientApp {
+    /// The manager has no events.
+    fn event(_: &mut Self, _: &ZwpPrimarySelectionDeviceManagerV1, _: <ZwpPrimarySelectionDeviceManagerV1 as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+
+impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for ClientApp {
+    /// Records the primary selection.
+    fn event(app: &mut Self, _: &ZwpPrimarySelectionDeviceV1, event: zwp_primary_selection_device_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        use zwp_primary_selection_device_v1::Event;
+        match event {
+            Event::DataOffer { offer } => {
+                app.offer_mimes.insert(offer.id(), Vec::new());
+            }
+            Event::Selection { id } => {
+                app.primary_events += 1;
+                app.primary_offer = id;
+            }
+            _ => {}
+        }
+    }
+
+    event_created_child!(ClientApp, ZwpPrimarySelectionDeviceV1, [
+        zwp_primary_selection_device_v1::EVT_DATA_OFFER_OPCODE => (ZwpPrimarySelectionOfferV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for ClientApp {
+    /// Records the mime types of the offer.
+    fn event(app: &mut Self, offer: &ZwpPrimarySelectionOfferV1, event: zwp_primary_selection_offer_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let zwp_primary_selection_offer_v1::Event::Offer { mime_type } = event {
+            app.offer_mimes.entry(offer.id()).or_default().push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for ClientApp {
+    /// Writes the source data on `send` and records the source events.
+    fn event(app: &mut Self, source: &ZwpPrimarySelectionSourceV1, event: zwp_primary_selection_source_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        use zwp_primary_selection_source_v1::Event;
+        match event {
+            Event::Send { fd, .. } => {
+                _write_source(app, &source.id(), fd);
+                app.source_events.push("send");
+            }
+            Event::Cancelled => app.source_events.push("cancelled"),
             _ => {}
         }
     }

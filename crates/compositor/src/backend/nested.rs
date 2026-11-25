@@ -803,12 +803,30 @@ fn _layer_elements(
     AsRenderElements::<GlesRenderer>::render_elements(layer, renderer, loc.to_physical(1), Scale::from(1.0), 1.0)
 }
 
-/// Elements of the client cursor surface at the pointer, minus its hotspot;
-/// none for a named or hidden cursor (the host draws a named one).
+/// Elements drawn with the pointer, front to back: the client cursor
+/// surface at the pointer minus its hotspot (none for a named or hidden
+/// cursor, the host draws a named one), then the drag icon.
 fn _cursor_elements(renderer: &mut GlesRenderer, state: &State) -> Vec<NestedElement> {
-    let CursorImageStatus::Surface(surface) = &state.cursor_status else { return Vec::new() };
     let output_loc = state.output_area();
     let origin = Point::<i32, Logical>::from((output_loc.x, output_loc.y));
+    let mut elements = _client_cursor_elements(renderer, state, origin);
+    elements.extend(_drag_icon_elements(renderer, state, origin));
+    elements
+}
+
+/// Render elements of the drag icon of the drag in progress, at the
+/// pointer plus its offset, below the cursor; empty with no drag or no
+/// icon. Like the cursor it is not in a screen capture.
+fn _drag_icon_elements(renderer: &mut GlesRenderer, state: &State, origin: Point<i32, Logical>) -> Vec<NestedElement> {
+    let Some((icon, loc)) = state.drag_icon() else { return Vec::new() };
+    let loc = loc - origin;
+    render_elements_from_surface_tree(renderer, &icon, loc.to_physical(1), Scale::from(1.0), 1.0, Kind::Unspecified)
+}
+
+/// Render elements of the cursor surface of the client with the pointer
+/// (empty for a named or hidden cursor, which the host window shows).
+fn _client_cursor_elements(renderer: &mut GlesRenderer, state: &State, origin: Point<i32, Logical>) -> Vec<NestedElement> {
+    let CursorImageStatus::Surface(surface) = &state.cursor_status else { return Vec::new() };
     // The seat always has a pointer (`add_input_devices`); the input paths log its absence.
     let Some(pointer) = state.seat.get_pointer() else { return Vec::new() };
     let hotspot = with_states(surface, |states| {

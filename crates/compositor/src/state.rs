@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::utils::with_renderer_surface_state},
-    delegate_data_device, delegate_output, delegate_seat,
-    desktop::{layer_map_for_output, LayerSurface, PopupManager, Space, Window},
+    delegate_output, delegate_seat,
+    desktop::{layer_map_for_output, utils::send_frames_surface_tree, LayerSurface, PopupManager, Space, Window},
     input::{
         keyboard::{KeyboardHandle, Keycode},
         pointer::CursorImageStatus,
@@ -27,13 +27,7 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::{DmabufState, ImportNotifier},
         output::{OutputHandler, OutputManagerState},
-        selection::{
-            data_device::{
-                set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
-                ServerDndGrabHandler,
-            },
-            SelectionHandler,
-        },
+        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::{
             wlr_layer::WlrLayerShellState,
             xdg::{decoration::XdgDecorationState, XdgShellState},
@@ -58,6 +52,7 @@ use crate::menu::WindowMenu;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
 use crate::protocols::screencopy::Screencopy;
 use crate::protocols::workspace::Workspaces;
+use crate::selection::Drag;
 use crate::snap::SnapZone;
 use crate::switcher::WindowSwitcher;
 use crate::wm::desktops::Desktops;
@@ -207,7 +202,14 @@ pub struct State {
     pub hidden_layers: Vec<LayerSurface>,
     pub shm_state: ShmState,
     pub seat_state: SeatState<State>,
+    /// `wl_data_device_manager`: clipboard and drag and drop (`selection`).
     pub data_device_state: DataDeviceState,
+    /// `zwp_primary_selection_device_manager_v1`: the primary selection
+    /// (middle click paste, `selection`).
+    pub primary_selection_state: PrimarySelectionState,
+    /// The client drag in progress, between `ClientDndGrabHandler::started`
+    /// and `dropped` (`selection`); its icon is drawn at the pointer.
+    pub drag: Option<Drag>,
     pub output_manager_state: OutputManagerState,
     pub seat: Seat<State>,
     pub output: Output,
@@ -290,6 +292,7 @@ impl State {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<State>(display);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<State>(display);
+        let primary_selection_state = PrimarySelectionState::new::<State>(display);
         let seat = seat_state.new_wl_seat(display, SEAT_NAME);
         let _global = output.create_global::<State>(display);
         let foreign_toplevels = ForeignToplevels::new(display);
@@ -321,6 +324,8 @@ impl State {
             shm_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
+            drag: None,
             output_manager_state,
             seat,
             output,
@@ -419,6 +424,10 @@ impl State {
         for layer in map.layers() {
             layer.send_frame(output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
         }
+        drop(map);
+        if let Some((icon, _)) = self.drag_icon() {
+            send_frames_surface_tree(&icon, output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
+        }
     }
 
     /// Moves the mapped `window` to `loc` without changing the stacking
@@ -478,6 +487,8 @@ impl State {
             self._end_foreign_popup_grab(&keyboard, target);
         }
         keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
+        // Smithay's `focus_changed` does not run when the keyboard goes to nothing.
+        self.update_selection_focus();
         for toplevel in self.space.elements().filter_map(|w| w.toplevel()) {
             toplevel.send_pending_configure();
         }
@@ -579,6 +590,7 @@ impl State {
         }
         self.check_window_menu();
         self.check_switcher();
+        self.cancel_dead_drag();
         let Some(keyboard) = self.seat.get_keyboard() else {
             if !self.no_keyboard_logged {
                 opusdm_ipc::err_log!(LOG_TAG, "refresh: the seat has no keyboard, focus is not checked");
@@ -659,11 +671,10 @@ impl SeatHandler for State {
         &mut self.seat_state
     }
 
-    /// Moves the selection (clipboard) focus with the keyboard focus.
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        let dh = &self.display_handle;
-        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(dh, seat, client);
+    /// The one choke point of every keyboard focus change to a surface:
+    /// the clipboard and primary selection focus follow it.
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        self.set_selection_focus(focused);
     }
 
     /// Stores the cursor image the focused client asked for.
@@ -673,22 +684,6 @@ impl SeatHandler for State {
 }
 
 delegate_seat!(State);
-
-impl SelectionHandler for State {
-    type SelectionUserData = ();
-}
-
-impl DataDeviceHandler for State {
-    /// The data device state.
-    fn data_device_state(&self) -> &DataDeviceState {
-        &self.data_device_state
-    }
-}
-
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
-
-delegate_data_device!(State);
 
 impl OutputHandler for State {}
 

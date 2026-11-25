@@ -202,12 +202,14 @@ impl State {
     /// grabs also end on a motion (their window died or was unmapped), but
     /// they forward the motion first: there the second one repeats one
     /// `wl_pointer.motion` with the same coordinates in the same frame
-    /// (harmless).
+    /// (harmless). A drag whose source died since the last `refresh` is
+    /// cancelled first (`cancel_dead_drag`), so the motion never reaches it.
     pub fn pointer_motion(&mut self, position: Point<f64, Logical>, time_msec: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "pointer motion: the seat has no pointer");
             return;
         };
+        self.cancel_dead_drag();
         let was_grabbed = pointer.is_grabbed();
         let found = self.under(position);
         let frame = match &found {
@@ -240,12 +242,14 @@ impl State {
     /// under the pointer (`_click_focus`); with Alt held on a window, the left
     /// button starts a `MoveGrab` and the right button a `ResizeGrab` on the
     /// edges of the quadrant the pointer is in: the grab consumes the press
-    /// and its release, the client never sees them.
+    /// and its release, the client never sees them. A dead drag is
+    /// cancelled first (`cancel_dead_drag`): its release drops nothing.
     pub fn pointer_button(&mut self, button: u32, pressed: bool, time_msec: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "pointer button: the seat has no pointer");
             return;
         };
+        self.cancel_dead_drag();
         if pressed && self.menu.is_some() {
             self.swallowed_buttons.insert(button);
             self.window_menu_click(pointer.current_location());

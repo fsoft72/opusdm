@@ -67,6 +67,7 @@ impl CompositorHandler for State {
         crate::grabs::handle_commit(self, surface);
         xdg::handle_popup_commit(self, surface);
         layer::handle_commit(self, surface);
+        crate::selection::handle_commit(self, surface);
         self.space.refresh();
     }
 }

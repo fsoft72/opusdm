@@ -15,6 +15,7 @@ mod ipc;
 mod menu;
 mod opacity;
 mod protocols;
+mod selection;
 mod shell;
 mod snap;
 mod state;

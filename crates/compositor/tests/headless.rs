@@ -2432,3 +2432,236 @@ fn a_pending_screencopy_leaves_the_queue_when_its_frame_or_client_goes() {
     let (events, _) = b.capture(None);
     assert!(events.ready, "{events:?}");
 }
+
+/// Mime type of the clipboard, primary selection and drag and drop tests.
+const TEXT_MIME: &str = "text/plain;charset=utf-8";
+
+/// Text of the clipboard, primary selection and drag and drop tests.
+const TEXT: &str = "hello stage3";
+
+/// How long a selection or drag and drop test waits for each step.
+const SELECTION_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Moves window `id` to `(x, y)` with the size 400x300 (`window/set-geometry`).
+fn place_400x300(comp: &Compositor, id: u64, x: i64, y: i64) {
+    let reply = ipc_request(comp, "window/set-geometry", json!({"id": id, "x": x, "y": y, "width": 400, "height": 300}));
+    assert_eq!(reply["ok"], true, "{reply}");
+}
+
+#[test]
+fn the_clipboard_goes_to_the_client_that_takes_the_keyboard() {
+    let comp = Compositor::start();
+    let mut a = TestClient::new(&comp);
+    let wa = a.map_toplevel((400, 300));
+    assert!(a.wait_keyboard_focus(&wa, SELECTION_TIMEOUT));
+    let mut b = TestClient::new(&comp);
+    a.set_clipboard(TEXT_MIME, TEXT);
+    b.roundtrip();
+    assert_eq!(b.clipboard_events(), 0, "a client without the keyboard gets no selection");
+    let wb = b.map_toplevel((400, 300));
+    assert!(b.wait_keyboard_focus(&wb, SELECTION_TIMEOUT));
+    assert!(b.wait_clipboard_offer(TEXT_MIME, SELECTION_TIMEOUT), "the focused client gets the clipboard offer");
+    let fd = b.receive_clipboard(TEXT_MIME);
+    a.roundtrip(); // the source client writes into the pipe, the compositor never reads it
+    assert_eq!(common::read_pipe(fd, SELECTION_TIMEOUT), Ok(TEXT.as_bytes().to_vec()));
+}
+
+#[test]
+fn the_primary_selection_goes_to_the_client_that_takes_the_keyboard() {
+    let comp = Compositor::start();
+    let mut a = TestClient::new(&comp);
+    assert!(a.has_primary_selection(), "zwp_primary_selection_device_manager_v1 is advertised");
+    let wa = a.map_toplevel((400, 300));
+    assert!(a.wait_keyboard_focus(&wa, SELECTION_TIMEOUT));
+    let mut b = TestClient::new(&comp);
+    a.set_primary(TEXT_MIME, TEXT);
+    b.roundtrip();
+    assert_eq!(b.primary_events(), 0, "a client without the keyboard gets no primary selection");
+    let wb = b.map_toplevel((400, 300));
+    assert!(b.wait_keyboard_focus(&wb, SELECTION_TIMEOUT));
+    assert!(b.wait_primary_offer(TEXT_MIME, SELECTION_TIMEOUT), "the focused client gets the primary offer");
+    let fd = b.receive_primary(TEXT_MIME);
+    a.roundtrip();
+    assert_eq!(common::read_pipe(fd, SELECTION_TIMEOUT), Ok(TEXT.as_bytes().to_vec()));
+}
+
+#[test]
+fn a_keyboard_layer_gets_the_clipboard_offer() {
+    let comp = Compositor::start();
+    let mut a = TestClient::new(&comp);
+    let wa = a.map_toplevel((400, 300));
+    assert!(a.wait_keyboard_focus(&wa, SELECTION_TIMEOUT));
+    a.set_clipboard(TEXT_MIME, TEXT);
+    let mut run = TestClient::new(&comp);
+    let layer = run.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    assert!(run.wait_keyboard_focus(&layer, SELECTION_TIMEOUT));
+    assert!(run.wait_clipboard_offer(TEXT_MIME, SELECTION_TIMEOUT), "a layer with the keyboard gets the clipboard offer");
+}
+
+#[test]
+fn a_dead_clipboard_source_leaves_no_offer_that_hangs() {
+    let comp = Compositor::start();
+    let mut b = TestClient::new(&comp);
+    let _wb = b.map_toplevel((400, 300));
+    let mut a = TestClient::new(&comp);
+    let wa = a.map_toplevel((400, 300));
+    assert!(a.wait_keyboard_focus(&wa, SELECTION_TIMEOUT));
+    a.set_clipboard(TEXT_MIME, TEXT);
+    let wb2 = b.map_toplevel((400, 300)); // B takes the keyboard and the offer
+    assert!(b.wait_keyboard_focus(&wb2, SELECTION_TIMEOUT));
+    assert!(b.wait_clipboard_offer(TEXT_MIME, SELECTION_TIMEOUT));
+    drop(wa);
+    drop(a); // killed with its source still set
+    let fd = b.receive_clipboard(TEXT_MIME);
+    assert_eq!(common::read_pipe(fd, SELECTION_TIMEOUT), Ok(Vec::new()), "a stale offer reads end of file at once");
+    // Focus away to another client and back: B sees the clipboard cleared.
+    let mut c = TestClient::new(&comp);
+    let wc = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&wc, SELECTION_TIMEOUT));
+    let before = b.clipboard_events();
+    drop(wc);
+    drop(c);
+    assert!(b.wait_keyboard_focus(&wb2, SELECTION_TIMEOUT));
+    assert!(b.wait_clipboard_cleared(before, SELECTION_TIMEOUT), "no stale clipboard offer after the source died");
+}
+
+#[test]
+fn a_dead_primary_source_leaves_no_offer_that_hangs() {
+    let comp = Compositor::start();
+    let mut b = TestClient::new(&comp);
+    assert!(b.has_primary_selection());
+    let _wb = b.map_toplevel((400, 300));
+    let mut a = TestClient::new(&comp);
+    let wa = a.map_toplevel((400, 300));
+    assert!(a.wait_keyboard_focus(&wa, SELECTION_TIMEOUT));
+    a.set_primary(TEXT_MIME, TEXT);
+    let wb2 = b.map_toplevel((400, 300));
+    assert!(b.wait_keyboard_focus(&wb2, SELECTION_TIMEOUT));
+    assert!(b.wait_primary_offer(TEXT_MIME, SELECTION_TIMEOUT));
+    drop(wa);
+    drop(a);
+    let fd = b.receive_primary(TEXT_MIME);
+    assert_eq!(common::read_pipe(fd, SELECTION_TIMEOUT), Ok(Vec::new()), "a stale offer reads end of file at once");
+}
+
+/// Two clients with a 400x300 window each, A at (0, 0) and B at (800, 0);
+/// the left button pressed on A (its client got the press and its serial).
+fn drag_setup(comp: &Compositor) -> (TestClient, common::TestWindow, TestClient, common::TestWindow) {
+    let mut a = TestClient::new(comp);
+    let wa = a.map_toplevel((400, 300));
+    let mut b = TestClient::new(comp);
+    let wb = b.map_toplevel((400, 300));
+    place_400x300(comp, 1, 0, 0);
+    place_400x300(comp, 2, 800, 0);
+    a.roundtrip();
+    b.roundtrip();
+    pointer_to(comp, 200, 150);
+    button(comp, "left", "press");
+    a.roundtrip();
+    assert_eq!(a.pointer_presses().len(), 1, "the press reaches the source client");
+    (a, wa, b, wb)
+}
+
+#[test]
+fn a_drag_from_one_client_drops_its_data_on_another() {
+    let comp = Compositor::start();
+    let (mut a, wa, mut b, _wb) = drag_setup(&comp);
+    let icon = a.start_drag(&wa, TEXT_MIME, TEXT);
+    pointer_to(&comp, 1000, 150);
+    assert!(b.wait_dnd_event("enter", SELECTION_TIMEOUT), "the target gets enter: {:?}", b.dnd_events());
+    b.dnd_accept(TEXT_MIME);
+    assert!(a.wait_frame(&icon, SELECTION_TIMEOUT), "the drag icon gets frame callbacks while it is shown");
+    button(&comp, "left", "release");
+    assert!(b.wait_dnd_event("drop", SELECTION_TIMEOUT), "the target gets drop: {:?}", b.dnd_events());
+    let fd = b.receive_dnd(TEXT_MIME);
+    a.roundtrip();
+    assert_eq!(common::read_pipe(fd, SELECTION_TIMEOUT), Ok(TEXT.as_bytes().to_vec()));
+    b.dnd_finish();
+    assert!(a.wait_source_event("dnd_finished", SELECTION_TIMEOUT), "{:?}", a.source_events());
+    assert!(!a.source_events().contains(&"cancelled"));
+}
+
+#[test]
+fn a_drag_whose_source_client_dies_sends_leave_to_the_target() {
+    // Smithay 0.7 ends the grab of a dead origin with a drop when the target
+    // had accepted: the target gets leave, and its receive reads end of
+    // file at once (the compositor never holds or reads the pipe).
+    let mut comp = Compositor::start();
+    let (mut a, wa, mut b, wb) = drag_setup(&comp);
+    let icon = a.start_drag(&wa, TEXT_MIME, TEXT);
+    pointer_to(&comp, 1000, 150);
+    assert!(b.wait_dnd_event("enter", SELECTION_TIMEOUT), "{:?}", b.dnd_events());
+    b.dnd_accept(TEXT_MIME);
+    drop(icon);
+    drop(wa);
+    drop(a); // killed mid-drag, the button still held
+    assert!(b.wait_dnd_event("leave", SELECTION_TIMEOUT), "the target gets leave: {:?}", b.dnd_events());
+    assert!(comp.is_running());
+    let fd = b.receive_dnd(TEXT_MIME);
+    assert_eq!(common::read_pipe(fd, SELECTION_TIMEOUT), Ok(Vec::new()), "the dead source's offer reads end of file at once");
+    button(&comp, "left", "release");
+    b.roundtrip();
+    // The pointer is free again: a click on B reaches B.
+    pointer_to(&comp, 1000, 160);
+    button(&comp, "left", "press");
+    button(&comp, "left", "release");
+    b.roundtrip();
+    assert!(b.pointer_presses().iter().any(|p| &p.0 == wb.wl_surface()), "the click after the drag reaches B");
+    assert!(comp_alive(&comp));
+}
+
+#[test]
+fn a_drag_whose_source_client_dies_before_an_accept_gets_no_drop() {
+    let mut comp = Compositor::start();
+    let (mut a, wa, mut b, _wb) = drag_setup(&comp);
+    let icon = a.start_drag(&wa, TEXT_MIME, TEXT);
+    pointer_to(&comp, 1000, 150);
+    assert!(b.wait_dnd_event("enter", SELECTION_TIMEOUT), "{:?}", b.dnd_events());
+    drop(icon);
+    drop(wa);
+    drop(a);
+    assert!(b.wait_dnd_event("leave", SELECTION_TIMEOUT), "the target gets leave: {:?}", b.dnd_events());
+    button(&comp, "left", "release");
+    b.roundtrip();
+    assert!(!b.dnd_events().contains(&"drop"), "{:?}", b.dnd_events());
+    assert!(comp.is_running());
+}
+
+#[test]
+fn a_drag_whose_source_is_destroyed_is_cancelled_without_a_drop() {
+    let comp = Compositor::start();
+    let (mut a, wa, mut b, wb) = drag_setup(&comp);
+    let _icon = a.start_drag(&wa, TEXT_MIME, TEXT);
+    pointer_to(&comp, 1000, 150);
+    assert!(b.wait_dnd_event("enter", SELECTION_TIMEOUT), "{:?}", b.dnd_events());
+    b.dnd_accept(TEXT_MIME);
+    a.destroy_data_sources(); // the client and its window stay
+    assert!(b.wait_dnd_event("leave", SELECTION_TIMEOUT), "the target gets leave: {:?}", b.dnd_events());
+    button(&comp, "left", "release");
+    b.roundtrip();
+    assert!(!b.dnd_events().contains(&"drop"), "a cancelled drag drops nothing: {:?}", b.dnd_events());
+    pointer_to(&comp, 1000, 160);
+    button(&comp, "left", "press");
+    button(&comp, "left", "release");
+    b.roundtrip();
+    assert!(b.pointer_presses().iter().any(|p| &p.0 == wb.wl_surface()), "the click after the drag reaches B");
+}
+
+#[test]
+fn a_drag_whose_origin_window_closes_ends_at_the_next_pointer_motion() {
+    // Smithay 0.7 ends a pointer grab whose origin surface is dead on the
+    // next pointer event; with no accept, the live source gets cancelled.
+    let comp = Compositor::start();
+    let (mut a, wa, mut b, _wb) = drag_setup(&comp);
+    let _icon = a.start_drag(&wa, TEXT_MIME, TEXT);
+    pointer_to(&comp, 1000, 150);
+    assert!(b.wait_dnd_event("enter", SELECTION_TIMEOUT), "{:?}", b.dnd_events());
+    drop(wa); // the origin window closes, its client stays
+    a.roundtrip();
+    pointer_to(&comp, 1010, 150);
+    assert!(b.wait_dnd_event("leave", SELECTION_TIMEOUT), "the target gets leave: {:?}", b.dnd_events());
+    assert!(a.wait_source_event("cancelled", SELECTION_TIMEOUT), "the live source gets cancelled: {:?}", a.source_events());
+    button(&comp, "left", "release");
+    b.roundtrip();
+    assert!(!b.dnd_events().contains(&"drop"));
+}
