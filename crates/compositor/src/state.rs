@@ -33,6 +33,7 @@ use smithay::{
 };
 
 use crate::geometry::Rect;
+use crate::grabs::ResizeTrack;
 
 /// Log tag of the compositor.
 pub const LOG_TAG: &str = "opusdm-compositor";
@@ -53,6 +54,8 @@ pub struct WindowInfo {
     /// Position the window had when it was unmapped by a null buffer; it
     /// maps there again instead of taking a new cascade position.
     pub last_position: Option<(i32, i32)>,
+    /// Interactive resize in progress, followed by the commits of the window.
+    pub resize: ResizeTrack,
 }
 
 /// Per-client data handed to Smithay when a client connects.

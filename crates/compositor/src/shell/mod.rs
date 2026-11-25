@@ -49,7 +49,7 @@ impl CompositorHandler for State {
 
     /// Imports the buffer, unmaps a toplevel that committed a null buffer,
     /// updates the window of the surface tree, sends the initial configure of a popup, sends the initial configure or
-    /// maps a toplevel, arranges the layer map for a layer surface, and refreshes the space.
+    /// maps a toplevel, places a toplevel in an interactive resize, arranges the layer map for a layer surface, and refreshes the space.
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         if xdg::unmap_if_bufferless(self, surface) {
@@ -64,6 +64,7 @@ impl CompositorHandler for State {
             }
         }
         xdg::handle_commit(self, surface);
+        crate::grabs::handle_commit(self, surface);
         xdg::handle_popup_commit(self, surface);
         layer::handle_commit(self, surface);
         self.space.refresh();

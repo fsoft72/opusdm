@@ -7,7 +7,10 @@ use smithay::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKeyboardGrab, PopupKind,
         PopupPointerGrab, PopupUngrabStrategy, Window, WindowSurfaceType,
     },
-    input::{pointer::Focus, Seat},
+    input::{
+        pointer::{Focus, GrabStartData},
+        Seat,
+    },
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
@@ -19,7 +22,7 @@ use smithay::{
     wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
 };
 
-use crate::geometry::{cascade_position, Rect};
+use crate::geometry::{cascade_position, Edges, Rect};
 use crate::state::{State, WindowInfo, LOG_TAG};
 
 impl XdgShellHandler for State {
@@ -145,6 +148,32 @@ impl XdgShellHandler for State {
         self.unfill_window(&surface, Fill::Fullscreen);
     }
 
+    /// Interactive move asked by the client (title bar drag): starts a
+    /// `MoveGrab` when `serial` is the pointer's current click grab on this
+    /// window; refused with a log otherwise.
+    fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let wl = surface.wl_surface();
+        let Some(start_data) = _check_grab(&seat, wl, serial, "move") else { return };
+        let Some(window) = self.mapped_window(wl) else {
+            opusdm_ipc::err_log!(LOG_TAG, "move {} refused: the toplevel is not mapped", wl.id());
+            return;
+        };
+        self.start_move_grab(window, start_data, serial);
+    }
+
+    /// Interactive resize asked by the client (border drag): starts a
+    /// `ResizeGrab` on `edges` when `serial` is the pointer's current click
+    /// grab on this window; refused with a log otherwise.
+    fn resize_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial, edges: xdg_toplevel::ResizeEdge) {
+        let wl = surface.wl_surface();
+        let Some(start_data) = _check_grab(&seat, wl, serial, "resize") else { return };
+        let Some(window) = self.mapped_window(wl) else {
+            opusdm_ipc::err_log!(LOG_TAG, "resize {} refused: the toplevel is not mapped", wl.id());
+            return;
+        };
+        self.start_resize_grab(window, _edges_from_xdg(edges), start_data, serial);
+    }
+
     /// No tasklist before stage 2: the window stays shown.
     fn minimize_request(&mut self, _surface: ToplevelSurface) {
         opusdm_ipc::debug_log!(LOG_TAG, "minimize ignored: no tasklist before stage 2");
@@ -168,6 +197,46 @@ impl XdgShellHandler for State {
 }
 
 delegate_xdg_shell!(State);
+
+/// Start data of the pointer grab a client `move` / `resize` request
+/// (`what`) refers to: the pointer must have an active grab with `serial`
+/// (the implicit grab of a button press) whose focus belongs to `surface`
+/// (the toplevel or one of its subsurfaces). `None`, logged, otherwise.
+fn _check_grab(seat: &wl_seat::WlSeat, surface: &WlSurface, serial: Serial, what: &str) -> Option<GrabStartData<State>> {
+    let id = surface.id();
+    let Some(seat) = Seat::<State>::from_resource(seat) else {
+        opusdm_ipc::err_log!(LOG_TAG, "{what} {id} refused: unknown seat");
+        return None;
+    };
+    let Some(pointer) = seat.get_pointer() else {
+        opusdm_ipc::err_log!(LOG_TAG, "{what} {id} refused: the seat has no pointer");
+        return None;
+    };
+    if !pointer.has_grab(serial) {
+        opusdm_ipc::err_log!(LOG_TAG, "{what} {id} refused: serial {serial:?} is not the current pointer grab");
+        return None;
+    }
+    let Some(start_data) = pointer.grab_start_data() else {
+        opusdm_ipc::err_log!(LOG_TAG, "{what} {id} refused: the pointer grab has no start data");
+        return None;
+    };
+    let on_surface = start_data.focus.as_ref().is_some_and(|(focus, _)| &super::_root_surface(focus) == surface);
+    if !on_surface {
+        opusdm_ipc::err_log!(LOG_TAG, "{what} {id} refused: the pointer grab is not on this window");
+        return None;
+    }
+    Some(start_data)
+}
+
+/// The edges of an xdg resize request; `None` (and unknown values) give no edge.
+fn _edges_from_xdg(edge: xdg_toplevel::ResizeEdge) -> Edges {
+    use xdg_toplevel::ResizeEdge as E;
+    let top = matches!(edge, E::Top | E::TopLeft | E::TopRight);
+    let bottom = matches!(edge, E::Bottom | E::BottomLeft | E::BottomRight);
+    let left = matches!(edge, E::Left | E::TopLeft | E::BottomLeft);
+    let right = matches!(edge, E::Right | E::TopRight | E::BottomRight);
+    Edges { top, bottom, left, right }
+}
 
 /// The two states where a window fills an area of the output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

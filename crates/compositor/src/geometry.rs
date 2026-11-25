@@ -7,8 +7,6 @@
 pub const CASCADE_STEP: i32 = 30;
 
 /// Smallest size a window can be resized to, as `(width, height)`.
-// Used by the interactive resize (stage 1, task 6).
-#[allow(dead_code)]
 pub const MIN_WINDOW_SIZE: (i32, i32) = (64, 32);
 
 /// A rectangle in output coordinates.
@@ -25,8 +23,6 @@ pub struct Rect {
 }
 
 /// Which edges of a window a resize drags.
-// Used by the interactive resize (stage 1, task 6).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Edges {
     /// The top edge moves.
@@ -59,8 +55,6 @@ pub fn cascade_position(area: Rect, size: (i32, i32), index: usize) -> (i32, i32
 /// fixed. The size never goes under `min`: the dragged edge stops there and the
 /// opposite edge does not move. Edges that are not set keep their size. When
 /// both `left` and `right` are set, `left` wins (the same for `top` / `bottom`).
-// Used by the interactive resize (stage 1, task 6).
-#[allow(dead_code)]
 pub fn resize_rect(start: Rect, edges: Edges, dx: i32, dy: i32, min: (i32, i32)) -> Rect {
     let (min_w, min_h) = min;
     let (mut x, mut w) = (start.x, start.w);

@@ -4,6 +4,8 @@ mod args;
 mod backend;
 mod child;
 mod geometry;
+mod grabs;
+mod input;
 mod shell;
 mod state;
 
