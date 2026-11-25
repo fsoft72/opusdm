@@ -198,22 +198,15 @@ fn _release_keyboard(state: &mut State, surface: &WlSurface) {
 
 /// Ends the popup grab (an open menu) of another surface before the
 /// exclusive layer `layer` takes the keyboard: the popups of the grab root
-/// get `popup_done` and the keyboard and pointer grabs are unset. A grab
+/// get `popup_done` and the keyboard and pointer grabs are unset. Only the
+/// keyboard grab gives the root (a popup grab always sets both grabs, while
+/// a pointer grab may be a button hold or a window move, which stay). A grab
 /// rooted at `layer` itself (its own menu) is left alone; no grab: nothing.
 fn _end_popup_grabs_for(state: &mut State, layer: &WlSurface) {
-    let mut roots: Vec<WlSurface> = Vec::new();
-    if let Some(root) = state.seat.get_keyboard().and_then(|k| k.grab_start_data().and_then(|d| d.focus.clone())) {
-        roots.push(root);
-    }
-    if let Some((root, _)) = state.seat.get_pointer().and_then(|p| p.grab_start_data().and_then(|d| d.focus.clone())) {
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-    for root in roots.iter().filter(|r| *r != layer) {
-        opusdm_ipc::debug_log!(LOG_TAG, "exclusive layer {} ends the popup grab rooted at {}", layer.id(), root.id());
-        state.dismiss_popups_and_grabs(root);
-    }
+    let root = state.seat.get_keyboard().and_then(|k| k.grab_start_data().and_then(|d| d.focus.clone()));
+    let Some(root) = root.filter(|r| r != layer) else { return };
+    opusdm_ipc::debug_log!(LOG_TAG, "exclusive layer {} ends the popup grab rooted at {}", layer.id(), root.id());
+    state.dismiss_popups_and_grabs(&root);
 }
 
 /// True when the layer surface `layer` committed a buffer and was not

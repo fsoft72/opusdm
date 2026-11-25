@@ -689,6 +689,14 @@ impl TestClient {
         self.queue.roundtrip(&mut self.app).map(|_| ()).map_err(|e| e.to_string())
     }
 
+    /// Changes the keyboard interactivity of the mapped layer surface `l`,
+    /// commits and waits until the compositor has handled it.
+    pub fn set_layer_keyboard(&mut self, l: &TestLayer, keyboard: KeyboardInteractivity) {
+        l.layer.set_keyboard_interactivity(keyboard);
+        l.layer.commit();
+        self.roundtrip();
+    }
+
     /// Hides the layer surface `l` keeping its role (the wlr-layer-shell
     /// unmap): attaches a null buffer, commits and waits until the
     /// compositor has handled it.

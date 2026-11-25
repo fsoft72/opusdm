@@ -288,6 +288,19 @@ fn an_exclusive_layer_mapped_over_an_open_menu_keeps_the_keyboard() {
 }
 
 #[test]
+fn a_layer_that_becomes_exclusive_over_an_open_menu_closes_it() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::None);
+    let menu = c.map_popup_with_grab(&w, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert!(!c.popup_done(&menu), "the menu must be open before the layer turns exclusive");
+    c.set_layer_keyboard(&run, KeyboardInteractivity::Exclusive);
+    assert!(c.popup_done(&menu));
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+}
+
+#[test]
 fn a_menu_of_the_exclusive_layer_gets_its_grab() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);
