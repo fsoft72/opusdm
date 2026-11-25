@@ -58,8 +58,10 @@ impl XdgShellHandler for State {
     /// Popup grab (menus: a click outside closes them), on a popup of a
     /// toplevel or of a layer surface. Refused with a log, and the popup
     /// dismissed (`popup_done`), when the root of the popup is not a mapped
-    /// toplevel or layer surface, when the seat has no keyboard or pointer,
-    /// or when another grab is active that this request does not descend from.
+    /// toplevel or layer surface, when an exclusive keyboard layer holds the
+    /// keyboard and the popup is not one of its own (the layer keeps the
+    /// keyboard), when the seat has no keyboard or pointer, or when another
+    /// grab is active that this request does not descend from.
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         let id = surface.wl_surface().id();
         let Some(seat) = Seat::<State>::from_resource(&seat) else {
@@ -78,6 +80,17 @@ impl XdgShellHandler for State {
                 LOG_TAG,
                 "popup grab {id} refused: root {} is not a mapped toplevel or layer surface, popup dismissed",
                 root.id()
+            );
+            surface.send_popup_done();
+            return;
+        }
+        // The popup grab would take the keyboard and, when the menu closes,
+        // Smithay gives it to the popup's root, never back to the layer.
+        if let Some(layer) = self.exclusive_layer.as_ref().filter(|layer| **layer != root) {
+            opusdm_ipc::err_log!(
+                LOG_TAG,
+                "popup grab {id} refused: exclusive keyboard layer {} holds the keyboard, popup dismissed",
+                layer.id()
             );
             surface.send_popup_done();
             return;

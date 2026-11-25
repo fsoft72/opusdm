@@ -275,6 +275,10 @@ struct ClientApp {
     frames: Vec<ObjectId>,
     /// Surface that has the keyboard of this client (`wl_keyboard` enter / leave).
     keyboard_focus: Option<WlSurface>,
+    /// Serial of the last `wl_keyboard.enter`, for requests that need an input serial.
+    keyboard_serial: u32,
+    /// Popups the compositor dismissed (`xdg_popup.popup_done`), by `wl_surface` id.
+    dismissed: Vec<ObjectId>,
 }
 
 impl ClientApp {
@@ -336,6 +340,8 @@ impl TestClient {
             surfaces: HashMap::new(),
             frames: Vec::new(),
             keyboard_focus: None,
+            keyboard_serial: 0,
+            dismissed: Vec::new(),
         };
         let mut client = TestClient { conn, queue, qh, app, _seat: seat, _keyboard: keyboard, layers: Vec::new() };
         client.roundtrip();
@@ -365,6 +371,18 @@ impl TestClient {
     /// constraint adjustment on): initial commit, waits for the configure,
     /// answers it with a buffer and waits until the compositor has handled it.
     pub fn map_popup(&mut self, parent: &impl PopupParent, anchor: Rect, size: (i32, i32)) -> TestPopup {
+        self._map_popup(parent, anchor, size, false)
+    }
+
+    /// Maps an xdg popup as `map_popup` does, asking for a popup grab
+    /// (`xdg_popup.grab`, a menu) before its first commit, with the serial of
+    /// the last keyboard enter this client got.
+    pub fn map_popup_grabbed(&mut self, parent: &impl PopupParent, anchor: Rect, size: (i32, i32)) -> TestPopup {
+        self._map_popup(parent, anchor, size, true)
+    }
+
+    /// Maps an xdg popup (see `map_popup`), with a popup grab when `grab`.
+    fn _map_popup(&mut self, parent: &impl PopupParent, anchor: Rect, size: (i32, i32), grab: bool) -> TestPopup {
         let positioner = XdgPositioner::new(&self.app.xdg).expect("xdg_positioner");
         positioner.set_size(size.0, size.1);
         positioner.set_anchor_rect(anchor.x, anchor.y, anchor.w, anchor.h);
@@ -377,6 +395,9 @@ impl TestClient {
         let popup =
             Popup::from_surface(parent.parent_xdg_surface(), &positioner, &self.qh, surface, &self.app.xdg).expect("popup");
         parent.adopt_popup(popup.xdg_popup());
+        if grab {
+            popup.xdg_popup().grab(&self._seat, self.app.keyboard_serial);
+        }
         let id = popup.wl_surface().id();
         let info = SurfaceInfo::new(size);
         self.app.surfaces.insert(id.clone(), info);
@@ -489,6 +510,27 @@ impl TestClient {
     pub fn layer_configure(&self, l: &TestLayer) -> (u32, u32) {
         let id = l.wl_surface().id();
         self.app.surfaces.get(&id).map(|s| s.layer_size).expect("known layer surface")
+    }
+
+    /// True once the compositor dismissed `popup` (`xdg_popup.popup_done`).
+    pub fn popup_dismissed(&self, popup: &TestPopup) -> bool {
+        self.app.dismissed.contains(&popup.wl_surface().id())
+    }
+
+    /// Destroys `popup` (a menu closed by the client) and waits until the
+    /// compositor has handled it.
+    pub fn destroy_popup(&mut self, popup: TestPopup) {
+        let id = popup.wl_surface().id();
+        self.app.surfaces.remove(&id);
+        drop(popup);
+        self.roundtrip();
+    }
+
+    /// Waits at most `timeout` until `surface` has this client's keyboard.
+    /// True when it has it.
+    pub fn wait_keyboard_focus(&mut self, surface: &impl HasSurface, timeout: Duration) -> bool {
+        let target = surface.wl_surface().clone();
+        self.dispatch_until(timeout, |app| app.keyboard_focus.as_ref() == Some(&target))
     }
 
     /// Surface that has this client's keyboard, from `wl_keyboard` enter / leave.
@@ -616,8 +658,10 @@ impl PopupHandler for ClientApp {
         self.answer_configure(popup.wl_surface(), (config.width, config.height));
     }
 
-    /// The tests do not dismiss popups.
-    fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Popup) {}
+    /// Records that the compositor dismissed `popup`.
+    fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &Popup) {
+        self.dismissed.push(popup.wl_surface().id());
+    }
 }
 
 impl LayerShellHandler for ClientApp {
@@ -641,10 +685,14 @@ impl Dispatch<wl_seat::WlSeat, ()> for ClientApp {
 }
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
-    /// Tracks the surface that has the keyboard (enter / leave); keys are ignored.
+    /// Tracks the surface that has the keyboard and the enter serial (enter /
+    /// leave); keys are ignored.
     fn event(app: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
-            wl_keyboard::Event::Enter { surface, .. } => app.keyboard_focus = Some(surface),
+            wl_keyboard::Event::Enter { serial, surface, .. } => {
+                app.keyboard_serial = serial;
+                app.keyboard_focus = Some(surface);
+            }
             wl_keyboard::Event::Leave { surface, .. } if app.keyboard_focus.as_ref() == Some(&surface) => {
                 app.keyboard_focus = None;
             }

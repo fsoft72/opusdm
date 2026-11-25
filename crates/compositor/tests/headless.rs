@@ -201,3 +201,36 @@ fn a_maximized_window_grows_when_the_panel_goes_away() {
     assert_eq!(c.last_configure(&w), (1920, 1080));
     assert!(c.wait_frame(&w, Duration::from_secs(2)));
 }
+
+#[test]
+fn a_window_menu_does_not_take_the_keyboard_from_an_exclusive_layer() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+    let menu = c.map_popup_grabbed(&w, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert!(c.popup_dismissed(&menu), "the grab of a window menu must be refused");
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+    c.destroy_popup(menu);
+    // A few housekeeping ticks of the compositor go by.
+    assert!(c.wait_frame(&run, Duration::from_secs(2)));
+    assert!(c.wait_frame(&run, Duration::from_secs(2)));
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+}
+
+#[test]
+fn a_menu_of_the_exclusive_layer_gets_its_grab() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = c.map_toplevel((400, 300));
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    let menu = c.map_popup_grabbed(&run, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert!(!c.popup_dismissed(&menu), "the grab of the layer's own menu must be accepted");
+    assert_eq!(c.keyboard_focus(), Some(menu.wl_surface().clone()));
+    c.destroy_popup(menu);
+    // The housekeeping tick moves the keyboard off the dead menu.
+    assert!(c.wait_keyboard_focus(&run, Duration::from_secs(2)), "the keyboard did not go back to the layer");
+}
