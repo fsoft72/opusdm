@@ -72,6 +72,9 @@ pub struct WindowInfo {
     pub last_position: Option<(i32, i32)>,
     /// Interactive resize in progress, followed by the commits of the window.
     pub resize: ResizeTrack,
+    /// Pid of the client process, read once from the socket credentials
+    /// when the toplevel is created (`None` when unknown or 0).
+    pub pid: Option<u32>,
 }
 
 impl WindowInfo {
@@ -87,6 +90,7 @@ impl WindowInfo {
             fullscreen: false,
             last_position: None,
             resize: ResizeTrack::default(),
+            pid: None,
         }
     }
 }
@@ -373,6 +377,33 @@ impl State {
         if keyboard.current_focus().is_some_and(|f| !f.alive()) {
             opusdm_ipc::debug_log!(LOG_TAG, "keyboard focus on a dead surface, refocusing");
             self.focus_topmost();
+        }
+    }
+}
+
+/// Pid of the client that owns `surface`, from its socket credentials;
+/// `None` (logged) when the client or its credentials are gone, or the pid
+/// is not positive (a client in another pid namespace reads 0).
+pub fn client_pid(dh: &DisplayHandle, surface: &WlSurface) -> Option<u32> {
+    let client = match dh.get_client(surface.id()) {
+        Ok(client) => client,
+        Err(e) => {
+            opusdm_ipc::err_log!(LOG_TAG, "pid of {}: no client: {e}", surface.id());
+            return None;
+        }
+    };
+    let credentials = match client.get_credentials(dh) {
+        Ok(credentials) => credentials,
+        Err(e) => {
+            opusdm_ipc::err_log!(LOG_TAG, "pid of {}: no credentials: {e}", surface.id());
+            return None;
+        }
+    };
+    match u32::try_from(credentials.pid) {
+        Ok(pid) if pid > 0 => Some(pid),
+        _ => {
+            opusdm_ipc::err_log!(LOG_TAG, "pid of {}: credentials give pid {}, shown as unknown", surface.id(), credentials.pid);
+            None
         }
     }
 }

@@ -196,9 +196,36 @@ fn refusals_are_error_replies() {
 fn window_close_asks_the_client_to_close() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);
-    let _w = c.map_toplevel((400, 300));
+    let w = c.map_toplevel((400, 300));
     let id = only_window_id(&comp);
     assert_eq!(ipc_request(&comp, "window/close", json!({"id": id}))["ok"], true);
+    assert!(c.wait_close_request(&w, Duration::from_secs(2)), "the client got xdg_toplevel.close");
+}
+
+#[test]
+fn closed_connections_give_back_their_fds_and_the_server_keeps_answering() {
+    let comp = Compositor::start();
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 4);
+    // Let the sources of that first connection go (a few loop iterations).
+    std::thread::sleep(Duration::from_millis(200));
+    let baseline = comp.open_fds();
+    // More than IPC_MAX_CONNECTIONS (64): a leaked connection would make the server refuse the rest.
+    for _ in 0..150 {
+        assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 4);
+    }
+    for _ in 0..30 {
+        assert!(ipc_send_raw(&comp, &(u32::MAX).to_le_bytes()));
+        assert!(ipc_send_raw(&comp, b"\x02\x00\x00\x00{]"));
+    }
+    let watch = ipc_watch(&comp);
+    drop(watch);
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 4);
+    // The sources of the last connection go away on the next loop iterations.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while comp.open_fds() > baseline && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(comp.open_fds(), baseline, "every closed connection gave its fds back");
 }
 
 #[test]

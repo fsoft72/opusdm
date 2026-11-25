@@ -24,10 +24,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use smithay::reexports::{
-    calloop::{generic::Generic, Interest, LoopHandle, Mode, PostAction},
-    wayland_server::Resource,
-};
+use smithay::reexports::calloop::{generic::Generic, Interest, LoopHandle, Mode, PostAction};
 
 use crate::backend::LoopData;
 use crate::state::{State, LOG_TAG};
@@ -369,22 +366,26 @@ fn _on_readable(state: &mut State, id: u64) -> PostAction {
         }
     }
     state.notify_watchers();
-    if closed && state.ipc.conns.remove(&id).is_some() {
-        opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} closed by the client");
+    if closed {
+        if let Some(conn) = state.ipc.conns.remove(&id) {
+            opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} closed by the client");
+            // Wakes a write source of this connection so it removes itself.
+            _shutdown(&conn.stream);
+        }
     }
     if state.ipc.conns.contains_key(&id) { PostAction::Continue } else { PostAction::Remove }
 }
 
 /// `window/kill`: SIGKILL to the process of the client of the window `id`
-/// (from the socket credentials). Refused for an unknown window, a client
-/// without credentials, a pid `<= 1` or the compositor's own pid. Returns
-/// the pid killed.
+/// (its pid read from the socket credentials when the toplevel was
+/// created, `WindowInfo::pid`). Refused for an unknown window, a window
+/// without a pid, a pid `<= 1` or the compositor's own pid. Returns the
+/// pid killed.
 pub fn kill_window(state: &State, id: WindowId) -> Result<i32, String> {
-    let (wl, _) = state.window_by_id(id).ok_or_else(|| format!("kill: unknown window {}", id.0))?;
-    let dh = &state.display_handle;
-    let client = dh.get_client(wl.id()).map_err(|e| format!("kill: window {} has no client: {e}", id.0))?;
-    let credentials = client.get_credentials(dh).map_err(|e| format!("kill: no credentials for window {}: {e}", id.0))?;
-    let pid = check_kill_pid(credentials.pid, std::process::id())?;
+    let (_, info) = state.window_by_id(id).ok_or_else(|| format!("kill: unknown window {}", id.0))?;
+    let pid = info.pid.ok_or_else(|| format!("kill: window {} has no client pid", id.0))?;
+    let pid = i32::try_from(pid).map_err(|_| format!("kill: pid {pid} of window {} is out of range", id.0))?;
+    let pid = check_kill_pid(pid, std::process::id())?;
     // SAFETY: kill(2) on a pid checked by `check_kill_pid`, no memory involved.
     let rc = unsafe { libc::kill(pid, libc::SIGKILL) };
     if rc != 0 {

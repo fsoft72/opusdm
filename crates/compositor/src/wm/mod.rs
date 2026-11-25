@@ -208,8 +208,6 @@ impl State {
                 }
             }
         });
-        let dh = &self.display_handle;
-        let pid = dh.get_client(wl.id()).ok().and_then(|c| c.get_credentials(dh).ok()).and_then(|c| u32::try_from(c.pid).ok());
         let (x, y) = self.space.element_location(&info.window).map(|p| (p.x, p.y)).or(info.last_position).unwrap_or_default();
         let size = info.window.geometry().size;
         let activated = info
@@ -220,7 +218,7 @@ impl State {
             id: info.id.0,
             app_id,
             title,
-            pid,
+            pid: info.pid,
             geometry: Rect { x, y, w: size.w, h: size.h },
             desktop: info.desktop,
             minimized: info.minimized,

@@ -138,6 +138,12 @@ impl Compositor {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Number of file descriptors the compositor process has open now
+    /// (entries of `/proc/<pid>/fd`).
+    pub fn open_fds(&self) -> usize {
+        std::fs::read_dir(format!("/proc/{}/fd", self.child.id())).expect("read the compositor fd table").count()
+    }
+
     /// Sends the signal `sig` to the compositor process.
     pub fn signal(&self, sig: i32) {
         let pid = i32::try_from(self.child.id()).expect("pid fits in i32");
@@ -320,6 +326,8 @@ struct ClientApp {
     dismissed: Vec<ObjectId>,
     /// `wl_keyboard.key` events (press and release) of non-modifier keys.
     keys: u32,
+    /// Toplevels that got `xdg_toplevel.close`, by `wl_surface` id.
+    close_requests: Vec<ObjectId>,
 }
 
 impl ClientApp {
@@ -390,6 +398,7 @@ impl TestClient {
             keyboard_serial: 0,
             dismissed: Vec::new(),
             keys: 0,
+            close_requests: Vec::new(),
         };
         let mut client = TestClient { conn, queue, qh, app, _seat: seat, _keyboard: keyboard, layers: Vec::new() };
         client.roundtrip();
@@ -625,6 +634,13 @@ impl TestClient {
         self.dispatch_until(timeout, |app| app.keys >= count)
     }
 
+    /// Waits at most `timeout` until `window` got `xdg_toplevel.close`.
+    /// True when it did.
+    pub fn wait_close_request(&mut self, window: &TestWindow, timeout: Duration) -> bool {
+        let id = window.wl_surface().id();
+        self.dispatch_until(timeout, |app| app.close_requests.contains(&id))
+    }
+
     /// Key events (presses and releases) of non-modifier keys received so far.
     pub fn keys_received(&self) -> u32 {
         self.app.keys
@@ -746,7 +762,10 @@ impl CompositorHandler for ClientApp {
 
 impl WindowHandler for ClientApp {
     /// The tests close windows by dropping them.
-    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {}
+    /// Records the `xdg_toplevel.close` of `window` (the tests close windows by dropping them).
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, window: &Window) {
+        self.close_requests.push(window.wl_surface().id());
+    }
 
     /// Answers every configure (SCTK has already acked it) with a buffer.
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, window: &Window, configure: WindowConfigure, _serial: u32) {

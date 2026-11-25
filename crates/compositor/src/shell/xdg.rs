@@ -23,7 +23,7 @@ use smithay::{
 };
 
 use crate::geometry::{cascade_position, Edges, Rect};
-use crate::state::{has_buffer, State, WindowInfo, LOG_TAG};
+use crate::state::{client_pid, has_buffer, State, WindowInfo, LOG_TAG};
 
 impl XdgShellHandler for State {
     /// The xdg-shell state.
@@ -31,8 +31,8 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
-    /// Tracks a new toplevel with a new id, on the current desktop and on
-    /// top of the stack; the initial configure (no size: the client decides)
+    /// Tracks a new toplevel with a new id and its client pid (read once
+    /// here), on the current desktop and on top of the stack; the initial configure (no size: the client decides)
     /// goes out on its initial commit, the window is mapped once its first
     /// buffer is committed.
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
@@ -40,7 +40,9 @@ impl XdgShellHandler for State {
         let wl = surface.wl_surface().clone();
         let id = self.new_window_id();
         let window = Window::new_wayland_window(surface);
-        self.windows.insert(wl.clone(), WindowInfo::new(id, window.clone(), self.desktops.current()));
+        let mut info = WindowInfo::new(id, window.clone(), self.desktops.current());
+        info.pid = client_pid(&self.display_handle, &wl);
+        self.windows.insert(wl.clone(), info);
         self.stack.push(id);
         self.unmapped.push(window);
         opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} is window {}", wl.id(), id.0);
