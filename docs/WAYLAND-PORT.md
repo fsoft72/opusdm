@@ -203,3 +203,46 @@ Testing: `./run-wayland.sh` (nested labwc), `./run-wayland.sh --headless`
 for scripted runs; `crates/wayland/examples/watch.rs` prints the windows and
 workspaces, `examples/screenshot.rs` saves every output.
 
+## Native compositor (opusdm-compositor)
+
+OpusDM's own Wayland compositor, `crates/compositor` (Smithay 0.7), built in
+five stages (design: `docs/superpowers/specs/2026-11-25-opusdm-compositor-design.md`).
+Stage 1 is a nested skeleton: it runs as a window of the current desktop
+(winit backend, GLES rendering) and is not a session yet.
+
+What stage 1 covers:
+
+- xdg-shell windows: cascade placement, client side decorations, move by
+  title bar, maximize / restore, fullscreen (above the TOP layer); `Alt` +
+  left drag moves, `Alt` + right drag resizes.
+- xdg popups (menus) kept inside the output, with grabs: a click outside
+  closes them.
+- wlr-layer-shell: desktop (BACKGROUND), dock (BOTTOM), panel (TOP, its
+  exclusive zone respected by maximized windows), Run window and
+  notifications (OVERLAY, exclusive keyboard for the Run window).
+- Click to focus, keyboard and pointer to clients; a client that dies
+  (even `kill -9`) does not take the compositor down.
+
+Missing until stage 2: tasklist (foreign-toplevel), pager and desktops
+(ext-workspace), global hotkeys (Ctrl+backslash, Ctrl+Shift+space,
+Ctrl+Print, Alt+1 / Alt+2 do nothing in the sandbox) and minimize (ignored
+with a debug trace). The keymap is the xkb default (`us`) unless
+`XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables are set. On a
+software renderer (Xephyr, llvmpipe) `linux-dmabuf` is not offered and one
+log line says so; clients use shared memory.
+
+Running it: `./run-native.sh [--debug] [resolution]` builds the workspace,
+opens the compositor window (default 1920x1080) and starts `opusdm-hub`
+inside it with its own runtime dir, `target/release` first on `PATH` and
+no Startup Apps (`--no-startup-apps`, as `run-x11.sh`). `--debug` sets
+`OPUSDM_DEBUG=1` and writes the hub output to `/ramdisk/opusdm.log`, or
+to `$NATIVE_LOG` when set; `NATIVE_RES` sets the default resolution.
+The hub reads the real `~/.config/opusdm`. To keep the sandbox hub off the
+D-Bus names of a running session, start it with its own bus, e.g. in a
+Xephyr:
+
+    Xephyr :7 -ac -screen 1600x1000 -no-host-grab &
+    env -u WAYLAND_DISPLAY DISPLAY=:7 dbus-run-session -- ./run-native.sh --debug 1440x900
+
+Without a window manager in Xephyr, give the compositor window the
+keyboard focus (`xdotool windowfocus`) or keys do not arrive.
