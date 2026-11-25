@@ -41,16 +41,20 @@ if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
         pid="$(cat "$BUS_PID_FILE" 2>/dev/null || true)"
         if [ -n "$pid" ]; then
             kill -TERM "$pid" 2>/dev/null || true
-        else
+        elif [ -n "$BUS_PID" ]; then
             kill -TERM -- "-$BUS_PID" 2>/dev/null || true
         fi
     }
     # Own process group: a Ctrl+C reaches only this run, which passes it on.
+    # The trap comes first (the forwarder copes with an empty BUS_PID); HUP
+    # too: closing the terminal reaches only this run, the sandbox has a
+    # group of its own.
+    BUS_PID=""
+    trap _forward_term TERM INT HUP
     set -m
     OPUSDM_SANDBOX_BUS="$BUS_PID_FILE" dbus-run-session -- bash "$0" "$@" &
     BUS_PID=$!
     set +m
-    trap _forward_term TERM INT
     STATUS=0
     wait "$BUS_PID" || STATUS=$?
     # A trapped signal ends `wait` early: wait again until the inner run is gone.
@@ -137,11 +141,12 @@ echo "Starting opusdm-compositor ($RESOLUTION)"
 # display) before the trap cleans up; its exit code is this script's.
 # `set -m` gives it a process group of its own, which the hub and every
 # tool it starts inherit.
+COMPOSITOR_PID=""
+trap '[ -n "$COMPOSITOR_PID" ] && kill -TERM "$COMPOSITOR_PID" 2>/dev/null; true' TERM INT HUP
 set -m
 "$COMPOSITOR_BIN" --nested --size "$RESOLUTION" --startup "sh $CONFIG_DIR/autostart" &
 COMPOSITOR_PID=$!
 set +m
-trap 'kill -TERM "$COMPOSITOR_PID" 2>/dev/null || true' TERM INT
 STATUS=0
 wait "$COMPOSITOR_PID" || STATUS=$?
 # A trapped signal ends `wait` early: wait again until the compositor is gone.
