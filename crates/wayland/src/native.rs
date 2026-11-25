@@ -44,6 +44,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// Tag of the log lines of this crate.
 const LOG_TAG: &str = "opusdm-wayland";
 
+/// Opacity in percent of a window whose compositor does not report one.
+const DEFAULT_OPACITY: u8 = 100;
+
 /// A window, as `windows/list` and the window events report it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeWindow {
@@ -64,6 +67,12 @@ pub struct NativeWindow {
     pub fullscreen: bool,
     /// The window has the keyboard focus.
     pub activated: bool,
+    /// Opacity in percent the window is drawn with (100 when the compositor
+    /// does not report it).
+    pub opacity: u8,
+    /// The window asked for attention (false when the compositor does not
+    /// report it).
+    pub urgent: bool,
 }
 
 /// Windows and desktops at one moment.
@@ -134,6 +143,8 @@ fn _parse_window(v: &Value) -> Option<NativeWindow> {
         maximized: flag("maximized"),
         fullscreen: flag("fullscreen"),
         activated: flag("activated"),
+        opacity: v.get("opacity").and_then(Value::as_u64).and_then(|n| u8::try_from(n).ok()).unwrap_or(DEFAULT_OPACITY),
+        urgent: flag("urgent"),
     })
 }
 
@@ -258,6 +269,55 @@ pub fn switch_desktop(index: u32) -> Result<(), String> {
 pub fn set_desktop_count(count: u32) -> Result<u32, String> {
     let reply = call("desktops/set-count", json!({ "count": count }))?;
     _u32(&reply, "count").ok_or_else(|| format!("desktops/set-count: no 'count' in {reply}"))
+}
+
+/// Ask the compositor to read `compositor.json` and `desktop.json` again.
+/// Returns the problems it found (each is also logged by the compositor).
+/// A blocking request (up to the request timeout): never call it on a GTK
+/// or owner thread.
+pub fn reload() -> Result<Vec<String>, String> {
+    _reload_reply(call("reload", json!({}))?)
+}
+
+/// The `errors` of a `reload` reply.
+fn _reload_reply(reply: Value) -> Result<Vec<String>, String> {
+    let errors = reply.get("errors").and_then(Value::as_array).ok_or_else(|| format!("reload: no 'errors' array in {reply}"))?;
+    Ok(errors.iter().filter_map(Value::as_str).map(str::to_string).collect())
+}
+
+/// The built-in key bindings of the compositor as (name, key) pairs; an
+/// empty key is a disabled binding.
+pub fn builtin_bindings() -> Result<Vec<(String, String)>, String> {
+    _bindings_reply(call("bindings/list", json!({}))?)
+}
+
+/// The (name, key) pairs of a `bindings/list` reply. An entry without a
+/// name or a key is an error: the list is a contract, not best effort.
+fn _bindings_reply(reply: Value) -> Result<Vec<(String, String)>, String> {
+    let list = reply.get("bindings").and_then(Value::as_array).ok_or_else(|| format!("bindings/list: no 'bindings' array in {reply}"))?;
+    let text = |b: &Value, k: &str| b.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("bindings/list: no '{k}' in {b}"));
+    list.iter().map(|b| Ok((text(b, "name")?, text(b, "key")?))).collect()
+}
+
+/// Draw window `id` with `percent` opacity (20..=100), or with the
+/// opacity of the desktop settings again for `None`.
+pub fn set_opacity(id: u32, percent: Option<u8>) -> Result<(), String> {
+    call("window/set-opacity", _opacity_data(id, percent)).map(drop)
+}
+
+/// The `data` of a `window/set-opacity` request.
+fn _opacity_data(id: u32, percent: Option<u8>) -> Value {
+    json!({ "id": id, "opacity": percent })
+}
+
+/// Move and resize window `id` to `rect`.
+pub fn set_geometry(id: u32, rect: Rect) -> Result<(), String> {
+    call("window/set-geometry", _geometry_data(id, rect)).map(drop)
+}
+
+/// The `data` of a `window/set-geometry` request.
+fn _geometry_data(id: u32, rect: Rect) -> Value {
+    json!({ "id": id, "x": rect.x, "y": rect.y, "width": rect.w, "height": rect.h })
 }
 
 /// Call `on_change` with the current state, then again after every burst of
@@ -664,6 +724,60 @@ mod tests {
         assert_eq!(w.geometry, Rect { x: 10, y: 20, w: 300, h: 200 });
         assert_eq!(st.windows[1].pid, None);
         assert_eq!(st.active().map(|w| w.id), Some(2));
+    }
+
+    #[test]
+    fn a_window_without_opacity_and_urgent_is_opaque_and_calm() {
+        let w = _parse_window(&window(1, false)).unwrap();
+        assert_eq!((w.opacity, w.urgent), (100, false));
+        let mut v = window(2, false);
+        v["opacity"] = json!(88);
+        v["urgent"] = json!(true);
+        let w = _parse_window(&v).unwrap();
+        assert_eq!((w.opacity, w.urgent), (88, true));
+    }
+
+    /// Serve one request on a fake compositor: check its method, answer
+    /// `answer`, return the request's data.
+    fn serve_one(dir: &TempDir, method: &'static str, answer: Value) -> std::thread::JoinHandle<Value> {
+        let listener = UnixListener::bind(dir.socket()).unwrap();
+        std::thread::spawn(move || {
+            let mut s = accept(&listener);
+            let req = receive(&mut s, 1 << 20).unwrap();
+            assert_eq!(req["method"], method);
+            reply(&mut s, answer);
+            req["data"].clone()
+        })
+    }
+
+    #[test]
+    fn reload_returns_the_errors_of_the_compositor() {
+        let dir = TempDir::new();
+        let server = serve_one(&dir, "reload", json!({ "ok": true, "errors": ["bad key", "bad layout"] }));
+        let reply = Client::_connect_at(&dir.socket()).unwrap().request("reload", json!({})).unwrap();
+        server.join().unwrap();
+        assert_eq!(_reload_reply(reply).unwrap(), vec!["bad key".to_string(), "bad layout".to_string()]);
+        assert!(_reload_reply(json!({ "ok": true })).is_err());
+    }
+
+    #[test]
+    fn bindings_are_name_key_pairs() {
+        let dir = TempDir::new();
+        let answer = json!({ "ok": true, "bindings": [{ "name": "switcher_next", "key": "Alt+Tab" }, { "name": "quit", "key": "" }] });
+        let server = serve_one(&dir, "bindings/list", answer);
+        let reply = Client::_connect_at(&dir.socket()).unwrap().request("bindings/list", json!({})).unwrap();
+        server.join().unwrap();
+        let want = vec![("switcher_next".to_string(), "Alt+Tab".to_string()), ("quit".to_string(), String::new())];
+        assert_eq!(_bindings_reply(reply).unwrap(), want);
+        assert!(_bindings_reply(json!({ "bindings": [{ "name": "x" }] })).is_err());
+    }
+
+    #[test]
+    fn opacity_and_geometry_requests_have_the_wire_shape() {
+        assert_eq!(_opacity_data(3, Some(50)), json!({ "id": 3, "opacity": 50 }));
+        assert_eq!(_opacity_data(3, None), json!({ "id": 3, "opacity": null }));
+        let rect = Rect { x: -5, y: 6, w: 300, h: 200 };
+        assert_eq!(_geometry_data(3, rect), json!({ "id": 3, "x": -5, "y": 6, "width": 300, "height": 200 }));
     }
 
     #[test]

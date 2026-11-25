@@ -10,6 +10,7 @@
 use opusdm_ipc::DesktopSettings;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Environment variable holding the path of the base picom config.
 pub const BASE_ENV: &str = "OPUSDM_PICOM_BASE";
@@ -101,9 +102,53 @@ pub fn apply(ds: &DesktopSettings) {
     }
 }
 
+/// Longest wait for `desktop.json` to hold the settings being applied.
+const SAVE_WAIT_MAX: Duration = Duration::from_secs(1);
+
+/// Pause between two looks at `desktop.json` while waiting for the save.
+const SAVE_WAIT_STEP: Duration = Duration::from_millis(20);
+
+/// Apply the desktop settings to opusdm-compositor: it reads `desktop.json`
+/// again (`reload`: opacity, snap, wrap, desktop count). Blocking (the save
+/// wait plus a request of up to 2 s): run it on the IoWorker, never on the
+/// GTK or owner thread. Replaces [`apply`] under the native compositor, which
+/// never writes `picom.conf`. A failure is logged and never stops the hub.
+pub fn apply_native(ds: &DesktopSettings) {
+    apply_native_with(ds, crate::desktop_settings::load, opusdm_wayland::native::reload, std::thread::sleep);
+}
+
+/// [`apply_native`] with its three outside parts given: how `desktop.json` is
+/// read, how the compositor is asked to reload, and how to sleep.
+///
+/// The hub saves `desktop.json` on its persist thread while the GTK side
+/// gets the change at once, so the reload could read the old file: this
+/// waits (at most `SAVE_WAIT_MAX`) until the file holds `ds`. A file that
+/// never does is logged and the reload is asked anyway.
+fn apply_native_with(
+    ds: &DesktopSettings,
+    load: impl Fn() -> DesktopSettings,
+    reload: impl Fn() -> Result<Vec<String>, String>,
+    sleep: impl Fn(Duration),
+) {
+    let mut waited = Duration::ZERO;
+    while load() != *ds {
+        if waited >= SAVE_WAIT_MAX {
+            opusdm_ipc::err_log!("opusdm-hub", "desktop.json does not hold the new settings after {SAVE_WAIT_MAX:?}, reloading opusdm-compositor anyway");
+            break;
+        }
+        sleep(SAVE_WAIT_STEP);
+        waited += SAVE_WAIT_STEP;
+    }
+    match reload() {
+        Ok(errors) => errors.iter().for_each(|e| opusdm_ipc::err_log!("opusdm-hub", "opusdm-compositor reload: {e}")),
+        Err(e) => opusdm_ipc::err_log!("opusdm-hub", "cannot reload opusdm-compositor: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
 
     const BASE: &str = "shadow = true;\ninactive-opacity = 0.50;\nactive-opacity = 1.0;\ninactive-opacity-override = false;\n";
 
@@ -145,5 +190,40 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let err = write_config(&td.path().join("none"), &td.path().join("out.conf"), &DesktopSettings::default());
         assert!(err.unwrap_err().contains("cannot read the base picom config"));
+    }
+
+    #[test]
+    fn native_apply_waits_for_the_save_then_asks_one_reload() {
+        let ds = DesktopSettings { inactive_opacity: 60, ..Default::default() };
+        let loads = Cell::new(0);
+        let reloads = Cell::new(0);
+        let sleeps = Cell::new(0);
+        let load = || {
+            loads.set(loads.get() + 1);
+            if loads.get() > 2 { ds.clone() } else { DesktopSettings::default() }
+        };
+        let reload = || {
+            reloads.set(reloads.get() + 1);
+            Ok(vec!["bad key".to_string()])
+        };
+        apply_native_with(&ds, load, reload, |_| sleeps.set(sleeps.get() + 1));
+        assert_eq!((loads.get(), sleeps.get(), reloads.get()), (3, 2, 1));
+    }
+
+    #[test]
+    fn native_apply_reloads_anyway_when_the_file_never_matches() {
+        let ds = DesktopSettings { inactive_opacity: 60, ..Default::default() };
+        let slept = RefCell::new(Duration::ZERO);
+        let reloads = Cell::new(0);
+        apply_native_with(
+            &ds,
+            DesktopSettings::default,
+            || {
+                reloads.set(reloads.get() + 1);
+                Err("gone".to_string())
+            },
+            |d| *slept.borrow_mut() += d,
+        );
+        assert_eq!((*slept.borrow(), reloads.get()), (SAVE_WAIT_MAX, 1));
     }
 }
