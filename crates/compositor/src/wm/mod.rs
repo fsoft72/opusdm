@@ -199,6 +199,7 @@ impl State {
             return;
         };
         self.active_window = Some(id);
+        self.remember_active(id);
         self.apply_active_window();
         for toplevel in self.space.elements().filter_map(|w| w.toplevel()) {
             toplevel.send_pending_configure();

@@ -127,12 +127,6 @@ impl State {
         }
     }
 
-    /// The window switcher (Task 4). For now only a `debug_log!` line:
-    /// `all` covers every desktop, `backwards` starts with the previous window.
-    pub fn open_switcher(&mut self, all: bool, backwards: bool) {
-        opusdm_ipc::debug_log!(LOG_TAG, "switcher (all {all}, backwards {backwards}): not implemented yet");
-    }
-
     /// Puts the window `id` at the bottom of the stack (Openbox `Lower`,
     /// `FocusToBottom`, `Unfocus`). When it was shown, the keyboard goes to
     /// the new topmost shown window (itself when it is alone), as after a

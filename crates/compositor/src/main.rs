@@ -5,6 +5,7 @@ mod args;
 mod backend;
 mod child;
 mod config;
+mod draw;
 mod geometry;
 mod grabs;
 mod hotkeys;
@@ -14,6 +15,7 @@ mod menu;
 mod protocols;
 mod shell;
 mod state;
+mod switcher;
 mod wm;
 
 use std::process::ExitCode;

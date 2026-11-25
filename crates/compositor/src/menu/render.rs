@@ -11,14 +11,12 @@
 //! are dropped with the menu when it closes.
 
 use pangocairo::pango;
-use smithay::{
-    backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
-    utils::{Buffer, Rectangle, Transform},
-};
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
 use super::model::{MenuItem, MenuNav};
-use super::theme::{MenuTheme, Rgb};
+use super::theme::MenuTheme;
 use super::{item_rects, menu_size, WindowMenu};
+use crate::draw::{fill_gradient, paint_buffer, set_rgb, RenderCache};
 
 /// Font of the menu labels.
 const MENU_FONT: &str = "Sans 10";
@@ -38,70 +36,59 @@ pub struct MenuImages {
     pub submenu: Option<MemoryRenderBuffer>,
 }
 
-/// The images last drawn for a menu and the state they were drawn for.
-#[derive(Debug, Clone, Default)]
-pub struct MenuImageCache {
-    /// The navigation state and the scale of `images`.
-    entry: Option<(MenuNav, i32, MenuImages)>,
-    /// How many times the images were drawn (read by the tests).
-    builds: u32,
-}
+/// The images last drawn for a menu, keyed by the navigation state and
+/// the scale they were drawn for (a failed draw included).
+pub type MenuImageCache = RenderCache<(MenuNav, i32), MenuImages>;
 
 impl WindowMenu {
     /// The images of the menu at `scale`: the cached ones while the
     /// navigation state (items and selection) and the scale are the same,
-    /// else drawn again. On an error the cache is empty and the next call
-    /// draws again; the menu itself is untouched (it stays usable by
-    /// keyboard).
+    /// else drawn again. An error is cached too, so a persistent failure
+    /// is not drawn again every frame (a new state is tried again); the
+    /// menu itself is untouched (it stays usable by keyboard).
     pub fn images(&mut self, theme: &MenuTheme, scale: i32) -> Result<MenuImages, String> {
-        if let Some((nav, s, images)) = &self.images.entry {
-            if *s == scale && *nav == self.nav { return Ok(images.clone()); }
-        }
-        self.images.entry = None;
-        let images = MenuImages { menu: render_menu(self, theme, scale)?, submenu: render_submenu(self, theme, scale)? };
-        self.images.entry = Some((self.nav.clone(), scale, images.clone()));
-        self.images.builds = self.images.builds.saturating_add(1);
-        Ok(images)
+        let nav = self.nav.clone();
+        self.images.get_or_draw((nav.clone(), scale), || {
+            Ok(MenuImages { menu: _render_nav_menu(&nav, theme, scale)?, submenu: _render_nav_submenu(&nav, theme, scale)? })
+        })
     }
 }
 
 /// Draws the top-level menu of `menu` at `scale` (buffer pixels per
 /// logical pixel): `menu_size` of its items, the selected item highlighted
-/// (it stays highlighted while its submenu is open).
+/// (it stays highlighted while its submenu is open). Used by the tests;
+/// the backend goes through `WindowMenu::images`.
+#[cfg(test)]
 pub fn render_menu(menu: &WindowMenu, theme: &MenuTheme, scale: i32) -> Result<MemoryRenderBuffer, String> {
-    let (top, _) = menu.nav.selected();
-    _render_items(menu.nav.items(), Some(top), theme, scale)
+    _render_nav_menu(&menu.nav, theme, scale)
 }
 
 /// Draws the open submenu of `menu` at `scale`; `None` while no submenu
-/// is open.
+/// is open. Used by the tests; the backend goes through
+/// `WindowMenu::images`.
+#[cfg(test)]
 pub fn render_submenu(menu: &WindowMenu, theme: &MenuTheme, scale: i32) -> Result<Option<MemoryRenderBuffer>, String> {
-    let (top, sub) = menu.nav.selected();
+    _render_nav_submenu(&menu.nav, theme, scale)
+}
+
+/// The top-level menu of the navigation state `nav` (see `render_menu`).
+fn _render_nav_menu(nav: &MenuNav, theme: &MenuTheme, scale: i32) -> Result<MemoryRenderBuffer, String> {
+    let (top, _) = nav.selected();
+    _render_items(nav.items(), Some(top), theme, scale)
+}
+
+/// The open submenu of the navigation state `nav` (see `render_submenu`).
+fn _render_nav_submenu(nav: &MenuNav, theme: &MenuTheme, scale: i32) -> Result<Option<MemoryRenderBuffer>, String> {
+    let (top, sub) = nav.selected();
     let Some(sub) = sub else { return Ok(None) };
-    let parent = menu.nav.items().get(top).ok_or_else(|| format!("window menu: no item {top} for the open submenu"))?;
+    let parent = nav.items().get(top).ok_or_else(|| format!("window menu: no item {top} for the open submenu"))?;
     _render_items(&parent.submenu, Some(sub), theme, scale).map(Some)
 }
 
 /// Draws `items` (the item `selected` highlighted) into an ARGB8888
 /// buffer of `menu_size(items)` times `scale`.
 fn _render_items(items: &[MenuItem], selected: Option<usize>, theme: &MenuTheme, scale: i32) -> Result<MemoryRenderBuffer, String> {
-    if scale < 1 { return Err(format!("window menu: bad scale {scale}")); }
-    let (w, h) = menu_size(items);
-    if w <= 0 || h <= 0 { return Err(format!("window menu: empty image {w}x{h}")); }
-    let (pw, ph) = (w * scale, h * scale);
-    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, pw, ph)
-        .map_err(|e| format!("window menu: cairo surface {pw}x{ph}: {e}"))?;
-    {
-        let cr = cairo::Context::new(&surface).map_err(|e| format!("window menu: cairo context: {e}"))?;
-        cr.scale(f64::from(scale), f64::from(scale));
-        _paint(&cr, items, selected, theme).map_err(|e| format!("window menu: cairo drawing: {e}"))?;
-    }
-    surface.flush();
-    let stride = surface.stride();
-    if stride != pw * 4 { return Err(format!("window menu: cairo stride {stride} for width {pw}")); }
-    let data = surface.data().map_err(|e| format!("window menu: cairo surface data: {e}"))?;
-    let opaque: Vec<Rectangle<i32, Buffer>> = vec![Rectangle::from_size((pw, ph).into())];
-    Ok(MemoryRenderBuffer::from_slice(&data, Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, Some(opaque)))
+    paint_buffer("window menu", menu_size(items), scale, |cr| _paint(cr, items, selected, theme))
 }
 
 /// Paints `items` on `cr` in logical pixels: the border, the items
@@ -112,12 +99,12 @@ fn _paint(cr: &cairo::Context, items: &[MenuItem], selected: Option<usize>, them
     let (w, h) = menu_size(items);
     let (w, h) = (f64::from(w), f64::from(h));
     let bw = f64::from(theme.border_width).min(w / 2.0).min(h / 2.0);
-    _set_rgb(cr, theme.border);
+    set_rgb(cr, theme.border);
     cr.rectangle(0.0, 0.0, w, h);
     cr.fill()?;
     let (x0, x1, top, bottom) = (bw, w - bw, bw, h - bw);
     if x1 <= x0 || bottom <= top { return Ok(()); }
-    _fill_gradient(cr, theme.item_bg, x0, top, x1 - x0, bottom - top)?;
+    fill_gradient(cr, theme.item_bg, x0, top, x1 - x0, bottom - top)?;
     let layout = pangocairo::functions::create_layout(cr);
     layout.set_font_description(Some(&pango::FontDescription::from_string(MENU_FONT)));
     layout.set_ellipsize(pango::EllipsizeMode::End);
@@ -146,19 +133,19 @@ fn _paint_item(
 ) -> Result<(), cairo::Error> {
     let pad = f64::from(theme.padding);
     if item.is_separator() {
-        _set_rgb(cr, theme.disabled_text);
+        set_rgb(cr, theme.disabled_text);
         cr.rectangle(x + pad, (y + h / 2.0).floor(), (w - 2.0 * pad).max(0.0), SEPARATOR_LINE);
         return cr.fill();
     }
     if active {
-        _fill_gradient(cr, theme.active_bg, x, y, w, h)?;
+        fill_gradient(cr, theme.active_bg, x, y, w, h)?;
     }
     let colour = match (item.enabled, active) {
         (false, _) => theme.disabled_text,
         (true, true) => theme.active_text,
         (true, false) => theme.item_text,
     };
-    _set_rgb(cr, colour);
+    set_rgb(cr, colour);
     let mut label_width = w - 2.0 * pad;
     if !item.submenu.is_empty() {
         layout.set_width(-1);
@@ -175,30 +162,6 @@ fn _paint_item(
     cr.move_to(x + pad, y + (h - f64::from(th)) / 2.0);
     pangocairo::functions::show_layout(cr, layout);
     Ok(())
-}
-
-/// Fills `(x, y, w, h)` with the vertical gradient `colours.0` (top) to
-/// `colours.1` (bottom).
-fn _fill_gradient(cr: &cairo::Context, colours: (Rgb, Rgb), x: f64, y: f64, w: f64, h: f64) -> Result<(), cairo::Error> {
-    let gradient = cairo::LinearGradient::new(0.0, y, 0.0, y + h);
-    for (offset, rgb) in [(0.0, colours.0), (1.0, colours.1)] {
-        let (r, g, b) = _components(rgb);
-        gradient.add_color_stop_rgb(offset, r, g, b);
-    }
-    cr.set_source(&gradient)?;
-    cr.rectangle(x, y, w, h);
-    cr.fill()
-}
-
-/// Sets the source of `cr` to the solid colour `rgb`.
-fn _set_rgb(cr: &cairo::Context, rgb: Rgb) {
-    let (r, g, b) = _components(rgb);
-    cr.set_source_rgb(r, g, b);
-}
-
-/// The components of `rgb` in `0.0..=1.0`.
-fn _components(rgb: Rgb) -> (f64, f64, f64) {
-    (f64::from(rgb.0) / 255.0, f64::from(rgb.1) / 255.0, f64::from(rgb.2) / 255.0)
 }
 
 #[cfg(test)]
@@ -224,15 +187,7 @@ mod tests {
 
     /// The bytes of `buffer`.
     fn bytes(buffer: &mut MemoryRenderBuffer) -> Vec<u8> {
-        let mut out = Vec::new();
-        buffer
-            .render()
-            .draw(|mem| -> Result<_, ()> {
-                out = mem.to_vec();
-                Ok(Vec::new())
-            })
-            .unwrap();
-        out
+        crate::draw::buffer_bytes(buffer)
     }
 
     /// The ARGB8888 pixel `(x, y)` of `data`, an image `width` pixels wide,
@@ -285,26 +240,28 @@ mod tests {
         let theme = MenuTheme::default();
         menu.images(&theme, 1).expect("drawn");
         menu.images(&theme, 1).expect("cached");
-        assert_eq!(menu.images.builds, 1, "same state: cached");
+        assert_eq!(menu.images.builds(), 1, "same state: cached");
         menu.nav.key(MenuKey::Down);
         let images = menu.images(&theme, 1).expect("drawn again");
-        assert_eq!(menu.images.builds, 2, "the selection moved");
+        assert_eq!(menu.images.builds(), 2, "the selection moved");
         assert!(images.submenu.is_none());
         menu.nav.key(MenuKey::Down);
         menu.nav.key(MenuKey::Right);
         let images = menu.images(&theme, 1).expect("drawn with the submenu");
-        assert_eq!(menu.images.builds, 3, "the submenu opened");
+        assert_eq!(menu.images.builds(), 3, "the submenu opened");
         assert!(images.submenu.is_some());
         menu.images(&theme, 2).expect("drawn at scale 2");
-        assert_eq!(menu.images.builds, 4, "the scale changed");
+        assert_eq!(menu.images.builds(), 4, "the scale changed");
     }
 
     #[test]
-    fn a_bad_scale_is_an_error_and_nothing_is_cached() {
+    fn a_render_error_is_not_drawn_again_for_the_same_state() {
         let mut menu = menu();
         assert!(render_menu(&menu, &MenuTheme::default(), 0).is_err());
         assert!(menu.images(&MenuTheme::default(), 0).is_err());
-        assert_eq!(menu.images.builds, 0);
-        assert!(menu.images.entry.is_none());
+        assert!(menu.images(&MenuTheme::default(), 0).is_err(), "the cached failure");
+        assert_eq!(menu.images.builds(), 1, "a failed draw is tried once per state");
+        menu.images(&MenuTheme::default(), 1).expect("a new state is drawn");
+        assert_eq!(menu.images.builds(), 2);
     }
 }

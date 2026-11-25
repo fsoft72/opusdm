@@ -183,6 +183,12 @@ impl HotkeyTable {
         self.hub.iter().find(|(c, _)| combo_matches(c, mods, keysym_name)).map(|(_, f)| Binding::Hub(f.clone()))
     }
 
+    /// The key of the built-in `action` as configured; `None` when its
+    /// binding is disabled.
+    pub fn combo_of(&self, action: Action) -> Option<KeyCombo> {
+        self.others.iter().find(|(_, a, _)| *a == action).map(|(_, _, combo)| combo.clone())
+    }
+
     /// Name of the built-in binding that has the key `combo`, if any.
     fn _builtin_name(&self, combo: &KeyCombo) -> Option<&'static str> {
         let same = |builtin: &Option<KeyCombo>| builtin.as_ref().is_some_and(|b| b.identity() == combo.identity());

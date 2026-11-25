@@ -851,8 +851,8 @@ fn the_window_menu_moves_the_window_to_another_desktop() {
     let mut c = TestClient::new(&comp);
     let w = c.map_toplevel((400, 300));
     assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
-    // Maximize, Minimize, Move to desktop; Right opens it on "1" (this desktop, disabled); Down: "2".
-    for key in ["Alt+space", "Down", "Down", "Right", "Down", "Return"] {
+    // Maximize, Minimize, Move to desktop; Right opens it on "2" ("1", this desktop, is disabled).
+    for key in ["Alt+space", "Down", "Down", "Right", "Return"] {
         ipc_request(&comp, "debug/key", json!({"key": key}));
     }
     assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["desktop"], 1);
@@ -1467,4 +1467,157 @@ fn debug_key_press_and_release_hold_a_modifier_across_calls() {
     assert_eq!(current_desktop(&comp), 3, "the held Ctrl made Ctrl+Alt+Left");
     let bad = ipc_request(&comp, "debug/key", json!({"key": "a", "state": "hold"}));
     assert!(bad["error"].is_string(), "{bad}");
+}
+
+/// Holds (`"press"`) or lets go of (`"release"`) the key `name` through `debug/key`.
+fn key_state(comp: &Compositor, name: &str, state: &str) {
+    let reply = ipc_request(comp, "debug/key", json!({"key": name, "state": state}));
+    assert_eq!(reply["ok"], true, "debug/key {name} {state} refused: {reply}");
+}
+
+/// Maps the windows A, B and C (ids 1, 2, 3, titled), C on top and active.
+fn three_windows(c: &mut TestClient) -> Vec<common::TestWindow> {
+    let windows: Vec<common::TestWindow> = ["A", "B", "C"].iter().map(|t| map_titled(c, t)).collect();
+    assert!(c.wait_keyboard_focus(&windows[2], Duration::from_secs(2)));
+    windows
+}
+
+#[test]
+fn alt_tab_released_activates_the_previous_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = three_windows(&mut c);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    assert_eq!(active_ids(&comp), vec![3], "nothing changes while Alt is held");
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2], "B, the window focused before C");
+    assert_eq!(c.keyboard_focus(), Some(w[1].wl_surface().clone()));
+    assert_eq!(stack_ids(&comp).last(), Some(&2), "B is raised");
+    assert_eq!(c.keys_received(), 0, "Tab never reaches a client");
+}
+
+#[test]
+fn alt_tab_twice_goes_two_windows_back_in_focus_order() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = three_windows(&mut c);
+    key(&comp, "Alt+Tab"); // C -> B, focus order now B, C, A
+    assert_eq!(active_ids(&comp), vec![2]);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    key(&comp, "Tab");
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![1], "A");
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn alt_shift_tab_goes_the_other_way() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = three_windows(&mut c);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Shift+Tab");
+    assert_eq!(active_ids(&comp), vec![3], "Shift released, Alt still held: still open");
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![1], "backwards from C: the least recent window, A");
+    // Opened with Alt+Tab, Shift+Tab steps back: C -> B -> C.
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    key(&comp, "Shift+Tab");
+    key(&comp, "Shift+Tab");
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2], "focus order A, C, B: Tab C, Shift+Tab A, Shift+Tab B");
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn escape_closes_the_switcher_with_no_change() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = three_windows(&mut c);
+    let stack = stack_ids(&comp);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    key(&comp, "Escape");
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![3]);
+    assert_eq!(stack_ids(&comp), stack);
+    assert_eq!(c.keyboard_focus(), Some(w[2].wl_surface().clone()));
+    assert_eq!(c.keys_received(), 0, "Escape is swallowed too, Alt+Escape (lower) does not run");
+    key(&comp, "a");
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 2, "the switcher is closed, keys reach the client again");
+}
+
+#[test]
+fn the_selected_window_destroyed_while_the_switcher_is_open_selects_the_next_one() {
+    let mut comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let mut w = three_windows(&mut c);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab"); // B selected
+    drop(w.remove(1));
+    c.roundtrip();
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert!(comp.is_running());
+    assert_eq!(active_ids(&comp), vec![1], "A, the entry after B");
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn other_keys_are_swallowed_while_the_switcher_is_open() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let _w = three_windows(&mut c);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    key(&comp, "a");
+    key(&comp, "F4"); // Alt+F4 (close) does not run either
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert!(comp.wait_log("window switcher: key a swallowed", Duration::from_secs(2)));
+    assert_eq!(active_ids(&comp), vec![2]);
+    assert_eq!(stack_ids(&comp).len(), 3, "no window was closed");
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn ctrl_alt_tab_switches_to_a_window_of_another_desktop() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = map_titled(&mut c, "A");
+    key(&comp, "Ctrl+Alt+Right");
+    let b = map_titled(&mut c, "B");
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    key(&comp, "Alt+Tab");
+    assert_eq!(active_ids(&comp), vec![2], "A is on another desktop: Alt+Tab has only B");
+    assert_eq!(current_desktop(&comp), 1);
+    key(&comp, "Ctrl+Alt+Tab");
+    assert_eq!(current_desktop(&comp), 0, "the desktop of A is shown");
+    assert_eq!(active_ids(&comp), vec![1]);
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn an_exclusive_layer_mapped_over_the_switcher_closes_it() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let _w = three_windows(&mut c);
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    assert!(comp.wait_log("window switcher closed: an exclusive keyboard layer holds the keyboard", Duration::from_secs(2)));
+    key_state(&comp, "Alt_L", "release");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![3], "no window was activated");
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
 }

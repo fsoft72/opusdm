@@ -51,6 +51,7 @@ use crate::menu::theme::MenuTheme;
 use crate::menu::WindowMenu;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
 use crate::protocols::workspace::Workspaces;
+use crate::switcher::WindowSwitcher;
 use crate::wm::desktops::Desktops;
 use crate::wm::settings::WmSettings;
 use crate::wm::{WindowId, HIDDEN_FRAME_INTERVAL};
@@ -226,6 +227,14 @@ pub struct State {
     /// restored by the next toggle when still alive; `None` when the mode
     /// is off. Only ids: a closed window is simply skipped.
     pub show_desktop: Option<Vec<WindowId>>,
+    /// Focus history for the window switcher: the ids of the windows that
+    /// were the active window, most recent first (`remember_active`);
+    /// pruned of dead windows by `refresh`.
+    pub mru: Vec<WindowId>,
+    /// The open window switcher (Alt+Tab), owned here only; it names its
+    /// windows by id and drops the entries of the windows that go (see
+    /// `switcher`).
+    pub switcher: Option<WindowSwitcher>,
 }
 
 impl State {
@@ -289,6 +298,8 @@ impl State {
             menu_theme: MenuTheme::load(),
             swallowed_buttons: HashSet::new(),
             show_desktop: None,
+            mru: Vec::new(),
+            switcher: None,
         }
     }
 
@@ -398,8 +409,9 @@ impl State {
             Some(w) => {
                 self.space.raise_element(w, true);
                 self.active_window = _window_id_of(&self.windows, w);
-                if self.active_window.is_none() {
-                    opusdm_ipc::err_log!(LOG_TAG, "focus: the focused window is not in the table, no active window");
+                match self.active_window {
+                    Some(id) => self.remember_active(id),
+                    None => opusdm_ipc::err_log!(LOG_TAG, "focus: the focused window is not in the table, no active window"),
                 }
             }
             None => {
@@ -485,13 +497,16 @@ impl State {
 
     /// Drops dead windows and layer surfaces from the space, the layer map and
     /// the tables (a safety net for `toplevel_destroyed` / `layer_destroyed`),
-    /// closes a window menu whose window is gone or hidden and moves a dead
-    /// keyboard focus to the top window.
+    /// closes a window menu whose window is gone or hidden, drops the
+    /// switcher entries of the windows that are gone (closing it under an
+    /// exclusive keyboard layer) and moves a dead keyboard focus to the top
+    /// window.
     pub fn refresh(&mut self) {
         self.space.refresh();
         self.windows.retain(|surface, _| surface.alive());
         let windows = &self.windows;
         self.stack.retain(|id| windows.values().any(|i| i.id == *id));
+        self.mru.retain(|id| windows.values().any(|i| i.id == *id));
         if let Some(id) = self.active_window.filter(|id| !windows.values().any(|i| i.id == *id)) {
             opusdm_ipc::debug_log!(LOG_TAG, "active window {} is dead, cleared", id.0);
             self.active_window = None;
@@ -511,6 +526,7 @@ impl State {
             self.exclusive_layer = None;
         }
         self.check_window_menu();
+        self.check_switcher();
         let Some(keyboard) = self.seat.get_keyboard() else {
             if !self.no_keyboard_logged {
                 opusdm_ipc::err_log!(LOG_TAG, "refresh: the seat has no keyboard, focus is not checked");

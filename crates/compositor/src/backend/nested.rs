@@ -22,7 +22,7 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
-                memory::MemoryRenderBufferRenderElement,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 AsRenderElements, Kind,
             },
@@ -52,8 +52,11 @@ use smithay::{
 
 use super::{announce, housekeeping, new_output, setup_common, stop_on_quit, LoopData, REFRESH_MHZ};
 use crate::args::Args;
+use crate::draw::DRAW_SCALE;
+use crate::geometry::Rect;
 use crate::menu::{render::MenuImages, MenuLayout};
 use crate::state::{State, LOG_TAG};
+use crate::switcher::render::{switcher_rect, switcher_size};
 
 /// Name of the nested output.
 const OUTPUT_NAME: &str = "NESTED-1";
@@ -75,12 +78,9 @@ const ERROR_LOG_PERIOD: Duration = Duration::from_secs(1);
 /// advertised to the clients stays `Normal`.
 const RENDER_TRANSFORM: Transform = Transform::Flipped180;
 
-/// Buffer pixels per logical pixel of the window menu images: the nested
-/// output is drawn at scale 1 (`OutputDamageTracker::new(.., 1.0, ..)`).
-const MENU_SCALE: i32 = 1;
-
 smithay::backend::renderer::element::render_elements! {
-    /// What the nested backend draws: client surfaces and the window menu.
+    /// What the nested backend draws: client surfaces, the window menu and
+    /// the window switcher.
     NestedElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Menu=MemoryRenderBufferRenderElement<GlesRenderer>,
@@ -159,7 +159,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         .insert_source(winit_loop, move |event, _, data| _on_winit_event(event, data, &mut pressed_buttons))
         .map_err(|e| format!("winit source: {e}"))?;
     let mut frame = Frame {
-        damage: OutputDamageTracker::new(size, 1.0, RENDER_TRANSFORM),
+        damage: OutputDamageTracker::new(size, f64::from(DRAW_SCALE), RENDER_TRANSFORM),
         damage_size: size,
         backend,
         host_cursor: None,
@@ -380,11 +380,12 @@ fn _render(frame: &mut Frame, state: &mut State) {
     }
     let size = frame.backend.window_size();
     if size != frame.damage_size {
-        frame.damage = OutputDamageTracker::new(size, 1.0, RENDER_TRANSFORM);
+        frame.damage = OutputDamageTracker::new(size, f64::from(DRAW_SCALE), RENDER_TRANSFORM);
         frame.damage_size = size;
     }
     let Frame { backend, damage, errors, presented, .. } = frame;
     let menu = _menu_images(state, errors);
+    let switcher = _switcher_image(state, errors);
     // The buffer age can only be asked while the window surface is current.
     // Smithay's `bind` does not make it current (only rendering does), and
     // an import or a frame with no damage may leave the context on no
@@ -401,7 +402,7 @@ fn _render(frame: &mut Frame, state: &mut State) {
             Ok(bound) => bound,
             Err(e) => return errors.log("frame bind", &e.to_string()),
         };
-        let elements = _elements(renderer, state, menu.as_ref(), errors);
+        let elements = _elements(renderer, state, menu.as_ref(), switcher.as_ref(), errors);
         match damage.render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR) {
             Ok(result) => result.damage.cloned(),
             Err(e) => return errors.log("frame render_output", &format!("{e:?}")),
@@ -447,7 +448,7 @@ fn _apply_host_cursor(window: &WinitWindow, cursor: HostCursor) {
 fn _menu_images(state: &mut State, errors: &mut ErrorThrottle) -> Option<(MenuImages, MenuLayout)> {
     let theme = state.menu_theme;
     let menu = state.menu.as_mut()?;
-    match menu.images(&theme, MENU_SCALE) {
+    match menu.images(&theme, DRAW_SCALE) {
         Ok(images) => Some((images, menu.layout())),
         Err(e) => {
             errors.log("window menu render", &e);
@@ -456,20 +457,44 @@ fn _menu_images(state: &mut State, errors: &mut ErrorThrottle) -> Option<(MenuIm
     }
 }
 
+/// The image of the open window switcher and its box on the output,
+/// drawn again only when its rows, selection or scale changed
+/// (`WindowSwitcher::images`); `None` when it is closed or drawing failed
+/// (logged, rate limited: the switcher stays usable by keyboard, it is only
+/// not shown).
+fn _switcher_image(state: &mut State, errors: &mut ErrorThrottle) -> Option<(MemoryRenderBuffer, Rect)> {
+    let theme = state.menu_theme;
+    let rows = state.switcher_rows()?;
+    let rect = switcher_rect(switcher_size(rows.len(), &theme), state.output_area());
+    let switcher = state.switcher.as_mut()?;
+    match switcher.image(rows, &theme, DRAW_SCALE) {
+        Ok(image) => Some((image, rect)),
+        Err(e) => {
+            errors.log("window switcher render", &e);
+            None
+        }
+    }
+}
+
 /// Render elements, front to back (the reverse of the drawing order
 /// BACKGROUND, BOTTOM, windows bottom to top, TOP, the topmost window when
-/// it is fullscreen, OVERLAY, the window menu, its submenu, cursor). Popups
-/// come with their parent, just above it; the order matches the hit test of
-/// `input.rs` (the open menu takes every click before it).
+/// it is fullscreen, OVERLAY, the window menu, its submenu, the window
+/// switcher, cursor). Popups come with their parent, just above it; the
+/// order matches the hit test of `input.rs` (the open menu takes every
+/// click before it; the switcher takes no click).
 fn _elements(
     renderer: &mut GlesRenderer,
     state: &State,
     menu: Option<&(MenuImages, MenuLayout)>,
+    switcher: Option<&(MemoryRenderBuffer, Rect)>,
     errors: &mut ErrorThrottle,
 ) -> Vec<NestedElement> {
     let output_loc = state.output_area();
     let origin = Point::<i32, Logical>::from((output_loc.x, output_loc.y));
     let mut elements = _cursor_elements(renderer, state, origin);
+    if let Some((image, rect)) = switcher {
+        elements.extend(_image_element(renderer, image, *rect, origin, "window switcher texture", errors));
+    }
     if let Some((images, layout)) = menu {
         elements.extend(_menu_elements(renderer, images, layout, origin, errors));
     }
@@ -505,15 +530,33 @@ fn _menu_elements(
     errors: &mut ErrorThrottle,
 ) -> Vec<NestedElement> {
     let submenu = images.submenu.as_ref().zip(layout.submenu.as_ref().map(|(_, rect, _)| *rect));
-    let mut out = Vec::new();
-    for (buffer, rect) in submenu.into_iter().chain([(&images.menu, layout.menu)]) {
-        let loc = (Point::<i32, Logical>::from((rect.x, rect.y)) - origin).to_f64().to_physical(1.0);
-        match MemoryRenderBufferRenderElement::from_buffer(renderer, loc, buffer, None, None, None, Kind::Unspecified) {
-            Ok(element) => out.push(NestedElement::Menu(element)),
-            Err(e) => errors.log("window menu texture", &e.to_string()),
+    submenu
+        .into_iter()
+        .chain([(&images.menu, layout.menu)])
+        .filter_map(|(buffer, rect)| _image_element(renderer, buffer, rect, origin, "window menu texture", errors))
+        .collect()
+}
+
+/// The element of the compositor drawn image `buffer` at the box `rect`
+/// (output coordinates, placed at `DRAW_SCALE`, the scale it was drawn
+/// at); `None` when the texture upload fails (logged as `kind`, rate
+/// limited: the image is left out of the frame).
+fn _image_element(
+    renderer: &mut GlesRenderer,
+    buffer: &MemoryRenderBuffer,
+    rect: Rect,
+    origin: Point<i32, Logical>,
+    kind: &'static str,
+    errors: &mut ErrorThrottle,
+) -> Option<NestedElement> {
+    let loc = (Point::<i32, Logical>::from((rect.x, rect.y)) - origin).to_f64().to_physical(f64::from(DRAW_SCALE));
+    match MemoryRenderBufferRenderElement::from_buffer(renderer, loc, buffer, None, None, None, Kind::Unspecified) {
+        Ok(element) => Some(NestedElement::Menu(element)),
+        Err(e) => {
+            errors.log(kind, &e.to_string());
+            None
         }
     }
-    out
 }
 
 /// The topmost window when it is fullscreen (drawn above TOP, as hit).

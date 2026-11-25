@@ -19,9 +19,10 @@ use smithay::{
 
 use crate::geometry::Rect;
 use crate::grabs::edges_for_point;
-use crate::hotkeys::{combo_text, mods_of, Binding};
+use crate::hotkeys::{combo_matches, combo_text, mods_of, Binding};
 use crate::menu::model::MenuKey;
-use opusdm_ipc::bindings::Mods;
+use crate::switcher::SwitcherKey;
+use opusdm_ipc::bindings::{KeyCombo, Mods};
 use crate::state::{State, LOG_TAG};
 
 /// Linux input code of the left mouse button (`BTN_LEFT`).
@@ -40,6 +41,8 @@ pub enum KeyRoute {
     Binding(Binding, String),
     /// A key for the open window menu.
     Menu(MenuKey),
+    /// A key for the open window switcher.
+    Switcher(SwitcherKey),
 }
 
 /// The window menu key of `sym`: arrows (keypad too), Return / KP_Enter
@@ -206,9 +209,12 @@ impl State {
     /// swallowed too, even when the modifiers were released first. While
     /// the window menu is open every non-modifier press goes to the menu
     /// (only the quit binding still matches) and is recorded the same way.
-    /// Every other key, modifiers included, goes to the surface with the
-    /// keyboard focus as before. The binding or the menu key runs after the
-    /// keyboard is updated.
+    /// While the window switcher is open every non-modifier press goes to
+    /// the switcher the same way (`_switcher_filter`), and after every key
+    /// event the switcher checks its hold modifiers (released: the selected
+    /// window is activated). Every other key, modifiers included, goes to
+    /// the surface with the keyboard focus as before. The binding, the menu
+    /// key or the switcher key runs after the keyboard is updated.
     pub fn keyboard_key(&mut self, keycode: Keycode, pressed: bool, time_msec: u32) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             opusdm_ipc::err_log!(LOG_TAG, "keyboard key: the seat has no keyboard");
@@ -222,14 +228,19 @@ impl State {
         match routed {
             Some(KeyRoute::Binding(binding, combo)) => self.run_binding(binding, &combo),
             Some(KeyRoute::Menu(key)) => self.window_menu_key(key),
+            Some(KeyRoute::Switcher(key)) => self.switcher_key(key),
             Some(KeyRoute::Swallowed) | None => {}
+        }
+        if self.switcher.is_some() {
+            self.check_switcher_mods();
         }
     }
 
     /// The hotkey filter of `keyboard_key`: `Intercept(Binding)` for a press
     /// that matches a binding (its keycode recorded), `Intercept(Swallowed)`
     /// for a key event of a recorded keycode (its release forgets it), the
-    /// window menu's filter while the menu is open, `Forward` otherwise.
+    /// window switcher's filter while the switcher is open, the window
+    /// menu's filter while the menu is open, `Forward` otherwise.
     fn _hotkey_filter(
         &mut self,
         keycode: Keycode,
@@ -242,7 +253,9 @@ impl State {
             opusdm_ipc::debug_log!(LOG_TAG, "hotkey release of key {} swallowed", keycode.raw());
             return FilterResult::Intercept(KeyRoute::Swallowed);
         }
-        // A menu whose window went since the last refresh must not eat this key.
+        // A switcher or a menu whose window went since the last refresh must not eat this key.
+        self.check_switcher();
+        if self.switcher.is_some() { return self._switcher_filter(keycode, mods, handle); }
         self.check_window_menu();
         if self.menu.is_some() { return self._menu_filter(keycode, mods, handle); }
         if self.swallowed_keys.contains(&keycode) {
@@ -289,6 +302,31 @@ impl State {
                 FilterResult::Intercept(KeyRoute::Swallowed)
             }
         }
+    }
+
+    /// The filter of a key press while the window switcher is open: a
+    /// modifier goes to the focused client as usual (so its release does
+    /// too, and the switcher sees the hold modifiers go); the key of the
+    /// opening combo moves the selection (with Shift toggled, the other
+    /// way); Escape cancels; any other key, bindings included, is swallowed
+    /// with a `debug_log!`. Every press taken has its keycode recorded so
+    /// its release is swallowed.
+    fn _switcher_filter(&mut self, keycode: Keycode, mods: &ModifiersState, handle: &KeysymHandle<'_>) -> FilterResult<KeyRoute> {
+        if handle.raw_syms().iter().any(|sym| sym.is_modifier_key()) { return FilterResult::Forward; }
+        self.swallowed_keys.insert(keycode);
+        let Some(switcher) = &self.switcher else {
+            opusdm_ipc::err_log!(LOG_TAG, "window switcher filter: the switcher closed, key swallowed");
+            return FilterResult::Intercept(KeyRoute::Swallowed);
+        };
+        // Only the key name is compared: the modifiers decide the direction.
+        let probe = KeyCombo { mods: Mods::default(), name: switcher.key.clone() };
+        let raw = handle.raw_latin_sym_or_raw_current_sym();
+        let modified = handle.modified_sym();
+        let is_key = raw.into_iter().chain([modified]).any(|sym| combo_matches(&probe, Mods::default(), &xkb::keysym_get_name(sym)));
+        if is_key { return FilterResult::Intercept(KeyRoute::Switcher(SwitcherKey::Step(switcher.steps_forward(mods.shift)))); }
+        if modified == Keysym::Escape { return FilterResult::Intercept(KeyRoute::Switcher(SwitcherKey::Cancel)); }
+        opusdm_ipc::debug_log!(LOG_TAG, "window switcher: key {} swallowed", xkb::keysym_get_name(modified));
+        FilterResult::Intercept(KeyRoute::Swallowed)
     }
 
     /// The binding of the key `handle` with `mods` and the keysym name that

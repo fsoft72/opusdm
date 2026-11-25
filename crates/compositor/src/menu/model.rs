@@ -131,8 +131,8 @@ impl MenuNav {
 
     /// Applies `key`; returns the action to run when an item was chosen
     /// (the menu is closed then).
-    /// Opening a submenu selects its first item, even a disabled one (the
-    /// window's own desktop), so Down from there is the next item.
+    /// Opening a submenu selects its first enabled item (not the window's
+    /// own desktop).
     pub fn key(&mut self, key: MenuKey) -> Option<MenuAction> {
         if self.closed { return None; }
         match key {
@@ -168,8 +168,8 @@ impl MenuNav {
 
     /// A pointer click on the item `top` (and on the item `sub` of its
     /// submenu): returns the action to run when one was chosen. A click on
-    /// a submenu parent opens its submenu; a click on a separator, a
-    /// disabled item or an index out of range does nothing.
+    /// a submenu parent opens its submenu on its first enabled item; a click
+    /// on a separator, a disabled item or an index out of range does nothing.
     pub fn click(&mut self, top: usize, sub: Option<usize>) -> Option<MenuAction> {
         if self.closed { return None; }
         let item = self.items.get(top)?;
@@ -182,7 +182,8 @@ impl MenuNav {
         }
         self.top = top;
         if self._has_submenu(top) {
-            self.sub = Some(0);
+            self.sub = None;
+            self._open_submenu();
             return None;
         }
         self.sub = None;
@@ -210,11 +211,12 @@ impl MenuNav {
         self.items.get(self.top).map(|i| i.submenu.as_slice()).unwrap_or(&[])
     }
 
-    /// Opens the submenu of the selected item, its first item selected;
-    /// nothing when the item has no submenu or it is already open.
+    /// Opens the submenu of the selected item, its first selectable item
+    /// selected (the first item when none is); nothing when the item has no
+    /// submenu or it is already open.
     fn _open_submenu(&mut self) {
         if self.sub.is_some() || !self._has_submenu(self.top) { return; }
-        self.sub = Some(0);
+        self.sub = Some(self._submenu().iter().position(MenuItem::is_selectable).unwrap_or(0));
     }
 
     /// Chooses the selected item (of the submenu when it is open): its
@@ -320,15 +322,27 @@ mod tests {
     }
 
     #[test]
-    fn right_down_enter_moves_to_the_next_desktop() {
+    fn right_enter_moves_to_the_first_other_desktop() {
         let mut nav = nav();
         nav.key(MenuKey::Down);
         nav.key(MenuKey::Down);
         assert_eq!(nav.key(MenuKey::Right), None);
-        assert_eq!(nav.selected(), (2, Some(0)));
-        nav.key(MenuKey::Down);
+        assert_eq!(nav.selected(), (2, Some(1)));
         assert_eq!(nav.key(MenuKey::Enter), Some(MenuAction::MoveToDesktop(1)));
         assert!(nav.closed());
+    }
+
+    #[test]
+    fn right_on_move_to_desktop_selects_the_first_enabled_desktop() {
+        let mut nav = nav();
+        nav.key(MenuKey::Down);
+        nav.key(MenuKey::Down);
+        nav.key(MenuKey::Right);
+        let (top, sub) = nav.selected();
+        let sub = sub.expect("submenu open");
+        assert_eq!(nav.items()[top].submenu[sub].label, "2", "desktop 0 is the window's own, disabled");
+        nav.key(MenuKey::Down);
+        assert_eq!(nav.selected(), (2, Some(2)));
     }
 
     #[test]
@@ -346,12 +360,15 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_a_disabled_desktop_does_nothing() {
+    fn up_and_down_in_the_submenu_never_stop_on_the_disabled_desktop() {
         let mut nav = nav();
         nav.key(MenuKey::Down);
         nav.key(MenuKey::Down);
         nav.key(MenuKey::Right);
-        assert_eq!(nav.key(MenuKey::Enter), None);
+        for _ in 0..8 {
+            nav.key(MenuKey::Up);
+            assert_ne!(nav.selected(), (2, Some(0)), "Up stopped on the window's own desktop");
+        }
         assert!(!nav.closed());
     }
 
@@ -395,7 +412,7 @@ mod tests {
         assert_eq!(nav.click(3, None), None, "a click on the separator does nothing");
         assert!(!nav.closed());
         assert_eq!(nav.click(2, None), None);
-        assert_eq!(nav.selected(), (2, Some(0)));
+        assert_eq!(nav.selected(), (2, Some(1)), "the submenu opens on its first enabled desktop");
         assert_eq!(nav.click(2, Some(0)), None, "the window's own desktop is disabled");
         assert_eq!(nav.click(2, Some(3)), Some(MenuAction::MoveToDesktop(3)));
         assert!(nav.closed());
