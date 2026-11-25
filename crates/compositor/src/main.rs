@@ -14,6 +14,7 @@ mod ipc;
 mod menu;
 mod protocols;
 mod shell;
+mod snap;
 mod state;
 mod switcher;
 mod wm;

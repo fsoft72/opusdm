@@ -1668,3 +1668,134 @@ fn a_hub_hotkey_is_swallowed_and_logged_while_the_switcher_is_open() {
     assert_eq!(active_ids(&comp), vec![2]);
     assert_eq!(c.keys_received(), 0);
 }
+
+/// Moves the pointer to `(x, y)` through `debug/pointer`.
+fn pointer_to(comp: &Compositor, x: i64, y: i64) {
+    let reply = ipc_request(comp, "debug/pointer", json!({"x": x, "y": y}));
+    assert_eq!(reply["ok"], true, "debug/pointer refused: {reply}");
+}
+
+/// Presses or releases the pointer button `button` through `debug/button`.
+fn button(comp: &Compositor, button: &str, state: &str) {
+    let reply = ipc_request(comp, "debug/button", json!({"button": button, "state": state}));
+    assert_eq!(reply["ok"], true, "debug/button {button} {state} refused: {reply}");
+}
+
+/// Alt + left drag from `from` to `to`: pointer at `from`, Alt held, left
+/// button pressed, the pointer moved half way then to `to`, released.
+fn alt_drag(comp: &Compositor, from: (i64, i64), to: (i64, i64)) {
+    pointer_to(comp, from.0, from.1);
+    key_state(comp, "Alt_L", "press");
+    button(comp, "left", "press");
+    pointer_to(comp, (from.0 + to.0) / 2, (from.1 + to.1) / 2);
+    pointer_to(comp, to.0, to.1);
+    button(comp, "left", "release");
+    key_state(comp, "Alt_L", "release");
+}
+
+/// `(x, y, width, height)` and `maximized` of window `id` from `windows/list`.
+fn window_rect(comp: &Compositor, id: u64) -> ((i64, i64, i64, i64), bool) {
+    let reply = ipc_request(comp, "windows/list", json!({}));
+    let windows = reply["windows"].as_array().expect("windows array");
+    let w = windows.iter().find(|w| w["id"] == id).expect("window in the list");
+    let g = &w["geometry"];
+    let rect = (g["x"].as_i64().expect("x"), g["y"].as_i64().expect("y"), g["width"].as_i64().expect("w"), g["height"].as_i64().expect("h"));
+    (rect, w["maximized"].as_bool().expect("maximized"))
+}
+
+#[test]
+fn an_alt_drag_to_the_left_edge_snaps_the_window_to_the_left_half() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    alt_drag(&comp, (200, 150), (2, 500));
+    assert!(c.wait_configure(&w, (960, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 960, 1080), false));
+    assert_eq!(c.keys_received(), 0, "Alt never reaches the client");
+}
+
+#[test]
+fn an_alt_drag_to_the_right_edge_snaps_the_window_to_the_right_half() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    alt_drag(&comp, (200, 150), (1917, 500));
+    assert!(c.wait_configure(&w, (960, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((960, 0, 960, 1080), false));
+}
+
+#[test]
+fn an_alt_drag_to_the_top_edge_maximizes_the_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    alt_drag(&comp, (200, 150), (900, 3));
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 1920, 1080), true));
+}
+
+#[test]
+fn a_snapped_window_dragged_away_gets_its_size_back() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    alt_drag(&comp, (200, 150), (2, 500));
+    assert!(c.wait_configure(&w, (960, 1080), Duration::from_secs(2)));
+    c.roundtrip();
+    alt_drag(&comp, (480, 540), (900, 600));
+    assert!(c.wait_configure(&w, (400, 300), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    let ((_, _, width, height), maximized) = window_rect(&comp, 1);
+    assert_eq!((width, height, maximized), (400, 300, false));
+}
+
+#[test]
+fn a_maximized_window_dragged_to_the_top_keeps_its_first_size_to_restore() {
+    // Dragging a snapped (left half) window straight to the top edge: the
+    // size restored after unmaximize is the size before the first snap.
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    alt_drag(&comp, (200, 150), (2, 500));
+    assert!(c.wait_configure(&w, (960, 1080), Duration::from_secs(2)));
+    c.roundtrip();
+    alt_drag(&comp, (480, 540), (900, 3));
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    w.xdg().unset_maximized();
+    assert!(c.wait_configure(&w, (400, 300), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+}
+
+#[test]
+fn with_snapping_off_an_alt_drag_to_the_edge_only_moves_the_window() {
+    let comp = Compositor::start_with_config(&[("desktop.json", r#"{"snap_enabled": false}"#)]);
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    alt_drag(&comp, (200, 150), (2, 500));
+    c.roundtrip();
+    assert_eq!(c.last_configure(&w), (400, 300), "no snap configure");
+    let ((x, y, width, height), maximized) = window_rect(&comp, 1);
+    assert_eq!((x, y, width, height, maximized), (-198, 350, 400, 300, false), "moved with the pointer, not snapped");
+}
+
+#[test]
+fn debug_pointer_and_debug_button_reach_the_client_through_the_real_pointer_path() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    pointer_to(&comp, 100, 50);
+    button(&comp, "left", "press");
+    button(&comp, "left", "release");
+    c.roundtrip();
+    let presses = c.pointer_presses();
+    assert_eq!(presses.len(), 1, "{presses:?}");
+    assert_eq!(presses[0].0, w.wl_surface().clone());
+    assert_eq!((presses[0].1.round() as i64, presses[0].2.round() as i64), (100, 50));
+    for bad in [json!({"button": "left"}), json!({"button": "side", "state": "press"}), json!({"button": "left", "state": "down"})] {
+        assert!(ipc_request(&comp, "debug/button", bad.clone())["error"].is_string(), "{bad}");
+    }
+    assert!(ipc_request(&comp, "debug/pointer", json!({"x": "a", "y": 1}))["error"].is_string());
+}

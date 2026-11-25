@@ -51,6 +51,7 @@ use crate::menu::theme::MenuTheme;
 use crate::menu::WindowMenu;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
 use crate::protocols::workspace::Workspaces;
+use crate::snap::SnapZone;
 use crate::switcher::WindowSwitcher;
 use crate::wm::desktops::Desktops;
 use crate::wm::settings::WmSettings;
@@ -75,8 +76,11 @@ pub struct WindowInfo {
     pub desktop: u32,
     /// True while the window is minimized (hidden until it is activated).
     pub minimized: bool,
-    /// Geometry before maximize / fullscreen, to restore it.
+    /// Geometry before maximize / fullscreen / an edge snap, to restore it.
     pub restore: Option<Rect>,
+    /// The half of the usable area the window was snapped to (`snap.rs`);
+    /// `None` when it is not snapped (a `Top` snap is a maximize).
+    pub snapped: Option<SnapZone>,
     /// True while the window is maximized (it fills `usable_area()`).
     pub maximized: bool,
     /// True while the window is fullscreen (it fills the whole output and is
@@ -105,6 +109,7 @@ impl WindowInfo {
             desktop,
             minimized: false,
             restore: None,
+            snapped: None,
             maximized: false,
             fullscreen: false,
             last_position: None,
@@ -235,6 +240,10 @@ pub struct State {
     /// windows by id and drops the entries of the windows that go (see
     /// `switcher`).
     pub switcher: Option<WindowSwitcher>,
+    /// The snap zone rectangle under the pointer while a move grab drags a
+    /// window (`MoveGrab`); the nested backend draws it as a translucent
+    /// preview. `None` when no grab is in a zone.
+    pub snap_preview: Option<Rect>,
 }
 
 impl State {
@@ -300,6 +309,7 @@ impl State {
             show_desktop: None,
             mru: Vec::new(),
             switcher: None,
+            snap_preview: None,
         }
     }
 

@@ -31,6 +31,9 @@ pub const BTN_LEFT: u32 = 0x110;
 /// Linux input code of the right mouse button (`BTN_RIGHT`).
 pub const BTN_RIGHT: u32 = 0x111;
 
+/// Linux input code of the middle mouse button (`BTN_MIDDLE`).
+pub const BTN_MIDDLE: u32 = 0x112;
+
 /// Where the key filter sends an intercepted key press.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyRoute {

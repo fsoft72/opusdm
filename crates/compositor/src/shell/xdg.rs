@@ -23,6 +23,7 @@ use smithay::{
 };
 
 use crate::geometry::{cascade_position, Edges, Rect};
+use crate::snap::SnapZone;
 use crate::state::{client_pid, has_buffer, State, WindowInfo, LOG_TAG};
 
 impl XdgShellHandler for State {
@@ -345,7 +346,8 @@ impl State {
     }
 
     /// Puts the toplevel `surface` in the `fill` state: stores the geometry
-    /// to restore (the first time it leaves the normal state), configures the
+    /// to restore (the first time it leaves the normal state; a snapped
+    /// window keeps the geometry it had before the snap), configures the
     /// area size and moves a mapped window to the area origin. An unmapped
     /// window is placed at the origin when it maps. Always answers with a
     /// configure once the initial one was sent, as the protocol asks.
@@ -367,7 +369,7 @@ impl State {
             }
             return;
         };
-        if !info.maximized && !info.fullscreen {
+        if !info.maximized && !info.fullscreen && info.snapped.is_none() {
             info.restore = normal_geo;
         }
         match fill {
@@ -394,7 +396,8 @@ impl State {
     /// Takes the toplevel `surface` out of the `fill` state: when the other
     /// fill state is still on, it fills that area; otherwise it gets back the
     /// stored geometry (size sent explicitly, so the client goes back to it)
-    /// or, with none stored, a configure that leaves the size to the client.
+    /// or, with none stored, a configure that leaves the size to the client;
+    /// a window maximized from a snap is then no longer snapped.
     fn unfill_window(&mut self, surface: &ToplevelSurface, fill: Fill) {
         let wl = surface.wl_surface();
         let Some(info) = self.windows.get_mut(wl) else {
@@ -411,7 +414,10 @@ impl State {
         let other = if info.maximized { Some(Fill::Maximized) } else if info.fullscreen { Some(Fill::Fullscreen) } else { None };
         let target = match other {
             Some(other) => Some(self.fill_area(other)),
-            None => info.restore.take(),
+            None => {
+                info.snapped = None;
+                info.restore.take()
+            }
         };
         surface.with_pending_state(|state| {
             state.states.unset(match fill {
@@ -433,7 +439,8 @@ impl State {
     /// Called after something may have changed the usable area (a layer
     /// surface mapped, changed or went away), with the area `before` it:
     /// when it changed, every maximized (not fullscreen) window is
-    /// configured to the new area and moved to its origin.
+    /// configured to the new area and moved to its origin, and every snapped
+    /// (not maximized or fullscreen) window to its new half.
     pub fn usable_area_changed(&mut self, before: Rect) {
         let area = self.usable_area();
         if area == before { return; }
@@ -442,6 +449,16 @@ impl State {
             self.windows.iter().filter(|(_, i)| i.maximized && !i.fullscreen).map(|(s, _)| s.clone()).collect();
         for wl in maximized {
             self.refill_window(&wl, area, "maximized");
+        }
+        let snapped: Vec<(WlSurface, SnapZone)> = self
+            .windows
+            .iter()
+            .filter(|(_, i)| !i.maximized && !i.fullscreen)
+            .filter_map(|(s, i)| i.snapped.map(|zone| (s.clone(), zone)))
+            .collect();
+        for (wl, zone) in snapped {
+            let target = self.snap_target(zone);
+            self.refill_window(&wl, target, "snapped");
         }
     }
 
@@ -460,7 +477,7 @@ impl State {
 
     /// Configures the toplevel `wl` (mapped or not) to the size of `area`
     /// and moves it to the area origin when it is mapped; `what` names the
-    /// fill state in the logs.
+    /// fill (or snap) state in the logs.
     fn refill_window(&mut self, wl: &WlSurface, area: Rect, what: &str) {
         let window = self.mapped_window(wl);
         // The table has every toplevel: mapped, unmapped or hidden.

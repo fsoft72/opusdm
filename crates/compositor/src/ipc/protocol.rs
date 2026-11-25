@@ -152,6 +152,8 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
         }
         "debug/key" => _debug_key(state, _str(data, "key")?, _key_state(data)?).map(|_| json!({})),
         "debug/click" => _debug_click(state, _u32(data, "x")?, _u32(data, "y")?).map(|_| json!({})),
+        "debug/pointer" => _debug_pointer(state, _f64(data, "x")?, _f64(data, "y")?).map(|_| json!({})),
+        "debug/button" => _debug_button(state, _button(data)?, _pressed(data)?).map(|_| json!({})),
         "debug/foreign-toplevels" => _debug_foreign_toplevels(state),
         "debug/workspaces" => _debug_workspaces(state),
         other => Err(format!("unknown method '{other}'")),
@@ -167,6 +169,33 @@ fn _window_id(data: &Value) -> Result<WindowId, String> {
 fn _u32(data: &Value, key: &str) -> Result<u32, String> {
     let value = data.get(key).ok_or_else(|| format!("missing '{key}'"))?;
     value.as_u64().and_then(|v| u32::try_from(v).ok()).ok_or_else(|| format!("'{key}' must be an unsigned integer, got {value}"))
+}
+
+/// The finite number `key` of `data`.
+fn _f64(data: &Value, key: &str) -> Result<f64, String> {
+    let value = data.get(key).ok_or_else(|| format!("missing '{key}'"))?;
+    value.as_f64().filter(|v| v.is_finite()).ok_or_else(|| format!("'{key}' must be a number, got {value}"))
+}
+
+/// The Linux input code of the `"button"` of a `debug/button` request:
+/// `"left"`, `"right"` or `"middle"`.
+fn _button(data: &Value) -> Result<u32, String> {
+    match _str(data, "button")? {
+        "left" => Ok(crate::input::BTN_LEFT),
+        "right" => Ok(crate::input::BTN_RIGHT),
+        "middle" => Ok(crate::input::BTN_MIDDLE),
+        other => Err(format!("'button' must be left, right or middle, got '{other}'")),
+    }
+}
+
+/// The `"state"` of a `debug/button` request: true for `"press"`, false
+/// for `"release"`.
+fn _pressed(data: &Value) -> Result<bool, String> {
+    match _str(data, "state")? {
+        "press" => Ok(true),
+        "release" => Ok(false),
+        other => Err(format!("'state' must be press or release, got '{other}'")),
+    }
 }
 
 /// The boolean `key` of `data`.
@@ -259,6 +288,31 @@ fn _debug_click(state: &mut State, x: u32, y: u32) -> Result<(), String> {
     state.pointer_button(crate::input::BTN_LEFT, true, time);
     state.pointer_button(crate::input::BTN_LEFT, false, time);
     opusdm_ipc::debug_log!(LOG_TAG, "debug/click at {x},{y} sent");
+    Ok(())
+}
+
+/// `debug/pointer`: moves the pointer to `(x, y)` (space coordinates)
+/// through `State::pointer_motion`, as the nested backend does with a host
+/// motion: the focus, the move / resize grabs and the client events as for
+/// real input. Refused unless the compositor runs with test input
+/// (`--headless`).
+fn _debug_pointer(state: &mut State, x: f64, y: f64) -> Result<(), String> {
+    if !state.test_input { return Err("debug/pointer is only available with --headless".to_string()); }
+    let time = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+    state.pointer_motion((x, y).into(), time);
+    opusdm_ipc::debug_log!(LOG_TAG, "debug/pointer to {x},{y} sent");
+    Ok(())
+}
+
+/// `debug/button`: presses or releases the pointer button `button` (a
+/// Linux input code) through `State::pointer_button`: click focus, Alt +
+/// drag grabs, the window menu and the client events as for real input.
+/// Refused unless the compositor runs with test input (`--headless`).
+fn _debug_button(state: &mut State, button: u32, pressed: bool) -> Result<(), String> {
+    if !state.test_input { return Err("debug/button is only available with --headless".to_string()); }
+    let time = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+    state.pointer_button(button, pressed, time);
+    opusdm_ipc::debug_log!(LOG_TAG, "debug/button {button:#x} pressed {pressed} sent");
     Ok(())
 }
 
@@ -444,6 +498,19 @@ mod tests {
         s.test_input = true;
         assert_eq!(call(&mut s, "debug/click", json!({"x": 10, "y": 10})), json!({"ok": true}));
         assert!(call(&mut s, "debug/click", json!({"x": -1, "y": 10}))["error"].is_string());
+    }
+
+    #[test]
+    fn debug_pointer_and_debug_button_need_test_input() {
+        let (_d, mut s) = state(4);
+        s.seat.add_pointer();
+        assert!(call(&mut s, "debug/pointer", json!({"x": 10, "y": 10}))["error"].is_string());
+        assert!(call(&mut s, "debug/button", json!({"button": "left", "state": "press"}))["error"].is_string());
+        s.test_input = true;
+        assert_eq!(call(&mut s, "debug/pointer", json!({"x": 10.5, "y": -3})), json!({"ok": true}));
+        assert_eq!(call(&mut s, "debug/button", json!({"button": "middle", "state": "press"})), json!({"ok": true}));
+        assert_eq!(call(&mut s, "debug/button", json!({"button": "middle", "state": "release"})), json!({"ok": true}));
+        assert!(call(&mut s, "debug/button", json!({"button": "left", "state": "tap"}))["error"].is_string());
     }
 
     #[test]

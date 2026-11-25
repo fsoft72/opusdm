@@ -23,6 +23,7 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                solid::{SolidColorBuffer, SolidColorRenderElement},
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 AsRenderElements, Kind,
             },
@@ -73,6 +74,10 @@ const CLEAR_COLOR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
 /// The same kind of frame error is logged at most once in this period.
 const ERROR_LOG_PERIOD: Duration = Duration::from_secs(1);
 
+/// Colour of the snap zone preview while a window is dragged: a light blue
+/// at 30% (premultiplied RGBA, as `SolidColorRenderElement` draws it).
+const SNAP_PREVIEW_COLOR: [f32; 4] = [0.33 * 0.3, 0.6 * 0.3, 0.95 * 0.3, 0.3];
+
 /// The GL framebuffer of the window is upside down: the damage tracker
 /// renders with this transform (as smallvil and anvil do), the output
 /// advertised to the clients stays `Normal`.
@@ -80,10 +85,11 @@ const RENDER_TRANSFORM: Transform = Transform::Flipped180;
 
 smithay::backend::renderer::element::render_elements! {
     /// What the nested backend draws: client surfaces, the window menu and
-    /// the window switcher.
+    /// the window switcher, the snap zone preview.
     NestedElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Menu=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Solid=SolidColorRenderElement,
 }
 
 /// Limits how often one kind of error is logged.
@@ -136,6 +142,9 @@ struct Frame {
     /// True once a frame was submitted: before the first swap the window
     /// surface has no buffer age (Mesa answers EGL BAD_SURFACE).
     presented: bool,
+    /// The snap zone preview (one buffer for the whole run, so its element
+    /// keeps its id and the damage tracker follows its size).
+    snap_preview: SolidColorBuffer,
 }
 
 /// Runs the compositor in a window of the host session until the window is
@@ -165,6 +174,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         host_cursor: None,
         errors: ErrorThrottle::default(),
         presented: false,
+        snap_preview: SolidColorBuffer::new((0, 0), SNAP_PREVIEW_COLOR),
     };
     let signal = event_loop.get_signal();
     event_loop
@@ -383,7 +393,11 @@ fn _render(frame: &mut Frame, state: &mut State) {
         frame.damage = OutputDamageTracker::new(size, f64::from(DRAW_SCALE), RENDER_TRANSFORM);
         frame.damage_size = size;
     }
-    let Frame { backend, damage, errors, presented, .. } = frame;
+    let Frame { backend, damage, errors, presented, snap_preview, .. } = frame;
+    let preview = state.snap_preview.map(|rect| {
+        snap_preview.update((rect.w, rect.h), SNAP_PREVIEW_COLOR);
+        (&*snap_preview, rect)
+    });
     let menu = _menu_images(state, errors);
     let switcher = _switcher_image(state, errors);
     // The buffer age can only be asked while the window surface is current.
@@ -402,7 +416,7 @@ fn _render(frame: &mut Frame, state: &mut State) {
             Ok(bound) => bound,
             Err(e) => return errors.log("frame bind", &e.to_string()),
         };
-        let elements = _elements(renderer, state, menu.as_ref(), switcher.as_ref(), errors);
+        let elements = _elements(renderer, state, menu.as_ref(), switcher.as_ref(), preview, errors);
         match damage.render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR) {
             Ok(result) => result.damage.cloned(),
             Err(e) => return errors.log("frame render_output", &format!("{e:?}")),
@@ -478,15 +492,17 @@ fn _switcher_image(state: &mut State, errors: &mut ErrorThrottle) -> Option<(Mem
 
 /// Render elements, front to back (the reverse of the drawing order
 /// BACKGROUND, BOTTOM, windows bottom to top, TOP, the topmost window when
-/// it is fullscreen, OVERLAY, the window menu, its submenu, the window
-/// switcher, cursor). Popups come with their parent, just above it; the
-/// order matches the hit test of `input.rs` (the open menu takes every
-/// click before it; the switcher takes no click).
+/// it is fullscreen, OVERLAY, the snap zone preview, the window menu, its
+/// submenu, the window switcher, cursor). Popups come with their parent,
+/// just above it; the order matches the hit test of `input.rs` (the open
+/// menu takes every click before it; the switcher and the preview take no
+/// click).
 fn _elements(
     renderer: &mut GlesRenderer,
     state: &State,
     menu: Option<&(MenuImages, MenuLayout)>,
     switcher: Option<&(MemoryRenderBuffer, Rect)>,
+    preview: Option<(&SolidColorBuffer, Rect)>,
     errors: &mut ErrorThrottle,
 ) -> Vec<NestedElement> {
     let output_loc = state.output_area();
@@ -497,6 +513,11 @@ fn _elements(
     }
     if let Some((images, layout)) = menu {
         elements.extend(_menu_elements(renderer, images, layout, origin, errors));
+    }
+    if let Some((buffer, rect)) = preview {
+        let loc = (Point::<i32, Logical>::from((rect.x, rect.y)) - origin).to_physical(1);
+        let element = SolidColorRenderElement::from_buffer(buffer, loc, Scale::from(1.0), 1.0, Kind::Unspecified);
+        elements.push(NestedElement::Solid(element));
     }
     let map = layer_map_for_output(&state.output);
     let layers = |layer: Layer| -> Vec<LayerSurface> { map.layers_on(layer).rev().cloned().collect() };

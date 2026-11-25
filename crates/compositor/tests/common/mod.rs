@@ -122,18 +122,32 @@ impl Compositor {
     /// The rest of its stdout (a `--startup` child may print there) is
     /// drained for the whole run, so a writer never gets EPIPE / SIGPIPE.
     pub fn start() -> Compositor {
-        Compositor::_start(false)
+        Compositor::_start(false, &[])
     }
 
     /// Starts the compositor as `start` does, with `OPUSDM_DEBUG` set, so its
     /// `debug_log!` lines reach `wait_log` / `log_count`.
     pub fn start_debug() -> Compositor {
-        Compositor::_start(true)
+        Compositor::_start(true, &[])
     }
 
-    /// Starts the compositor (see `start`); `debug` sets `OPUSDM_DEBUG`.
-    fn _start(debug: bool) -> Compositor {
+    /// Starts the compositor as `start` does, after writing each `(name,
+    /// text)` of `files` into its OpusDM config directory (read at startup).
+    pub fn start_with_config(files: &[(&str, &str)]) -> Compositor {
+        Compositor::_start(false, files)
+    }
+
+    /// Starts the compositor (see `start`); `debug` sets `OPUSDM_DEBUG`,
+    /// `files` are written into the config directory first.
+    fn _start(debug: bool, files: &[(&str, &str)]) -> Compositor {
         let runtime = tempfile::tempdir().expect("temp XDG_RUNTIME_DIR");
+        if !files.is_empty() {
+            let dir = runtime.path().join("config").join("opusdm");
+            std::fs::create_dir_all(&dir).expect("create the test config dir");
+            for (name, text) in files {
+                std::fs::write(dir.join(name), text).expect("write the test config file");
+            }
+        }
         let mut command = Command::new(env!("CARGO_BIN_EXE_opusdm-compositor"));
         if debug {
             command.env("OPUSDM_DEBUG", "1");
