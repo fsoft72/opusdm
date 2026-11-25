@@ -14,8 +14,41 @@
 #   ./run-wayland.sh --debug      # debug log in /ramdisk/opusdm.log
 #   ./run-wayland.sh --headless   # no window: for scripted tests (grim, wlrctl)
 #   ./run-wayland.sh --wayfire    # Wayfire with wayfire.ini instead of labwc
+#
+# Always on a private D-Bus session bus (the script runs itself again under
+# dbus-run-session): no need to start it under one.
 
 set -euo pipefail
+
+# A private D-Bus session bus, always: on the live bus the sandbox hub would
+# take org.freedesktop.FileManager1, the notification and SNI names from the
+# live hub. The script runs itself again under dbus-run-session;
+# OPUSDM_SANDBOX_BUS (the marker) names a file this outer run created.
+# dbus-run-session dies on TERM without passing it on, so the outer run
+# stays: it passes TERM / INT to the whole process group of dbus-run-session
+# (labwc / Wayfire run in the foreground of the inner run, in that group, as
+# a Ctrl+C in the terminal reached them before) and exits with the status
+# dbus-run-session hands back.
+if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
+    command -v dbus-run-session >/dev/null 2>&1 || { echo "dbus-run-session not found (package: dbus-daemon or dbus-bin): the sandbox needs a private D-Bus session"; exit 1; }
+    BUS_MARKER="$(mktemp /tmp/opusdm-wayland-bus-XXXXXX)"
+    trap 'rm -f "$BUS_MARKER"' EXIT
+    # Own process group: a Ctrl+C reaches only this run, which passes it on.
+    set -m
+    OPUSDM_SANDBOX_BUS="$BUS_MARKER" dbus-run-session -- bash "$0" "$@" &
+    BUS_PID=$!
+    set +m
+    trap 'kill -TERM -- "-$BUS_PID" 2>/dev/null || true' TERM INT
+    STATUS=0
+    wait "$BUS_PID" || STATUS=$?
+    # A trapped signal ends `wait` early: wait again until the inner run is gone.
+    while kill -0 "$BUS_PID" 2>/dev/null; do
+        STATUS=0
+        wait "$BUS_PID" || STATUS=$?
+    done
+    exit "$STATUS"
+fi
+unset OPUSDM_SANDBOX_BUS
 
 DEBUG=0
 GRID_DEBUG=0

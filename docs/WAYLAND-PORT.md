@@ -200,7 +200,8 @@ window itself (the desktop file of the app id instead), no Force kill
 screen window on another workspace also pauses the background.
 
 Testing: `./run-wayland.sh` (nested labwc), `./run-wayland.sh --headless`
-for scripted runs; `crates/wayland/examples/watch.rs` prints the windows and
+for scripted runs (always on a private D-Bus session bus: the script runs
+itself again under `dbus-run-session`, needed on `PATH`); `crates/wayland/examples/watch.rs` prints the windows and
 workspaces, `examples/screenshot.rs` saves every output.
 
 ## Native compositor (opusdm-compositor)
