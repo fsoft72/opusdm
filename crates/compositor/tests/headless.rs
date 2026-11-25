@@ -1246,3 +1246,58 @@ fn a_switch_to_the_current_desktop_changes_nothing() {
     assert_eq!(c.keyboard_focus(), Some(panel.wl_surface().clone()), "the panel keeps the keyboard");
     assert_eq!(active_ids(&comp), vec![2]);
 }
+
+#[test]
+fn a_window_mapped_while_another_window_has_a_menu_open_gets_the_keyboard() {
+    let comp = Compositor::start();
+    let mut ca = TestClient::new(&comp);
+    let a = ca.map_toplevel((400, 300));
+    let menu = ca.map_popup_with_grab(&a, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert_eq!(ca.keyboard_focus(), Some(menu.wl_surface().clone()), "the menu of A has the keyboard");
+    let mut cb = TestClient::new(&comp);
+    let b = cb.map_toplevel((400, 300));
+    assert!(cb.wait_keyboard_focus(&b, Duration::from_secs(2)), "the new window B must get the keyboard");
+    ca.roundtrip();
+    assert!(ca.popup_done(&menu), "the menu of A is dismissed");
+    ipc_request(&comp, "debug/key", json!({"key": "a"}));
+    assert!(cb.wait_keys(2, Duration::from_secs(2)), "the keys go to B");
+    ca.roundtrip();
+    assert_eq!(ca.keys_received(), 0, "A and its menu get no key");
+    assert_eq!(active_ids(&comp), vec![2], "B is the active window");
+}
+
+#[test]
+fn an_activation_while_another_window_has_a_menu_open_moves_the_keyboard() {
+    let comp = Compositor::start();
+    let mut cb = TestClient::new(&comp);
+    let b = cb.map_toplevel((400, 300));
+    let mut ca = TestClient::new(&comp);
+    let a = ca.map_toplevel((400, 300));
+    let menu = ca.map_popup_with_grab(&a, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert_eq!(ca.keyboard_focus(), Some(menu.wl_surface().clone()), "the menu of A has the keyboard");
+    let token = cb.activation_token();
+    cb.request_activation(&b, &token);
+    assert!(cb.wait_keyboard_focus(&b, Duration::from_secs(2)), "the activated window B must get the keyboard");
+    ca.roundtrip();
+    assert!(ca.popup_done(&menu), "the menu of A is dismissed");
+    ipc_request(&comp, "debug/key", json!({"key": "a"}));
+    assert!(cb.wait_keys(2, Duration::from_secs(2)), "the keys go to B");
+    ca.roundtrip();
+    assert_eq!(ca.keys_received(), 0, "A and its menu get no key");
+    assert_eq!(active_ids(&comp), vec![1], "B is the active window");
+}
+
+#[test]
+fn activating_the_window_that_owns_the_open_menu_keeps_the_menu() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = map_titled(&mut c, "A");
+    let b = map_titled(&mut c, "B");
+    let menu = c.map_popup_with_grab(&b, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    let reply = ipc_request(&comp, "window/activate", json!({"id": 2}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    c.roundtrip();
+    assert!(!c.popup_done(&menu), "the window's own menu stays open");
+    assert_eq!(c.keyboard_focus(), Some(menu.wl_surface().clone()), "the menu keeps the keyboard");
+    assert_eq!(active_ids(&comp), vec![2]);
+}

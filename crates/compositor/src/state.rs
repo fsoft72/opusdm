@@ -10,7 +10,11 @@ use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::utils::with_renderer_surface_state},
     delegate_data_device, delegate_output, delegate_seat,
     desktop::{layer_map_for_output, LayerSurface, PopupManager, Space, Window},
-    input::{keyboard::Keycode, pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
+    input::{
+        keyboard::{KeyboardHandle, Keycode},
+        pointer::CursorImageStatus,
+        Seat, SeatHandler, SeatState,
+    },
     output::Output,
     reexports::wayland_server::{
         backend::{ClientData, ClientId, DisconnectReason},
@@ -364,10 +368,26 @@ impl State {
             }
         }
         let target = window.as_ref().and_then(|w| w.toplevel()).map(|t| t.wl_surface().clone());
+        if let Some(target) = &target {
+            self._end_foreign_popup_grab(&keyboard, target);
+        }
         keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
         for toplevel in self.space.elements().filter_map(|w| w.toplevel()) {
             toplevel.send_pending_configure();
         }
+    }
+
+    /// Ends the popup grab (an open menu) rooted at a surface other than
+    /// `target` before `target` takes the keyboard: Smithay's popup
+    /// keyboard grab ignores focus changes while it is active and gives the
+    /// keyboard back to its root when it ends, so the keyboard would stay
+    /// with the menu while `target` is shown active. The popups of the root
+    /// get `popup_done`. A grab rooted at `target` itself (its own menu) is
+    /// left alone; no grab: nothing.
+    fn _end_foreign_popup_grab(&mut self, keyboard: &KeyboardHandle<State>, target: &WlSurface) {
+        let Some(root) = keyboard.grab_start_data().and_then(|d| d.focus).filter(|r| r != target) else { return };
+        opusdm_ipc::debug_log!(LOG_TAG, "focus: {} ends the popup grab rooted at {}", target.id(), root.id());
+        self.dismiss_popups_and_grabs(&root);
     }
 
     /// Gives the focus to the exclusive keyboard layer when one is mapped,
