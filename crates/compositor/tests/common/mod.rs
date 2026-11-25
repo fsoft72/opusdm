@@ -1120,6 +1120,22 @@ impl TestClient {
         Some(buffer.canvas(&mut self.app.pool).expect("capture canvas").to_vec())
     }
 
+    /// Destroys the `wl_buffer` handed to `copy` while the frame stays alive.
+    pub fn capture_drop_buffer(&mut self, capture: &mut TestCapture) {
+        // Dropping the slot buffer (never attached) destroys its `wl_buffer`.
+        drop(capture.buffer.take());
+        self.conn.flush().expect("flush");
+    }
+
+    /// Waits for `ready` or `failed` on the frame of `capture` and returns
+    /// its events; panics when neither comes within `CAPTURE_TIMEOUT`.
+    pub fn capture_wait(&mut self, capture: &TestCapture) -> CaptureEvents {
+        let id = capture.frame.id();
+        let done = self.dispatch_until(CAPTURE_TIMEOUT, |app| app.captures.get(&id).is_some_and(|e| e.ready || e.failed));
+        assert!(done, "capture: neither ready nor failed within {CAPTURE_TIMEOUT:?}");
+        self.capture_events(capture)
+    }
+
     /// A whole capture as `opusdm-shot` does it: frame, then `copy` with the
     /// announced Xrgb8888 buffer, then destroy. The events and the pixels
     /// (on `ready`).

@@ -2343,3 +2343,92 @@ fn a_screencopy_client_that_dies_after_copy_leaves_the_compositor_running() {
     assert_eq!(pixels.expect("pixels")[..4], HEADLESS_CAPTURE_PIXEL);
     assert!(comp.is_running());
 }
+
+/// IPC `debug/screencopy`: sets the hold of the capture servicing when
+/// `hold` is given; returns the copies waiting in the queue.
+fn screencopy_pending(comp: &Compositor, hold: Option<bool>) -> u64 {
+    let data = match hold {
+        Some(h) => json!({"hold": h}),
+        None => json!({}),
+    };
+    let reply = ipc_request(comp, "debug/screencopy", data);
+    assert_eq!(reply["ok"], true, "debug/screencopy refused: {reply}");
+    reply["pending"].as_u64().expect("pending")
+}
+
+/// Polls `screencopy_pending` until it is `want` or 2 s pass; the last value.
+fn wait_screencopy_pending(comp: &Compositor, want: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let pending = screencopy_pending(comp, None);
+        if pending == want || Instant::now() >= deadline { return pending; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_screencopy_whose_buffer_is_destroyed_before_the_copy_fails_with_a_log_line() {
+    use wayland_client::protocol::wl_shm::Format;
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    assert_eq!(screencopy_pending(&comp, Some(true)), 0);
+    let mut capture = c.capture_frame(None);
+    c.capture_send_copy(&mut capture, (1920, 1080), Format::Xrgb8888, false);
+    c.roundtrip();
+    assert_eq!(screencopy_pending(&comp, None), 1, "the copy waits in the held queue");
+    c.capture_drop_buffer(&mut capture);
+    c.roundtrip();
+    assert_eq!(screencopy_pending(&comp, Some(false)), 1);
+    let events = c.capture_wait(&capture);
+    assert!(events.failed && !events.ready, "{events:?}");
+    assert!(comp.wait_log("its buffer was destroyed before the copy", Duration::from_secs(2)), "err_log line expected");
+    assert_eq!(wait_screencopy_pending(&comp, 0), 0);
+    c.capture_destroy(capture);
+    let (events, pixels) = c.capture(None);
+    assert!(events.ready, "{events:?}");
+    assert_eq!(pixels.expect("pixels")[..4], HEADLESS_CAPTURE_PIXEL);
+}
+
+#[test]
+fn a_screencopy_client_that_never_copies_and_disconnects_leaves_the_next_capture_working() {
+    let mut comp = Compositor::start();
+    let mut a = TestClient::new(&comp);
+    let capture = a.capture_frame(None);
+    assert!(a.capture_events(&capture).buffer_done);
+    drop(capture);
+    drop(a); // never called copy, socket closed with the frame alive
+    assert_eq!(wait_screencopy_pending(&comp, 0), 0);
+    let mut b = TestClient::new(&comp);
+    let (events, pixels) = b.capture(None);
+    assert!(events.ready, "{events:?}");
+    assert_eq!(pixels.expect("pixels")[..4], HEADLESS_CAPTURE_PIXEL);
+    assert!(comp.is_running());
+}
+
+#[test]
+fn a_pending_screencopy_leaves_the_queue_when_its_frame_or_client_goes() {
+    use wayland_client::protocol::wl_shm::Format;
+    let comp = Compositor::start();
+    assert_eq!(screencopy_pending(&comp, Some(true)), 0);
+    // Client death with a copy queued.
+    let mut a = TestClient::new(&comp);
+    let mut capture = a.capture_frame(None);
+    a.capture_send_copy(&mut capture, (1920, 1080), Format::Xrgb8888, false);
+    a.roundtrip();
+    assert_eq!(screencopy_pending(&comp, None), 1);
+    drop(capture);
+    drop(a);
+    assert_eq!(wait_screencopy_pending(&comp, 0), 0, "a dead client's frame leaves the queue");
+    // Frame destroyed with a copy queued, client alive.
+    let mut b = TestClient::new(&comp);
+    let mut capture = b.capture_frame(None);
+    b.capture_send_copy(&mut capture, (1920, 1080), Format::Xrgb8888, false);
+    b.roundtrip();
+    assert_eq!(screencopy_pending(&comp, None), 1);
+    b.capture_destroy(capture);
+    b.roundtrip();
+    assert_eq!(screencopy_pending(&comp, None), 0, "a destroyed frame leaves the queue");
+    assert_eq!(screencopy_pending(&comp, Some(false)), 0);
+    let (events, _) = b.capture(None);
+    assert!(events.ready, "{events:?}");
+}

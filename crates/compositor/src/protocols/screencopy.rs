@@ -28,8 +28,13 @@
 //! or `failed`), when the client destroys it (`destroyed`), or, when the
 //! client died, through `destroyed` too (wayland-server calls it for every
 //! object of a dead client); `take_pending_captures` also drops any entry
-//! whose frame or buffer is no longer alive, with a debug line. A dropped
-//! entry is not a failure: nobody is left to tell.
+//! whose frame is no longer alive, with a debug line: not a failure, nobody
+//! is left to tell. A live frame whose `wl_buffer` was destroyed before the
+//! copy gets `failed` with an error line (its client is still waiting).
+//!
+//! Tests only (`--headless`): the IPC `debug/screencopy` reports the queue
+//! length and can hold the servicing (`Screencopy::hold`), so a test can see
+//! an entry wait in the queue and leave it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -94,31 +99,43 @@ pub struct Screencopy {
     _global: GlobalId,
     /// Copies queued by `copy`, in order, serviced by the backend.
     pending: Vec<PendingCapture>,
+    /// While true, `take_pending_captures` hands nothing to the backend
+    /// (set only by the IPC `debug/screencopy`, headless tests).
+    hold: bool,
 }
 
 impl Screencopy {
     /// Creates the `zwlr_screencopy_manager_v1` global on `display`.
     pub fn new(display: &DisplayHandle) -> Screencopy {
         let global = display.create_global::<State, ZwlrScreencopyManagerV1, ()>(SCREENCOPY_VERSION, ());
-        Screencopy { _global: global, pending: Vec::new() }
+        Screencopy { _global: global, pending: Vec::new(), hold: false }
+    }
+
+    /// Number of copies waiting for the backend (IPC `debug/screencopy`).
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// True while the servicing is held (IPC `debug/screencopy`).
+    pub fn held(&self) -> bool {
+        self.hold
+    }
+
+    /// Holds (`true`) or releases the servicing of the queue (IPC
+    /// `debug/screencopy`, headless tests only).
+    pub fn set_hold(&mut self, hold: bool) {
+        self.hold = hold;
     }
 }
 
 impl State {
-    /// Takes the copies waiting for the backend; the ones whose frame or
-    /// buffer is gone are dropped with a debug line (not a failure).
+    /// Takes the copies waiting for the backend (none while held). A copy
+    /// whose frame is gone is dropped with a debug line (not a failure); a
+    /// live frame whose buffer is gone gets `failed` with an error line.
     pub fn take_pending_captures(&mut self) -> Vec<PendingCapture> {
+        if self.screencopy.hold { return Vec::new(); }
         let pending = std::mem::take(&mut self.screencopy.pending);
-        pending
-            .into_iter()
-            .filter(|c| {
-                let alive = c.frame.is_alive() && c.buffer.is_alive();
-                if !alive {
-                    opusdm_ipc::debug_log!(LOG_TAG, "screencopy: frame {} or its buffer is gone, dropped", c.frame.id());
-                }
-                alive
-            })
-            .collect()
+        pending.into_iter().filter(_still_wanted).collect()
     }
 
     /// Answers the copy `c` with `pixels` (`Xrgb8888`, top-down, rows of
@@ -126,12 +143,10 @@ impl State {
     /// `flags(0)`, `damage` (the whole buffer, for `copy_with_damage`) and
     /// `ready` with the current monotonic time. An `Err`, or pixels that
     /// cannot be written, send `failed` with an error line. A frame gone in
-    /// the meantime is dropped with a debug line.
+    /// the meantime is dropped with a debug line; a buffer gone in the
+    /// meantime fails the frame (`_still_wanted`).
     pub fn complete_capture(&mut self, c: PendingCapture, pixels: Result<Vec<u8>, String>) {
-        if !c.frame.is_alive() || !c.buffer.is_alive() {
-            opusdm_ipc::debug_log!(LOG_TAG, "screencopy: frame {} gone before its answer, dropped", c.frame.id());
-            return;
-        }
+        if !_still_wanted(&c) { return; }
         let written = pixels.and_then(|p| _write_buffer(&c.buffer, c.region, &p));
         if let Err(e) = written {
             opusdm_ipc::err_log!(LOG_TAG, "screencopy: frame {} failed: {e}", c.frame.id());
@@ -147,6 +162,23 @@ impl State {
         c.frame.ready((secs >> 32) as u32, (secs & 0xffff_ffff) as u32, now.subsec_nanos());
         opusdm_ipc::debug_log!(LOG_TAG, "screencopy: frame {} ready ({}x{})", c.frame.id(), c.region.w, c.region.h);
     }
+}
+
+/// True when the copy `c` can still be answered with pixels. A dead frame
+/// (destroyed, or its client died) is dropped with a debug line; a live
+/// frame whose buffer was destroyed gets `failed` with an error line, since
+/// its client waits for an answer.
+fn _still_wanted(c: &PendingCapture) -> bool {
+    if !c.frame.is_alive() {
+        opusdm_ipc::debug_log!(LOG_TAG, "screencopy: frame {} is gone, dropped", c.frame.id());
+        return false;
+    }
+    if !c.buffer.is_alive() {
+        opusdm_ipc::err_log!(LOG_TAG, "screencopy: frame {} failed: its buffer was destroyed before the copy", c.frame.id());
+        c.frame.failed();
+        return false;
+    }
+    true
 }
 
 /// The part of `region` (output coordinates, `None`: all of it) inside an

@@ -167,6 +167,7 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
         "debug/button" => _debug_button(state, _button(data)?, _pressed(data)?).map(|_| json!({})),
         "debug/foreign-toplevels" => _debug_foreign_toplevels(state),
         "debug/workspaces" => _debug_workspaces(state),
+        "debug/screencopy" => _debug_screencopy(state, data),
         other => Err(format!("unknown method '{other}'")),
     }
 }
@@ -366,6 +367,18 @@ fn _debug_workspaces(state: &State) -> Result<Value, String> {
     if !state.test_input { return Err("debug/workspaces is only available with --headless".to_string()); }
     let (managers, workspaces) = state.workspaces.counts();
     Ok(json!({"managers": managers, "workspaces": workspaces}))
+}
+
+/// `debug/screencopy`: sets the hold of the screen copy servicing when
+/// `data` has a boolean `hold`, then answers how many copies wait in the
+/// queue and the hold (the tests check that a dead frame leaves none).
+/// Refused unless the compositor runs with test input (`--headless`).
+fn _debug_screencopy(state: &mut State, data: &Value) -> Result<Value, String> {
+    if !state.test_input { return Err("debug/screencopy is only available with --headless".to_string()); }
+    if data.get("hold").is_some() {
+        state.screencopy.set_hold(_bool(data, "hold")?);
+    }
+    Ok(json!({"pending": state.screencopy.pending_count(), "hold": state.screencopy.held()}))
 }
 
 /// Lowest and highest xkb keycode searched for a keysym.
