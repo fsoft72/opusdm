@@ -5,8 +5,17 @@
 # run-wayland.sh (nested labwc) and run-x11.sh: a sandbox for testing the
 # native compositor without touching the real session.
 #
-# Stage 1 of the compositor: windows, popups, layer shell, move / resize,
-# maximize, fullscreen. No tasklist, pager, global hotkeys or minimize yet.
+# Stage 2 of the compositor: windows, popups, layer shell, move / resize,
+# maximize, fullscreen, desktops, minimize, tasklist, pager, global hotkeys,
+# window menu. No screen copy (opusdm-shot), XWayland or DRM session yet.
+#
+# The sandbox never writes the live configuration: XDG_CONFIG_HOME is a temp
+# folder whose `opusdm` is a COPY of ~/.config/opusdm (every other entry of
+# ~/.config is a symlink), removed at exit. In the copy every global hotkey
+# gets `Super+` (the host desktop keeps its own combos: Ctrl+Shift+space in
+# the sandbox is Ctrl+Shift+Super+space) and the window menu is
+# Super+Alt+space (OPUSDM_COMPOSITOR_CONFIG, a temp compositor.json): the
+# host Openbox takes Alt+space. The table used is printed at start.
 #
 # Usage:
 #   ./run-native.sh [--debug] [resolution]
@@ -90,6 +99,7 @@ LIVE_SESSION_VARS=(OPUSDM_PICOM_BASE OPUSDM_HUB_SOCK OPUSDM_DOCK_SOCK OPUSDM_APP
 
 # Exit conditions up front
 command -v cargo >/dev/null 2>&1 || { echo "cargo not found (install Rust: https://rustup.rs)"; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "jq not found (package: jq): the sandbox needs it to write its own hotkey table"; exit 1; }
 [[ "$RESOLUTION" =~ ^[0-9]+x[0-9]+$ ]] || { echo "Bad resolution: $RESOLUTION (expected WxH, e.g. 1280x800)"; exit 1; }
 if [ "$DEBUG" = "1" ] && [ ! -d "$(dirname "$DEBUG_LOG")" ]; then
     echo "Debug log folder not found: $(dirname "$DEBUG_LOG") (set NATIVE_LOG to a file in an existing folder)"
@@ -109,13 +119,81 @@ COMPOSITOR_BIN="$BIN_DIR/opusdm-compositor"
 [ -x "$HUB_BIN" ] || { echo "opusdm-hub not built at $HUB_BIN"; exit 1; }
 [ -x "$COMPOSITOR_BIN" ] || { echo "opusdm-compositor not built at $COMPOSITOR_BIN"; exit 1; }
 
+# Where the live configuration is read from (never written).
+LIVE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+# Window menu key of the sandbox: the host Openbox takes Alt+space.
+SANDBOX_WINDOW_MENU="Super+Alt+space"
+
+# Temp folders, all removed by the EXIT trap. The trap is set before the
+# first mktemp and copes with empty names.
+CONFIG_DIR=""
+HUB_RUNTIME_DIR=""
+PRIVATE_CONFIG_HOME=""
+trap 'rm -rf ${CONFIG_DIR:+"$CONFIG_DIR"} ${HUB_RUNTIME_DIR:+"$HUB_RUNTIME_DIR"} ${PRIVATE_CONFIG_HOME:+"$PRIVATE_CONFIG_HOME"}' EXIT
+
+# Fills the folder $1 as a private XDG_CONFIG_HOME: `opusdm` is a copy of
+# the live one (an empty folder when there is none), every other entry of
+# the live config home is a symlink to it.
+_make_private_config() {
+    local dest="$1" entry name
+    if [ -d "$LIVE_CONFIG_HOME/opusdm" ]; then
+        cp -a "$LIVE_CONFIG_HOME/opusdm" "$dest/opusdm"
+    else
+        echo "No $LIVE_CONFIG_HOME/opusdm: the sandbox hub starts from an empty configuration" >&2
+        mkdir "$dest/opusdm"
+    fi
+    for entry in "$LIVE_CONFIG_HOME"/* "$LIVE_CONFIG_HOME"/.[!.]*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        name="$(basename "$entry")"
+        [ "$name" = "opusdm" ] && continue
+        ln -s "$entry" "$dest/$name"
+    done
+}
+
+# Rewrites the hotkeys.json of the copy in $1 into the sandbox table: every
+# global entry without Super gets `Super+` before its key name (the canonical
+# order Ctrl, Alt, Shift, Super, key). Entries already using Super are kept
+# and listed on stderr: the host may take them. Prints the table used.
+_make_sandbox_hotkeys() {
+    local file="$1/hotkeys.json" taken
+    if [ ! -f "$file" ]; then
+        echo "No hotkeys.json in the configuration: the hub writes its defaults (the real combos, not Super+)" >&2
+        return 0
+    fi
+    taken="$(jq -r '.[] | select(.global == true) | select(.key | split("+") | .[:-1] | map(ascii_downcase) | any(. == "super")) | "  \(.key)  \(.function)"' "$file")" \
+        || { echo "hotkeys.json is not valid JSON: $file" >&2; return 1; }
+    jq 'map(if .global == true and ((.key | split("+") | .[:-1] | map(ascii_downcase) | any(. == "super")) | not)
+            then .key |= (split("+") | .[:-1] + ["Super"] + .[-1:] | join("+"))
+            else . end)' "$file" >"$file.new" \
+        || { echo "Cannot write the sandbox hotkey table: $file" >&2; return 1; }
+    mv "$file.new" "$file"
+    if [ -n "$taken" ]; then
+        echo "These global hotkeys already use Super and may be taken by the host:" >&2
+        echo "$taken" >&2
+    fi
+    echo "Sandbox global hotkeys (Super+ added; real combos are not bound here):"
+    jq -r '.[] | select(.global == true) | "  \(.key)  \(.function)"' "$file"
+}
+
 # A config directory of its own holding the autostart script the compositor
-# runs once its socket is up.
+# runs once its socket is up, and the sandbox compositor.json.
 CONFIG_DIR="$(mktemp -d /tmp/opusdm-native-XXXXXX)"
 # The hub gets its own runtime dir so a stale socket never blocks the
 # sandbox; the compositor keeps the real one (its socket lives there).
 HUB_RUNTIME_DIR="$(mktemp -d /tmp/opusdm-native-run-XXXXXX)"
-trap 'rm -rf "$CONFIG_DIR" "$HUB_RUNTIME_DIR"' EXIT
+# The private configuration. The compositor (it only reads: desktop.json for
+# the number of desktops, the theme) and the hub (with every tool it starts)
+# both get it, so nothing in the sandbox writes the live ~/.config/opusdm.
+PRIVATE_CONFIG_HOME="$(mktemp -d /tmp/opusdm-cfg-XXXXXX)"
+_make_private_config "$PRIVATE_CONFIG_HOME"
+_make_sandbox_hotkeys "$PRIVATE_CONFIG_HOME/opusdm"
+export XDG_CONFIG_HOME="$PRIVATE_CONFIG_HOME"
+echo "Configuration: a copy in $PRIVATE_CONFIG_HOME/opusdm (removed at exit)"
+
+printf '{"window_menu": "%s"}\n' "$SANDBOX_WINDOW_MENU" >"$CONFIG_DIR/compositor.json"
+export OPUSDM_COMPOSITOR_CONFIG="$CONFIG_DIR/compositor.json"
+echo "Window menu: $SANDBOX_WINDOW_MENU"
 
 HUB_OUT="/dev/stderr"
 [ "$DEBUG" = "1" ] && HUB_OUT="$DEBUG_LOG" && echo "Debug log: $HUB_OUT"

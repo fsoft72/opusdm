@@ -208,8 +208,8 @@ workspaces, `examples/screenshot.rs` saves every output.
 
 OpusDM's own Wayland compositor, `crates/compositor` (Smithay 0.7), built in
 five stages (design: `docs/superpowers/specs/2026-11-25-opusdm-compositor-design.md`).
-Stage 1 is a nested skeleton: it runs as a window of the current desktop
-(winit backend, GLES rendering) and is not a session yet.
+Stages 1 and 2 are done: it runs nested, as a window of the current
+desktop (winit backend, GLES rendering), and is not a session yet.
 
 What stage 1 covers:
 
@@ -224,13 +224,41 @@ What stage 1 covers:
 - Click to focus, keyboard and pointer to clients; a client that dies
   (even `kill -9`) does not take the compositor down.
 
-Missing until stage 2: tasklist (foreign-toplevel), pager and desktops
-(ext-workspace), global hotkeys (Ctrl+backslash, Ctrl+Shift+space,
-Ctrl+Print, Alt+1 / Alt+2 do nothing in the sandbox) and minimize (ignored
-with a debug trace). The keymap is the xkb default (`us`) unless
-`XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables are set. On a
-software renderer (Xephyr, llvmpipe) `linux-dmabuf` is not offered and one
-log line says so; clients use shared memory.
+What stage 2 adds:
+
+- Window ids, 4 virtual desktops (`desktop.json` `virtual_screens`, 1..16,
+  changed live by the hub through `desktops/set-count`), minimize. A desktop
+  switch focuses the top window of the new desktop; a layer surface (panel,
+  Run window) never takes the active window.
+- A private IPC (`$XDG_RUNTIME_DIR/opusdm-compositor-<WAYLAND_DISPLAY>.sock`,
+  exported to children as `OPUSDM_COMPOSITOR_SOCKET`): window list and
+  actions, desktops, hotkeys, a `watch` event stream. The panel and the hub
+  use it through `opusdm_wayland::native` when they run under the compositor.
+- wlr-foreign-toplevel and ext-workspace: the panel tasklist (minimize,
+  restore, Move to desktop, Force kill) and pager (one box per desktop,
+  click to switch) work as on X11.
+- Global hotkeys: the hub sends its `hotkeys.json` global table
+  (`hotkeys/set`, sent again after a hub restart; a hotkey pressed with no
+  hub logs `hotkey <combo>: no hub connected`). Built in: Quit
+  (`Ctrl+Alt+BackSpace`) and the window menu (`Alt+space`), configurable in
+  `compositor.json` (`window_menu`, `quit`, `quit_enabled`; another file
+  with `OPUSDM_COMPOSITOR_CONFIG`).
+- The window menu, drawn by the compositor with the OpusDMTheme colours:
+  Maximize / Restore, Minimize, Move to desktop 1..N, Close, Kill; keyboard
+  and pointer.
+- An exclusive layer (the Run window) closes open menus; xdg-activation
+  (a notification click brings its application's window forward).
+
+Not there yet (stage 3 and later): wlr-screencopy (opusdm-shot starts on
+Ctrl+Print but cannot capture: "the compositor offers no screen copy"),
+wlr-output-management (the hub logs that `wlr-randr` failed), XWayland,
+the DRM / libinput session and the VT-switch bindings. Known in stage 2:
+the tasklist shows the windows in stacking order, so the buttons move when
+the active window changes (X11 keeps the map order); the first panel click
+after a tasklist menu closed can be lost. The keymap is the xkb default
+(`us`) unless `XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables
+are set. On a software renderer (Xephyr, llvmpipe) `linux-dmabuf` is not
+offered and one log line says so; clients use shared memory.
 
 Running it: `./run-native.sh [--debug] [resolution]` builds the workspace,
 opens the compositor window (default 1920x1080) and starts `opusdm-hub`
@@ -238,7 +266,24 @@ inside it with its own runtime dir, `target/release` first on `PATH` and
 no Startup Apps (`--no-startup-apps`, as `run-x11.sh`). `--debug` sets
 `OPUSDM_DEBUG=1` and writes the hub output to `/ramdisk/opusdm.log`, or
 to `$NATIVE_LOG` when set; `NATIVE_RES` sets the default resolution.
-The hub reads the real `~/.config/opusdm`. The script always runs on a
+The sandbox never writes the live configuration: `XDG_CONFIG_HOME` (for
+the compositor, which only reads it, and the hub with every tool it starts)
+is a temp folder whose `opusdm` is a copy of `~/.config/opusdm` and whose
+other entries are symlinks to `~/.config`, removed at exit. In the copy
+every global hotkey gets `Super+` before its key name, so the host desktop
+keeps its own combos (the table used is printed at start; an entry that
+already has `Super` is kept and listed on stderr as "may be taken by the
+host"; `jq` is needed):
+
+    Alt+Super+1             builtin-desktop-prev
+    Alt+Super+2             builtin-desktop-next
+    Ctrl+Super+backslash    exec:opusdm-terminal
+    Ctrl+Super+Print        exec:opusdm-shot
+    Ctrl+Shift+Super+space  exec:opusdm-run
+
+and the window menu is `Super+Alt+space` (a temp `compositor.json` through
+`OPUSDM_COMPOSITOR_CONFIG`: the host Openbox takes `Alt+space`). The real
+combos are checked on a spare VT in stage 4. The script always runs on a
 private D-Bus session bus (it runs itself again under `dbus-run-session`,
 needed on `PATH`), so the sandbox hub never takes the live session's
 `org.freedesktop.FileManager1`, notification or SNI names; `kill <script pid>`
@@ -249,4 +294,10 @@ in a Xephyr:
     env -u WAYLAND_DISPLAY DISPLAY=:7 ./run-native.sh --debug 1440x900
 
 Without a window manager in Xephyr, give the compositor window the
-keyboard focus (`xdotool windowfocus`) or keys do not arrive.
+keyboard focus (`xdotool windowfocus`) or keys do not arrive. On an Xvfb /
+Xephyr with the default keymap, `xdotool key F2` presses `Alt_L` with the
+F-key (the F-keys have the `CTRL+ALT` key type): the Lister sees Alt+F2 and
+does nothing, and under a window manager `xdotool key F4` is Alt+F4, which
+closes the window. Load a keymap whose F-keys are `ONE_LEVEL` first
+(`xkbcomp` a dump of the server's keymap with `key <FK02> { type=
+"ONE_LEVEL", symbols[Group1]= [ F2 ] };` and so on), or check with `xev`.
