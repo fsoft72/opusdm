@@ -20,6 +20,12 @@
 #                                    # picom.conf); XDG_CONFIG_HOME points to a
 #                                    # private folder, so ~/.config/mimeapps.list
 #                                    # is not touched either. Same as XEPHYR_CONFIG_DIR.
+#
+# Transparency: picom runs on the sandbox's picom.conf as it is, and the
+# sandbox hub gets no OPUSDM_PICOM_BASE, so changing the opacity in Settings
+# does not apply live in the sandbox (the price of never touching the live
+# picom or ~/.config/opusdm/picom.conf).
+
 set -euo pipefail
 
 # A private D-Bus session bus, always: on the live bus the sandbox hub would
@@ -121,6 +127,12 @@ command -v "$TERMINAL" >/dev/null 2>&1 || { echo "Terminal '$TERMINAL' not found
 # compositor instead of Xephyr.
 unset WAYLAND_DISPLAY
 export GDK_BACKEND=x11
+# A live OpusDM session exports OPUSDM_PICOM_BASE: with it the sandbox hub
+# would rewrite $XDG_CONFIG_HOME/opusdm/picom.conf (the live file when no
+# --config-dir is given) and signal every picom of the user, the live one
+# included. Without it the hub leaves picom alone: transparency changes made
+# inside the sandbox do not apply live there.
+unset OPUSDM_PICOM_BASE
 
 # Use DIR as the OpusDM configuration: OpusDM reads $XDG_CONFIG_HOME/opusdm,
 # so XDG_CONFIG_HOME becomes a private folder whose `opusdm` entry is DIR.
@@ -198,14 +210,12 @@ if [ -n "$COMPOSITOR" ]; then
         COMP_ARGS=()
         # Use the sandbox picom config when present
         if [ "$COMPOSITOR" = "picom" ] && [ -f "$PICOM_CONFIG" ]; then
-            # Run on a per-user copy: the hub rewrites its opacity keys and
-            # signals picom to reload it (Settings, Windows tab).
-            PICOM_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/opusdm/picom.conf"
-            mkdir -p "$(dirname "$PICOM_USER_CONF")"
-            [ -f "$PICOM_USER_CONF" ] || cp "$PICOM_CONFIG" "$PICOM_USER_CONF"
-            COMP_ARGS=(--config "$PICOM_USER_CONF")
-            export OPUSDM_PICOM_BASE="$PICOM_CONFIG"
-            echo "  using config: $PICOM_USER_CONF (base: $PICOM_CONFIG)"
+            # Run on the sandbox config as it is. The sandbox hub gets no
+            # OPUSDM_PICOM_BASE (unset above), so it never rewrites a
+            # picom.conf and never signals a picom: the user's live picom
+            # and ~/.config/opusdm/picom.conf stay out of reach.
+            COMP_ARGS=(--config "$PICOM_CONFIG")
+            echo "  using config: $PICOM_CONFIG"
         fi
         DISPLAY="$DISPLAY_NUM" "$COMPOSITOR" ${COMP_ARGS[@]+"${COMP_ARGS[@]}"} &
         CHILD_PIDS+=("$!")
