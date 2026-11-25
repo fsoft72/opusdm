@@ -16,8 +16,52 @@
 #   ./run-native.sh 1280x800
 #   ./run-native.sh --debug       # debug log in /ramdisk/opusdm.log
 #   NATIVE_LOG=/tmp/hub.log ./run-native.sh --debug   # debug log elsewhere
+#
+# Always on a private D-Bus session bus (the script runs itself again under
+# dbus-run-session): no need to start it under one.
 
 set -euo pipefail
+
+# A private D-Bus session bus, always: on the live bus the sandbox hub would
+# take org.freedesktop.FileManager1, the notification and SNI names from the
+# live hub. The script runs itself again under dbus-run-session.
+# OPUSDM_SANDBOX_BUS (the marker) names a file this outer run created and
+# the inner run writes its pid to. dbus-run-session dies on TERM without
+# passing it on, so the outer run stays: it passes TERM / INT to the inner
+# run (whose trap ends the compositor's process group) and exits with the
+# status dbus-run-session hands back (the inner run's).
+if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
+    command -v dbus-run-session >/dev/null 2>&1 || { echo "dbus-run-session not found (package: dbus-daemon or dbus-bin): the sandbox needs a private D-Bus session"; exit 1; }
+    BUS_PID_FILE="$(mktemp /tmp/opusdm-native-bus-XXXXXX)"
+    trap 'rm -f "$BUS_PID_FILE"' EXIT
+    # Passes a TERM to the inner run; before it has written its pid, to
+    # the whole process group of dbus-run-session (nothing started yet).
+    _forward_term() {
+        local pid
+        pid="$(cat "$BUS_PID_FILE" 2>/dev/null || true)"
+        if [ -n "$pid" ]; then
+            kill -TERM "$pid" 2>/dev/null || true
+        else
+            kill -TERM -- "-$BUS_PID" 2>/dev/null || true
+        fi
+    }
+    # Own process group: a Ctrl+C reaches only this run, which passes it on.
+    set -m
+    OPUSDM_SANDBOX_BUS="$BUS_PID_FILE" dbus-run-session -- bash "$0" "$@" &
+    BUS_PID=$!
+    set +m
+    trap _forward_term TERM INT
+    STATUS=0
+    wait "$BUS_PID" || STATUS=$?
+    # A trapped signal ends `wait` early: wait again until the inner run is gone.
+    while kill -0 "$BUS_PID" 2>/dev/null; do
+        STATUS=0
+        wait "$BUS_PID" || STATUS=$?
+    done
+    exit "$STATUS"
+fi
+echo "$$" >"$OPUSDM_SANDBOX_BUS"
+unset OPUSDM_SANDBOX_BUS
 
 DEBUG=0
 ARGS=()

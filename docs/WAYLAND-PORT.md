@@ -237,12 +237,15 @@ inside it with its own runtime dir, `target/release` first on `PATH` and
 no Startup Apps (`--no-startup-apps`, as `run-x11.sh`). `--debug` sets
 `OPUSDM_DEBUG=1` and writes the hub output to `/ramdisk/opusdm.log`, or
 to `$NATIVE_LOG` when set; `NATIVE_RES` sets the default resolution.
-The hub reads the real `~/.config/opusdm`. To keep the sandbox hub off the
-D-Bus names of a running session, start it with its own bus, e.g. in a
-Xephyr:
+The hub reads the real `~/.config/opusdm`. The script always runs on a
+private D-Bus session bus (it runs itself again under `dbus-run-session`,
+needed on `PATH`), so the sandbox hub never takes the live session's
+`org.freedesktop.FileManager1`, notification or SNI names; `kill <script pid>`
+or Ctrl+C still ends the compositor, the hub and the tools it started. E.g.
+in a Xephyr:
 
     Xephyr :7 -ac -screen 1600x1000 -no-host-grab &
-    env -u WAYLAND_DISPLAY DISPLAY=:7 dbus-run-session -- ./run-native.sh --debug 1440x900
+    env -u WAYLAND_DISPLAY DISPLAY=:7 ./run-native.sh --debug 1440x900
 
 Without a window manager in Xephyr, give the compositor window the
 keyboard focus (`xdotool windowfocus`) or keys do not arrive.
