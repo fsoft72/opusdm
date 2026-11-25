@@ -1,6 +1,6 @@
 //! Compositor state: the Smithay protocol states, the windows and the seat.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::utils::with_renderer_surface_state},
     delegate_data_device, delegate_output, delegate_seat,
     desktop::{layer_map_for_output, LayerSurface, PopupManager, Space, Window},
-    input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
+    input::{keyboard::Keycode, pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
     output::Output,
     reexports::wayland_server::{
         backend::{ClientData, ClientId, DisconnectReason},
@@ -34,8 +34,10 @@ use smithay::{
     },
 };
 
+use crate::config::CompositorConfig;
 use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
+use crate::hotkeys::HotkeyTable;
 use crate::ipc::IpcServer;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
 use crate::protocols::workspace::Workspaces;
@@ -178,6 +180,12 @@ pub struct State {
     pub foreign_toplevels: ForeignToplevels,
     /// The `ext_workspace_manager_v1` global and its managers.
     pub workspaces: Workspaces,
+    /// Built-in bindings (`compositor.json`) and the hotkeys of the hub,
+    /// matched by `keyboard_key` before the focused client.
+    pub hotkeys: HotkeyTable,
+    /// Keys whose press matched a binding: their release (and any repeat
+    /// press) is swallowed too, so the client never sees half a key.
+    pub swallowed_keys: HashSet<Keycode>,
 }
 
 impl State {
@@ -230,6 +238,8 @@ impl State {
             test_input: false,
             foreign_toplevels,
             workspaces,
+            hotkeys: HotkeyTable::new(&CompositorConfig::default()),
+            swallowed_keys: HashSet::new(),
         }
     }
 
@@ -353,6 +363,12 @@ impl State {
     pub fn focus_is_gone_or(&self, surface: &WlSurface) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else { return true };
         keyboard.current_focus().is_none_or(|f| &f == surface || !f.alive())
+    }
+
+    /// Opens the window menu of the focused window (the `WindowMenu`
+    /// binding). A stub until the window menu exists (stage 2, task 8).
+    pub fn open_window_menu(&mut self) {
+        opusdm_ipc::debug_log!(LOG_TAG, "window menu requested (not implemented yet)");
     }
 
     /// Drops dead windows and layer surfaces from the space, the layer map and

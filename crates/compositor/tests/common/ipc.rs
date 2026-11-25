@@ -114,6 +114,19 @@ impl IpcWatch {
         self.wait_for_event(event, timeout).is_some()
     }
 
+    /// Reads events until a `hotkey` event for `function` comes (true) or
+    /// `timeout` passes.
+    pub fn wait_for_hotkey(&mut self, function: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else { return false };
+            let Some(value) = self.wait_for_event("hotkey", left) else { return false };
+            if value["function"] == function {
+                return true;
+            }
+        }
+    }
+
     /// Reads events until one named `event` comes and returns it, or `None`
     /// once `timeout` passes.
     pub fn wait_for_event(&mut self, event: &str, timeout: Duration) -> Option<Value> {

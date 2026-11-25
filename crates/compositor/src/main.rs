@@ -3,8 +3,10 @@
 mod args;
 mod backend;
 mod child;
+mod config;
 mod geometry;
 mod grabs;
+mod hotkeys;
 mod input;
 mod ipc;
 mod protocols;

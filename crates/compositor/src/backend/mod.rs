@@ -22,6 +22,8 @@ use smithay::{
 
 use crate::args::{Args, BackendKind};
 use crate::child::{reap, spawn_startup};
+use crate::config::CompositorConfig;
+use crate::hotkeys::HotkeyTable;
 use crate::ipc::{socket_path, IpcServer};
 use crate::state::{ClientState, State, LOG_TAG};
 
@@ -65,7 +67,7 @@ pub fn run(args: &Args) -> Result<(), String> {
 
 /// Setup shared by every backend: event loop, display, the state with
 /// `output` and the desktop count of `DesktopSettings.virtual_screens`,
-/// the SIGTERM / SIGINT flag, keyboard and pointer, the Wayland socket
+/// the built-in bindings of `compositor.json`, the SIGTERM / SIGINT flag, keyboard and pointer, the Wayland socket
 /// with its client sources and the private IPC socket next to it.
 fn setup_common(output: Output) -> Result<Common, String> {
     let event_loop: EventLoop<'static, LoopData> = EventLoop::try_new().map_err(|e| format!("event loop: {e}"))?;
@@ -73,6 +75,7 @@ fn setup_common(output: Output) -> Result<Common, String> {
     let settings = opusdm_ipc::settings::load_desktop_settings(LOG_TAG);
     let mut state = State::new(&display.handle(), output, settings.virtual_screens);
     opusdm_ipc::debug_log!(LOG_TAG, "{} virtual desktops", state.desktops.count());
+    state.hotkeys = HotkeyTable::new(&CompositorConfig::load());
     register_quit_signals(&state.quit)?;
     add_input_devices(&mut state)?;
     let socket_name = init_wayland(&event_loop, &mut display)?;

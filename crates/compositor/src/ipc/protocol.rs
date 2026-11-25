@@ -87,6 +87,8 @@ pub enum After {
     Nothing,
     /// The connection becomes a `watch` event stream.
     Watch,
+    /// The connection sent `hotkeys/set`: it is the hub from now on.
+    Hub,
 }
 
 /// Runs the request `req` on `state` and returns its reply (`{"ok": true,
@@ -94,7 +96,11 @@ pub enum After {
 /// connection does next.
 pub fn handle(state: &mut State, req: &Request) -> (Value, After) {
     opusdm_ipc::debug_log!(LOG_TAG, "ipc request {} {}", req.method, req.data);
-    let after = if req.method == "watch" { After::Watch } else { After::Nothing };
+    let after = match req.method.as_str() {
+        "watch" => After::Watch,
+        "hotkeys/set" => After::Hub,
+        _ => After::Nothing,
+    };
     match _run(state, req) {
         Ok(Value::Object(mut fields)) => {
             fields.insert("ok".to_string(), Value::Bool(true));
@@ -136,6 +142,7 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
             Ok(json!({}))
         }
         "watch" => Ok(json!({})),
+        "hotkeys/set" => Ok(json!({"errors": state.hotkeys.set_hub(&_hotkey_entries(data)?)})),
         "debug/key" => _debug_key(state, _str(data, "key")?).map(|_| json!({})),
         "debug/foreign-toplevels" => _debug_foreign_toplevels(state),
         "debug/workspaces" => _debug_workspaces(state),
@@ -164,6 +171,14 @@ fn _bool(data: &Value, key: &str) -> Result<bool, String> {
 fn _str<'a>(data: &'a Value, key: &str) -> Result<&'a str, String> {
     let value = data.get(key).ok_or_else(|| format!("missing '{key}'"))?;
     value.as_str().ok_or_else(|| format!("'{key}' must be a string, got {value}"))
+}
+
+/// The `hotkeys` of a `hotkeys/set` request as (key, function) pairs: an
+/// array of `{"key": string, "function": string}` objects.
+fn _hotkey_entries(data: &Value) -> Result<Vec<(String, String)>, String> {
+    let list = data.get("hotkeys").ok_or("missing 'hotkeys'")?;
+    let items = list.as_array().ok_or_else(|| format!("'hotkeys' must be an array, got {list}"))?;
+    items.iter().map(|item| Ok((_str(item, "key")?.to_string(), _str(item, "function")?.to_string()))).collect()
 }
 
 /// `debug/key`: presses the modifiers of `combo` (`Ctrl+Alt+u`), presses and
@@ -367,6 +382,51 @@ mod tests {
         let keyboard = s.seat.get_keyboard().unwrap();
         assert!(keyboard.pressed_keys().is_empty(), "every key is released");
         assert!(!keyboard.modifier_state().ctrl && !keyboard.modifier_state().alt);
+    }
+
+    #[test]
+    fn hotkeys_set_replaces_the_table_and_reports_conflicts() {
+        let (_d, mut s) = state(4);
+        let data = json!({"hotkeys": [{"key": "Alt+space", "function": "run"}, {"key": "Ctrl+backslash", "function": "terminal"}]});
+        let (reply, after) = handle(&mut s, &Request { method: "hotkeys/set".into(), data });
+        assert_eq!(after, After::Hub);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["errors"], json!(["hotkey Alt+space: run conflicts with the built-in window menu, the built-in wins"]));
+        let ctrl = opusdm_ipc::bindings::Mods { ctrl: true, ..Default::default() };
+        assert_eq!(s.hotkeys.lookup(ctrl, "backslash"), Some(crate::hotkeys::Binding::Hub("terminal".into())));
+        for bad in [json!({}), json!({"hotkeys": 3}), json!({"hotkeys": [{"key": "a"}]})] {
+            let (reply, after) = handle(&mut s, &Request { method: "hotkeys/set".into(), data: bad });
+            assert!(reply["error"].is_string() && after == After::Nothing, "{reply}");
+        }
+    }
+
+    #[test]
+    fn a_matched_key_release_is_swallowed_even_after_its_modifier() {
+        let (_d, mut s) = state(4);
+        s.test_input = true;
+        s.hotkeys.set_hub(&[("Ctrl+backslash".into(), "terminal".into())]);
+        let ctrl = _keycode_for(&mut s, "Control_L").unwrap();
+        let key = _keycode_for(&mut s, "backslash").unwrap();
+        s.keyboard_key(ctrl, true, 0);
+        s.keyboard_key(key, true, 0);
+        assert!(s.swallowed_keys.contains(&key), "the matched press is recorded");
+        s.keyboard_key(ctrl, false, 0);
+        s.keyboard_key(key, false, 0);
+        assert!(s.swallowed_keys.is_empty(), "its release is swallowed and forgotten");
+        let keyboard = s.seat.get_keyboard().unwrap();
+        assert!(keyboard.pressed_keys().is_empty());
+        s.keyboard_key(key, true, 0);
+        assert!(s.swallowed_keys.is_empty(), "backslash without Ctrl is not a hotkey");
+        s.keyboard_key(key, false, 0);
+    }
+
+    #[test]
+    fn the_quit_binding_sets_the_quit_flag() {
+        let (_d, mut s) = state(4);
+        s.test_input = true;
+        assert_eq!(call(&mut s, "debug/key", json!({"key": "Ctrl+Alt+BackSpace"})), json!({"ok": true}));
+        assert!(s.quit.load(Ordering::Relaxed));
+        assert!(s.swallowed_keys.is_empty());
     }
 
     #[test]

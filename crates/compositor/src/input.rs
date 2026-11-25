@@ -1,4 +1,5 @@
-//! Pointer and keyboard input: hit test, click focus, Alt + drag grabs.
+//! Pointer and keyboard input: hit test, click focus, Alt + drag grabs,
+//! global hotkeys matched before the focused client.
 //!
 //! Backend independent: the backend (nested, task 7) turns its events into
 //! calls of `pointer_motion`, `pointer_button`, `pointer_axis` and
@@ -8,7 +9,7 @@ use smithay::{
     backend::input::{ButtonState, KeyState},
     desktop::{layer_map_for_output, LayerSurface, Window, WindowSurfaceType},
     input::{
-        keyboard::{FilterResult, Keycode},
+        keyboard::{xkb, FilterResult, Keycode, KeysymHandle, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, GrabStartData, MotionEvent},
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
@@ -18,6 +19,7 @@ use smithay::{
 
 use crate::geometry::Rect;
 use crate::grabs::edges_for_point;
+use crate::hotkeys::{combo_text, mods_of, Binding};
 use crate::state::{State, LOG_TAG};
 
 /// Linux input code of the left mouse button (`BTN_LEFT`).
@@ -134,8 +136,12 @@ impl State {
         pointer.frame(self);
     }
 
-    /// A key changed: sent to the surface with the keyboard focus (no
-    /// compositor key bindings in stage 1).
+    /// A key changed. A press that matches a binding (`HotkeyTable::lookup`,
+    /// on the layout independent keysym) is swallowed and its keycode
+    /// recorded; the release (and a repeat press) of a recorded keycode is
+    /// swallowed too, even when the modifiers were released first. Every
+    /// other key, modifiers included, goes to the surface with the keyboard
+    /// focus as before. The binding runs after the keyboard is updated.
     pub fn keyboard_key(&mut self, keycode: Keycode, pressed: bool, time_msec: u32) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             opusdm_ipc::err_log!(LOG_TAG, "keyboard key: the seat has no keyboard");
@@ -143,7 +149,37 @@ impl State {
         };
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
         let serial = SERIAL_COUNTER.next_serial();
-        keyboard.input::<(), _>(self, keycode, state, serial, time_msec, |_, _, _| FilterResult::Forward);
+        let matched = keyboard.input::<Option<(Binding, String)>, _>(self, keycode, state, serial, time_msec, |s, mods, handle| {
+            s._hotkey_filter(keycode, pressed, mods, &handle)
+        });
+        if let Some(Some((binding, combo))) = matched {
+            self.run_binding(binding, &combo);
+        }
+    }
+
+    /// The hotkey filter of `keyboard_key`: `Intercept(Some(..))` for a press
+    /// that matches a binding (its keycode recorded), `Intercept(None)` for
+    /// a key event of a recorded keycode (its release forgets it), `Forward`
+    /// otherwise.
+    fn _hotkey_filter(
+        &mut self,
+        keycode: Keycode,
+        pressed: bool,
+        mods: &ModifiersState,
+        handle: &KeysymHandle<'_>,
+    ) -> FilterResult<Option<(Binding, String)>> {
+        if !pressed {
+            if !self.swallowed_keys.remove(&keycode) { return FilterResult::Forward; }
+            opusdm_ipc::debug_log!(LOG_TAG, "hotkey release of key {} swallowed", keycode.raw());
+            return FilterResult::Intercept(None);
+        }
+        if self.swallowed_keys.contains(&keycode) { return FilterResult::Intercept(None); }
+        let Some(sym) = handle.raw_latin_sym_or_raw_current_sym() else { return FilterResult::Forward };
+        let name = xkb::keysym_get_name(sym);
+        let mods = mods_of(mods);
+        let Some(binding) = self.hotkeys.lookup(mods, &name) else { return FilterResult::Forward };
+        self.swallowed_keys.insert(keycode);
+        FilterResult::Intercept(Some((binding, combo_text(mods, &name))))
     }
 
     /// Focus on a press: a window is raised and gets the keyboard; a layer

@@ -14,6 +14,12 @@
 //! dead or flooding client is dropped with an `err_log!` line, the server
 //! keeps accepting. Dropping the server (the loop has ended: quit, signal,
 //! error) removes the socket file.
+//!
+//! The hub is the connection that last sent `hotkeys/set`; the server keeps
+//! only its id (`hub`), never the connection itself. When it closes the id
+//! is cleared with `err_log!("hub disconnected")`; the hotkey table (in
+//! `State::hotkeys`) stays, and a matched hub hotkey goes to every watcher,
+//! or is logged as "no hub connected" when none is left.
 
 pub mod frame;
 pub mod protocol;
@@ -79,6 +85,10 @@ pub struct IpcServer {
     next_id: u64,
     /// What the `watch` connections were last told.
     snapshot: Snapshot,
+    /// The connection that last sent `hotkeys/set` (the hub), while it is
+    /// open. Only a marker for the logs: the hotkey table stays when it
+    /// closes and `hotkey` events go to every watcher.
+    hub: Option<u64>,
 }
 
 /// Path of the IPC socket for the Wayland socket `wayland_display` in
@@ -104,6 +114,7 @@ impl IpcServer {
             conns: HashMap::new(),
             next_id: 0,
             snapshot: Snapshot::default(),
+            hub: None,
         };
         listener.set_nonblocking(true).map_err(|e| format!("ipc: non-blocking listener: {e}"))?;
         handle
@@ -187,6 +198,26 @@ impl IpcServer {
         let Some(conn) = self.conns.remove(&id) else { return };
         opusdm_ipc::err_log!(LOG_TAG, "ipc: connection {id} dropped: {reason}");
         _shutdown(&conn.stream);
+        self._forget_hub(id);
+    }
+
+    /// The connection `id` sent `hotkeys/set`: it is the hub now.
+    fn _set_hub(&mut self, id: u64) {
+        if self.hub == Some(id) { return; }
+        match self.hub.replace(id) {
+            Some(old) => opusdm_ipc::debug_log!(LOG_TAG, "hub connected on connection {id} (replaces connection {old})"),
+            None => opusdm_ipc::debug_log!(LOG_TAG, "hub connected on connection {id}"),
+        }
+    }
+
+    /// The connection `id` is gone: when it was the hub, logs it. The
+    /// hotkey table stays; until a new hub connects a matched hub hotkey
+    /// logs "no hub connected" (when no watcher is left).
+    fn _forget_hub(&mut self, id: u64) {
+        if self.hub != Some(id) { return; }
+        self.hub = None;
+        opusdm_ipc::err_log!(LOG_TAG, "hub disconnected");
+        opusdm_ipc::debug_log!(LOG_TAG, "hub connection {id} closed, the hotkey table stays");
     }
 
     /// Serializes `value` and queues it on the connection `id`.
@@ -359,10 +390,14 @@ fn _on_readable(state: &mut State, id: u64) -> PostAction {
         };
         let (reply, after) = protocol::handle(state, &request);
         state.ipc._send(id, &reply);
-        if after == After::Watch {
-            let views = state.window_views();
-            let desktops = (state.desktops.count(), state.desktops.current());
-            state.ipc._start_watch(id, views, desktops);
+        match after {
+            After::Watch => {
+                let views = state.window_views();
+                let desktops = (state.desktops.count(), state.desktops.current());
+                state.ipc._start_watch(id, views, desktops);
+            }
+            After::Hub => state.ipc._set_hub(id),
+            After::Nothing => {}
         }
     }
     state.notify_watchers();
@@ -371,6 +406,7 @@ fn _on_readable(state: &mut State, id: u64) -> PostAction {
             opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} closed by the client");
             // Wakes a write source of this connection so it removes itself.
             _shutdown(&conn.stream);
+            state.ipc._forget_hub(id);
         }
     }
     if state.ipc.conns.contains_key(&id) { PostAction::Continue } else { PostAction::Remove }
