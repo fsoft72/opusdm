@@ -51,7 +51,7 @@ pub struct FramePointer {
     /// the same button it runs (drawn pressed while the pointer is on it).
     pub pressed: Option<(WindowId, TitleButton)>,
     /// The window and the time (ms) of the last left press on a title,
-    /// for the double click.
+    /// for the double click; cleared by any other press and by a drag.
     pub last_title_press: Option<(WindowId, u32)>,
     /// True while the cursor is the one the compositor set for a frame.
     pub cursor_set: bool,
@@ -244,6 +244,9 @@ impl State {
     /// edges of the quadrant the pointer is in: the grab consumes the press
     /// and its release, the client never sees them. A dead drag is
     /// cancelled first (`cancel_dead_drag`): its release drops nothing.
+    /// Every press but a plain left press on a title clears the pending
+    /// double click (`FramePointer::last_title_press`; a drag clears it
+    /// too, `MoveGrab`): only two title clicks in a row count.
     pub fn pointer_button(&mut self, button: u32, pressed: bool, time_msec: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "pointer button: the seat has no pointer");
@@ -251,6 +254,7 @@ impl State {
         };
         self.cancel_dead_drag();
         if pressed && self.menu.is_some() {
+            self.frame_pointer.last_title_press = None;
             self.swallowed_buttons.insert(button);
             self.window_menu_click(pointer.current_location());
             return;
@@ -266,12 +270,16 @@ impl State {
             let location = pointer.current_location();
             match self.under(location) {
                 Some(Under::Frame(window, zone)) => {
+                    if button != BTN_LEFT || zone != FrameZone::Title {
+                        self.frame_pointer.last_title_press = None;
+                    }
                     if self._frame_press(window, zone, button, location, serial, time_msec) {
                         self.swallowed_buttons.insert(button);
                         return;
                     }
                 }
                 found => {
+                    self.frame_pointer.last_title_press = None;
                     let hit = match found {
                         Some(Under::Surface(hit)) => Some(hit),
                         _ => None,
@@ -369,6 +377,7 @@ impl State {
         }
         self.focus_window(Some(window.clone()));
         if self._alt_held() {
+            self.frame_pointer.last_title_press = None;
             self._alt_grab(window, None, button, location, serial);
             return false;
         }

@@ -226,6 +226,8 @@ impl PointerGrab<State> for MoveGrab {
         if !self.dragging {
             if !past_drag_threshold((delta.x, delta.y)) { return; }
             self.dragging = true;
+            // A press that became a drag is no first click of a double click.
+            data.frame_pointer.last_title_press = None;
             if let Some((loc, size)) = data.restore_for_drag(&self.window, self.start_data.location) {
                 self.initial_loc = loc;
                 self.size = size;

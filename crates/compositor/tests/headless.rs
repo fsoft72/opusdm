@@ -2317,6 +2317,44 @@ fn a_left_drag_on_the_title_moves_the_window() {
 }
 
 #[test]
+fn a_title_drag_does_not_count_toward_a_double_click() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    pointer_to(&comp, TITLE_AT.0, TITLE_AT.1);
+    button(&comp, "left", "press");
+    pointer_to(&comp, TITLE_AT.0 + 20, TITLE_AT.1 + 20);
+    button(&comp, "left", "release");
+    assert_eq!(window_rect(&comp, 1), ((20, 20, 408, 332), false), "dragged by 20 px");
+    // Grabbed again at once (well within DOUBLE_CLICK_MS) to adjust it.
+    click_at(&comp, (TITLE_AT.0 + 20, TITLE_AT.1 + 20), "left");
+    let maximized = (1920 - 2 * BORDER, 1080 - TITLE - 2 * BORDER);
+    assert!(!c.wait_configure(&w, maximized, Duration::from_millis(300)), "a drag then a press is no double click");
+    assert_eq!(window_rect(&comp, 1), ((20, 20, 408, 332), false));
+}
+
+#[test]
+fn a_press_elsewhere_between_two_title_clicks_is_no_double_click() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    let maximized = (1920 - 2 * BORDER, 1080 - TITLE - 2 * BORDER);
+    click_at(&comp, TITLE_AT, "left");
+    click_at(&comp, (104, 78), "left"); // the client area of the same window
+    click_at(&comp, TITLE_AT, "left");
+    assert!(!c.wait_configure(&w, maximized, Duration::from_millis(300)), "a client click in between: no double click");
+    assert!(!window_rect(&comp, 1).1);
+    // A right press on the title (the window menu, closed with Escape) in between does not count either.
+    std::thread::sleep(Duration::from_millis(600));
+    click_at(&comp, TITLE_AT, "left");
+    click_at(&comp, TITLE_AT, "right");
+    key(&comp, "Escape");
+    click_at(&comp, TITLE_AT, "left");
+    assert!(!c.wait_configure(&w, maximized, Duration::from_millis(300)), "a right press in between: no double click");
+    assert!(!window_rect(&comp, 1).1);
+}
+
+#[test]
 fn a_left_drag_on_the_right_border_resizes_the_window() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);
