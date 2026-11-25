@@ -36,7 +36,9 @@ pub struct WindowView {
     pub maximized: bool,
     /// True while fullscreen.
     pub fullscreen: bool,
-    /// True when the window has the `Activated` state (the keyboard).
+    /// True when the window is the active one (the xdg `Activated` state):
+    /// the last window that took the keyboard, which stays active while a
+    /// layer surface (the panel, the Run window) has the keyboard.
     pub activated: bool,
 }
 

@@ -1077,3 +1077,97 @@ fn focusing_another_window_after_a_panel_click_makes_only_it_active() {
     assert_eq!(active_ids(&comp), vec![1], "only A is active");
     assert_eq!(foreign_active_titles(&mut c), vec!["A".to_string()]);
 }
+
+/// Switches to desktop `index` through the IPC and waits for the client.
+fn switch_to(comp: &Compositor, c: &mut TestClient, index: u32) {
+    let reply = ipc_request(comp, "desktops/switch", json!({"index": index}));
+    assert_eq!(reply["ok"], true, "desktops/switch refused: {reply}");
+    c.roundtrip();
+}
+
+#[test]
+fn the_active_window_destroyed_while_the_panel_has_the_keyboard_leaves_no_active_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let panel = map_panel(&mut c);
+    let _a = map_titled(&mut c, "A");
+    let mut other = TestClient::new(&comp);
+    let b = other.map_toplevel((400, 300));
+    assert_eq!(active_ids(&comp), vec![2]);
+    click(&comp, 960, 20);
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2], "B stays active after the panel click");
+    drop(b);
+    drop(other); // the client of the active window dies
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while activated_ids(&comp).len() != 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    c.roundtrip();
+    assert_eq!(activated_ids(&comp), vec![(1, false)], "B is gone and A was not focused: no active window");
+    assert!(foreign_active_titles(&mut c).is_empty());
+    assert_eq!(c.keyboard_focus(), Some(panel.wl_surface().clone()), "the panel keeps the keyboard");
+}
+
+#[test]
+fn a_desktop_switch_away_and_back_gives_the_top_window_the_keyboard() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _panel = map_panel(&mut c);
+    let _a = map_titled(&mut c, "A");
+    let b = map_titled(&mut c, "B");
+    click(&comp, 960, 20);
+    c.roundtrip();
+    switch_to(&comp, &mut c, 1);
+    assert!(active_ids(&comp).is_empty(), "nothing is shown on desktop 2");
+    switch_to(&comp, &mut c, 0);
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()), "back on desktop 1, the top window has the keyboard");
+    assert_eq!(active_ids(&comp), vec![2]);
+    assert_eq!(foreign_active_titles(&mut c), vec!["B".to_string()]);
+}
+
+#[test]
+fn a_desktop_switch_activates_the_top_window_of_the_new_desktop() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _panel = map_panel(&mut c);
+    let _a = map_titled(&mut c, "A");
+    let b = map_titled(&mut c, "B");
+    let reply = ipc_request(&comp, "window/move-to-desktop", json!({"id": 2, "desktop": 1}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    click(&comp, 960, 20);
+    c.roundtrip();
+    switch_to(&comp, &mut c, 1);
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()));
+    assert_eq!(active_ids(&comp), vec![2]);
+}
+
+#[test]
+fn a_desktop_switch_under_an_exclusive_layer_only_changes_the_active_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = map_titled(&mut c, "A");
+    let _b = map_titled(&mut c, "B");
+    let reply = ipc_request(&comp, "window/move-to-desktop", json!({"id": 2, "desktop": 1}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    switch_to(&comp, &mut c, 1);
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()), "the exclusive layer keeps the keyboard");
+    assert_eq!(active_ids(&comp), vec![2], "B, the top window of desktop 2, is the active window");
+    assert_eq!(foreign_active_titles(&mut c), vec!["B".to_string()]);
+}
+
+#[test]
+fn a_switch_to_the_current_desktop_changes_nothing() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let panel = map_panel(&mut c);
+    let _a = map_titled(&mut c, "A");
+    let _b = map_titled(&mut c, "B");
+    click(&comp, 960, 20);
+    c.roundtrip();
+    switch_to(&comp, &mut c, 0);
+    assert_eq!(c.keyboard_focus(), Some(panel.wl_surface().clone()), "the panel keeps the keyboard");
+    assert_eq!(active_ids(&comp), vec![2]);
+}

@@ -98,6 +98,7 @@ impl State {
         info.minimized = false;
         let desktop = info.desktop;
         let window = info.window.clone();
+        let switched = desktop != self.desktops.current();
         if !self.desktops.switch_to(desktop) {
             return Err(format!("activate: window {} is on desktop {desktop}, out of range", id.0));
         }
@@ -105,6 +106,8 @@ impl State {
         self.sync_space();
         if self.space.element_location(&window).is_some() {
             self.focus_window(Some(window));
+        } else if switched {
+            self._focus_desktop_top();
         }
         opusdm_ipc::debug_log!(LOG_TAG, "window {} activated on desktop {desktop}", id.0);
         self.notify_watchers();
@@ -136,14 +139,46 @@ impl State {
     }
 
     /// Shows the desktop `index` (0-based).
+    /// The topmost shown window of the new desktop gets the keyboard and
+    /// becomes the active window (`_focus_desktop_top`); a switch to the
+    /// current desktop changes nothing.
     pub fn switch_desktop(&mut self, index: u32) -> Result<(), String> {
+        let switched = index != self.desktops.current();
         if !self.desktops.switch_to(index) {
             return Err(format!("switch desktop: desktop {index} is out of range (count {})", self.desktops.count()));
         }
         opusdm_ipc::debug_log!(LOG_TAG, "switched to desktop {index}");
         self.sync_space();
+        if switched {
+            self._focus_desktop_top();
+        }
         self.notify_watchers();
         Ok(())
+    }
+
+    /// After a desktop switch, as Openbox does on X11: the topmost shown
+    /// window gets the keyboard and becomes the active window. While an
+    /// exclusive keyboard layer is mapped it only becomes the active window
+    /// (the layer keeps the keyboard). Nothing when no window is shown.
+    fn _focus_desktop_top(&mut self) {
+        let Some(top) = self.space.elements().next_back().cloned() else {
+            opusdm_ipc::debug_log!(LOG_TAG, "desktop switch: no window shown, focus unchanged");
+            return;
+        };
+        if self.exclusive_layer.is_none() {
+            self.focus_window(Some(top));
+            return;
+        }
+        let Some(id) = self._info_of(&top).map(|i| i.id) else {
+            opusdm_ipc::err_log!(LOG_TAG, "desktop switch: the top window is not in the table, active window unchanged");
+            return;
+        };
+        self.active_window = Some(id);
+        self.apply_active_window();
+        for toplevel in self.space.elements().filter_map(|w| w.toplevel()) {
+            toplevel.send_pending_configure();
+        }
+        opusdm_ipc::debug_log!(LOG_TAG, "desktop switch: window {} is active, the exclusive layer keeps the keyboard", id.0);
     }
 
     /// Sets the number of desktops (clamped) and returns it; the windows of
