@@ -163,10 +163,17 @@ fn spawn_native(tx: async_channel::Sender<EwmhEvent>) -> bool {
 }
 
 /// The events that bring a panel showing opusdm-compositor state `prev`
-/// (nothing yet when `None`) up to `now`.
+/// (nothing yet when `None`) up to `now`. The compositor lists windows in
+/// stacking order; the clients are sent in map order (by window id, ids are
+/// never reused), as X11's `_NET_CLIENT_LIST`, so the tasklist buttons do
+/// not move when a window is raised.
 pub fn native_events(prev: Option<&native::NativeState>, now: &native::NativeState) -> Vec<EwmhEvent> {
     let desktops = |s: &native::NativeState| (s.count, s.current);
-    let clients = |s: &native::NativeState| s.windows.iter().map(native_client).collect::<Vec<_>>();
+    let clients = |s: &native::NativeState| {
+        let mut clients = s.windows.iter().map(native_client).collect::<Vec<_>>();
+        clients.sort_by_key(|c| c.xid);
+        clients
+    };
     let active = |s: &native::NativeState| s.active().map(|w| w.id);
     let mut out = Vec::new();
     if prev.map(desktops) != Some(desktops(now)) {
@@ -504,6 +511,23 @@ mod tests {
         let out = native_events(Some(&before), &minimized);
         let [EwmhEvent::Clients(clients)] = out.as_slice() else { panic!("clients only") };
         assert!(clients[0].minimized);
+    }
+
+    #[test]
+    fn native_clients_keep_the_map_order_whatever_the_stacking() {
+        // The compositor lists windows in stacking order (last = top); the
+        // tasklist keeps X11's map order (`_NET_CLIENT_LIST`): by window id.
+        let below = native_state(0, Some(2));
+        let mut raised = below.clone();
+        raised.windows.reverse();
+        let ids = |s: &native::NativeState| {
+            let out = native_events(None, s);
+            let EwmhEvent::Clients(clients) = &out[1] else { panic!("clients") };
+            clients.iter().map(|c| c.xid).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&below), vec![1, 2]);
+        assert_eq!(ids(&raised), vec![1, 2]);
+        assert!(native_events(Some(&below), &raised).is_empty(), "a restack alone changes nothing in the panel");
     }
 
     #[test]
