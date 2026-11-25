@@ -40,6 +40,9 @@ pub struct WindowView {
     /// the last window that took the keyboard, which stays active while a
     /// layer surface (the panel, the Run window) has the keyboard.
     pub activated: bool,
+    /// Opacity in percent the window is drawn with (`window_opacity`): the
+    /// override of `window/set-opacity`, else from `desktop.json`.
+    pub opacity: u8,
 }
 
 /// Writes `rect` as `{"x","y","width","height"}`.
@@ -131,6 +134,14 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
             state.set_minimized(id, _bool(data, "state")?).map(|_| json!({}))
         }
         "window/close" => state.close_window(_window_id(data)?).map(|_| json!({})),
+        "window/set-opacity" => {
+            let id = _window_id(data)?;
+            state.set_window_opacity(id, _opacity(data)?).map(|_| json!({}))
+        }
+        "window/set-geometry" => {
+            let id = _window_id(data)?;
+            state.set_window_geometry(id, _rect(data)?).map(|_| json!({}))
+        }
         "window/kill" => state.kill_window_pid(_window_id(data)?, "window/kill").map(|pid| json!({"pid": pid})),
         "window/move-to-desktop" => {
             let id = _window_id(data)?;
@@ -171,10 +182,33 @@ fn _u32(data: &Value, key: &str) -> Result<u32, String> {
     value.as_u64().and_then(|v| u32::try_from(v).ok()).ok_or_else(|| format!("'{key}' must be an unsigned integer, got {value}"))
 }
 
+/// The signed 32-bit integer `key` of `data`.
+fn _i32(data: &Value, key: &str) -> Result<i32, String> {
+    let value = data.get(key).ok_or_else(|| format!("missing '{key}'"))?;
+    value.as_i64().and_then(|v| i32::try_from(v).ok()).ok_or_else(|| format!("'{key}' must be an integer, got {value}"))
+}
+
 /// The finite number `key` of `data`.
 fn _f64(data: &Value, key: &str) -> Result<f64, String> {
     let value = data.get(key).ok_or_else(|| format!("missing '{key}'"))?;
     value.as_f64().filter(|v| v.is_finite()).ok_or_else(|| format!("'{key}' must be a number, got {value}"))
+}
+
+/// The `"opacity"` of a `window/set-opacity` request: a percent, or
+/// `null` to clear the override (the range is checked by the state).
+fn _opacity(data: &Value) -> Result<Option<u8>, String> {
+    let value = data.get("opacity").ok_or("missing 'opacity'")?;
+    if value.is_null() { return Ok(None); }
+    let percent = value.as_u64().ok_or_else(|| format!("'opacity' must be an integer percent or null, got {value}"))?;
+    u8::try_from(percent).map(Some).map_err(|_| format!("'opacity' {percent} is out of range"))
+}
+
+/// The `"x"`, `"y"`, `"width"`, `"height"` of a `window/set-geometry`
+/// request (the size is checked by the state).
+fn _rect(data: &Value) -> Result<Rect, String> {
+    let w = i32::try_from(_u32(data, "width")?).map_err(|_| "'width' is too big".to_string())?;
+    let h = i32::try_from(_u32(data, "height")?).map_err(|_| "'height' is too big".to_string())?;
+    Ok(Rect { x: _i32(data, "x")?, y: _i32(data, "y")?, w, h })
 }
 
 /// The Linux input code of the `"button"` of a `debug/button` request:
@@ -432,6 +466,7 @@ mod tests {
             maximized: false,
             fullscreen: false,
             activated: false,
+            opacity: 100,
         }
     }
 
@@ -449,7 +484,7 @@ mod tests {
     fn the_window_json_has_the_documented_keys() {
         let v = window_json(&view(5, "t"));
         assert_eq!(v["geometry"], json!({"x": 1, "y": 2, "width": 3, "height": 4}));
-        for key in ["id", "app_id", "title", "pid", "desktop", "minimized", "maximized", "fullscreen", "activated"] {
+        for key in ["id", "app_id", "title", "pid", "desktop", "minimized", "maximized", "fullscreen", "activated", "opacity"] {
             assert!(v.get(key).is_some(), "{key}");
         }
     }

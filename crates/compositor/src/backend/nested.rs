@@ -33,7 +33,7 @@ use smithay::{
         winit::{self, WinitEvent, WinitGraphicsBackend, WinitInput},
     },
     delegate_dmabuf,
-    desktop::{layer_map_for_output, utils::send_frames_surface_tree, LayerSurface, Window},
+    desktop::{layer_map_for_output, utils::send_frames_surface_tree, LayerSurface, PopupManager, Window},
     input::pointer::{AxisFrame, CursorIcon, CursorImageStatus, CursorImageSurfaceData},
     output::Mode,
     reexports::{
@@ -587,7 +587,11 @@ fn _fullscreen_top(state: &State) -> Option<Window> {
     state.windows.get(wl).is_some_and(|i| i.fullscreen).then(|| top.clone())
 }
 
-/// Elements of `window` with its popups, at its place in the space.
+/// Elements of `window` with its popups, at its place in the space, front
+/// to back (popups first, as Smithay's `Window::render_elements`). The
+/// toplevel surface tree is drawn with the window opacity
+/// (`State::effective_opacity`, read from `State::wm` every frame); its
+/// popups (menus) are always opaque, as picom's menu rule on X11.
 fn _window_elements(
     renderer: &mut GlesRenderer,
     state: &State,
@@ -596,8 +600,27 @@ fn _window_elements(
 ) -> Vec<NestedElement> {
     // Every element of the space has a location: no per-frame log for the impossible case.
     let Some(loc) = state.space.element_location(window) else { return Vec::new() };
-    let render_loc = loc - window.geometry().loc - origin;
-    AsRenderElements::<GlesRenderer>::render_elements(window, renderer, render_loc.to_physical(1), Scale::from(1.0), 1.0)
+    let render_loc = (loc - window.geometry().loc - origin).to_physical(1);
+    let Some(toplevel) = window.toplevel() else {
+        return AsRenderElements::<GlesRenderer>::render_elements(window, renderer, render_loc, Scale::from(1.0), 1.0);
+    };
+    let surface = toplevel.wl_surface();
+    let percent = state.windows.get(surface).map_or(100, |info| state.effective_opacity(info));
+    let alpha = f32::from(percent) / 100.0;
+    let mut elements: Vec<NestedElement> = Vec::new();
+    for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+        let offset = (window.geometry().loc + popup_offset - popup.geometry().loc).to_physical(1);
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            popup.wl_surface(),
+            render_loc + offset,
+            Scale::from(1.0),
+            1.0,
+            Kind::Unspecified,
+        ));
+    }
+    elements.extend(render_elements_from_surface_tree(renderer, surface, render_loc, Scale::from(1.0), alpha, Kind::Unspecified));
+    elements
 }
 
 /// Elements of the layer surface `layer` with its popups; the surface

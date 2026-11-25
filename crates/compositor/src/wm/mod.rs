@@ -25,7 +25,9 @@ use smithay::{
 };
 
 use crate::geometry::Rect;
+use crate::grabs::ResizeTrack;
 use crate::ipc::protocol::WindowView;
+use crate::opacity::{window_opacity, OPACITY_OVERRIDE_RANGE};
 use crate::state::{has_buffer, State, WindowInfo, LOG_TAG};
 use desktops::Desktops;
 
@@ -221,6 +223,72 @@ impl State {
         count
     }
 
+    /// Sets (`Some`) or clears (`None`) the opacity override of the window
+    /// `id`, in percent within `OPACITY_OVERRIDE_RANGE`; it is drawn with it
+    /// from the next frame. Unknown window or out of range: an error.
+    pub fn set_window_opacity(&mut self, id: WindowId, percent: Option<u8>) -> Result<(), String> {
+        let (lo, hi) = OPACITY_OVERRIDE_RANGE;
+        if let Some(p) = percent.filter(|p| !(lo..=hi).contains(p)) {
+            return Err(format!("set opacity: {p} is out of range {lo}..={hi}"));
+        }
+        let info = self._info_by_id_mut(id).ok_or_else(|| format!("set opacity: unknown window {}", id.0))?;
+        info.opacity_override = percent;
+        opusdm_ipc::debug_log!(LOG_TAG, "window {} opacity override {percent:?}", id.0);
+        self.notify_watchers();
+        Ok(())
+    }
+
+    /// Opacity in percent the toplevel of `info` is drawn with
+    /// (`window_opacity`): from `State::wm` as it is now (a `reload` applies
+    /// at the next frame), active when it has the `Activated` state (the
+    /// same flag `windows/list` reports).
+    pub fn effective_opacity(&self, info: &WindowInfo) -> u8 {
+        let active = info
+            .window
+            .toplevel()
+            .is_some_and(|t| t.with_pending_state(|s| s.states.contains(xdg_toplevel::State::Activated)));
+        window_opacity(&self.wm, active, info.opacity_override)
+    }
+
+    /// Gives the window `id` the geometry `rect` (IPC `window/set-geometry`):
+    /// it leaves maximized, fullscreen and snapped (the stored geometry to
+    /// restore is dropped), is configured to the size of `rect` (a client
+    /// with a bigger minimum size takes its own, as usual) and moved to its
+    /// origin; a hidden or unmapped window shows there when it maps again.
+    /// Unknown window or an empty size: an error.
+    pub fn set_window_geometry(&mut self, id: WindowId, rect: Rect) -> Result<(), String> {
+        if rect.w <= 0 || rect.h <= 0 {
+            return Err(format!("set geometry: the size {}x{} is empty", rect.w, rect.h));
+        }
+        let info = self._info_by_id_mut(id).ok_or_else(|| format!("set geometry: unknown window {}", id.0))?;
+        info.maximized = false;
+        info.fullscreen = false;
+        info.snapped = None;
+        info.restore = None;
+        // The commits of an ended resize would place the window by the old drag: stop that.
+        if !matches!(info.resize, ResizeTrack::Resizing { .. }) {
+            info.resize = ResizeTrack::Idle;
+        }
+        let window = info.window.clone();
+        let toplevel = window.toplevel().cloned().ok_or_else(|| format!("set geometry: window {} has no toplevel", id.0))?;
+        toplevel.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Maximized);
+            state.states.unset(xdg_toplevel::State::Fullscreen);
+            state.size = Some((rect.w, rect.h).into());
+        });
+        if self.space.element_location(&window).is_some() {
+            self.move_window(&window, (rect.x, rect.y));
+        } else if let Some(info) = self._info_by_id_mut(id) {
+            info.last_position = Some((rect.x, rect.y));
+        }
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_pending_configure();
+        }
+        opusdm_ipc::debug_log!(LOG_TAG, "window {} set to {rect:?}", id.0);
+        self.notify_watchers();
+        Ok(())
+    }
+
     /// Asks the window `id` to close (`xdg_toplevel.close`).
     pub fn close_window(&mut self, id: WindowId) -> Result<(), String> {
         let (_, info) = self.window_by_id(id).ok_or_else(|| format!("close: unknown window {}", id.0))?;
@@ -295,6 +363,7 @@ impl State {
             maximized: info.maximized,
             fullscreen: info.fullscreen,
             activated,
+            opacity: window_opacity(&self.wm, activated, info.opacity_override),
         }
     }
 

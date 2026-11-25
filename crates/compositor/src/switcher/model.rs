@@ -73,6 +73,7 @@ mod tests {
             maximized: false,
             fullscreen: false,
             activated: false,
+            opacity: 100,
         }
     }
 

@@ -428,3 +428,121 @@ fn reload_with_a_broken_desktop_json_keeps_the_desktops_and_the_wm_settings() {
     ipc_request(&comp, "debug/key", json!({"key": "Ctrl+Alt+Left"}));
     assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["current"], 3, "the default wrap is back");
 }
+
+/// `(id, opacity)` of every window of `windows/list`, in stack order.
+fn opacities(comp: &Compositor) -> Vec<(u64, u64)> {
+    let list = ipc_request(comp, "windows/list", json!({}));
+    let windows = list["windows"].as_array().cloned().unwrap_or_else(|| panic!("no windows array: {list}"));
+    windows.iter().map(|w| (w["id"].as_u64().expect("id"), w["opacity"].as_u64().unwrap_or_else(|| panic!("no opacity: {w}")))).collect()
+}
+
+#[test]
+fn the_inactive_window_reports_88_and_the_active_one_100() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    assert_eq!(opacities(&comp), vec![(1, 88), (2, 100)]);
+}
+
+#[test]
+fn window_set_opacity_overrides_and_null_clears() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    assert_eq!(ipc_request(&comp, "window/set-opacity", json!({"id": 2, "opacity": 50})), json!({"ok": true}));
+    assert_eq!(opacities(&comp), vec![(1, 88), (2, 50)], "the override wins on the active window");
+    assert_eq!(ipc_request(&comp, "window/set-opacity", json!({"id": 2, "opacity": null})), json!({"ok": true}));
+    assert_eq!(opacities(&comp), vec![(1, 88), (2, 100)]);
+    for bad in [
+        json!({"id": 2, "opacity": 19}),
+        json!({"id": 2, "opacity": 101}),
+        json!({"id": 2, "opacity": "50"}),
+        json!({"id": 2}),
+        json!({"id": 99, "opacity": 50}),
+    ] {
+        let reply = ipc_request(&comp, "window/set-opacity", bad.clone());
+        assert!(reply["error"].is_string(), "{bad}: {reply}");
+    }
+    assert_eq!(opacities(&comp), vec![(1, 88), (2, 100)], "refused requests change nothing");
+}
+
+#[test]
+fn a_watcher_sees_the_opacity_change() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = c.map_toplevel((400, 300));
+    let mut watch = ipc_watch(&comp);
+    ipc_request(&comp, "window/set-opacity", json!({"id": 1, "opacity": 40}));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let event = watch.wait_for_event("window-changed", left).expect("a window-changed event with opacity 40");
+        if event["window"]["opacity"] == 40 { break; }
+    }
+}
+
+#[test]
+fn reload_with_another_inactive_opacity_changes_the_reported_opacity() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    assert_eq!(opacities(&comp), vec![(1, 88), (2, 100)]);
+    comp.write_config("desktop.json", r#"{"inactive_opacity": 60}"#);
+    assert_eq!(ipc_request(&comp, "reload", json!({}))["errors"], json!([]));
+    assert_eq!(opacities(&comp), vec![(1, 60), (2, 100)]);
+    comp.write_config("desktop.json", r#"{"transparency_enabled": false}"#);
+    assert_eq!(ipc_request(&comp, "reload", json!({}))["errors"], json!([]));
+    assert_eq!(opacities(&comp), vec![(1, 100), (2, 100)]);
+}
+
+#[test]
+fn window_set_geometry_moves_and_resizes_the_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let reply = ipc_request(&comp, "window/set-geometry", json!({"id": 1, "x": 100, "y": 120, "width": 640, "height": 480}));
+    assert_eq!(reply, json!({"ok": true}));
+    assert!(c.wait_configure(&w, (640, 480), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    let list = ipc_request(&comp, "windows/list", json!({}));
+    assert_eq!(list["windows"][0]["geometry"], json!({"x": 100, "y": 120, "width": 640, "height": 480}), "{list}");
+}
+
+#[test]
+fn window_set_geometry_unmaximizes_the_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    w.xdg().set_maximized();
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)));
+    c.roundtrip();
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["maximized"], true);
+    ipc_request(&comp, "window/set-geometry", json!({"id": 1, "x": 10, "y": 20, "width": 500, "height": 400}));
+    assert!(c.wait_configure(&w, (500, 400), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    let list = ipc_request(&comp, "windows/list", json!({}));
+    assert_eq!(list["windows"][0]["maximized"], false, "{list}");
+    assert_eq!(list["windows"][0]["geometry"], json!({"x": 10, "y": 20, "width": 500, "height": 400}), "{list}");
+}
+
+#[test]
+fn window_set_geometry_refuses_bad_requests() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = c.map_toplevel((400, 300));
+    for bad in [
+        json!({"id": 99, "x": 0, "y": 0, "width": 100, "height": 100}),
+        json!({"id": 1, "x": 0, "y": 0, "width": 0, "height": 100}),
+        json!({"id": 1, "x": 0, "y": 0, "width": 100}),
+        json!({"id": 1, "x": "a", "y": 0, "width": 100, "height": 100}),
+    ] {
+        let reply = ipc_request(&comp, "window/set-geometry", bad.clone());
+        assert!(reply["error"].is_string(), "{bad}: {reply}");
+    }
+}

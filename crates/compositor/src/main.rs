@@ -12,6 +12,7 @@ mod hotkeys;
 mod input;
 mod ipc;
 mod menu;
+mod opacity;
 mod protocols;
 mod shell;
 mod snap;

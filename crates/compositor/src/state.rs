@@ -81,6 +81,9 @@ pub struct WindowInfo {
     /// The half of the usable area the window was snapped to (`snap.rs`);
     /// `None` when it is not snapped (a `Top` snap is a maximize).
     pub snapped: Option<SnapZone>,
+    /// Opacity in percent set by IPC `window/set-opacity`: it wins over the
+    /// active / inactive opacity of `desktop.json` (`opacity.rs`).
+    pub opacity_override: Option<u8>,
     /// True while the window is maximized (it fills `usable_area()`).
     pub maximized: bool,
     /// True while the window is fullscreen (it fills the whole output and is
@@ -110,6 +113,7 @@ impl WindowInfo {
             minimized: false,
             restore: None,
             snapped: None,
+            opacity_override: None,
             maximized: false,
             fullscreen: false,
             last_position: None,

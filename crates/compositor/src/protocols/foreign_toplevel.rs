@@ -377,6 +377,7 @@ mod tests {
             maximized,
             fullscreen,
             activated,
+            opacity: 100,
         }
     }
 
