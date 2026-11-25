@@ -34,11 +34,14 @@ if [ -z "${OPUSDM_SANDBOX_BUS:-}" ] || [ ! -f "$OPUSDM_SANDBOX_BUS" ]; then
     BUS_MARKER="$(mktemp /tmp/opusdm-wayland-bus-XXXXXX)"
     trap 'rm -f "$BUS_MARKER"' EXIT
     # Own process group: a Ctrl+C reaches only this run, which passes it on.
+    # The trap comes first (an empty BUS_PID is skipped); HUP too: closing the
+    # terminal reaches only this run, as the sandbox is in a group of its own.
+    BUS_PID=""
+    trap '[ -n "$BUS_PID" ] && kill -TERM -- "-$BUS_PID" 2>/dev/null; true' TERM INT HUP
     set -m
     OPUSDM_SANDBOX_BUS="$BUS_MARKER" dbus-run-session -- bash "$0" "$@" &
     BUS_PID=$!
     set +m
-    trap 'kill -TERM -- "-$BUS_PID" 2>/dev/null || true' TERM INT
     STATUS=0
     wait "$BUS_PID" || STATUS=$?
     # A trapped signal ends `wait` early: wait again until the inner run is gone.
@@ -103,11 +106,16 @@ HUB_BIN="$(pwd)/target/release/opusdm-hub"
 
 # A config directory of its own: rc.xml plus an autostart that sizes the
 # nested output and starts the hub.
+CONFIG_DIR=""
+HUB_RUNTIME_DIR=""
+# One EXIT trap of this (inner) run removes both temp dirs, only the ones
+# created below (empty variables are skipped). It is set before the first
+# mktemp so a failing second one leaves nothing behind.
+trap '[ -n "$CONFIG_DIR" ] && rm -rf "$CONFIG_DIR"; [ -n "$HUB_RUNTIME_DIR" ] && rm -rf "$HUB_RUNTIME_DIR"; true' EXIT
 CONFIG_DIR="$(mktemp -d /tmp/opusdm-labwc-XXXXXX)"
 # The hub gets its own runtime dir so a stale socket never blocks the
 # sandbox; the compositor keeps the real one (its socket lives there).
 HUB_RUNTIME_DIR="$(mktemp -d /tmp/opusdm-wayland-XXXXXX)"
-trap 'rm -rf "$CONFIG_DIR"' EXIT
 
 cp "$LABWC_CONFIG" "$CONFIG_DIR/rc.xml"
 
@@ -115,6 +123,10 @@ HUB_OUT="/dev/stderr"
 [ "$DEBUG" = "1" ] && HUB_OUT="$DEBUG_LOG" && echo "Debug log: $HUB_OUT"
 
 {
+    # labwc / Wayfire start this script in a session of its own, so the hub and
+    # its tools are not in the compositor's process group: record its group
+    # for the cleanup after the compositor exits.
+    echo "ps -o pgid= -p \$\$ | tr -d ' ' >\"$CONFIG_DIR/autostart.pgid\""
     echo '# Size the nested output (its name depends on the host: WL-1, X11-1...)'
     echo 'OUTPUT="$(wlr-randr | awk '"'"'NR == 1 { print $1 }'"'"')"'
     echo "wlr-randr --output \"\$OUTPUT\" --custom-mode $RESOLUTION || true"
@@ -128,25 +140,61 @@ HUB_OUT="/dev/stderr"
     echo "export PATH=\"$(pwd)/target/release:\$PATH\""
     [ "$GRID_DEBUG" = "1" ] && echo 'export GRID_DEBUG=1'
     [ "$DEBUG" = "1" ] && echo 'export OPUSDM_DEBUG=1'
-    echo "\"$HUB_BIN\" >\"$HUB_OUT\" 2>&1 &"
+    # A sandbox never starts the user's Startup Apps a second time (as run-x11.sh)
+    echo "\"$HUB_BIN\" --no-startup-apps >\"$HUB_OUT\" 2>&1 &"
 } >"$CONFIG_DIR/autostart"
+
+# Runs the compositor given as arguments in the background, in a process
+# group of its own (`set -m`), so a TERM / INT to this script is passed on to
+# it and, once it is gone, to the whole group: tools that outlive it
+# (opusdm-keyring-watch is not a Wayland client and does not quit with it)
+# do not stay behind. Not exec: this shell runs the EXIT trap that removes
+# the temp dirs. Exit status: the compositor's.
+_run_compositor() {
+    local pid=""
+    # The trap is set before the job starts; an empty pid is skipped.
+    trap '[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null; true' TERM INT HUP
+    set -m
+    "$@" &
+    pid=$!
+    set +m
+    local status=0
+    wait "$pid" || status=$?
+    # A trapped signal ends `wait` early: wait again until the compositor is gone.
+    while kill -0 "$pid" 2>/dev/null; do
+        status=0
+        wait "$pid" || status=$?
+    done
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    # The group of the autostart script (hub and tools), recorded by it.
+    local hub_pgid=""
+    hub_pgid="$(cat "$CONFIG_DIR/autostart.pgid" 2>/dev/null || true)"
+    case "$hub_pgid" in
+        ''|*[!0-9]*) ;;
+        *) kill -TERM -- "-$hub_pgid" 2>/dev/null || true ;;
+    esac
+    return "$status"
+}
 
 if [ "$WAYFIRE" = "1" ]; then
     # wayfire.ini starts $OPUSDM_HUB: here the same autostart script labwc runs.
     export OPUSDM_HUB="sh $CONFIG_DIR/autostart"
     echo "Starting Wayfire ($RESOLUTION), config: $WAYFIRE_CONFIG"
+    STATUS=0
     if [ "$HEADLESS" = "1" ]; then
-        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WAYLAND_DISPLAY= wayfire -c "$WAYFIRE_CONFIG"
+        _run_compositor env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WAYLAND_DISPLAY= wayfire -c "$WAYFIRE_CONFIG" || STATUS=$?
     else
-        wayfire -c "$WAYFIRE_CONFIG"
+        _run_compositor wayfire -c "$WAYFIRE_CONFIG" || STATUS=$?
     fi
-    exit 0
+    exit "$STATUS"
 fi
 
 echo "Starting labwc ($RESOLUTION), config: $LABWC_CONFIG"
+STATUS=0
 if [ "$HEADLESS" = "1" ]; then
     # Prints the socket to use, e.g. WAYLAND_DISPLAY=wayland-1 grim shot.png
-    WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WAYLAND_DISPLAY= labwc --config-dir "$CONFIG_DIR"
+    _run_compositor env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WAYLAND_DISPLAY= labwc --config-dir "$CONFIG_DIR" || STATUS=$?
 else
-    labwc --config-dir "$CONFIG_DIR"
+    _run_compositor labwc --config-dir "$CONFIG_DIR" || STATUS=$?
 fi
+exit "$STATUS"
