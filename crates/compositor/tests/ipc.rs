@@ -383,6 +383,16 @@ fn reload_with_a_broken_compositor_json_reports_it_and_uses_the_defaults() {
 }
 
 #[test]
+fn reload_reports_two_built_ins_on_the_same_key() {
+    let comp = Compositor::start();
+    comp.write_config("compositor.json", r#"{"lower": "Alt+F4"}"#);
+    let reply = ipc_request(&comp, "reload", json!({}));
+    let error = "compositor.json lower 'Alt+F4': same key as close, close wins";
+    assert_eq!(reply["errors"], json!([error]), "{reply}");
+    assert!(comp.wait_log(error, Duration::from_secs(2)));
+}
+
+#[test]
 fn reload_reports_a_hub_hotkey_shadowed_by_a_built_in_and_gives_it_back_later() {
     let comp = Compositor::start();
     let (mut hub, reply) = common::ipc::ipc_hub(&comp, json!({"hotkeys": [{"key": "Super+q", "function": "run"}]}));

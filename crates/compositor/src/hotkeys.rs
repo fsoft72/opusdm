@@ -82,7 +82,8 @@ impl HotkeyTable {
     /// Replaces the built-in bindings with those of `config` and keeps the
     /// hotkeys of the hub, resolved again against the new built-ins.
     /// Returns the errors (each also logged): a key that does not parse
-    /// (its default is used instead) and a hub hotkey a built-in now takes
+    /// (its default is used instead), two built-ins on the same key (the
+    /// first in `lookup` order wins) and a hub hotkey a built-in now takes
     /// (the built-in wins; the entry comes back when the built-in moves).
     pub fn rebuild_builtins(&mut self, config: &CompositorConfig) -> Vec<String> {
         let mut errors = Vec::new();
@@ -104,6 +105,7 @@ impl HotkeyTable {
             opusdm_ipc::debug_log!(LOG_TAG, "quit binding disabled by compositor.json");
         }
         self.others = others;
+        errors.extend(self._builtin_duplicates());
         let (hub, problems) = self._resolve_hub();
         let clashes: Vec<String> = problems.into_iter().filter(|(clash, _)| *clash).map(|(_, e)| e).collect();
         for e in &clashes {
@@ -187,6 +189,28 @@ impl HotkeyTable {
     /// binding is disabled.
     pub fn combo_of(&self, action: Action) -> Option<KeyCombo> {
         self.others.iter().find(|(_, a, _)| *a == action).map(|(_, _, combo)| combo.clone())
+    }
+
+    /// The built-ins that share their key with an earlier one in `lookup`
+    /// order (quit, window menu, then the others in `builtin_keys` order):
+    /// the earlier one wins and the later never matches. Returns one error
+    /// per later built-in, each also logged.
+    fn _builtin_duplicates(&self) -> Vec<String> {
+        let ordered = self.quit.iter().map(|c| ("quit", c))
+            .chain(self.window_menu.iter().map(|c| ("window_menu", c)))
+            .chain(self.others.iter().map(|(name, _, c)| (*name, c)));
+        let mut seen: Vec<(&'static str, &KeyCombo)> = Vec::new();
+        let mut errors = Vec::new();
+        for (name, combo) in ordered {
+            let Some((winner, _)) = seen.iter().find(|(_, c)| c.identity() == combo.identity()) else {
+                seen.push((name, combo));
+                continue;
+            };
+            let error = format!("compositor.json {name} '{}': same key as {winner}, {winner} wins", format_key(combo));
+            opusdm_ipc::err_log!(LOG_TAG, "{error}");
+            errors.push(error);
+        }
+        errors
     }
 
     /// Name of the built-in binding that has the key `combo`, if any.
@@ -399,6 +423,22 @@ mod tests {
         let list = table.list();
         assert!(list.contains(&("close", "Super+q".to_string())), "{list:?}");
         assert!(list.contains(&("lower", "Alt+Escape".to_string())), "a bad key takes its default: {list:?}");
+    }
+
+    #[test]
+    fn two_built_ins_on_the_same_key_are_reported_and_the_first_wins() {
+        let mut table = HotkeyTable::new(&CompositorConfig::default());
+        let config = CompositorConfig { lower: "Alt+F4".into(), show_desktop: "Alt+space".into(), ..CompositorConfig::default() };
+        let errors = table.rebuild_builtins(&config);
+        assert_eq!(
+            errors,
+            [
+                "compositor.json show_desktop 'Alt+space': same key as window_menu, window_menu wins",
+                "compositor.json lower 'Alt+F4': same key as close, close wins",
+            ]
+        );
+        assert_eq!(table.lookup(mods("a"), "F4"), Some(Binding::BuiltIn(Action::Close)));
+        assert_eq!(table.lookup(mods("a"), "space"), Some(Binding::WindowMenu));
     }
 
     #[test]
