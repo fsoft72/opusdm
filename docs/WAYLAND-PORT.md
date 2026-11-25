@@ -208,7 +208,7 @@ workspaces, `examples/screenshot.rs` saves every output.
 
 OpusDM's own Wayland compositor, `crates/compositor` (Smithay 0.7), built in
 five stages (design: `docs/superpowers/specs/2026-11-25-opusdm-compositor-design.md`).
-Stages 1 and 2 are done: it runs nested, as a window of the current
+Stages 1, 2 and 3 are done: it runs nested, as a window of the current
 desktop (winit backend, GLES rendering), and is not a session yet.
 
 What stage 1 covers:
@@ -249,9 +249,34 @@ What stage 2 adds:
 - An exclusive layer (the Run window) closes open menus; xdg-activation
   (a notification click brings its application's window forward).
 
-Not there yet (stage 3 and later): wlr-screencopy (opusdm-shot starts on
-Ctrl+Print but cannot capture: "the compositor offers no screen copy"),
-wlr-output-management (the hub logs that `wlr-randr` failed), XWayland,
+What stage 3 adds:
+
+- Window manager built-ins, configurable in `compositor.json` (an empty
+  key disables one; `bindings/list` lists them, `reload` reads the file
+  again): the Alt+Tab switcher (`switcher_next` `Alt+Tab`, `switcher_prev`
+  `Alt+Shift+Tab`, `switcher_all` `Ctrl+Alt+Tab` over every desktop; hold
+  Alt and press Tab again, Shift goes backwards, Escape cancels), `close`
+  `Alt+F4`, `desktop_left` / `desktop_right` `Ctrl+Alt+Left` / `Right`,
+  `desktop_1`..`desktop_4` `Super+F1`..`F4`, `send_left` / `send_right`
+  `Shift+Alt+Left` / `Right` (the window and the view move), `show_desktop`
+  `Super+d`, `lower` `Alt+Escape`, `focus_left` / `right` / `up` / `down`
+  `Super+Shift+<arrow>`, `window_menu` `Alt+space`, `quit`
+  `Ctrl+Alt+BackSpace`. `snap_threshold` (10 px) and `title_layout`
+  (`close,iconify,max:`) are read there too.
+- Snapping: a window dragged to the left / right edge takes that half, to
+  the top it maximizes (a preview shows where); dragging it more than 8 px
+  restores it. Opacity of active (100) / inactive (88) windows from
+  Settings, applied at once (the hub calls `reload`).
+- Server side title bars (xdg-decoration) for clients that ask for them
+  (`foot`): buttons, double click maximizes, right click opens the window
+  menu, middle click lowers, borders resize. GTK4 windows keep their own.
+- wlr-screencopy (`opusdm-shot` full screen and region), clipboard and
+  primary selection, drag and drop between clients.
+- Strict xdg-activation: a token made from a recent input of the asking
+  client focuses the window; any other marks it urgent (`windows/list`
+  `"urgent": true`).
+
+Not there yet (stage 4 and later): wlr-output-management (the hub logs that `wlr-randr` failed), XWayland,
 the DRM / libinput session and the VT-switch bindings. The tasklist keeps
 the map order as on X11 (the IPC lists windows in stacking order, the
 panel sorts them by id). The keymap is the xkb default
@@ -280,9 +305,33 @@ host"; `jq` is needed):
     Ctrl+Super+Print        exec:opusdm-shot
     Ctrl+Shift+Super+space  exec:opusdm-run
 
-and the window menu is `Super+Alt+space` (a temp `compositor.json` through
-`OPUSDM_COMPOSITOR_CONFIG`: the host Openbox takes `Alt+space`). The real
-combos are checked on a spare VT in stage 4. The script always runs on a
+The host Openbox also grabs every default built-in of the compositor, so
+the sandbox writes a temp `compositor.json` (through
+`OPUSDM_COMPOSITOR_CONFIG`) that moves them to `Ctrl+Super` combos, printed
+at start after the hotkey table (Openbox matches the exact modifiers, so
+these reach the nested window):
+
+    Ctrl+Super+Tab          switcher_next
+    Ctrl+Shift+Super+Tab    switcher_prev
+    Ctrl+Alt+Super+Tab      switcher_all
+    Ctrl+Super+F4           close
+    Ctrl+Super+Left         desktop_left
+    Ctrl+Super+Right        desktop_right
+    Ctrl+Shift+Super+F1..F4 desktop_1..desktop_4
+    Ctrl+Shift+Super+Left   send_left
+    Ctrl+Shift+Super+Right  send_right
+    Ctrl+Super+d            show_desktop
+    Ctrl+Super+Escape       lower
+    Ctrl+Alt+Super+<arrow>  focus_left / right / up / down
+    Super+Alt+space         window_menu
+    Ctrl+Alt+BackSpace      quit (default: Openbox does not grab it)
+
+Shift and Alt are added where two built-ins (or a built-in and a sandbox
+hotkey) would clash: `close` takes `Ctrl+Super+F4`, so the desktops are
+`Ctrl+Shift+Super+F<n>`; `send_*` takes `Ctrl+Shift+Super+<arrow>`, so the
+directional focus is `Ctrl+Alt+Super+<arrow>`. The switcher stays open
+while Ctrl or Super is held. The table lives in `SANDBOX_BUILTINS` in
+`run-native.sh`. The real combos are checked on a spare VT in stage 4. The script always runs on a
 private D-Bus session bus (it runs itself again under `dbus-run-session`,
 needed on `PATH`), so the sandbox hub never takes the live session's
 `org.freedesktop.FileManager1`, notification or SNI names; `kill <script pid>`

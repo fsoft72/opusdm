@@ -5,17 +5,21 @@
 # run-wayland.sh (nested labwc) and run-x11.sh: a sandbox for testing the
 # native compositor without touching the real session.
 #
-# Stage 2 of the compositor: windows, popups, layer shell, move / resize,
+# Stage 3 of the compositor: windows, popups, layer shell, move / resize,
 # maximize, fullscreen, desktops, minimize, tasklist, pager, global hotkeys,
-# window menu. No screen copy (opusdm-shot), XWayland or DRM session yet.
+# window menu, the window manager built-ins (switcher, close, desktops,
+# focus...), snapping, opacity, server side title bars, screen copy
+# (opusdm-shot), clipboard and drag and drop. No XWayland or DRM session yet.
 #
 # The sandbox never writes the live configuration: XDG_CONFIG_HOME is a temp
 # folder whose `opusdm` is a COPY of ~/.config/opusdm (every other entry of
 # ~/.config is a symlink), removed at exit. In the copy every global hotkey
 # gets `Super+` (the host desktop keeps its own combos: Ctrl+Shift+space in
-# the sandbox is Ctrl+Shift+Super+space) and the window menu is
-# Super+Alt+space (OPUSDM_COMPOSITOR_CONFIG, a temp compositor.json): the
-# host Openbox takes Alt+space. The table used is printed at start.
+# the sandbox is Ctrl+Shift+Super+space). The built-ins of the compositor
+# that the host Openbox grabs get Ctrl+Super+<key> (Alt+Tab is Ctrl+Super+Tab,
+# Alt+F4 is Ctrl+Super+F4...) and the window menu is Super+Alt+space
+# (OPUSDM_COMPOSITOR_CONFIG, a temp compositor.json). Both tables used are
+# printed at start.
 #
 # Usage:
 #   ./run-native.sh [--debug] [resolution]
@@ -122,8 +126,33 @@ COMPOSITOR_BIN="$BIN_DIR/opusdm-compositor"
 # Where the live configuration is read from (never written).
 LIVE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 
-# Window menu key of the sandbox: the host Openbox takes Alt+space.
-SANDBOX_WINDOW_MENU="Super+Alt+space"
+# Built-in bindings of the sandbox compositor.json, as "name key" pairs: the
+# host Openbox grabs every default of them (Alt+Tab, Alt+F4, Ctrl+Alt+Left,
+# Super+F1, Super+d, Alt+space...), so each one gets Ctrl+Super (plus Shift or
+# Alt where two would clash). Openbox matches the exact modifiers, so these
+# combos reach the nested window. `quit` (Ctrl+Alt+BackSpace) is not grabbed
+# by Openbox and keeps its default. Keep in sync with docs/WAYLAND-PORT.md.
+SANDBOX_BUILTINS=(
+    "switcher_next Ctrl+Super+Tab"
+    "switcher_prev Ctrl+Shift+Super+Tab"
+    "switcher_all Ctrl+Alt+Super+Tab"
+    "close Ctrl+Super+F4"
+    "desktop_left Ctrl+Super+Left"
+    "desktop_right Ctrl+Super+Right"
+    "desktop_1 Ctrl+Shift+Super+F1"
+    "desktop_2 Ctrl+Shift+Super+F2"
+    "desktop_3 Ctrl+Shift+Super+F3"
+    "desktop_4 Ctrl+Shift+Super+F4"
+    "send_left Ctrl+Shift+Super+Left"
+    "send_right Ctrl+Shift+Super+Right"
+    "show_desktop Ctrl+Super+d"
+    "lower Ctrl+Super+Escape"
+    "focus_left Ctrl+Alt+Super+Left"
+    "focus_right Ctrl+Alt+Super+Right"
+    "focus_up Ctrl+Alt+Super+Up"
+    "focus_down Ctrl+Alt+Super+Down"
+    "window_menu Super+Alt+space"
+)
 
 # Temp folders, all removed by the EXIT trap. The trap is set before the
 # first mktemp and copes with empty names.
@@ -183,6 +212,20 @@ _make_sandbox_hotkeys() {
     jq -r '.[] | select(.global == true) | "  \(.key)  \(.function)"' "$file"
 }
 
+# Writes the sandbox compositor.json to $1 from SANDBOX_BUILTINS and prints
+# the table used.
+_make_sandbox_compositor_config() {
+    local file="$1" entry
+    printf '%s\n' "${SANDBOX_BUILTINS[@]}" \
+        | jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {(.[0]): .[1]}) | add' >"$file" \
+        || { echo "jq failed writing the sandbox compositor.json $file" >&2; return 1; }
+    echo "Sandbox built-in bindings (compositor.json; the host Openbox grabs the defaults):"
+    for entry in "${SANDBOX_BUILTINS[@]}"; do
+        printf '  %-24s %s\n' "${entry#* }" "${entry%% *}"
+    done
+    echo "  Ctrl+Alt+BackSpace       quit (default, not grabbed by Openbox)"
+}
+
 # A config directory of its own holding the autostart script the compositor
 # runs once its socket is up, and the sandbox compositor.json.
 CONFIG_DIR="$(mktemp -d /tmp/opusdm-native-XXXXXX)"
@@ -198,9 +241,8 @@ _make_sandbox_hotkeys "$PRIVATE_CONFIG_HOME/opusdm"
 export XDG_CONFIG_HOME="$PRIVATE_CONFIG_HOME"
 echo "Configuration: a copy in $PRIVATE_CONFIG_HOME/opusdm (removed at exit)"
 
-printf '{"window_menu": "%s"}\n' "$SANDBOX_WINDOW_MENU" >"$CONFIG_DIR/compositor.json"
+_make_sandbox_compositor_config "$CONFIG_DIR/compositor.json"
 export OPUSDM_COMPOSITOR_CONFIG="$CONFIG_DIR/compositor.json"
-echo "Window menu: $SANDBOX_WINDOW_MENU"
 
 HUB_OUT="/dev/stderr"
 [ "$DEBUG" = "1" ] && HUB_OUT="$DEBUG_LOG" && echo "Debug log: $HUB_OUT"
