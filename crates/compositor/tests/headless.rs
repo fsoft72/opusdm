@@ -155,6 +155,39 @@ fn a_layer_surface_hidden_by_destroying_its_role_keeps_the_client_alive() {
 }
 
 #[test]
+fn a_layer_surface_created_again_on_the_same_surface_gets_its_own_size() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let note = c.map_layer(Layer::Overlay, Anchor::TOP | Anchor::RIGHT, (300, 80), 0, KeyboardInteractivity::None);
+    assert_eq!(c.hide_layer_keeping_surface(&note), Ok(()));
+    // The role-less anchors set after the destroy must not leak into the new
+    // layer surface: anchored to TOP only, it keeps the asked width.
+    let again = c.map_layer_again(&note, Layer::Overlay, Anchor::TOP, (200, 60));
+    assert_eq!(c.layer_configure(&again), (200, 60));
+    c.roundtrip();
+}
+
+#[test]
+fn a_layer_surface_created_again_does_not_inherit_the_roleless_anchors() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let note = c.map_layer(Layer::Overlay, Anchor::TOP | Anchor::RIGHT, (300, 80), 0, KeyboardInteractivity::None);
+    assert_eq!(c.hide_layer_keeping_surface(&note), Ok(()));
+    // No anchor and a width of 0 is a protocol error on a fresh surface; it
+    // must be one here too (with the anchors left from the destroy it would
+    // silently stretch over the whole output).
+    assert!(c.layer_again_without_anchor(&note, (0, 60)).is_err());
+    assert!(comp_alive(&comp));
+}
+
+/// The compositor still accepts clients.
+fn comp_alive(comp: &Compositor) -> bool {
+    let mut other = TestClient::new(comp);
+    let w = other.map_toplevel((100, 100));
+    other.wait_frame(&w, Duration::from_secs(2))
+}
+
+#[test]
 fn a_maximized_window_grows_when_the_panel_goes_away() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);

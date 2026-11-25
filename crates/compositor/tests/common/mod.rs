@@ -402,6 +402,48 @@ impl TestClient {
         keyboard: KeyboardInteractivity,
     ) -> TestLayer {
         let surface = self.app.compositor.create_surface(&self.qh);
+        self._map_layer_on(Surface::from(surface), layer, anchor, size, exclusive_zone, keyboard)
+    }
+
+    /// Maps a new layer surface on the `wl_surface` of `old`, whose layer
+    /// role was destroyed by `hide_layer_keeping_surface` (what GTK does when
+    /// a hidden layer window is shown again), as `map_layer` does.
+    pub fn map_layer_again(
+        &mut self,
+        old: &TestLayer,
+        layer: Layer,
+        anchor: Anchor,
+        size: (u32, u32),
+    ) -> TestLayer {
+        let surface = old.wl_surface().clone();
+        self._map_layer_on(Surface::from(surface), layer, anchor, size, 0, KeyboardInteractivity::None)
+    }
+
+    /// Gives the `wl_surface` of `old` (layer role destroyed by
+    /// `hide_layer_keeping_surface`) a new layer surface that never sends
+    /// `set_anchor`, asks `size` and does the initial commit. The result of
+    /// the roundtrip that follows: an error when the compositor killed the
+    /// client (as it must for a size of 0 with no anchor on a fresh surface).
+    pub fn layer_again_without_anchor(&mut self, old: &TestLayer, size: (u32, u32)) -> Result<(), String> {
+        let surface = Surface::from(old.wl_surface().clone());
+        let ls = self.app.layer_shell.create_layer_surface(&self.qh, surface, Layer::Overlay, Some("opusdm-test"), None);
+        ls.set_size(size.0, size.1);
+        ls.commit();
+        let result = self.queue.roundtrip(&mut self.app).map(|_| ()).map_err(|e| e.to_string());
+        self.layers.push(ls);
+        result
+    }
+
+    /// Gives `surface` a layer role and maps it (see `map_layer`).
+    fn _map_layer_on(
+        &mut self,
+        surface: Surface,
+        layer: Layer,
+        anchor: Anchor,
+        size: (u32, u32),
+        exclusive_zone: i32,
+        keyboard: KeyboardInteractivity,
+    ) -> TestLayer {
         let ls = self.app.layer_shell.create_layer_surface(&self.qh, surface, layer, Some("opusdm-test"), None);
         ls.set_size(size.0, size.1);
         ls.set_anchor(anchor);
