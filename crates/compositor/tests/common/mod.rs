@@ -102,6 +102,8 @@ pub struct Compositor {
     pub ipc_socket: PathBuf,
     child: Child,
     _runtime: TempDir,
+    /// Every stderr line of the compositor so far (also echoed to stderr).
+    log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Compositor {
@@ -120,8 +122,9 @@ impl Compositor {
             .env("HOME", runtime.path())
             .env("XDG_CONFIG_HOME", runtime.path().join("config"))
             .env_remove("WAYLAND_DISPLAY")
+            .env_remove("OPUSDM_COMPOSITOR_CONFIG")
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn opusdm-compositor");
         let stdout = child.stdout.take().expect("compositor stdout");
@@ -136,10 +139,36 @@ impl Compositor {
             // Ends when the compositor (and every child holding the pipe) is gone.
             let _ = std::io::copy(&mut reader, &mut std::io::sink());
         });
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stderr = child.stderr.take().expect("compositor stderr");
+        let sink = Arc::clone(&log);
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                eprintln!("{line}");
+                sink.lock().expect("log lock").push(line);
+            }
+        });
         let name = _read_announce(&mut child, &rx, "WAYLAND_DISPLAY=");
         let ipc = _read_announce(&mut child, &rx, "OPUSDM_COMPOSITOR_SOCKET=");
         let socket = runtime.path().join(name);
-        Compositor { socket, ipc_socket: PathBuf::from(ipc), child, _runtime: runtime }
+        Compositor { socket, ipc_socket: PathBuf::from(ipc), child, _runtime: runtime, log }
+    }
+
+    /// Waits at most `timeout` for a stderr line of the compositor that
+    /// contains `text`. True when one came.
+    pub fn wait_log(&self, text: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.log_count(text) > 0 { return true; }
+            if Instant::now() >= deadline { return false; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Number of stderr lines so far that contain `text`.
+    pub fn log_count(&self, text: &str) -> usize {
+        self.log.lock().expect("log lock").iter().filter(|l| l.contains(text)).count()
     }
 
     /// True while the compositor process has not exited.

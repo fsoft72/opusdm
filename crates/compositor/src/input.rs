@@ -9,7 +9,7 @@ use smithay::{
     backend::input::{ButtonState, KeyState},
     desktop::{layer_map_for_output, LayerSurface, Window, WindowSurfaceType},
     input::{
-        keyboard::{xkb, FilterResult, Keycode, KeysymHandle, ModifiersState},
+        keyboard::{xkb, FilterResult, Keycode, Keysym, KeysymHandle, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, GrabStartData, MotionEvent},
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
@@ -20,6 +20,7 @@ use smithay::{
 use crate::geometry::Rect;
 use crate::grabs::edges_for_point;
 use crate::hotkeys::{combo_text, mods_of, Binding};
+use opusdm_ipc::bindings::Mods;
 use crate::state::{State, LOG_TAG};
 
 /// Linux input code of the left mouse button (`BTN_LEFT`).
@@ -173,13 +174,32 @@ impl State {
             opusdm_ipc::debug_log!(LOG_TAG, "hotkey release of key {} swallowed", keycode.raw());
             return FilterResult::Intercept(None);
         }
-        if self.swallowed_keys.contains(&keycode) { return FilterResult::Intercept(None); }
-        let Some(sym) = handle.raw_latin_sym_or_raw_current_sym() else { return FilterResult::Forward };
-        let name = xkb::keysym_get_name(sym);
+        if self.swallowed_keys.contains(&keycode) {
+            opusdm_ipc::debug_log!(LOG_TAG, "hotkey repeat press of key {} swallowed", keycode.raw());
+            return FilterResult::Intercept(None);
+        }
         let mods = mods_of(mods);
-        let Some(binding) = self.hotkeys.lookup(mods, &name) else { return FilterResult::Forward };
+        let Some((binding, name)) = self._lookup_key(mods, handle) else { return FilterResult::Forward };
         self.swallowed_keys.insert(keycode);
         FilterResult::Intercept(Some((binding, combo_text(mods, &name))))
+    }
+
+    /// The binding of the key `handle` with `mods` and the keysym name that
+    /// matched: the layout independent base keysym
+    /// (`raw_latin_sym_or_raw_current_sym`, `Ctrl+Shift+1`) first, then,
+    /// when it differs, the keysym the keymap state produces
+    /// (`modified_sym`, `Ctrl+Shift+exclam`, as the lister's recorder and
+    /// GDK write a shifted key; keypad keys with Num Lock alike).
+    fn _lookup_key(&self, mods: Mods, handle: &KeysymHandle<'_>) -> Option<(Binding, String)> {
+        let raw = handle.raw_latin_sym_or_raw_current_sym();
+        if let Some(sym) = raw {
+            let name = xkb::keysym_get_name(sym);
+            if let Some(binding) = self.hotkeys.lookup(mods, &name) { return Some((binding, name)); }
+        }
+        let modified = handle.modified_sym();
+        if Some(modified) == raw || modified == Keysym::NoSymbol { return None; }
+        let name = xkb::keysym_get_name(modified);
+        self.hotkeys.lookup(mods, &name).map(|binding| (binding, name))
     }
 
     /// Focus on a press: a window is raised and gets the keyboard; a layer

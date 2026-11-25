@@ -68,9 +68,9 @@ impl HotkeyTable {
     }
 
     /// Replaces the hotkeys of the hub with `entries` (key, function).
-    /// Returns the errors, each also logged: a key that does not parse, and a
+    /// Returns the errors, each also logged: a key that does not parse, a
     /// key taken by a built-in binding (the built-in wins, the entry is
-    /// dropped).
+    /// dropped) and a key already bound by an earlier entry (the first wins).
     pub fn set_hub(&mut self, entries: &[(String, String)]) -> Vec<String> {
         let mut errors = Vec::new();
         let mut hub = Vec::new();
@@ -84,6 +84,10 @@ impl HotkeyTable {
             };
             if let Some(name) = self._builtin_name(&combo) {
                 errors.push(format!("hotkey {}: {function} conflicts with the built-in {name}, the built-in wins", format_key(&combo)));
+                continue;
+            }
+            if let Some((_, first)) = hub.iter().find(|(c, _): &&(KeyCombo, String)| c.identity() == combo.identity()) {
+                errors.push(format!("hotkey {}: {function} duplicates {first}", format_key(&combo)));
                 continue;
             }
             hub.push((combo, function.clone()));
@@ -141,11 +145,9 @@ impl State {
             }
             Binding::WindowMenu => self.open_window_menu(),
             Binding::Hub(function) => {
-                if !self.ipc.has_watchers() {
+                if !self.ipc.send_to_hub(&json!({"event": "hotkey", "function": function})) {
                     opusdm_ipc::err_log!(LOG_TAG, "hotkey {combo}: no hub connected");
-                    return;
                 }
-                self.ipc.broadcast(&json!({"event": "hotkey", "function": function}));
             }
         }
     }
@@ -213,6 +215,14 @@ mod tests {
         assert!(errors[1].starts_with("hotkey Ctrl+Bogus+x"), "{errors:?}");
         assert_eq!(table.lookup(mods("a"), "space"), Some(Binding::WindowMenu));
         assert_eq!(table.lookup(mods("cs"), "space"), Some(Binding::Hub("run".into())));
+    }
+
+    #[test]
+    fn a_duplicated_hub_key_keeps_the_first_function() {
+        let mut table = HotkeyTable::new(&CompositorConfig::default());
+        let errors = table.set_hub(&[("Ctrl+t".into(), "terminal".into()), ("Ctrl+T".into(), "other".into())]);
+        assert_eq!(errors, ["hotkey Ctrl+t: other duplicates terminal"]);
+        assert_eq!(table.lookup(mods("c"), "t"), Some(Binding::Hub("terminal".into())));
     }
 
     #[test]

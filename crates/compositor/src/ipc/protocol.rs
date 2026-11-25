@@ -421,6 +421,35 @@ mod tests {
     }
 
     #[test]
+    fn a_hotkey_written_with_the_shifted_symbol_matches() {
+        let (_d, mut s) = state(4);
+        s.test_input = true;
+        assert!(s.hotkeys.set_hub(&[("Ctrl+Shift+exclam".into(), "shifted".into())]).is_empty());
+        let one = _keycode_for(&mut s, "1").unwrap();
+        assert_eq!(call(&mut s, "debug/key", json!({"key": "Ctrl+Shift+1"})), json!({"ok": true}));
+        assert!(s.swallowed_keys.is_empty(), "press and release swallowed and forgotten");
+        s.hotkeys.set_hub(&[("Ctrl+Shift+1".into(), "base".into())]);
+        let ctrl = _keycode_for(&mut s, "Control_L").unwrap();
+        let shift = _keycode_for(&mut s, "Shift_L").unwrap();
+        for code in [ctrl, shift, one] {
+            s.keyboard_key(code, true, 0);
+        }
+        assert!(s.swallowed_keys.contains(&one), "the base keysym matches first");
+        for code in [one, shift, ctrl] {
+            s.keyboard_key(code, false, 0);
+        }
+        assert!(s.swallowed_keys.is_empty());
+        s.hotkeys.set_hub(&[("Ctrl+Shift+exclam".into(), "shifted".into())]);
+        for code in [ctrl, shift, one] {
+            s.keyboard_key(code, true, 0);
+        }
+        assert!(s.swallowed_keys.contains(&one), "the modified keysym matches when the base one does not");
+        for code in [one, shift, ctrl] {
+            s.keyboard_key(code, false, 0);
+        }
+    }
+
+    #[test]
     fn the_quit_binding_sets_the_quit_flag() {
         let (_d, mut s) = state(4);
         s.test_input = true;

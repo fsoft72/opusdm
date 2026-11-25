@@ -102,6 +102,20 @@ pub fn ipc_watch(comp: &Compositor) -> IpcWatch {
     IpcWatch { stream }
 }
 
+/// Opens a connection that becomes the hub: sends `hotkeys/set` with
+/// `data`, then `watch`, on the same connection (as the hub does). Returns
+/// the watch stream and the reply to `hotkeys/set`.
+pub fn ipc_hub(comp: &Compositor, data: Value) -> (IpcWatch, Value) {
+    let mut stream = _connect(comp);
+    _send(&mut stream, "hotkeys/set", data);
+    let set = _read_message(&mut stream, Instant::now() + REQUEST_TIMEOUT).expect("reply to hotkeys/set");
+    assert_eq!(set["ok"], true, "hotkeys/set refused: {set}");
+    _send(&mut stream, "watch", json!({}));
+    let reply = _read_message(&mut stream, Instant::now() + REQUEST_TIMEOUT).expect("reply to watch");
+    assert_eq!(reply["ok"], true, "watch refused: {reply}");
+    (IpcWatch { stream }, set)
+}
+
 impl IpcWatch {
     /// The next event, waiting at most `timeout`; `None` on timeout or when
     /// the compositor closed the connection.

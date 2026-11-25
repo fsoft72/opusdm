@@ -15,11 +15,18 @@
 //! keeps accepting. Dropping the server (the loop has ended: quit, signal,
 //! error) removes the socket file.
 //!
-//! The hub is the connection that last sent `hotkeys/set`; the server keeps
-//! only its id (`hub`), never the connection itself. When it closes the id
-//! is cleared with `err_log!("hub disconnected")`; the hotkey table (in
-//! `State::hotkeys`) stays, and a matched hub hotkey goes to every watcher,
-//! or is logged as "no hub connected" when none is left.
+//! The hub is the connection that sent `hotkeys/set` and is a `watch`
+//! stream (it sends `hotkeys/set`, then `watch`, on the same connection;
+//! or `hotkeys/set` on its watch stream). The server keeps only its id
+//! (`hub`), never the connection itself. A `hotkeys/set` from a connection
+//! that is not watching replaces the table and makes that connection the
+//! candidate (`hub_candidate`): it becomes the hub when it sends `watch`;
+//! a candidate that closes first was a one-shot client (`debug_log!`, the
+//! hub, if any, keeps its role). When the hub closes its id is cleared with
+//! `err_log!("hub disconnected")`; the hotkey table (in `State::hotkeys`)
+//! stays, and a matched hub hotkey is logged as "no hub connected" and
+//! swallowed until a new hub connects. `hotkey` events go to the hub only,
+//! never to the other watchers (the panel).
 
 pub mod frame;
 pub mod protocol;
@@ -85,10 +92,12 @@ pub struct IpcServer {
     next_id: u64,
     /// What the `watch` connections were last told.
     snapshot: Snapshot,
-    /// The connection that last sent `hotkeys/set` (the hub), while it is
-    /// open. Only a marker for the logs: the hotkey table stays when it
-    /// closes and `hotkey` events go to every watcher.
+    /// The hub: the connection that sent `hotkeys/set` and is a watcher.
+    /// The only receiver of `hotkey` events.
     hub: Option<u64>,
+    /// A connection that sent `hotkeys/set` and is not watching yet: it
+    /// becomes the hub when it sends `watch`.
+    hub_candidate: Option<u64>,
 }
 
 /// Path of the IPC socket for the Wayland socket `wayland_display` in
@@ -115,6 +124,7 @@ impl IpcServer {
             next_id: 0,
             snapshot: Snapshot::default(),
             hub: None,
+            hub_candidate: None,
         };
         listener.set_nonblocking(true).map_err(|e| format!("ipc: non-blocking listener: {e}"))?;
         handle
@@ -201,8 +211,28 @@ impl IpcServer {
         self._forget_hub(id);
     }
 
-    /// The connection `id` sent `hotkeys/set`: it is the hub now.
-    fn _set_hub(&mut self, id: u64) {
+    /// Sends `event` to the hub. False (nothing sent) when there is no hub.
+    pub fn send_to_hub(&mut self, event: &Value) -> bool {
+        let Some(id) = self.hub.filter(|id| self.conns.get(id).is_some_and(|c| c.watch)) else { return false };
+        self._send(id, event);
+        true
+    }
+
+    /// The connection `id` sent `hotkeys/set`: a watcher becomes the hub
+    /// now, any other connection becomes the candidate (the hub once it
+    /// sends `watch`).
+    fn _hotkeys_sent(&mut self, id: u64) {
+        if self.conns.get(&id).is_some_and(|c| c.watch) {
+            self._make_hub(id);
+            return;
+        }
+        self.hub_candidate = Some(id);
+        opusdm_ipc::debug_log!(LOG_TAG, "connection {id} sent hotkeys/set: the hub once it watches");
+    }
+
+    /// The connection `id` is the hub (replacing the previous one).
+    fn _make_hub(&mut self, id: u64) {
+        if self.hub_candidate == Some(id) { self.hub_candidate = None; }
         if self.hub == Some(id) { return; }
         match self.hub.replace(id) {
             Some(old) => opusdm_ipc::debug_log!(LOG_TAG, "hub connected on connection {id} (replaces connection {old})"),
@@ -210,10 +240,15 @@ impl IpcServer {
         }
     }
 
-    /// The connection `id` is gone: when it was the hub, logs it. The
-    /// hotkey table stays; until a new hub connects a matched hub hotkey
-    /// logs "no hub connected" (when no watcher is left).
+    /// The connection `id` is gone. The hub: `err_log!("hub disconnected")`,
+    /// the hotkey table stays and hub hotkeys log "no hub connected" until a
+    /// new hub connects. The candidate: a one-shot `hotkeys/set` client,
+    /// only traced.
     fn _forget_hub(&mut self, id: u64) {
+        if self.hub_candidate == Some(id) {
+            self.hub_candidate = None;
+            opusdm_ipc::debug_log!(LOG_TAG, "connection {id} sent hotkeys/set and closed without watching: one-shot, the table stays");
+        }
         if self.hub != Some(id) { return; }
         self.hub = None;
         opusdm_ipc::err_log!(LOG_TAG, "hub disconnected");
@@ -333,6 +368,9 @@ impl IpcServer {
         let Some(conn) = self.conns.get_mut(&id) else { return };
         conn.watch = true;
         opusdm_ipc::debug_log!(LOG_TAG, "ipc: connection {id} is a watcher");
+        if self.hub_candidate == Some(id) {
+            self._make_hub(id);
+        }
     }
 }
 
@@ -396,7 +434,7 @@ fn _on_readable(state: &mut State, id: u64) -> PostAction {
                 let desktops = (state.desktops.count(), state.desktops.current());
                 state.ipc._start_watch(id, views, desktops);
             }
-            After::Hub => state.ipc._set_hub(id),
+            After::Hub => state.ipc._hotkeys_sent(id),
             After::Nothing => {}
         }
     }
@@ -492,6 +530,37 @@ mod tests {
         let mut buf = [0u8; 15];
         peer.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"\x0b\x00\x00\x00{\"ok\":true}");
+    }
+
+    #[test]
+    fn hotkey_events_go_to_the_hub_only_once_it_watches() {
+        let (mut server, mut peer) = server_with_conn(0);
+        server.conns.get_mut(&1).unwrap().watch = false;
+        assert!(!server.send_to_hub(&serde_json::json!({"event": "hotkey"})), "no hub");
+        server._hotkeys_sent(1);
+        assert_eq!((server.hub, server.hub_candidate), (None, Some(1)));
+        assert!(!server.send_to_hub(&serde_json::json!({"event": "hotkey"})), "a candidate is not the hub");
+        server._start_watch(1, Vec::new(), (4, 0));
+        assert_eq!((server.hub, server.hub_candidate), (Some(1), None));
+        assert!(server.send_to_hub(&serde_json::json!({"event": "hotkey"})));
+        let mut buf = [0u8; 4];
+        peer.read_exact(&mut buf).unwrap();
+        server._close(1, "test");
+        assert_eq!(server.hub, None);
+        assert!(!server.send_to_hub(&serde_json::json!({"event": "hotkey"})));
+    }
+
+    #[test]
+    fn a_one_shot_hotkeys_set_keeps_the_watching_hub() {
+        let (mut server, _peer) = server_with_conn(0);
+        server._hotkeys_sent(1);
+        assert_eq!(server.hub, Some(1), "a watcher that sends hotkeys/set is the hub at once");
+        let (ours, _peer2) = UnixStream::pair().unwrap();
+        server.conns.insert(2, Conn { stream: ours, read_buf: Vec::new(), pending: Vec::new(), watch: false, writing: false });
+        server._hotkeys_sent(2);
+        assert_eq!((server.hub, server.hub_candidate), (Some(1), Some(2)));
+        server._close(2, "one-shot done");
+        assert_eq!((server.hub, server.hub_candidate), (Some(1), None));
     }
 
     #[test]

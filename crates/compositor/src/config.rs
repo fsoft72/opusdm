@@ -19,6 +19,9 @@ pub const DEFAULT_WINDOW_MENU: &str = "Alt+space";
 /// Default key that ends the compositor.
 pub const DEFAULT_QUIT: &str = "Ctrl+Alt+BackSpace";
 
+/// The keys `compositor.json` may have.
+const KNOWN_KEYS: [&str; 3] = ["window_menu", "quit", "quit_enabled"];
+
 /// The settings of `compositor.json`; a missing key takes its default.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -43,9 +46,14 @@ impl Default for CompositorConfig {
 }
 
 impl CompositorConfig {
-    /// Parses the JSON object `json`; missing keys take their default.
+    /// Parses the JSON object `json`; missing keys take their default, an
+    /// unknown key is logged with `err_log!` and ignored.
     pub fn parse(json: &str) -> Result<CompositorConfig, String> {
-        serde_json::from_str(json).map_err(|e| e.to_string())
+        let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        for key in unknown_keys(&value) {
+            opusdm_ipc::err_log!(LOG_TAG, "compositor.json: unknown key '{key}' ignored");
+        }
+        serde_json::from_value(value).map_err(|e| e.to_string())
     }
 
     /// Reads `$OPUSDM_COMPOSITOR_CONFIG`, else `config_dir()/compositor.json`
@@ -75,6 +83,13 @@ impl CompositorConfig {
             }
         }
     }
+}
+
+/// The keys of the JSON object `value` that `CompositorConfig` does not
+/// know (none when `value` is not an object).
+pub fn unknown_keys(value: &serde_json::Value) -> Vec<String> {
+    let Some(object) = value.as_object() else { return Vec::new() };
+    object.keys().filter(|k| !KNOWN_KEYS.contains(&k.as_str())).cloned().collect()
 }
 
 /// Path of `compositor.json`: `$OPUSDM_COMPOSITOR_CONFIG` when set and not
@@ -108,10 +123,20 @@ mod tests {
     }
 
     #[test]
+    fn unknown_keys_are_found_and_the_rest_still_applies() {
+        let json = r#"{"quit_enabled": false, "window_menue": "Super+m"}"#;
+        assert_eq!(unknown_keys(&serde_json::from_str(json).unwrap()), ["window_menue"]);
+        let config = CompositorConfig::parse(json).unwrap();
+        assert!(!config.quit_enabled);
+        assert_eq!(config.window_menu, "Alt+space");
+    }
+
+    #[test]
     fn keys_are_read_and_bad_json_is_an_error() {
         let config = CompositorConfig::parse(r#"{"window_menu": "Super+m", "quit": "Ctrl+Alt+q"}"#).unwrap();
         assert_eq!((config.window_menu.as_str(), config.quit.as_str()), ("Super+m", "Ctrl+Alt+q"));
         assert!(CompositorConfig::parse("not json").is_err());
+        assert!(CompositorConfig::parse("[1]").is_err());
         assert!(CompositorConfig::parse(r#"{"quit_enabled": "yes"}"#).is_err());
     }
 }

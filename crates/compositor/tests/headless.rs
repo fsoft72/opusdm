@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use common::ipc::{ipc_request, ipc_watch};
+use common::ipc::{ipc_hub, ipc_request, ipc_watch};
 use common::{Anchor, Compositor, HasSurface, KeyboardInteractivity, Layer, Rect, TestClient};
 
 #[test]
@@ -570,16 +570,22 @@ fn a_workspace_client_that_dies_leaves_no_workspaces_behind() {
     assert_eq!(wait_workspace_counts(&comp, (0, 0)), (0, 0));
 }
 
+/// The hub table used by the hotkey tests.
+fn terminal_table() -> serde_json::Value {
+    json!({"hotkeys": [{"key": "Ctrl+backslash", "function": "terminal"}]})
+}
+
 #[test]
-fn a_hub_hotkey_reaches_the_watcher_and_not_the_client() {
+fn a_hub_hotkey_reaches_the_hub_and_not_the_client_nor_other_watchers() {
     let comp = Compositor::start();
-    let mut watch = ipc_watch(&comp);
+    let mut panel = ipc_watch(&comp);
+    let (mut hub, _) = ipc_hub(&comp, terminal_table());
     let mut c = TestClient::new(&comp);
     let w = c.map_toplevel((400, 300));
     assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
-    ipc_request(&comp, "hotkeys/set", json!({"hotkeys": [{"key": "Ctrl+backslash", "function": "terminal"}]}));
     ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"}));
-    assert!(watch.wait_for_hotkey("terminal", Duration::from_secs(2)));
+    assert!(hub.wait_for_hotkey("terminal", Duration::from_secs(2)));
+    assert!(!panel.wait_for("hotkey", Duration::from_millis(300)), "a plain watcher gets no hotkey event");
     c.roundtrip();
     assert_eq!(c.keys_received(), 0, "neither the press nor the release of backslash reach the client");
 }
@@ -587,13 +593,45 @@ fn a_hub_hotkey_reaches_the_watcher_and_not_the_client() {
 #[test]
 fn hotkeys_work_again_after_the_hub_reconnects() {
     let comp = Compositor::start();
-    ipc_request(&comp, "hotkeys/set", json!({"hotkeys": [{"key": "Ctrl+backslash", "function": "terminal"}]}));
-    drop(ipc_watch(&comp)); // the old hub goes away
-    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"})); // logged, swallowed
-    let mut watch = ipc_watch(&comp);
-    ipc_request(&comp, "hotkeys/set", json!({"hotkeys": [{"key": "Ctrl+backslash", "function": "terminal"}]}));
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    let (mut hub_a, _) = ipc_hub(&comp, terminal_table());
     ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"}));
-    assert!(watch.wait_for_hotkey("terminal", Duration::from_secs(2)));
+    assert!(hub_a.wait_for_hotkey("terminal", Duration::from_secs(2)), "hub A gets the event");
+    let mut panel = ipc_watch(&comp); // a plain watcher, like the panel
+    drop(hub_a); // the hub crashes
+    assert!(comp.wait_log("hub disconnected", Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"}));
+    assert!(comp.wait_log("hotkey Ctrl+backslash: no hub connected", Duration::from_secs(2)));
+    assert!(!panel.wait_for("hotkey", Duration::from_millis(300)), "the plain watcher gets no hotkey event");
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0, "the key is swallowed with no hub");
+    let (mut hub_b, _) = ipc_hub(&comp, terminal_table());
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"}));
+    assert!(hub_b.wait_for_hotkey("terminal", Duration::from_secs(2)), "hub B gets the event");
+    assert_eq!(comp.log_count("hub disconnected"), 1);
+}
+
+#[test]
+fn a_one_shot_hotkeys_set_replaces_the_table_without_a_hub() {
+    let comp = Compositor::start();
+    let mut watch = ipc_watch(&comp);
+    let reply = ipc_request(&comp, "hotkeys/set", terminal_table());
+    assert_eq!(reply["ok"], true, "{reply}");
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"}));
+    assert!(comp.wait_log("hotkey Ctrl+backslash: no hub connected", Duration::from_secs(2)));
+    assert!(!watch.wait_for("hotkey", Duration::from_millis(300)));
+    assert_eq!(comp.log_count("hub disconnected"), 0, "a one-shot client was never the hub");
+}
+
+#[test]
+fn a_hub_hotkey_written_with_the_shifted_symbol_matches() {
+    let comp = Compositor::start();
+    let (mut hub, set) = ipc_hub(&comp, json!({"hotkeys": [{"key": "Ctrl+Shift+exclam", "function": "one"}]}));
+    assert_eq!(set["errors"], json!([]), "{set}");
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+Shift+1"}));
+    assert!(hub.wait_for_hotkey("one", Duration::from_secs(2)));
 }
 
 #[test]
@@ -620,12 +658,10 @@ fn a_hub_hotkey_that_conflicts_with_a_built_in_is_reported_and_the_built_in_wins
     let mut c = TestClient::new(&comp);
     let w = c.map_toplevel((400, 300));
     assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
-    let mut watch = ipc_watch(&comp);
-    let reply = ipc_request(&comp, "hotkeys/set", json!({"hotkeys": [{"key": "Alt+space", "function": "run"}]}));
-    assert_eq!(reply["ok"], true, "{reply}");
+    let (mut hub, reply) = ipc_hub(&comp, json!({"hotkeys": [{"key": "Alt+space", "function": "run"}]}));
     assert_eq!(reply["errors"].as_array().map(Vec::len), Some(1), "{reply}");
     ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
-    assert!(!watch.wait_for_hotkey("run", Duration::from_millis(300)), "the window menu binding wins");
+    assert!(!hub.wait_for_hotkey("run", Duration::from_millis(300)), "the window menu binding wins");
     c.roundtrip();
     assert_eq!(c.keys_received(), 0, "the window menu binding swallows the key");
 }
