@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smithay::{
-    backend::allocator::dmabuf::Dmabuf,
+    backend::{allocator::dmabuf::Dmabuf, renderer::utils::with_renderer_surface_state},
     delegate_data_device, delegate_output, delegate_seat,
     desktop::{layer_map_for_output, LayerSurface, PopupManager, Space, Window},
     input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
@@ -36,6 +36,8 @@ use smithay::{
 
 use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
+use crate::wm::desktops::Desktops;
+use crate::wm::{WindowId, HIDDEN_FRAME_INTERVAL};
 
 /// Log tag of the compositor.
 pub const LOG_TAG: &str = "opusdm-compositor";
@@ -43,9 +45,19 @@ pub const LOG_TAG: &str = "opusdm-compositor";
 /// Name of the seat advertised to clients.
 const SEAT_NAME: &str = "seat0";
 
-/// What the compositor keeps about a toplevel besides its `Window`.
-#[derive(Debug, Clone, Default)]
+/// What the compositor keeps about a toplevel: its `Window` and the state
+/// of the window manager.
+#[derive(Debug, Clone)]
 pub struct WindowInfo {
+    /// Stable id of the window, never reused in a run.
+    pub id: WindowId,
+    /// The Smithay window, kept here for the whole life of the toplevel
+    /// (the space holds only the shown windows).
+    pub window: Window,
+    /// 0-based index of the desktop the window is on.
+    pub desktop: u32,
+    /// True while the window is minimized (hidden until it is activated).
+    pub minimized: bool,
     /// Geometry before maximize / fullscreen, to restore it.
     pub restore: Option<Rect>,
     /// True while the window is maximized (it fills `usable_area()`).
@@ -53,11 +65,29 @@ pub struct WindowInfo {
     /// True while the window is fullscreen (it fills the whole output and is
     /// shown above the TOP layer when it is the topmost window).
     pub fullscreen: bool,
-    /// Position the window had when it was unmapped by a null buffer; it
-    /// maps there again instead of taking a new cascade position.
+    /// Position the window had when it left the space (unmapped by a null
+    /// buffer, minimized or left on another desktop); it maps there again
+    /// instead of taking a new cascade position.
     pub last_position: Option<(i32, i32)>,
     /// Interactive resize in progress, followed by the commits of the window.
     pub resize: ResizeTrack,
+}
+
+impl WindowInfo {
+    /// Info of a new toplevel `window` with the id `id`, on the desktop `desktop`.
+    pub fn new(id: WindowId, window: Window, desktop: u32) -> WindowInfo {
+        WindowInfo {
+            id,
+            window,
+            desktop,
+            minimized: false,
+            restore: None,
+            maximized: false,
+            fullscreen: false,
+            last_position: None,
+            resize: ResizeTrack::default(),
+        }
+    }
 }
 
 /// Per-client data handed to Smithay when a client connects.
@@ -82,10 +112,20 @@ impl ClientData for ClientState {
 #[allow(dead_code)]
 pub struct State {
     pub display_handle: DisplayHandle,
-    /// Mapped windows, in stacking order (last = top).
+    /// Shown windows, in stacking order (last = top): minimized windows and
+    /// windows of other desktops are out of the space (see `sync_space`).
     pub space: Space<Window>,
-    /// Every toplevel, mapped or not, keyed by its `wl_surface`.
+    /// Every toplevel, mapped or not, shown or hidden, keyed by its
+    /// `wl_surface`: the owner of the `Window` of every toplevel.
     pub windows: HashMap<WlSurface, WindowInfo>,
+    /// Stacking order of every toplevel (last = top), shown or not.
+    pub stack: Vec<WindowId>,
+    /// The virtual desktops.
+    pub desktops: Desktops,
+    /// Id the next toplevel gets (ids start at 1, never reused).
+    pub next_window_id: u32,
+    /// When the hidden windows got their last frame callbacks.
+    pub last_hidden_frame: Instant,
     /// Toplevels created but not mapped yet (no buffer committed).
     pub unmapped: Vec<Window>,
     /// The xdg popups of every client (parents are toplevels or layer surfaces).
@@ -125,9 +165,9 @@ pub struct State {
 }
 
 impl State {
-    /// Creates the protocol globals, the seat (without devices) and maps
-    /// `output` at the origin of the space.
-    pub fn new(display: &DisplayHandle, output: Output) -> State {
+    /// Creates the protocol globals, the seat (without devices), `desktops`
+    /// virtual desktops (clamped) and maps `output` at the origin of the space.
+    pub fn new(display: &DisplayHandle, output: Output, desktops: u32) -> State {
         let compositor_state = CompositorState::new::<State>(display);
         let xdg_shell_state = XdgShellState::new::<State>(display);
         let layer_shell_state = WlrLayerShellState::new::<State>(display);
@@ -143,6 +183,10 @@ impl State {
             display_handle: display.clone(),
             space,
             windows: HashMap::new(),
+            stack: Vec::new(),
+            desktops: Desktops::new(desktops),
+            next_window_id: 1,
+            last_hidden_frame: Instant::now(),
             unmapped: Vec::new(),
             popups: PopupManager::default(),
             compositor_state,
@@ -184,13 +228,22 @@ impl State {
         Rect { x: output.x + zone.loc.x, y: output.y + zone.loc.y, w: zone.size.w, h: zone.size.h }
     }
 
-    /// Sends the frame callbacks of every mapped window and layer surface
-    /// (and their popups).
-    pub fn send_frames(&self) {
+    /// Sends the frame callbacks of every shown window and layer surface
+    /// (and their popups), and every `HIDDEN_FRAME_INTERVAL` those of the
+    /// hidden windows that have a buffer (minimized or on another desktop),
+    /// so their clients do not stall.
+    pub fn send_frames(&mut self) {
         let time = self.start_time.elapsed();
         let output = &self.output;
         for window in self.space.elements() {
             window.send_frame(output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
+        }
+        if self.last_hidden_frame.elapsed() >= HIDDEN_FRAME_INTERVAL {
+            self.last_hidden_frame = Instant::now();
+            let hidden = self.windows.values().filter(|i| self.space.element_location(&i.window).is_none() && has_buffer(&i.window));
+            for info in hidden {
+                info.window.send_frame(output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
+            }
         }
         let map = layer_map_for_output(output);
         for layer in map.layers() {
@@ -219,6 +272,7 @@ impl State {
     pub fn focus_window(&mut self, window: Option<Window>) {
         if let Some(layer) = self.exclusive_layer.clone() {
             if let Some(w) = &window {
+                self.raise_in_stack(w);
                 self.space.raise_element(w, false);
             }
             opusdm_ipc::debug_log!(LOG_TAG, "focus: exclusive layer {} keeps the keyboard", layer.id());
@@ -230,6 +284,9 @@ impl State {
             opusdm_ipc::err_log!(LOG_TAG, "focus: the seat has no keyboard");
             return;
         };
+        if let Some(w) = &window {
+            self.raise_in_stack(w);
+        }
         match &window {
             Some(w) => self.space.raise_element(w, true),
             None => self.space.elements().for_each(|w| {
@@ -282,6 +339,8 @@ impl State {
     pub fn refresh(&mut self) {
         self.space.refresh();
         self.windows.retain(|surface, _| surface.alive());
+        let windows = &self.windows;
+        self.stack.retain(|id| windows.values().any(|i| i.id == *id));
         self.unmapped.retain(|w| w.alive());
         self.popups.cleanup();
         let before = self.usable_area();
@@ -308,6 +367,12 @@ impl State {
             self.focus_topmost();
         }
     }
+}
+
+/// True when the toplevel surface of `window` has a buffer attached.
+pub fn has_buffer(window: &Window) -> bool {
+    let Some(toplevel) = window.toplevel() else { return false };
+    with_renderer_surface_state(toplevel.wl_surface(), |s| s.buffer().is_some()).unwrap_or(false)
 }
 
 impl SeatHandler for State {

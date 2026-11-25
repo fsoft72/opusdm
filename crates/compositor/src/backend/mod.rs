@@ -63,12 +63,15 @@ pub fn run(args: &Args) -> Result<(), String> {
 }
 
 /// Setup shared by every backend: event loop, display, the state with
-/// `output`, the SIGTERM / SIGINT flag, keyboard and pointer, and the
-/// Wayland socket with its client sources.
+/// `output` and the desktop count of `DesktopSettings.virtual_screens`,
+/// the SIGTERM / SIGINT flag, keyboard and pointer, and the Wayland socket
+/// with its client sources.
 fn setup_common(output: Output) -> Result<Common, String> {
     let event_loop: EventLoop<'static, LoopData> = EventLoop::try_new().map_err(|e| format!("event loop: {e}"))?;
     let mut display: Display<State> = Display::new().map_err(|e| format!("wayland display: {e}"))?;
-    let mut state = State::new(&display.handle(), output);
+    let settings = opusdm_ipc::settings::load_desktop_settings(LOG_TAG);
+    let mut state = State::new(&display.handle(), output, settings.virtual_screens);
+    opusdm_ipc::debug_log!(LOG_TAG, "{} virtual desktops", state.desktops.count());
     register_quit_signals(&state.quit)?;
     add_input_devices(&mut state)?;
     let socket_name = init_wayland(&event_loop, &mut display)?;

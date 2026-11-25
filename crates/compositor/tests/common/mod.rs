@@ -88,8 +88,10 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    /// Starts the compositor in a fresh `XDG_RUNTIME_DIR` and waits (at most
-    /// `START_TIMEOUT`) for the `WAYLAND_DISPLAY=<name>` line on its stdout.
+    /// Starts the compositor in a fresh `XDG_RUNTIME_DIR` (also its `HOME`
+    /// and `XDG_CONFIG_HOME`, so the owner's `~/.config/opusdm` is never read
+    /// or written) and waits (at most `START_TIMEOUT`) for the
+    /// `WAYLAND_DISPLAY=<name>` line on its stdout.
     /// The rest of its stdout (a `--startup` child may print there) is
     /// drained for the whole run, so a writer never gets EPIPE / SIGPIPE.
     pub fn start() -> Compositor {
@@ -97,6 +99,8 @@ impl Compositor {
         let mut child = Command::new(env!("CARGO_BIN_EXE_opusdm-compositor"))
             .args(["--headless", "--size", OUTPUT_SIZE])
             .env("XDG_RUNTIME_DIR", runtime.path())
+            .env("HOME", runtime.path())
+            .env("XDG_CONFIG_HOME", runtime.path().join("config"))
             .env_remove("WAYLAND_DISPLAY")
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

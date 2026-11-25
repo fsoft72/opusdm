@@ -8,6 +8,7 @@ mod grabs;
 mod input;
 mod shell;
 mod state;
+mod wm;
 
 use std::process::ExitCode;
 

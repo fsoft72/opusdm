@@ -23,7 +23,7 @@ use smithay::{
 };
 
 use crate::geometry::{cascade_position, Edges, Rect};
-use crate::state::{State, WindowInfo, LOG_TAG};
+use crate::state::{has_buffer, State, WindowInfo, LOG_TAG};
 
 impl XdgShellHandler for State {
     /// The xdg-shell state.
@@ -31,13 +31,19 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
-    /// Tracks a new toplevel; the initial configure (no size: the client
-    /// decides) goes out on its initial commit, the window is mapped once its
-    /// first buffer is committed.
+    /// Tracks a new toplevel with a new id, on the current desktop and on
+    /// top of the stack; the initial configure (no size: the client decides)
+    /// goes out on its initial commit, the window is mapped once its first
+    /// buffer is committed.
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         surface.with_pending_state(|state| state.size = None);
-        self.windows.insert(surface.wl_surface().clone(), WindowInfo::default());
-        self.unmapped.push(Window::new_wayland_window(surface));
+        let wl = surface.wl_surface().clone();
+        let id = self.new_window_id();
+        let window = Window::new_wayland_window(surface);
+        self.windows.insert(wl.clone(), WindowInfo::new(id, window.clone(), self.desktops.current()));
+        self.stack.push(id);
+        self.unmapped.push(window);
+        opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} is window {}", wl.id(), id.0);
     }
 
     /// Keeps the popup inside the output and tracks it; its initial configure
@@ -194,16 +200,26 @@ impl XdgShellHandler for State {
         crate::grabs::handle_ack(self, &surface, configure.serial);
     }
 
-    /// No tasklist before stage 2: the window stays shown.
-    fn minimize_request(&mut self, _surface: ToplevelSurface) {
-        opusdm_ipc::debug_log!(LOG_TAG, "minimize ignored: no tasklist before stage 2");
+    /// Minimizes the window: it leaves the space (and the keyboard) until it
+    /// is activated again.
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        let wl = surface.wl_surface();
+        let Some(id) = self.windows.get(wl).map(|info| info.id) else {
+            opusdm_ipc::err_log!(LOG_TAG, "minimize {} refused: unknown toplevel", wl.id());
+            return;
+        };
+        if let Err(err) = self.set_minimized(id, true) {
+            opusdm_ipc::err_log!(LOG_TAG, "minimize {}: {err}", wl.id());
+        }
     }
 
-    /// Removes the window from the space and the tables; when it had the
-    /// keyboard, the topmost remaining window gets it.
+    /// Removes the window from the space, the tables and the stack; when it
+    /// had the keyboard, the topmost remaining window gets it.
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let wl = surface.wl_surface();
-        self.windows.remove(wl);
+        if let Some(info) = self.windows.remove(wl) {
+            self.stack.retain(|id| *id != info.id);
+        }
         self.unmapped.retain(|w| w.toplevel().is_some_and(|t| t.wl_surface() != wl));
         let mapped = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl)).cloned();
         if let Some(window) = mapped {
@@ -416,11 +432,8 @@ impl State {
     /// fill state in the logs.
     fn refill_window(&mut self, wl: &WlSurface, area: Rect, what: &str) {
         let window = self.mapped_window(wl);
-        let toplevel = window
-            .as_ref()
-            .or_else(|| self.unmapped.iter().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl)))
-            .and_then(|w| w.toplevel())
-            .cloned();
+        // The table has every toplevel: mapped, unmapped or hidden.
+        let toplevel = self.windows.get(wl).and_then(|info| info.window.toplevel()).cloned();
         let Some(toplevel) = toplevel else {
             opusdm_ipc::err_log!(LOG_TAG, "{what} toplevel {} not found, not reconfigured", wl.id());
             return;
@@ -464,7 +477,8 @@ impl State {
 }
 
 /// Commit of a toplevel not mapped yet: sends the initial configure, or maps
-/// the window and focuses it once a buffer is committed. A fullscreen or
+/// the window and focuses it once a buffer is committed. It maps on the
+/// current desktop, not minimized, on top of the stack. A fullscreen or
 /// maximized window maps at the origin of its area, a new window takes the
 /// next cascade position, a window unmapped by a null buffer its old one.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
@@ -480,12 +494,18 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     }
     let has_buffer = with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
     if !has_buffer { return; }
+    let current = state.desktops.current();
+    let Some(info) = state.windows.get_mut(surface) else {
+        opusdm_ipc::err_log!(LOG_TAG, "commit: toplevel {} has no window entry, not mapped", surface.id());
+        return;
+    };
+    info.desktop = current;
+    info.minimized = false;
+    let last = info.last_position.take();
+    let fill = if info.fullscreen { Some(Fill::Fullscreen) } else if info.maximized { Some(Fill::Maximized) } else { None };
     let window = state.unmapped.remove(index);
     window.on_commit();
     let size = window.geometry().size;
-    let info = state.windows.get(surface).cloned().unwrap_or_default();
-    let last = state.windows.get_mut(surface).and_then(|info| info.last_position.take());
-    let fill = if info.fullscreen { Some(Fill::Fullscreen) } else if info.maximized { Some(Fill::Maximized) } else { None };
     let (x, y) = match (fill, last) {
         (Some(fill), _) => {
             let area = state.fill_area(fill);
@@ -503,20 +523,18 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     state.focus_window(Some(window));
 }
 
-/// Commit of a mapped toplevel with no buffer (xdg unmap): removes it from the
-/// space, keeps its `windows` entry with its position, puts it back in
-/// `unmapped` (its next commit gets a fresh initial configure) and moves the
-/// keyboard to the topmost window when it had it. True when it unmapped.
+/// Commit of a mapped toplevel (shown, or hidden: minimized or on another
+/// desktop) with no buffer (xdg unmap): removes it from the space, keeps its
+/// `windows` entry with its position, puts it back in `unmapped` (its next
+/// commit gets a fresh initial configure) and moves the keyboard to the
+/// topmost window when it had it. True when it unmapped.
 pub fn unmap_if_bufferless(state: &mut State, surface: &WlSurface) -> bool {
-    let found = state.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface)).cloned();
-    let Some(window) = found else { return false };
-    let has_buffer = with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
-    if has_buffer { return false; }
-    let position = state.space.element_location(&window).map(|p| (p.x, p.y));
-    match state.windows.get_mut(surface) {
-        Some(info) => info.last_position = position,
-        None => opusdm_ipc::err_log!(LOG_TAG, "unmap: toplevel {} has no window entry", surface.id()),
-    }
+    let Some(info) = state.windows.get_mut(surface) else { return false };
+    let window = info.window.clone();
+    if state.unmapped.contains(&window) || has_buffer(&window) { return false; }
+    // A hidden window is out of the space: it keeps the position stored when it was hidden.
+    let position = state.space.element_location(&window).map(|p| (p.x, p.y)).or(info.last_position);
+    info.last_position = position;
     state.space.unmap_elem(&window);
     window.set_activated(false);
     state.unmapped.push(window);

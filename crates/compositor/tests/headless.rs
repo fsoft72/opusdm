@@ -27,13 +27,46 @@ fn a_client_that_disconnects_abruptly_does_not_take_the_compositor_down() {
 }
 
 #[test]
-fn minimize_is_ignored_and_the_window_keeps_getting_frames() {
+fn a_minimized_window_loses_the_keyboard_and_still_gets_frames() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);
-    let w = c.map_toplevel((400, 300));
-    w.xdg().set_minimized();
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    b.xdg().set_minimized();
     c.roundtrip();
-    assert!(c.wait_frame(&w, Duration::from_secs(2)));
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+    assert!(c.wait_frame(&b, Duration::from_secs(3)));
+}
+
+#[test]
+fn a_minimized_window_whose_client_dies_leaves_nothing_behind() {
+    let comp = Compositor::start();
+    let mut app = TestClient::new(&comp);
+    let mut other = TestClient::new(&comp);
+    let a = app.map_toplevel((400, 300));
+    let hidden = other.map_toplevel((400, 300));
+    hidden.xdg().set_minimized();
+    other.roundtrip();
+    drop(hidden);
+    drop(other); // killed while its window is minimized
+    let b = app.map_toplevel((200, 100));
+    assert!(app.wait_keyboard_focus(&b, Duration::from_secs(2)), "a new window must get the keyboard");
+    assert!(app.wait_frame(&b, Duration::from_secs(2)));
+    assert!(app.wait_frame(&a, Duration::from_secs(2)));
+}
+
+#[test]
+fn a_minimized_window_unmapped_by_a_null_buffer_maps_again_and_takes_the_keyboard() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    b.xdg().set_minimized();
+    c.roundtrip();
+    c.unmap(&b);
+    assert!(c.remap(&b), "no configure after the new initial commit");
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)), "the mapped window must get the keyboard");
+    assert!(c.wait_frame(&b, Duration::from_secs(2)));
 }
 
 #[test]
