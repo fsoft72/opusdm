@@ -47,11 +47,16 @@ use wayland_client::{
     backend::ObjectId,
     globals::registry_queue_init,
     protocol::{wl_callback, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface::WlSurface},
-    event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+    event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
 };
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
+};
+use wayland_protocols::ext::workspace::v1::client::{
+    ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
+    ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
+    ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_popup::XdgPopup,
@@ -319,6 +324,26 @@ struct ForeignEntry {
     published: Option<ForeignToplevel>,
 }
 
+/// A workspace as an `ext_workspace_manager_v1` client sees it after the
+/// last `done` of the manager.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestWorkspace {
+    /// Last `name` event (empty before one came).
+    pub name: String,
+    /// The last `state` event had the `active` bit.
+    pub active: bool,
+    /// Values of the last `coordinates` event.
+    pub coordinates: Vec<u32>,
+}
+
+/// A workspace handle of a `TestClient` and its fields as received so far.
+struct WorkspaceEntry {
+    /// The handle.
+    handle: ExtWorkspaceHandleV1,
+    /// The fields received since the handle came.
+    fields: TestWorkspace,
+}
+
 /// What the client knows about one of its surfaces (any role).
 struct SurfaceInfo {
     /// Size the test asked for, used when a configure leaves the size to the client.
@@ -367,6 +392,12 @@ struct ClientApp {
     close_requests: Vec<ObjectId>,
     /// Foreign-toplevel handles not closed yet, in the order they came.
     foreign: Vec<ForeignEntry>,
+    /// Workspace handles not removed yet, in the order they came.
+    workspaces: Vec<WorkspaceEntry>,
+    /// The workspaces as of the last `ext_workspace_manager_v1.done`.
+    workspaces_published: Vec<TestWorkspace>,
+    /// Workspace groups not removed yet.
+    workspace_groups: Vec<ExtWorkspaceGroupHandleV1>,
 }
 
 impl ClientApp {
@@ -404,6 +435,8 @@ pub struct TestClient {
     layers: Vec<LayerSurface>,
     /// The `zwlr_foreign_toplevel_manager_v1`, when the compositor has it.
     foreign_manager: Option<ZwlrForeignToplevelManagerV1>,
+    /// The `ext_workspace_manager_v1`, when the compositor has it.
+    workspace_manager: Option<ExtWorkspaceManagerV1>,
 }
 
 impl TestClient {
@@ -441,11 +474,24 @@ impl TestClient {
             keys: 0,
             close_requests: Vec::new(),
             foreign: Vec::new(),
+            workspaces: Vec::new(),
+            workspaces_published: Vec::new(),
+            workspace_groups: Vec::new(),
         };
         // Bound after `wl_output` (bound by `OutputState::new`); `None` when the compositor has no such global.
         let foreign_manager = globals.bind::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ()).ok();
-        let mut client =
-            TestClient { conn, queue, qh, app, _seat: seat, _keyboard: keyboard, layers: Vec::new(), foreign_manager };
+        let workspace_manager = globals.bind::<ExtWorkspaceManagerV1, _, _>(&qh, 1..=1, ()).ok();
+        let mut client = TestClient {
+            conn,
+            queue,
+            qh,
+            app,
+            _seat: seat,
+            _keyboard: keyboard,
+            layers: Vec::new(),
+            foreign_manager,
+            workspace_manager,
+        };
         client.roundtrip();
         client
     }
@@ -727,6 +773,31 @@ impl TestClient {
         ok
     }
 
+    /// The workspaces the workspace manager of this client lists after a
+    /// roundtrip, as of the last manager `done`, in the order they came;
+    /// panics when the compositor has no workspace manager global.
+    pub fn workspaces(&mut self) -> Vec<TestWorkspace> {
+        assert!(self.workspace_manager.is_some(), "the compositor has no ext_workspace_manager_v1");
+        self.roundtrip();
+        self.app.workspaces_published.clone()
+    }
+
+    /// Asks the compositor to activate the workspace at `index` of
+    /// `workspaces()` (`activate` + manager `commit`).
+    pub fn activate_workspace(&mut self, index: usize) {
+        let Some(manager) = &self.workspace_manager else { panic!("the compositor has no ext_workspace_manager_v1") };
+        let Some(entry) = self.app.workspaces.get(index) else { panic!("no workspace {index}") };
+        entry.handle.activate();
+        manager.commit();
+        self.roundtrip();
+    }
+
+    /// The workspace groups this client knows (not removed).
+    pub fn workspace_groups(&mut self) -> usize {
+        self.roundtrip();
+        self.app.workspace_groups.len()
+    }
+
     /// The toplevels the foreign-toplevel manager of this client lists after
     /// a roundtrip, as of the last `done` of each handle, in the order the
     /// handles came; panics when the compositor has no manager global.
@@ -882,6 +953,82 @@ impl Dispatch<wl_callback::WlCallback, Arc<AtomicBool>> for ClientApp {
     ) {
         if let wl_callback::Event::Done { .. } = event {
             done.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Dispatch<ExtWorkspaceManagerV1, ()> for ClientApp {
+    /// Records every new group and workspace, publishes the workspaces on
+    /// `done`; `finished` needs nothing (the tests never stop the manager).
+    fn event(
+        app: &mut Self,
+        _: &ExtWorkspaceManagerV1,
+        event: ext_workspace_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use ext_workspace_manager_v1::Event;
+        match event {
+            Event::WorkspaceGroup { workspace_group } => app.workspace_groups.push(workspace_group),
+            Event::Workspace { workspace } => app.workspaces.push(WorkspaceEntry {
+                handle: workspace,
+                fields: TestWorkspace { name: String::new(), active: false, coordinates: Vec::new() },
+            }),
+            Event::Done => app.workspaces_published = app.workspaces.iter().map(|e| e.fields.clone()).collect(),
+            _ => {}
+        }
+    }
+
+    event_created_child!(ClientApp, ExtWorkspaceManagerV1, [
+        ext_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE => (ExtWorkspaceGroupHandleV1, ()),
+        ext_workspace_manager_v1::EVT_WORKSPACE_OPCODE => (ExtWorkspaceHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ExtWorkspaceGroupHandleV1, ()> for ClientApp {
+    /// Forgets (and destroys) a removed group; the other group events are not needed.
+    fn event(
+        app: &mut Self,
+        group: &ExtWorkspaceGroupHandleV1,
+        event: ext_workspace_group_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_workspace_group_handle_v1::Event::Removed = event {
+            app.workspace_groups.retain(|g| g != group);
+            group.destroy();
+        }
+    }
+}
+
+impl Dispatch<ExtWorkspaceHandleV1, ()> for ClientApp {
+    /// Collects the fields of a workspace and forgets (and destroys) it on
+    /// `removed`, as the OpusDM pager does.
+    fn event(
+        app: &mut Self,
+        handle: &ExtWorkspaceHandleV1,
+        event: ext_workspace_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use ext_workspace_handle_v1::Event;
+        if let Event::Removed = event {
+            app.workspaces.retain(|e| &e.handle != handle);
+            handle.destroy();
+            return;
+        }
+        let Some(entry) = app.workspaces.iter_mut().find(|e| &e.handle == handle) else { panic!("event for an unknown workspace {}", handle.id()) };
+        match event {
+            Event::Name { name } => entry.fields.name = name,
+            Event::Coordinates { coordinates } => {
+                entry.fields.coordinates = coordinates.as_chunks::<4>().0.iter().map(|b| u32::from_ne_bytes(*b)).collect();
+            }
+            Event::State { state: WEnum::Value(flags) } => entry.fields.active = flags.contains(ext_workspace_handle_v1::State::Active),
+            Event::State { state: WEnum::Unknown(bits) } => panic!("workspace state with unknown bits {bits:#x}"),
+            _ => {}
         }
     }
 }

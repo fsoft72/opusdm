@@ -138,6 +138,7 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
         "watch" => Ok(json!({})),
         "debug/key" => _debug_key(state, _str(data, "key")?).map(|_| json!({})),
         "debug/foreign-toplevels" => _debug_foreign_toplevels(state),
+        "debug/workspaces" => _debug_workspaces(state),
         other => Err(format!("unknown method '{other}'")),
     }
 }
@@ -200,6 +201,15 @@ fn _debug_foreign_toplevels(state: &State) -> Result<Value, String> {
     if !state.test_input { return Err("debug/foreign-toplevels is only available with --headless".to_string()); }
     let (managers, handles) = state.foreign_toplevels.counts();
     Ok(json!({"managers": managers, "handles": handles}))
+}
+
+/// `debug/workspaces`: how many workspace managers and workspaces the
+/// compositor keeps (the tests check that a dead client leaves none).
+/// Refused unless the compositor runs with test input (`--headless`).
+fn _debug_workspaces(state: &State) -> Result<Value, String> {
+    if !state.test_input { return Err("debug/workspaces is only available with --headless".to_string()); }
+    let (managers, workspaces) = state.workspaces.counts();
+    Ok(json!({"managers": managers, "workspaces": workspaces}))
 }
 
 /// Lowest and highest xkb keycode searched for a keysym.

@@ -133,6 +133,14 @@ mod tests {
     }
 
     #[test]
+    fn single_coordinate_workspaces_sort_in_index_order() {
+        // opusdm-compositor sends one coordinate per workspace: the desktop index.
+        let ws = |name: &str, index: u32| Workspace { name: name.into(), coordinates: vec![index], ..Default::default() };
+        let names: Vec<_> = pager_order(&[ws("3", 2), ws("1", 0), ws("2", 1)]).into_iter().map(|w| w.name).collect();
+        assert_eq!(names, ["1", "2", "3"]);
+    }
+
+    #[test]
     fn the_snapshot_knows_the_active_window_and_workspace() {
         let snapshot = Snapshot {
             toplevels: vec![Toplevel { id: 1, ..Default::default() }, Toplevel { id: 2, activated: true, ..Default::default() }],

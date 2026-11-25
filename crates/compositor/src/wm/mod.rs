@@ -184,12 +184,13 @@ impl State {
             .collect()
     }
 
-    /// Tells the foreign-toplevel clients and the IPC `watch` connections
-    /// what changed since they were last told (windows added, changed or
-    /// removed, desktops changed), from the same `window_views`, so the two
-    /// never disagree. Cheap when nobody listens; called after every state
-    /// change.
+    /// Tells the workspace clients what changed in the desktops, and the
+    /// foreign-toplevel clients and the IPC `watch` connections what changed
+    /// since they were last told (windows added, changed or removed,
+    /// desktops changed), from the same `window_views`, so the two never
+    /// disagree. Cheap when nobody listens; called after every state change.
     pub fn notify_watchers(&mut self) {
+        self.workspaces_update();
         let foreign = self.foreign_toplevels.is_active();
         let ipc = self.ipc.has_watchers();
         if !foreign && !ipc { return; }

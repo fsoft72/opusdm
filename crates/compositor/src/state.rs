@@ -38,6 +38,7 @@ use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
 use crate::ipc::IpcServer;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
+use crate::protocols::workspace::Workspaces;
 use crate::wm::desktops::Desktops;
 use crate::wm::{WindowId, HIDDEN_FRAME_INTERVAL};
 
@@ -175,6 +176,8 @@ pub struct State {
     pub test_input: bool,
     /// The `zwlr_foreign_toplevel_manager_v1` global, its managers and handles.
     pub foreign_toplevels: ForeignToplevels,
+    /// The `ext_workspace_manager_v1` global and its managers.
+    pub workspaces: Workspaces,
 }
 
 impl State {
@@ -191,6 +194,7 @@ impl State {
         let seat = seat_state.new_wl_seat(display, SEAT_NAME);
         let _global = output.create_global::<State>(display);
         let foreign_toplevels = ForeignToplevels::new(display);
+        let workspaces = Workspaces::new(display);
         let mut space = Space::default();
         space.map_output(&output, (0, 0));
         State {
@@ -225,6 +229,7 @@ impl State {
             ipc: IpcServer::default(),
             test_input: false,
             foreign_toplevels,
+            workspaces,
         }
     }
 

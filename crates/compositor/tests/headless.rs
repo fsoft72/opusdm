@@ -476,3 +476,96 @@ fn foreign_toplevel_maximize_and_close_requests_reach_the_window() {
     t.handle.close();
     assert!(c.wait_close_request(&w, Duration::from_secs(2)));
 }
+
+#[test]
+fn four_workspaces_with_the_first_active() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let ws = c.workspaces();
+    assert_eq!(ws.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["1", "2", "3", "4"]);
+    assert!(ws[0].active && !ws[1].active);
+}
+
+#[test]
+fn activating_a_workspace_switches_the_desktop() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    c.activate_workspace(2);
+    assert!(c.workspaces()[2].active);
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["current"], 2);
+}
+
+#[test]
+fn a_new_desktop_count_reaches_workspace_clients() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    assert_eq!(c.workspaces().len(), 4);
+    ipc_request(&comp, "desktops/set-count", json!({"count": 6}));
+    assert_eq!(c.workspaces().len(), 6);
+}
+
+#[test]
+fn workspaces_carry_one_coordinate_and_one_group() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let coordinates: Vec<_> = c.workspaces().into_iter().map(|w| w.coordinates).collect();
+    assert_eq!(coordinates, [vec![0], vec![1], vec![2], vec![3]]);
+    assert_eq!(c.workspace_groups(), 1);
+}
+
+#[test]
+fn a_desktop_switched_over_ipc_is_the_active_workspace() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    ipc_request(&comp, "desktops/switch", json!({"index": 3}));
+    let active: Vec<_> = c.workspaces().into_iter().map(|w| w.active).collect();
+    assert_eq!(active, [false, false, false, true]);
+}
+
+/// `(managers, workspaces)` the compositor keeps for workspace clients
+/// (`debug/workspaces`).
+fn workspace_counts(comp: &Compositor) -> (u64, u64) {
+    let reply = ipc_request(comp, "debug/workspaces", json!({}));
+    assert_eq!(reply["ok"], true, "debug/workspaces refused: {reply}");
+    (reply["managers"].as_u64().expect("managers"), reply["workspaces"].as_u64().expect("workspaces"))
+}
+
+/// Polls `workspace_counts` until it is `want` or 2 s pass; the last value.
+fn wait_workspace_counts(comp: &Compositor, want: (u64, u64)) -> (u64, u64) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let counts = workspace_counts(comp);
+        if counts == want || Instant::now() >= deadline {
+            return counts;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn shrinking_the_desktops_removes_workspaces_and_keeps_the_current_one_active() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    c.activate_workspace(3);
+    ipc_request(&comp, "desktops/set-count", json!({"count": 2}));
+    let ws = c.workspaces();
+    assert_eq!(ws.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["1", "2"]);
+    assert!(!ws[0].active && ws[1].active);
+    assert_eq!(workspace_counts(&comp), (1, 2));
+}
+
+#[test]
+fn a_workspace_client_that_dies_leaves_no_workspaces_behind() {
+    let comp = Compositor::start();
+    let mut a = TestClient::new(&comp);
+    let mut b = TestClient::new(&comp);
+    assert_eq!(a.workspaces().len(), 4);
+    assert_eq!(b.workspaces().len(), 4);
+    assert_eq!(workspace_counts(&comp), (2, 8));
+    drop(b); // socket closed with the manager and the workspaces alive, like kill -9
+    assert_eq!(wait_workspace_counts(&comp, (1, 4)), (1, 4));
+    a.activate_workspace(1);
+    assert!(a.workspaces()[1].active);
+    drop(a);
+    assert_eq!(wait_workspace_counts(&comp, (0, 0)), (0, 0));
+}
