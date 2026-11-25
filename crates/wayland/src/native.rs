@@ -345,41 +345,49 @@ fn _wait_and_drain(rx: &mpsc::Receiver<()>) -> bool {
     true
 }
 
-/// What the hotkey thread and its [`HotkeyWatch`] handles share.
+/// Failed attempts in a row between two "still lost" log lines while the
+/// compositor is away (about once a minute with `RECONNECT_DELAY`).
+const RETRY_LOG_EVERY: u32 = 30;
+
+/// What the hotkey thread and the writer thread share. Never locked by
+/// [`HotkeyWatch::set`], which only sends on a channel, so a slow
+/// compositor cannot block the caller.
 struct HotkeyShared {
     /// The global hotkey table, as (key, function) pairs: sent on every
     /// (re)connection.
     table: Vec<(String, String)>,
-    /// A second handle on the live hub connection, for [`HotkeyWatch::set`];
+    /// Bumped by every new table: the handshake sends the table it copied
+    /// and, once its writer is published, sends the latest one again when
+    /// the generation moved meanwhile (a new table is never lost).
+    generation: u64,
+    /// A second handle on the live hub connection, for the writer thread;
     /// `None` while there is none.
     writer: Option<UnixStream>,
 }
 
 /// Lock `shared`, going on after a panic of another holder (the data is a
-/// table and a socket: always consistent).
+/// table, a counter and a socket: always consistent).
 fn _lock(shared: &Mutex<HotkeyShared>) -> MutexGuard<'_, HotkeyShared> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Handle on the thread of [`watch_hotkeys`], to change its table. Dropping
-/// it does not stop the thread.
+/// Handle on the threads of [`watch_hotkeys`], to change the table.
+/// Dropping every handle stops only the writer thread (with a debug line);
+/// the hotkey thread goes on with the last table.
 #[derive(Clone)]
 pub struct HotkeyWatch {
-    shared: Arc<Mutex<HotkeyShared>>,
+    tx: mpsc::Sender<Vec<(String, String)>>,
 }
 
 impl HotkeyWatch {
-    /// Replace the hotkey table: kept for every reconnection and sent now
-    /// (`hotkeys/set`) on the live connection, if any. The reply comes on
+    /// Replace the hotkey table: kept for every reconnection and sent
+    /// (`hotkeys/set`) on the live connection, if any, by the writer
+    /// thread. Never blocks and never touches the socket: the caller may be
+    /// a thread that must not wait on the compositor. The reply comes on
     /// the event stream; its errors are logged by the hotkey thread. `Err`
-    /// when the write failed: the thread then reconnects and sends this
-    /// table.
+    /// only when the writer thread is gone.
     pub fn set(&self, table: Vec<(String, String)>) -> Result<(), String> {
-        let mut shared = _lock(&self.shared);
-        shared.table = table;
-        let data = _hotkeys_data(&shared.table);
-        let Some(writer) = shared.writer.as_mut() else { return Ok(()) };
-        send(writer, "hotkeys/set", data).map_err(|e| format!("{e} (sent again on reconnection)"))
+        self.tx.send(table).map_err(|_| "the compositor hotkey writer thread is gone".to_string())
     }
 }
 
@@ -394,13 +402,16 @@ fn _hotkeys_data(table: &[(String, String)]) -> Value {
 /// call `on_hit(function)` for every `hotkey` event, from a thread of its
 /// own. When the connection is lost it logs, waits [`RECONNECT_DELAY`] and
 /// connects again, sending the table again; it never stops. `Err` only when
-/// this process does not run under the compositor or the thread cannot
+/// this process does not run under the compositor or a thread cannot
 /// start. The returned [`HotkeyWatch`] changes the table later.
 ///
-/// Ownership: the thread is detached and owns `on_hit`, its connection and
-/// one `Arc` of the shared table; it runs for the whole life of the
-/// process. When the compositor goes away every attempt logs a line and the
-/// next one comes `RECONNECT_DELAY` later.
+/// Ownership: two detached threads share one `Arc<Mutex<HotkeyShared>>`
+/// (table, generation, writer). The hotkey thread owns `on_hit` and its
+/// connection and runs for the whole life of the process. The writer
+/// thread owns the receiving end of the [`HotkeyWatch`] channel and runs
+/// while a handle exists. When the compositor goes away the hotkey thread
+/// logs the loss, then one line every `RETRY_LOG_EVERY` attempts, and one
+/// line when the connection is back; attempts are `RECONNECT_DELAY` apart.
 pub fn watch_hotkeys(table: Vec<(String, String)>, on_hit: impl Fn(String) + Send + 'static) -> Result<HotkeyWatch, String> {
     _watch_hotkeys_at(_require_socket()?, table, on_hit, RECONNECT_DELAY)
 }
@@ -413,29 +424,67 @@ fn _watch_hotkeys_at(
     on_hit: impl Fn(String) + Send + 'static,
     delay: Duration,
 ) -> Result<HotkeyWatch, String> {
-    let shared = Arc::new(Mutex::new(HotkeyShared { table, writer: None }));
+    let shared = Arc::new(Mutex::new(HotkeyShared { table, generation: 0, writer: None }));
+    let (tx, rx) = mpsc::channel::<Vec<(String, String)>>();
     let ours = Arc::clone(&shared);
     std::thread::Builder::new()
         .name("opusdm-native-hotkeys".into())
-        .spawn(move || loop {
-            let e = _hotkey_session(&path, &ours, &on_hit);
-            _lock(&ours).writer = None;
-            opusdm_ipc::err_log!(LOG_TAG, "compositor IPC lost: {e}, retrying");
-            std::thread::sleep(delay);
-        })
+        .spawn(move || _hotkey_loop(&path, &ours, &on_hit, delay))
         .map_err(|e| format!("cannot start the compositor hotkey thread: {e}"))?;
-    Ok(HotkeyWatch { shared })
+    std::thread::Builder::new()
+        .name("opusdm-native-hotkey-writer".into())
+        .spawn(move || _writer_loop(&shared, &rx))
+        .map_err(|e| format!("cannot start the compositor hotkey writer thread: {e}"))?;
+    Ok(HotkeyWatch { tx })
 }
 
-/// One hub connection: connect, send the table and `watch`, then report the
-/// hotkey events until the connection fails. Returns why it ended.
-fn _hotkey_session(path: &Path, shared: &Mutex<HotkeyShared>, on_hit: &impl Fn(String)) -> String {
-    let mut stream = match _hub_handshake(path, shared, on_hit) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
+/// The writer thread: store every new table from `rx` (the latest of a
+/// burst) and send it on the live connection, if any. Ends when every
+/// [`HotkeyWatch`] is dropped.
+fn _writer_loop(shared: &Mutex<HotkeyShared>, rx: &mpsc::Receiver<Vec<(String, String)>>) {
+    while let Ok(mut table) = rx.recv() {
+        while let Ok(newer) = rx.try_recv() { table = newer; }
+        let mut shared = _lock(shared);
+        shared.table = table;
+        shared.generation = shared.generation.wrapping_add(1);
+        let data = _hotkeys_data(&shared.table);
+        let Some(writer) = shared.writer.as_mut() else { continue };
+        if let Err(e) = send(writer, "hotkeys/set", data) {
+            opusdm_ipc::err_log!(LOG_TAG, "compositor hotkeys not sent: {e} (sent again on reconnection)");
+        }
+    }
+    opusdm_ipc::debug_log!(LOG_TAG, "compositor hotkey writer stopped: no HotkeyWatch left, the last table stays");
+}
+
+/// The hotkey thread: one hub session after the other, forever, with
+/// `delay` between two attempts and a bounded number of log lines.
+fn _hotkey_loop(path: &Path, shared: &Mutex<HotkeyShared>, on_hit: &impl Fn(String), delay: Duration) {
+    let mut failures: u32 = 0;
     loop {
-        let message = match _receive(&mut stream) {
+        let e = match _hub_handshake(path, shared, on_hit) {
+            Ok(mut stream) => {
+                if failures > 0 { opusdm_ipc::err_log!(LOG_TAG, "compositor IPC back after {failures} failed attempts"); }
+                failures = 0;
+                _hotkey_events(&mut stream, on_hit)
+            }
+            Err(e) => e,
+        };
+        _lock(shared).writer = None;
+        failures = failures.saturating_add(1);
+        if failures == 1 {
+            opusdm_ipc::err_log!(LOG_TAG, "compositor IPC lost: {e}, retrying");
+        } else if failures.is_multiple_of(RETRY_LOG_EVERY) {
+            opusdm_ipc::err_log!(LOG_TAG, "compositor IPC still lost after {failures} attempts: {e}, retrying");
+        }
+        std::thread::sleep(delay);
+    }
+}
+
+/// Report the hotkey events of a connected hub `stream` until it fails.
+/// Returns why it ended.
+fn _hotkey_events(stream: &mut UnixStream, on_hit: &impl Fn(String)) -> String {
+    loop {
+        let message = match _receive(stream) {
             Ok(m) => m,
             Err(e) => return e,
         };
@@ -445,21 +494,35 @@ fn _hotkey_session(path: &Path, shared: &Mutex<HotkeyShared>, on_hit: &impl Fn(S
     }
 }
 
-/// Connect to `path`, send `hotkeys/set` with the shared table and `watch`,
-/// and publish a writer for [`HotkeyWatch::set`]. The lock is held from the
-/// table read to the publication, so a new table is never lost nor mixed
-/// with the replies of the handshake. Returns the stream, with no read
-/// timeout (events may stay away for hours).
+/// Connect to `path`, send `hotkeys/set` with a copy of the shared table
+/// and `watch`, with no lock held during the I/O, then publish a writer
+/// for the writer thread. If a new table came during the handshake, it is
+/// sent now, under the lock, so it is never lost. Returns the stream, with
+/// no read timeout (events may stay away for hours).
 fn _hub_handshake(path: &Path, shared: &Mutex<HotkeyShared>, on_hit: &impl Fn(String)) -> Result<UnixStream, String> {
     let mut stream = _open(path)?;
     _set_timeouts(&stream, Some(REQUEST_TIMEOUT))?;
-    let mut shared = _lock(shared);
-    send(&mut stream, "hotkeys/set", _hotkeys_data(&shared.table))?;
+    let (generation, data) = {
+        let shared = _lock(shared);
+        (shared.generation, _hotkeys_data(&shared.table))
+    };
+    send(&mut stream, "hotkeys/set", data)?;
+    // A refusal is logged and the handshake goes on: the connection then
+    // watches as a plain watcher, NOT the hub (the server makes a
+    // connection the hub only after a hotkeys/set it accepted), so every
+    // hub hotkey is swallowed with "no hub connected" until a valid table
+    // is set.
     _log_hotkeys_reply(_await_reply(&mut stream, on_hit).map_err(|e| format!("hotkeys/set: {e}"))?);
     send(&mut stream, "watch", json!({}))?;
     _checked("watch", _await_reply(&mut stream, on_hit).map_err(|e| format!("watch: {e}"))?)?;
     stream.set_read_timeout(None).map_err(|e| format!("cannot clear the read timeout: {e}"))?;
-    shared.writer = Some(stream.try_clone().map_err(|e| format!("cannot duplicate the hub connection: {e}"))?);
+    let writer = stream.try_clone().map_err(|e| format!("cannot duplicate the hub connection: {e}"))?;
+    let mut shared = _lock(shared);
+    shared.writer = Some(writer);
+    if shared.generation != generation {
+        let data = _hotkeys_data(&shared.table);
+        if let Some(w) = shared.writer.as_mut() { send(w, "hotkeys/set", data)?; }
+    }
     Ok(stream)
 }
 
@@ -487,7 +550,10 @@ fn _dispatch(message: Value, on_hit: &impl Fn(String)) -> Option<Value> {
 /// the keys it could not bind (`errors`).
 fn _log_hotkeys_reply(reply: Value) {
     if let Some(e) = reply.get("error").and_then(Value::as_str) {
-        opusdm_ipc::err_log!(LOG_TAG, "compositor refused the hotkeys: {e}");
+        opusdm_ipc::err_log!(
+            LOG_TAG,
+            "compositor refused the hotkeys: {e}; until a valid table is set this process may not be the hub and hub hotkeys are swallowed"
+        );
         return;
     }
     let errors = reply.get("errors").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -644,7 +710,8 @@ mod tests {
         let dir = TempDir::new();
         let listener = UnixListener::bind(dir.socket()).unwrap();
         let first = vec![("Ctrl+backslash".to_string(), "terminal".to_string())];
-        let watch = _watch_hotkeys_at(dir.socket(), first, |_| {}, Duration::from_millis(50)).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watch = _watch_hotkeys_at(dir.socket(), first, move |f| tx.send(f).unwrap(), Duration::from_millis(50)).unwrap();
         let mut s = accept_hub(&listener, &json!([{ "key": "Ctrl+backslash", "function": "terminal" }]));
 
         watch.set(vec![("Alt+F2".to_string(), "run".to_string())]).unwrap();
@@ -654,7 +721,32 @@ mod tests {
         reply(&mut s, json!({ "ok": true, "errors": ["Alt+F2: taken"] }));
         drop(s);
 
+        // The reply above was read before the loss, so it is handled by now.
         accept_hub(&listener, &json!([{ "key": "Alt+F2", "function": "run" }]));
+        assert!(rx.try_recv().is_err(), "a reply is not a hotkey");
+    }
+
+    #[test]
+    fn set_never_waits_for_a_slow_handshake_and_its_table_is_still_sent() {
+        let dir = TempDir::new();
+        let listener = UnixListener::bind(dir.socket()).unwrap();
+        let first = vec![("Ctrl+backslash".to_string(), "terminal".to_string())];
+        let watch = _watch_hotkeys_at(dir.socket(), first, |_| {}, Duration::from_millis(50)).unwrap();
+        let mut s = accept(&listener);
+        assert_eq!(receive(&mut s, 1 << 20).unwrap()["method"], "hotkeys/set");
+
+        // The handshake waits for the reply now: set() must not.
+        let start = std::time::Instant::now();
+        watch.set(vec![("Alt+F2".to_string(), "run".to_string())]).unwrap();
+        assert!(start.elapsed() < Duration::from_millis(100), "set() blocked for {:?}", start.elapsed());
+        std::thread::sleep(Duration::from_millis(300));
+        reply(&mut s, json!({ "ok": true, "errors": [] }));
+        assert_eq!(receive(&mut s, 1 << 20).unwrap()["method"], "watch");
+        reply(&mut s, json!({ "ok": true }));
+
+        let req = receive(&mut s, 1 << 20).unwrap();
+        assert_eq!(req["method"], "hotkeys/set");
+        assert_eq!(req["data"]["hotkeys"], json!([{ "key": "Alt+F2", "function": "run" }]));
     }
 
     /// Answer one `windows/list` and one `desktops/list` on `s`.
