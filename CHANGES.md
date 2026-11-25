@@ -2,6 +2,7 @@
 
 ## 2026-11-25
 - Design (branch `opus-wayland`): `docs/superpowers/specs/2026-11-25-opusdm-compositor-design.md`, the native Wayland compositor `opusdm-compositor` (Smithay 0.7, in five stages, nested sandbox first). Draft for the owner's review: approach A (Smithay) and the scope (all `openbox-rc.xml` window manager bindings built in, screen lock deferred to stage 5) decided by the owner; the other calls are listed at the end of the document. No code change. NOT verified: nothing built or run, the Smithay API was checked only through its documentation.
+- Plan (branch `opus-wayland`): `docs/superpowers/plans/2026-11-25-compositor-stage1.md`, stage 1 of the native compositor (nested skeleton: crate, headless test backend, xdg-shell, popups, layer-shell, input, nested winit backend, `run-native.sh`). Stages 2-5 get their own plans after stage 1 runs. No code change. NOT verified: nothing built or run.
 
 ## 2026-11-23
 - Version bump to **0.20.1** (`[workspace.package]` in `Cargo.toml`, inherited by all crates and `xtask`; `Cargo.lock` refreshed) with `scripts/release.sh`. No code change. Verified: `cargo build --release --workspace` passes. NOT verified: nothing else exercised, no behaviour touched.
