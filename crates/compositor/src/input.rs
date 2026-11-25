@@ -119,14 +119,28 @@ impl State {
 
     /// The pointer moved to `position` (space coordinates): the surface under
     /// it gets the pointer focus (an active grab decides instead).
+    ///
+    /// A motion that ends a grab is sent once more. Smithay 0.7's popup grab
+    /// (`PopupPointerGrab::motion`), once its menus are gone, only unsets
+    /// itself and drops that motion: the pointer kept its old position, so
+    /// the next click went where the menu had been (the first pager click
+    /// after a tasklist menu was lost). Our own grabs forward the motion
+    /// before they end, so for them the second motion changes nothing.
     pub fn pointer_motion(&mut self, position: Point<f64, Logical>, time_msec: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "pointer motion: the seat has no pointer");
             return;
         };
+        let was_grabbed = pointer.is_grabbed();
         let under = self.surface_under(position).map(|hit| (hit.surface, hit.location));
         let event = MotionEvent { location: position, serial: SERIAL_COUNTER.next_serial(), time: time_msec };
         pointer.motion(self, under, &event);
+        if was_grabbed && !pointer.is_grabbed() {
+            opusdm_ipc::debug_log!(LOG_TAG, "pointer grab ended by a motion: motion sent again");
+            let under = self.surface_under(position).map(|hit| (hit.surface, hit.location));
+            let event = MotionEvent { location: position, serial: SERIAL_COUNTER.next_serial(), time: time_msec };
+            pointer.motion(self, under, &event);
+        }
         pointer.frame(self);
     }
 

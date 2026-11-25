@@ -1006,6 +1006,14 @@ fn click(comp: &Compositor, x: i64, y: i64) {
     assert_eq!(reply["ok"], true, "debug/click refused: {reply}");
 }
 
+/// Top-left corner of window `id` from `windows/list`.
+fn window_geometry(comp: &Compositor, id: u64) -> (i64, i64) {
+    let reply = ipc_request(comp, "windows/list", json!({}));
+    let windows = reply["windows"].as_array().expect("windows array");
+    let w = windows.iter().find(|w| w["id"] == id).expect("window in the list");
+    (w["geometry"]["x"].as_i64().expect("x"), w["geometry"]["y"].as_i64().expect("y"))
+}
+
 /// A panel like the OpusDM bar: TOP layer across the top, 40 px tall,
 /// exclusive zone 40, keyboard on demand.
 fn map_panel(c: &mut TestClient) -> common::TestLayer {
@@ -1019,6 +1027,40 @@ fn map_titled(c: &mut TestClient, title: &str) -> common::TestWindow {
     w.wl_surface().commit();
     c.roundtrip();
     w
+}
+
+#[test]
+fn the_first_click_after_a_menu_closed_goes_where_the_pointer_is() {
+    // The tasklist menu case: a menu of the panel holds a popup grab, an
+    // item is clicked, the client destroys the menu; the next pointer
+    // motion (one event, as xdotool sends) and click land elsewhere. The
+    // ended grab must not eat that motion: the click is hit-tested where
+    // the pointer now is.
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let panel = map_panel(&mut c);
+    let a = c.map_toplevel((200, 150));
+    click(&comp, 960, 20);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(panel.wl_surface().clone()), "the panel has the keyboard for its menu");
+    let menu = c.map_popup_grabbed(&panel, Rect { x: 1000, y: 10, w: 1, h: 1 }, (200, 200));
+    click(&comp, 1050, 100);
+    c.roundtrip();
+    c.destroy_popup(menu);
+    // As a user does: some time passes, the compositor's housekeeping
+    // (every 16 ms here) cleans the dead menu up and the grab has ended.
+    std::thread::sleep(Duration::from_millis(200));
+    // Window A is at the cascade origin, far from the menu.
+    let before = c.pointer_presses().len();
+    click(&comp, 50, 100);
+    c.roundtrip();
+    let presses = c.pointer_presses();
+    assert_eq!(presses.len(), before + 1, "one press reached the client");
+    let (surface, x, y) = &presses[before];
+    assert_eq!(surface, a.wl_surface(), "the click after the menu reaches the window under the pointer");
+    let geometry = window_geometry(&comp, 1);
+    assert_eq!((*x, *y), (50.0 - geometry.0 as f64, 100.0 - geometry.1 as f64), "at the pointer's position, not where the menu was");
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()), "and gives it the keyboard");
 }
 
 #[test]

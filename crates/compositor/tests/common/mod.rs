@@ -46,7 +46,7 @@ use tempfile::TempDir;
 use wayland_client::{
     backend::ObjectId,
     globals::registry_queue_init,
-    protocol::{wl_callback, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface::WlSurface},
+    protocol::{wl_callback, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface::WlSurface},
     event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
 };
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
@@ -441,6 +441,12 @@ struct ClientApp {
     dismissed: Vec<ObjectId>,
     /// `wl_keyboard.key` events (press and release) of non-modifier keys.
     keys: u32,
+    /// Surface with the pointer of this client and the surface-local
+    /// position of the pointer on it (`wl_pointer` enter / motion / leave).
+    pointer: Option<(WlSurface, f64, f64)>,
+    /// Every `wl_pointer.button` press: the surface with the pointer and the
+    /// surface-local position at that moment.
+    presses: Vec<(WlSurface, f64, f64)>,
     /// Toplevels that got `xdg_toplevel.close`, by `wl_surface` id.
     close_requests: Vec<ObjectId>,
     /// Foreign-toplevel handles not closed yet, in the order they came.
@@ -511,6 +517,7 @@ impl TestClient {
         let layer_shell = LayerShell::bind(&globals, &qh).expect("zwlr_layer_shell_v1");
         let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).expect("wl_seat");
         let keyboard = seat.get_keyboard(&qh, ());
+        let _pointer = seat.get_pointer(&qh, ());
         let shm = Shm::bind(&globals, &qh).expect("wl_shm");
         let pool = SlotPool::new(400 * 300 * 4, &shm).expect("shm pool");
         let app = ClientApp {
@@ -527,6 +534,8 @@ impl TestClient {
             keyboard_serial: 0,
             dismissed: Vec::new(),
             keys: 0,
+            pointer: None,
+            presses: Vec::new(),
             close_requests: Vec::new(),
             foreign: Vec::new(),
             workspaces: Vec::new(),
@@ -861,6 +870,12 @@ impl TestClient {
     /// Surface that has this client's keyboard, from `wl_keyboard` enter / leave.
     pub fn keyboard_focus(&self) -> Option<WlSurface> {
         self.app.keyboard_focus.clone()
+    }
+
+    /// Every pointer button press this client got so far: the surface with
+    /// the pointer and the surface-local position at that moment.
+    pub fn pointer_presses(&self) -> Vec<(WlSurface, f64, f64)> {
+        self.app.presses.clone()
     }
 
     /// Position (relative to the parent's window geometry) and size of the
@@ -1260,6 +1275,29 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
             }
             wl_keyboard::Event::Key { key, .. } if !MODIFIER_KEYCODES.contains(&key) => {
                 app.keys += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for ClientApp {
+    /// Tracks the surface with the pointer and the surface-local position
+    /// (enter / motion / leave) and records every button press with them.
+    fn event(app: &mut Self, _: &wl_pointer::WlPointer, event: wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        match event {
+            wl_pointer::Event::Enter { surface, surface_x, surface_y, .. } => app.pointer = Some((surface, surface_x, surface_y)),
+            wl_pointer::Event::Leave { surface, .. } if app.pointer.as_ref().map(|p| &p.0) == Some(&surface) => app.pointer = None,
+            wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+                if let Some(p) = app.pointer.as_mut() {
+                    p.1 = surface_x;
+                    p.2 = surface_y;
+                }
+            }
+            wl_pointer::Event::Button { state: WEnum::Value(wl_pointer::ButtonState::Pressed), .. } => {
+                if let Some(p) = app.pointer.clone() {
+                    app.presses.push(p);
+                }
             }
             _ => {}
         }
