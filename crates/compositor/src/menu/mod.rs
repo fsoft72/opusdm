@@ -13,6 +13,7 @@
 //! unknown id is logged and nothing runs).
 
 pub mod model;
+pub mod render;
 pub mod theme;
 
 use smithay::{
@@ -26,6 +27,7 @@ use crate::geometry::Rect;
 use crate::state::{State, LOG_TAG};
 use crate::wm::WindowId;
 use model::{menu_items, MenuAction, MenuItem, MenuKey, MenuNav};
+use render::MenuImageCache;
 
 /// Height of a menu item, in pixels.
 pub const MENU_ITEM_HEIGHT: i32 = 24;
@@ -86,8 +88,6 @@ pub fn submenu_origin(menu: Rect, item: Rect, size: (i32, i32), output: Rect) ->
 }
 
 /// Where the window menu and its open submenu are, in output coordinates.
-// `menu` and the submenu box are read by the renderer (stage 2, task 9).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuLayout {
     /// The menu box.
@@ -156,6 +156,9 @@ pub struct WindowMenu {
     pub origin: (i32, i32),
     /// The output area the menu and its submenu stay in.
     pub output: Rect,
+    /// The images last drawn for the menu (`render`), drawn again only
+    /// when the navigation state changes.
+    pub images: MenuImageCache,
 }
 
 impl WindowMenu {
@@ -203,7 +206,7 @@ impl State {
         }
         let output = self.output_area();
         let origin = place_menu((loc.x, loc.y), menu_size(nav.items()), output);
-        self.menu = Some(WindowMenu { window, nav, origin, output });
+        self.menu = Some(WindowMenu { window, nav, origin, output, images: MenuImageCache::default() });
         opusdm_ipc::debug_log!(LOG_TAG, "window menu opened on window {} at {origin:?}", window.0);
     }
 

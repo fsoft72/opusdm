@@ -22,6 +22,7 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
+                memory::MemoryRenderBufferRenderElement,
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 AsRenderElements, Kind,
             },
@@ -51,6 +52,7 @@ use smithay::{
 
 use super::{announce, housekeeping, new_output, setup_common, stop_on_quit, LoopData, REFRESH_MHZ};
 use crate::args::Args;
+use crate::menu::{render::MenuImages, MenuLayout};
 use crate::state::{State, LOG_TAG};
 
 /// Name of the nested output.
@@ -72,6 +74,17 @@ const ERROR_LOG_PERIOD: Duration = Duration::from_secs(1);
 /// renders with this transform (as smallvil and anvil do), the output
 /// advertised to the clients stays `Normal`.
 const RENDER_TRANSFORM: Transform = Transform::Flipped180;
+
+/// Buffer pixels per logical pixel of the window menu images: the nested
+/// output is drawn at scale 1 (`OutputDamageTracker::new(.., 1.0, ..)`).
+const MENU_SCALE: i32 = 1;
+
+smithay::backend::renderer::element::render_elements! {
+    /// What the nested backend draws: client surfaces and the window menu.
+    NestedElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Menu=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
 
 /// Limits how often one kind of error is logged.
 #[derive(Debug, Default)]
@@ -371,6 +384,7 @@ fn _render(frame: &mut Frame, state: &mut State) {
         frame.damage_size = size;
     }
     let Frame { backend, damage, errors, presented, .. } = frame;
+    let menu = _menu_images(state, errors);
     // The buffer age can only be asked while the window surface is current.
     // Smithay's `bind` does not make it current (only rendering does), and
     // an import or a frame with no damage may leave the context on no
@@ -387,7 +401,7 @@ fn _render(frame: &mut Frame, state: &mut State) {
             Ok(bound) => bound,
             Err(e) => return errors.log("frame bind", &e.to_string()),
         };
-        let elements = _elements(renderer, state);
+        let elements = _elements(renderer, state, menu.as_ref(), errors);
         match damage.render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR) {
             Ok(result) => result.damage.cloned(),
             Err(e) => return errors.log("frame render_output", &format!("{e:?}")),
@@ -426,14 +440,39 @@ fn _apply_host_cursor(window: &WinitWindow, cursor: HostCursor) {
     }
 }
 
+/// The images and the layout of the open window menu, drawn again only
+/// when its state changed (`WindowMenu::images`); `None` when no menu is
+/// open or drawing failed (logged, rate limited: the menu stays open and
+/// usable by keyboard, it is only not shown).
+fn _menu_images(state: &mut State, errors: &mut ErrorThrottle) -> Option<(MenuImages, MenuLayout)> {
+    let theme = state.menu_theme;
+    let menu = state.menu.as_mut()?;
+    match menu.images(&theme, MENU_SCALE) {
+        Ok(images) => Some((images, menu.layout())),
+        Err(e) => {
+            errors.log("window menu render", &e);
+            None
+        }
+    }
+}
+
 /// Render elements, front to back (the reverse of the drawing order
 /// BACKGROUND, BOTTOM, windows bottom to top, TOP, the topmost window when
-/// it is fullscreen, OVERLAY, cursor). Popups come with their parent, just
-/// above it; the order matches the hit test of `input.rs`.
-fn _elements(renderer: &mut GlesRenderer, state: &State) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+/// it is fullscreen, OVERLAY, the window menu, its submenu, cursor). Popups
+/// come with their parent, just above it; the order matches the hit test of
+/// `input.rs` (the open menu takes every click before it).
+fn _elements(
+    renderer: &mut GlesRenderer,
+    state: &State,
+    menu: Option<&(MenuImages, MenuLayout)>,
+    errors: &mut ErrorThrottle,
+) -> Vec<NestedElement> {
     let output_loc = state.output_area();
     let origin = Point::<i32, Logical>::from((output_loc.x, output_loc.y));
     let mut elements = _cursor_elements(renderer, state, origin);
+    if let Some((images, layout)) = menu {
+        elements.extend(_menu_elements(renderer, images, layout, origin, errors));
+    }
     let map = layer_map_for_output(&state.output);
     let layers = |layer: Layer| -> Vec<LayerSurface> { map.layers_on(layer).rev().cloned().collect() };
     let fullscreen = _fullscreen_top(state);
@@ -455,6 +494,28 @@ fn _elements(renderer: &mut GlesRenderer, state: &State) -> Vec<WaylandSurfaceRe
     elements
 }
 
+/// Elements of the window menu, front to back: the open submenu, then the
+/// menu, each at its box of `layout`. A texture upload failure is logged
+/// (rate limited) and that image is left out of the frame.
+fn _menu_elements(
+    renderer: &mut GlesRenderer,
+    images: &MenuImages,
+    layout: &MenuLayout,
+    origin: Point<i32, Logical>,
+    errors: &mut ErrorThrottle,
+) -> Vec<NestedElement> {
+    let submenu = images.submenu.as_ref().zip(layout.submenu.as_ref().map(|(_, rect, _)| *rect));
+    let mut out = Vec::new();
+    for (buffer, rect) in submenu.into_iter().chain([(&images.menu, layout.menu)]) {
+        let loc = (Point::<i32, Logical>::from((rect.x, rect.y)) - origin).to_f64().to_physical(1.0);
+        match MemoryRenderBufferRenderElement::from_buffer(renderer, loc, buffer, None, None, None, Kind::Unspecified) {
+            Ok(element) => out.push(NestedElement::Menu(element)),
+            Err(e) => errors.log("window menu texture", &e.to_string()),
+        }
+    }
+    out
+}
+
 /// The topmost window when it is fullscreen (drawn above TOP, as hit).
 fn _fullscreen_top(state: &State) -> Option<Window> {
     let top = state.space.elements().next_back()?;
@@ -468,7 +529,7 @@ fn _window_elements(
     state: &State,
     window: &Window,
     origin: Point<i32, Logical>,
-) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+) -> Vec<NestedElement> {
     // Every element of the space has a location: no per-frame log for the impossible case.
     let Some(loc) = state.space.element_location(window) else { return Vec::new() };
     let render_loc = loc - window.geometry().loc - origin;
@@ -481,7 +542,7 @@ fn _layer_elements(
     renderer: &mut GlesRenderer,
     map: &smithay::desktop::LayerMap,
     layer: &LayerSurface,
-) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+) -> Vec<NestedElement> {
     // `layer` comes from this map, so it has a geometry: no per-frame log.
     let Some(geo) = map.layer_geometry(layer) else { return Vec::new() };
     let loc = geo.loc - layer.bbox().loc;
@@ -494,7 +555,7 @@ fn _cursor_elements(
     renderer: &mut GlesRenderer,
     state: &State,
     origin: Point<i32, Logical>,
-) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+) -> Vec<NestedElement> {
     let CursorImageStatus::Surface(surface) = &state.cursor_status else { return Vec::new() };
     // The seat always has a pointer (`add_input_devices`); the input paths log its absence.
     let Some(pointer) = state.seat.get_pointer() else { return Vec::new() };

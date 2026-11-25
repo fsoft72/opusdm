@@ -8,12 +8,14 @@ use crate::state::LOG_TAG;
 /// Name of the theme the window menu reads.
 pub const THEME_NAME: &str = "OpusDMTheme";
 
+/// The themerc key of the menu border colour (it falls back to
+/// `window.active.border.color` when absent).
+const MENU_BORDER_KEY: &str = "menu.border.color";
+
 /// Path of the themerc inside a themes directory.
 const THEMERC_PATH: &str = "openbox-3/themerc";
 
 /// An RGB colour.
-// Read by the renderer (stage 2, task 9).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
@@ -37,8 +39,6 @@ impl Rgb {
 }
 
 /// Colours and metrics of the window menu.
-// Read by the renderer (stage 2, task 9).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuTheme {
     /// Item background gradient (`menu.items.bg.color`, `colorTo`).
@@ -51,6 +51,9 @@ pub struct MenuTheme {
     pub active_bg: (Rgb, Rgb),
     /// Selected item text (`menu.items.active.text.color`).
     pub active_text: Rgb,
+    /// Border colour (`menu.border.color`, else
+    /// `window.active.border.color`, as Openbox).
+    pub border: Rgb,
     /// Border width in pixels (`border.width`).
     pub border_width: u32,
     /// Padding in pixels (`padding.width`).
@@ -66,6 +69,7 @@ impl Default for MenuTheme {
             disabled_text: Rgb(0x60, 0x60, 0x60),
             active_bg: (Rgb(0x6d, 0x95, 0xde), Rgb(0x2b, 0x82, 0x9d)),
             active_text: Rgb(0xf8, 0xf8, 0xf8),
+            border: Rgb(0x18, 0x18, 0x18),
             border_width: 4,
             padding: 2,
         }
@@ -75,15 +79,36 @@ impl Default for MenuTheme {
 impl MenuTheme {
     /// The menu theme of the themerc text `themerc`; a missing key keeps
     /// its default, a value that does not parse is logged and keeps it too.
+    /// `menu.border.color` wins over `window.active.border.color` wherever
+    /// it is in the file.
     pub fn parse(themerc: &str) -> MenuTheme {
         let mut theme = MenuTheme::default();
+        let mut menu_border = None;
         for line in themerc.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('!') || line.starts_with('#') { continue; }
             let Some((key, value)) = line.split_once(':') else { continue };
-            theme._set(key.trim(), value.trim());
+            let (key, value) = (key.trim(), value.trim());
+            if key == MENU_BORDER_KEY {
+                menu_border = theme._colour(key, value).or(menu_border);
+                continue;
+            }
+            theme._set(key, value);
+        }
+        if let Some(border) = menu_border {
+            theme.border = border;
         }
         theme
+    }
+
+    /// The colour `value` of the themerc `key`; `None`, logged, when it
+    /// does not parse.
+    fn _colour(&self, key: &str, value: &str) -> Option<Rgb> {
+        let rgb = Rgb::parse(value);
+        if rgb.is_none() {
+            opusdm_ipc::err_log!(LOG_TAG, "themerc {key}: '{value}' is not a colour, default kept");
+        }
+        rgb
     }
 
     /// Sets the field of the themerc `key` to `value`; an unknown key is
@@ -106,6 +131,7 @@ impl MenuTheme {
             "menu.items.active.bg.color" => colour(&mut self.active_bg.0),
             "menu.items.active.bg.colorTo" => colour(&mut self.active_bg.1),
             "menu.items.active.text.color" => colour(&mut self.active_text),
+            "window.active.border.color" => colour(&mut self.border),
             "border.width" => width(&mut self.border_width),
             "padding.width" => width(&mut self.padding),
             _ => {}
@@ -191,7 +217,18 @@ mod tests {
         assert_eq!(theme.disabled_text, Rgb(0x60, 0x60, 0x60));
         assert_eq!(theme.active_text, Rgb(0xf8, 0xf8, 0xf8));
         assert_eq!((theme.border_width, theme.padding), (4, 2));
+        assert_eq!(theme.border, Rgb(0x18, 0x18, 0x18));
         assert_eq!(theme, MenuTheme::default(), "the defaults are OpusDMTheme's values");
+    }
+
+    #[test]
+    fn the_menu_border_colour_wins_over_the_window_border_colour() {
+        let theme = MenuTheme::parse("menu.border.color: #010101\nwindow.active.border.color: #020202\n");
+        assert_eq!(theme.border, Rgb(1, 1, 1));
+        let theme = MenuTheme::parse("window.active.border.color: #020202\n");
+        assert_eq!(theme.border, Rgb(2, 2, 2));
+        let theme = MenuTheme::parse("menu.border.color: bad\nwindow.active.border.color: #020202\n");
+        assert_eq!(theme.border, Rgb(2, 2, 2), "a bad menu border falls back to the window border");
     }
 
     #[test]
