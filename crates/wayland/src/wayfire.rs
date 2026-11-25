@@ -14,13 +14,18 @@
 //! coordinates outside the output. OpusDM numbers the workspaces row by row,
 //! like a pager: `index = y * columns + x`.
 
-use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
+
+use crate::frame::{self, send};
+#[cfg(test)]
+use crate::frame::frame;
+#[cfg(test)]
+use std::io::Write;
 
 /// Environment variable Wayfire sets for its children: the IPC socket path.
 pub const ENV_SOCKET: &str = "WAYFIRE_SOCKET";
@@ -218,28 +223,9 @@ fn connect() -> Result<UnixStream, String> {
     UnixStream::connect(&path).map_err(|e| format!("cannot connect to {}: {e}", path.display()))
 }
 
-/// `body` framed for the socket: its length (4 bytes, little endian), then it.
-fn frame(body: &[u8]) -> Vec<u8> {
-    let mut out = (body.len() as u32).to_le_bytes().to_vec();
-    out.extend_from_slice(body);
-    out
-}
-
-/// Send request `method` with `data` on `stream`.
-fn send(stream: &mut UnixStream, method: &str, data: Value) -> Result<(), String> {
-    let body = json!({ "method": method, "data": data }).to_string();
-    stream.write_all(&frame(body.as_bytes())).map_err(|e| format!("{method}: write failed: {e}"))
-}
-
 /// Read one message from `stream`.
 fn receive(stream: &mut UnixStream) -> Result<Value, String> {
-    let mut len = [0u8; 4];
-    stream.read_exact(&mut len).map_err(|e| format!("read failed: {e}"))?;
-    let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_MESSAGE { return Err(format!("message of {len} bytes refused")); }
-    let mut body = vec![0u8; len];
-    stream.read_exact(&mut body).map_err(|e| format!("read failed: {e}"))?;
-    serde_json::from_slice(&body).map_err(|e| format!("bad JSON from Wayfire: {e}"))
+    frame::receive_from(stream, MAX_MESSAGE, "Wayfire")
 }
 
 /// The reply as a result: `Err` with Wayfire's message when it has `error`.

@@ -9,8 +9,10 @@
 
 mod client;
 pub mod compositor;
+mod frame;
 mod model;
 pub mod labwc;
+pub mod native;
 pub mod screencopy;
 pub mod wayfire;
 pub mod wayfire_ini;
