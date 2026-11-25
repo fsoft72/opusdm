@@ -294,6 +294,7 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     if exclusive && !holds {
         opusdm_ipc::debug_log!(LOG_TAG, "exclusive keyboard layer {} mapped, it takes the keyboard", surface.id());
         _end_popup_grabs_for(state, surface);
+        state.close_window_menu("an exclusive keyboard layer mapped");
         state.exclusive_layer = Some(surface.clone());
         state.focus_layer(surface);
     } else if !exclusive && holds {

@@ -765,3 +765,154 @@ fn a_pending_activation_goes_away_with_its_window() {
     assert!(comp.wait_log("pending activation of window 2 discarded", Duration::from_secs(2)));
     assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()));
 }
+
+#[test]
+fn the_window_menu_minimizes_the_focused_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = c.map_toplevel((400, 300));
+    for key in ["Alt+space", "Down", "Return"] {
+        ipc_request(&comp, "debug/key", json!({"key": key}));
+    }
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["minimized"], true);
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn the_window_menu_closes_when_its_window_goes() {
+    let mut comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    drop(w);
+    c.roundtrip();
+    ipc_request(&comp, "debug/key", json!({"key": "Return"})); // no window: nothing runs
+    let mut d = TestClient::new(&comp);
+    let _x = d.map_toplevel((400, 300));
+    ipc_request(&comp, "debug/key", json!({"key": "a"}));
+    d.roundtrip();
+    assert_eq!(d.keys_received(), 2); // the menu is gone, keys reach clients again
+    assert!(comp.is_running());
+}
+
+#[test]
+fn the_first_window_menu_item_toggles_maximize() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    for key in ["Alt+space", "Return"] {
+        ipc_request(&comp, "debug/key", json!({"key": key}));
+    }
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["maximized"], true);
+    for key in ["Alt+space", "Return"] {
+        ipc_request(&comp, "debug/key", json!({"key": key}));
+    }
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["maximized"], false, "Restore");
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn the_window_menu_moves_the_window_to_another_desktop() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    // Maximize, Minimize, Move to desktop; Right opens it on "1" (this desktop, disabled); Down: "2".
+    for key in ["Alt+space", "Down", "Down", "Right", "Down", "Return"] {
+        ipc_request(&comp, "debug/key", json!({"key": key}));
+    }
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["desktop"], 1);
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn escape_closes_the_window_menu_and_keys_reach_the_client_again() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    for key in ["Alt+space", "a", "Escape"] {
+        ipc_request(&comp, "debug/key", json!({"key": key}));
+    }
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0, "keys go to the open menu, never to the client");
+    ipc_request(&comp, "debug/key", json!({"key": "a"}));
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 2);
+    let list = ipc_request(&comp, "windows/list", json!({}));
+    assert_eq!(list["windows"][0]["minimized"], false, "Escape runs no action: {list}");
+    assert_eq!(list["windows"][0]["maximized"], false, "Escape runs no action: {list}");
+}
+
+#[test]
+fn an_exclusive_layer_mapped_over_the_window_menu_closes_it() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    assert!(comp.wait_log("window menu closed: an exclusive keyboard layer mapped", Duration::from_secs(2)));
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()));
+    ipc_request(&comp, "debug/key", json!({"key": "Return"}));
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 2, "the layer gets the keys, the menu is closed");
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["maximized"], false);
+}
+
+#[test]
+fn the_window_menu_needs_a_focused_window() {
+    let comp = Compositor::start_debug();
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    assert!(comp.wait_log("window menu: no focused window", Duration::from_secs(2)));
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "a"}));
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 2, "no menu was left open");
+}
+
+#[test]
+fn the_window_menu_ends_an_open_client_menu_first() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let menu = c.map_popup_with_grab(&w, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert!(!c.popup_done(&menu), "the client menu must be open first");
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    c.roundtrip();
+    assert!(c.popup_done(&menu), "the client menu is dismissed");
+    for key in ["Down", "Return"] {
+        ipc_request(&comp, "debug/key", json!({"key": key}));
+    }
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["minimized"], true);
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn the_window_menu_closes_when_its_client_dies() {
+    let mut comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    assert!(comp.wait_log("window menu opened on window 1", Duration::from_secs(2)));
+    drop(w);
+    drop(c); // socket closed with the window alive, like kill -9
+    assert!(comp.wait_log("window menu closed: its window was destroyed", Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "Return"}));
+    assert_eq!(comp.log_count("window menu: ToggleMaximize"), 0, "no action on a dead window");
+    let mut d = TestClient::new(&comp);
+    let x = d.map_toplevel((400, 300));
+    assert!(d.wait_keyboard_focus(&x, Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "a"}));
+    d.roundtrip();
+    assert_eq!(d.keys_received(), 2);
+    assert!(comp.is_running());
+}

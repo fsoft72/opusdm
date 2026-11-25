@@ -10,6 +10,7 @@ mod grabs;
 mod hotkeys;
 mod input;
 mod ipc;
+mod menu;
 mod protocols;
 mod shell;
 mod state;

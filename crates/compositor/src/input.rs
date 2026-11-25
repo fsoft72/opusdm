@@ -20,6 +20,7 @@ use smithay::{
 use crate::geometry::Rect;
 use crate::grabs::edges_for_point;
 use crate::hotkeys::{combo_text, mods_of, Binding};
+use crate::menu::model::MenuKey;
 use opusdm_ipc::bindings::Mods;
 use crate::state::{State, LOG_TAG};
 
@@ -28,6 +29,33 @@ pub const BTN_LEFT: u32 = 0x110;
 
 /// Linux input code of the right mouse button (`BTN_RIGHT`).
 pub const BTN_RIGHT: u32 = 0x111;
+
+/// Where the key filter sends an intercepted key press.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// Nothing runs: the release or repeat of a swallowed key, or a key
+    /// the open window menu does not use.
+    Swallowed,
+    /// A binding matched by the key (its combo text for the logs).
+    Binding(Binding, String),
+    /// A key for the open window menu.
+    Menu(MenuKey),
+}
+
+/// The window menu key of `sym`: arrows (keypad too), Return / KP_Enter
+/// and Escape; `None` for any other key.
+pub fn menu_key_of(sym: Keysym) -> Option<MenuKey> {
+    let key = match sym {
+        Keysym::Up | Keysym::KP_Up => MenuKey::Up,
+        Keysym::Down | Keysym::KP_Down => MenuKey::Down,
+        Keysym::Left | Keysym::KP_Left => MenuKey::Left,
+        Keysym::Right | Keysym::KP_Right => MenuKey::Right,
+        Keysym::Return | Keysym::KP_Enter => MenuKey::Enter,
+        Keysym::Escape => MenuKey::Escape,
+        _ => return None,
+    };
+    Some(key)
+}
 
 /// One step of the pointer hit test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +130,9 @@ impl State {
         pointer.frame(self);
     }
 
-    /// A pointer button changed. A press with no active grab focuses what is
+    /// A pointer button changed. While the window menu is open a press goes
+    /// to the menu (`window_menu_click`) and neither it nor its release
+    /// reach a client. A press with no active grab focuses what is
     /// under the pointer (`_click_focus`); with Alt held on a window, the left
     /// button starts a `MoveGrab` and the right button a `ResizeGrab` on the
     /// edges of the quadrant the pointer is in: the grab consumes the press
@@ -112,6 +142,15 @@ impl State {
             opusdm_ipc::err_log!(LOG_TAG, "pointer button: the seat has no pointer");
             return;
         };
+        if pressed && self.menu.is_some() {
+            self.swallowed_buttons.insert(button);
+            self.window_menu_click(pointer.current_location());
+            return;
+        }
+        if !pressed && self.swallowed_buttons.remove(&button) {
+            opusdm_ipc::debug_log!(LOG_TAG, "release of button {button:#x} swallowed: its press went to the window menu");
+            return;
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
         if pressed && !pointer.is_grabbed() {
@@ -140,9 +179,12 @@ impl State {
     /// A key changed. A press that matches a binding (`HotkeyTable::lookup`,
     /// on the layout independent keysym) is swallowed and its keycode
     /// recorded; the release (and a repeat press) of a recorded keycode is
-    /// swallowed too, even when the modifiers were released first. Every
-    /// other key, modifiers included, goes to the surface with the keyboard
-    /// focus as before. The binding runs after the keyboard is updated.
+    /// swallowed too, even when the modifiers were released first. While
+    /// the window menu is open every non-modifier press goes to the menu
+    /// (only the quit binding still matches) and is recorded the same way.
+    /// Every other key, modifiers included, goes to the surface with the
+    /// keyboard focus as before. The binding or the menu key runs after the
+    /// keyboard is updated.
     pub fn keyboard_key(&mut self, keycode: Keycode, pressed: bool, time_msec: u32) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             opusdm_ipc::err_log!(LOG_TAG, "keyboard key: the seat has no keyboard");
@@ -150,38 +192,63 @@ impl State {
         };
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
         let serial = SERIAL_COUNTER.next_serial();
-        let matched = keyboard.input::<Option<(Binding, String)>, _>(self, keycode, state, serial, time_msec, |s, mods, handle| {
+        let routed = keyboard.input::<KeyRoute, _>(self, keycode, state, serial, time_msec, |s, mods, handle| {
             s._hotkey_filter(keycode, pressed, mods, &handle)
         });
-        if let Some(Some((binding, combo))) = matched {
-            self.run_binding(binding, &combo);
+        match routed {
+            Some(KeyRoute::Binding(binding, combo)) => self.run_binding(binding, &combo),
+            Some(KeyRoute::Menu(key)) => self.window_menu_key(key),
+            Some(KeyRoute::Swallowed) | None => {}
         }
     }
 
-    /// The hotkey filter of `keyboard_key`: `Intercept(Some(..))` for a press
-    /// that matches a binding (its keycode recorded), `Intercept(None)` for
-    /// a key event of a recorded keycode (its release forgets it), `Forward`
-    /// otherwise.
+    /// The hotkey filter of `keyboard_key`: `Intercept(Binding)` for a press
+    /// that matches a binding (its keycode recorded), `Intercept(Swallowed)`
+    /// for a key event of a recorded keycode (its release forgets it), the
+    /// window menu's filter while the menu is open, `Forward` otherwise.
     fn _hotkey_filter(
         &mut self,
         keycode: Keycode,
         pressed: bool,
         mods: &ModifiersState,
         handle: &KeysymHandle<'_>,
-    ) -> FilterResult<Option<(Binding, String)>> {
+    ) -> FilterResult<KeyRoute> {
         if !pressed {
             if !self.swallowed_keys.remove(&keycode) { return FilterResult::Forward; }
             opusdm_ipc::debug_log!(LOG_TAG, "hotkey release of key {} swallowed", keycode.raw());
-            return FilterResult::Intercept(None);
+            return FilterResult::Intercept(KeyRoute::Swallowed);
         }
+        if self.menu.is_some() { return self._menu_filter(keycode, mods, handle); }
         if self.swallowed_keys.contains(&keycode) {
             opusdm_ipc::debug_log!(LOG_TAG, "hotkey repeat press of key {} swallowed", keycode.raw());
-            return FilterResult::Intercept(None);
+            return FilterResult::Intercept(KeyRoute::Swallowed);
         }
         let mods = mods_of(mods);
         let Some((binding, name)) = self._lookup_key(mods, handle) else { return FilterResult::Forward };
         self.swallowed_keys.insert(keycode);
-        FilterResult::Intercept(Some((binding, combo_text(mods, &name))))
+        FilterResult::Intercept(KeyRoute::Binding(binding, combo_text(mods, &name)))
+    }
+
+    /// The filter of a key press while the window menu is open: a modifier
+    /// goes to the focused client as usual (its release does too, so the
+    /// client never sees a modifier stuck); the quit binding still runs;
+    /// any other press (repeats included) goes to the menu, its keycode
+    /// recorded so its release is swallowed.
+    fn _menu_filter(&mut self, keycode: Keycode, mods: &ModifiersState, handle: &KeysymHandle<'_>) -> FilterResult<KeyRoute> {
+        if handle.raw_syms().iter().any(|sym| sym.is_modifier_key()) { return FilterResult::Forward; }
+        self.swallowed_keys.insert(keycode);
+        let mods = mods_of(mods);
+        if let Some((Binding::Quit, name)) = self._lookup_key(mods, handle) {
+            return FilterResult::Intercept(KeyRoute::Binding(Binding::Quit, combo_text(mods, &name)));
+        }
+        let sym = handle.modified_sym();
+        match menu_key_of(sym) {
+            Some(key) => FilterResult::Intercept(KeyRoute::Menu(key)),
+            None => {
+                opusdm_ipc::debug_log!(LOG_TAG, "key {} ignored by the window menu", xkb::keysym_get_name(sym));
+                FilterResult::Intercept(KeyRoute::Swallowed)
+            }
+        }
     }
 
     /// The binding of the key `handle` with `mods` and the keysym name that

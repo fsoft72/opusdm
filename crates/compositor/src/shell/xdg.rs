@@ -235,13 +235,16 @@ impl XdgShellHandler for State {
 
     /// Removes the window from the space, the tables and the stack; when it
     /// had the keyboard, the topmost remaining window gets it. Its
-    /// foreign-toplevel handles are closed.
+    /// foreign-toplevel handles are closed and its window menu, if open, too.
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let wl = surface.wl_surface();
         if let Some(info) = self.windows.remove(wl) {
             self.stack.retain(|id| *id != info.id);
             if info.pending_activation {
                 opusdm_ipc::debug_log!(LOG_TAG, "pending activation of window {} discarded: destroyed before it mapped", info.id.0);
+            }
+            if self.menu.as_ref().is_some_and(|m| m.window == info.id) {
+                self.close_window_menu("its window was destroyed");
             }
         }
         self.unmapped.retain(|w| w.toplevel().is_some_and(|t| t.wl_surface() != wl));

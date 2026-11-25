@@ -40,6 +40,8 @@ use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
 use crate::hotkeys::HotkeyTable;
 use crate::ipc::IpcServer;
+use crate::menu::theme::MenuTheme;
+use crate::menu::WindowMenu;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
 use crate::protocols::workspace::Workspaces;
 use crate::wm::desktops::Desktops;
@@ -193,6 +195,14 @@ pub struct State {
     /// Keys whose press matched a binding: their release (and any repeat
     /// press) is swallowed too, so the client never sees half a key.
     pub swallowed_keys: HashSet<Keycode>,
+    /// The open window menu (Alt+Space), owned here only; it names its
+    /// window by id and is closed when the window goes (see `menu`).
+    pub menu: Option<WindowMenu>,
+    /// Colours of the window menu, read once at startup from OpusDMTheme.
+    pub menu_theme: MenuTheme,
+    /// Pointer buttons whose press the window menu took: their release is
+    /// swallowed too, so no client sees half a click.
+    pub swallowed_buttons: HashSet<u32>,
 }
 
 impl State {
@@ -249,6 +259,9 @@ impl State {
             workspaces,
             hotkeys: HotkeyTable::new(&CompositorConfig::default()),
             swallowed_keys: HashSet::new(),
+            menu: None,
+            menu_theme: MenuTheme::load(),
+            swallowed_buttons: HashSet::new(),
         }
     }
 
@@ -374,15 +387,10 @@ impl State {
         keyboard.current_focus().is_none_or(|f| &f == surface || !f.alive())
     }
 
-    /// Opens the window menu of the focused window (the `WindowMenu`
-    /// binding). A stub until the window menu exists (stage 2, task 8).
-    pub fn open_window_menu(&mut self) {
-        opusdm_ipc::debug_log!(LOG_TAG, "window menu requested (not implemented yet)");
-    }
-
     /// Drops dead windows and layer surfaces from the space, the layer map and
-    /// the tables (a safety net for `toplevel_destroyed` / `layer_destroyed`)
-    /// and moves a dead keyboard focus to the top window.
+    /// the tables (a safety net for `toplevel_destroyed` / `layer_destroyed`),
+    /// closes a window menu whose window is gone or hidden and moves a dead
+    /// keyboard focus to the top window.
     pub fn refresh(&mut self) {
         self.space.refresh();
         self.windows.retain(|surface, _| surface.alive());
@@ -402,6 +410,7 @@ impl State {
             opusdm_ipc::debug_log!(LOG_TAG, "exclusive keyboard layer is dead, released");
             self.exclusive_layer = None;
         }
+        self.check_window_menu();
         let Some(keyboard) = self.seat.get_keyboard() else {
             if !self.no_keyboard_logged {
                 opusdm_ipc::err_log!(LOG_TAG, "refresh: the seat has no keyboard, focus is not checked");
