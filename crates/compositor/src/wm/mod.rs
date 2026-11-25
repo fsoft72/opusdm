@@ -184,12 +184,20 @@ impl State {
             .collect()
     }
 
-    /// Tells the IPC `watch` connections what changed since they were last
-    /// told (windows added, changed or removed, desktops changed). Cheap
-    /// when nobody watches; called after every state change.
+    /// Tells the foreign-toplevel clients and the IPC `watch` connections
+    /// what changed since they were last told (windows added, changed or
+    /// removed, desktops changed), from the same `window_views`, so the two
+    /// never disagree. Cheap when nobody listens; called after every state
+    /// change.
     pub fn notify_watchers(&mut self) {
-        if !self.ipc.has_watchers() { return; }
+        let foreign = self.foreign_toplevels.is_active();
+        let ipc = self.ipc.has_watchers();
+        if !foreign && !ipc { return; }
         let views = self.window_views();
+        if foreign {
+            self.foreign_toplevels_apply(&views);
+        }
+        if !ipc { return; }
         let desktops = (self.desktops.count(), self.desktops.current());
         for event in self.ipc.take_events(views, desktops) {
             self.ipc.broadcast(&event);

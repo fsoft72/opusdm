@@ -37,6 +37,7 @@ use smithay::{
 use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
 use crate::ipc::IpcServer;
+use crate::protocols::foreign_toplevel::ForeignToplevels;
 use crate::wm::desktops::Desktops;
 use crate::wm::{WindowId, HIDDEN_FRAME_INTERVAL};
 
@@ -172,6 +173,8 @@ pub struct State {
     /// True when the IPC accepts synthetic input (`debug/key`): only with
     /// `--headless`, the test backend.
     pub test_input: bool,
+    /// The `zwlr_foreign_toplevel_manager_v1` global, its managers and handles.
+    pub foreign_toplevels: ForeignToplevels,
 }
 
 impl State {
@@ -187,6 +190,7 @@ impl State {
         let data_device_state = DataDeviceState::new::<State>(display);
         let seat = seat_state.new_wl_seat(display, SEAT_NAME);
         let _global = output.create_global::<State>(display);
+        let foreign_toplevels = ForeignToplevels::new(display);
         let mut space = Space::default();
         space.map_output(&output, (0, 0));
         State {
@@ -220,6 +224,7 @@ impl State {
             pending_dmabufs: Vec::new(),
             ipc: IpcServer::default(),
             test_input: false,
+            foreign_toplevels,
         }
     }
 

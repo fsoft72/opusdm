@@ -2,8 +2,11 @@
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use serde_json::json;
+
+use common::ipc::ipc_request;
 use common::{Anchor, Compositor, HasSurface, KeyboardInteractivity, Layer, Rect, TestClient};
 
 #[test]
@@ -355,4 +358,121 @@ fn a_hidden_exclusive_layer_whose_client_dies_leaves_nothing_behind() {
     let b = app.map_toplevel((200, 100));
     assert!(app.wait_keyboard_focus(&b, Duration::from_secs(2)), "a new window must get the keyboard");
     assert!(app.wait_frame(&b, Duration::from_secs(2)));
+}
+
+#[test]
+fn foreign_toplevels_list_title_app_id_and_states() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    w.xdg().set_title("Lister".into());
+    w.xdg().set_app_id("opusdm-lister".into());
+    w.wl_surface().commit();
+    let t = c.toplevels();
+    assert_eq!((t[0].title.as_str(), t[0].app_id.as_str()), ("Lister", "opusdm-lister"));
+    assert!(t[0].states.contains(&2)); // activated
+    assert_eq!(t[0].outputs, 1);
+}
+
+#[test]
+fn a_foreign_toplevel_minimize_and_activate_round_trip() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = c.map_toplevel((400, 300));
+    let t = c.toplevels().remove(0);
+    c.minimize(&t);
+    assert!(c.toplevels()[0].states.contains(&1));
+    c.activate(&t);
+    let states = &c.toplevels()[0].states;
+    assert!(!states.contains(&1) && states.contains(&2));
+}
+
+#[test]
+fn a_fullscreen_window_is_reported_fullscreen() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    w.xdg().set_fullscreen(None);
+    c.roundtrip();
+    assert!(c.toplevels()[0].states.contains(&3));
+}
+
+#[test]
+fn a_destroyed_window_is_closed_for_foreign_toplevel_clients() {
+    let comp = Compositor::start();
+    let mut watcher = TestClient::new(&comp);
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert_eq!(watcher.toplevels().len(), 1);
+    drop(w);
+    c.roundtrip();
+    assert_eq!(watcher.toplevels().len(), 0);
+}
+
+/// `(managers, handles)` the compositor keeps for foreign-toplevel clients
+/// (`debug/foreign-toplevels`).
+fn foreign_counts(comp: &Compositor) -> (u64, u64) {
+    let reply = ipc_request(comp, "debug/foreign-toplevels", json!({}));
+    assert_eq!(reply["ok"], true, "debug/foreign-toplevels refused: {reply}");
+    (reply["managers"].as_u64().expect("managers"), reply["handles"].as_u64().expect("handles"))
+}
+
+/// Polls `foreign_counts` until it is `want` or 2 s pass; the last value.
+fn wait_foreign_counts(comp: &Compositor, want: (u64, u64)) -> (u64, u64) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let counts = foreign_counts(comp);
+        if counts == want || Instant::now() >= deadline {
+            return counts;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_foreign_toplevel_client_that_dies_leaves_no_handles_behind() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = c.map_toplevel((400, 300));
+    let mut watcher = TestClient::new(&comp);
+    assert_eq!(watcher.toplevels().len(), 1);
+    assert_eq!(foreign_counts(&comp), (2, 2));
+    drop(watcher); // socket closed with the manager and the handle alive, like kill -9
+    assert_eq!(wait_foreign_counts(&comp, (1, 1)), (1, 1));
+    drop(c);
+    assert_eq!(wait_foreign_counts(&comp, (0, 0)), (0, 0));
+}
+
+#[test]
+fn a_minimized_window_stays_listed_and_an_unmapped_one_is_closed() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    b.xdg().set_minimized();
+    c.roundtrip();
+    let t = c.toplevels();
+    assert_eq!(t.len(), 2);
+    assert!(t[1].states.contains(&1) && !t[1].states.contains(&2));
+    c.unmap(&a);
+    assert_eq!(c.toplevels().len(), 1);
+    assert!(c.remap(&a));
+    assert_eq!(c.toplevels().len(), 2);
+}
+
+#[test]
+fn foreign_toplevel_maximize_and_close_requests_reach_the_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let t = c.toplevels().remove(0);
+    t.handle.set_maximized();
+    c.roundtrip();
+    assert!(c.toplevels()[0].states.contains(&0));
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)));
+    t.handle.unset_maximized();
+    c.roundtrip();
+    assert!(!c.toplevels()[0].states.contains(&0));
+    t.handle.close();
+    assert!(c.wait_close_request(&w, Duration::from_secs(2)));
 }

@@ -47,7 +47,11 @@ use wayland_client::{
     backend::ObjectId,
     globals::registry_queue_init,
     protocol::{wl_callback, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface::WlSurface},
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+    event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+};
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_popup::XdgPopup,
@@ -282,6 +286,39 @@ impl HasSurface for TestPopup {
     }
 }
 
+/// A toplevel as a `zwlr_foreign_toplevel_manager_v1` client sees it after
+/// the last `done` of its handle.
+#[derive(Debug, Clone)]
+pub struct ForeignToplevel {
+    /// Last `title` event (empty before one came).
+    pub title: String,
+    /// Last `app_id` event (empty before one came).
+    pub app_id: String,
+    /// Values of the last `state` event (0 maximized, 1 minimized, 2 activated, 3 fullscreen).
+    pub states: Vec<u32>,
+    /// Outputs entered and not left.
+    pub outputs: usize,
+    /// The handle, to send requests on it.
+    pub handle: ZwlrForeignToplevelHandleV1,
+}
+
+/// A foreign-toplevel handle of a `TestClient`: the events since the last
+/// `done` and what the last `done` published.
+struct ForeignEntry {
+    /// The handle.
+    handle: ZwlrForeignToplevelHandleV1,
+    /// Last `title` received, published on `done`.
+    title: String,
+    /// Last `app_id` received, published on `done`.
+    app_id: String,
+    /// Last `state` received, published on `done`.
+    states: Vec<u32>,
+    /// Ids of the outputs entered and not left.
+    outputs: Vec<ObjectId>,
+    /// The toplevel as of the last `done` (`None` before the first one).
+    published: Option<ForeignToplevel>,
+}
+
 /// What the client knows about one of its surfaces (any role).
 struct SurfaceInfo {
     /// Size the test asked for, used when a configure leaves the size to the client.
@@ -328,6 +365,8 @@ struct ClientApp {
     keys: u32,
     /// Toplevels that got `xdg_toplevel.close`, by `wl_surface` id.
     close_requests: Vec<ObjectId>,
+    /// Foreign-toplevel handles not closed yet, in the order they came.
+    foreign: Vec<ForeignEntry>,
 }
 
 impl ClientApp {
@@ -363,6 +402,8 @@ pub struct TestClient {
     /// may drop its `TestLayer` (a panel it does not look at again) and the
     /// panel must stay mapped.
     layers: Vec<LayerSurface>,
+    /// The `zwlr_foreign_toplevel_manager_v1`, when the compositor has it.
+    foreign_manager: Option<ZwlrForeignToplevelManagerV1>,
 }
 
 impl TestClient {
@@ -399,8 +440,12 @@ impl TestClient {
             dismissed: Vec::new(),
             keys: 0,
             close_requests: Vec::new(),
+            foreign: Vec::new(),
         };
-        let mut client = TestClient { conn, queue, qh, app, _seat: seat, _keyboard: keyboard, layers: Vec::new() };
+        // Bound after `wl_output` (bound by `OutputState::new`); `None` when the compositor has no such global.
+        let foreign_manager = globals.bind::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ()).ok();
+        let mut client =
+            TestClient { conn, queue, qh, app, _seat: seat, _keyboard: keyboard, layers: Vec::new(), foreign_manager };
         client.roundtrip();
         client
     }
@@ -682,6 +727,25 @@ impl TestClient {
         ok
     }
 
+    /// The toplevels the foreign-toplevel manager of this client lists after
+    /// a roundtrip, as of the last `done` of each handle, in the order the
+    /// handles came; panics when the compositor has no manager global.
+    pub fn toplevels(&mut self) -> Vec<ForeignToplevel> {
+        assert!(self.foreign_manager.is_some(), "the compositor has no zwlr_foreign_toplevel_manager_v1");
+        self.roundtrip();
+        self.app.foreign.iter().filter_map(|e| e.published.clone()).collect()
+    }
+
+    /// Asks the compositor to activate the toplevel `t` (`activate` with the seat of this client).
+    pub fn activate(&self, t: &ForeignToplevel) {
+        t.handle.activate(&self._seat);
+    }
+
+    /// Asks the compositor to minimize the toplevel `t` (`set_minimized`).
+    pub fn minimize(&self, t: &ForeignToplevel) {
+        t.handle.set_minimized();
+    }
+
     /// Sends a `wl_display.sync` and handles every event up to its answer;
     /// panics when the answer does not come within `ROUNDTRIP_TIMEOUT`.
     pub fn roundtrip(&mut self) {
@@ -818,6 +882,72 @@ impl Dispatch<wl_callback::WlCallback, Arc<AtomicBool>> for ClientApp {
     ) {
         if let wl_callback::Event::Done { .. } = event {
             done.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for ClientApp {
+    /// Records every new handle; `finished` needs nothing (the tests never stop the manager).
+    fn event(
+        app: &mut Self,
+        _: &ZwlrForeignToplevelManagerV1,
+        event: zwlr_foreign_toplevel_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel } = event {
+            app.foreign.push(ForeignEntry {
+                handle: toplevel,
+                title: String::new(),
+                app_id: String::new(),
+                states: Vec::new(),
+                outputs: Vec::new(),
+                published: None,
+            });
+        }
+    }
+
+    event_created_child!(ClientApp, ZwlrForeignToplevelManagerV1, [
+        zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE => (ZwlrForeignToplevelHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ClientApp {
+    /// Collects the events of a handle, publishes them on `done` and forgets
+    /// the handle on `closed`.
+    fn event(
+        app: &mut Self,
+        handle: &ZwlrForeignToplevelHandleV1,
+        event: zwlr_foreign_toplevel_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwlr_foreign_toplevel_handle_v1::Event;
+        if let Event::Closed = event {
+            app.foreign.retain(|e| &e.handle != handle);
+            return;
+        }
+        let Some(entry) = app.foreign.iter_mut().find(|e| &e.handle == handle) else { panic!("event for an unknown handle {}", handle.id()) };
+        match event {
+            Event::Title { title } => entry.title = title,
+            Event::AppId { app_id } => entry.app_id = app_id,
+            Event::State { state } => {
+                entry.states = state.as_chunks::<4>().0.iter().map(|b| u32::from_ne_bytes(*b)).collect();
+            }
+            Event::OutputEnter { output } => entry.outputs.push(output.id()),
+            Event::OutputLeave { output } => entry.outputs.retain(|o| *o != output.id()),
+            Event::Done => {
+                entry.published = Some(ForeignToplevel {
+                    title: entry.title.clone(),
+                    app_id: entry.app_id.clone(),
+                    states: entry.states.clone(),
+                    outputs: entry.outputs.len(),
+                    handle: entry.handle.clone(),
+                });
+            }
+            _ => {}
         }
     }
 }

@@ -7,6 +7,7 @@ mod geometry;
 mod grabs;
 mod input;
 mod ipc;
+mod protocols;
 mod shell;
 mod state;
 mod wm;

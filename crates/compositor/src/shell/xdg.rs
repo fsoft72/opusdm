@@ -215,8 +215,27 @@ impl XdgShellHandler for State {
         }
     }
 
+    /// Sends the new title to the foreign-toplevel handles of the window.
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        let Some(id) = self.windows.get(surface.wl_surface()).map(|info| info.id) else {
+            opusdm_ipc::err_log!(LOG_TAG, "title of {}: unknown toplevel, not sent", surface.wl_surface().id());
+            return;
+        };
+        self.foreign_toplevel_update(id);
+    }
+
+    /// Sends the new app id to the foreign-toplevel handles of the window.
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        let Some(id) = self.windows.get(surface.wl_surface()).map(|info| info.id) else {
+            opusdm_ipc::err_log!(LOG_TAG, "app id of {}: unknown toplevel, not sent", surface.wl_surface().id());
+            return;
+        };
+        self.foreign_toplevel_update(id);
+    }
+
     /// Removes the window from the space, the tables and the stack; when it
-    /// had the keyboard, the topmost remaining window gets it.
+    /// had the keyboard, the topmost remaining window gets it. Its
+    /// foreign-toplevel handles are closed.
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let wl = surface.wl_surface();
         if let Some(info) = self.windows.remove(wl) {
@@ -231,6 +250,7 @@ impl XdgShellHandler for State {
         if self.focus_is_gone_or(wl) {
             self.focus_topmost();
         }
+        self.foreign_toplevels_sync();
     }
 }
 
@@ -361,6 +381,7 @@ impl State {
         if surface.is_initial_configure_sent() {
             surface.send_configure();
         }
+        self.foreign_toplevels_sync();
     }
 
     /// Takes the toplevel `surface` out of the `fill` state: when the other
@@ -399,6 +420,7 @@ impl State {
         if surface.is_initial_configure_sent() {
             surface.send_configure();
         }
+        self.foreign_toplevels_sync();
     }
 
     /// Called after something may have changed the usable area (a layer
@@ -523,6 +545,7 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     opusdm_ipc::debug_log!(LOG_TAG, "map toplevel {} {}x{} at {x},{y}", surface.id(), size.w, size.h);
     state.space.map_element(window.clone(), (x, y), true);
     state.focus_window(Some(window));
+    state.foreign_toplevels_sync();
 }
 
 /// Commit of a mapped toplevel (shown, or hidden: minimized or on another
@@ -544,6 +567,7 @@ pub fn unmap_if_bufferless(state: &mut State, surface: &WlSurface) -> bool {
     if state.focus_is_gone_or(surface) {
         state.focus_topmost();
     }
+    state.foreign_toplevels_sync();
     true
 }
 
