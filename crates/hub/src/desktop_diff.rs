@@ -46,6 +46,14 @@ pub fn diff(old: &DesktopSettings, new: &DesktopSettings) -> DesktopChanges {
     }
 }
 
+/// Whether going from `old` to `new` needs a `reload` of opusdm-compositor:
+/// a change of the opacity, snap, wrap or number of desktops (what the
+/// compositor reads from `desktop.json`).
+pub fn needs_native_reload(old: &DesktopSettings, new: &DesktopSettings) -> bool {
+    let c = diff(old, new);
+    c.transparency || c.virtual_screens || c.snap || old.wrap_desktops != new.wrap_desktops
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +109,22 @@ mod tests {
         let old = DesktopSettings::default();
         let new = DesktopSettings { open_lister_at_start: !old.open_lister_at_start, ..old.clone() };
         assert!(!diff(&old, &new).any());
+    }
+
+    #[test]
+    fn the_native_reload_follows_what_the_compositor_reads() {
+        let old = DesktopSettings::default();
+        let with = |f: fn(&mut DesktopSettings)| {
+            let mut n = old.clone();
+            f(&mut n);
+            needs_native_reload(&old, &n)
+        };
+        assert!(with(|d| d.virtual_screens += 1));
+        assert!(with(|d| d.inactive_opacity -= 1));
+        assert!(with(|d| d.transparency_enabled = !d.transparency_enabled));
+        assert!(with(|d| d.snap_enabled = !d.snap_enabled));
+        assert!(with(|d| d.wrap_desktops = !d.wrap_desktops), "wrap alone");
+        assert!(!with(|d| d.icon_size += 1));
+        assert!(!needs_native_reload(&old, &old.clone()));
     }
 }

@@ -54,8 +54,14 @@ pub(super) fn spawn_persist_thread() -> Sender<PersistMsg> {
                         }
                     }
                     PersistMsg::Desktop(d) => {
+                        // Under opusdm-compositor: what is on disk now is what the
+                        // compositor last read, so it is the "old" side of the diff.
+                        let old = if crate::global_keys_wl::under_native() { Some(desktop_settings::load()) } else { None };
                         if let Err(e) = desktop_settings::save(&d) {
                             opusdm_ipc::err_log!("hub", "cannot save desktop.json: {e}");
+                        } else if old.is_some_and(|old| crate::desktop_diff::needs_native_reload(&old, &d)) {
+                            // Only after a successful save, in save order: the reload reads this file.
+                            crate::compositor::reload_native();
                         }
                     }
                     PersistMsg::Bindings(b) => {

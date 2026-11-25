@@ -214,7 +214,9 @@ fn build_ui(
     let desktop_settings = config.desktop;
     let io = opusdm_hub::io_worker::IoWorker::new("opusdm-hub-io");
     apply_virtual_screens(&io, desktop_settings.virtual_screens);
-    apply_compositor(&io, &desktop_settings);
+    if !opusdm_hub::global_keys_wl::under_native() {
+        apply_compositor(&io, &desktop_settings);
+    }
     opusdm_hub::snap::start(desktop_settings.snap_enabled);
     let initial_settings = config.settings;
     crate::background::install(&initial_settings.theme.background);
@@ -447,14 +449,6 @@ fn apply_compositor(io: &opusdm_hub::io_worker::IoWorker, ds: &opusdm_ipc::Deskt
     io.submit(move || opusdm_hub::compositor::apply(&ds));
 }
 
-/// Ask opusdm-compositor to reload the desktop settings on the background
-/// worker: the request waits on the compositor, which must not freeze the
-/// desktop. Only under the native compositor, where it replaces picom.
-fn reload_native_compositor(io: &opusdm_hub::io_worker::IoWorker, ds: &opusdm_ipc::DesktopSettings) {
-    let ds = ds.clone();
-    io.submit(move || opusdm_hub::compositor::apply_native(&ds));
-}
-
 /// Apply one hub event to the GTK side.
 fn apply_event(widgets: &Rc<Widgets>, ev: HubEvent) {
     match ev {
@@ -528,25 +522,18 @@ fn update_leftout(widgets: &Rc<Widgets>, edit: impl FnOnce(&mut opusdm_ipc::Left
 /// untouched part (the compositor above all) makes the whole desktop flicker.
 fn apply_desktop_settings(widgets: &Rc<Widgets>, ds: opusdm_ipc::DesktopSettings) {
     let changes = opusdm_hub::desktop_diff::diff(&widgets.desktop.settings.borrow(), &ds);
-    // Under opusdm-compositor one `reload` applies opacity, snap, wrap and the
-    // desktop count (it reads desktop.json); off it nothing here changes.
+    // Under opusdm-compositor the persist thread reloads the compositor after
+    // the save (opacity, snap, wrap, count): picom and set-count are not used.
     let native = opusdm_hub::global_keys_wl::under_native();
-    let wrap = native && widgets.desktop.settings.borrow().wrap_desktops != ds.wrap_desktops;
-    if !changes.any() && !wrap {
+    if !changes.any() {
         return;
     }
     *widgets.desktop.settings.borrow_mut() = ds.clone();
-    if native {
-        if changes.virtual_screens || changes.transparency || changes.snap || wrap {
-            reload_native_compositor(&widgets.io, &ds);
-        }
-    } else {
-        if changes.virtual_screens {
-            apply_virtual_screens(&widgets.io, ds.virtual_screens);
-        }
-        if changes.transparency {
-            apply_compositor(&widgets.io, &ds);
-        }
+    if changes.virtual_screens && !native {
+        apply_virtual_screens(&widgets.io, ds.virtual_screens);
+    }
+    if changes.transparency && !native {
+        apply_compositor(&widgets.io, &ds);
     }
     if changes.snap {
         opusdm_hub::snap::set_enabled(ds.snap_enabled);
