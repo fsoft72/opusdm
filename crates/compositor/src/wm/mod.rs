@@ -105,7 +105,11 @@ impl State {
         self._raise_id(id);
         self.sync_space();
         if self.space.element_location(&window).is_some() {
-            self.focus_window(Some(window));
+            self.focus_window(Some(window.clone()));
+            // Under an exclusive layer `focus_window` only raises the window: make it the active one.
+            if self.exclusive_layer.is_some() {
+                self._set_active_under_layer(&window, "activate");
+            }
         } else if switched {
             self._focus_desktop_top();
         }
@@ -169,8 +173,17 @@ impl State {
             self.focus_window(Some(top));
             return;
         }
-        let Some(id) = self._info_of(&top).map(|i| i.id) else {
-            opusdm_ipc::err_log!(LOG_TAG, "desktop switch: the top window is not in the table, active window unchanged");
+        self._set_active_under_layer(&top, "desktop switch");
+    }
+
+    /// While an exclusive keyboard layer holds the keyboard: makes `window`
+    /// the active window (`Activated` state, `windows/list`, foreign
+    /// toplevel) without giving it the keyboard. `why` names the caller in
+    /// the log lines. A window missing from the table is logged and leaves
+    /// the active window unchanged.
+    fn _set_active_under_layer(&mut self, window: &Window, why: &str) {
+        let Some(id) = self._info_of(window).map(|i| i.id) else {
+            opusdm_ipc::err_log!(LOG_TAG, "{why}: the window is not in the table, active window unchanged");
             return;
         };
         self.active_window = Some(id);
@@ -178,7 +191,7 @@ impl State {
         for toplevel in self.space.elements().filter_map(|w| w.toplevel()) {
             toplevel.send_pending_configure();
         }
-        opusdm_ipc::debug_log!(LOG_TAG, "desktop switch: window {} is active, the exclusive layer keeps the keyboard", id.0);
+        opusdm_ipc::debug_log!(LOG_TAG, "{why}: window {} is active, the exclusive layer keeps the keyboard", id.0);
     }
 
     /// Sets the number of desktops (clamped) and returns it; the windows of

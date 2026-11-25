@@ -1301,3 +1301,20 @@ fn activating_the_window_that_owns_the_open_menu_keeps_the_menu() {
     assert_eq!(c.keyboard_focus(), Some(menu.wl_surface().clone()), "the menu keeps the keyboard");
     assert_eq!(active_ids(&comp), vec![2]);
 }
+
+#[test]
+fn activating_a_window_under_an_exclusive_layer_makes_it_active() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = map_titled(&mut c, "A");
+    let _b = map_titled(&mut c, "B");
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2]);
+    let reply = ipc_request(&comp, "window/activate", json!({"id": 1}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()), "the exclusive layer keeps the keyboard");
+    assert_eq!(active_ids(&comp), vec![1], "A, activated from the tasklist, is the active window");
+    assert_eq!(foreign_active_titles(&mut c), vec!["A".to_string()]);
+}
