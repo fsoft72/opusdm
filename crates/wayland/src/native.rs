@@ -14,6 +14,7 @@
 //! and X11 sessions never reach this module.
 
 use std::ffi::OsString;
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
@@ -384,8 +385,10 @@ impl HotkeyWatch {
     /// (`hotkeys/set`) on the live connection, if any, by the writer
     /// thread. Never blocks and never touches the socket: the caller may be
     /// a thread that must not wait on the compositor. The reply comes on
-    /// the event stream; its errors are logged by the hotkey thread. `Err`
-    /// only when the writer thread is gone.
+    /// the event stream; its errors are logged by the hotkey thread. A
+    /// failed write (timeout, peer gone) shuts the connection down, so the
+    /// table is sent on the reconnection. `Err` only when the writer thread
+    /// is gone.
     pub fn set(&self, table: Vec<(String, String)>) -> Result<(), String> {
         self.tx.send(table).map_err(|_| "the compositor hotkey writer thread is gone".to_string())
     }
@@ -427,14 +430,17 @@ fn _watch_hotkeys_at(
     let shared = Arc::new(Mutex::new(HotkeyShared { table, generation: 0, writer: None }));
     let (tx, rx) = mpsc::channel::<Vec<(String, String)>>();
     let ours = Arc::clone(&shared);
-    std::thread::Builder::new()
-        .name("opusdm-native-hotkeys".into())
-        .spawn(move || _hotkey_loop(&path, &ours, &on_hit, delay))
-        .map_err(|e| format!("cannot start the compositor hotkey thread: {e}"))?;
+    // The writer first: if the hotkey thread then fails to start, `tx` is
+    // dropped with this `Err`, the writer thread ends on its own and
+    // nothing keeps running (a retrying caller never starts a second hub).
     std::thread::Builder::new()
         .name("opusdm-native-hotkey-writer".into())
-        .spawn(move || _writer_loop(&shared, &rx))
+        .spawn(move || _writer_loop(&ours, &rx))
         .map_err(|e| format!("cannot start the compositor hotkey writer thread: {e}"))?;
+    std::thread::Builder::new()
+        .name("opusdm-native-hotkeys".into())
+        .spawn(move || _hotkey_loop(&path, &shared, &on_hit, delay))
+        .map_err(|e| format!("cannot start the compositor hotkey thread: {e}"))?;
     Ok(HotkeyWatch { tx })
 }
 
@@ -449,8 +455,13 @@ fn _writer_loop(shared: &Mutex<HotkeyShared>, rx: &mpsc::Receiver<Vec<(String, S
         shared.generation = shared.generation.wrapping_add(1);
         let data = _hotkeys_data(&shared.table);
         let Some(writer) = shared.writer.as_mut() else { continue };
-        if let Err(e) = send(writer, "hotkeys/set", data) {
-            opusdm_ipc::err_log!(LOG_TAG, "compositor hotkeys not sent: {e} (sent again on reconnection)");
+        let Err(e) = send(writer, "hotkeys/set", data) else { continue };
+        // A timed out or partial write leaves the stream useless (the table
+        // not applied, maybe half a frame): shut it down, so the hotkey
+        // thread sees the loss, reconnects and sends the stored table.
+        opusdm_ipc::err_log!(LOG_TAG, "compositor hotkeys not sent: {e}; dropping the connection to send them on reconnection");
+        if let Err(e) = writer.shutdown(Shutdown::Both) {
+            opusdm_ipc::err_log!(LOG_TAG, "compositor hub connection not shut down: {e}");
         }
     }
     opusdm_ipc::debug_log!(LOG_TAG, "compositor hotkey writer stopped: no HotkeyWatch left, the last table stays");
@@ -747,6 +758,22 @@ mod tests {
         let req = receive(&mut s, 1 << 20).unwrap();
         assert_eq!(req["method"], "hotkeys/set");
         assert_eq!(req["data"]["hotkeys"], json!([{ "key": "Alt+F2", "function": "run" }]));
+    }
+
+    #[test]
+    fn a_failed_table_write_forces_a_reconnection_that_sends_it() {
+        let dir = TempDir::new();
+        let listener = UnixListener::bind(dir.socket()).unwrap();
+        let first = vec![("Ctrl+backslash".to_string(), "terminal".to_string())];
+        let watch = _watch_hotkeys_at(dir.socket(), first, |_| {}, Duration::from_millis(50)).unwrap();
+        let s = accept_hub(&listener, &json!([{ "key": "Ctrl+backslash", "function": "terminal" }]));
+
+        // The server stops reading but keeps the connection open: the next
+        // write fails (EPIPE) while the client's read side stays alive.
+        s.shutdown(std::net::Shutdown::Read).unwrap();
+        watch.set(vec![("Alt+F2".to_string(), "run".to_string())]).unwrap();
+        accept_hub(&listener, &json!([{ "key": "Alt+F2", "function": "run" }]));
+        drop(s);
     }
 
     /// Answer one `windows/list` and one `desktops/list` on `s`.
