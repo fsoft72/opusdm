@@ -46,10 +46,15 @@ impl CompositorHandler for State {
         FALLBACK.get_or_init(CompositorClientState::default)
     }
 
-    /// Imports the buffer, updates the window of the surface tree, sends the
-    /// initial configure or maps a new toplevel, and refreshes the space.
+    /// Imports the buffer, unmaps a toplevel that committed a null buffer,
+    /// updates the window of the surface tree, sends the initial configure or
+    /// maps a toplevel, and refreshes the space.
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        if xdg::unmap_if_bufferless(self, surface) {
+            self.space.refresh();
+            return;
+        }
         if !is_sync_subsurface(surface) {
             let root = _root_surface(surface);
             let window = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &root));

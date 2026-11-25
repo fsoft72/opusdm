@@ -70,7 +70,8 @@ impl XdgShellHandler for State {
 delegate_xdg_shell!(State);
 
 /// Commit of a toplevel not mapped yet: sends the initial configure, or maps
-/// the window in the cascade and focuses it once a buffer is committed.
+/// the window and focuses it once a buffer is committed. A new window takes
+/// the next cascade position, a window unmapped by a null buffer its old one.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let found = state.unmapped.iter().position(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface));
     let Some(index) = found else { return };
@@ -87,9 +88,40 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let window = state.unmapped.remove(index);
     window.on_commit();
     let size = window.geometry().size;
-    let (x, y) = cascade_position(state.usable_area(), (size.w, size.h), state.cascade_index);
-    state.cascade_index = state.cascade_index.wrapping_add(1);
+    let last = state.windows.get_mut(surface).and_then(|info| info.last_position.take());
+    let (x, y) = match last {
+        Some(pos) => pos,
+        None => {
+            let pos = cascade_position(state.usable_area(), (size.w, size.h), state.cascade_index);
+            state.cascade_index = state.cascade_index.wrapping_add(1);
+            pos
+        }
+    };
     opusdm_ipc::debug_log!(LOG_TAG, "map toplevel {} {}x{} at {x},{y}", surface.id(), size.w, size.h);
     state.space.map_element(window.clone(), (x, y), true);
     state.focus_window(Some(window));
+}
+
+/// Commit of a mapped toplevel with no buffer (xdg unmap): removes it from the
+/// space, keeps its `windows` entry with its position, puts it back in
+/// `unmapped` (its next commit gets a fresh initial configure) and moves the
+/// keyboard to the topmost window when it had it. True when it unmapped.
+pub fn unmap_if_bufferless(state: &mut State, surface: &WlSurface) -> bool {
+    let found = state.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface)).cloned();
+    let Some(window) = found else { return false };
+    let has_buffer = with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
+    if has_buffer { return false; }
+    let position = state.space.element_location(&window).map(|p| (p.x, p.y));
+    match state.windows.get_mut(surface) {
+        Some(info) => info.last_position = position,
+        None => opusdm_ipc::err_log!(LOG_TAG, "unmap: toplevel {} has no window entry", surface.id()),
+    }
+    state.space.unmap_elem(&window);
+    window.set_activated(false);
+    state.unmapped.push(window);
+    opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} unmapped (null buffer) at {position:?}", surface.id());
+    if state.focus_is_gone_or(surface) {
+        state.focus_topmost();
+    }
+    true
 }

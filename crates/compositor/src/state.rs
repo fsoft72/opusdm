@@ -47,6 +47,9 @@ pub struct WindowInfo {
     // Written and read by maximize / fullscreen (stage 1, task 5).
     #[allow(dead_code)]
     pub restore: Option<Rect>,
+    /// Position the window had when it was unmapped by a null buffer; it
+    /// maps there again instead of taking a new cascade position.
+    pub last_position: Option<(i32, i32)>,
 }
 
 /// Per-client data handed to Smithay when a client connects.
@@ -92,6 +95,8 @@ pub struct State {
     /// Set by SIGTERM / SIGINT; the loop ends when it is true.
     pub quit: Arc<AtomicBool>,
     pub start_time: Instant,
+    /// True once `refresh` has logged that the seat has no keyboard.
+    pub no_keyboard_logged: bool,
 }
 
 impl State {
@@ -125,6 +130,7 @@ impl State {
             cascade_index: 0,
             quit: Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
+            no_keyboard_logged: false,
         }
     }
 
@@ -185,7 +191,13 @@ impl State {
         self.space.refresh();
         self.windows.retain(|surface, _| surface.alive());
         self.unmapped.retain(|w| w.alive());
-        let Some(keyboard) = self.seat.get_keyboard() else { return };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            if !self.no_keyboard_logged {
+                opusdm_ipc::err_log!(LOG_TAG, "refresh: the seat has no keyboard, focus is not checked");
+                self.no_keyboard_logged = true;
+            }
+            return;
+        };
         if keyboard.current_focus().is_some_and(|f| !f.alive()) {
             opusdm_ipc::debug_log!(LOG_TAG, "keyboard focus on a dead surface, refocusing");
             self.focus_topmost();

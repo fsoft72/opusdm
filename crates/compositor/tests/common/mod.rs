@@ -271,6 +271,30 @@ impl TestClient {
         TestWindow { window }
     }
 
+    /// Unmaps `window` the xdg way: attaches a null buffer, commits and waits
+    /// until the compositor has handled it.
+    pub fn unmap(&mut self, window: &TestWindow) {
+        let wl = window.wl_surface();
+        let info = self.app.surfaces.get_mut(&wl.id()).expect("known window");
+        info.configured = false;
+        wl.attach(None, 0, 0);
+        wl.commit();
+        self.roundtrip();
+    }
+
+    /// Maps an unmapped `window` again: redoes the initial commit (no buffer)
+    /// and waits for a configure, answered with a buffer. True when the
+    /// configure came; then waits until the compositor has handled the buffer.
+    pub fn remap(&mut self, window: &TestWindow) -> bool {
+        let id = window.wl_surface().id();
+        window.wl_surface().commit();
+        let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
+        if ok {
+            self.roundtrip();
+        }
+        ok
+    }
+
     /// Sends a `wl_display.sync` and handles every event up to its answer.
     pub fn roundtrip(&mut self) {
         self.queue.roundtrip(&mut self.app).expect("roundtrip");

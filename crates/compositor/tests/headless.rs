@@ -42,3 +42,13 @@ fn sigterm_ends_the_compositor_cleanly() {
     comp.signal(libc::SIGTERM); // harness helper, `libc` dev-dependency (workspace)
     assert_eq!(comp.wait_exit(Duration::from_secs(2)), Some(0));
 }
+
+#[test]
+fn a_toplevel_unmapped_by_a_null_buffer_maps_again() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    c.unmap(&w);
+    assert!(c.remap(&w), "no configure after the new initial commit");
+    assert!(c.wait_frame(&w, Duration::from_secs(2)));
+}
