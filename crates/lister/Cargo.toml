@@ -20,6 +20,7 @@ terminal = ["dep:vte4"]
 
 [dependencies]
 opusdm-ipc = { path = "../ipc" }
+opusdm-wayland = { path = "../wayland" }
 opusdm-ui = { path = "../ui" }
 opusdm-apps = { path = "../apps" }
 opusdm-iconview = { path = "../iconview" }

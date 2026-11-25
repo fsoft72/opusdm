@@ -3732,6 +3732,7 @@ dependencies = [
  "opusdm-iconview",
  "opusdm-ipc",
  "opusdm-ui",
+ "opusdm-wayland",
  "sha2 0.10.9",
  "tar",
  "tempfile",

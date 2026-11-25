@@ -15,7 +15,8 @@ use opusdm_ipc::function::{Function, FunctionId};
 use opusdm_ui::EmbeddedTool;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::sync::OnceLock;
 
 /// What a key combination does, as "Find Key" reports it.
 #[derive(Debug, PartialEq, Eq)]
@@ -93,9 +94,70 @@ fn known_ids(functions: &[Function]) -> HashSet<FunctionId> {
     functions.iter().map(|f| f.id.clone()).collect()
 }
 
+/// Whether this Lister runs under opusdm-compositor, decided once per process
+/// (the environment does not change while it runs).
+fn under_native() -> bool {
+    static UNDER_NATIVE: OnceLock<bool> = OnceLock::new();
+    *UNDER_NATIVE.get_or_init(opusdm_wayland::native::under_native)
+}
+
+/// The built-in bindings of the native compositor as key combinations. A
+/// disabled binding (empty key) is skipped; a key that does not parse is
+/// logged and skipped.
+fn builtin_combos(pairs: Vec<(String, String)>) -> Vec<(KeyCombo, String)> {
+    let mut combos = Vec::new();
+    for (name, key) in pairs {
+        if key.is_empty() { continue; }
+        match parse_key(&key) {
+            Ok(combo) => combos.push((combo, name)),
+            Err(e) => opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: built-in {name} has an unusable key '{key}': {e}"),
+        }
+    }
+    combos
+}
+
+/// Under the native compositor, fetch its built-in bindings once, on a
+/// background thread (the request blocks for up to ~2 s), then store them in
+/// `state` on the GTK thread and revalidate. Until they arrive, or if the
+/// request fails (logged), the editor validates without them.
+fn fetch_builtins(state: &Rc<State>) {
+    if !under_native() { return; }
+    let (tx, rx) = async_channel::bounded(1);
+    let spawned = std::thread::Builder::new().name("hotkeys-builtins".to_string()).spawn(move || {
+        if tx.send_blocking(opusdm_wayland::native::builtin_bindings()).is_err() {
+            opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: the editor was closed before the built-in bindings were read");
+        }
+    });
+    if let Err(e) = spawned {
+        opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: cannot start the built-in bindings thread: {e}");
+        return;
+    }
+    // Weak: the editor body owns the state; the future must not keep it alive.
+    let weak: Weak<State> = Rc::downgrade(state);
+    glib::spawn_future_local(async move {
+        let reply = match rx.recv().await {
+            Ok(reply) => reply,
+            Err(e) => return opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: the built-in bindings thread ended without an answer: {e}"),
+        };
+        let Some(state) = weak.upgrade() else {
+            return opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: the editor was closed before the built-in bindings arrived");
+        };
+        match reply {
+            Ok(pairs) => {
+                *state.builtins.borrow_mut() = builtin_combos(pairs);
+                revalidate(&state);
+            }
+            Err(e) => opusdm_ipc::err_log!("opusdm-lister", "Hotkeys: cannot read the native built-in bindings: {e}"),
+        }
+    });
+}
+
 /// Everything the editor's callbacks share.
 struct State {
     hotkeys: RefCell<Vec<Hotkey>>,
+    /// The native compositor's built-in keys; empty off native and until the
+    /// background fetch answers.
+    builtins: RefCell<Vec<(KeyCombo, String)>>,
     functions: Vec<Function>,
     rows_box: gtk::Box,
     /// One box per row, holding that row's error and built-in notes, so they
@@ -198,7 +260,7 @@ impl Body {
 
     /// Whether the rows pass the validation that gates Save.
     fn is_valid(&self) -> bool {
-        bindings::validate_hotkeys(&self.state.hotkeys.borrow(), &known_ids(&self.state.functions)).is_empty()
+        bindings::validate_hotkeys(&self.state.hotkeys.borrow(), &known_ids(&self.state.functions), &self.state.builtins.borrow()).is_empty()
     }
 
     /// Remember the rows as the saved hotkeys.
@@ -226,6 +288,7 @@ fn build_body(window: &gtk::Window, hotkeys: Vec<Hotkey>, functions: Vec<Functio
     let saved = hotkeys.clone();
     let state = Rc::new(State {
         hotkeys: RefCell::new(hotkeys),
+        builtins: RefCell::new(Vec::new()),
         functions,
         rows_box,
         notes: RefCell::new(Vec::new()),
@@ -241,6 +304,7 @@ fn build_body(window: &gtk::Window, hotkeys: Vec<Hotkey>, functions: Vec<Functio
         });
     }
     rebuild(&state);
+    fetch_builtins(&state);
     Body { state, root, saved: RefCell::new(saved) }
 }
 
@@ -277,7 +341,7 @@ fn rebuild(state: &Rc<State>) {
 /// when nothing is wrong.
 fn revalidate(state: &Rc<State>) {
     let hotkeys = state.hotkeys.borrow().clone();
-    let errors = bindings::validate_hotkeys(&hotkeys, &known_ids(&state.functions));
+    let errors = bindings::validate_hotkeys(&hotkeys, &known_ids(&state.functions), &state.builtins.borrow());
     for (index, notes) in state.notes.borrow().iter().enumerate() {
         let Some(hotkey) = hotkeys.get(index) else { continue };
         fill_notes(notes, index, hotkey, &errors);
@@ -640,6 +704,16 @@ mod tests {
         let mut f = Function::new(name);
         f.id = id.to_string();
         f
+    }
+
+    #[test]
+    fn builtin_combos_skips_disabled_and_unparsable_keys() {
+        let pairs = vec![
+            ("switcher_next".to_string(), "Alt+Tab".to_string()),
+            ("close".to_string(), String::new()),
+            ("bad".to_string(), "Ctrl+".to_string()),
+        ];
+        assert_eq!(builtin_combos(pairs), vec![(combo("Alt+Tab"), "switcher_next".to_string())]);
     }
 
     #[test]

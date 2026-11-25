@@ -237,6 +237,9 @@ pub enum BindingError {
     HotkeyUnknownFunction { index: usize },
     /// A global hotkey without Ctrl, Alt or Super.
     HotkeyGlobalNeedsModifier { index: usize },
+    /// A global hotkey on a key the native compositor binds itself; the
+    /// built-in wins, so the hotkey would never fire.
+    HotkeyConflictsWithBuiltin { index: usize, builtin: String },
     /// A menu label that is empty or blank.
     MenuEmptyLabel { path: Vec<usize> },
     /// A menu entry whose function id is not a saved function.
@@ -263,6 +266,7 @@ impl BindingError {
             | BindingError::HotkeyDuplicate { index, .. }
             | BindingError::HotkeyUnknownFunction { index }
             | BindingError::HotkeyGlobalNeedsModifier { index }
+            | BindingError::HotkeyConflictsWithBuiltin { index, .. }
             | BindingError::HotkeyInvalidCommand { index, .. } => Some(*index),
             _ => None,
         }
@@ -302,6 +306,9 @@ impl fmt::Display for BindingError {
             BindingError::HotkeyGlobalNeedsModifier { .. } => {
                 write!(f, "a global hotkey needs Ctrl, Alt or Super")
             }
+            BindingError::HotkeyConflictsWithBuiltin { builtin, .. } => {
+                write!(f, "conflicts with the native compositor's built-in {builtin}; the built-in wins")
+            }
             BindingError::MenuEmptyLabel { .. } => write!(f, "the label is empty"),
             BindingError::MenuUnknownFunction { .. } => write!(f, "the function no longer exists"),
             BindingError::ScriptUnknownFunction { .. } => write!(f, "the function no longer exists"),
@@ -334,8 +341,10 @@ fn check_reference(reference: &str, known: &HashSet<FunctionId>) -> Option<RefIs
     }
 }
 
-/// Every problem in a hotkey list, in row order.
-pub fn validate_hotkeys(hotkeys: &[Hotkey], known: &HashSet<FunctionId>) -> Vec<BindingError> {
+/// Every problem in a hotkey list, in row order. `builtins` are the keys the
+/// native compositor binds itself (`&[]` everywhere else): a global hotkey on
+/// one of them is reported, because the built-in wins.
+pub fn validate_hotkeys(hotkeys: &[Hotkey], known: &HashSet<FunctionId>, builtins: &[(KeyCombo, String)]) -> Vec<BindingError> {
     let mut errors = Vec::new();
     let mut seen: HashMap<(Mods, String), usize> = HashMap::new();
     for (index, hotkey) in hotkeys.iter().enumerate() {
@@ -350,6 +359,11 @@ pub fn validate_hotkeys(hotkeys: &[Hotkey], known: &HashSet<FunctionId>) -> Vec<
                 }
                 if hotkey.global && !combo.mods.has_command_modifier() {
                     errors.push(BindingError::HotkeyGlobalNeedsModifier { index });
+                }
+                if hotkey.global {
+                    if let Some((_, name)) = builtins.iter().find(|(b, _)| b.identity() == combo.identity()) {
+                        errors.push(BindingError::HotkeyConflictsWithBuiltin { index, builtin: name.clone() });
+                    }
                 }
             }
         }
@@ -663,7 +677,7 @@ mod tests {
         assert!(functions.contains(&mine));
         let ids: HashSet<FunctionId> = functions.iter().map(|f| f.id.clone()).collect();
         // The exec: programs may not be installed where the tests run.
-        let errors = validate_hotkeys(&hotkeys, &ids);
+        let errors = validate_hotkeys(&hotkeys, &ids, &[]);
         assert!(errors.iter().all(|e| matches!(e, BindingError::HotkeyInvalidCommand { .. })), "{errors:?}");
         assert!(!seed_default_hotkeys_in(dir.path(), &functions_file));
     }
@@ -680,7 +694,7 @@ mod tests {
     #[test]
     fn validate_hotkeys_accepts_a_good_inline_command_and_reports_a_bad_one() {
         let list = [hk("Ctrl+u", "bash:ls", false), hk("Ctrl+j", "exec:sh -c true", true), hk("Ctrl+k", "bash:  ", false), hk("Ctrl+l", "exec:opusdm-nope-xyz", false)];
-        let errors = validate_hotkeys(&list, &known(&[]));
+        let errors = validate_hotkeys(&list, &known(&[]), &[]);
         assert_eq!(errors.len(), 2, "{errors:?}");
         assert!(matches!(&errors[0], BindingError::HotkeyInvalidCommand { index: 2, .. }));
         assert!(matches!(&errors[1], BindingError::HotkeyInvalidCommand { index: 3, reason } if reason.contains("was not found")));
@@ -706,7 +720,7 @@ mod tests {
 
     #[test]
     fn a_saved_id_that_is_missing_is_still_the_old_error() {
-        let errors = validate_hotkeys(&[hk("Ctrl+u", "gone", false)], &known(&["a"]));
+        let errors = validate_hotkeys(&[hk("Ctrl+u", "gone", false)], &known(&["a"]), &[]);
         assert_eq!(errors, vec![BindingError::HotkeyUnknownFunction { index: 0 }]);
     }
 
@@ -790,23 +804,48 @@ mod tests {
     #[test]
     fn validate_hotkeys_flags_a_duplicate_whatever_the_global_flag() {
         let list = [hk("Ctrl+u", "a", false), hk("ctrl+U", "b", true)];
-        let errors = validate_hotkeys(&list, &known(&["a", "b"]));
+        let errors = validate_hotkeys(&list, &known(&["a", "b"]), &[]);
         assert_eq!(errors, vec![BindingError::HotkeyDuplicate { index: 1, first: 0 }]);
     }
 
     #[test]
     fn validate_hotkeys_flags_invalid_key_unknown_function_and_bare_global() {
         let list = [hk("Ctrl+", "a", false), hk("Ctrl+j", "gone", false), hk("j", "a", true)];
-        let errors = validate_hotkeys(&list, &known(&["a"]));
+        let errors = validate_hotkeys(&list, &known(&["a"]), &[]);
         assert!(errors.contains(&BindingError::HotkeyKeyInvalid { index: 0, reason: "missing key name in 'Ctrl+'".into() }));
         assert!(errors.contains(&BindingError::HotkeyUnknownFunction { index: 1 }));
         assert!(errors.contains(&BindingError::HotkeyGlobalNeedsModifier { index: 2 }));
     }
 
+    /// The built-in list a native compositor would report for `Alt+Tab`.
+    fn alt_tab_builtin() -> Vec<(KeyCombo, String)> {
+        vec![(parse_key("Alt+Tab").unwrap(), "switcher_next".to_string())]
+    }
+
+    #[test]
+    fn a_global_hotkey_on_a_builtin_key_is_flagged() {
+        let errors = validate_hotkeys(&[hk("Alt+Tab", "a", true)], &known(&["a"]), &alt_tab_builtin());
+        assert_eq!(errors, vec![BindingError::HotkeyConflictsWithBuiltin { index: 0, builtin: "switcher_next".into() }]);
+        assert_eq!(errors[0].hotkey_index(), Some(0));
+        assert_eq!(errors[0].to_string(), "conflicts with the native compositor's built-in switcher_next; the built-in wins");
+    }
+
+    #[test]
+    fn a_non_global_hotkey_on_a_builtin_key_is_not_flagged() {
+        let errors = validate_hotkeys(&[hk("Alt+Tab", "a", false)], &known(&["a"]), &alt_tab_builtin());
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn no_builtins_means_no_conflict() {
+        let errors = validate_hotkeys(&[hk("Alt+Tab", "a", true)], &known(&["a"]), &[]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
     #[test]
     fn validate_hotkeys_accepts_a_clean_list() {
         let list = [hk("Ctrl+u", "a", false), hk("Ctrl+Alt+u", "a", true)];
-        assert!(validate_hotkeys(&list, &known(&["a"])).is_empty());
+        assert!(validate_hotkeys(&list, &known(&["a"]), &[]).is_empty());
     }
 
     #[test]
