@@ -177,6 +177,18 @@ impl State {
     /// is ended first, as an exclusive layer does, so the client menu and
     /// the window menu never fight for the keyboard and the pointer.
     pub fn open_window_menu(&mut self) {
+        self._open_window_menu(None);
+    }
+
+    /// `open_window_menu` with the menu's top-left corner at `at` (output
+    /// coordinates, kept inside the output): a right press on a frame.
+    pub fn open_window_menu_at(&mut self, at: (i32, i32)) {
+        self._open_window_menu(Some(at));
+    }
+
+    /// Opens the window menu at `anchor`, or at the top-left corner of the
+    /// window when `None` (see `open_window_menu`).
+    fn _open_window_menu(&mut self, anchor: Option<(i32, i32)>) {
         if let Some(menu) = &self.menu {
             opusdm_ipc::debug_log!(LOG_TAG, "window menu: already open on window {}", menu.window.0);
             return;
@@ -205,7 +217,7 @@ impl State {
             self.dismiss_popups_and_grabs(&grab_root);
         }
         let output = self.output_area();
-        let origin = place_menu((loc.x, loc.y), menu_size(nav.items()), output);
+        let origin = place_menu(anchor.unwrap_or((loc.x, loc.y)), menu_size(nav.items()), output);
         self.menu = Some(WindowMenu { window, nav, origin, output, images: MenuImageCache::default() });
         opusdm_ipc::debug_log!(LOG_TAG, "window menu opened on window {} at {origin:?}", window.0);
     }
@@ -272,7 +284,7 @@ impl State {
     /// window is logged and nothing runs.
     pub fn run_menu_action(&mut self, id: WindowId, action: MenuAction) {
         let result = match action {
-            MenuAction::ToggleMaximize => self._toggle_maximize(id),
+            MenuAction::ToggleMaximize => self.toggle_maximize(id),
             MenuAction::Minimize => self.set_minimized(id, true),
             MenuAction::MoveToDesktop(desktop) => self.move_to_desktop(id, desktop),
             MenuAction::Close => self.close_window(id),
@@ -295,8 +307,9 @@ impl State {
     }
 
     /// Maximizes the window `id`, or restores it when it is maximized,
-    /// through the same path as a client request (stage 1 `fill_window`).
-    fn _toggle_maximize(&mut self, id: WindowId) -> Result<(), String> {
+    /// through the same path as a client request (stage 1 `fill_window`);
+    /// the window menu and the title bar (maximize button, double click).
+    pub fn toggle_maximize(&mut self, id: WindowId) -> Result<(), String> {
         let (_, info) = self.window_by_id(id).ok_or_else(|| format!("unknown window {}", id.0))?;
         let toplevel = info.window.toplevel().cloned().ok_or_else(|| format!("window {} has no toplevel", id.0))?;
         if info.maximized {

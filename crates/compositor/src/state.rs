@@ -46,10 +46,12 @@ use smithay::{
 use opusdm_ipc::desktop::DesktopSettings;
 
 use crate::config::CompositorConfig;
+use crate::decor::geometry::TitleLayout;
 use crate::decor::theme::DecorTheme;
 use crate::geometry::Rect;
 use crate::grabs::ResizeTrack;
 use crate::hotkeys::HotkeyTable;
+use crate::input::FramePointer;
 use crate::ipc::IpcServer;
 use crate::menu::theme::MenuTheme;
 use crate::menu::WindowMenu;
@@ -187,8 +189,15 @@ pub struct State {
     pub xdg_activation_state: XdgActivationState,
     /// `zxdg_decoration_manager_v1`: server side decorations (see `decor`).
     pub xdg_decoration_state: XdgDecorationState,
-    /// Metrics of the frame of the decorated windows (OpusDMTheme defaults).
+    /// Colours and metrics of the frame of the decorated windows, read once
+    /// at startup from OpusDMTheme (`DecorTheme::load`).
     pub decor_theme: DecorTheme,
+    /// The title bar buttons of the decorated windows, parsed from
+    /// `config.title_layout` (startup and IPC `reload`).
+    pub title_layout: TitleLayout,
+    /// What the pointer does on the frames: hovered and pressed title bar
+    /// button, last title press (double click), frame cursor.
+    pub frame_pointer: FramePointer,
     /// Mapped TOP / OVERLAY layer surface with exclusive keyboard
     /// interactivity: it keeps the keyboard while it is mapped.
     pub exclusive_layer: Option<WlSurface>,
@@ -299,7 +308,9 @@ impl State {
             layer_shell_state,
             xdg_activation_state,
             xdg_decoration_state,
-            decor_theme: DecorTheme::default(),
+            decor_theme: DecorTheme::load(),
+            title_layout: TitleLayout::parse(&CompositorConfig::default().title_layout),
+            frame_pointer: FramePointer::default(),
             exclusive_layer: None,
             hidden_layers: Vec::new(),
             shm_state,
@@ -336,15 +347,19 @@ impl State {
 
     /// The IPC `reload`: reads `compositor.json` and `desktop.json` again
     /// (read only), stores them in `config` and `wm`, applies the desktop
-    /// count with `set_desktop_count` and rebuilds the built-in bindings,
-    /// keeping the hotkeys of the hub. Returns the problems (each also
-    /// logged): those of `compositor.json`, the hub hotkeys a built-in now
-    /// takes, and a `desktop.json` that exists but cannot be read or parsed
+    /// count with `set_desktop_count`, parses the title bar layout and
+    /// rebuilds the built-in bindings, keeping the hotkeys of the hub.
+    /// Returns the problems (each also logged): those of `compositor.json`
+    /// (the title layout's unknown or repeated buttons included), the hub
+    /// hotkeys a built-in now takes, and a `desktop.json` that exists but cannot be read or parsed
     /// (then the desktop count and `wm` are kept as they are). A missing
     /// file is not a problem: it gives the defaults, as at startup.
     pub fn reload(&mut self) -> Vec<String> {
         let (config, mut errors) = CompositorConfig::load_with_errors();
         errors.extend(self.hotkeys.rebuild_builtins(&config));
+        let (title_layout, layout_errors) = TitleLayout::parse_with_errors(&config.title_layout);
+        errors.extend(layout_errors);
+        self.title_layout = title_layout;
         self.config = config;
         match read_desktop_settings(&opusdm_ipc::settings::desktop_settings_path()) {
             Ok(desktop) => {

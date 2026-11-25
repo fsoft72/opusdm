@@ -84,11 +84,7 @@ impl MenuTheme {
     pub fn parse(themerc: &str) -> MenuTheme {
         let mut theme = MenuTheme::default();
         let mut menu_border = None;
-        for line in themerc.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('!') || line.starts_with('#') { continue; }
-            let Some((key, value)) = line.split_once(':') else { continue };
-            let (key, value) = (key.trim(), value.trim());
+        for (key, value) in themerc_entries(themerc) {
             if key == MENU_BORDER_KEY {
                 menu_border = theme._colour(key, value).or(menu_border);
                 continue;
@@ -97,6 +93,13 @@ impl MenuTheme {
         }
         if let Some(border) = menu_border {
             theme.border = border;
+        }
+        let solid = |key: &str| !gradient_flag(themerc, key);
+        if solid("menu.items.bg") {
+            theme.item_bg.1 = theme.item_bg.0;
+        }
+        if solid("menu.items.active.bg") {
+            theme.active_bg.1 = theme.active_bg.0;
         }
         theme
     }
@@ -143,7 +146,7 @@ impl MenuTheme {
     /// `~/.themes` and `/usr/share/themes`; the defaults, with one
     /// `err_log!`, when there is none.
     pub fn load() -> MenuTheme {
-        let dirs = _theme_dirs();
+        let dirs = theme_dirs();
         if let Some(theme) = MenuTheme::load_from(&dirs) { return theme; }
         let searched: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
         opusdm_ipc::err_log!(LOG_TAG, "window menu theme {THEME_NAME} not found in {searched:?}, built-in colours used");
@@ -154,23 +157,55 @@ impl MenuTheme {
     /// `dirs`; `None` when there is none (a file that exists but cannot be
     /// read is logged and skipped).
     pub fn load_from(dirs: &[PathBuf]) -> Option<MenuTheme> {
-        for dir in dirs {
-            let path = _themerc_in(dir);
-            match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    opusdm_ipc::debug_log!(LOG_TAG, "window menu theme read from {}", path.display());
-                    return Some(MenuTheme::parse(&text));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => opusdm_ipc::err_log!(LOG_TAG, "window menu theme {}: {e}, skipped", path.display()),
-            }
-        }
-        None
+        read_themerc(dirs, "window menu theme").map(|text| MenuTheme::parse(&text))
     }
 }
 
-/// The themes directories searched, in order.
-fn _theme_dirs() -> Vec<PathBuf> {
+/// The `key: value` entries of the themerc text `themerc`, trimmed, in
+/// file order; blank lines, comments (`!` or `#`) and lines without `:`
+/// are skipped.
+pub fn themerc_entries(themerc: &str) -> impl Iterator<Item = (&str, &str)> {
+    themerc.lines().filter_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('!') || line.starts_with('#') { return None; }
+        let (key, value) = line.split_once(':')?;
+        Some((key.trim(), value.trim()))
+    })
+}
+
+/// True when the texture `key` of the themerc text `themerc` (for example
+/// `window.active.title.bg: raised splitvertical gradient`) is a gradient,
+/// so its `colorTo` is used; false when the key says `solid`,
+/// `parentrelative` or anything without `gradient` (the colour alone is
+/// drawn, as Openbox). A missing key counts as a gradient: the built-in
+/// colours are gradients. The last entry of `key` wins.
+pub fn gradient_flag(themerc: &str, key: &str) -> bool {
+    let Some(value) = themerc_entries(themerc).filter(|(k, _)| *k == key).map(|(_, v)| v).last() else { return true };
+    value.split_whitespace().any(|word| word.eq_ignore_ascii_case("gradient"))
+}
+
+/// The text of the first readable themerc of `THEME_NAME` in `dirs`
+/// (`what` names the theme in the logs); `None` when there is none (a file
+/// that exists but cannot be read is logged and skipped).
+pub fn read_themerc(dirs: &[PathBuf], what: &str) -> Option<String> {
+    for dir in dirs {
+        let path = _themerc_in(dir);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                opusdm_ipc::debug_log!(LOG_TAG, "{what} read from {}", path.display());
+                return Some(text);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => opusdm_ipc::err_log!(LOG_TAG, "{what} {}: {e}, skipped", path.display()),
+        }
+    }
+    None
+}
+
+/// The themes directories searched for `THEME_NAME`, in order:
+/// `$XDG_DATA_HOME/themes` (default `~/.local/share/themes`), `~/.themes`
+/// and `/usr/share/themes`.
+pub fn theme_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .filter(|d| !d.is_empty())
@@ -238,6 +273,24 @@ mod tests {
         assert_eq!(theme.border_width, 4);
         assert_eq!(theme.active_bg, MenuTheme::default().active_bg);
         assert_eq!(MenuTheme::parse(""), MenuTheme::default());
+    }
+
+    #[test]
+    fn a_texture_without_gradient_draws_its_colour_alone() {
+        assert!(gradient_flag(REPO_THEMERC, "window.active.title.bg"));
+        assert!(gradient_flag(REPO_THEMERC, "window.inactive.title.bg"), "gradient splitvertical gradient flat");
+        assert!(!gradient_flag(REPO_THEMERC, "window.active.label.bg"), "parentrelative");
+        assert!(gradient_flag("", "menu.items.bg"), "a missing key keeps the built-in gradient");
+        assert!(!gradient_flag("menu.items.bg: flat solid\n", "menu.items.bg"));
+        let theme = MenuTheme::parse("menu.items.bg: flat solid\nmenu.items.bg.color: #010101\nmenu.items.bg.colorTo: #020202\n");
+        assert_eq!(theme.item_bg, (Rgb(1, 1, 1), Rgb(1, 1, 1)), "a solid texture ignores colorTo");
+        assert_eq!(theme.active_bg, MenuTheme::default().active_bg);
+    }
+
+    #[test]
+    fn themerc_entries_skip_comments_and_lines_without_a_colon() {
+        let entries: Vec<_> = themerc_entries("! c\n# c\n\nno colon\n a.b : x y \n").collect();
+        assert_eq!(entries, vec![("a.b", "x y")]);
     }
 
     #[test]

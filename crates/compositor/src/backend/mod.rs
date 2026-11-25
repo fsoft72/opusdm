@@ -23,6 +23,7 @@ use smithay::{
 use crate::args::{Args, BackendKind};
 use crate::child::{reap, spawn_startup};
 use crate::config::CompositorConfig;
+use crate::decor::geometry::TitleLayout;
 use crate::hotkeys::HotkeyTable;
 use crate::ipc::{socket_path, IpcServer};
 use crate::state::{ClientState, State, LOG_TAG};
@@ -79,6 +80,7 @@ fn setup_common(output: Output) -> Result<Common, String> {
     opusdm_ipc::debug_log!(LOG_TAG, "{} virtual desktops", state.desktops.count());
     state.wm = WmSettings::from_desktop(&settings);
     state.config = CompositorConfig::load();
+    state.title_layout = TitleLayout::parse(&state.config.title_layout);
     state.hotkeys = HotkeyTable::new(&state.config);
     register_quit_signals(&state.quit)?;
     add_input_devices(&mut state)?;

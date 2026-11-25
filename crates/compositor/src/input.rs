@@ -7,23 +7,25 @@
 
 use smithay::{
     backend::input::{ButtonState, KeyState},
-    desktop::{layer_map_for_output, LayerSurface, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, space::SpaceElement, LayerSurface, Window, WindowSurfaceType},
     input::{
         keyboard::{xkb, FilterResult, Keycode, Keysym, KeysymHandle, ModifiersState},
-        pointer::{AxisFrame, ButtonEvent, GrabStartData, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, GrabStartData, MotionEvent},
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     utils::{Logical, Point, Serial, SERIAL_COUNTER},
     wayland::shell::wlr_layer::{KeyboardInteractivity, Layer},
 };
 
-use crate::geometry::Rect;
+use crate::decor::geometry::{frame_rect, frame_zone, FrameZone, Insets, TitleButton};
+use crate::geometry::{Edges, Rect};
 use crate::grabs::edges_for_point;
 use crate::hotkeys::{combo_matches, combo_text, mods_of, Binding};
 use crate::menu::model::MenuKey;
 use crate::switcher::SwitcherKey;
 use opusdm_ipc::bindings::{KeyCombo, Mods};
 use crate::state::{State, LOG_TAG};
+use crate::wm::WindowId;
 
 /// Linux input code of the left mouse button (`BTN_LEFT`).
 pub const BTN_LEFT: u32 = 0x110;
@@ -33,6 +35,59 @@ pub const BTN_RIGHT: u32 = 0x111;
 
 /// Linux input code of the middle mouse button (`BTN_MIDDLE`).
 pub const BTN_MIDDLE: u32 = 0x112;
+
+/// Longest time between two left presses on the same title bar that make a
+/// double click, in milliseconds (Openbox `doubleClickTime`).
+pub const DOUBLE_CLICK_MS: u32 = 500;
+
+/// What the pointer does on the server side frames (title bar buttons,
+/// double click, cursor). Only window ids: a window that goes is simply
+/// not found any more.
+#[derive(Debug, Clone, Default)]
+pub struct FramePointer {
+    /// The title bar button under the pointer and its window (drawn hovered).
+    pub hovered: Option<(WindowId, TitleButton)>,
+    /// The title bar button the left button was pressed on: released on
+    /// the same button it runs (drawn pressed while the pointer is on it).
+    pub pressed: Option<(WindowId, TitleButton)>,
+    /// The window and the time (ms) of the last left press on a title,
+    /// for the double click.
+    pub last_title_press: Option<(WindowId, u32)>,
+    /// True while the cursor is the one the compositor set for a frame.
+    pub cursor_set: bool,
+}
+
+/// What is under a point: a surface, or the frame of a decorated window.
+#[derive(Debug, Clone)]
+pub enum Under {
+    /// A surface that gets the pointer.
+    Surface(Hit),
+    /// A part of the frame of a decorated window (never `FrameZone::Client`).
+    Frame(Window, FrameZone),
+}
+
+/// The cursor shown over the frame `zone`: the resize arrow of a border
+/// (its corner on a corner), the default arrow elsewhere.
+pub fn frame_cursor(zone: FrameZone) -> CursorIcon {
+    let FrameZone::Border(edges) = zone else { return CursorIcon::Default };
+    match edges {
+        Edges { top: true, left: true, .. } => CursorIcon::NwResize,
+        Edges { top: true, right: true, .. } => CursorIcon::NeResize,
+        Edges { bottom: true, left: true, .. } => CursorIcon::SwResize,
+        Edges { bottom: true, right: true, .. } => CursorIcon::SeResize,
+        Edges { top: true, .. } => CursorIcon::NResize,
+        Edges { bottom: true, .. } => CursorIcon::SResize,
+        Edges { left: true, .. } => CursorIcon::WResize,
+        Edges { right: true, .. } => CursorIcon::EResize,
+        _ => CursorIcon::Default,
+    }
+}
+
+/// True when the left presses at `first` and `then` (ms, the clock may
+/// wrap) are at most `DOUBLE_CLICK_MS` apart.
+pub fn is_double_click(first: u32, then: u32) -> bool {
+    then.wrapping_sub(first) <= DOUBLE_CLICK_MS
+}
 
 /// Where the key filter sends an intercepted key press.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,15 +166,26 @@ pub struct Hit {
 
 impl State {
     /// Surface under `pos` (space coordinates), searched in `HIT_ORDER`;
-    /// popups are hit before their parent.
+    /// popups are hit before their parent. `None` on the frame of a
+    /// decorated window (no client gets the pointer there).
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<Hit> {
+        match self.under(pos)? {
+            Under::Surface(hit) => Some(hit),
+            Under::Frame(..) => None,
+        }
+    }
+
+    /// What is under `pos` (space coordinates), searched in `HIT_ORDER`:
+    /// a surface (popups before their parent) or, among the windows, the
+    /// frame of a decorated window, which covers what is below it.
+    pub fn under(&self, pos: Point<f64, Logical>) -> Option<Under> {
         first_hit(|slot| match slot {
-            HitSlot::Overlay => self._layer_hit(Layer::Overlay, pos),
-            HitSlot::Fullscreen => self._fullscreen_hit(pos),
-            HitSlot::Top => self._layer_hit(Layer::Top, pos),
+            HitSlot::Overlay => self._layer_hit(Layer::Overlay, pos).map(Under::Surface),
+            HitSlot::Fullscreen => self._fullscreen_hit(pos).map(Under::Surface),
+            HitSlot::Top => self._layer_hit(Layer::Top, pos).map(Under::Surface),
             HitSlot::Windows => self._windows_hit(pos),
-            HitSlot::Bottom => self._layer_hit(Layer::Bottom, pos),
-            HitSlot::Background => self._layer_hit(Layer::Background, pos),
+            HitSlot::Bottom => self._layer_hit(Layer::Bottom, pos).map(Under::Surface),
+            HitSlot::Background => self._layer_hit(Layer::Background, pos).map(Under::Surface),
         })
     }
 
@@ -143,7 +209,17 @@ impl State {
             return;
         };
         let was_grabbed = pointer.is_grabbed();
-        let under = self.surface_under(position).map(|hit| (hit.surface, hit.location));
+        let found = self.under(position);
+        let frame = match &found {
+            Some(Under::Frame(window, zone)) if !was_grabbed => Some((window.clone(), *zone)),
+            _ => None,
+        };
+        let on_surface = matches!(found, Some(Under::Surface(_)));
+        let under = match found {
+            Some(Under::Surface(hit)) => Some((hit.surface, hit.location)),
+            _ => None,
+        };
+        self._frame_motion(frame, on_surface);
         let event = MotionEvent { location: position, serial: SERIAL_COUNTER.next_serial(), time: time_msec };
         pointer.motion(self, under, &event);
         if was_grabbed && !pointer.is_grabbed() {
@@ -157,7 +233,10 @@ impl State {
 
     /// A pointer button changed. While the window menu is open a press goes
     /// to the menu (`window_menu_click`) and neither it nor its release
-    /// reach a client. A press with no active grab focuses what is
+    /// reach a client. A press with no active grab on the frame of a
+    /// decorated window goes to `_frame_press` (Openbox mousebinds: title
+    /// bar buttons, move, double click, window menu, lower, border resize).
+    /// Any other press with no active grab focuses what is
     /// under the pointer (`_click_focus`); with Alt held on a window, the left
     /// button starts a `MoveGrab` and the right button a `ResizeGrab` on the
     /// edges of the quadrant the pointer is in: the grab consumes the press
@@ -173,22 +252,176 @@ impl State {
             return;
         }
         if !pressed && self.swallowed_buttons.remove(&button) {
-            opusdm_ipc::debug_log!(LOG_TAG, "release of button {button:#x} swallowed: its press went to the window menu");
+            opusdm_ipc::debug_log!(LOG_TAG, "release of button {button:#x} swallowed: its press went to the window menu or a frame");
+            self._frame_release(button, pointer.current_location());
             return;
         }
         let serial = SERIAL_COUNTER.next_serial();
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
         if pressed && !pointer.is_grabbed() {
             let location = pointer.current_location();
-            let hit = self.surface_under(location);
-            self._click_focus(hit.as_ref());
-            if let Some(hit) = hit {
-                self._alt_grab(hit, button, location, serial);
+            match self.under(location) {
+                Some(Under::Frame(window, zone)) => {
+                    if self._frame_press(window, zone, button, location, serial, time_msec) {
+                        self.swallowed_buttons.insert(button);
+                        return;
+                    }
+                }
+                found => {
+                    let hit = match found {
+                        Some(Under::Surface(hit)) => Some(hit),
+                        _ => None,
+                    };
+                    self._click_focus(hit.as_ref());
+                    if let Some(Hit { surface, location: origin, owner: HitOwner::Window(window) }) = hit {
+                        self._alt_grab(window, Some((surface, origin)), button, location, serial);
+                    }
+                }
             }
         }
         // With a grab just started this press goes to the grab, which drops it.
+        self._send_button(button, state, serial, time_msec);
+    }
+
+    /// Sends the button event to the pointer (its grab, or the surface
+    /// with the pointer focus) and ends the pointer frame.
+    fn _send_button(&mut self, button: u32, state: ButtonState, serial: Serial, time_msec: u32) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            opusdm_ipc::err_log!(LOG_TAG, "pointer button: the seat has no pointer");
+            return;
+        };
         pointer.button(self, &ButtonEvent { serial, time: time_msec, button, state });
         pointer.frame(self);
+    }
+
+    /// The pointer moved, with no grab, onto the frame part `frame` (or off
+    /// every frame: `None`; `on_surface` when it is on a client surface):
+    /// the hovered title bar button follows it, and the cursor is the one
+    /// of the frame part (`frame_cursor`); leaving the frames sets the
+    /// default cursor once (a client surface sets its own on enter).
+    fn _frame_motion(&mut self, frame: Option<(Window, FrameZone)>, on_surface: bool) {
+        let Some((window, zone)) = frame else {
+            self.frame_pointer.hovered = None;
+            if self.frame_pointer.cursor_set {
+                self.frame_pointer.cursor_set = false;
+                if !on_surface {
+                    self.cursor_status = CursorImageStatus::default_named();
+                }
+            }
+            return;
+        };
+        let id = self._toplevel_id(&window);
+        self.frame_pointer.hovered = match (id, zone) {
+            (Some(id), FrameZone::Button(button)) => Some((id, button)),
+            _ => None,
+        };
+        self.cursor_status = CursorImageStatus::Named(frame_cursor(zone));
+        self.frame_pointer.cursor_set = true;
+    }
+
+    /// A press of `button` with no grab on the `zone` of the frame of
+    /// `window` (Openbox mousebinds). Middle on the title or a border
+    /// lowers the window. Left and right raise and focus it first; with
+    /// Alt held they start the Alt move / resize grab as on the client.
+    /// Left on a button arms it (`_frame_release` runs it), on the title
+    /// starts a `MoveGrab` (a second press within `DOUBLE_CLICK_MS` toggles
+    /// maximize instead), on a border a `ResizeGrab` from its edges. Right
+    /// on the title or a border opens the window menu at the pointer.
+    /// Returns true when the press (and its release) is swallowed, false
+    /// when it goes on to the pointer (a grab just started takes it).
+    fn _frame_press(
+        &mut self,
+        window: Window,
+        zone: FrameZone,
+        button: u32,
+        location: Point<f64, Logical>,
+        serial: Serial,
+        time_msec: u32,
+    ) -> bool {
+        let Some(id) = self._toplevel_id(&window) else {
+            opusdm_ipc::err_log!(LOG_TAG, "frame press: the window is not in the table, press dropped");
+            return true;
+        };
+        if button == BTN_MIDDLE {
+            if matches!(zone, FrameZone::Title | FrameZone::Border(_)) {
+                if let Err(e) = self.lower_window(id) {
+                    opusdm_ipc::err_log!(LOG_TAG, "frame middle press: {e}");
+                }
+            }
+            return true;
+        }
+        if button != BTN_LEFT && button != BTN_RIGHT {
+            opusdm_ipc::debug_log!(LOG_TAG, "frame press of button {button:#x} on window {}: no binding", id.0);
+            return true;
+        }
+        self.focus_window(Some(window.clone()));
+        if self._alt_held() {
+            self._alt_grab(window, None, button, location, serial);
+            return false;
+        }
+        let start_data = GrabStartData { focus: None, button, location };
+        match (button, zone) {
+            (BTN_RIGHT, FrameZone::Title | FrameZone::Border(_)) => {
+                let at = location.to_i32_floor();
+                self.open_window_menu_at((at.x, at.y));
+                true
+            }
+            (BTN_LEFT, FrameZone::Button(title_button)) => {
+                self.frame_pointer.pressed = Some((id, title_button));
+                opusdm_ipc::debug_log!(LOG_TAG, "title button {title_button:?} of window {} pressed", id.0);
+                true
+            }
+            (BTN_LEFT, FrameZone::Title) => {
+                let last = self.frame_pointer.last_title_press.take();
+                if last.is_some_and(|(last_id, at)| last_id == id && is_double_click(at, time_msec)) {
+                    opusdm_ipc::debug_log!(LOG_TAG, "double click on the title of window {}: toggle maximize", id.0);
+                    if let Err(e) = self.toggle_maximize(id) {
+                        opusdm_ipc::err_log!(LOG_TAG, "title double click: {e}");
+                    }
+                    return true;
+                }
+                self.frame_pointer.last_title_press = Some((id, time_msec));
+                self.start_move_grab(window, start_data, serial);
+                false
+            }
+            (BTN_LEFT, FrameZone::Border(edges)) => {
+                self.start_resize_grab(window, edges, start_data, serial);
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// The release of a swallowed `button` at `location`: when it is the
+    /// left button and a title bar button was pressed, that button runs if
+    /// the pointer is still on it (Close = `close_window`, Iconify =
+    /// `set_minimized`, Maximize = `toggle_maximize`); off it nothing runs.
+    fn _frame_release(&mut self, button: u32, location: Point<f64, Logical>) {
+        if button != BTN_LEFT { return; }
+        let Some((id, title_button)) = self.frame_pointer.pressed.take() else { return };
+        let still_on = match self.under(location) {
+            Some(Under::Frame(window, FrameZone::Button(b))) => b == title_button && self._toplevel_id(&window) == Some(id),
+            _ => false,
+        };
+        if !still_on {
+            opusdm_ipc::debug_log!(LOG_TAG, "title button {title_button:?} of window {} released off it: nothing runs", id.0);
+            return;
+        }
+        let result = match title_button {
+            TitleButton::Close => self.close_window(id),
+            TitleButton::Iconify => self.set_minimized(id, true),
+            TitleButton::Maximize => self.toggle_maximize(id),
+        };
+        match result {
+            Ok(()) => opusdm_ipc::debug_log!(LOG_TAG, "title button {title_button:?} of window {} run", id.0),
+            Err(e) => opusdm_ipc::err_log!(LOG_TAG, "title button {title_button:?} of window {}: {e}", id.0),
+        }
+    }
+
+    /// The id of the toplevel `window` in the table; `None` when it is not there.
+    fn _toplevel_id(&self, window: &Window) -> Option<WindowId> {
+        let wl = window.toplevel()?.wl_surface();
+        self.windows.get(wl).map(|info| info.id)
     }
 
     /// A scroll frame: sent to the surface with the pointer focus; while
@@ -392,13 +625,20 @@ impl State {
         self.focus_layer(&wl);
     }
 
-    /// Starts the Alt + button grab on the window of `hit`, when Alt is held
-    /// and `button` is the left (move) or right (resize) one.
-    fn _alt_grab(&mut self, hit: Hit, button: u32, location: Point<f64, Logical>, serial: Serial) {
+    /// Starts the Alt + button grab on `window` (`focus`: the surface with
+    /// the pointer at the press, none on the frame), when Alt is held and
+    /// `button` is the left (move) or right (resize) one.
+    fn _alt_grab(
+        &mut self,
+        window: Window,
+        focus: Option<(WlSurface, Point<f64, Logical>)>,
+        button: u32,
+        location: Point<f64, Logical>,
+        serial: Serial,
+    ) {
         if button != BTN_LEFT && button != BTN_RIGHT { return; }
-        let HitOwner::Window(window) = hit.owner else { return };
         if !self._alt_held() { return; }
-        let start_data = GrabStartData { focus: Some((hit.surface, hit.location)), button, location };
+        let start_data = GrabStartData { focus, button, location };
         if button == BTN_LEFT {
             self.start_move_grab(window, start_data, serial);
             return;
@@ -444,10 +684,38 @@ impl State {
         _window_hit(top, loc - top.geometry().loc, pos)
     }
 
-    /// Hit on the windows, topmost first.
-    fn _windows_hit(&self, pos: Point<f64, Logical>) -> Option<Hit> {
-        let (window, render_loc) = self.space.element_under(pos)?;
-        _window_hit(window, render_loc, pos)
+    /// Hit on the windows, topmost first: for each window, its surfaces
+    /// (as Smithay's `Space::element_under`: in its bounding box and its
+    /// input region), then its frame when it is decorated.
+    fn _windows_hit(&self, pos: Point<f64, Logical>) -> Option<Under> {
+        for window in self.space.elements().rev() {
+            let Some(loc) = self.space.element_location(window) else { continue };
+            let render_loc = loc - window.geometry().loc;
+            let in_bbox = self.space.element_bbox(window).is_some_and(|bbox| bbox.to_f64().contains(pos));
+            if in_bbox && window.is_in_input_region(&(pos - render_loc.to_f64())) {
+                return _window_hit(window, render_loc, pos).map(Under::Surface);
+            }
+            if let Some(zone) = self._frame_zone_at(window, loc, pos) {
+                return Some(Under::Frame(window.clone(), zone));
+            }
+        }
+        None
+    }
+
+    /// The part of the frame of `window` (client at `loc`) under `pos`;
+    /// `None` when it has no frame, `pos` is outside it or in its client area.
+    fn _frame_zone_at(&self, window: &Window, loc: Point<i32, Logical>, pos: Point<f64, Logical>) -> Option<FrameZone> {
+        let insets = self.insets_of(window.toplevel()?.wl_surface());
+        if insets == Insets::default() { return None; }
+        let size = window.geometry().size;
+        let frame = frame_rect(Rect { x: loc.x, y: loc.y, w: size.w, h: size.h }, insets);
+        let at = pos.to_i32_floor();
+        let inside = at.x >= frame.x && at.y >= frame.y && at.x < frame.x.saturating_add(frame.w) && at.y < frame.y.saturating_add(frame.h);
+        if !inside { return None; }
+        match frame_zone(frame, (at.x, at.y), insets, &self.title_layout) {
+            FrameZone::Client => None,
+            zone => Some(zone),
+        }
     }
 }
 
@@ -492,5 +760,23 @@ mod tests {
     #[test]
     fn nothing_under_the_pointer_is_no_hit() {
         assert_eq!(first_hit(probe(&[])), None);
+    }
+
+    #[test]
+    fn two_presses_at_most_500_ms_apart_are_a_double_click() {
+        assert!(is_double_click(1000, 1500));
+        assert!(!is_double_click(1000, 1501));
+        assert!(is_double_click(u32::MAX - 100, 200), "the clock wraps");
+    }
+
+    #[test]
+    fn a_border_shows_its_resize_cursor_and_the_title_the_arrow() {
+        let edges = |top, bottom, left, right| FrameZone::Border(Edges { top, bottom, left, right });
+        assert_eq!(frame_cursor(edges(false, false, false, true)), CursorIcon::EResize);
+        assert_eq!(frame_cursor(edges(true, false, true, false)), CursorIcon::NwResize);
+        assert_eq!(frame_cursor(edges(false, true, false, true)), CursorIcon::SeResize);
+        assert_eq!(frame_cursor(edges(false, true, false, false)), CursorIcon::SResize);
+        assert_eq!(frame_cursor(FrameZone::Title), CursorIcon::Default);
+        assert_eq!(frame_cursor(FrameZone::Button(TitleButton::Close)), CursorIcon::Default);
     }
 }

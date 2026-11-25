@@ -14,20 +14,42 @@
 //! (the toplevel's user data) and no handle to it is kept here.
 
 pub mod geometry;
+pub mod render;
 pub mod theme;
 
 use smithay::{
     delegate_xdg_decoration,
     reexports::{
-        wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        wayland_protocols::xdg::{decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode, shell::server::xdg_toplevel},
         wayland_server::{protocol::wl_surface::WlSurface, Resource},
     },
-    wayland::shell::xdg::{decoration::XdgDecorationHandler, ToplevelSurface},
+    wayland::{
+        compositor::with_states,
+        shell::xdg::{decoration::XdgDecorationHandler, ToplevelSurface, XdgToplevelSurfaceData},
+    },
 };
 
 use crate::geometry::Rect;
 use crate::state::{State, LOG_TAG};
+use crate::wm::WindowId;
 use geometry::{client_rect, frame_rect, insets, Insets};
+use render::TitleState;
+
+/// What a backend draws for the frame of one shown decorated window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecorView {
+    /// The window.
+    pub id: WindowId,
+    /// The frame rectangle in the space.
+    pub frame: Rect,
+    /// The insets of the frame.
+    pub insets: Insets,
+    /// What its title bar shows (the title image cache key).
+    pub title: TitleState,
+    /// Opacity of the frame, `0.0..=1.0`: the window's own
+    /// (`effective_opacity`), so a translucent window has a translucent frame.
+    pub alpha: f32,
+}
 
 impl State {
     /// The insets of the toplevel `wl` as it is now (decorated, fullscreen);
@@ -51,6 +73,32 @@ impl State {
     /// The frame rectangle of the toplevel `wl` whose client is `client`.
     pub fn frame_rect_of(&self, wl: &WlSurface, client: Rect) -> Rect {
         frame_rect(client, self.insets_of(wl))
+    }
+
+    /// The frames to draw, bottom to top: one per window of the space that
+    /// has a frame (decorated, not fullscreen), with its title, its active
+    /// state (`Activated`, as `windows/list`), the hovered and pressed
+    /// title bar buttons (`frame_pointer`; pressed only while the pointer
+    /// is on it) and its opacity.
+    pub fn decor_views(&self) -> Vec<DecorView> {
+        self.space.elements().filter_map(|window| self._decor_view(window)).collect()
+    }
+
+    /// The frame of `window` (see `decor_views`); `None` without one.
+    fn _decor_view(&self, window: &smithay::desktop::Window) -> Option<DecorView> {
+        let wl = window.toplevel()?.wl_surface();
+        let info = self.windows.get(wl)?;
+        let insets = self.insets_of(wl);
+        if insets == Insets::default() { return None; }
+        let loc = self.space.element_location(window)?;
+        let size = window.geometry().size;
+        let frame = frame_rect(Rect { x: loc.x, y: loc.y, w: size.w, h: size.h }, insets);
+        let active = window.toplevel().is_some_and(|t| t.with_pending_state(|s| s.states.contains(xdg_toplevel::State::Activated)));
+        let hovered = self.frame_pointer.hovered.filter(|(id, _)| *id == info.id).map(|(_, b)| b);
+        let pressed = self.frame_pointer.pressed.filter(|(id, _)| *id == info.id).map(|(_, b)| b).filter(|b| hovered == Some(*b));
+        let title = TitleState { title: _title_of(wl), active, width: frame.w, hovered, pressed };
+        let alpha = f32::from(self.effective_opacity(info)) / 100.0;
+        Some(DecorView { id: info.id, frame, insets, title, alpha })
     }
 
     /// Sets the decoration mode of `toplevel` (`ServerSide` decorates it,
@@ -81,6 +129,8 @@ impl State {
             } else if let Some(zone) = snapped {
                 let area = self.snap_target(zone);
                 self.refill_window(&wl, area, "snapped");
+            } else if decorated {
+                self._keep_title_in_area(&wl);
             }
         }
         if toplevel.is_initial_configure_sent() {
@@ -89,6 +139,27 @@ impl State {
         if changed {
             self.notify_watchers();
         }
+    }
+}
+
+impl State {
+    /// A shown window in the normal state that just became decorated: when
+    /// its frame top (its title bar) would be above the top of the usable
+    /// area, the window moves down so the frame starts there (the client
+    /// keeps its place otherwise; a hidden or not yet mapped window is
+    /// placed by its frame when it shows).
+    fn _keep_title_in_area(&mut self, wl: &WlSurface) {
+        let Some(window) = self.windows.get(wl).map(|info| info.window.clone()) else { return };
+        let Some(loc) = self.space.element_location(&window) else {
+            opusdm_ipc::debug_log!(LOG_TAG, "decoration of {}: not shown, placed by its frame when shown", wl.id());
+            return;
+        };
+        let top = self.insets_of(wl).top;
+        let area = self.usable_area();
+        if loc.y.saturating_sub(top) >= area.y { return; }
+        let y = area.y.saturating_add(top);
+        opusdm_ipc::debug_log!(LOG_TAG, "decoration of {}: title above the usable area, moved down to {}", wl.id(), y);
+        self.move_window(&window, (loc.x, y));
     }
 }
 
@@ -113,3 +184,18 @@ impl XdgDecorationHandler for State {
 }
 
 delegate_xdg_decoration!(State);
+
+/// The title of the toplevel `wl` (`xdg_toplevel.set_title`); empty when
+/// it has none (a poisoned lock is logged).
+fn _title_of(wl: &WlSurface) -> String {
+    with_states(wl, |states| {
+        let Some(data) = states.data_map.get::<XdgToplevelSurfaceData>() else { return String::new() };
+        match data.lock() {
+            Ok(attrs) => attrs.title.clone().unwrap_or_default(),
+            Err(_) => {
+                opusdm_ipc::err_log!(LOG_TAG, "toplevel {}: data lock poisoned, no title", wl.id());
+                String::new()
+            }
+        }
+    })
+}

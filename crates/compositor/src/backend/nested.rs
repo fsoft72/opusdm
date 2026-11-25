@@ -53,11 +53,13 @@ use smithay::{
 
 use super::{announce, housekeeping, new_output, setup_common, stop_on_quit, LoopData, REFRESH_MHZ};
 use crate::args::Args;
+use crate::decor::render::WindowDecor;
 use crate::draw::DRAW_SCALE;
 use crate::geometry::Rect;
 use crate::menu::{render::MenuImages, MenuLayout};
 use crate::state::{State, LOG_TAG};
 use crate::switcher::render::{switcher_rect, switcher_size};
+use crate::wm::WindowId;
 
 /// Name of the nested output.
 const OUTPUT_NAME: &str = "NESTED-1";
@@ -85,7 +87,8 @@ const RENDER_TRANSFORM: Transform = Transform::Flipped180;
 
 smithay::backend::renderer::element::render_elements! {
     /// What the nested backend draws: client surfaces, the window menu and
-    /// the window switcher, the snap zone preview.
+    /// the window switcher, the title bars (images), the snap zone preview
+    /// and the frame borders (solid colours).
     NestedElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Menu=MemoryRenderBufferRenderElement<GlesRenderer>,
@@ -145,6 +148,20 @@ struct Frame {
     /// The snap zone preview (one buffer for the whole run, so its element
     /// keeps its id and the damage tracker follows its size).
     snap_preview: SolidColorBuffer,
+    /// The drawn frames of the decorated windows, by window id: an entry
+    /// is made when a window is first drawn with a frame and dropped on the
+    /// first frame it is not (closed, hidden, no longer decorated).
+    decor: HashMap<WindowId, WindowDecor>,
+}
+
+/// What one frame draws for the frame of a decorated window.
+struct DecorDraw {
+    /// The title bar image and its box (`None` when drawing it failed, logged).
+    title: Option<(MemoryRenderBuffer, Rect)>,
+    /// The border buffers and their boxes.
+    borders: Vec<(SolidColorBuffer, Rect)>,
+    /// Opacity of the frame (the window's).
+    alpha: f32,
 }
 
 /// Runs the compositor in a window of the host session until the window is
@@ -175,6 +192,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         errors: ErrorThrottle::default(),
         presented: false,
         snap_preview: SolidColorBuffer::new((0, 0), SNAP_PREVIEW_COLOR),
+        decor: HashMap::new(),
     };
     let signal = event_loop.get_signal();
     event_loop
@@ -280,9 +298,14 @@ fn _resize_output(state: &mut State, size: Size<i32, Physical>) {
 
 /// The host window lost the focus: the host will not send the releases of
 /// what is held now, so every pressed button and key is released here (an
-/// Alt + drag grab ends, a client does not autorepeat forever).
+/// Alt + drag grab ends, a client does not autorepeat forever); a pressed
+/// title bar button is disarmed first, so that release does not run it.
 fn _release_held(state: &mut State, pressed_buttons: &mut HashSet<u32>) {
     let time = _now_msec(state);
+    // A synthesized release must not run a title bar button the user never released.
+    if let Some((id, button)) = state.frame_pointer.pressed.take() {
+        opusdm_ipc::debug_log!(LOG_TAG, "host focus lost: title button {button:?} of window {} disarmed", id.0);
+    }
     for button in pressed_buttons.drain() {
         opusdm_ipc::debug_log!(LOG_TAG, "host focus lost: releasing button {button:#x}");
         state.pointer_button(button, false, time);
@@ -393,13 +416,14 @@ fn _render(frame: &mut Frame, state: &mut State) {
         frame.damage = OutputDamageTracker::new(size, f64::from(DRAW_SCALE), RENDER_TRANSFORM);
         frame.damage_size = size;
     }
-    let Frame { backend, damage, errors, presented, snap_preview, .. } = frame;
+    let Frame { backend, damage, errors, presented, snap_preview, decor, .. } = frame;
     let preview = state.snap_preview.map(|rect| {
         snap_preview.update((rect.w, rect.h), SNAP_PREVIEW_COLOR);
         (&*snap_preview, rect)
     });
     let menu = _menu_images(state, errors);
     let switcher = _switcher_image(state, errors);
+    let frames = _decor_draws(state, decor, errors);
     // The buffer age can only be asked while the window surface is current.
     // Smithay's `bind` does not make it current (only rendering does), and
     // an import or a frame with no damage may leave the context on no
@@ -416,7 +440,7 @@ fn _render(frame: &mut Frame, state: &mut State) {
             Ok(bound) => bound,
             Err(e) => return errors.log("frame bind", &e.to_string()),
         };
-        let elements = _elements(renderer, state, menu.as_ref(), switcher.as_ref(), preview, errors);
+        let elements = _elements(renderer, state, menu.as_ref(), switcher.as_ref(), preview, &frames, errors);
         match damage.render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR) {
             Ok(result) => result.damage.cloned(),
             Err(e) => return errors.log("frame render_output", &format!("{e:?}")),
@@ -490,11 +514,43 @@ fn _switcher_image(state: &mut State, errors: &mut ErrorThrottle) -> Option<(Mem
     }
 }
 
+/// What to draw for the frames of the decorated windows this frame, by
+/// window id (`State::decor_views`), from the cache `decor` (title images
+/// drawn again only when their state changed); the cache entries of the
+/// windows without a frame now are dropped. A title that fails to draw is
+/// logged (rate limited) and left out: the borders are still drawn.
+fn _decor_draws(
+    state: &State,
+    decor: &mut HashMap<WindowId, WindowDecor>,
+    errors: &mut ErrorThrottle,
+) -> HashMap<WindowId, DecorDraw> {
+    let views = state.decor_views();
+    decor.retain(|id, _| views.iter().any(|v| v.id == *id));
+    let theme = state.decor_theme;
+    let mut draws = HashMap::new();
+    for view in views {
+        let cache = decor.entry(view.id).or_default();
+        let (w, h) = crate::decor::render::title_image_size(view.frame.w, &theme);
+        let title = match cache.title_image(view.title.clone(), &state.title_layout, &theme, DRAW_SCALE) {
+            Ok(image) => Some((image, Rect { x: view.frame.x, y: view.frame.y, w, h })),
+            Err(e) => {
+                errors.log("title bar render", &e);
+                None
+            }
+        };
+        let colour = if view.title.active { theme.active_border } else { theme.inactive_border };
+        let borders = cache.borders(view.frame, view.insets, colour);
+        draws.insert(view.id, DecorDraw { title, borders, alpha: view.alpha });
+    }
+    draws
+}
+
 /// Render elements, front to back (the reverse of the drawing order
 /// BACKGROUND, BOTTOM, windows bottom to top, TOP, the topmost window when
 /// it is fullscreen, OVERLAY, the snap zone preview, the window menu, its
 /// submenu, the window switcher, cursor). Popups come with their parent,
-/// just above it; the order matches the hit test of `input.rs` (the open
+/// just above it, and the frame of a decorated window (`frames`) just
+/// below it; the order matches the hit test of `input.rs` (the open
 /// menu takes every click before it; the switcher and the preview take no
 /// click).
 fn _elements(
@@ -503,13 +559,14 @@ fn _elements(
     menu: Option<&(MenuImages, MenuLayout)>,
     switcher: Option<&(MemoryRenderBuffer, Rect)>,
     preview: Option<(&SolidColorBuffer, Rect)>,
+    frames: &HashMap<WindowId, DecorDraw>,
     errors: &mut ErrorThrottle,
 ) -> Vec<NestedElement> {
     let output_loc = state.output_area();
     let origin = Point::<i32, Logical>::from((output_loc.x, output_loc.y));
     let mut elements = _cursor_elements(renderer, state, origin);
     if let Some((image, rect)) = switcher {
-        elements.extend(_image_element(renderer, image, *rect, origin, "window switcher texture", errors));
+        elements.extend(_image_element(renderer, image, *rect, origin, None, "window switcher texture", errors));
     }
     if let Some((images, layout)) = menu {
         elements.extend(_menu_elements(renderer, images, layout, origin, errors));
@@ -526,13 +583,13 @@ fn _elements(
         elements.extend(_layer_elements(renderer, &map, &layer));
     }
     if let Some(window) = &fullscreen {
-        elements.extend(_window_elements(renderer, state, window, origin));
+        elements.extend(_window_elements(renderer, state, window, origin, frames, errors));
     }
     for layer in layers(Layer::Top) {
         elements.extend(_layer_elements(renderer, &map, &layer));
     }
     for window in state.space.elements().rev().filter(|w| Some(*w) != fullscreen.as_ref()) {
-        elements.extend(_window_elements(renderer, state, window, origin));
+        elements.extend(_window_elements(renderer, state, window, origin, frames, errors));
     }
     for layer in layers(Layer::Bottom).into_iter().chain(layers(Layer::Background)) {
         elements.extend(_layer_elements(renderer, &map, &layer));
@@ -554,24 +611,26 @@ fn _menu_elements(
     submenu
         .into_iter()
         .chain([(&images.menu, layout.menu)])
-        .filter_map(|(buffer, rect)| _image_element(renderer, buffer, rect, origin, "window menu texture", errors))
+        .filter_map(|(buffer, rect)| _image_element(renderer, buffer, rect, origin, None, "window menu texture", errors))
         .collect()
 }
 
 /// The element of the compositor drawn image `buffer` at the box `rect`
 /// (output coordinates, placed at `DRAW_SCALE`, the scale it was drawn
-/// at); `None` when the texture upload fails (logged as `kind`, rate
-/// limited: the image is left out of the frame).
+/// at), with `alpha` (`None`: opaque); `None` when the texture upload
+/// fails (logged as `kind`, rate limited: the image is left out of the
+/// frame).
 fn _image_element(
     renderer: &mut GlesRenderer,
     buffer: &MemoryRenderBuffer,
     rect: Rect,
     origin: Point<i32, Logical>,
+    alpha: Option<f32>,
     kind: &'static str,
     errors: &mut ErrorThrottle,
 ) -> Option<NestedElement> {
     let loc = (Point::<i32, Logical>::from((rect.x, rect.y)) - origin).to_f64().to_physical(f64::from(DRAW_SCALE));
-    match MemoryRenderBufferRenderElement::from_buffer(renderer, loc, buffer, None, None, None, Kind::Unspecified) {
+    match MemoryRenderBufferRenderElement::from_buffer(renderer, loc, buffer, alpha, None, None, Kind::Unspecified) {
         Ok(element) => Some(NestedElement::Menu(element)),
         Err(e) => {
             errors.log(kind, &e.to_string());
@@ -587,16 +646,20 @@ fn _fullscreen_top(state: &State) -> Option<Window> {
     state.windows.get(wl).is_some_and(|i| i.fullscreen).then(|| top.clone())
 }
 
-/// Elements of `window` with its popups, at its place in the space, front
-/// to back (popups first, as Smithay's `Window::render_elements`). The
-/// toplevel surface tree is drawn with the window opacity
-/// (`State::effective_opacity`, read from `State::wm` every frame); its
-/// popups (menus) are always opaque, as picom's menu rule on X11.
+/// Elements of `window` with its popups and its frame, at its place in the
+/// space, front to back (popups first, as Smithay's
+/// `Window::render_elements`, then the surface tree, then the frame of
+/// `frames`, title image and borders). The toplevel surface tree and the
+/// frame are drawn with the window opacity (`State::effective_opacity`,
+/// read from `State::wm` every frame); its popups (menus) are always
+/// opaque, as picom's menu rule on X11.
 fn _window_elements(
     renderer: &mut GlesRenderer,
     state: &State,
     window: &Window,
     origin: Point<i32, Logical>,
+    frames: &HashMap<WindowId, DecorDraw>,
+    errors: &mut ErrorThrottle,
 ) -> Vec<NestedElement> {
     // Every element of the space has a location: no per-frame log for the impossible case.
     let Some(loc) = state.space.element_location(window) else { return Vec::new() };
@@ -620,6 +683,15 @@ fn _window_elements(
         ));
     }
     elements.extend(render_elements_from_surface_tree(renderer, surface, render_loc, Scale::from(1.0), alpha, Kind::Unspecified));
+    let Some(frame) = state.windows.get(surface).and_then(|info| frames.get(&info.id)) else { return elements };
+    if let Some((image, rect)) = &frame.title {
+        elements.extend(_image_element(renderer, image, *rect, origin, Some(frame.alpha), "title bar texture", errors));
+    }
+    for (buffer, rect) in &frame.borders {
+        let loc = (Point::<i32, Logical>::from((rect.x, rect.y)) - origin).to_physical(1);
+        let element = SolidColorRenderElement::from_buffer(buffer, loc, Scale::from(1.0), frame.alpha, Kind::Unspecified);
+        elements.push(NestedElement::Solid(element));
+    }
     elements
 }
 

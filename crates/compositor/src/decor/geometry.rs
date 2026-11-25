@@ -8,10 +8,6 @@
 //! IPC / foreign-toplevel clients see; the client sits inside it, moved by
 //! the insets.
 
-// The title bar layout and the hit test are used by the title bar input and
-// drawing (stage 3 Task 7); only the insets are used by the placement now.
-#![allow(dead_code)]
-
 use crate::decor::theme::DecorTheme;
 use crate::geometry::{Edges, Rect};
 use crate::state::LOG_TAG;
@@ -83,22 +79,31 @@ impl TitleLayout {
     /// all on the left). Empty names are ignored; an unknown name or a
     /// button given twice is skipped with an `err_log!`.
     pub fn parse(s: &str) -> TitleLayout {
+        TitleLayout::parse_with_errors(s).0
+    }
+
+    /// `parse`, with the problems it logged (for the IPC `reload` reply).
+    pub fn parse_with_errors(s: &str) -> (TitleLayout, Vec<String>) {
         let (left, right) = s.split_once(':').unwrap_or((s, ""));
         let mut layout = TitleLayout::default();
+        let mut errors = Vec::new();
         for (side, names) in [(false, left), (true, right)] {
             for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
                 let Some(button) = _button_named(name) else {
-                    opusdm_ipc::err_log!(LOG_TAG, "title layout {s:?}: unknown button {name:?}, skipped");
+                    errors.push(format!("title layout {s:?}: unknown button {name:?}, skipped"));
                     continue;
                 };
                 if layout.left.contains(&button) || layout.right.contains(&button) {
-                    opusdm_ipc::err_log!(LOG_TAG, "title layout {s:?}: button {name:?} given twice, skipped");
+                    errors.push(format!("title layout {s:?}: button {name:?} given twice, skipped"));
                     continue;
                 }
                 if side { layout.right.push(button) } else { layout.left.push(button) }
             }
         }
-        layout
+        for e in &errors {
+            opusdm_ipc::err_log!(LOG_TAG, "{e}");
+        }
+        (layout, errors)
     }
 }
 
@@ -226,7 +231,10 @@ fn _contains(rect: Rect, point: (i32, i32)) -> bool {
 mod tests {
     use super::*;
 
-    const THEME: DecorTheme = DecorTheme { border_width: 4 };
+    /// The default theme (border width 4).
+    fn theme() -> DecorTheme {
+        DecorTheme::default()
+    }
 
     /// A 400x300 frame at (100, 50) with the default theme insets.
     const FRAME: Rect = Rect { x: 100, y: 50, w: 400, h: 300 };
@@ -238,19 +246,19 @@ mod tests {
 
     #[test]
     fn a_decorated_window_has_the_title_and_the_border_as_insets() {
-        assert_eq!(insets(true, false, &THEME), Insets { top: 28, left: 4, right: 4, bottom: 4 });
+        assert_eq!(insets(true, false, &theme()), Insets { top: 28, left: 4, right: 4, bottom: 4 });
     }
 
     #[test]
     fn an_undecorated_or_fullscreen_window_has_no_insets() {
-        assert_eq!(insets(false, false, &THEME), Insets::default());
-        assert_eq!(insets(true, true, &THEME), Insets::default());
-        assert_eq!(insets(false, true, &THEME), Insets::default());
+        assert_eq!(insets(false, false, &theme()), Insets::default());
+        assert_eq!(insets(true, true, &theme()), Insets::default());
+        assert_eq!(insets(false, true, &theme()), Insets::default());
     }
 
     #[test]
     fn client_and_frame_rects_are_inverse() {
-        let i = insets(true, false, &THEME);
+        let i = insets(true, false, &theme());
         let client = client_rect(FRAME, i);
         assert_eq!(client, Rect { x: 104, y: 78, w: 392, h: 268 });
         assert_eq!(frame_rect(client, i), FRAME);
@@ -273,11 +281,14 @@ mod tests {
         assert_eq!(TitleLayout::parse(":close").right, vec![TitleButton::Close]);
         assert_eq!(TitleLayout::parse("close").left, vec![TitleButton::Close]);
         assert_eq!(TitleLayout::parse(""), TitleLayout::default());
+        let (_, errors) = TitleLayout::parse_with_errors("close,shade,close");
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(TitleLayout::parse_with_errors("close,iconify,max:").1.is_empty());
     }
 
     #[test]
     fn the_buttons_are_16_pixels_2_apart_and_centered_on_the_bar() {
-        let i = insets(true, false, &THEME);
+        let i = insets(true, false, &theme());
         let rects = button_rects(FRAME, i, &default_layout());
         // Bar at (104, 54), 392x24: buttons 4 px from its left end and its top.
         assert_eq!(rects, vec![
@@ -295,7 +306,7 @@ mod tests {
 
     #[test]
     fn the_title_text_sits_between_the_buttons() {
-        let i = insets(true, false, &THEME);
+        let i = insets(true, false, &theme());
         // Left: 4 + 3 * 18 - 2 + 4 = 60 from the bar start; right: 4 from its end.
         assert_eq!(title_text_rect(FRAME, i, &default_layout()), Some(Rect { x: 164, y: 54, w: 328, h: 24 }));
         assert_eq!(title_text_rect(FRAME, Insets::default(), &default_layout()), None);
@@ -303,14 +314,14 @@ mod tests {
 
     #[test]
     fn a_point_on_the_close_button_of_a_400x300_frame() {
-        let i = insets(true, false, &THEME);
+        let i = insets(true, false, &theme());
         assert_eq!(frame_zone(FRAME, (110, 60), i, &default_layout()), FrameZone::Button(TitleButton::Close));
         assert_eq!(frame_zone(FRAME, (150, 70), i, &default_layout()), FrameZone::Button(TitleButton::Maximize));
     }
 
     #[test]
     fn a_point_on_the_title_bar_outside_the_buttons_is_the_title() {
-        let i = insets(true, false, &THEME);
+        let i = insets(true, false, &theme());
         assert_eq!(frame_zone(FRAME, (300, 60), i, &default_layout()), FrameZone::Title);
         // Between two buttons and under them, still on the bar.
         assert_eq!(frame_zone(FRAME, (125, 60), i, &default_layout()), FrameZone::Title);
@@ -319,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_point_on_the_right_border_and_the_corners() {
-        let i = insets(true, false, &THEME);
+        let i = insets(true, false, &theme());
         let right = Edges { right: true, ..Edges::default() };
         assert_eq!(frame_zone(FRAME, (498, 200), i, &default_layout()), FrameZone::Border(right));
         let top_left = Edges { top: true, left: true, ..Edges::default() };
@@ -331,7 +342,7 @@ mod tests {
 
     #[test]
     fn a_point_inside_the_client_is_the_client() {
-        let i = insets(true, false, &THEME);
+        let i = insets(true, false, &theme());
         assert_eq!(frame_zone(FRAME, (300, 200), i, &default_layout()), FrameZone::Client);
         assert_eq!(frame_zone(FRAME, (104, 78), i, &default_layout()), FrameZone::Client);
     }

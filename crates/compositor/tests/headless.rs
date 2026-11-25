@@ -2032,3 +2032,222 @@ fn a_maximized_decorated_window_dragged_away_keeps_the_pointer_on_its_frame() {
     // The frame is 408x332: 960 - 960 * 408 / 1920 = 756, 540 - 540 * 332 / 1080 = 374, then +40, +20.
     assert_eq!(window_rect(&comp, 1), ((796, 394, 408, 332), false));
 }
+
+// Server side decorations: the pointer on the frame (title bar buttons,
+// title, borders). A decorated 400x300 window cascades with its frame at
+// (0, 0), 408x332: the title bar is (4, 4) 400x24, the buttons of the
+// default layout "close,iconify,max:" are 16x16 at x 8, 26 and 44, y 8.
+
+/// A point on the close button of a decorated window with its frame at (0, 0).
+const CLOSE_AT: (i64, i64) = (16, 16);
+
+/// A point on the iconify button.
+const ICONIFY_AT: (i64, i64) = (34, 16);
+
+/// A point on the maximize button.
+const MAXIMIZE_AT: (i64, i64) = (52, 16);
+
+/// A point on the title, right of the buttons.
+const TITLE_AT: (i64, i64) = (250, 16);
+
+/// Presses and releases `name` at `at`.
+fn click_at(comp: &Compositor, at: (i64, i64), name: &str) {
+    pointer_to(comp, at.0, at.1);
+    button(comp, name, "press");
+    button(comp, name, "release");
+}
+
+/// Maps a decorated 400x300 window and waits until it has the keyboard.
+fn decorated_focused(c: &mut TestClient) -> common::TestWindow {
+    let w = map_decorated(c);
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    c.roundtrip();
+    w
+}
+
+#[test]
+fn a_click_on_the_close_button_asks_the_client_to_close() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    click_at(&comp, CLOSE_AT, "left");
+    assert!(c.wait_close_request(&w, Duration::from_secs(2)), "xdg_toplevel.close after the click");
+    assert!(c.pointer_presses().is_empty(), "the client never sees a click on its frame");
+}
+
+#[test]
+fn a_press_on_the_close_button_released_elsewhere_does_nothing() {
+    let mut comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    pointer_to(&comp, CLOSE_AT.0, CLOSE_AT.1);
+    button(&comp, "left", "press");
+    pointer_to(&comp, TITLE_AT.0, TITLE_AT.1);
+    button(&comp, "left", "release");
+    assert!(!c.wait_close_request(&w, Duration::from_millis(300)), "no close: released off the button");
+    assert!(comp.is_running());
+}
+
+#[test]
+fn the_iconify_and_maximize_buttons_minimize_and_toggle_maximize() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    click_at(&comp, MAXIMIZE_AT, "left");
+    assert!(c.wait_configure(&w, (1920 - 2 * BORDER, 1080 - TITLE - 2 * BORDER), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 1920, 1080), true));
+    // Maximized, the frame is still at (0, 0): the same button restores.
+    click_at(&comp, MAXIMIZE_AT, "left");
+    assert!(c.wait_configure(&w, (400, 300), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert!(!window_rect(&comp, 1).1, "restored");
+    let ((x, y, _, _), _) = window_rect(&comp, 1);
+    click_at(&comp, (x + ICONIFY_AT.0, y + ICONIFY_AT.1), "left");
+    assert_eq!(minimized_flags(&comp), vec![true]);
+}
+
+#[test]
+fn a_double_click_on_the_title_toggles_maximize_and_a_single_click_does_not() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    click_at(&comp, TITLE_AT, "left");
+    click_at(&comp, TITLE_AT, "left");
+    assert!(c.wait_configure(&w, (1920 - 2 * BORDER, 1080 - TITLE - 2 * BORDER), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 1920, 1080), true), "maximized in windows/list");
+    // A single click (no drag) on the title of the maximized window leaves it maximized.
+    std::thread::sleep(Duration::from_millis(600));
+    click_at(&comp, TITLE_AT, "left");
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 1920, 1080), true), "still maximized after a single click");
+    assert!(c.pointer_presses().is_empty());
+}
+
+#[test]
+fn a_right_press_on_the_title_opens_the_window_menu() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = decorated_focused(&mut c);
+    click_at(&comp, TITLE_AT, "right");
+    for name in ["Down", "Return"] {
+        key(&comp, name);
+    }
+    assert_eq!(minimized_flags(&comp), vec![true], "Down, Return chose Minimize");
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0, "the menu took the keys");
+}
+
+#[test]
+fn a_right_press_on_a_border_opens_the_window_menu_at_the_pointer() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let _w = decorated_focused(&mut c);
+    click_at(&comp, (300, 330), "right");
+    assert!(comp.wait_log("window menu opened on window 1 at (300, 330)", Duration::from_secs(2)));
+}
+
+#[test]
+fn a_middle_press_on_the_title_lowers_the_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = map_decorated(&mut c);
+    let b = map_decorated(&mut c);
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    assert_eq!(stack_ids(&comp), vec![1, 2]);
+    // B's frame cascades at (30, 30): its title is at y 34..58.
+    click_at(&comp, (300, 45), "middle");
+    assert_eq!(stack_ids(&comp), vec![2, 1], "B lowered");
+    assert!(c.wait_keyboard_focus(&a, Duration::from_secs(2)), "the new top window has the keyboard");
+    assert!(c.pointer_presses().is_empty(), "A under B's title saw no click");
+}
+
+#[test]
+fn a_click_on_the_title_of_an_inactive_window_raises_and_focuses_it() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = map_decorated(&mut c);
+    let b = map_decorated(&mut c);
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    // A's title above B's frame (B starts at y 30).
+    click_at(&comp, (100, 16), "left");
+    assert!(c.wait_keyboard_focus(&a, Duration::from_secs(2)));
+    assert_eq!(stack_ids(&comp), vec![2, 1], "A raised");
+    assert!(c.pointer_presses().is_empty());
+}
+
+#[test]
+fn a_left_drag_on_the_title_moves_the_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _w = decorated_focused(&mut c);
+    pointer_to(&comp, TITLE_AT.0, TITLE_AT.1);
+    button(&comp, "left", "press");
+    pointer_to(&comp, TITLE_AT.0 + 50, TITLE_AT.1 + 50);
+    pointer_to(&comp, TITLE_AT.0 + 100, TITLE_AT.1 + 100);
+    button(&comp, "left", "release");
+    assert_eq!(window_rect(&comp, 1), ((100, 100, 408, 332), false));
+    assert!(c.pointer_presses().is_empty());
+}
+
+#[test]
+fn a_left_drag_on_the_right_border_resizes_the_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    pointer_to(&comp, 406, 150);
+    button(&comp, "left", "press");
+    pointer_to(&comp, 456, 150);
+    pointer_to(&comp, 506, 150);
+    button(&comp, "left", "release");
+    assert!(c.wait_configure(&w, (500, 300), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    assert!(c.pointer_presses().is_empty());
+}
+
+#[test]
+fn a_click_in_the_client_area_still_reaches_the_client() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    click_at(&comp, (104, 78), "left");
+    c.roundtrip();
+    let presses = c.pointer_presses();
+    assert_eq!(presses.len(), 1, "{presses:?}");
+    assert_eq!(presses[0].0, w.wl_surface().clone());
+    assert_eq!((presses[0].1.round() as i64, presses[0].2.round() as i64), (100, 50), "surface local");
+}
+
+#[test]
+fn the_title_layout_of_a_reload_moves_the_buttons() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    comp.write_config("compositor.json", r#"{"title_layout": ":close"}"#);
+    let reply = ipc_request(&comp, "reload", json!({}));
+    assert_eq!(reply["errors"], json!([]), "{reply}");
+    click_at(&comp, CLOSE_AT, "left");
+    assert!(!c.wait_close_request(&w, Duration::from_millis(300)), "no button on the left any more");
+    // The bar ends at x 404: close is 16 px wide, 4 px before the end.
+    click_at(&comp, (392, 16), "left");
+    assert!(c.wait_close_request(&w, Duration::from_secs(2)), "close on the right");
+    comp.write_config("compositor.json", r#"{"title_layout": "close,shade:"}"#);
+    let reply = ipc_request(&comp, "reload", json!({}));
+    let errors = reply["errors"].as_array().expect("errors");
+    assert!(errors.iter().any(|e| e.as_str().is_some_and(|e| e.contains("shade"))), "{reply}");
+}
+
+#[test]
+fn a_window_that_turns_server_side_under_a_panel_keeps_its_title_in_the_area() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _panel = map_panel(&mut c);
+    let w = c.map_toplevel_decorated((400, 300), WindowDecorations::RequestClient);
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 40, 400, 300), false));
+    w.request_server_side(true);
+    c.roundtrip();
+    assert!(c.server_side(&w));
+    let ((x, y, width, height), _) = window_rect(&comp, 1);
+    assert_eq!((x, y, width, height), (-BORDER as i64, 40, 408, 332), "the frame top is the top of the usable area");
+}
