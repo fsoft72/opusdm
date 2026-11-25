@@ -134,11 +134,18 @@ trap 'rm -rf ${CONFIG_DIR:+"$CONFIG_DIR"} ${HUB_RUNTIME_DIR:+"$HUB_RUNTIME_DIR"}
 
 # Fills the folder $1 as a private XDG_CONFIG_HOME: `opusdm` is a copy of
 # the live one (an empty folder when there is none), every other entry of
-# the live config home is a symlink to it.
+# the live config home is a symlink to it. The copy follows symlinks (a
+# symlinked opusdm folder, symlinked files inside it): a link left in the
+# copy would let the sandbox write the live file, so any link left (a
+# dangling one cannot be copied either) ends the script with a message.
 _make_private_config() {
-    local dest="$1" entry name
+    local dest="$1" entry name links
     if [ -d "$LIVE_CONFIG_HOME/opusdm" ]; then
-        cp -a "$LIVE_CONFIG_HOME/opusdm" "$dest/opusdm"
+        cp -RL --preserve=mode,timestamps "$LIVE_CONFIG_HOME/opusdm" "$dest/opusdm" \
+            || { echo "Cannot copy $LIVE_CONFIG_HOME/opusdm (a dangling symlink in it?): the sandbox needs a full copy" >&2; exit 1; }
+        [ ! -L "$dest/opusdm" ] || { echo "The copy $dest/opusdm is a symlink: the sandbox would write the live configuration" >&2; exit 1; }
+        links="$(find "$dest/opusdm" -type l)"
+        [ -z "$links" ] || { echo "The copy of the configuration still holds symlinks, the sandbox would write through them:" >&2; echo "$links" >&2; exit 1; }
     else
         echo "No $LIVE_CONFIG_HOME/opusdm: the sandbox hub starts from an empty configuration" >&2
         mkdir "$dest/opusdm"
@@ -162,11 +169,11 @@ _make_sandbox_hotkeys() {
         return 0
     fi
     taken="$(jq -r '.[] | select(.global == true) | select(.key | split("+") | .[:-1] | map(ascii_downcase) | any(. == "super")) | "  \(.key)  \(.function)"' "$file")" \
-        || { echo "hotkeys.json is not valid JSON: $file" >&2; return 1; }
+        || { echo "jq failed on $file (not valid JSON or not an array of hotkeys)" >&2; return 1; }
     jq 'map(if .global == true and ((.key | split("+") | .[:-1] | map(ascii_downcase) | any(. == "super")) | not)
             then .key |= (split("+") | .[:-1] + ["Super"] + .[-1:] | join("+"))
             else . end)' "$file" >"$file.new" \
-        || { echo "Cannot write the sandbox hotkey table: $file" >&2; return 1; }
+        || { echo "jq failed writing the sandbox hotkey table from $file (not valid JSON or not an array of hotkeys)" >&2; return 1; }
     mv "$file.new" "$file"
     if [ -n "$taken" ]; then
         echo "These global hotkeys already use Super and may be taken by the host:" >&2
