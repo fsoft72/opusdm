@@ -19,7 +19,7 @@ use smithay::{
         },
     },
     utils::{Logical, Point, Serial},
-    wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
+    wayland::shell::xdg::{Configure, PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
 };
 
 use crate::geometry::{cascade_position, Edges, Rect};
@@ -172,6 +172,13 @@ impl XdgShellHandler for State {
             return;
         };
         self.start_resize_grab(window, _edges_from_xdg(edges), start_data, serial);
+    }
+
+    /// A toplevel acked a configure: an interactive resize waiting for its
+    /// final configure moves on (`grabs::handle_ack`). Popups: nothing to do.
+    fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
+        let Configure::Toplevel(configure) = configure else { return };
+        crate::grabs::handle_ack(self, &surface, configure.serial);
     }
 
     /// No tasklist before stage 2: the window stays shown.

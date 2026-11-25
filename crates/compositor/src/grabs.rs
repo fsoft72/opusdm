@@ -38,14 +38,74 @@ pub enum ResizeTrack {
         /// Geometry of the window when the resize started.
         initial: Rect,
     },
-    /// The grab ended; the next commit (the final size) is still placed,
-    /// then the track goes back to `Idle`.
-    WaitingLastCommit {
+    /// The grab ended and the final configure (serial `serial`) went out;
+    /// commits are still placed (they carry the sizes of the resize) until
+    /// the client acks it. After `commits_left` more commits without that
+    /// ack the track gives up (a client that never acks cannot keep it).
+    WaitingFinalAck {
+        /// The edges that were dragged.
+        edges: Edges,
+        /// Geometry of the window when the resize started.
+        initial: Rect,
+        /// Serial of the final configure (no `Resizing` state).
+        serial: Serial,
+        /// Commits still placed before giving up on the ack.
+        commits_left: u32,
+    },
+    /// The final configure was acked: its commit is placed, then `Idle`.
+    WaitingFinalCommit {
         /// The edges that were dragged.
         edges: Edges,
         /// Geometry of the window when the resize started.
         initial: Rect,
     },
+}
+
+/// Commits placed after the end of a resize while the client has not acked
+/// the final configure; then the track goes back to `Idle`.
+pub const RESIZE_ACK_COMMIT_LIMIT: u32 = 30;
+
+/// What a commit does to a resize track: the next track, the drag to place
+/// the committed size with (if any) and whether the track gave up waiting
+/// for the final ack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitStep {
+    /// The track after the commit.
+    pub next: ResizeTrack,
+    /// Edges and initial geometry to place the committed size with.
+    pub place: Option<(Edges, Rect)>,
+    /// True when the final ack never came within `RESIZE_ACK_COMMIT_LIMIT`.
+    pub gave_up: bool,
+}
+
+/// Decides what a commit of the window does with its resize `track`.
+pub fn resize_track_on_commit(track: ResizeTrack) -> CommitStep {
+    match track {
+        ResizeTrack::Idle => CommitStep { next: track, place: None, gave_up: false },
+        ResizeTrack::Resizing { edges, initial } => CommitStep { next: track, place: Some((edges, initial)), gave_up: false },
+        ResizeTrack::WaitingFinalAck { edges, initial, serial, commits_left } => {
+            let Some(left) = commits_left.checked_sub(1) else {
+                return CommitStep { next: ResizeTrack::Idle, place: Some((edges, initial)), gave_up: true };
+            };
+            let next = ResizeTrack::WaitingFinalAck { edges, initial, serial, commits_left: left };
+            CommitStep { next, place: Some((edges, initial)), gave_up: false }
+        }
+        ResizeTrack::WaitingFinalCommit { edges, initial } => {
+            CommitStep { next: ResizeTrack::Idle, place: Some((edges, initial)), gave_up: false }
+        }
+    }
+}
+
+/// Decides what the ack of the configure `acked` does with the resize
+/// `track`: the final configure (or a later one) acked moves it to
+/// `WaitingFinalCommit`; anything else keeps it.
+pub fn resize_track_on_ack(track: ResizeTrack, acked: Serial) -> ResizeTrack {
+    match track {
+        ResizeTrack::WaitingFinalAck { edges, initial, serial, .. } if acked >= serial => {
+            ResizeTrack::WaitingFinalCommit { edges, initial }
+        }
+        other => other,
+    }
 }
 
 /// Returns the edges an Alt + right button resize drags: the ones of the
@@ -111,7 +171,8 @@ pub struct ResizeGrab {
 
 impl PointerGrab<State> for MoveGrab {
     /// Moves the window by the pointer delta from the start of the grab; no
-    /// client has the pointer focus meanwhile. A dead window ends the grab.
+    /// client has the pointer focus meanwhile. A dead or unmapped window
+    /// ends the grab.
     fn motion(
         &mut self,
         data: &mut State,
@@ -122,6 +183,11 @@ impl PointerGrab<State> for MoveGrab {
         handle.motion(data, None, event);
         if !self.window.alive() {
             opusdm_ipc::debug_log!(LOG_TAG, "move grab: the window is gone, grab ended");
+            handle.unset_grab(self, data, event.serial, event.time, true);
+            return;
+        }
+        if data.space.element_location(&self.window).is_none() {
+            opusdm_ipc::debug_log!(LOG_TAG, "move grab: the window is not mapped any more, grab ended");
             handle.unset_grab(self, data, event.serial, event.time, true);
             return;
         }
@@ -212,7 +278,8 @@ impl PointerGrab<State> for MoveGrab {
 impl PointerGrab<State> for ResizeGrab {
     /// Computes the new geometry from the pointer delta (never under
     /// `MIN_WINDOW_SIZE`) and sends its size with the `Resizing` state; the
-    /// commits place the window (`handle_commit`). A dead window ends the grab.
+    /// commits place the window (`handle_commit`). A dead or unmapped window
+    /// ends the grab.
     fn motion(
         &mut self,
         data: &mut State,
@@ -226,6 +293,11 @@ impl PointerGrab<State> for ResizeGrab {
             handle.unset_grab(self, data, event.serial, event.time, true);
             return;
         };
+        if data.space.element_location(&self.window).is_none() {
+            opusdm_ipc::debug_log!(LOG_TAG, "resize grab: the window is not mapped any more, grab ended");
+            handle.unset_grab(self, data, event.serial, event.time, true);
+            return;
+        }
         let delta = (event.location - self.start_data.location).to_i32_round();
         let r = resize_rect(self.initial, self.edges, delta.x, delta.y, MIN_WINDOW_SIZE);
         self.last_size = (r.w, r.h);
@@ -310,25 +382,42 @@ impl PointerGrab<State> for ResizeGrab {
     }
 
     /// The resize ends (button released or grab replaced): sends the last
-    /// size without the `Resizing` state and lets the next commit place the
-    /// window. A dead window has nothing to configure.
+    /// size without the `Resizing` state and waits for its ack (the commits
+    /// until then are still placed, see `ResizeTrack::WaitingFinalAck`). A
+    /// dead window has nothing to configure; an unmapped one only loses the
+    /// pending `Resizing` state (its next initial configure carries it) and
+    /// its track goes back to `Idle`.
     fn unset(&mut self, data: &mut State) {
         let Some(toplevel) = self.window.toplevel().filter(|t| t.alive()).cloned() else {
             opusdm_ipc::debug_log!(LOG_TAG, "resize grab ended: the window is gone");
             return;
         };
         let (w, h) = self.last_size;
+        let mapped = data.space.element_location(&self.window).is_some();
         toplevel.with_pending_state(|state| {
             state.states.unset(xdg_toplevel::State::Resizing);
-            state.size = Some((w, h).into());
+            if mapped {
+                state.size = Some((w, h).into());
+            }
         });
-        toplevel.send_pending_configure();
         let wl = toplevel.wl_surface();
-        match data.windows.get_mut(wl) {
-            Some(info) => info.resize = ResizeTrack::WaitingLastCommit { edges: self.edges, initial: self.initial },
-            None => opusdm_ipc::err_log!(LOG_TAG, "resize grab ended: toplevel {} has no window entry", wl.id()),
+        let Some(info) = data.windows.get_mut(wl) else {
+            opusdm_ipc::err_log!(LOG_TAG, "resize grab ended: toplevel {} has no window entry", wl.id());
+            return;
+        };
+        if !mapped {
+            info.resize = ResizeTrack::Idle;
+            opusdm_ipc::debug_log!(LOG_TAG, "resize grab of {} ended: the window is not mapped, no final configure", wl.id());
+            return;
         }
-        opusdm_ipc::debug_log!(LOG_TAG, "resize grab of {} ended at {w}x{h}", wl.id());
+        let serial = toplevel.send_configure();
+        info.resize = ResizeTrack::WaitingFinalAck {
+            edges: self.edges,
+            initial: self.initial,
+            serial,
+            commits_left: RESIZE_ACK_COMMIT_LIMIT,
+        };
+        opusdm_ipc::debug_log!(LOG_TAG, "resize grab of {} ended at {w}x{h}, final configure {serial:?}", wl.id());
     }
 }
 
@@ -351,7 +440,10 @@ impl State {
             opusdm_ipc::err_log!(LOG_TAG, "move grab refused: toplevel {} is not mapped", toplevel.wl_surface().id());
             return;
         };
-        let info = self.windows.get(toplevel.wl_surface()).cloned().unwrap_or_default();
+        let Some(info) = self.windows.get(toplevel.wl_surface()).cloned() else {
+            opusdm_ipc::err_log!(LOG_TAG, "move grab refused: toplevel {} has no window entry", toplevel.wl_surface().id());
+            return;
+        };
         if info.maximized || info.fullscreen {
             let restore = info.restore.map(|r| (r.w, r.h));
             self._leave_fill(&toplevel, restore);
@@ -432,28 +524,45 @@ impl State {
     }
 }
 
-/// Commit of a toplevel: while it is resized (or right after), places it so
-/// the edges opposite to the dragged top / left edges stay where they were,
-/// using the size the client committed. Not a mapped toplevel in a resize:
-/// nothing to do.
+/// Commit of a toplevel: while it is resized (and until the client has
+/// committed the final configure of the resize, see `ResizeTrack`), places it
+/// so the edges opposite to the dragged top / left edges stay where they
+/// were, using the size the client committed. A track that gave up waiting
+/// for the final ack, or whose window is no longer mapped, goes back to
+/// `Idle` with a debug trace. Not a toplevel in a resize: nothing to do.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let Some(info) = state.windows.get_mut(surface) else { return };
-    let (edges, initial) = match info.resize {
-        ResizeTrack::Idle => return,
-        ResizeTrack::Resizing { edges, initial } => (edges, initial),
-        ResizeTrack::WaitingLastCommit { edges, initial } => {
+    if info.resize == ResizeTrack::Idle { return; }
+    let step = resize_track_on_commit(info.resize);
+    info.resize = step.next;
+    if step.gave_up {
+        opusdm_ipc::debug_log!(LOG_TAG, "resize of {}: final configure never acked, placement stopped", surface.id());
+    }
+    let Some((edges, initial)) = step.place else { return };
+    let found = state.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface)).cloned();
+    let Some(window) = found else {
+        opusdm_ipc::debug_log!(LOG_TAG, "resize of {}: the window is not mapped, placement stopped", surface.id());
+        if let Some(info) = state.windows.get_mut(surface) {
             info.resize = ResizeTrack::Idle;
-            (edges, initial)
         }
+        return;
     };
     if !edges.left && !edges.top { return; }
-    let found = state.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface)).cloned();
-    let Some(window) = found else { return };
     let size = window.geometry().size;
     let origin = resized_origin(initial, edges, (size.w, size.h));
     let current = state.space.element_location(&window).map(|p| (p.x, p.y));
     if current == Some(origin) { return; }
     state.move_window(&window, origin);
+}
+
+/// Ack of a toplevel configure: moves the resize track of `surface` on when
+/// the final configure of a resize is acked (`resize_track_on_ack`).
+pub fn handle_ack(state: &mut State, surface: &WlSurface, acked: Serial) {
+    let Some(info) = state.windows.get_mut(surface) else { return };
+    let next = resize_track_on_ack(info.resize, acked);
+    if next == info.resize { return; }
+    opusdm_ipc::debug_log!(LOG_TAG, "resize of {}: final configure acked ({acked:?})", surface.id());
+    info.resize = next;
 }
 
 #[cfg(test)]
@@ -494,6 +603,66 @@ mod tests {
         let maximized = Rect { x: 0, y: 30, w: 1920, h: 1050 };
         // Pointer at the middle of the title bar: it stays in the middle of the 800 wide window.
         assert_eq!(restored_origin(maximized, (800, 600), (960, 40)), (560, 35));
+    }
+
+    const TOP_LEFT: Edges = Edges { top: true, left: true, bottom: false, right: false };
+    const INITIAL: Rect = Rect { x: 100, y: 100, w: 400, h: 300 };
+
+    /// The track right after a grab ended with final configure serial 10.
+    fn waiting(commits_left: u32) -> ResizeTrack {
+        ResizeTrack::WaitingFinalAck { edges: TOP_LEFT, initial: INITIAL, serial: Serial::from(10), commits_left }
+    }
+
+    #[test]
+    fn commits_before_the_final_ack_are_placed_and_keep_waiting() {
+        let step = resize_track_on_commit(waiting(RESIZE_ACK_COMMIT_LIMIT));
+        assert_eq!(step.place, Some((TOP_LEFT, INITIAL)));
+        assert_eq!(step.next, waiting(RESIZE_ACK_COMMIT_LIMIT - 1));
+        assert!(!step.gave_up);
+    }
+
+    #[test]
+    fn an_older_ack_does_not_end_the_wait() {
+        assert_eq!(resize_track_on_ack(waiting(5), Serial::from(9)), waiting(5));
+    }
+
+    #[test]
+    fn the_final_ack_then_its_commit_end_the_resize() {
+        let acked = resize_track_on_ack(waiting(5), Serial::from(10));
+        assert_eq!(acked, ResizeTrack::WaitingFinalCommit { edges: TOP_LEFT, initial: INITIAL });
+        let step = resize_track_on_commit(acked);
+        assert_eq!(step.place, Some((TOP_LEFT, INITIAL)));
+        assert_eq!(step.next, ResizeTrack::Idle);
+        assert!(!step.gave_up);
+    }
+
+    #[test]
+    fn a_later_ack_also_ends_the_wait() {
+        let acked = resize_track_on_ack(waiting(5), Serial::from(12));
+        assert_eq!(acked, ResizeTrack::WaitingFinalCommit { edges: TOP_LEFT, initial: INITIAL });
+    }
+
+    #[test]
+    fn a_client_that_never_acks_cannot_keep_the_track() {
+        let mut track = waiting(RESIZE_ACK_COMMIT_LIMIT);
+        let mut commits = 0;
+        while track != ResizeTrack::Idle {
+            let step = resize_track_on_commit(track);
+            commits += 1;
+            assert_eq!(step.gave_up, step.next == ResizeTrack::Idle);
+            track = step.next;
+            assert!(commits <= RESIZE_ACK_COMMIT_LIMIT + 1, "the track never gave up");
+        }
+        assert_eq!(commits, RESIZE_ACK_COMMIT_LIMIT + 1);
+        assert_eq!(resize_track_on_commit(track).place, None);
+    }
+
+    #[test]
+    fn commits_while_resizing_are_placed_and_idle_is_left_alone() {
+        let resizing = ResizeTrack::Resizing { edges: TOP_LEFT, initial: INITIAL };
+        assert_eq!(resize_track_on_commit(resizing), CommitStep { next: resizing, place: Some((TOP_LEFT, INITIAL)), gave_up: false });
+        assert_eq!(resize_track_on_commit(ResizeTrack::Idle), CommitStep { next: ResizeTrack::Idle, place: None, gave_up: false });
+        assert_eq!(resize_track_on_ack(resizing, Serial::from(99)), resizing);
     }
 
     #[test]
