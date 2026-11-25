@@ -371,13 +371,17 @@ fn _render(frame: &mut Frame, state: &mut State) {
         frame.damage_size = size;
     }
     let Frame { backend, damage, errors, presented, .. } = frame;
-    // The buffer age is only valid with the window surface current: a
-    // dmabuf / shm import may have left the context on no surface (EGL
-    // BAD_SURFACE), so bind once before asking.
+    // The buffer age can only be asked while the window surface is current.
+    // Smithay's `bind` does not make it current (only rendering does), and
+    // an import or a frame with no damage may leave the context on no
+    // surface: then Mesa answers EGL BAD_SURFACE, logged by Smithay as an
+    // ERROR. In that case the age is unknown, 0 (full redraw), without
+    // asking.
     if let Err(e) = backend.bind() {
         return errors.log("frame bind", &e.to_string());
     }
-    let age = if *presented { backend.buffer_age().unwrap_or(0) } else { 0 };
+    let current = backend.egl_surface().is_current();
+    let age = if *presented && current { backend.buffer_age().unwrap_or(0) } else { 0 };
     let rendered = {
         let (renderer, mut framebuffer) = match backend.bind() {
             Ok(bound) => bound,
