@@ -1799,3 +1799,91 @@ fn debug_pointer_and_debug_button_reach_the_client_through_the_real_pointer_path
     }
     assert!(ipc_request(&comp, "debug/pointer", json!({"x": "a", "y": 1}))["error"].is_string());
 }
+
+/// Alt + left click at `at` with a pointer jitter of `jitter` px (under the
+/// drag threshold) between the press and the release.
+fn alt_click(comp: &Compositor, at: (i64, i64), jitter: i64) {
+    pointer_to(comp, at.0, at.1);
+    key_state(comp, "Alt_L", "press");
+    button(comp, "left", "press");
+    pointer_to(comp, at.0 + jitter, at.1 + jitter);
+    button(comp, "left", "release");
+    key_state(comp, "Alt_L", "release");
+}
+
+/// Maps a 400x300 window and snaps it to the left half (960x1080).
+fn snapped_left(c: &mut TestClient, comp: &Compositor) -> common::TestWindow {
+    let w = c.map_toplevel((400, 300));
+    alt_drag(comp, (200, 150), (2, 500));
+    assert!(c.wait_configure(&w, (960, 1080), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    w
+}
+
+#[test]
+fn an_alt_click_on_a_snapped_window_keeps_it_snapped() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = snapped_left(&mut c, &comp);
+    alt_click(&comp, (480, 540), 0);
+    alt_click(&comp, (480, 540), 5);
+    c.roundtrip();
+    assert_eq!(c.last_configure(&w), (960, 1080), "no restore configure");
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 960, 1080), false));
+}
+
+#[test]
+fn an_alt_click_on_a_maximized_window_keeps_it_maximized() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    w.xdg().set_maximized();
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)));
+    c.roundtrip();
+    alt_click(&comp, (900, 500), 0);
+    alt_click(&comp, (900, 500), -7);
+    c.roundtrip();
+    assert_eq!(c.last_configure(&w), (1920, 1080), "no restore configure");
+    assert_eq!(window_rect(&comp, 1), ((0, 0, 1920, 1080), true));
+}
+
+#[test]
+fn an_alt_drag_past_the_threshold_restores_a_maximized_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    w.xdg().set_maximized();
+    assert!(c.wait_configure(&w, (1920, 1080), Duration::from_secs(2)));
+    c.roundtrip();
+    alt_drag(&comp, (960, 540), (1000, 560));
+    assert!(c.wait_configure(&w, (400, 300), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    // The pointer kept its relative place: 960 - 960 * 400 / 1920 = 760, 540 - 540 * 300 / 1080 = 390, then +40, +20.
+    assert_eq!(window_rect(&comp, 1), ((800, 410, 400, 300), false));
+}
+
+#[test]
+fn a_snapped_window_follows_a_usable_area_change() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = snapped_left(&mut c, &comp);
+    let _panel = map_panel(&mut c);
+    assert!(c.wait_configure(&w, (960, 1040), Duration::from_secs(2)), "configure {:?}", c.last_configure(&w));
+    c.roundtrip();
+    assert_eq!(window_rect(&comp, 1), ((0, 40, 960, 1040), false));
+}
+
+#[test]
+fn set_geometry_ends_the_snapped_state() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = snapped_left(&mut c, &comp);
+    let reply = ipc_request(&comp, "window/set-geometry", json!({"id": 1, "x": 100, "y": 100, "width": 500, "height": 400}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(c.wait_configure(&w, (500, 400), Duration::from_secs(2)));
+    c.roundtrip();
+    let _panel = map_panel(&mut c);
+    c.roundtrip();
+    assert_eq!(c.last_configure(&w), (500, 400), "not re-fitted to the half");
+    assert_eq!(window_rect(&comp, 1), ((100, 100, 500, 400), false));
+}

@@ -150,8 +150,20 @@ pub fn restored_origin(current: Rect, restore: (i32, i32), pointer: (i32, i32)) 
     (x, y)
 }
 
-/// Pointer grab that moves `window` with the pointer; released in a snap
-/// zone it snaps the window there.
+/// Distance in pixels (on either axis) the pointer must move from the press
+/// before a move grab moves its window (Openbox's drag threshold): a click
+/// leaves the window as it was, a maximized, fullscreen or snapped window is
+/// restored only once it is really dragged.
+pub const MOVE_DRAG_THRESHOLD: f64 = 8.0;
+
+/// True when the pointer moved by `delta` (from the press) is past
+/// `MOVE_DRAG_THRESHOLD` on either axis.
+pub fn past_drag_threshold(delta: (f64, f64)) -> bool {
+    delta.0.abs() >= MOVE_DRAG_THRESHOLD || delta.1.abs() >= MOVE_DRAG_THRESHOLD
+}
+
+/// Pointer grab that moves `window` with the pointer once it is dragged past
+/// `MOVE_DRAG_THRESHOLD`; released in a snap zone it snaps the window there.
 pub struct MoveGrab {
     /// Pointer state when the grab started.
     pub start_data: GrabStartData<State>,
@@ -164,6 +176,10 @@ pub struct MoveGrab {
     /// client may not have committed yet. Kept as the size to restore when
     /// the window snaps.
     pub size: (i32, i32),
+    /// True once the pointer went past `MOVE_DRAG_THRESHOLD`: the window
+    /// follows the pointer and a release may snap it. Before that the grab
+    /// changes nothing.
+    pub dragging: bool,
 }
 
 /// Pointer grab that resizes `window` by its `edges`.
@@ -181,9 +197,12 @@ pub struct ResizeGrab {
 }
 
 impl PointerGrab<State> for MoveGrab {
-    /// Moves the window by the pointer delta from the start of the grab and
-    /// shows the preview of the snap zone under the pointer; no client has
-    /// the pointer focus meanwhile. A dead or unmapped window ends the grab.
+    /// Once the pointer is past `MOVE_DRAG_THRESHOLD` from the press (the
+    /// first time: a maximized, fullscreen or snapped window is restored,
+    /// `State::restore_for_drag`), moves the window by the pointer delta
+    /// from the start of the grab and shows the preview of the snap zone
+    /// under the pointer; no client has the pointer focus meanwhile. A dead
+    /// or unmapped window ends the grab.
     fn motion(
         &mut self,
         data: &mut State,
@@ -203,6 +222,14 @@ impl PointerGrab<State> for MoveGrab {
             return;
         }
         let delta = event.location - self.start_data.location;
+        if !self.dragging {
+            if !past_drag_threshold((delta.x, delta.y)) { return; }
+            self.dragging = true;
+            if let Some((loc, size)) = data.restore_for_drag(&self.window, self.start_data.location) {
+                self.initial_loc = loc;
+                self.size = size;
+            }
+        }
         let loc = (self.initial_loc.to_f64() + delta).to_i32_round();
         data.move_window(&self.window, (loc.x, loc.y));
         let zone = data.snap_zone_at(event.location);
@@ -221,11 +248,13 @@ impl PointerGrab<State> for MoveGrab {
     }
 
     /// The button events are consumed; the release of the button that started
-    /// the grab ends it, snapping the window when the pointer is in a snap
-    /// zone (a dead window is not snapped).
+    /// the grab ends it, snapping the window when it was dragged and the
+    /// pointer is in a snap zone (a dead window is not snapped; a release
+    /// before the drag threshold changes nothing).
     fn button(&mut self, data: &mut State, handle: &mut PointerInnerHandle<'_, State>, event: &ButtonEvent) {
         if handle.current_pressed().contains(&self.start_data.button) { return; }
-        match data.snap_zone_at(handle.current_location()) {
+        let zone = if self.dragging { data.snap_zone_at(handle.current_location()) } else { None };
+        match zone {
             Some(zone) if self.window.alive() => data.snap_window(&self.window, zone, self.size),
             Some(zone) => opusdm_ipc::debug_log!(LOG_TAG, "move grab: released in {zone:?}, the window is gone"),
             None => {}
@@ -443,12 +472,10 @@ impl PointerGrab<State> for ResizeGrab {
 }
 
 impl State {
-    /// Starts a `MoveGrab` of the mapped `window`. A maximized, fullscreen or
-    /// snapped window is first restored: its states are cleared with a
-    /// configure of its restore size, and it is placed so it stays under the
-    /// pointer.
-    /// Refused with a log when the seat has no pointer or the window is not a
-    /// mapped toplevel.
+    /// Starts a `MoveGrab` of the mapped `window`. Nothing changes until the
+    /// pointer is dragged past `MOVE_DRAG_THRESHOLD` (`MoveGrab::motion`).
+    /// Refused with a log when the seat has no pointer or the window is not
+    /// a mapped toplevel.
     pub fn start_move_grab(&mut self, window: Window, start_data: GrabStartData<State>, serial: Serial) {
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "move grab refused: the seat has no pointer");
@@ -458,31 +485,48 @@ impl State {
             opusdm_ipc::err_log!(LOG_TAG, "move grab refused: the window has no toplevel");
             return;
         };
-        let Some(mut loc) = self.space.element_location(&window) else {
+        let Some(loc) = self.space.element_location(&window) else {
             opusdm_ipc::err_log!(LOG_TAG, "move grab refused: toplevel {} is not mapped", toplevel.wl_surface().id());
             return;
         };
-        let Some(info) = self.windows.get(toplevel.wl_surface()).cloned() else {
-            opusdm_ipc::err_log!(LOG_TAG, "move grab refused: toplevel {} has no window entry", toplevel.wl_surface().id());
-            return;
-        };
         let geo = window.geometry().size;
-        let mut size = (geo.w, geo.h);
-        if info.maximized || info.fullscreen || info.snapped.is_some() {
-            let restore = info.restore.map(|r| (r.w, r.h));
-            self._leave_fill(&toplevel, restore);
-            if let Some(restored) = restore {
-                let current = Rect { x: loc.x, y: loc.y, w: geo.w, h: geo.h };
-                let p = start_data.location.to_i32_round();
-                let origin = restored_origin(current, restored, (p.x, p.y));
-                self.move_window(&window, origin);
-                loc = origin.into();
-                size = restored;
-            }
-        }
         opusdm_ipc::debug_log!(LOG_TAG, "move grab of {} from {},{}", toplevel.wl_surface().id(), loc.x, loc.y);
-        let grab = MoveGrab { start_data, window, initial_loc: loc, size };
+        let grab = MoveGrab { start_data, window, initial_loc: loc, size: (geo.w, geo.h), dragging: false };
         pointer.set_grab(self, grab, serial, Focus::Clear);
+    }
+
+    /// Called when a move grab of `window` goes past the drag threshold: a
+    /// maximized, fullscreen or snapped window leaves that state, gets a
+    /// configure of its restore size and is placed so the point under
+    /// `press` (the pointer at the press) keeps its relative position.
+    /// Returns the new origin and size; `None` when the window is in the
+    /// normal state or was restored to no stored size (the client decides),
+    /// or is not a mapped toplevel in the table (logged).
+    pub fn restore_for_drag(&mut self, window: &Window, press: Point<f64, Logical>) -> Option<(Point<i32, Logical>, (i32, i32))> {
+        let Some(toplevel) = window.toplevel().cloned() else {
+            opusdm_ipc::err_log!(LOG_TAG, "move drag: the window has no toplevel, not restored");
+            return None;
+        };
+        let wl = toplevel.wl_surface();
+        let Some(info) = self.windows.get(wl) else {
+            opusdm_ipc::err_log!(LOG_TAG, "move drag: toplevel {} has no window entry, not restored", wl.id());
+            return None;
+        };
+        if !info.maximized && !info.fullscreen && info.snapped.is_none() { return None; }
+        let restore = info.restore.map(|r| (r.w, r.h));
+        let Some(loc) = self.space.element_location(window) else {
+            opusdm_ipc::err_log!(LOG_TAG, "move drag: toplevel {} is not mapped, not restored", wl.id());
+            return None;
+        };
+        self._leave_fill(&toplevel, restore);
+        let restored = restore?;
+        let geo = window.geometry().size;
+        let current = Rect { x: loc.x, y: loc.y, w: geo.w, h: geo.h };
+        let p = press.to_i32_round();
+        let origin = restored_origin(current, restored, (p.x, p.y));
+        self.move_window(window, origin);
+        self.notify_watchers();
+        Some((origin.into(), restored))
     }
 
     /// Starts a `ResizeGrab` of the mapped `window` by its `edges`. A
@@ -600,6 +644,14 @@ pub fn handle_ack(state: &mut State, surface: &WlSurface, acked: Serial) {
 mod tests {
     use super::*;
     use crate::geometry::{Edges, Rect};
+
+    #[test]
+    fn the_drag_threshold_is_8_pixels_on_either_axis() {
+        assert!(!past_drag_threshold((0.0, 0.0)));
+        assert!(!past_drag_threshold((7.9, -7.9)));
+        assert!(past_drag_threshold((8.0, 0.0)));
+        assert!(past_drag_threshold((0.0, -8.0)));
+    }
 
     #[test]
     fn the_resize_edges_follow_the_quadrant_of_the_pointer() {
