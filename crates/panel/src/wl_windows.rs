@@ -13,7 +13,8 @@
 //!
 //! Under opusdm-compositor its private IPC (`opusdm_wayland::native`) comes
 //! first and tells the same (desktop of each window, pid, geometry). Whether
-//! the panel runs under it is decided once per process ([`under_native`]).
+//! the panel runs under it is decided once per process ([`under_native`]);
+//! the actions use that IPC only when its watch started ([`native_active`]).
 
 use std::sync::{mpsc, Mutex, OnceLock};
 
@@ -26,7 +27,7 @@ use crate::ewmh::{ClientWin, EwmhEvent, WinRect};
 /// Start forwarding the compositor's changes to `tx`. Nothing is sent when
 /// the session or the compositor offers neither windows nor workspaces.
 pub fn spawn(tx: async_channel::Sender<EwmhEvent>) {
-    if under_native() && spawn_native(tx.clone()) { return; }
+    if under_native() && _decide_native(spawn_native(tx.clone())) { return; }
     if wayfire::under_wayfire() && spawn_wayfire(tx.clone()) { return; }
     let Some(session) = opusdm_wayland::shared() else { return };
     let last: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -99,6 +100,42 @@ static UNDER_NATIVE: OnceLock<bool> = OnceLock::new();
 /// Whether the panel runs under opusdm-compositor (see [`UNDER_NATIVE`]).
 pub(crate) fn under_native() -> bool {
     *UNDER_NATIVE.get_or_init(native::under_native)
+}
+
+/// Whether the window list comes from opusdm-compositor's IPC, decided once
+/// by [`spawn`]: `false` for the rest of the process when its watch could
+/// not start (the list then comes from foreign-toplevel, whose ids are not
+/// the compositor's: actions must not go to the native IPC with them).
+static NATIVE_ACTIVE: OnceLock<bool> = OnceLock::new();
+
+/// Record the outcome of the native watch (`watched`) for the whole process
+/// and return it. A second decision is ignored, with a log line.
+fn _decide_native(watched: bool) -> bool {
+    if NATIVE_ACTIVE.set(watched).is_err() {
+        opusdm_ipc::err_log!("opusdm-panel", "native window list already decided, second decision ({watched}) ignored");
+    }
+    if !watched {
+        opusdm_ipc::err_log!("opusdm-panel", "window actions go through Wayland for the rest of the session, not the compositor IPC");
+    }
+    native_active()
+}
+
+/// What [`native_active`] answers for `under` (running under the compositor)
+/// and `decided` (the outcome of the native watch, `None` before `spawn`).
+fn _native_decision(under: bool, decided: Option<bool>) -> bool {
+    under && decided == Some(true)
+}
+
+/// Whether window actions and the tasklist "Move to desktop" menu use
+/// opusdm-compositor's IPC: under it AND its watch started. Before `spawn`
+/// decided it answers `false`, with a log line.
+pub(crate) fn native_active() -> bool {
+    if !under_native() { return false; }
+    let decided = NATIVE_ACTIVE.get().copied();
+    if decided.is_none() {
+        opusdm_ipc::err_log!("opusdm-panel", "window action before the window list was set up: not sent to the compositor");
+    }
+    _native_decision(true, decided)
 }
 
 /// Forward opusdm-compositor's changes to `tx` through its private IPC.
@@ -198,21 +235,21 @@ fn client(t: &opusdm_wayland::Toplevel) -> ClientWin {
 /// Switch to workspace `index`. `false` when not on Wayland (the caller then
 /// takes the X11 path).
 pub fn switch_desktop(index: u32) -> bool {
-    if under_native() { return with_native("switch desktop", move || native::switch_desktop(index)); }
+    if native_active() { return with_native("switch desktop", move || native::switch_desktop(index)); }
     if wayfire::under_wayfire() { return with_wayfire("switch desktop", move || wayfire::switch_desktop(index)); }
     with_session(|s| s.activate_workspace(index as usize))
 }
 
 /// Raise and focus window `id`; `false` when not on Wayland.
 pub fn activate_window(id: u32) -> bool {
-    if under_native() { return with_native("activate window", move || native::activate(id)); }
+    if native_active() { return with_native("activate window", move || native::activate(id)); }
     if wayfire::under_wayfire() { return with_wayfire("activate window", move || wayfire::focus(id)); }
     with_session(|s| s.activate(id))
 }
 
 /// Minimize window `id`; `false` when not on Wayland.
 pub fn iconify_window(id: u32) -> bool {
-    if under_native() { return with_native("minimize window", move || native::set_minimized(id, true)); }
+    if native_active() { return with_native("minimize window", move || native::set_minimized(id, true)); }
     if wayfire::under_wayfire() { return with_wayfire("minimize window", move || wayfire::set_minimized(id, true)); }
     with_session(|s| s.minimize(id))
 }
@@ -220,7 +257,7 @@ pub fn iconify_window(id: u32) -> bool {
 /// Ask window `id` to close, like its close button; `false` when not on
 /// Wayland.
 pub fn close_window(id: u32) -> bool {
-    if under_native() { return with_native("close window", move || native::close(id)); }
+    if native_active() { return with_native("close window", move || native::close(id)); }
     if wayfire::under_wayfire() { return with_wayfire("close window", move || wayfire::close(id)); }
     with_session(|s| s.close(id))
 }
@@ -229,7 +266,7 @@ pub fn close_window(id: u32) -> bool {
 /// opusdm-compositor and Wayfire can do it: no Wayland protocol moves
 /// another client's window.
 pub fn move_window_to_desktop(id: u32, index: u32) -> bool {
-    if under_native() { return with_native("move window to desktop", move || native::move_to_desktop(id, index)); }
+    if native_active() { return with_native("move window to desktop", move || native::move_to_desktop(id, index)); }
     if wayfire::under_wayfire() { return with_wayfire("move window to desktop", move || wayfire::move_to_desktop(id, index)); }
     opusdm_ipc::session::is_wayland()
 }
@@ -238,7 +275,7 @@ pub fn move_window_to_desktop(id: u32, index: u32) -> bool {
 /// the kill with its own pid guards. `false` when not under it (the caller
 /// then kills the window's pid itself).
 pub fn kill_window(id: u32) -> bool {
-    if !under_native() { return false; }
+    if !native_active() { return false; }
     with_native("kill window", move || native::kill(id))
 }
 
@@ -417,6 +454,15 @@ mod tests {
             ..Default::default()
         };
         native::NativeState { windows: vec![window(1, 0), window(2, 2)], count: 4, current }
+    }
+
+    #[test]
+    fn native_actions_need_the_compositor_and_a_started_watch() {
+        assert!(!_native_decision(false, None));
+        assert!(!_native_decision(false, Some(true)));
+        assert!(!_native_decision(true, None), "undecided is not native");
+        assert!(!_native_decision(true, Some(false)), "a fallback is not native");
+        assert!(_native_decision(true, Some(true)));
     }
 
     #[test]

@@ -216,8 +216,8 @@ fn desktop_label(index: u32, names: &[String]) -> String {
 fn context_menu(btn: &gtk::Button, c: &ClientWin, count: u32, names: &[String]) -> gtk::PopoverMenu {
     let menu = gio::Menu::new();
     // Wayland has no request that moves another client's window; X11 and
-    // opusdm-compositor's IPC have one.
-    if opusdm_ipc::session::is_x11() || crate::wl_windows::under_native() {
+    // opusdm-compositor's IPC (when the window list comes from it) have one.
+    if opusdm_ipc::session::is_x11() || crate::wl_windows::native_active() {
         let desktops = gio::Menu::new();
         for i in 0..count {
             desktops.append(Some(&desktop_label(i, names)), Some(&format!("win.move({i})")));
