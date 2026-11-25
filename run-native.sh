@@ -36,6 +36,8 @@ DEBUG_LOG="${NATIVE_LOG:-/ramdisk/opusdm.log}"   # hub output with --debug
 # Variables of a running OpusDM session that would point the sandbox at the
 # live one: the base picom config (the hub would rewrite the user's
 # picom.conf and signal the live picom) and the IPC socket overrides.
+# Keep in sync with `child_env` in crates/compositor/src/child.rs (a unit
+# test there compares the two lists).
 LIVE_SESSION_VARS=(OPUSDM_PICOM_BASE OPUSDM_HUB_SOCK OPUSDM_DOCK_SOCK OPUSDM_APPLETS_SOCK OPUSDM_LABWC_RC)
 
 # Exit conditions up front
