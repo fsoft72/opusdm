@@ -19,12 +19,13 @@ use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Surface},
-    delegate_compositor, delegate_output, delegate_registry, delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
-    delegate_xdg_window,
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm, delegate_xdg_popup,
+    delegate_xdg_shell, delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     shell::{
+        wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
         xdg::{
             popup::{Popup, PopupConfigure, PopupHandler},
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
@@ -41,14 +42,17 @@ use tempfile::TempDir;
 use wayland_client::{
     backend::ObjectId,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_shm, wl_surface::WlSurface},
-    Connection, EventQueue, Proxy, QueueHandle,
+    protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface::WlSurface},
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
 };
 use wayland_protocols::xdg::shell::client::{
-    xdg_positioner::{Anchor, ConstraintAdjustment, Gravity},
+    xdg_popup::XdgPopup,
+    xdg_positioner::{Anchor as PositionerAnchor, ConstraintAdjustment, Gravity},
     xdg_surface::XdgSurface,
     xdg_toplevel::XdgToplevel,
 };
+
+pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 
 /// How long `Compositor::start` waits for the socket name.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -180,18 +184,44 @@ impl HasSurface for TestWindow {
     }
 }
 
-/// A surface that can be the parent of an xdg popup (toplevels now, layer
-/// surfaces in task 5).
+/// A surface that can be the parent of an xdg popup (toplevels and layer surfaces).
 pub trait PopupParent {
     /// The `xdg_surface` the popup is created against; `None` for a parent
     /// that adopts the popup through its own request (a layer surface's `get_popup`).
     fn parent_xdg_surface(&self) -> Option<&XdgSurface>;
+
+    /// Adopts `popup` before its first commit; nothing for an xdg parent.
+    fn adopt_popup(&self, _popup: &XdgPopup) {}
 }
 
 impl PopupParent for TestWindow {
     /// The `xdg_surface` of the toplevel.
     fn parent_xdg_surface(&self) -> Option<&XdgSurface> {
         Some(self.window.xdg_surface())
+    }
+}
+
+/// A mapped layer surface of a `TestClient`.
+pub struct TestLayer {
+    layer: LayerSurface,
+}
+
+impl HasSurface for TestLayer {
+    /// The surface of the layer surface.
+    fn wl_surface(&self) -> &WlSurface {
+        self.layer.wl_surface()
+    }
+}
+
+impl PopupParent for TestLayer {
+    /// A layer surface has no `xdg_surface`: it adopts the popup.
+    fn parent_xdg_surface(&self) -> Option<&XdgSurface> {
+        None
+    }
+
+    /// Sends `zwlr_layer_surface_v1.get_popup` for `popup`.
+    fn adopt_popup(&self, popup: &XdgPopup) {
+        self.layer.get_popup(popup);
     }
 }
 
@@ -219,6 +249,15 @@ struct SurfaceInfo {
     buffer: Option<Buffer>,
     /// Position (relative to the parent) and size of the last popup configure.
     popup_rect: Rect,
+    /// Size sent by the last layer surface configure (0 = the client decides).
+    layer_size: (u32, u32),
+}
+
+impl SurfaceInfo {
+    /// Info of a new surface the test wants of size `requested`.
+    fn new(requested: (i32, i32)) -> SurfaceInfo {
+        SurfaceInfo { requested, last_configure: (0, 0), configured: false, buffer: None, popup_rect: Rect::default(), layer_size: (0, 0) }
+    }
 }
 
 /// Client side state handed to the event queue.
@@ -227,12 +266,15 @@ struct ClientApp {
     output_state: OutputState,
     compositor: CompositorState,
     xdg: XdgShell,
+    layer_shell: LayerShell,
     shm: Shm,
     pool: SlotPool,
     /// Surfaces keyed by the `wl_surface` id.
     surfaces: HashMap<ObjectId, SurfaceInfo>,
     /// Surfaces that got a frame callback since their last `wait_frame` request.
     frames: Vec<ObjectId>,
+    /// Surface that has the keyboard of this client (`wl_keyboard` enter / leave).
+    keyboard_focus: Option<WlSurface>,
 }
 
 impl ClientApp {
@@ -261,6 +303,13 @@ pub struct TestClient {
     queue: EventQueue<ClientApp>,
     qh: QueueHandle<ClientApp>,
     app: ClientApp,
+    /// Seat and keyboard, kept alive so the enter / leave events keep coming.
+    _seat: wl_seat::WlSeat,
+    _keyboard: wl_keyboard::WlKeyboard,
+    /// Every layer surface mapped, kept alive as long as the client: a test
+    /// may drop its `TestLayer` (a panel it does not look at again) and the
+    /// panel must stay mapped.
+    layers: Vec<LayerSurface>,
 }
 
 impl TestClient {
@@ -271,6 +320,9 @@ impl TestClient {
         let qh = queue.handle();
         let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor");
         let xdg = XdgShell::bind(&globals, &qh).expect("xdg_wm_base");
+        let layer_shell = LayerShell::bind(&globals, &qh).expect("zwlr_layer_shell_v1");
+        let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).expect("wl_seat");
+        let keyboard = seat.get_keyboard(&qh, ());
         let shm = Shm::bind(&globals, &qh).expect("wl_shm");
         let pool = SlotPool::new(400 * 300 * 4, &shm).expect("shm pool");
         let app = ClientApp {
@@ -278,12 +330,14 @@ impl TestClient {
             output_state: OutputState::new(&globals, &qh),
             compositor,
             xdg,
+            layer_shell,
             shm,
             pool,
             surfaces: HashMap::new(),
             frames: Vec::new(),
+            keyboard_focus: None,
         };
-        let mut client = TestClient { conn, queue, qh, app };
+        let mut client = TestClient { conn, queue, qh, app, _seat: seat, _keyboard: keyboard, layers: Vec::new() };
         client.roundtrip();
         client
     }
@@ -296,7 +350,7 @@ impl TestClient {
         let window = self.app.xdg.create_window(surface, WindowDecorations::None, &self.qh);
         window.set_title("opusdm-compositor test");
         let id = window.wl_surface().id();
-        let info = SurfaceInfo { requested: size, last_configure: (0, 0), configured: false, buffer: None, popup_rect: Rect::default() };
+        let info = SurfaceInfo::new(size);
         self.app.surfaces.insert(id.clone(), info);
         window.commit();
         let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
@@ -314,7 +368,7 @@ impl TestClient {
         let positioner = XdgPositioner::new(&self.app.xdg).expect("xdg_positioner");
         positioner.set_size(size.0, size.1);
         positioner.set_anchor_rect(anchor.x, anchor.y, anchor.w, anchor.h);
-        positioner.set_anchor(Anchor::TopLeft);
+        positioner.set_anchor(PositionerAnchor::TopLeft);
         positioner.set_gravity(Gravity::BottomRight);
         positioner.set_constraint_adjustment(
             ConstraintAdjustment::SlideX | ConstraintAdjustment::SlideY | ConstraintAdjustment::FlipX | ConstraintAdjustment::FlipY,
@@ -322,14 +376,67 @@ impl TestClient {
         let surface = Surface::new(&self.app.compositor, &self.qh).expect("popup surface");
         let popup =
             Popup::from_surface(parent.parent_xdg_surface(), &positioner, &self.qh, surface, &self.app.xdg).expect("popup");
+        parent.adopt_popup(popup.xdg_popup());
         let id = popup.wl_surface().id();
-        let info = SurfaceInfo { requested: size, last_configure: (0, 0), configured: false, buffer: None, popup_rect: Rect::default() };
+        let info = SurfaceInfo::new(size);
         self.app.surfaces.insert(id.clone(), info);
         popup.wl_surface().commit();
         let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
         assert!(ok, "the popup got no configure");
         self.roundtrip();
         TestPopup { popup }
+    }
+
+    /// Maps a layer surface on the default output: sets its size, anchor,
+    /// exclusive zone and keyboard interactivity, does the initial commit,
+    /// waits for the first configure, answers it with a buffer of the
+    /// configured size (the asked size on an axis left at 0) and waits until
+    /// the compositor has handled it. The layer surface lives as long as the
+    /// client, even when the returned `TestLayer` is dropped.
+    pub fn map_layer(
+        &mut self,
+        layer: Layer,
+        anchor: Anchor,
+        size: (u32, u32),
+        exclusive_zone: i32,
+        keyboard: KeyboardInteractivity,
+    ) -> TestLayer {
+        let surface = self.app.compositor.create_surface(&self.qh);
+        let ls = self.app.layer_shell.create_layer_surface(&self.qh, surface, layer, Some("opusdm-test"), None);
+        ls.set_size(size.0, size.1);
+        ls.set_anchor(anchor);
+        ls.set_exclusive_zone(exclusive_zone);
+        ls.set_keyboard_interactivity(keyboard);
+        let requested = (i32::try_from(size.0).expect("width"), i32::try_from(size.1).expect("height"));
+        let id = ls.wl_surface().id();
+        self.app.surfaces.insert(id.clone(), SurfaceInfo::new(requested));
+        ls.commit();
+        let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
+        assert!(ok, "the layer surface got no configure");
+        self.roundtrip();
+        self.layers.push(ls.clone());
+        TestLayer { layer: ls }
+    }
+
+    /// Destroys the layer surface `l` (and its `wl_surface`) and waits until
+    /// the compositor has handled it.
+    pub fn destroy_layer(&mut self, l: TestLayer) {
+        let id = l.wl_surface().id();
+        self.layers.retain(|ls| ls.wl_surface().id() != id);
+        self.app.surfaces.remove(&id);
+        drop(l);
+        self.roundtrip();
+    }
+
+    /// Size sent by the last configure of the layer surface `l`.
+    pub fn layer_configure(&self, l: &TestLayer) -> (u32, u32) {
+        let id = l.wl_surface().id();
+        self.app.surfaces.get(&id).map(|s| s.layer_size).expect("known layer surface")
+    }
+
+    /// Surface that has this client's keyboard, from `wl_keyboard` enter / leave.
+    pub fn keyboard_focus(&self) -> Option<WlSurface> {
+        self.app.keyboard_focus.clone()
     }
 
     /// Position (relative to the parent's window geometry) and size of the
@@ -456,6 +563,39 @@ impl PopupHandler for ClientApp {
     fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Popup) {}
 }
 
+impl LayerShellHandler for ClientApp {
+    /// The tests do not close layer surfaces from the compositor side.
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {}
+
+    /// Records the configured size and answers it (SCTK has already acked it) with a buffer.
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _serial: u32) {
+        let (w, h) = configure.new_size;
+        if let Some(info) = self.surfaces.get_mut(&layer.wl_surface().id()) {
+            info.layer_size = (w, h);
+        }
+        let size = (i32::try_from(w).unwrap_or(i32::MAX), i32::try_from(h).unwrap_or(i32::MAX));
+        self.answer_configure(layer.wl_surface(), size);
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for ClientApp {
+    /// The keyboard is asked for at bind time: seat events are not needed.
+    fn event(_: &mut Self, _: &wl_seat::WlSeat, _: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for ClientApp {
+    /// Tracks the surface that has the keyboard (enter / leave); keys are ignored.
+    fn event(app: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => app.keyboard_focus = Some(surface),
+            wl_keyboard::Event::Leave { surface, .. } if app.keyboard_focus.as_ref() == Some(&surface) => {
+                app.keyboard_focus = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 impl OutputHandler for ClientApp {
     /// The output state.
     fn output_state(&mut self) -> &mut OutputState {
@@ -493,4 +633,5 @@ delegate_shm!(ClientApp);
 delegate_xdg_shell!(ClientApp);
 delegate_xdg_popup!(ClientApp);
 delegate_xdg_window!(ClientApp);
+delegate_layer!(ClientApp);
 delegate_registry!(ClientApp);

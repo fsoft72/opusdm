@@ -3,17 +3,23 @@
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
     delegate_xdg_shell,
-    desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window},
+    desktop::{
+        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKeyboardGrab, PopupKind,
+        PopupPointerGrab, PopupUngrabStrategy, Window, WindowSurfaceType,
+    },
     input::{pointer::Focus, Seat},
-    reexports::wayland_server::{
-        protocol::{wl_seat, wl_surface::WlSurface},
-        Resource,
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::{
+            protocol::{wl_output::WlOutput, wl_seat, wl_surface::WlSurface},
+            Resource,
+        },
     },
     utils::{Logical, Point, Serial},
     wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
 };
 
-use crate::geometry::cascade_position;
+use crate::geometry::{cascade_position, Rect};
 use crate::state::{State, WindowInfo, LOG_TAG};
 
 impl XdgShellHandler for State {
@@ -32,32 +38,45 @@ impl XdgShellHandler for State {
     }
 
     /// Keeps the popup inside the output and tracks it; its initial configure
-    /// goes out on its first commit.
+    /// goes out on its first commit. A popup created without a parent waits
+    /// for a layer surface to adopt it (`WlrLayerShellHandler::new_popup`),
+    /// which unconstrains it then.
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        self.unconstrain_popup(&surface);
         let id = surface.wl_surface().id();
+        match surface.get_parent_surface() {
+            Some(_) => self.unconstrain_popup(&surface),
+            None => opusdm_ipc::debug_log!(LOG_TAG, "popup {id} has no parent yet, waiting for a layer surface"),
+        }
         if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
             opusdm_ipc::err_log!(LOG_TAG, "popup {id} not tracked: {err:?}");
         }
     }
 
-    /// Popup grab (menus: a click outside closes them). Refused with a log
-    /// when the root of the popup is not a mapped toplevel, when the seat has
-    /// no keyboard or pointer, or when another grab is active that this
-    /// request does not descend from.
+    /// Popup grab (menus: a click outside closes them), on a popup of a
+    /// toplevel or of a layer surface. Refused with a log, and the popup
+    /// dismissed (`popup_done`), when the root of the popup is not a mapped
+    /// toplevel or layer surface, when the seat has no keyboard or pointer,
+    /// or when another grab is active that this request does not descend from.
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         let id = surface.wl_surface().id();
         let Some(seat) = Seat::<State>::from_resource(&seat) else {
-            opusdm_ipc::err_log!(LOG_TAG, "popup grab {id} refused: unknown seat");
+            opusdm_ipc::err_log!(LOG_TAG, "popup grab {id} refused: unknown seat, popup dismissed");
+            surface.send_popup_done();
             return;
         };
-        let kind = PopupKind::Xdg(surface);
+        let kind = PopupKind::Xdg(surface.clone());
         let Ok(root) = find_popup_root_surface(&kind) else {
-            opusdm_ipc::err_log!(LOG_TAG, "popup grab {id} refused: the root of the popup is gone");
+            opusdm_ipc::err_log!(LOG_TAG, "popup grab {id} refused: the root of the popup is gone, popup dismissed");
+            surface.send_popup_done();
             return;
         };
         if self.root_position(&root).is_none() {
-            opusdm_ipc::err_log!(LOG_TAG, "popup grab {id} refused: root {} is not a mapped toplevel", root.id());
+            opusdm_ipc::err_log!(
+                LOG_TAG,
+                "popup grab {id} refused: root {} is not a mapped toplevel or layer surface, popup dismissed",
+                root.id()
+            );
+            surface.send_popup_done();
             return;
         }
         let mut grab = match self.popups.grab_popup(root, kind, &seat, serial) {
@@ -100,6 +119,32 @@ impl XdgShellHandler for State {
         surface.send_repositioned(token);
     }
 
+    /// Maximizes the window: it fills `usable_area()` until unmaximized.
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.fill_window(&surface, Fill::Maximized);
+    }
+
+    /// Restores the window from maximized (to its previous geometry, or to
+    /// fullscreen when it is fullscreen too).
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.unfill_window(&surface, Fill::Maximized);
+    }
+
+    /// Makes the window fullscreen on the output (one output: a requested
+    /// output is ignored): it fills the whole output until unfullscreened.
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+        if output.is_some() {
+            opusdm_ipc::debug_log!(LOG_TAG, "fullscreen {}: requested output ignored, one output only", surface.wl_surface().id());
+        }
+        self.fill_window(&surface, Fill::Fullscreen);
+    }
+
+    /// Restores the window from fullscreen (to its previous geometry, or to
+    /// maximized when it is maximized too).
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.unfill_window(&surface, Fill::Fullscreen);
+    }
+
     /// No tasklist before stage 2: the window stays shown.
     fn minimize_request(&mut self, _surface: ToplevelSurface) {
         opusdm_ipc::debug_log!(LOG_TAG, "minimize ignored: no tasklist before stage 2");
@@ -124,22 +169,160 @@ impl XdgShellHandler for State {
 
 delegate_xdg_shell!(State);
 
+/// The two states where a window fills an area of the output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fill {
+    /// Fills `usable_area()` (the output minus the exclusive zones).
+    Maximized,
+    /// Fills the whole output, above the TOP layer.
+    Fullscreen,
+}
+
 impl State {
     /// Position in the space of the geometry of `root`, the root surface of a
-    /// popup. A mapped toplevel is found in the space; a layer surface root
-    /// is not supported yet (task 5 adds it here). `None` and a log for an
-    /// unknown root.
+    /// popup: a mapped toplevel (its window geometry) or a layer surface of
+    /// the layer map (its surface origin). `None` for any other root; the
+    /// callers log it with their context.
     fn root_position(&self, root: &WlSurface) -> Option<Point<i32, Logical>> {
         let window = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == root));
-        let Some(window) = window else {
-            opusdm_ipc::err_log!(LOG_TAG, "popup root {} is not a mapped toplevel (layer roots come in task 5)", root.id());
-            return None;
+        if let Some(window) = window {
+            return self.space.element_geometry(window).map(|geo| geo.loc);
+        }
+        let output_loc = self.space.output_geometry(&self.output)?.loc;
+        let map = layer_map_for_output(&self.output);
+        let layer = map.layer_for_surface(root, WindowSurfaceType::TOPLEVEL)?;
+        let geo = map.layer_geometry(layer)?;
+        // `layer_geometry` is the bounding box of the surface tree; its
+        // offset from the surface origin is the bbox location.
+        Some(output_loc + geo.loc - layer.bbox().loc)
+    }
+
+    /// The mapped window of the toplevel `surface`, if it is in the space.
+    fn mapped_window(&self, surface: &WlSurface) -> Option<Window> {
+        self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface)).cloned()
+    }
+
+    /// Area `fill` covers: the usable area or the whole output.
+    fn fill_area(&self, fill: Fill) -> Rect {
+        match fill {
+            Fill::Maximized => self.usable_area(),
+            Fill::Fullscreen => self.output_area(),
+        }
+    }
+
+    /// Puts the toplevel `surface` in the `fill` state: stores the geometry
+    /// to restore (the first time it leaves the normal state), configures the
+    /// area size and moves a mapped window to the area origin. An unmapped
+    /// window is placed at the origin when it maps. Always answers with a
+    /// configure once the initial one was sent, as the protocol asks.
+    fn fill_window(&mut self, surface: &ToplevelSurface, fill: Fill) {
+        let wl = surface.wl_surface();
+        let window = self.mapped_window(wl);
+        let normal_geo = window.as_ref().and_then(|w| {
+            let loc = self.space.element_location(w)?;
+            let size = w.geometry().size;
+            Some(Rect { x: loc.x, y: loc.y, w: size.w, h: size.h })
+        });
+        // Fullscreen wins over maximized: a maximized window going fullscreen fills the output.
+        let effective = if fill == Fill::Maximized && self.windows.get(wl).is_some_and(|i| i.fullscreen) { Fill::Fullscreen } else { fill };
+        let area = self.fill_area(effective);
+        let Some(info) = self.windows.get_mut(wl) else {
+            opusdm_ipc::err_log!(LOG_TAG, "{fill:?} {} refused: unknown toplevel", wl.id());
+            if surface.is_initial_configure_sent() {
+                surface.send_configure();
+            }
+            return;
         };
-        let Some(geo) = self.space.element_geometry(window) else {
-            opusdm_ipc::err_log!(LOG_TAG, "popup root {} has no geometry in the space", root.id());
-            return None;
+        if !info.maximized && !info.fullscreen {
+            info.restore = normal_geo;
+        }
+        match fill {
+            Fill::Maximized => info.maximized = true,
+            Fill::Fullscreen => info.fullscreen = true,
+        }
+        surface.with_pending_state(|state| {
+            state.states.set(match fill {
+                Fill::Maximized => xdg_toplevel::State::Maximized,
+                Fill::Fullscreen => xdg_toplevel::State::Fullscreen,
+            });
+            state.size = Some((area.w, area.h).into());
+        });
+        opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} {fill:?} to {area:?}", wl.id());
+        if let Some(window) = window {
+            self.move_window(&window, (area.x, area.y));
+        }
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+    }
+
+    /// Takes the toplevel `surface` out of the `fill` state: when the other
+    /// fill state is still on, it fills that area; otherwise it gets back the
+    /// stored geometry (size sent explicitly, so the client goes back to it)
+    /// or, with none stored, a configure that leaves the size to the client.
+    fn unfill_window(&mut self, surface: &ToplevelSurface, fill: Fill) {
+        let wl = surface.wl_surface();
+        let Some(info) = self.windows.get_mut(wl) else {
+            opusdm_ipc::err_log!(LOG_TAG, "un{fill:?} {} refused: unknown toplevel", wl.id());
+            if surface.is_initial_configure_sent() {
+                surface.send_configure();
+            }
+            return;
         };
-        Some(geo.loc)
+        match fill {
+            Fill::Maximized => info.maximized = false,
+            Fill::Fullscreen => info.fullscreen = false,
+        }
+        let other = if info.maximized { Some(Fill::Maximized) } else if info.fullscreen { Some(Fill::Fullscreen) } else { None };
+        let target = match other {
+            Some(other) => Some(self.fill_area(other)),
+            None => info.restore.take(),
+        };
+        surface.with_pending_state(|state| {
+            state.states.unset(match fill {
+                Fill::Maximized => xdg_toplevel::State::Maximized,
+                Fill::Fullscreen => xdg_toplevel::State::Fullscreen,
+            });
+            state.size = target.map(|r| (r.w, r.h).into());
+        });
+        opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} un{fill:?} to {target:?}", wl.id());
+        if let (Some(window), Some(r)) = (self.mapped_window(wl), target) {
+            self.move_window(&window, (r.x, r.y));
+        }
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+    }
+
+    /// Called after something may have changed the usable area (a layer
+    /// surface mapped, changed or went away), with the area `before` it:
+    /// when it changed, every maximized (not fullscreen) window is
+    /// configured to the new area and moved to its origin.
+    pub fn usable_area_changed(&mut self, before: Rect) {
+        let area = self.usable_area();
+        if area == before { return; }
+        opusdm_ipc::debug_log!(LOG_TAG, "usable area {before:?} -> {area:?}");
+        let maximized: Vec<WlSurface> =
+            self.windows.iter().filter(|(_, i)| i.maximized && !i.fullscreen).map(|(s, _)| s.clone()).collect();
+        for wl in maximized {
+            let window = self.mapped_window(&wl);
+            let toplevel = window
+                .as_ref()
+                .or_else(|| self.unmapped.iter().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &wl)))
+                .and_then(|w| w.toplevel())
+                .cloned();
+            let Some(toplevel) = toplevel else {
+                opusdm_ipc::err_log!(LOG_TAG, "maximized toplevel {} not found, not reconfigured", wl.id());
+                continue;
+            };
+            toplevel.with_pending_state(|state| state.size = Some((area.w, area.h).into()));
+            if let Some(window) = window {
+                self.move_window(&window, (area.x, area.y));
+            }
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_pending_configure();
+            }
+        }
     }
 
     /// Moves the pending geometry of `popup` inside the output with its
@@ -147,14 +330,17 @@ impl State {
     /// relative to the popup's parent (its root position plus the offsets of
     /// the parent popups). An unknown root leaves the geometry as asked and
     /// logs.
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    pub(super) fn unconstrain_popup(&self, popup: &PopupSurface) {
         let kind = PopupKind::Xdg(popup.clone());
         let id = popup.wl_surface().id();
         let Ok(root) = find_popup_root_surface(&kind) else {
             opusdm_ipc::err_log!(LOG_TAG, "popup {id} not unconstrained: its root is gone");
             return;
         };
-        let Some(root_pos) = self.root_position(&root) else { return };
+        let Some(root_pos) = self.root_position(&root) else {
+            opusdm_ipc::err_log!(LOG_TAG, "popup {id} not unconstrained: root {} is not a mapped toplevel or layer surface", root.id());
+            return;
+        };
         let Some(output_geo) = self.space.output_geometry(&self.output) else {
             opusdm_ipc::err_log!(LOG_TAG, "popup {id} not unconstrained: the output is not mapped");
             return;
@@ -169,8 +355,9 @@ impl State {
 }
 
 /// Commit of a toplevel not mapped yet: sends the initial configure, or maps
-/// the window and focuses it once a buffer is committed. A new window takes
-/// the next cascade position, a window unmapped by a null buffer its old one.
+/// the window and focuses it once a buffer is committed. A fullscreen or
+/// maximized window maps at the origin of its area, a new window takes the
+/// next cascade position, a window unmapped by a null buffer its old one.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let found = state.unmapped.iter().position(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface));
     let Some(index) = found else { return };
@@ -187,10 +374,16 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let window = state.unmapped.remove(index);
     window.on_commit();
     let size = window.geometry().size;
+    let info = state.windows.get(surface).cloned().unwrap_or_default();
     let last = state.windows.get_mut(surface).and_then(|info| info.last_position.take());
-    let (x, y) = match last {
-        Some(pos) => pos,
-        None => {
+    let fill = if info.fullscreen { Some(Fill::Fullscreen) } else if info.maximized { Some(Fill::Maximized) } else { None };
+    let (x, y) = match (fill, last) {
+        (Some(fill), _) => {
+            let area = state.fill_area(fill);
+            (area.x, area.y)
+        }
+        (None, Some(pos)) => pos,
+        (None, None) => {
             let pos = cascade_position(state.usable_area(), (size.w, size.h), state.cascade_index);
             state.cascade_index = state.cascade_index.wrapping_add(1);
             pos

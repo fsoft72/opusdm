@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use smithay::{
     delegate_data_device, delegate_output, delegate_seat,
-    desktop::{PopupManager, Space, Window},
+    desktop::{layer_map_for_output, PopupManager, Space, Window},
     input::{Seat, SeatHandler, SeatState},
     output::Output,
     reexports::wayland_server::{
@@ -16,7 +16,7 @@ use smithay::{
         protocol::wl_surface::WlSurface,
         DisplayHandle, Resource,
     },
-    utils::{IsAlive, SERIAL_COUNTER},
+    utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         output::{OutputHandler, OutputManagerState},
@@ -27,7 +27,7 @@ use smithay::{
             },
             SelectionHandler,
         },
-        shell::xdg::XdgShellState,
+        shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
     },
 };
@@ -44,9 +44,12 @@ const SEAT_NAME: &str = "seat0";
 #[derive(Debug, Clone, Default)]
 pub struct WindowInfo {
     /// Geometry before maximize / fullscreen, to restore it.
-    // Written and read by maximize / fullscreen (stage 1, task 5).
-    #[allow(dead_code)]
     pub restore: Option<Rect>,
+    /// True while the window is maximized (it fills `usable_area()`).
+    pub maximized: bool,
+    /// True while the window is fullscreen (it fills the whole output and is
+    /// shown above the TOP layer; the render order comes in task 7).
+    pub fullscreen: bool,
     /// Position the window had when it was unmapped by a null buffer; it
     /// maps there again instead of taking a new cascade position.
     pub last_position: Option<(i32, i32)>,
@@ -80,10 +83,14 @@ pub struct State {
     pub windows: HashMap<WlSurface, WindowInfo>,
     /// Toplevels created but not mapped yet (no buffer committed).
     pub unmapped: Vec<Window>,
-    /// The xdg popups of every client (parents are toplevels, later layers).
+    /// The xdg popups of every client (parents are toplevels or layer surfaces).
     pub popups: PopupManager,
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
+    /// Mapped TOP / OVERLAY layer surface with exclusive keyboard
+    /// interactivity: it keeps the keyboard while it is mapped.
+    pub exclusive_layer: Option<WlSurface>,
     pub shm_state: ShmState,
     pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
@@ -107,6 +114,7 @@ impl State {
     pub fn new(display: &DisplayHandle, output: Output) -> State {
         let compositor_state = CompositorState::new::<State>(display);
         let xdg_shell_state = XdgShellState::new::<State>(display);
+        let layer_shell_state = WlrLayerShellState::new::<State>(display);
         let shm_state = ShmState::new::<State>(display, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<State>(display);
         let mut seat_state = SeatState::new();
@@ -123,6 +131,8 @@ impl State {
             popups: PopupManager::default(),
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
+            exclusive_layer: None,
             shm_state,
             seat_state,
             data_device_state,
@@ -137,9 +147,8 @@ impl State {
         }
     }
 
-    /// Area where windows are placed: the output geometry minus the exclusive
-    /// zones of layer surfaces (the whole output until layer shell exists).
-    pub fn usable_area(&self) -> Rect {
+    /// Geometry of the output in the space.
+    pub fn output_area(&self) -> Rect {
         let Some(geo) = self.space.output_geometry(&self.output) else {
             opusdm_ipc::err_log!(LOG_TAG, "output {} is not mapped in the space", self.output.name());
             return Rect::default();
@@ -147,18 +156,56 @@ impl State {
         Rect { x: geo.loc.x, y: geo.loc.y, w: geo.size.w, h: geo.size.h }
     }
 
-    /// Sends the frame callbacks of every mapped window (and its popups).
+    /// Area where windows are placed: the output geometry minus the exclusive
+    /// zones of the layer surfaces (`non_exclusive_zone` of its layer map).
+    pub fn usable_area(&self) -> Rect {
+        let output = self.output_area();
+        let zone = layer_map_for_output(&self.output).non_exclusive_zone();
+        Rect { x: output.x + zone.loc.x, y: output.y + zone.loc.y, w: zone.size.w, h: zone.size.h }
+    }
+
+    /// Sends the frame callbacks of every mapped window and layer surface
+    /// (and their popups).
     pub fn send_frames(&self) {
         let time = self.start_time.elapsed();
         let output = &self.output;
         for window in self.space.elements() {
             window.send_frame(output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
         }
+        let map = layer_map_for_output(output);
+        for layer in map.layers() {
+            layer.send_frame(output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
+        }
+    }
+
+    /// Moves the mapped `window` to `loc` without changing the stacking
+    /// order (Smithay's `map_element` raises the element it maps).
+    pub fn move_window(&mut self, window: &Window, loc: (i32, i32)) {
+        let target: Point<i32, Logical> = loc.into();
+        let order: Vec<(Window, Point<i32, Logical>)> = self
+            .space
+            .elements()
+            .filter_map(|w| self.space.element_location(w).map(|p| (w.clone(), if w == window { target } else { p })))
+            .collect();
+        for (w, p) in order {
+            self.space.map_element(w, p, false);
+        }
     }
 
     /// Raises `window`, gives it the keyboard and the `Activated` state;
-    /// `None` takes the focus away from every window.
+    /// `None` takes the focus away from every window. While an exclusive
+    /// keyboard layer is mapped the window is only raised: the layer keeps
+    /// the keyboard.
     pub fn focus_window(&mut self, window: Option<Window>) {
+        if let Some(layer) = self.exclusive_layer.clone() {
+            if let Some(w) = &window {
+                self.space.raise_element(w, false);
+            }
+            opusdm_ipc::debug_log!(LOG_TAG, "focus: exclusive layer {} keeps the keyboard", layer.id());
+            // A window mapped meanwhile may have been activated by `map_element`: undo it.
+            self.focus_layer(&layer);
+            return;
+        }
         let Some(keyboard) = self.seat.get_keyboard() else {
             opusdm_ipc::err_log!(LOG_TAG, "focus: the seat has no keyboard");
             return;
@@ -176,10 +223,31 @@ impl State {
         }
     }
 
-    /// Gives the focus to the topmost mapped window (none when the space is empty).
+    /// Gives the focus to the exclusive keyboard layer when one is mapped,
+    /// else to the topmost mapped window (none when the space is empty).
     pub fn focus_topmost(&mut self) {
+        if let Some(layer) = self.exclusive_layer.clone() {
+            self.focus_layer(&layer);
+            return;
+        }
         let top = self.space.elements().next_back().cloned();
         self.focus_window(top);
+    }
+
+    /// Gives the keyboard to the layer surface `surface` and takes the
+    /// `Activated` state away from every window.
+    pub fn focus_layer(&mut self, surface: &WlSurface) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            opusdm_ipc::err_log!(LOG_TAG, "focus: the seat has no keyboard");
+            return;
+        };
+        for window in self.space.elements() {
+            window.set_activated(false);
+        }
+        keyboard.set_focus(self, Some(surface.clone()), SERIAL_COUNTER.next_serial());
+        for toplevel in self.space.elements().filter_map(|w| w.toplevel()) {
+            toplevel.send_pending_configure();
+        }
     }
 
     /// True when the keyboard focus is `surface`, a dead surface or nothing.
@@ -188,13 +256,21 @@ impl State {
         keyboard.current_focus().is_none_or(|f| &f == surface || !f.alive())
     }
 
-    /// Drops dead windows from the space and the tables (a safety net for
-    /// `toplevel_destroyed`) and moves a dead keyboard focus to the top window.
+    /// Drops dead windows and layer surfaces from the space, the layer map and
+    /// the tables (a safety net for `toplevel_destroyed` / `layer_destroyed`)
+    /// and moves a dead keyboard focus to the top window.
     pub fn refresh(&mut self) {
         self.space.refresh();
         self.windows.retain(|surface, _| surface.alive());
         self.unmapped.retain(|w| w.alive());
         self.popups.cleanup();
+        let before = self.usable_area();
+        layer_map_for_output(&self.output).cleanup();
+        self.usable_area_changed(before);
+        if self.exclusive_layer.as_ref().is_some_and(|l| !l.alive()) {
+            opusdm_ipc::debug_log!(LOG_TAG, "exclusive keyboard layer is dead, released");
+            self.exclusive_layer = None;
+        }
         let Some(keyboard) = self.seat.get_keyboard() else {
             if !self.no_keyboard_logged {
                 opusdm_ipc::err_log!(LOG_TAG, "refresh: the seat has no keyboard, focus is not checked");
