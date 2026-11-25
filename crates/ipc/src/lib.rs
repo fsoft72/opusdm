@@ -1,5 +1,14 @@
 //! Wire protocol and socket helpers shared by opusdm-hub and opusdm-lister.
 
+/// Writes one `[tag:pid] message` line to stderr, the format `err_log!` and
+/// `debug_log!` always had. Unlike `eprintln!` a failed write (for example a
+/// closed pipe, EPIPE) is ignored instead of panicking.
+pub fn write_log_line(tag: &str, args: std::fmt::Arguments) {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "[{}:{}] {}", tag, std::process::id(), args);
+}
+
 /// Debug trace gated on `OPUSDM_DEBUG=1`, quiet otherwise so production runs
 /// stay quiet without a recompile. `opusdm-lister`'s `dlog!` and
 /// `opusdm-iconview`'s `dbg_log!` are thin per-crate wrappers around this so
@@ -8,7 +17,7 @@
 macro_rules! debug_log {
     ($tag:expr, $($arg:tt)*) => {
         if std::env::var_os("OPUSDM_DEBUG").is_some() {
-            eprintln!("[{}:{}] {}", $tag, std::process::id(), format_args!($($arg)*));
+            $crate::write_log_line($tag, format_args!($($arg)*));
         }
     };
 }
@@ -20,7 +29,7 @@ macro_rules! debug_log {
 #[macro_export]
 macro_rules! err_log {
     ($tag:expr, $($arg:tt)*) => {
-        eprintln!("[{}:{}] {}", $tag, std::process::id(), format_args!($($arg)*))
+        $crate::write_log_line($tag, format_args!($($arg)*))
     };
 }
 
@@ -80,3 +89,58 @@ pub use proto::{
     FUNCTION_WAIT_PROTOCOL, PROTOCOL_VERSION, protocol_mismatch,
 };
 pub use theme::{IconSetId, Theme};
+
+#[cfg(test)]
+mod log_tests {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    const CHILD_ENV: &str = "OPUSDM_IPC_LOG_TEST_CHILD";
+
+    /// Spawns this test binary as a child that runs `test_name` in child mode `mode`.
+    fn spawn_child(test_name: &str, mode: &str) -> std::process::Child {
+        let exe = std::env::current_exe().expect("current_exe");
+        Command::new(exe)
+            .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, mode)
+            .env_remove("OPUSDM_DEBUG")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn child")
+    }
+
+    /// Logging to a stderr pipe whose read end is gone must not panic.
+    #[test]
+    fn logging_to_a_closed_stderr_does_not_panic() {
+        if std::env::var(CHILD_ENV).as_deref() == Ok("closed") {
+            for i in 0..100 {
+                crate::err_log!("test", "line {i}");
+                crate::debug_log!("test", "debug {i}");
+            }
+            return;
+        }
+        let mut child = spawn_child("log_tests::logging_to_a_closed_stderr_does_not_panic", "closed");
+        // Drop the read end before the child logs: the child blocks on nothing,
+        // it only starts logging once the harness has booted, so close at once.
+        drop(child.stderr.take());
+        let status = child.wait().expect("wait");
+        assert!(status.success(), "child failed: {status:?}");
+    }
+
+    /// The line format stays `[tag:pid] message\n`.
+    #[test]
+    fn log_line_format_is_unchanged() {
+        if std::env::var(CHILD_ENV).as_deref() == Ok("format") {
+            crate::err_log!("tagx", "hello {}", 42);
+            return;
+        }
+        let mut child = spawn_child("log_tests::log_line_format_is_unchanged", "format");
+        let mut err = String::new();
+        child.stderr.take().expect("stderr").read_to_string(&mut err).expect("read");
+        let pid = child.id();
+        child.wait().expect("wait");
+        let expected = format!("[tagx:{pid}] hello 42\n");
+        assert!(err.contains(&expected), "stderr was {err:?}");
+    }
+}
