@@ -330,3 +330,54 @@ fn a_client_that_half_closes_gets_every_reply_even_past_the_socket_buffer() {
     assert_eq!(comp.open_fds(), baseline, "the half-closed connection gave its fds back");
     assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 4);
 }
+
+/// The `{"name","key"}` entries of a `bindings/list` reply.
+fn listed_bindings(comp: &Compositor) -> Vec<serde_json::Value> {
+    let reply = ipc_request(comp, "bindings/list", json!({}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    reply["bindings"].as_array().cloned().unwrap_or_else(|| panic!("no bindings array: {reply}"))
+}
+
+#[test]
+fn bindings_list_has_the_default_built_ins() {
+    let comp = Compositor::start();
+    let bindings = listed_bindings(&comp);
+    assert!(bindings.contains(&json!({"name": "close", "key": "Alt+F4"})), "{bindings:?}");
+    assert!(bindings.contains(&json!({"name": "quit", "key": "Ctrl+Alt+BackSpace"})), "{bindings:?}");
+    assert_eq!(bindings.len(), 20, "{bindings:?}");
+}
+
+#[test]
+fn reload_reads_compositor_json_and_desktop_json_again() {
+    let comp = Compositor::start();
+    comp.write_config("compositor.json", r#"{"close": "Super+q", "switcher_all": "", "lowerr": "x"}"#);
+    comp.write_config("desktop.json", r#"{"virtual_screens": 6}"#);
+    let reply = ipc_request(&comp, "reload", json!({}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["errors"], json!(["unknown key 'lowerr' ignored"]), "{reply}");
+    let bindings = listed_bindings(&comp);
+    assert!(bindings.contains(&json!({"name": "close", "key": "Super+q"})), "{bindings:?}");
+    assert!(!bindings.iter().any(|b| b["name"] == "switcher_all"), "an empty key disables it: {bindings:?}");
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["count"], 6);
+}
+
+#[test]
+fn reload_keeps_the_hub_hotkeys() {
+    let comp = Compositor::start();
+    let (mut hub, reply) = common::ipc::ipc_hub(&comp, json!({"hotkeys": [{"key": "Ctrl+backslash", "function": "terminal"}]}));
+    assert_eq!(reply["errors"], json!([]), "{reply}");
+    comp.write_config("compositor.json", r#"{"close": "Super+q"}"#);
+    assert_eq!(ipc_request(&comp, "reload", json!({}))["errors"], json!([]));
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"}));
+    assert!(hub.wait_for_hotkey("terminal", Duration::from_secs(2)), "the hub hotkey still fires after reload");
+}
+
+#[test]
+fn reload_with_a_broken_compositor_json_reports_it_and_uses_the_defaults() {
+    let comp = Compositor::start();
+    comp.write_config("compositor.json", "not json");
+    let reply = ipc_request(&comp, "reload", json!({}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["errors"].as_array().map(Vec::len), Some(1), "{reply}");
+    assert!(listed_bindings(&comp).contains(&json!({"name": "close", "key": "Alt+F4"})));
+}

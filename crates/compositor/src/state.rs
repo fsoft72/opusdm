@@ -49,6 +49,7 @@ use crate::menu::WindowMenu;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
 use crate::protocols::workspace::Workspaces;
 use crate::wm::desktops::Desktops;
+use crate::wm::settings::WmSettings;
 use crate::wm::{WindowId, HIDDEN_FRAME_INTERVAL};
 
 /// Log tag of the compositor.
@@ -199,6 +200,11 @@ pub struct State {
     pub foreign_toplevels: ForeignToplevels,
     /// The `ext_workspace_manager_v1` global and its managers.
     pub workspaces: Workspaces,
+    /// `compositor.json` as last read (startup or IPC `reload`).
+    pub config: CompositorConfig,
+    /// The window manager part of `desktop.json` as last read (startup or
+    /// IPC `reload`); the opacity is read from here at draw time.
+    pub wm: WmSettings,
     /// Built-in bindings (`compositor.json`) and the hotkeys of the hub,
     /// matched by `keyboard_key` before the focused client.
     pub hotkeys: HotkeyTable,
@@ -268,12 +274,30 @@ impl State {
             test_input: false,
             foreign_toplevels,
             workspaces,
+            config: CompositorConfig::default(),
+            wm: WmSettings::default(),
             hotkeys: HotkeyTable::new(&CompositorConfig::default()),
             swallowed_keys: HashSet::new(),
             menu: None,
             menu_theme: MenuTheme::load(),
             swallowed_buttons: HashSet::new(),
         }
+    }
+
+    /// The IPC `reload`: reads `compositor.json` and `desktop.json` again
+    /// (read only), stores them in `config` and `wm`, applies the desktop
+    /// count with `set_desktop_count` and rebuilds the built-in bindings,
+    /// keeping the hotkeys of the hub. Returns the problems of
+    /// `compositor.json` (each also logged); a missing file is not one.
+    pub fn reload(&mut self) -> Vec<String> {
+        let (config, mut errors) = CompositorConfig::load_with_errors();
+        let desktop = opusdm_ipc::settings::load_desktop_settings(LOG_TAG);
+        errors.extend(self.hotkeys.rebuild_builtins(&config));
+        self.config = config;
+        self.wm = WmSettings::from_desktop(&desktop);
+        self.set_desktop_count(desktop.virtual_screens);
+        opusdm_ipc::debug_log!(LOG_TAG, "reload: {:?}, {} config errors", self.wm, errors.len());
+        errors
     }
 
     /// Geometry of the output in the space.

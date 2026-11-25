@@ -145,6 +145,11 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
         }
         "watch" => Ok(json!({})),
         "hotkeys/set" => Ok(json!({"errors": state.hotkeys.set_hub(&_hotkey_entries(data)?)})),
+        "reload" => Ok(json!({"errors": state.reload()})),
+        "bindings/list" => {
+            let bindings: Vec<Value> = state.hotkeys.list().into_iter().map(|(name, key)| json!({"name": name, "key": key})).collect();
+            Ok(json!({"bindings": bindings}))
+        }
         "debug/key" => _debug_key(state, _str(data, "key")?).map(|_| json!({})),
         "debug/click" => _debug_click(state, _u32(data, "x")?, _u32(data, "y")?).map(|_| json!({})),
         "debug/foreign-toplevels" => _debug_foreign_toplevels(state),

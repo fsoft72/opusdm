@@ -7,6 +7,7 @@
 //! keyboard focus in line with it.
 
 pub mod desktops;
+pub mod settings;
 
 use std::time::Duration;
 

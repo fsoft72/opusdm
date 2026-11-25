@@ -26,6 +26,7 @@ use crate::config::CompositorConfig;
 use crate::hotkeys::HotkeyTable;
 use crate::ipc::{socket_path, IpcServer};
 use crate::state::{ClientState, State, LOG_TAG};
+use crate::wm::settings::WmSettings;
 
 /// Refresh rate given to the output of every backend, in mHz.
 pub const REFRESH_MHZ: i32 = 60_000;
@@ -67,7 +68,8 @@ pub fn run(args: &Args) -> Result<(), String> {
 
 /// Setup shared by every backend: event loop, display, the state with
 /// `output` and the desktop count of `DesktopSettings.virtual_screens`,
-/// the built-in bindings of `compositor.json`, the SIGTERM / SIGINT flag, keyboard and pointer, the Wayland socket
+/// the window manager settings of `desktop.json`, the built-in bindings of
+/// `compositor.json`, the SIGTERM / SIGINT flag, keyboard and pointer, the Wayland socket
 /// with its client sources and the private IPC socket next to it.
 fn setup_common(output: Output) -> Result<Common, String> {
     let event_loop: EventLoop<'static, LoopData> = EventLoop::try_new().map_err(|e| format!("event loop: {e}"))?;
@@ -75,7 +77,9 @@ fn setup_common(output: Output) -> Result<Common, String> {
     let settings = opusdm_ipc::settings::load_desktop_settings(LOG_TAG);
     let mut state = State::new(&display.handle(), output, settings.virtual_screens);
     opusdm_ipc::debug_log!(LOG_TAG, "{} virtual desktops", state.desktops.count());
-    state.hotkeys = HotkeyTable::new(&CompositorConfig::load());
+    state.wm = WmSettings::from_desktop(&settings);
+    state.config = CompositorConfig::load();
+    state.hotkeys = HotkeyTable::new(&state.config);
     register_quit_signals(&state.quit)?;
     add_input_devices(&mut state)?;
     let socket_name = init_wayland(&event_loop, &mut display)?;

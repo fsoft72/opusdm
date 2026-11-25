@@ -206,6 +206,15 @@ impl Compositor {
         std::fs::read_dir(format!("/proc/{}/fd", self.child.id())).expect("read the compositor fd table").count()
     }
 
+    /// Writes `text` to the file `name` of the compositor's OpusDM config
+    /// directory (`$XDG_CONFIG_HOME/opusdm`, inside the test's temp dir),
+    /// for a later `reload`.
+    pub fn write_config(&self, name: &str, text: &str) {
+        let dir = self._runtime.path().join("config").join("opusdm");
+        std::fs::create_dir_all(&dir).expect("create the test config dir");
+        std::fs::write(dir.join(name), text).expect("write the test config file");
+    }
+
     /// Sends the signal `sig` to the compositor process.
     pub fn signal(&self, sig: i32) {
         let pid = i32::try_from(self.child.id()).expect("pid fits in i32");
