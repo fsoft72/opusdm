@@ -56,6 +56,7 @@ use crate::ipc::IpcServer;
 use crate::menu::theme::MenuTheme;
 use crate::menu::WindowMenu;
 use crate::protocols::foreign_toplevel::ForeignToplevels;
+use crate::protocols::screencopy::Screencopy;
 use crate::protocols::workspace::Workspaces;
 use crate::snap::SnapZone;
 use crate::switcher::WindowSwitcher;
@@ -236,6 +237,9 @@ pub struct State {
     pub foreign_toplevels: ForeignToplevels,
     /// The `ext_workspace_manager_v1` global and its managers.
     pub workspaces: Workspaces,
+    /// The `zwlr_screencopy_manager_v1` global and the copies waiting for
+    /// the backend (serviced once per loop iteration, see `screencopy`).
+    pub screencopy: Screencopy,
     /// `compositor.json` as last read (startup or IPC `reload`).
     pub config: CompositorConfig,
     /// The window manager part of `desktop.json` as last read (startup or
@@ -290,6 +294,7 @@ impl State {
         let _global = output.create_global::<State>(display);
         let foreign_toplevels = ForeignToplevels::new(display);
         let workspaces = Workspaces::new(display);
+        let screencopy = Screencopy::new(display);
         let mut space = Space::default();
         space.map_output(&output, (0, 0));
         State {
@@ -331,6 +336,7 @@ impl State {
             test_input: false,
             foreign_toplevels,
             workspaces,
+            screencopy,
             config: CompositorConfig::default(),
             wm: WmSettings::default(),
             hotkeys: HotkeyTable::new(&CompositorConfig::default()),

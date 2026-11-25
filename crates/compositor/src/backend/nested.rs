@@ -6,6 +6,13 @@
 //! calloop event loop of `run` for the whole run. A host window close or a
 //! signal sets `State::quit`; the next frame tick stops the loop, `run`
 //! returns, and dropping `LoopData` disconnects every client.
+//!
+//! Screen captures (wlr-screencopy): every frame tick, after the window is
+//! drawn, the captures queued in `State` are answered from one offscreen
+//! render of the same element list as the window (`_scene_elements`), read
+//! back with `ExportMem`. The cursor is not in that list; the snap zone
+//! preview is (a capture shows the screen as drawn, minus the cursor). The
+//! offscreen texture lives only for that render.
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
@@ -27,8 +34,8 @@ use smithay::{
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 AsRenderElements, Kind,
             },
-            gles::GlesRenderer,
-            ImportDma, ImportMemWl,
+            gles::{GlesRenderer, GlesTexture},
+            Bind, ExportMem, ImportDma, ImportMemWl, Offscreen,
         },
         winit::{self, WinitEvent, WinitGraphicsBackend, WinitInput},
     },
@@ -43,7 +50,7 @@ use smithay::{
         },
         winit::{dpi::PhysicalSize, window::Window as WinitWindow},
     },
-    utils::{IsAlive, Logical, Physical, Point, Scale, Size, Transform},
+    utils::{Buffer as BufferCoord, IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::{
         compositor::with_states,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -51,12 +58,15 @@ use smithay::{
     },
 };
 
+use smithay::backend::allocator::Fourcc;
+
 use super::{announce, housekeeping, new_output, setup_common, stop_on_quit, LoopData, REFRESH_MHZ};
 use crate::args::Args;
 use crate::decor::render::WindowDecor;
 use crate::draw::DRAW_SCALE;
 use crate::geometry::Rect;
 use crate::menu::{render::MenuImages, MenuLayout};
+use crate::protocols::screencopy::{crop_xrgb, rgba_to_xrgb, PendingCapture};
 use crate::state::{State, LOG_TAG};
 use crate::switcher::render::{switcher_rect, switcher_size};
 use crate::wm::WindowId;
@@ -94,6 +104,10 @@ smithay::backend::renderer::element::render_elements! {
     Menu=MemoryRenderBufferRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
 }
+
+/// Pixel format of the offscreen capture texture and of its read back
+/// (RGBA bytes, readable on every GLES 2 implementation).
+const CAPTURE_FOURCC: Fourcc = Fourcc::Abgr8888;
 
 /// Limits how often one kind of error is logged.
 #[derive(Debug, Default)]
@@ -162,6 +176,19 @@ struct DecorDraw {
     borders: Vec<(SolidColorBuffer, Rect)>,
     /// Opacity of the frame (the window's).
     alpha: f32,
+}
+
+/// What one frame draws besides the client surfaces, built once per frame
+/// and used both for the window and for the screen captures.
+struct SceneParts<'a> {
+    /// The open window menu: images and layout.
+    menu: Option<(MenuImages, MenuLayout)>,
+    /// The open window switcher: image and box.
+    switcher: Option<(MemoryRenderBuffer, Rect)>,
+    /// The snap zone preview: buffer and box.
+    preview: Option<(&'a SolidColorBuffer, Rect)>,
+    /// The frames of the decorated windows, by window id.
+    frames: HashMap<WindowId, DecorDraw>,
 }
 
 /// Runs the compositor in a window of the host session until the window is
@@ -402,9 +429,9 @@ fn _import_dmabufs(frame: &mut Frame, state: &mut State) {
     }
 }
 
-/// Renders one frame into the host window: binds, renders the elements in
-/// stacking order through the damage tracker and submits the damage. A
-/// failure is logged (rate limited) and the frame is skipped.
+/// Renders one frame into the host window (`_render_window`), then
+/// answers the pending screen captures from the same scene
+/// (`_service_captures`).
 fn _render(frame: &mut Frame, state: &mut State) {
     let host_cursor = _update_cursor(state);
     if frame.host_cursor != Some(host_cursor) {
@@ -424,6 +451,23 @@ fn _render(frame: &mut Frame, state: &mut State) {
     let menu = _menu_images(state, errors);
     let switcher = _switcher_image(state, errors);
     let frames = _decor_draws(state, decor, errors);
+    let parts = SceneParts { menu, switcher, preview, frames };
+    _render_window(backend, damage, presented, state, &parts, errors);
+    _service_captures(backend.renderer(), state, &parts, errors);
+}
+
+/// Draws the scene `parts` and the client surfaces into the host window:
+/// binds, renders the elements in stacking order through the damage
+/// tracker and submits the damage. A failure is logged (rate limited) and
+/// the frame is skipped.
+fn _render_window(
+    backend: &mut WinitGraphicsBackend<GlesRenderer>,
+    damage: &mut OutputDamageTracker,
+    presented: &mut bool,
+    state: &State,
+    parts: &SceneParts,
+    errors: &mut ErrorThrottle,
+) {
     // The buffer age can only be asked while the window surface is current.
     // Smithay's `bind` does not make it current (only rendering does), and
     // an import or a frame with no damage may leave the context on no
@@ -440,7 +484,8 @@ fn _render(frame: &mut Frame, state: &mut State) {
             Ok(bound) => bound,
             Err(e) => return errors.log("frame bind", &e.to_string()),
         };
-        let elements = _elements(renderer, state, menu.as_ref(), switcher.as_ref(), preview, &frames, errors);
+        let mut elements = _cursor_elements(renderer, state);
+        elements.extend(_scene_elements(renderer, state, parts, errors));
         match damage.render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR) {
             Ok(result) => result.damage.cloned(),
             Err(e) => return errors.log("frame render_output", &format!("{e:?}")),
@@ -451,6 +496,56 @@ fn _render(frame: &mut Frame, state: &mut State) {
         Ok(()) => *presented = true,
         Err(e) => errors.log("frame submit", &e.to_string()),
     }
+}
+
+/// Answers the screen captures queued in `state`: one offscreen render of
+/// the scene for all of them, each cropped to its region. A failed render
+/// fails every capture of this tick (logged by `complete_capture`).
+fn _service_captures(renderer: &mut GlesRenderer, state: &mut State, parts: &SceneParts, errors: &mut ErrorThrottle) {
+    let captures = state.take_pending_captures();
+    if captures.is_empty() { return; }
+    let area = state.output_area();
+    let full = _capture_output(renderer, state, parts, errors);
+    for capture in captures {
+        let pixels = _capture_pixels(state, &capture, &full, (area.w, area.h));
+        state.complete_capture(capture, pixels);
+    }
+}
+
+/// The pixels of `capture` cut out of the output picture `full` (of
+/// `size`); an error when the render failed or the capture is not of the
+/// nested output.
+fn _capture_pixels(state: &State, capture: &PendingCapture, full: &Result<Vec<u8>, String>, size: (i32, i32)) -> Result<Vec<u8>, String> {
+    if capture.output != state.output { return Err(format!("output {} is not the nested output", capture.output.name())); }
+    let full = full.as_ref().map_err(Clone::clone)?;
+    crop_xrgb(full, size, capture.region)
+}
+
+/// The whole output as a top-down `Xrgb8888` picture: the scene (no
+/// cursor) rendered into an offscreen texture and read back.
+fn _capture_output(
+    renderer: &mut GlesRenderer,
+    state: &State,
+    parts: &SceneParts,
+    errors: &mut ErrorThrottle,
+) -> Result<Vec<u8>, String> {
+    let area = state.output_area();
+    if area.w <= 0 || area.h <= 0 { return Err(format!("the output has no size ({}x{})", area.w, area.h)); }
+    let size = Size::<i32, BufferCoord>::from((area.w, area.h));
+    let mut texture: GlesTexture = Offscreen::<GlesTexture>::create_buffer(renderer, CAPTURE_FOURCC, size)
+        .map_err(|e| format!("capture texture: {e}"))?;
+    let elements = _scene_elements(renderer, state, parts, errors);
+    // A texture is not upside down: `Normal` puts the top row first in memory.
+    let mut damage = OutputDamageTracker::new((area.w, area.h), f64::from(DRAW_SCALE), Transform::Normal);
+    let mut target = renderer.bind(&mut texture).map_err(|e| format!("capture bind: {e}"))?;
+    damage
+        .render_output(renderer, &mut target, 0, &elements, CLEAR_COLOR)
+        .map_err(|e| format!("capture render: {e:?}"))?;
+    let mapping = renderer
+        .copy_framebuffer(&target, Rectangle::from_size(size), CAPTURE_FOURCC)
+        .map_err(|e| format!("capture read back: {e}"))?;
+    let rgba = renderer.map_texture(&mapping).map_err(|e| format!("capture map: {e}"))?;
+    Ok(rgba_to_xrgb(rgba))
 }
 
 /// Resets a cursor surface that died to the default cursor and returns
@@ -545,33 +640,33 @@ fn _decor_draws(
     draws
 }
 
-/// Render elements, front to back (the reverse of the drawing order
-/// BACKGROUND, BOTTOM, windows bottom to top, TOP, the topmost window when
-/// it is fullscreen, OVERLAY, the snap zone preview, the window menu, its
-/// submenu, the window switcher, cursor). Popups come with their parent,
-/// just above it, and the frame of a decorated window (`frames`) just
-/// below it; the order matches the hit test of `input.rs` (the open
+/// Render elements of the scene, front to back (the reverse of the drawing
+/// order BACKGROUND, BOTTOM, windows bottom to top, TOP, the topmost window
+/// when it is fullscreen, OVERLAY, the snap zone preview, the window menu,
+/// its submenu, the window switcher); the window puts the cursor
+/// (`_cursor_elements`) in front, a screen capture does not. Popups come
+/// with their parent, just above it, and the frame of a decorated window
+/// just below it; the order matches the hit test of `input.rs` (the open
 /// menu takes every click before it; the switcher and the preview take no
-/// click).
-fn _elements(
+/// click). The one list for the window and the captures, so they cannot
+/// drift.
+fn _scene_elements(
     renderer: &mut GlesRenderer,
     state: &State,
-    menu: Option<&(MenuImages, MenuLayout)>,
-    switcher: Option<&(MemoryRenderBuffer, Rect)>,
-    preview: Option<(&SolidColorBuffer, Rect)>,
-    frames: &HashMap<WindowId, DecorDraw>,
+    parts: &SceneParts,
     errors: &mut ErrorThrottle,
 ) -> Vec<NestedElement> {
     let output_loc = state.output_area();
     let origin = Point::<i32, Logical>::from((output_loc.x, output_loc.y));
-    let mut elements = _cursor_elements(renderer, state, origin);
-    if let Some((image, rect)) = switcher {
+    let frames = &parts.frames;
+    let mut elements = Vec::new();
+    if let Some((image, rect)) = &parts.switcher {
         elements.extend(_image_element(renderer, image, *rect, origin, None, "window switcher texture", errors));
     }
-    if let Some((images, layout)) = menu {
+    if let Some((images, layout)) = &parts.menu {
         elements.extend(_menu_elements(renderer, images, layout, origin, errors));
     }
-    if let Some((buffer, rect)) = preview {
+    if let Some((buffer, rect)) = parts.preview {
         let loc = (Point::<i32, Logical>::from((rect.x, rect.y)) - origin).to_physical(1);
         let element = SolidColorRenderElement::from_buffer(buffer, loc, Scale::from(1.0), 1.0, Kind::Unspecified);
         elements.push(NestedElement::Solid(element));
@@ -710,12 +805,10 @@ fn _layer_elements(
 
 /// Elements of the client cursor surface at the pointer, minus its hotspot;
 /// none for a named or hidden cursor (the host draws a named one).
-fn _cursor_elements(
-    renderer: &mut GlesRenderer,
-    state: &State,
-    origin: Point<i32, Logical>,
-) -> Vec<NestedElement> {
+fn _cursor_elements(renderer: &mut GlesRenderer, state: &State) -> Vec<NestedElement> {
     let CursorImageStatus::Surface(surface) = &state.cursor_status else { return Vec::new() };
+    let output_loc = state.output_area();
+    let origin = Point::<i32, Logical>::from((output_loc.x, output_loc.y));
     // The seat always has a pointer (`add_input_devices`); the input paths log its absence.
     let Some(pointer) = state.seat.get_pointer() else { return Vec::new() };
     let hotspot = with_states(surface, |states| {

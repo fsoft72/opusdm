@@ -2251,3 +2251,95 @@ fn a_window_that_turns_server_side_under_a_panel_keeps_its_title_in_the_area() {
     let ((x, y, width, height), _) = window_rect(&comp, 1);
     assert_eq!((x, y, width, height), (-BORDER as i64, 40, 408, 332), "the frame top is the top of the usable area");
 }
+
+/// Pixel the headless backend fills every capture with (B, G, R, X), as
+/// `HEADLESS_CAPTURE_PIXEL` of the binary.
+const HEADLESS_CAPTURE_PIXEL: [u8; 4] = [0x20, 0x20, 0x20, 0xff];
+
+/// `wl_shm` format code of Xrgb8888.
+const XRGB8888: u32 = 1;
+
+#[test]
+fn a_screencopy_client_captures_the_whole_output() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    assert_eq!(c.screencopy_version(), 3);
+    let (events, pixels) = c.capture(None);
+    assert_eq!(events.buffer, Some((XRGB8888, 1920, 1080, 7680)), "{events:?}");
+    assert!(events.buffer_done && !events.linux_dmabuf, "{events:?}");
+    assert!(events.ready && !events.failed, "{events:?}");
+    assert_eq!(events.flags, Some(0), "{events:?}");
+    let pixels = pixels.expect("pixels on ready");
+    assert_eq!(pixels.len(), 1920 * 1080 * 4);
+    assert_eq!(pixels[..4], HEADLESS_CAPTURE_PIXEL);
+    assert_eq!(pixels[pixels.len() - 4..], HEADLESS_CAPTURE_PIXEL, "the last pixel is written too");
+}
+
+#[test]
+fn a_screencopy_with_damage_reports_the_whole_buffer() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let mut capture = c.capture_frame(None);
+    let pixels = c.capture_copy(&mut capture, (1920, 1080), wayland_client::protocol::wl_shm::Format::Xrgb8888, true);
+    let events = c.capture_events(&capture);
+    assert!(pixels.is_some(), "{events:?}");
+    assert_eq!(events.damage, Some((0, 0, 1920, 1080)), "{events:?}");
+}
+
+#[test]
+fn a_screencopy_region_gives_a_buffer_of_the_region() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let (events, pixels) = c.capture(Some(Rect { x: 10, y: 10, w: 100, h: 50 }));
+    assert_eq!(events.buffer, Some((XRGB8888, 100, 50, 400)), "{events:?}");
+    assert!(events.ready, "{events:?}");
+    let pixels = pixels.expect("pixels on ready");
+    assert_eq!(pixels.len(), 100 * 50 * 4);
+    assert_eq!(pixels[..4], HEADLESS_CAPTURE_PIXEL);
+    // A region across the bottom right corner is clipped to the output.
+    let (events, _) = c.capture(Some(Rect { x: 1900, y: 1060, w: 100, h: 50 }));
+    assert_eq!(events.buffer, Some((XRGB8888, 20, 20, 80)), "{events:?}");
+    assert!(events.ready, "{events:?}");
+    // A region outside the output is empty: failed.
+    let (events, pixels) = c.capture(Some(Rect { x: 2000, y: 2000, w: 10, h: 10 }));
+    assert!(events.failed && pixels.is_none(), "{events:?}");
+}
+
+#[test]
+fn a_screencopy_with_a_wrong_buffer_fails_and_the_next_capture_works() {
+    use wayland_client::protocol::wl_shm::Format;
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let mut capture = c.capture_frame(None);
+    assert!(c.capture_copy(&mut capture, (100, 100), Format::Xrgb8888, false).is_none());
+    assert!(c.capture_events(&capture).failed);
+    c.capture_destroy(capture);
+    let mut capture = c.capture_frame(None);
+    assert!(c.capture_copy(&mut capture, (1920, 1080), Format::Argb8888, false).is_none(), "wrong format");
+    assert!(c.capture_events(&capture).failed);
+    c.capture_destroy(capture);
+    let (events, pixels) = c.capture(None);
+    assert!(events.ready, "{events:?}");
+    assert_eq!(pixels.expect("pixels")[..4], HEADLESS_CAPTURE_PIXEL);
+    c.roundtrip(); // the client is still connected: no protocol error
+}
+
+#[test]
+fn a_screencopy_client_that_dies_after_copy_leaves_the_compositor_running() {
+    use wayland_client::protocol::wl_shm::Format;
+    let mut comp = Compositor::start();
+    let mut a = TestClient::new(&comp);
+    let mut capture = a.capture_frame(None);
+    a.capture_send_copy(&mut capture, (1920, 1080), Format::Xrgb8888, false);
+    drop(capture);
+    drop(a); // socket closed with the frame pending
+    let mut b = TestClient::new(&comp);
+    // A frame destroyed right after copy is dropped from the queue too.
+    let mut capture = b.capture_frame(None);
+    b.capture_send_copy(&mut capture, (1920, 1080), Format::Xrgb8888, false);
+    b.capture_destroy(capture);
+    let (events, pixels) = b.capture(None);
+    assert!(events.ready, "{events:?}");
+    assert_eq!(pixels.expect("pixels")[..4], HEADLESS_CAPTURE_PIXEL);
+    assert!(comp.is_running());
+}

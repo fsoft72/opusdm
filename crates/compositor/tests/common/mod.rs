@@ -49,6 +49,10 @@ use wayland_client::{
     protocol::{wl_callback, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface::WlSurface},
     event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
 };
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+};
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
@@ -81,6 +85,14 @@ const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long `TestClient::roundtrip` waits for the answer to its sync: a
 /// hung compositor fails the test instead of hanging `cargo test`.
 const ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a screen capture waits for each step (`buffer_done`, `ready`
+/// or `failed`).
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Byte the test fills a capture buffer with before `copy`, so a pixel the
+/// compositor did not write is visible.
+pub const CAPTURE_FILL: u8 = 0x55;
 
 /// How long `TestClient::activation_token` waits for the token.
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -385,6 +397,33 @@ impl HasSurface for TestPopup {
     }
 }
 
+/// What a `zwlr_screencopy_frame_v1` told the client so far.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CaptureEvents {
+    /// The `buffer` event: `wl_shm` format, width, height and stride.
+    pub buffer: Option<(u32, u32, u32, u32)>,
+    /// A `buffer_done` event came (version 3).
+    pub buffer_done: bool,
+    /// A `linux_dmabuf` event came.
+    pub linux_dmabuf: bool,
+    /// The `flags` event.
+    pub flags: Option<u32>,
+    /// The `damage` event: x, y, width, height.
+    pub damage: Option<(u32, u32, u32, u32)>,
+    /// A `ready` event came.
+    pub ready: bool,
+    /// A `failed` event came.
+    pub failed: bool,
+}
+
+/// A screen capture frame of a `TestClient`.
+pub struct TestCapture {
+    /// The frame.
+    pub frame: ZwlrScreencopyFrameV1,
+    /// The buffer handed to `copy`, kept alive while the compositor may write it.
+    buffer: Option<Buffer>,
+}
+
 /// A toplevel as a `zwlr_foreign_toplevel_manager_v1` client sees it after
 /// the last `done` of its handle.
 #[derive(Debug, Clone)]
@@ -503,6 +542,8 @@ struct ClientApp {
     workspaces_published: Vec<TestWorkspace>,
     /// Workspace groups not removed yet.
     workspace_groups: Vec<ExtWorkspaceGroupHandleV1>,
+    /// Events of every screen capture frame, by frame id.
+    captures: HashMap<ObjectId, CaptureEvents>,
 }
 
 impl ClientApp {
@@ -544,6 +585,8 @@ pub struct TestClient {
     workspace_manager: Option<ExtWorkspaceManagerV1>,
     /// The `xdg_activation_v1`, when the compositor has it.
     activation: Option<XdgActivationV1>,
+    /// The `zwlr_screencopy_manager_v1`, when the compositor has it.
+    screencopy: Option<ZwlrScreencopyManagerV1>,
 }
 
 impl TestClient {
@@ -588,11 +631,13 @@ impl TestClient {
             workspaces: Vec::new(),
             workspaces_published: Vec::new(),
             workspace_groups: Vec::new(),
+            captures: HashMap::new(),
         };
         // Bound after `wl_output` (bound by `OutputState::new`); `None` when the compositor has no such global.
         let foreign_manager = globals.bind::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ()).ok();
         let workspace_manager = globals.bind::<ExtWorkspaceManagerV1, _, _>(&qh, 1..=1, ()).ok();
         let activation = globals.bind::<XdgActivationV1, _, _>(&qh, 1..=1, ()).ok();
+        let screencopy = globals.bind::<ZwlrScreencopyManagerV1, _, _>(&qh, 1..=3, ()).ok();
         let mut client = TestClient {
             conn,
             queue,
@@ -604,6 +649,7 @@ impl TestClient {
             foreign_manager,
             workspace_manager,
             activation,
+            screencopy,
         };
         client.roundtrip();
         client
@@ -1015,6 +1061,90 @@ impl TestClient {
         t.handle.set_minimized();
     }
 
+    /// Version of the bound `zwlr_screencopy_manager_v1`; panics when the
+    /// compositor has none.
+    pub fn screencopy_version(&self) -> u32 {
+        self.screencopy.as_ref().expect("the compositor offers zwlr_screencopy_manager_v1").version()
+    }
+
+    /// Asks for a capture of the first output (`region`: only that box of
+    /// it, output coordinates) and waits for `buffer_done` or `failed`.
+    pub fn capture_frame(&mut self, region: Option<Rect>) -> TestCapture {
+        let manager = self.screencopy.clone().expect("the compositor offers zwlr_screencopy_manager_v1");
+        let output = self.app.output_state.outputs().next().expect("an output");
+        let frame = match region {
+            None => manager.capture_output(0, &output, &self.qh, ()),
+            Some(r) => manager.capture_output_region(0, &output, r.x, r.y, r.w, r.h, &self.qh, ()),
+        };
+        self.app.captures.insert(frame.id(), CaptureEvents::default());
+        let id = frame.id();
+        let done = self.dispatch_until(CAPTURE_TIMEOUT, |app| app.captures.get(&id).is_some_and(|e| e.buffer_done || e.failed));
+        assert!(done, "capture: neither buffer_done nor failed within {CAPTURE_TIMEOUT:?}");
+        TestCapture { frame, buffer: None }
+    }
+
+    /// What the frame of `capture` reported so far.
+    pub fn capture_events(&self, capture: &TestCapture) -> CaptureEvents {
+        self.app.captures.get(&capture.frame.id()).cloned().expect("known capture")
+    }
+
+    /// Sends `copy` (or `copy_with_damage`) with a fresh shm buffer of
+    /// `size` and `format` filled with `CAPTURE_FILL`, without waiting.
+    pub fn capture_send_copy(&mut self, capture: &mut TestCapture, size: (i32, i32), format: wl_shm::Format, with_damage: bool) {
+        let (buffer, canvas) = self.app.pool.create_buffer(size.0, size.1, size.0 * 4, format).expect("shm buffer");
+        canvas.fill(CAPTURE_FILL);
+        if with_damage {
+            capture.frame.copy_with_damage(buffer.wl_buffer());
+        } else {
+            capture.frame.copy(buffer.wl_buffer());
+        }
+        capture.buffer = Some(buffer);
+        self.conn.flush().expect("flush");
+    }
+
+    /// Sends `copy` as `capture_send_copy` and waits for `ready` or
+    /// `failed`; returns the pixels of the buffer on `ready`.
+    pub fn capture_copy(
+        &mut self,
+        capture: &mut TestCapture,
+        size: (i32, i32),
+        format: wl_shm::Format,
+        with_damage: bool,
+    ) -> Option<Vec<u8>> {
+        self.capture_send_copy(capture, size, format, with_damage);
+        let id = capture.frame.id();
+        let done = self.dispatch_until(CAPTURE_TIMEOUT, |app| app.captures.get(&id).is_some_and(|e| e.ready || e.failed));
+        assert!(done, "capture: neither ready nor failed within {CAPTURE_TIMEOUT:?}");
+        if !self.capture_events(capture).ready { return None; }
+        let buffer = capture.buffer.as_ref().expect("buffer kept");
+        Some(buffer.canvas(&mut self.app.pool).expect("capture canvas").to_vec())
+    }
+
+    /// A whole capture as `opusdm-shot` does it: frame, then `copy` with the
+    /// announced Xrgb8888 buffer, then destroy. The events and the pixels
+    /// (on `ready`).
+    pub fn capture(&mut self, region: Option<Rect>) -> (CaptureEvents, Option<Vec<u8>>) {
+        let mut capture = self.capture_frame(region);
+        let events = self.capture_events(&capture);
+        let Some((_, w, h, _)) = events.buffer.filter(|_| !events.failed) else {
+            self.capture_destroy(capture);
+            return (events, None);
+        };
+        let pixels = self.capture_copy(&mut capture, (w as i32, h as i32), wl_shm::Format::Xrgb8888, false);
+        let events = self.capture_events(&capture);
+        self.capture_destroy(capture);
+        (events, pixels)
+    }
+
+    /// Destroys the frame of `capture` and its buffer.
+    pub fn capture_destroy(&mut self, capture: TestCapture) {
+        capture.frame.destroy();
+        self.app.captures.remove(&capture.frame.id());
+        // Dropping the slot buffer destroys its `wl_buffer` and frees the slot.
+        drop(capture.buffer);
+        self.conn.flush().expect("flush");
+    }
+
     /// Sends a `wl_display.sync` and handles every event up to its answer;
     /// panics when the answer does not come within `ROUNDTRIP_TIMEOUT`.
     pub fn roundtrip(&mut self) {
@@ -1323,6 +1453,36 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ClientApp {
                     handle: entry.handle.clone(),
                 });
             }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwlrScreencopyManagerV1, ()> for ClientApp {
+    /// The manager has no events.
+    fn event(_: &mut Self, _: &ZwlrScreencopyManagerV1, _: <ZwlrScreencopyManagerV1 as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+
+impl Dispatch<ZwlrScreencopyFrameV1, ()> for ClientApp {
+    /// Records every event of a capture frame.
+    fn event(
+        app: &mut Self,
+        frame: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwlr_screencopy_frame_v1::Event;
+        let Some(e) = app.captures.get_mut(&frame.id()) else { return };
+        match event {
+            Event::Buffer { format, width, height, stride } => e.buffer = Some((u32::from(format), width, height, stride)),
+            Event::BufferDone => e.buffer_done = true,
+            Event::LinuxDmabuf { .. } => e.linux_dmabuf = true,
+            Event::Flags { flags } => e.flags = Some(u32::from(flags)),
+            Event::Damage { x, y, width, height } => e.damage = Some((x, y, width, height)),
+            Event::Ready { .. } => e.ready = true,
+            Event::Failed => e.failed = true,
             _ => {}
         }
     }
