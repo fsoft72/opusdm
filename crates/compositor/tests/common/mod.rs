@@ -614,9 +614,10 @@ impl TestClient {
         value.expect("token present")
     }
 
-    /// Asks the compositor to activate `w` with `token`
-    /// (`xdg_activation_v1.activate`); the test roundtrips after it.
-    pub fn request_activation(&mut self, w: &TestWindow, token: &str) {
+    /// Asks the compositor to activate the surface of `w` (a window, a layer
+    /// surface) with `token` (`xdg_activation_v1.activate`); the test
+    /// roundtrips after it.
+    pub fn request_activation(&mut self, w: &impl HasSurface, token: &str) {
         self._activation().activate(token.to_string(), w.wl_surface());
     }
 

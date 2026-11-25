@@ -729,6 +729,38 @@ fn an_unknown_token_changes_nothing() {
 }
 
 #[test]
+fn activating_a_layer_surface_is_not_an_error() {
+    // GTK asks xdg-activation for every surface it shows, layer surfaces
+    // (panel, notification popups, Run window) too: nothing happens and no
+    // error line is written (no OPUSDM_DEBUG here, so only err_log lines).
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let panel = c.map_layer(Layer::Top, Anchor::TOP | Anchor::LEFT | Anchor::RIGHT, (0, 30), 30, KeyboardInteractivity::None);
+    let token = c.activation_token();
+    c.request_activation(&panel, &token);
+    c.roundtrip();
+    // An unknown token is an error line: when it shows, the layer request before it was handled.
+    c.request_activation(&a, "not-a-token");
+    c.roundtrip();
+    assert!(comp.wait_log("refused: unknown or expired token", Duration::from_secs(2)));
+    assert_eq!(comp.log_count("activation of"), 1, "only the unknown token is an error line");
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+}
+
+#[test]
+fn activating_a_layer_surface_is_a_debug_trace() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    c.map_toplevel((400, 300));
+    let panel = c.map_layer(Layer::Top, Anchor::TOP | Anchor::LEFT | Anchor::RIGHT, (0, 30), 30, KeyboardInteractivity::None);
+    let token = c.activation_token();
+    c.request_activation(&panel, &token);
+    c.roundtrip();
+    assert!(comp.wait_log("ignored: a zwlr_layer_surface_v1 is not a window", Duration::from_secs(2)));
+}
+
+#[test]
 fn an_activation_token_works_only_once() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);

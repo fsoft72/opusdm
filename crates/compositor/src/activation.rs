@@ -21,8 +21,12 @@ use smithay::{
             DisplayHandle, Resource,
         },
     },
-    wayland::xdg_activation::{
-        ActivationTokenData, XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+    wayland::{
+        compositor,
+        shell::{wlr_layer::LAYER_SURFACE_ROLE, xdg::XDG_POPUP_ROLE},
+        xdg_activation::{
+            ActivationTokenData, XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+        },
     },
 };
 
@@ -34,6 +38,15 @@ pub const ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// True when a token created `age` ago can still activate a window.
 fn _is_fresh(age: Duration) -> bool {
     age < ACTIVATION_TOKEN_TIMEOUT
+}
+
+/// True when a surface with the role `role` is one that is never a window
+/// but that clients ask to activate anyway: a layer surface or an xdg popup
+/// (GTK requests an activation for every surface it shows). Such a request
+/// is a debug trace; any other surface that is not in the window table is
+/// an error.
+fn _is_known_non_window(role: Option<&str>) -> bool {
+    matches!(role, Some(LAYER_SURFACE_ROLE | XDG_POPUP_ROLE))
 }
 
 impl XdgActivationHandler for State {
@@ -53,7 +66,8 @@ impl XdgActivationHandler for State {
     /// Activates the toplevel `surface` when the token is fresh: right away
     /// when it is mapped, when it maps otherwise. The token is removed in
     /// every case; an expired token or a surface that is not a toplevel is
-    /// refused with a log line and changes nothing.
+    /// refused with a log line and changes nothing (a debug line for a layer
+    /// surface or a popup, which GTK asks for as a matter of course).
     fn request_activation(&mut self, token: XdgActivationToken, data: XdgActivationTokenData, surface: WlSurface) {
         self.xdg_activation_state.remove_token(&token);
         let age = data.timestamp.elapsed();
@@ -62,7 +76,13 @@ impl XdgActivationHandler for State {
             return;
         }
         let Some(info) = self.windows.get_mut(&surface) else {
-            opusdm_ipc::err_log!(LOG_TAG, "activation of {} refused: not a toplevel", surface.id());
+            let role = compositor::get_role(&surface);
+            if _is_known_non_window(role) {
+                // Expected: GTK asks for every surface it shows (panel, popups, Run window).
+                opusdm_ipc::debug_log!(LOG_TAG, "activation of {} ignored: a {} is not a window", surface.id(), role.unwrap_or_default());
+            } else {
+                opusdm_ipc::err_log!(LOG_TAG, "activation of {} refused: not a toplevel (role {role:?})", surface.id());
+            }
             return;
         };
         let id = info.id;
@@ -127,5 +147,14 @@ mod tests {
         assert!(_is_fresh(ACTIVATION_TOKEN_TIMEOUT - Duration::from_millis(1)));
         assert!(!_is_fresh(ACTIVATION_TOKEN_TIMEOUT));
         assert!(!_is_fresh(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn layer_surfaces_and_popups_are_known_non_windows() {
+        assert!(_is_known_non_window(Some("zwlr_layer_surface_v1")));
+        assert!(_is_known_non_window(Some("xdg_popup")));
+        assert!(!_is_known_non_window(Some("xdg_toplevel")), "a toplevel not in the table is unexpected");
+        assert!(!_is_known_non_window(Some("wl_subsurface")));
+        assert!(!_is_known_non_window(None), "a surface with no role is unexpected");
     }
 }
