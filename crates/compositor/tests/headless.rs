@@ -690,3 +690,78 @@ fn a_hub_hotkey_that_conflicts_with_a_built_in_is_reported_and_the_built_in_wins
     c.roundtrip();
     assert_eq!(c.keys_received(), 0, "the window menu binding swallows the key");
 }
+
+#[test]
+fn a_valid_activation_token_raises_and_focuses_a_window() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let _b = c.map_toplevel((400, 300)); // b has the keyboard
+    let token = c.activation_token();
+    c.request_activation(&a, &token);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+}
+
+#[test]
+fn activation_restores_a_window_on_another_desktop() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let id = ipc_request(&comp, "windows/list", json!({}))["windows"][0]["id"].as_u64().unwrap();
+    ipc_request(&comp, "window/move-to-desktop", json!({"id": id, "desktop": 1}));
+    let token = c.activation_token();
+    c.request_activation(&a, &token);
+    c.roundtrip();
+    assert_eq!(ipc_request(&comp, "desktops/list", json!({}))["current"], 1);
+}
+
+#[test]
+fn an_unknown_token_changes_nothing() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    c.request_activation(&a, "not-a-token");
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()));
+    assert!(comp.wait_log("refused: unknown or expired token", Duration::from_secs(2)), "an unknown token is refused with a log line");
+}
+
+#[test]
+fn an_activation_token_works_only_once() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = c.map_toplevel((400, 300));
+    let b = c.map_toplevel((400, 300));
+    let token = c.activation_token();
+    c.request_activation(&a, &token);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+    c.request_activation(&b, &token);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()), "a used token is removed");
+    assert!(comp.wait_log("refused: unknown or expired token", Duration::from_secs(2)));
+}
+
+#[test]
+fn an_activation_before_the_window_maps_is_applied_when_it_maps() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let _b = c.map_toplevel((400, 300));
+    let token = c.activation_token();
+    let a = c.map_toplevel_activated((400, 300), &token);
+    assert!(comp.wait_log("pending activation of window 2 applied", Duration::from_secs(2)));
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+}
+
+#[test]
+fn a_pending_activation_goes_away_with_its_window() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let b = c.map_toplevel((400, 300));
+    let token = c.activation_token();
+    c.activate_toplevel_destroyed_before_map(&token);
+    assert!(comp.wait_log("pending activation of window 2 discarded", Duration::from_secs(2)));
+    assert_eq!(c.keyboard_focus(), Some(b.wl_surface().clone()));
+}

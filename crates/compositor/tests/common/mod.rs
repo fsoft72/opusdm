@@ -58,6 +58,10 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
     ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
 };
+use wayland_protocols::xdg::activation::v1::client::{
+    xdg_activation_token_v1::{self, XdgActivationTokenV1},
+    xdg_activation_v1::XdgActivationV1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup::XdgPopup,
     xdg_positioner::{Anchor as PositionerAnchor, ConstraintAdjustment, Gravity},
@@ -76,6 +80,9 @@ const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long `TestClient::roundtrip` waits for the answer to its sync: a
 /// hung compositor fails the test instead of hanging `cargo test`.
 const ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long `TestClient::activation_token` waits for the token.
+const TOKEN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Size of the output the harness asks for.
 const OUTPUT_SIZE: &str = "1920x1080";
@@ -115,8 +122,25 @@ impl Compositor {
     /// The rest of its stdout (a `--startup` child may print there) is
     /// drained for the whole run, so a writer never gets EPIPE / SIGPIPE.
     pub fn start() -> Compositor {
+        Compositor::_start(false)
+    }
+
+    /// Starts the compositor as `start` does, with `OPUSDM_DEBUG` set, so its
+    /// `debug_log!` lines reach `wait_log` / `log_count`.
+    pub fn start_debug() -> Compositor {
+        Compositor::_start(true)
+    }
+
+    /// Starts the compositor (see `start`); `debug` sets `OPUSDM_DEBUG`.
+    fn _start(debug: bool) -> Compositor {
         let runtime = tempfile::tempdir().expect("temp XDG_RUNTIME_DIR");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_opusdm-compositor"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_opusdm-compositor"));
+        if debug {
+            command.env("OPUSDM_DEBUG", "1");
+        } else {
+            command.env_remove("OPUSDM_DEBUG");
+        }
+        let mut child = command
             .args(["--headless", "--size", OUTPUT_SIZE])
             .env("XDG_RUNTIME_DIR", runtime.path())
             .env("HOME", runtime.path())
@@ -466,6 +490,8 @@ pub struct TestClient {
     foreign_manager: Option<ZwlrForeignToplevelManagerV1>,
     /// The `ext_workspace_manager_v1`, when the compositor has it.
     workspace_manager: Option<ExtWorkspaceManagerV1>,
+    /// The `xdg_activation_v1`, when the compositor has it.
+    activation: Option<XdgActivationV1>,
 }
 
 impl TestClient {
@@ -510,6 +536,7 @@ impl TestClient {
         // Bound after `wl_output` (bound by `OutputState::new`); `None` when the compositor has no such global.
         let foreign_manager = globals.bind::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ()).ok();
         let workspace_manager = globals.bind::<ExtWorkspaceManagerV1, _, _>(&qh, 1..=1, ()).ok();
+        let activation = globals.bind::<XdgActivationV1, _, _>(&qh, 1..=1, ()).ok();
         let mut client = TestClient {
             conn,
             queue,
@@ -520,6 +547,7 @@ impl TestClient {
             layers: Vec::new(),
             foreign_manager,
             workspace_manager,
+            activation,
         };
         client.roundtrip();
         client
@@ -541,6 +569,61 @@ impl TestClient {
         // The compositor has handled the buffer commit (the window is mapped) after this.
         self.roundtrip();
         TestWindow { window }
+    }
+
+    /// Maps an xdg toplevel of `size` as `map_toplevel` does, sending
+    /// `xdg_activation_v1.activate` with `token` right after its initial
+    /// commit, while the compositor has not mapped it yet.
+    pub fn map_toplevel_activated(&mut self, size: (i32, i32), token: &str) -> TestWindow {
+        let surface = self.app.compositor.create_surface(&self.qh);
+        let window = self.app.xdg.create_window(surface, WindowDecorations::None, &self.qh);
+        window.set_title("opusdm-compositor test");
+        let id = window.wl_surface().id();
+        self.app.surfaces.insert(id.clone(), SurfaceInfo::new(size));
+        window.commit();
+        self._activation().activate(token.to_string(), window.wl_surface());
+        let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
+        assert!(ok, "the toplevel got no configure");
+        self.roundtrip();
+        TestWindow { window }
+    }
+
+    /// Creates an xdg toplevel, does its initial commit, sends
+    /// `xdg_activation_v1.activate` with `token` and destroys it in the same
+    /// batch of requests (it never maps), then waits for the compositor.
+    pub fn activate_toplevel_destroyed_before_map(&mut self, token: &str) {
+        let surface = self.app.compositor.create_surface(&self.qh);
+        let window = self.app.xdg.create_window(surface, WindowDecorations::None, &self.qh);
+        window.commit();
+        self._activation().activate(token.to_string(), window.wl_surface());
+        drop(window);
+        self.roundtrip();
+    }
+
+    /// Asks the compositor for an xdg-activation token (with the serial of
+    /// the last keyboard enter of this client) and waits for it.
+    pub fn activation_token(&mut self) -> String {
+        let cell: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let token = self._activation().get_activation_token(&self.qh, Arc::clone(&cell));
+        token.set_serial(self.app.keyboard_serial, &self._seat);
+        token.commit();
+        let ok = self.dispatch_until(TOKEN_TIMEOUT, |_| cell.lock().expect("token lock").is_some());
+        assert!(ok, "no activation token within {TOKEN_TIMEOUT:?}");
+        token.destroy();
+        let value = cell.lock().expect("token lock").clone();
+        value.expect("token present")
+    }
+
+    /// Asks the compositor to activate `w` with `token`
+    /// (`xdg_activation_v1.activate`); the test roundtrips after it.
+    pub fn request_activation(&mut self, w: &TestWindow, token: &str) {
+        self._activation().activate(token.to_string(), w.wl_surface());
+    }
+
+    /// The `xdg_activation_v1` of this client; panics when the compositor
+    /// has no such global.
+    fn _activation(&self) -> &XdgActivationV1 {
+        self.activation.as_ref().expect("the compositor has no xdg_activation_v1")
     }
 
     /// Maps an xdg popup of `size` on `parent`, anchored at the rectangle
@@ -990,6 +1073,27 @@ impl Dispatch<wl_callback::WlCallback, Arc<AtomicBool>> for ClientApp {
     ) {
         if let wl_callback::Event::Done { .. } = event {
             done.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Dispatch<XdgActivationV1, ()> for ClientApp {
+    /// `xdg_activation_v1` has no events.
+    fn event(_: &mut Self, _: &XdgActivationV1, _: <XdgActivationV1 as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+
+impl Dispatch<XdgActivationTokenV1, Arc<std::sync::Mutex<Option<String>>>> for ClientApp {
+    /// Stores the token string of `done` in the cell of the request.
+    fn event(
+        _: &mut Self,
+        _: &XdgActivationTokenV1,
+        event: xdg_activation_token_v1::Event,
+        cell: &Arc<std::sync::Mutex<Option<String>>>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event {
+            *cell.lock().expect("token lock") = Some(token);
         }
     }
 }

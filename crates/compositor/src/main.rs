@@ -1,5 +1,6 @@
 //! opusdm-compositor: the native Wayland compositor of OpusDM.
 
+mod activation;
 mod args;
 mod backend;
 mod child;

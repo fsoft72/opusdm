@@ -240,6 +240,9 @@ impl XdgShellHandler for State {
         let wl = surface.wl_surface();
         if let Some(info) = self.windows.remove(wl) {
             self.stack.retain(|id| *id != info.id);
+            if info.pending_activation {
+                opusdm_ipc::debug_log!(LOG_TAG, "pending activation of window {} discarded: destroyed before it mapped", info.id.0);
+            }
         }
         self.unmapped.retain(|w| w.toplevel().is_some_and(|t| t.wl_surface() != wl));
         let mapped = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl)).cloned();
@@ -505,6 +508,7 @@ impl State {
 /// current desktop, not minimized, on top of the stack. A fullscreen or
 /// maximized window maps at the origin of its area, a new window takes the
 /// next cascade position, a window unmapped by a null buffer its old one.
+/// An xdg-activation request that came before the map is applied then.
 pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     let found = state.unmapped.iter().position(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface));
     let Some(index) = found else { return };
@@ -525,6 +529,8 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     };
     info.desktop = current;
     info.minimized = false;
+    let id = info.id;
+    let activate = std::mem::take(&mut info.pending_activation);
     let last = info.last_position.take();
     let fill = if info.fullscreen { Some(Fill::Fullscreen) } else if info.maximized { Some(Fill::Maximized) } else { None };
     let window = state.unmapped.remove(index);
@@ -546,6 +552,11 @@ pub fn handle_commit(state: &mut State, surface: &WlSurface) {
     state.space.map_element(window.clone(), (x, y), true);
     state.focus_window(Some(window));
     state.foreign_toplevels_sync();
+    if !activate { return; }
+    match state.activate_window(id) {
+        Ok(()) => opusdm_ipc::debug_log!(LOG_TAG, "pending activation of window {} applied", id.0),
+        Err(err) => opusdm_ipc::err_log!(LOG_TAG, "pending activation of window {}: {err}", id.0),
+    }
 }
 
 /// Commit of a mapped toplevel (shown, or hidden: minimized or on another

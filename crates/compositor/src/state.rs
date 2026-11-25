@@ -31,6 +31,7 @@ use smithay::{
         },
         shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
+        xdg_activation::XdgActivationState,
     },
 };
 
@@ -79,6 +80,9 @@ pub struct WindowInfo {
     /// Pid of the client process, read once from the socket credentials
     /// when the toplevel is created (`None` when unknown or 0).
     pub pid: Option<u32>,
+    /// An xdg-activation request came while the toplevel was not mapped:
+    /// it is activated when it maps (the flag goes away with the window).
+    pub pending_activation: bool,
 }
 
 impl WindowInfo {
@@ -95,6 +99,7 @@ impl WindowInfo {
             last_position: None,
             resize: ResizeTrack::default(),
             pid: None,
+            pending_activation: false,
         }
     }
 }
@@ -142,6 +147,8 @@ pub struct State {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
+    /// `xdg_activation_v1`: the activation tokens (see `activation.rs`).
+    pub xdg_activation_state: XdgActivationState,
     /// Mapped TOP / OVERLAY layer surface with exclusive keyboard
     /// interactivity: it keeps the keyboard while it is mapped.
     pub exclusive_layer: Option<WlSurface>,
@@ -195,6 +202,7 @@ impl State {
         let compositor_state = CompositorState::new::<State>(display);
         let xdg_shell_state = XdgShellState::new::<State>(display);
         let layer_shell_state = WlrLayerShellState::new::<State>(display);
+        let xdg_activation_state = XdgActivationState::new::<State>(display);
         let shm_state = ShmState::new::<State>(display, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<State>(display);
         let mut seat_state = SeatState::new();
@@ -218,6 +226,7 @@ impl State {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
+            xdg_activation_state,
             exclusive_layer: None,
             hidden_layers: Vec::new(),
             shm_state,
