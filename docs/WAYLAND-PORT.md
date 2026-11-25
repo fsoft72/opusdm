@@ -276,7 +276,8 @@ What stage 3 adds:
   client focuses the window; any other marks it urgent (`windows/list`
   `"urgent": true`).
 
-Not there yet (stage 4 and later): wlr-output-management (the hub logs that `wlr-randr` failed), XWayland,
+Not there yet (stage 4 and later): wlr-output-management (the hub logs
+that `wlr-randr` failed), XWayland,
 the DRM / libinput session and the VT-switch bindings. The tasklist keeps
 the map order as on X11 (the IPC lists windows in stacking order, the
 panel sorts them by id). The keymap is the xkb default
@@ -331,9 +332,13 @@ hotkey) would clash: `close` takes `Ctrl+Super+F4`, so the desktops are
 `Ctrl+Shift+Super+F<n>`; `send_*` takes `Ctrl+Shift+Super+<arrow>`, so the
 directional focus is `Ctrl+Alt+Super+<arrow>`. The switcher stays open
 while Ctrl or Super is held. The table lives in `SANDBOX_BUILTINS` in
-`run-native.sh`. The real combos are checked on a spare VT in stage 4. The script always runs on a
-private D-Bus session bus (it runs itself again under `dbus-run-session`,
-needed on `PATH`), so the sandbox hub never takes the live session's
+`run-native.sh`; a sandbox global hotkey that ends up on one of these
+keys is listed on stderr (the built-in wins, it does nothing there). The
+real combos are checked on a spare VT in stage 4.
+
+The script always runs on a private D-Bus session bus (it runs itself
+again under `dbus-run-session`, needed on `PATH`), so the sandbox hub
+never takes the live session's
 `org.freedesktop.FileManager1`, notification or SNI names; `kill <script pid>`
 or Ctrl+C still ends the compositor, the hub and the tools it started. E.g.
 in a Xephyr:

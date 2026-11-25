@@ -226,6 +226,24 @@ _make_sandbox_compositor_config() {
     echo "  Ctrl+Alt+BackSpace       quit (default, not grabbed by Openbox)"
 }
 
+# Warns on stderr for every sandbox global hotkey (in the hotkeys.json $1)
+# whose key equals a built-in of the compositor.json $2: the built-in wins,
+# so that hotkey does nothing in the sandbox. Modifiers are compared in any
+# order and case. Nothing to compare without a hotkeys.json.
+_warn_hotkey_clashes() {
+    local hotkeys="$1" builtins="$2" clashes
+    [ -f "$hotkeys" ] || return 0
+    clashes="$(jq -r --slurpfile b "$builtins" '
+        def norm: split("+") | (.[:-1] | map(ascii_downcase) | sort) + .[-1:] | join("+");
+        ($b[0] | to_entries | map({key: (.value | norm), value: .key}) | from_entries) as $taken
+        | .[] | select(.global == true) | select($taken[.key | norm] != null)
+        | "  \(.key)  \(.function) (the built-in \($taken[.key | norm]) wins)"' "$hotkeys")" \
+        || { echo "jq failed comparing $hotkeys with $builtins" >&2; return 1; }
+    [ -z "$clashes" ] && return 0
+    echo "These sandbox global hotkeys use a key of a sandbox built-in and do nothing here:" >&2
+    echo "$clashes" >&2
+}
+
 # A config directory of its own holding the autostart script the compositor
 # runs once its socket is up, and the sandbox compositor.json.
 CONFIG_DIR="$(mktemp -d /tmp/opusdm-native-XXXXXX)"
@@ -242,6 +260,7 @@ export XDG_CONFIG_HOME="$PRIVATE_CONFIG_HOME"
 echo "Configuration: a copy in $PRIVATE_CONFIG_HOME/opusdm (removed at exit)"
 
 _make_sandbox_compositor_config "$CONFIG_DIR/compositor.json"
+_warn_hotkey_clashes "$PRIVATE_CONFIG_HOME/opusdm/hotkeys.json" "$CONFIG_DIR/compositor.json"
 export OPUSDM_COMPOSITOR_CONFIG="$CONFIG_DIR/compositor.json"
 
 HUB_OUT="/dev/stderr"
