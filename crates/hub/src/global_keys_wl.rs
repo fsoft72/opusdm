@@ -1,6 +1,10 @@
 //! System-global hotkeys (F-03) on Wayland, where no client may grab keys.
-//! Two ways, picked by the session:
+//! Three ways, picked by the session:
 //!
+//! - **opusdm-compositor** (it exports `OPUSDM_COMPOSITOR_SOCKET` for its
+//!   children, see [`under_native`]): the global hotkeys are sent to the
+//!   compositor (`hotkeys/set`) on its private IPC, which reports each press
+//!   on the same connection (see `opusdm_wayland::native::watch_hotkeys`).
 //! - **labwc** (it sets `LABWC_PID` for its children): the global hotkeys
 //!   become labwc keybinds that start `opusdm-hub --run FUNCTION` (see
 //!   `remote`). They live in a marked block inside `<keyboard>` of labwc's
@@ -16,7 +20,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use opusdm_ipc::bindings::{parse_key, Hotkey};
 use opusdm_ipc::function::FunctionId;
@@ -27,8 +31,25 @@ pub const BLOCK_NAME: &str = "global hotkeys";
 /// Called with the function of each global hotkey pressed.
 pub type OnHit = Box<dyn Fn(FunctionId) + Send + Sync>;
 
+/// Whether the hub runs under opusdm-compositor, decided once per process
+/// (the environment does not change while it runs). Shared by the global
+/// hotkeys and the desktop count of the toolbar.
+pub fn under_native() -> bool {
+    static UNDER_NATIVE: OnceLock<bool> = OnceLock::new();
+    *UNDER_NATIVE.get_or_init(opusdm_wayland::native::under_native)
+}
+
+/// The hotkey table of the compositor for `hotkeys`: the global entries
+/// only, as (key, function) pairs, in file order.
+pub fn native_table(hotkeys: &[Hotkey]) -> Vec<(String, String)> {
+    hotkeys.iter().filter(|h| h.global).map(|h| (h.key.clone(), h.function.clone())).collect()
+}
+
 /// The global hotkey backend of this Wayland session.
 pub enum GlobalKeysWl {
+    /// The hotkey table of opusdm-compositor; the handle feeds the writer
+    /// thread of `watch_hotkeys`, whose hotkey thread reports the presses.
+    Native(opusdm_wayland::native::HotkeyWatch),
     /// Keybinds in labwc's `rc.xml`.
     Labwc { rc: PathBuf, hub: PathBuf, sock: PathBuf },
     /// The GlobalShortcuts portal; the thread rebinds what it is sent.
@@ -36,9 +57,23 @@ pub enum GlobalKeysWl {
 }
 
 impl GlobalKeysWl {
-    /// Pick the backend: labwc when the hub runs under it, else the portal.
-    /// `None` (logged) when there is none.
+    /// Pick the backend: opusdm-compositor when the hub runs under it, then
+    /// labwc, else the portal. `None` (logged) when there is none.
+    ///
+    /// Ownership (native): the returned value is kept by the hub owner
+    /// thread for the whole run; the hotkey thread of `watch_hotkeys` owns
+    /// `on_hit` and lives as long as the process, reconnecting every 2 s
+    /// while the compositor is away.
     pub fn start(on_hit: OnHit) -> Option<GlobalKeysWl> {
+        if under_native() {
+            return match opusdm_wayland::native::watch_hotkeys(Vec::new(), on_hit) {
+                Ok(watch) => Some(GlobalKeysWl::Native(watch)),
+                Err(e) => {
+                    opusdm_ipc::err_log!("opusdm-hub", "global hotkeys are not available through opusdm-compositor: {e}");
+                    None
+                }
+            };
+        }
         if opusdm_wayland::labwc::under_labwc() {
             let hub = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("opusdm-hub"));
             return Some(GlobalKeysWl::Labwc { rc: opusdm_wayland::labwc::rc_path(), hub, sock: opusdm_ipc::sockpath::hub_sock_path() });
@@ -52,9 +87,15 @@ impl GlobalKeysWl {
         }
     }
 
-    /// Make `globals` the global hotkeys.
+    /// Make `globals` the global hotkeys. Never blocks on the compositor
+    /// (native: only a channel send).
     pub fn set(&self, globals: &[Hotkey]) {
         match self {
+            GlobalKeysWl::Native(watch) => {
+                if let Err(e) = watch.set(native_table(globals)) {
+                    opusdm_ipc::err_log!("opusdm-hub", "cannot send the global hotkeys to opusdm-compositor: {e}");
+                }
+            }
             GlobalKeysWl::Labwc { rc, hub, sock } => {
                 if let Err(e) = sync_labwc(rc, globals, hub, sock) {
                     opusdm_ipc::err_log!("opusdm-hub", "cannot write the global hotkeys into {}: {e}", rc.display());
@@ -302,5 +343,26 @@ mod tests {
         assert!(block.contains("command=\"&apos;/opt/o dm/opusdm-hub&apos; --run &apos;exec:opusdm-shot&apos; --sock &apos;/run/h.sock&apos;\""));
         assert!(block.ends_with("    </keybind>\n"));
         assert_eq!(labwc_block(&[], Path::new("h"), Path::new("s")).0, "");
+    }
+
+    #[test]
+    fn the_native_table_is_the_global_entries_in_file_order() {
+        let local = Hotkey { key: "Ctrl+q".into(), function: "lister:quit".into(), global: false };
+        let hotkeys = [
+            hotkey("Ctrl+backslash", "exec:opusdm-term"),
+            local,
+            hotkey("Alt+1", "desktop:1"),
+            hotkey("Ctrl+Shift+space", "opusdm:run"),
+        ];
+        let expected: Vec<(String, String)> = [
+            ("Ctrl+backslash", "exec:opusdm-term"),
+            ("Alt+1", "desktop:1"),
+            ("Ctrl+Shift+space", "opusdm:run"),
+        ]
+        .iter()
+        .map(|(k, f)| (k.to_string(), f.to_string()))
+        .collect();
+        assert_eq!(native_table(&hotkeys), expected);
+        assert!(native_table(&[]).is_empty());
     }
 }

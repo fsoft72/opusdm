@@ -182,11 +182,26 @@ impl Widgets {
 }
 
 /// Ask the window manager for `count` virtual screens. A failure is logged
-/// and never stops the hub.
-fn apply_virtual_screens(count: u32) {
+/// and never stops the hub. Under opusdm-compositor the request (up to 2 s)
+/// runs on `io`, never on the GTK thread; the X11 path is unchanged and the
+/// other Wayland sessions have no desktop count to set.
+fn apply_virtual_screens(io: &opusdm_hub::io_worker::IoWorker, count: u32) {
+    if opusdm_hub::global_keys_wl::under_native() {
+        io.submit(move || set_native_desktop_count(count));
+        return;
+    }
     if !opusdm_ipc::session::is_x11() { return; }
     if let Err(e) = opusdm_ui::with_x11(|x11| x11.set_desktop_count(count)) {
         opusdm_ipc::err_log!("opusdm-hub", "cannot set the number of virtual screens: {e}");
+    }
+}
+
+/// Set the number of desktops of opusdm-compositor (a blocking request:
+/// run it off the GTK thread). Logs the count kept, or the error.
+fn set_native_desktop_count(count: u32) {
+    match opusdm_wayland::native::set_desktop_count(count) {
+        Ok(kept) => opusdm_ipc::debug_log!("opusdm-hub", "opusdm-compositor desktop count: asked {count}, kept {kept}"),
+        Err(e) => opusdm_ipc::err_log!("opusdm-hub", "cannot set the number of desktops of opusdm-compositor: {e}"),
     }
 }
 
@@ -197,8 +212,8 @@ fn build_ui(
     config: opusdm_hub::startup_config::StartupConfig,
 ) {
     let desktop_settings = config.desktop;
-    apply_virtual_screens(desktop_settings.virtual_screens);
     let io = opusdm_hub::io_worker::IoWorker::new("opusdm-hub-io");
+    apply_virtual_screens(&io, desktop_settings.virtual_screens);
     apply_compositor(&io, &desktop_settings);
     opusdm_hub::snap::start(desktop_settings.snap_enabled);
     let initial_settings = config.settings;
@@ -510,7 +525,7 @@ fn apply_desktop_settings(widgets: &Rc<Widgets>, ds: opusdm_ipc::DesktopSettings
     }
     *widgets.desktop.settings.borrow_mut() = ds.clone();
     if changes.virtual_screens {
-        apply_virtual_screens(ds.virtual_screens);
+        apply_virtual_screens(&widgets.io, ds.virtual_screens);
     }
     if changes.transparency {
         apply_compositor(&widgets.io, &ds);
