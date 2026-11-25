@@ -18,15 +18,17 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_output, delegate_registry, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
+    compositor::{CompositorHandler, CompositorState, Surface},
+    delegate_compositor, delegate_output, delegate_registry, delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
+    delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     shell::{
         xdg::{
+            popup::{Popup, PopupConfigure, PopupHandler},
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
-            XdgShell,
+            XdgPositioner, XdgShell, XdgSurface as _,
         },
         WaylandSurface,
     },
@@ -42,7 +44,11 @@ use wayland_client::{
     protocol::{wl_output, wl_shm, wl_surface::WlSurface},
     Connection, EventQueue, Proxy, QueueHandle,
 };
-use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
+use wayland_protocols::xdg::shell::client::{
+    xdg_positioner::{Anchor, ConstraintAdjustment, Gravity},
+    xdg_surface::XdgSurface,
+    xdg_toplevel::XdgToplevel,
+};
 
 /// How long `Compositor::start` waits for the socket name.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -174,6 +180,33 @@ impl HasSurface for TestWindow {
     }
 }
 
+/// A surface that can be the parent of an xdg popup (toplevels now, layer
+/// surfaces in task 5).
+pub trait PopupParent {
+    /// The `xdg_surface` the popup is created against; `None` for a parent
+    /// that adopts the popup through its own request (a layer surface's `get_popup`).
+    fn parent_xdg_surface(&self) -> Option<&XdgSurface>;
+}
+
+impl PopupParent for TestWindow {
+    /// The `xdg_surface` of the toplevel.
+    fn parent_xdg_surface(&self) -> Option<&XdgSurface> {
+        Some(self.window.xdg_surface())
+    }
+}
+
+/// A mapped xdg popup of a `TestClient`.
+pub struct TestPopup {
+    popup: Popup,
+}
+
+impl HasSurface for TestPopup {
+    /// The surface of the popup.
+    fn wl_surface(&self) -> &WlSurface {
+        self.popup.wl_surface()
+    }
+}
+
 /// What the client knows about one of its surfaces (any role).
 struct SurfaceInfo {
     /// Size the test asked for, used when a configure leaves the size to the client.
@@ -184,6 +217,8 @@ struct SurfaceInfo {
     configured: bool,
     /// Buffer attached last; kept alive while the compositor may use it.
     buffer: Option<Buffer>,
+    /// Position (relative to the parent) and size of the last popup configure.
+    popup_rect: Rect,
 }
 
 /// Client side state handed to the event queue.
@@ -261,7 +296,7 @@ impl TestClient {
         let window = self.app.xdg.create_window(surface, WindowDecorations::None, &self.qh);
         window.set_title("opusdm-compositor test");
         let id = window.wl_surface().id();
-        let info = SurfaceInfo { requested: size, last_configure: (0, 0), configured: false, buffer: None };
+        let info = SurfaceInfo { requested: size, last_configure: (0, 0), configured: false, buffer: None, popup_rect: Rect::default() };
         self.app.surfaces.insert(id.clone(), info);
         window.commit();
         let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
@@ -269,6 +304,39 @@ impl TestClient {
         // The compositor has handled the buffer commit (the window is mapped) after this.
         self.roundtrip();
         TestWindow { window }
+    }
+
+    /// Maps an xdg popup of `size` on `parent`, anchored at the rectangle
+    /// `anchor` of the parent (anchor top-left, gravity bottom-right, every
+    /// constraint adjustment on): initial commit, waits for the configure,
+    /// answers it with a buffer and waits until the compositor has handled it.
+    pub fn map_popup(&mut self, parent: &impl PopupParent, anchor: Rect, size: (i32, i32)) -> TestPopup {
+        let positioner = XdgPositioner::new(&self.app.xdg).expect("xdg_positioner");
+        positioner.set_size(size.0, size.1);
+        positioner.set_anchor_rect(anchor.x, anchor.y, anchor.w, anchor.h);
+        positioner.set_anchor(Anchor::TopLeft);
+        positioner.set_gravity(Gravity::BottomRight);
+        positioner.set_constraint_adjustment(
+            ConstraintAdjustment::SlideX | ConstraintAdjustment::SlideY | ConstraintAdjustment::FlipX | ConstraintAdjustment::FlipY,
+        );
+        let surface = Surface::new(&self.app.compositor, &self.qh).expect("popup surface");
+        let popup =
+            Popup::from_surface(parent.parent_xdg_surface(), &positioner, &self.qh, surface, &self.app.xdg).expect("popup");
+        let id = popup.wl_surface().id();
+        let info = SurfaceInfo { requested: size, last_configure: (0, 0), configured: false, buffer: None, popup_rect: Rect::default() };
+        self.app.surfaces.insert(id.clone(), info);
+        popup.wl_surface().commit();
+        let ok = self.dispatch_until(CONFIGURE_TIMEOUT, |app| app.surfaces.get(&id).is_some_and(|s| s.configured));
+        assert!(ok, "the popup got no configure");
+        self.roundtrip();
+        TestPopup { popup }
+    }
+
+    /// Position (relative to the parent's window geometry) and size of the
+    /// last configure of `popup`.
+    pub fn popup_configure(&self, popup: &TestPopup) -> Rect {
+        let id = popup.wl_surface().id();
+        self.app.surfaces.get(&id).map(|s| s.popup_rect).expect("known popup")
     }
 
     /// Unmaps `window` the xdg way: attaches a null buffer, commits and waits
@@ -374,6 +442,20 @@ impl WindowHandler for ClientApp {
     }
 }
 
+impl PopupHandler for ClientApp {
+    /// Records the position and size of the configure and answers it with a buffer.
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &Popup, config: PopupConfigure) {
+        let id = popup.wl_surface().id();
+        if let Some(info) = self.surfaces.get_mut(&id) {
+            info.popup_rect = Rect { x: config.position.0, y: config.position.1, w: config.width, h: config.height };
+        }
+        self.answer_configure(popup.wl_surface(), (config.width, config.height));
+    }
+
+    /// The tests do not dismiss popups.
+    fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Popup) {}
+}
+
 impl OutputHandler for ClientApp {
     /// The output state.
     fn output_state(&mut self) -> &mut OutputState {
@@ -409,5 +491,6 @@ delegate_compositor!(ClientApp);
 delegate_output!(ClientApp);
 delegate_shm!(ClientApp);
 delegate_xdg_shell!(ClientApp);
+delegate_xdg_popup!(ClientApp);
 delegate_xdg_window!(ClientApp);
 delegate_registry!(ClientApp);

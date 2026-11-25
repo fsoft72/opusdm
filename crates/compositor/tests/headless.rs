@@ -4,7 +4,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Compositor, TestClient};
+use common::{Compositor, Rect, TestClient};
 
 #[test]
 fn a_toplevel_gets_configured_and_frame_callbacks() {
@@ -51,4 +51,14 @@ fn a_toplevel_unmapped_by_a_null_buffer_maps_again() {
     c.unmap(&w);
     assert!(c.remap(&w), "no configure after the new initial commit");
     assert!(c.wait_frame(&w, Duration::from_secs(2)));
+}
+
+#[test]
+fn a_popup_gets_configured_and_shown() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    let p = c.map_popup(&w, Rect { x: 10, y: 10, w: 1, h: 1 }, (200, 150));
+    assert_eq!(c.popup_configure(&p).w, 200);
+    assert!(c.wait_frame(&p, Duration::from_secs(2)));
 }

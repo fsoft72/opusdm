@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use smithay::{
     delegate_data_device, delegate_output, delegate_seat,
-    desktop::{Space, Window},
+    desktop::{PopupManager, Space, Window},
     input::{Seat, SeatHandler, SeatState},
     output::Output,
     reexports::wayland_server::{
@@ -80,6 +80,8 @@ pub struct State {
     pub windows: HashMap<WlSurface, WindowInfo>,
     /// Toplevels created but not mapped yet (no buffer committed).
     pub unmapped: Vec<Window>,
+    /// The xdg popups of every client (parents are toplevels, later layers).
+    pub popups: PopupManager,
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
@@ -118,6 +120,7 @@ impl State {
             space,
             windows: HashMap::new(),
             unmapped: Vec::new(),
+            popups: PopupManager::default(),
             compositor_state,
             xdg_shell_state,
             shm_state,
@@ -191,6 +194,7 @@ impl State {
         self.space.refresh();
         self.windows.retain(|surface, _| surface.alive());
         self.unmapped.retain(|w| w.alive());
+        self.popups.cleanup();
         let Some(keyboard) = self.seat.get_keyboard() else {
             if !self.no_keyboard_logged {
                 opusdm_ipc::err_log!(LOG_TAG, "refresh: the seat has no keyboard, focus is not checked");
