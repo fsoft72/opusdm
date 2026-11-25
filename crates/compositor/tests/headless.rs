@@ -145,6 +145,16 @@ fn a_window_going_away_does_not_steal_the_keyboard_from_an_exclusive_layer() {
 }
 
 #[test]
+fn a_layer_surface_hidden_by_destroying_its_role_keeps_the_client_alive() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let note = c.map_layer(Layer::Overlay, Anchor::TOP | Anchor::RIGHT, (300, 80), 0, KeyboardInteractivity::None);
+    assert_eq!(c.hide_layer_keeping_surface(&note), Ok(()));
+    let w = c.map_toplevel((200, 100));
+    assert!(c.wait_frame(&w, Duration::from_secs(2)));
+}
+
+#[test]
 fn a_maximized_window_grows_when_the_panel_goes_away() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);

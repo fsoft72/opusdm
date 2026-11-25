@@ -428,6 +428,21 @@ impl TestClient {
         self.roundtrip();
     }
 
+    /// Hides the layer surface `l` the GTK way: destroys only its
+    /// `zwlr_layer_surface_v1` (the `wl_surface` stays), then attaches a null
+    /// buffer and commits the bare `wl_surface`. The result of the roundtrip
+    /// that follows: an error when the compositor killed the client.
+    pub fn hide_layer_keeping_surface(&mut self, l: &TestLayer) -> Result<(), String> {
+        let smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(role) = l.layer.kind() else {
+            return Err("not a wlr layer surface".to_string());
+        };
+        role.destroy();
+        let wl = l.wl_surface();
+        wl.attach(None, 0, 0);
+        wl.commit();
+        self.queue.roundtrip(&mut self.app).map(|_| ()).map_err(|e| e.to_string())
+    }
+
     /// Size sent by the last configure of the layer surface `l`.
     pub fn layer_configure(&self, l: &TestLayer) -> (u32, u32) {
         let id = l.wl_surface().id();

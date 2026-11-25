@@ -6,18 +6,26 @@
 
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
-    delegate_layer_shell,
     desktop::{layer_map_for_output, LayerSurface, WindowSurfaceType},
-    reexports::wayland_server::{
-        protocol::{wl_output::WlOutput, wl_surface::WlSurface},
-        Resource,
+    reexports::{
+        wayland_protocols_wlr::layer_shell::v1::server::{
+            zwlr_layer_shell_v1::ZwlrLayerShellV1,
+            zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
+        },
+        wayland_server::{
+            backend::ClientId,
+            delegate_dispatch, delegate_global_dispatch,
+            protocol::{wl_output::WlOutput, wl_surface::WlSurface},
+            Client, DataInit, Dispatch, DisplayHandle, Resource,
+        },
     },
     wayland::{
         compositor::with_states,
         shell::{
             wlr_layer::{
-                KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
-                WlrLayerShellState,
+                Anchor, KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState,
+                LayerSurfaceData, WlrLayerShellGlobalData, WlrLayerShellHandler, WlrLayerShellState,
+                WlrLayerSurfaceUserData,
             },
             xdg::PopupSurface,
         },
@@ -41,6 +49,7 @@ impl WlrLayerShellHandler for State {
             opusdm_ipc::debug_log!(LOG_TAG, "layer {id}: requested output ignored, one output only");
         }
         opusdm_ipc::debug_log!(LOG_TAG, "new layer surface {id} {namespace:?} on {layer:?}");
+        _clear_roleless_anchor(surface.wl_surface(), layer);
         let mut map = layer_map_for_output(&self.output);
         if let Err(err) = map.map_layer(&LayerSurface::new(surface, namespace)) {
             opusdm_ipc::err_log!(LOG_TAG, "layer surface {id} not mapped: {err}");
@@ -75,7 +84,72 @@ impl WlrLayerShellHandler for State {
     }
 }
 
-delegate_layer_shell!(State);
+// `delegate_layer_shell!` without its `zwlr_layer_surface_v1` part: that one
+// is the `Dispatch` impl below, which wraps Smithay's.
+delegate_dispatch!(State: [ZwlrLayerShellV1: ()] => WlrLayerShellState);
+delegate_global_dispatch!(State: [ZwlrLayerShellV1: WlrLayerShellGlobalData] => WlrLayerShellState);
+
+impl Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData> for State {
+    /// Every request goes to Smithay unchanged.
+    fn request(
+        state: &mut State,
+        client: &Client,
+        resource: &ZwlrLayerSurfaceV1,
+        request: zwlr_layer_surface_v1::Request,
+        data: &WlrLayerSurfaceUserData,
+        dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, State>,
+    ) {
+        <WlrLayerShellState as Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData, State>>::request(
+            state, client, resource, request, data, dh, data_init,
+        );
+    }
+
+    /// Smithay's destroy (which calls `layer_destroyed`), then the size check
+    /// Smithay keeps on the `wl_surface` is satisfied for the commits of the
+    /// now role-less surface (see [`_set_roleless_anchor`]).
+    fn destroyed(state: &mut State, client: ClientId, resource: &ZwlrLayerSurfaceV1, data: &WlrLayerSurfaceUserData) {
+        let surface = state
+            .layer_shell_state
+            .layer_surfaces()
+            .find(|layer| layer.shell_surface() == resource)
+            .map(|layer| layer.wl_surface().clone());
+        <WlrLayerShellState as Dispatch<ZwlrLayerSurfaceV1, WlrLayerSurfaceUserData, State>>::destroyed(
+            state, client, resource, data,
+        );
+        let Some(surface) = surface else {
+            opusdm_ipc::debug_log!(LOG_TAG, "destroyed layer surface {} was not known", resource.id());
+            return;
+        };
+        _set_roleless_anchor(&surface);
+    }
+}
+
+/// Smithay 0.7 checks the layer size on every commit of the `wl_surface`
+/// (a pre-commit hook that is never removed) and, when the layer surface is
+/// destroyed, resets its state to size 0 with no anchor. GTK hides a layer
+/// window by destroying the `zwlr_layer_surface_v1` and then committing a
+/// null buffer on the same `wl_surface`: the check fails and the client is
+/// killed with `invalid_size` (opusdm-notify died this way). Anchoring the
+/// pending state to every edge makes the check pass; nothing reads it while
+/// the surface has no layer role, and [`_clear_roleless_anchor`] drops it
+/// when the surface gets a layer role again.
+fn _set_roleless_anchor(surface: &WlSurface) {
+    with_states(surface, |states| {
+        states.cached_state.get::<LayerSurfaceCachedState>().pending().anchor = Anchor::all();
+    });
+}
+
+/// A new layer surface on `surface` starts from the default state (as on a
+/// fresh `wl_surface`) with its `layer`, not from the anchors left by
+/// [`_set_roleless_anchor`]. Called on `get_layer_surface`, before any
+/// request of the client on the new layer surface.
+fn _clear_roleless_anchor(surface: &WlSurface, layer: Layer) {
+    with_states(surface, |states| {
+        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+        *cached.pending() = LayerSurfaceCachedState { layer, ..Default::default() };
+    });
+}
 
 /// True when `layer` asks for the keyboard exclusively on a layer where that
 /// is honoured (TOP and OVERLAY).
