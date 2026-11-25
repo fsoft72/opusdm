@@ -235,7 +235,7 @@ impl State {
     pub fn window_menu_key(&mut self, key: MenuKey) {
         self.check_window_menu();
         let Some(menu) = self.menu.as_mut() else {
-            opusdm_ipc::debug_log!(LOG_TAG, "window menu key {key:?}: the menu closed, key dropped");
+            opusdm_ipc::err_log!(LOG_TAG, "window menu key {key:?}: the menu closed, key dropped");
             return;
         };
         let action = menu.nav.key(key);

@@ -903,7 +903,7 @@ fn the_window_menu_closes_when_its_client_dies() {
     assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
     ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
     assert!(comp.wait_log("window menu opened on window 1", Duration::from_secs(2)));
-    drop(w);
+    std::mem::forget(w); // no xdg_toplevel.destroy queued: the client death destroys it
     drop(c); // socket closed with the window alive, like kill -9
     assert!(comp.wait_log("window menu closed: its window was destroyed", Duration::from_secs(2)));
     ipc_request(&comp, "debug/key", json!({"key": "Return"}));
@@ -915,4 +915,38 @@ fn the_window_menu_closes_when_its_client_dies() {
     d.roundtrip();
     assert_eq!(d.keys_received(), 2);
     assert!(comp.is_running());
+}
+
+#[test]
+fn a_hub_hotkey_is_swallowed_and_logged_while_the_window_menu_is_open() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    let (mut hub, _) = ipc_hub(&comp, terminal_table());
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    ipc_request(&comp, "debug/key", json!({"key": "Ctrl+backslash"}));
+    assert!(comp.wait_log("hotkey Ctrl+backslash: swallowed, the window menu is open", Duration::from_secs(2)));
+    assert!(!hub.wait_for_hotkey("terminal", Duration::from_millis(300)), "the hub gets no event");
+    ipc_request(&comp, "debug/key", json!({"key": "Return"}));
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["maximized"], true, "the menu stayed open");
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0);
+}
+
+#[test]
+fn a_second_window_menu_key_closes_the_menu() {
+    let comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let w = c.map_toplevel((400, 300));
+    assert!(c.wait_keyboard_focus(&w, Duration::from_secs(2)));
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    ipc_request(&comp, "debug/key", json!({"key": "Alt+space"}));
+    assert!(comp.wait_log("window menu closed: the window menu key was pressed again", Duration::from_secs(2)));
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 0, "both Alt+Space presses are swallowed");
+    ipc_request(&comp, "debug/key", json!({"key": "Return"}));
+    c.roundtrip();
+    assert_eq!(c.keys_received(), 2, "the menu is closed, Return reaches the client");
+    assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["maximized"], false);
 }

@@ -143,6 +143,8 @@ impl State {
                 opusdm_ipc::err_log!(LOG_TAG, "hotkey {combo}: quit binding, stopping the compositor");
                 self.quit.store(true, std::sync::atomic::Ordering::Relaxed);
             }
+            // A second press closes the open menu, as in Openbox.
+            Binding::WindowMenu if self.menu.is_some() => self.close_window_menu("the window menu key was pressed again"),
             Binding::WindowMenu => self.open_window_menu(),
             Binding::Hub(function) => {
                 if !self.ipc.send_to_hub(&json!({"event": "hotkey", "function": function})) {

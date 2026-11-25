@@ -129,7 +129,7 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
             state.set_minimized(id, _bool(data, "state")?).map(|_| json!({}))
         }
         "window/close" => state.close_window(_window_id(data)?).map(|_| json!({})),
-        "window/kill" => state.kill_window_pid(_window_id(data)?).map(|pid| json!({"pid": pid})),
+        "window/kill" => state.kill_window_pid(_window_id(data)?, "window/kill").map(|pid| json!({"pid": pid})),
         "window/move-to-desktop" => {
             let id = _window_id(data)?;
             state.move_to_desktop(id, _u32(data, "desktop")?).map(|_| json!({}))

@@ -166,8 +166,13 @@ impl State {
         pointer.frame(self);
     }
 
-    /// A scroll frame: sent to the surface with the pointer focus.
+    /// A scroll frame: sent to the surface with the pointer focus; while
+    /// the window menu is open it is dropped (no client scrolls under it).
     pub fn pointer_axis(&mut self, frame: AxisFrame) {
+        if self.menu.is_some() {
+            opusdm_ipc::debug_log!(LOG_TAG, "scroll dropped: the window menu is open");
+            return;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             opusdm_ipc::err_log!(LOG_TAG, "pointer axis: the seat has no pointer");
             return;
@@ -218,6 +223,8 @@ impl State {
             opusdm_ipc::debug_log!(LOG_TAG, "hotkey release of key {} swallowed", keycode.raw());
             return FilterResult::Intercept(KeyRoute::Swallowed);
         }
+        // A menu whose window went since the last refresh must not eat this key.
+        self.check_window_menu();
         if self.menu.is_some() { return self._menu_filter(keycode, mods, handle); }
         if self.swallowed_keys.contains(&keycode) {
             opusdm_ipc::debug_log!(LOG_TAG, "hotkey repeat press of key {} swallowed", keycode.raw());
@@ -231,15 +238,24 @@ impl State {
 
     /// The filter of a key press while the window menu is open: a modifier
     /// goes to the focused client as usual (its release does too, so the
-    /// client never sees a modifier stuck); the quit binding still runs;
-    /// any other press (repeats included) goes to the menu, its keycode
-    /// recorded so its release is swallowed.
+    /// client never sees a modifier stuck); the quit binding still runs and
+    /// the window menu binding runs too (it closes the menu); a hub hotkey
+    /// is swallowed with an `err_log!`; any other press (repeats included)
+    /// goes to the menu. Every press taken has its keycode recorded so its
+    /// release is swallowed.
     fn _menu_filter(&mut self, keycode: Keycode, mods: &ModifiersState, handle: &KeysymHandle<'_>) -> FilterResult<KeyRoute> {
         if handle.raw_syms().iter().any(|sym| sym.is_modifier_key()) { return FilterResult::Forward; }
         self.swallowed_keys.insert(keycode);
         let mods = mods_of(mods);
-        if let Some((Binding::Quit, name)) = self._lookup_key(mods, handle) {
-            return FilterResult::Intercept(KeyRoute::Binding(Binding::Quit, combo_text(mods, &name)));
+        match self._lookup_key(mods, handle) {
+            Some((binding @ (Binding::Quit | Binding::WindowMenu), name)) => {
+                return FilterResult::Intercept(KeyRoute::Binding(binding, combo_text(mods, &name)));
+            }
+            Some((Binding::Hub(function), name)) => {
+                opusdm_ipc::err_log!(LOG_TAG, "hotkey {}: swallowed, the window menu is open ({function} not run)", combo_text(mods, &name));
+                return FilterResult::Intercept(KeyRoute::Swallowed);
+            }
+            None => {}
         }
         let sym = handle.modified_sym();
         match menu_key_of(sym) {

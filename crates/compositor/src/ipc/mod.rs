@@ -451,19 +451,19 @@ fn _on_readable(state: &mut State, id: u64) -> PostAction {
 }
 
 impl State {
-    /// SIGKILL to the process of the client of the window `id` (the
-    /// `window/kill` request and the window menu's "Kill"); see
-    /// `kill_window_pid`.
+    /// SIGKILL to the process of the client of the window `id`, asked by
+    /// the window menu's "Kill"; see `kill_window_pid`.
     pub fn kill_window(&self, id: WindowId) -> Result<(), String> {
-        self.kill_window_pid(id).map(|_| ())
+        self.kill_window_pid(id, "window menu Kill").map(|_| ())
     }
 
     /// SIGKILL to the process of the client of the window `id` (its pid
     /// read from the socket credentials when the toplevel was created,
     /// `WindowInfo::pid`). Refused for an unknown window, a window without
-    /// a pid, a pid `<= 1` or the compositor's own pid. Returns the pid
-    /// killed (the `window/kill` reply).
-    pub fn kill_window_pid(&self, id: WindowId) -> Result<i32, String> {
+    /// a pid, a pid `<= 1` or the compositor's own pid. `source` (who
+    /// asked) goes in the log line. Returns the pid killed (the
+    /// `window/kill` reply).
+    pub fn kill_window_pid(&self, id: WindowId, source: &str) -> Result<i32, String> {
         let (_, info) = self.window_by_id(id).ok_or_else(|| format!("kill: unknown window {}", id.0))?;
         let pid = info.pid.ok_or_else(|| format!("kill: window {} has no client pid", id.0))?;
         let pid = i32::try_from(pid).map_err(|_| format!("kill: pid {pid} of window {} is out of range", id.0))?;
@@ -473,7 +473,7 @@ impl State {
         if rc != 0 {
             return Err(format!("kill: pid {pid} of window {}: {}", id.0, std::io::Error::last_os_error()));
         }
-        opusdm_ipc::err_log!(LOG_TAG, "window/kill: SIGKILL sent to pid {pid} (window {})", id.0);
+        opusdm_ipc::err_log!(LOG_TAG, "{source}: SIGKILL sent to pid {pid} (window {})", id.0);
         Ok(pid)
     }
 }
