@@ -240,6 +240,7 @@ impl XdgShellHandler for State {
         let wl = surface.wl_surface();
         if let Some(info) = self.windows.remove(wl) {
             self.stack.retain(|id| *id != info.id);
+            self.forget_active_window(info.id);
             if info.pending_activation {
                 opusdm_ipc::debug_log!(LOG_TAG, "pending activation of window {} discarded: destroyed before it mapped", info.id.0);
             }
@@ -574,8 +575,10 @@ pub fn unmap_if_bufferless(state: &mut State, surface: &WlSurface) -> bool {
     // A hidden window is out of the space: it keeps the position stored when it was hidden.
     let position = state.space.element_location(&window).map(|p| (p.x, p.y)).or(info.last_position);
     info.last_position = position;
+    let id = info.id;
     state.space.unmap_elem(&window);
     window.set_activated(false);
+    state.forget_active_window(id);
     state.unmapped.push(window);
     opusdm_ipc::debug_log!(LOG_TAG, "toplevel {} unmapped (null buffer) at {position:?}", surface.id());
     if state.focus_is_gone_or(surface) {

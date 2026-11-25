@@ -306,7 +306,7 @@ impl State {
 
     /// Takes `window` out of the space: stores its position, dismisses its
     /// popups (ending their keyboard and pointer grabs) and takes its
-    /// `Activated` state away.
+    /// `Activated` state away (it is no longer the active window).
     fn _hide(&mut self, window: &Window) {
         let position = self.space.element_location(window).map(|p| (p.x, p.y));
         self.space.unmap_elem(window);
@@ -317,7 +317,11 @@ impl State {
         };
         let wl = toplevel.wl_surface();
         match self.windows.get_mut(wl) {
-            Some(info) => info.last_position = position,
+            Some(info) => {
+                info.last_position = position;
+                let id = info.id;
+                self.forget_active_window(id);
+            }
             None => opusdm_ipc::err_log!(LOG_TAG, "hide: toplevel {} has no window entry", wl.id()),
         }
         self.dismiss_popups_and_grabs(wl);

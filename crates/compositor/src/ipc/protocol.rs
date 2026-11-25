@@ -144,6 +144,7 @@ fn _run(state: &mut State, req: &Request) -> Result<Value, String> {
         "watch" => Ok(json!({})),
         "hotkeys/set" => Ok(json!({"errors": state.hotkeys.set_hub(&_hotkey_entries(data)?)})),
         "debug/key" => _debug_key(state, _str(data, "key")?).map(|_| json!({})),
+        "debug/click" => _debug_click(state, _u32(data, "x")?, _u32(data, "y")?).map(|_| json!({})),
         "debug/foreign-toplevels" => _debug_foreign_toplevels(state),
         "debug/workspaces" => _debug_workspaces(state),
         other => Err(format!("unknown method '{other}'")),
@@ -206,6 +207,21 @@ fn _debug_key(state: &mut State, combo: &str) -> Result<(), String> {
         state.keyboard_key(*code, false, time);
     }
     opusdm_ipc::debug_log!(LOG_TAG, "debug/key {combo} sent");
+    Ok(())
+}
+
+/// `debug/click`: moves the pointer to `(x, y)` (space coordinates), then
+/// presses and releases the left button, through `State::pointer_motion`
+/// and `State::pointer_button` (click focus, grabs and the client events as
+/// for real input). Refused unless the compositor runs with test input
+/// (`--headless`).
+fn _debug_click(state: &mut State, x: u32, y: u32) -> Result<(), String> {
+    if !state.test_input { return Err("debug/click is only available with --headless".to_string()); }
+    let time = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+    state.pointer_motion((f64::from(x), f64::from(y)).into(), time);
+    state.pointer_button(crate::input::BTN_LEFT, true, time);
+    state.pointer_button(crate::input::BTN_LEFT, false, time);
+    opusdm_ipc::debug_log!(LOG_TAG, "debug/click at {x},{y} sent");
     Ok(())
 }
 
@@ -382,6 +398,15 @@ mod tests {
         let keyboard = s.seat.get_keyboard().unwrap();
         assert!(keyboard.pressed_keys().is_empty(), "every key is released");
         assert!(!keyboard.modifier_state().ctrl && !keyboard.modifier_state().alt);
+    }
+
+    #[test]
+    fn debug_click_needs_test_input() {
+        let (_d, mut s) = state(4);
+        assert!(call(&mut s, "debug/click", json!({"x": 10, "y": 10}))["error"].is_string());
+        s.test_input = true;
+        assert_eq!(call(&mut s, "debug/click", json!({"x": 10, "y": 10})), json!({"ok": true}));
+        assert!(call(&mut s, "debug/click", json!({"x": -1, "y": 10}))["error"].is_string());
     }
 
     #[test]

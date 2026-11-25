@@ -950,3 +950,130 @@ fn a_second_window_menu_key_closes_the_menu() {
     assert_eq!(c.keys_received(), 2, "the menu is closed, Return reaches the client");
     assert_eq!(ipc_request(&comp, "windows/list", json!({}))["windows"][0]["maximized"], false);
 }
+
+/// `(id, activated)` of every window in `windows/list`, in stacking order.
+fn activated_ids(comp: &Compositor) -> Vec<(u64, bool)> {
+    let reply = ipc_request(comp, "windows/list", json!({}));
+    let windows = reply["windows"].as_array().cloned().unwrap_or_default();
+    windows.iter().map(|w| (w["id"].as_u64().unwrap_or(0), w["activated"].as_bool().unwrap_or(false))).collect()
+}
+
+/// Ids of the windows `windows/list` reports activated.
+fn active_ids(comp: &Compositor) -> Vec<u64> {
+    activated_ids(comp).into_iter().filter(|(_, a)| *a).map(|(id, _)| id).collect()
+}
+
+/// Titles of the foreign toplevels with the `activated` state (2).
+fn foreign_active_titles(c: &mut TestClient) -> Vec<String> {
+    c.toplevels().into_iter().filter(|t| t.states.contains(&2)).map(|t| t.title).collect()
+}
+
+/// Clicks at `(x, y)` through `debug/click`.
+fn click(comp: &Compositor, x: i64, y: i64) {
+    let reply = ipc_request(comp, "debug/click", json!({"x": x, "y": y}));
+    assert_eq!(reply["ok"], true, "debug/click refused: {reply}");
+}
+
+/// A panel like the OpusDM bar: TOP layer across the top, 40 px tall,
+/// exclusive zone 40, keyboard on demand.
+fn map_panel(c: &mut TestClient) -> common::TestLayer {
+    c.map_layer(Layer::Top, Anchor::TOP | Anchor::LEFT | Anchor::RIGHT, (0, 40), 40, KeyboardInteractivity::OnDemand)
+}
+
+/// Maps a toplevel titled `title`.
+fn map_titled(c: &mut TestClient, title: &str) -> common::TestWindow {
+    let w = c.map_toplevel((400, 300));
+    w.xdg().set_title(title.into());
+    w.wl_surface().commit();
+    c.roundtrip();
+    w
+}
+
+#[test]
+fn a_click_on_an_on_demand_layer_keeps_the_window_active() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let panel = map_panel(&mut c);
+    let _a = map_titled(&mut c, "A");
+    assert_eq!(active_ids(&comp), vec![1]);
+    click(&comp, 960, 20);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(panel.wl_surface().clone()), "the panel takes the keyboard");
+    assert_eq!(active_ids(&comp), vec![1], "windows/list: A stays activated");
+    assert_eq!(foreign_active_titles(&mut c), vec!["A".to_string()], "foreign toplevel: A stays activated");
+}
+
+#[test]
+fn an_exclusive_layer_keeps_the_window_active() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = map_titled(&mut c, "A");
+    let run = c.map_layer(Layer::Overlay, Anchor::empty(), (600, 80), 0, KeyboardInteractivity::Exclusive);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(run.wl_surface().clone()), "the exclusive layer takes the keyboard");
+    assert_eq!(active_ids(&comp), vec![1], "windows/list: A stays activated");
+    assert_eq!(foreign_active_titles(&mut c), vec!["A".to_string()], "foreign toplevel: A stays activated");
+    // A window mapped under the exclusive layer does not take the active state.
+    let _b = map_titled(&mut c, "B");
+    assert_eq!(active_ids(&comp), vec![1], "B mapped under the exclusive layer is not activated");
+    c.destroy_layer(run);
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2], "the keyboard goes to the topmost window, which becomes active");
+}
+
+#[test]
+fn a_minimized_active_window_is_no_longer_active_and_the_next_one_is() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _a = map_titled(&mut c, "A");
+    let _b = map_titled(&mut c, "B");
+    assert_eq!(active_ids(&comp), vec![2]);
+    let reply = ipc_request(&comp, "window/minimize", json!({"id": 2, "state": true}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![1], "B minimized: A, which gets the keyboard, is the active one");
+    assert_eq!(foreign_active_titles(&mut c), vec!["A".to_string()]);
+}
+
+#[test]
+fn a_window_minimized_while_the_panel_has_the_keyboard_is_no_longer_active() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let panel = map_panel(&mut c);
+    let _a = map_titled(&mut c, "A");
+    let _b = map_titled(&mut c, "B");
+    click(&comp, 960, 20);
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2], "B stays active after the panel click");
+    let reply = ipc_request(&comp, "window/minimize", json!({"id": 2, "state": true}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    c.roundtrip();
+    assert!(!active_ids(&comp).contains(&2), "minimized B is no longer active");
+    assert!(!foreign_active_titles(&mut c).contains(&"B".to_string()));
+    // The existing focus logic leaves the keyboard on the panel, so no window takes over.
+    assert_eq!(c.keyboard_focus(), Some(panel.wl_surface().clone()));
+    let reply = ipc_request(&comp, "window/activate", json!({"id": 2}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2], "restored B is the only active window");
+}
+
+#[test]
+fn focusing_another_window_after_a_panel_click_makes_only_it_active() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let _panel = map_panel(&mut c);
+    let a = map_titled(&mut c, "A");
+    let _b = map_titled(&mut c, "B");
+    click(&comp, 960, 20);
+    c.roundtrip();
+    assert_eq!(active_ids(&comp), vec![2]);
+    // Click on a part of A that B does not cover (B is cascaded below right of A).
+    let reply = ipc_request(&comp, "windows/list", json!({}));
+    let ga = reply["windows"].as_array().unwrap().iter().find(|w| w["id"] == 1).unwrap()["geometry"].clone();
+    click(&comp, ga["x"].as_i64().unwrap() + 5, ga["y"].as_i64().unwrap() + 5);
+    c.roundtrip();
+    assert_eq!(c.keyboard_focus(), Some(a.wl_surface().clone()));
+    assert_eq!(active_ids(&comp), vec![1], "only A is active");
+    assert_eq!(foreign_active_titles(&mut c), vec!["A".to_string()]);
+}

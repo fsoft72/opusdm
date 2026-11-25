@@ -136,6 +136,12 @@ pub struct State {
     pub windows: HashMap<WlSurface, WindowInfo>,
     /// Stacking order of every toplevel (last = top), shown or not.
     pub stack: Vec<WindowId>,
+    /// The active toplevel: the last toplevel that took the keyboard, the
+    /// only one with the `Activated` state. A layer surface taking the
+    /// keyboard (a panel click, an exclusive layer) leaves it as it is; it
+    /// changes only when another toplevel gets the keyboard, and is cleared
+    /// when its window is hidden, unmapped or destroyed.
+    pub active_window: Option<WindowId>,
     /// The virtual desktops.
     pub desktops: Desktops,
     /// Id the next toplevel gets (ids start at 1, never reused).
@@ -228,6 +234,7 @@ impl State {
             space,
             windows: HashMap::new(),
             stack: Vec::new(),
+            active_window: None,
             desktops: Desktops::new(desktops),
             next_window_id: 1,
             last_hidden_frame: Instant::now(),
@@ -342,10 +349,19 @@ impl State {
             self.raise_in_stack(w);
         }
         match &window {
-            Some(w) => self.space.raise_element(w, true),
-            None => self.space.elements().for_each(|w| {
-                w.set_activated(false);
-            }),
+            Some(w) => {
+                self.space.raise_element(w, true);
+                self.active_window = _window_id_of(&self.windows, w);
+                if self.active_window.is_none() {
+                    opusdm_ipc::err_log!(LOG_TAG, "focus: the focused window is not in the table, no active window");
+                }
+            }
+            None => {
+                self.active_window = None;
+                self.space.elements().for_each(|w| {
+                    w.set_activated(false);
+                });
+            }
         }
         let target = window.as_ref().and_then(|w| w.toplevel()).map(|t| t.wl_surface().clone());
         keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
@@ -365,20 +381,38 @@ impl State {
         self.focus_window(top);
     }
 
-    /// Gives the keyboard to the layer surface `surface` and takes the
-    /// `Activated` state away from every window.
+    /// Gives the keyboard to the layer surface `surface`. The active window
+    /// keeps the `Activated` state (a layer never becomes the active window);
+    /// every other window loses it (`map_element` may have given it to a
+    /// window mapped under an exclusive layer).
     pub fn focus_layer(&mut self, surface: &WlSurface) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             opusdm_ipc::err_log!(LOG_TAG, "focus: the seat has no keyboard");
             return;
         };
-        for window in self.space.elements() {
-            window.set_activated(false);
-        }
+        self.apply_active_window();
         keyboard.set_focus(self, Some(surface.clone()), SERIAL_COUNTER.next_serial());
         for toplevel in self.space.elements().filter_map(|w| w.toplevel()) {
             toplevel.send_pending_configure();
         }
+    }
+
+    /// Gives the `Activated` state to the active window (`active_window`)
+    /// and takes it away from every other window of the space; the caller
+    /// sends the configures.
+    pub fn apply_active_window(&self) {
+        for window in self.space.elements() {
+            let id = _window_id_of(&self.windows, window);
+            window.set_activated(id.is_some() && id == self.active_window);
+        }
+    }
+
+    /// Clears `active_window` when it is `id` (its window was hidden,
+    /// unmapped or destroyed).
+    pub fn forget_active_window(&mut self, id: WindowId) {
+        if self.active_window != Some(id) { return; }
+        self.active_window = None;
+        opusdm_ipc::debug_log!(LOG_TAG, "window {} is no longer the active window", id.0);
     }
 
     /// True when the keyboard focus is `surface`, a dead surface or nothing.
@@ -396,6 +430,10 @@ impl State {
         self.windows.retain(|surface, _| surface.alive());
         let windows = &self.windows;
         self.stack.retain(|id| windows.values().any(|i| i.id == *id));
+        if let Some(id) = self.active_window.filter(|id| !windows.values().any(|i| i.id == *id)) {
+            opusdm_ipc::debug_log!(LOG_TAG, "active window {} is dead, cleared", id.0);
+            self.active_window = None;
+        }
         self.unmapped.retain(|w| w.alive());
         self.popups.cleanup();
         let before = self.usable_area();
@@ -423,6 +461,11 @@ impl State {
             self.focus_topmost();
         }
     }
+}
+
+/// Id of the toplevel `window` in `windows`, when it is in the table.
+fn _window_id_of(windows: &HashMap<WlSurface, WindowInfo>, window: &Window) -> Option<WindowId> {
+    windows.get(window.toplevel()?.wl_surface()).map(|info| info.id)
 }
 
 /// Pid of the client that owns `surface`, from its socket credentials;
