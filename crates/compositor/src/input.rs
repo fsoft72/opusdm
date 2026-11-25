@@ -418,9 +418,15 @@ impl State {
     /// left button and a title bar button was pressed, that button runs if
     /// the pointer is still on it (Close = `close_window`, Iconify =
     /// `set_minimized`, Maximize = `toggle_maximize`); off it nothing runs.
+    /// While the window menu or the switcher is open (opened while the
+    /// button was held) the button is disarmed: nothing runs.
     fn _frame_release(&mut self, button: u32, location: Point<f64, Logical>) {
         if button != BTN_LEFT { return; }
         let Some((id, title_button)) = self.frame_pointer.pressed.take() else { return };
+        if self.menu.is_some() || self.switcher.is_some() {
+            opusdm_ipc::debug_log!(LOG_TAG, "title button {title_button:?} of window {} disarmed: the window menu or the switcher is open, nothing runs", id.0);
+            return;
+        }
         let still_on = match self.under(location) {
             Some(Under::Frame(window, FrameZone::Button(b))) => b == title_button && self._toplevel_id(&window) == Some(id),
             _ => false,

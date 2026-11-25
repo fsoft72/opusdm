@@ -2355,6 +2355,50 @@ fn a_press_elsewhere_between_two_title_clicks_is_no_double_click() {
 }
 
 #[test]
+fn a_title_button_held_while_the_window_menu_opens_is_disarmed() {
+    let mut comp = Compositor::start_debug();
+    let mut c = TestClient::new(&comp);
+    let w = decorated_focused(&mut c);
+    // Left held on Close, the menu opened by a right press on the title.
+    pointer_to(&comp, CLOSE_AT.0, CLOSE_AT.1);
+    button(&comp, "left", "press");
+    pointer_to(&comp, TITLE_AT.0, TITLE_AT.1);
+    click_at(&comp, TITLE_AT, "right");
+    pointer_to(&comp, CLOSE_AT.0, CLOSE_AT.1);
+    button(&comp, "left", "release");
+    assert!(!c.wait_close_request(&w, Duration::from_millis(300)), "no close while the menu is open (right press)");
+    assert!(comp.wait_log("disarmed", Duration::from_secs(2)));
+    key(&comp, "Escape");
+    // Left held on Close, the menu opened by Alt+space.
+    button(&comp, "left", "press");
+    assert!(comp.wait_log("title button Close of window 1 pressed", Duration::from_secs(2)));
+    key(&comp, "Alt+space");
+    button(&comp, "left", "release");
+    assert!(!c.wait_close_request(&w, Duration::from_millis(300)), "no close while the menu is open (Alt+space)");
+    assert_eq!(comp.log_count("disarmed"), 2, "the Alt+space menu disarmed the held Close too");
+    key(&comp, "Escape");
+    assert!(comp.is_running());
+}
+
+#[test]
+fn a_title_button_held_while_the_switcher_opens_is_disarmed() {
+    let comp = Compositor::start();
+    let mut c = TestClient::new(&comp);
+    let a = map_decorated(&mut c);
+    let b = map_decorated(&mut c);
+    assert!(c.wait_keyboard_focus(&b, Duration::from_secs(2)));
+    // B's frame cascades at (30, 30): its close button is at (46, 46).
+    pointer_to(&comp, 30 + CLOSE_AT.0, 30 + CLOSE_AT.1);
+    button(&comp, "left", "press");
+    key_state(&comp, "Alt_L", "press");
+    key(&comp, "Tab");
+    button(&comp, "left", "release");
+    assert!(!c.wait_close_request(&b, Duration::from_millis(300)), "no close while the switcher is open");
+    key_state(&comp, "Alt_L", "release");
+    assert!(!c.wait_close_request(&a, Duration::from_millis(300)));
+}
+
+#[test]
 fn a_left_drag_on_the_right_border_resizes_the_window() {
     let comp = Compositor::start();
     let mut c = TestClient::new(&comp);
