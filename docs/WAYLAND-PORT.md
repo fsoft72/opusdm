@@ -252,10 +252,9 @@ What stage 2 adds:
 Not there yet (stage 3 and later): wlr-screencopy (opusdm-shot starts on
 Ctrl+Print but cannot capture: "the compositor offers no screen copy"),
 wlr-output-management (the hub logs that `wlr-randr` failed), XWayland,
-the DRM / libinput session and the VT-switch bindings. Known in stage 2:
-the tasklist shows the windows in stacking order, so the buttons move when
-the active window changes (X11 keeps the map order); the first panel click
-after a tasklist menu closed can be lost. The keymap is the xkb default
+the DRM / libinput session and the VT-switch bindings. The tasklist keeps
+the map order as on X11 (the IPC lists windows in stacking order, the
+panel sorts them by id). The keymap is the xkb default
 (`us`) unless `XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables
 are set. On a software renderer (Xephyr, llvmpipe) `linux-dmabuf` is not
 offered and one log line says so; clients use shared memory.
